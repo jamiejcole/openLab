@@ -23,14 +23,16 @@ use openlab_core::{SaveError, WorkspaceId};
 
 pub use atomic::{Stage, write_atomic, write_atomic_with};
 pub use backup::backup_existing;
-pub use files::{modified_ms, read_text};
-pub use recovery::{RecoveryCheck, RecoveryOffer, check_recovery, clear_recovery, write_recovery};
+pub use files::{modified_ms, read_text, unique_sibling};
+pub use recovery::{
+    RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, write_recovery,
+};
 pub use relink::{
     FolderScan, FoundRelinks, ScanLimits, find_in_folder, media_path, missing_media, scan_folder,
 };
 pub use save::{SaveReport, save_workspace, save_workspace_with};
 pub use settings::{load_machine_settings, save_machine_settings};
-pub use writer::SaveWriter;
+pub use writer::{JobKind, SaveWriter};
 
 /// `<app-support>/openLab`.
 #[derive(Clone, Debug)]
@@ -56,19 +58,39 @@ impl AppDirs {
         self.root.join("settings.json")
     }
 
-    pub fn backups_dir(&self, workspace: WorkspaceId) -> PathBuf {
-        self.root.join("Backups").join(workspace.to_string())
+    /// `Backups/<workspace-id>-<hash of show path>`: a duplicated show has the same workspace
+    /// id, and its backups must not rotate the original's out.
+    pub fn backups_dir(&self, workspace: WorkspaceId, show_path: &Path) -> PathBuf {
+        self.root
+            .join("Backups")
+            .join(format!("{workspace}-{}", files::path_key(show_path)))
     }
 
-    pub fn recovery_path(&self, workspace: WorkspaceId) -> PathBuf {
-        self.root
-            .join("Recovery")
-            .join(format!("{workspace}.openlab"))
+    pub fn recovery_dir(&self) -> PathBuf {
+        self.root.join("Recovery")
+    }
+
+    /// `Recovery/<workspace-id>-<hash of show path>.openlab`, or `<workspace-id>.openlab` for a
+    /// workspace that has never been saved. Binding the file to its show path stops a copy of
+    /// the show from being offered another copy's unsaved work.
+    pub fn recovery_path(&self, workspace: WorkspaceId, show_path: Option<&Path>) -> PathBuf {
+        self.recovery_dir()
+            .join(format!("{}.openlab", recovery_stem(workspace, show_path)))
+    }
+}
+
+pub(crate) fn recovery_stem(workspace: WorkspaceId, show_path: Option<&Path>) -> String {
+    match show_path {
+        Some(path) => format!("{workspace}-{}", files::path_key(path)),
+        None => workspace.to_string(),
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum PersistError {
+    /// A queued save was replaced by a newer one for the same file before it ran.
+    #[error("superseded by a newer save")]
+    Superseded,
     #[error("could not {op} {}: {source}", path.display())]
     Io {
         op: &'static str,

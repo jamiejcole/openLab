@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use super::PersistError;
@@ -37,4 +37,33 @@ pub fn modified_ms(path: &Path) -> Option<i64> {
         Ok(after) => i64::try_from(after.as_millis()).ok()?,
         Err(before) => -i64::try_from(before.duration().as_millis()).ok()?,
     })
+}
+
+/// [`openlab_core::path_hash`] of a file path, spelled the way show files spell paths.
+pub(crate) fn path_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    openlab_core::path_hash(&openlab_core::to_portable(
+        &text,
+        openlab_core::PathStyle::host(),
+    ))
+}
+
+/// A name beside `path` ending `.<suffix>`, `.<suffix>.1`, ... that does not exist yet, so
+/// evidence kept from one failure is not overwritten by the next. After a few tries the last
+/// name is reused, so repeated failures cannot fill the disk.
+pub fn unique_sibling(path: &Path, suffix: &str) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_os_string();
+    let mut candidate = path.to_path_buf();
+    for n in 0..8 {
+        let mut next = name.clone();
+        next.push(format!(".{suffix}"));
+        if n > 0 {
+            next.push(format!(".{n}"));
+        }
+        candidate = path.with_file_name(next);
+        if !candidate.exists() {
+            break;
+        }
+    }
+    candidate
 }

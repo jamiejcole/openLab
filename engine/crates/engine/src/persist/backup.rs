@@ -36,7 +36,7 @@ pub fn backup_existing(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(PersistError::io("read", show_path)(e)),
     };
-    let dir = dirs.backups_dir(workspace);
+    let dir = dirs.backups_dir(workspace, show_path);
     fs::create_dir_all(&dir).map_err(PersistError::io("create", &dir))?;
     // Two saves in the same millisecond must not overwrite each other's backup.
     let mut ms = now_ms;
@@ -54,8 +54,13 @@ pub fn backup_existing(
 
 /// Deletes all but the `keep` newest backups of `workspace`. Files in the folder that are not
 /// backups are left alone. Never fails: what could not be removed is reported.
-pub(crate) fn rotate(dirs: &AppDirs, workspace: WorkspaceId, keep: u32) -> Rotation {
-    let dir = dirs.backups_dir(workspace);
+pub(crate) fn rotate(
+    dirs: &AppDirs,
+    workspace: WorkspaceId,
+    show_path: &Path,
+    keep: u32,
+) -> Rotation {
+    let dir = dirs.backups_dir(workspace, show_path);
     let mut outcome = Rotation::default();
     let Ok(entries) = fs::read_dir(&dir) else {
         return outcome;

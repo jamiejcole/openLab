@@ -30,9 +30,7 @@ pub fn load_machine_settings(dirs: &AppDirs) -> LoadedSettings {
         },
     };
     if !loaded.warnings.is_empty() {
-        let mut name = path.file_name().unwrap_or_default().to_os_string();
-        name.push(".corrupt");
-        let _ = fs::copy(&path, path.with_file_name(name));
+        let _ = fs::copy(&path, super::unique_sibling(&path, "corrupt"));
     }
     loaded
 }
