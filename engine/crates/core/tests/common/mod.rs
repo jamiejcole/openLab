@@ -69,7 +69,7 @@ pub fn audio() -> CueKind {
         last_slice_play_count: 1,
         levels: CueLevels {
             master_db: 0.0,
-            output_db: vec![0.0, 0.0],
+            outputs: vec![out(0.0), out(0.0)],
             crosspoints: vec![],
             gangs: vec![],
         },
@@ -91,6 +91,28 @@ pub fn fade(target: u128) -> CueKind {
     }
 }
 
+pub fn out(db: f64) -> CueOutput {
+    CueOutput { db, mute: false }
+}
+
+pub fn patch_output() -> PatchOutput {
+    PatchOutput {
+        level_db: 0.0,
+        mute: false,
+        delay_ms: 0.0,
+        polarity_inverted: false,
+    }
+}
+
+pub fn patch(n: u128, outputs: usize) -> OutputPatch {
+    OutputPatch {
+        id: patch_id(n),
+        name: "Main".into(),
+        master_db: 0.0,
+        outputs: vec![patch_output(); outputs],
+    }
+}
+
 pub fn group(children: Vec<Cue>) -> CueKind {
     CueKind::Group {
         mode: GroupMode::Timeline,
@@ -108,12 +130,12 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             panic_duration: 5.0,
             autosave_interval: 30.0,
             osc_passcode: None,
+            master_db: 0.0,
+            hotkeys: TransportHotkeys::default(),
+            auto_number_start: 1.0,
+            auto_number_increment: 1.0,
         },
-        patches: vec![OutputPatch {
-            id: patch_id(1),
-            name: "Main".into(),
-            channel_count: 2,
-        }],
+        patches: vec![patch(1, 2)],
         network_patches: vec![NetworkPatch {
             id: net_id(1),
             name: "Desk".into(),

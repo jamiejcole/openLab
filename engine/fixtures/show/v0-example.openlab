@@ -7,7 +7,18 @@
       "min_go_interval": 0.0,
       "panic_duration": 5.0,
       "autosave_interval": 30.0,
-      "osc_passcode": null
+      "osc_passcode": null,
+      "master_db": 0.0,
+      "hotkeys": {
+        "go": null,
+        "stop_all": null,
+        "pause_all": null,
+        "resume_all": null,
+        "playhead_next": null,
+        "playhead_previous": null
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 1.0
     },
     "patches": [],
     "network_patches": [],

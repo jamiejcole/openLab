@@ -55,7 +55,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ---
 
 ## 2. Workspace & Files
-- [x] **WS-01** `v0.0.1` A workspace is a single document containing cue lists, carts, patches, settings and references to media.
+- [ ] **WS-01** `v0.0.1` A workspace is a single document containing cue lists, carts, patches, settings and references to media.
 - [ ] **WS-02** `v0.0.1` New / Open / Save / Save As / Revert / Close; multiple workspaces open at once.
 - [ ] **WS-03** `v0.0.1` Media referenced by relative path when inside the workspace folder, absolute otherwise; relink missing media (single and batch "find in folder").
 - [ ] **WS-04** "Bundle workspace": copy workspace + all referenced media into one self-contained folder for transport between machines.
@@ -318,7 +318,7 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **CL-05** cue lists only (carts later).
 - **CUE-09** hotkey and OSC triggers only.
 - **CT-10** audio level fades only (video fades in v0.0.2).
-- **CT-30** send only; OSC parameter fades later.
+- **CT-30**: OSC send only; raw UDP/TCP string messages and OSC parameter fades later.
 - **PB-10** OSC/network output override only (MIDI/timecode not yet present).
 - **PB-12** wall clock only.
 - **AUD-01** CoreAudio and WASAPI; ASIO later.

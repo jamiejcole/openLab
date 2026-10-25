@@ -19,10 +19,10 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [x] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
 - [x] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
 - [x] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
-- [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06]
+- [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06] — saves clone the workspace and run `save_show` on the writer thread, never the control thread (serialise + verify-reload costs up to ~1 s on minimum spec; from M1-A review L6)
 - [ ] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
 - [ ] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
-- [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32]
+- [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32] — includes converting native Windows relative paths (backslashes) to forward slashes when a path is created; the loader only converts Windows absolute paths (M1-A review L2)
 - [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
 - [x] M1.9 Fuzz target: show-file loader [QA-04]
 - [ ] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
@@ -33,7 +33,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [ ] M2.2 Pre-wait / action / post-wait timing and continue modes (do-not-continue, auto-continue, auto-follow) [CUE-02, CUE-03]
 - [ ] M2.3 Playhead, GO, double-GO protection, playhead navigation [PB-01, PB-02, PB-05, CL-06]
 - [ ] M2.4 Group cues: timeline, start-first-and-enter, start-first-and-go-to-next, playlist (loop/shuffle), random [CT-22]
-- [ ] M2.5 Control cues: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo [CT-11..CT-21]
+- [ ] M2.5 Control cues: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo [CT-11..CT-21] — CueEngine must still bound chained triggering at runtime (depth/iteration limit): load-time validation warns on Start/GoTo cycles, but edits can create them too (M1-A review M1)
 - [ ] M2.6 Fade cue logic (audio levels; stop-target-when-done) [CT-10]
 - [ ] M2.7 Panic (fade all, second press = hard stop), Pause All / Resume All [PB-03, PB-04]
 - [ ] M2.8 Broken-cue detection (missing media, missing device, invalid target) [CUE-06, NFR-07]
