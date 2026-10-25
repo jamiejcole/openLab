@@ -2,6 +2,9 @@
 
 //! openlab-engine: the headless openLab show-playback engine.
 
+use std::io::Write;
+use std::process::ExitCode;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn output(args: &[String]) -> String {
@@ -12,9 +15,13 @@ fn output(args: &[String]) -> String {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    println!("{}", output(&args));
+    // `println!` panics if stdout is closed (e.g. a broken pipe); a failed write is just a failed run.
+    match writeln!(std::io::stdout().lock(), "{}", output(&args)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
 }
 
 #[cfg(test)]
