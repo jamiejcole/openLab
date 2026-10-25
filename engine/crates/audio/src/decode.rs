@@ -107,6 +107,31 @@ pub enum WarningKind {
     /// Nothing can be read past `at` (the container keeps failing, or its timestamps jump by
     /// more than a minute): the file plays to there.
     Unreadable,
+    /// Seeks in this damaged file decode forward from the start (see [`Seeking::FromStart`]):
+    /// preload it if it fits, or expect slow loops and start offsets deep in the file.
+    SlowSeeks,
+}
+
+/// How a seek reaches a frame of a file on its probe's timeline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seeking {
+    /// The container's own seek lands on the probe's timeline (no damage).
+    Direct,
+    /// Damaged: a seek goes to the nearest checkpoint before its target that still decodes as
+    /// the probe decoded it, then decodes forward (at most `INDEX_SPACING` frames).
+    Indexed(Arc<SeekIndex>),
+    /// Damaged, and seeks do not reproduce the probe's timeline (symphonia's MP3 reader counts
+    /// damaged frames differently after a seek; AAC noise substitution is never bit-identical
+    /// after one): seeks decode forward from the start, in bounded steps on a disk worker.
+    FromStart,
+}
+
+/// Checkpoints recorded during a probe's full decode: a hash of the `CHECK_LEN` timeline
+/// frames from every `INDEX_SPACING`-th frame.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SeekIndex {
+    /// Checkpoint `j` (from 1) is at frame `j * INDEX_SPACING`.
+    hashes: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,11 +141,41 @@ pub struct MediaWarning {
     pub frames: u64,
 }
 
-/// A playable file's probe: its format and exact length, and any damage found on the way.
+/// A playable file's probe: its format and exact length, any damage found on the way, and how
+/// seeks reach its frames (pass it on in [`StreamRequest`](crate::StreamRequest)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probed {
     pub info: MediaInfo,
     pub warnings: Vec<MediaWarning>,
+    pub seeking: Seeking,
+}
+
+impl Probed {
+    /// Seeks in this file are slow ([`Seeking::FromStart`]): preload it if it fits the budget.
+    pub fn preload_advised(&self) -> bool {
+        self.seeking == Seeking::FromStart
+    }
+}
+
+/// Frames between seek-index checkpoints.
+pub const INDEX_SPACING: u64 = 8192;
+/// Frames hashed at each checkpoint.
+const CHECK_LEN: u64 = 256;
+/// Decoding a seek to a checkpoint may take before the checkpoint counts as unusable.
+const VERIFY_BUDGET: u64 = 8 * INDEX_SPACING;
+/// Checkpoints tried before a seek falls back to decoding from the start.
+const CHECKPOINT_TRIES: usize = 3;
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv(mut h: u64, samples: &[f32]) -> u64 {
+    for x in samples {
+        for b in x.to_bits().to_le_bytes() {
+            h = (h ^ u64::from(b)).wrapping_mul(FNV_PRIME);
+        }
+    }
+    h
 }
 
 /// Why a file cannot be played. Shown to the operator as a broken cue; never a panic.
@@ -279,13 +334,23 @@ pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
         Media::Preloaded(p) => Ok(Probed {
             info: p.info,
             warnings: p.warnings.clone(),
+            seeking: Seeking::Direct,
         }),
         other => contain(|| {
             let mut d = Decoder::open(other)?;
             let info = d.exact_info()?;
+            let seeking = d.choose_seeking(info.frames)?;
+            if seeking == Seeking::FromStart {
+                d.warn(MediaWarning {
+                    kind: WarningKind::SlowSeeks,
+                    at: 0,
+                    frames: 0,
+                });
+            }
             Ok(Probed {
                 info,
                 warnings: std::mem::take(&mut d.warnings),
+                seeking,
             })
         }),
     }
@@ -389,16 +454,23 @@ pub(crate) trait FrameSource: Send {
     fn take_warnings(&mut self) -> Vec<MediaWarning> {
         Vec::new()
     }
+    /// Does at most about `budget` frames of the decoding a seek still needs; true once the
+    /// next `read` is cheap. Lets a disk worker split a long seek across steps.
+    fn prepare(&mut self, _budget: u64) -> Result<bool, MediaError> {
+        Ok(true)
+    }
 }
 
-/// Opens `media` as a frame source. Blocking. `damaged`: its probe reported damage, so seeks
-/// decode forward from the start (see `Decoder::linear_seeks`).
-pub(crate) fn open_source(media: Media, damaged: bool) -> Result<Box<dyn FrameSource>, MediaError> {
+/// Opens `media` as a frame source, seeking as its probe found (`Probed::seeking`). Blocking.
+pub(crate) fn open_source(
+    media: Media,
+    seeking: Seeking,
+) -> Result<Box<dyn FrameSource>, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(Box::new(MemorySource { data: p, pos: 0 })),
         other => {
             let mut d = Decoder::open(other)?;
-            d.linear_seeks = damaged;
+            d.seeking = seeking;
             Ok(Box::new(d))
         }
     }
@@ -580,11 +652,28 @@ struct Decoder {
     /// by `take_warnings`.
     warnings: Vec<MediaWarning>,
     reported: usize,
-    /// Seeks decode forward from the start, for a file the probe found damaged: after damage,
-    /// symphonia's readers can place frames differently after a seek than when reading through
-    /// (its MP3 reader counts and trims damaged frames differently), and only reading through
-    /// reproduces the probe's timeline.
-    linear_seeks: bool,
+    /// How seeks reach the probe's timeline (see [`Seeking`]).
+    seeking: Seeking,
+    /// Set while the probe's full decode records the seek index.
+    index: Option<IndexBuilder>,
+    /// Frames decoded since opening (what a seek costs).
+    decoded: u64,
+}
+
+/// The seek index being recorded: checkpoint hashes so far, and the hash of a window in progress.
+#[derive(Debug, Default)]
+struct IndexBuilder {
+    hashes: Vec<u64>,
+    open: Option<u64>,
+}
+
+/// What a bounded refill achieved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fill {
+    Ready,
+    End,
+    /// The budget ran out while a seek was still decoding towards its target.
+    Pending,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -703,7 +792,9 @@ impl Decoder {
             silence: 0,
             warnings: Vec::new(),
             reported: 0,
-            linear_seeks: false,
+            seeking: Seeking::Direct,
+            index: None,
+            decoded: 0,
         };
         d.find_origin()?;
         Ok(d)
@@ -767,7 +858,10 @@ impl Decoder {
                     }
                 }
             }
-            None => self.count_to_end()?,
+            None => {
+                self.index = Some(IndexBuilder::default());
+                self.count_to_end()?
+            }
         };
         // Fewer frames than the container declares: the file was cut short (or, for lossy
         // formats, frames were lost where the container could not tell).
@@ -787,6 +881,7 @@ impl Decoder {
     /// Decodes to the end and returns the frame position reached.
     fn count_to_end(&mut self) -> Result<u64, MediaError> {
         loop {
+            self.index_feed();
             self.next += self.run_len();
             self.silence = 0;
             self.buf_pos = self.buf.len();
@@ -922,7 +1017,7 @@ impl Decoder {
                         self.unreadable();
                         break;
                     }
-                    if frames > 0 && self.resync.is_none() {
+                    if frames > 0 {
                         self.warn(MediaWarning {
                             kind: WarningKind::Missing,
                             at: u64::try_from(pos).unwrap_or(0),
@@ -939,6 +1034,7 @@ impl Decoder {
                 ));
             }
             let n = decoded.frames();
+            self.decoded = self.decoded.saturating_add(n as u64);
             decoded.copy_to_vec_interleaved(&mut self.buf);
             for x in &mut self.buf {
                 *x = sanitize_sample(*x);
@@ -983,7 +1079,17 @@ impl Decoder {
     /// Missing frames (a gap in the positions) become silence and a warning; repeated ones are
     /// dropped. Returns false at the end of the stream.
     fn refill(&mut self) -> Result<bool, MediaError> {
+        Ok(self.fill(None)? == Fill::Ready)
+    }
+
+    /// As `refill`; with a `budget`, a seek still decoding towards its target stops after about
+    /// that many frames (`Fill::Pending`) and continues on the next call.
+    fn fill(&mut self, budget: Option<u64>) -> Result<Fill, MediaError> {
+        let mut spent = 0u64;
         loop {
+            if self.resync.is_some() && budget.is_some_and(|b| spent >= b) {
+                return Ok(Fill::Pending);
+            }
             let Some(mut pos) = self.decode_packet()? else {
                 // A seek that runs into the end before its target may have met a container that
                 // reads differently after a seek (symphonia's FLAC reader can stop short of
@@ -994,10 +1100,12 @@ impl Decoder {
                     self.seek_with(self.next, SEEK_TRIES - 1)?;
                     continue;
                 }
-                return Ok(false);
+                return Ok(Fill::End);
             };
             let len = i64::try_from(self.run_len()).unwrap_or(i64::MAX);
             let end = pos.saturating_add(len);
+            // Every packet costs a decode, even one that yields nothing.
+            spent = spent.saturating_add(self.run_len().max(64));
             if let Some(r) = self.resync {
                 // Counted positions need every packet, even the ones dropped here.
                 self.cursor = u64::try_from(end).unwrap_or(0);
@@ -1046,7 +1154,7 @@ impl Decoder {
                 }
                 self.drop_front(u64::try_from(want - pos).unwrap_or(0));
                 self.resync = None;
-                return Ok(true);
+                return Ok(Fill::Ready);
             }
             if len == 0 {
                 continue;
@@ -1057,7 +1165,7 @@ impl Decoder {
                 let gap = u64::try_from(pos - cursor).unwrap_or(0);
                 if gap > self.max_gap() {
                     self.unreadable();
-                    return Ok(false);
+                    return Ok(Fill::End);
                 }
                 self.warn(MediaWarning {
                     kind: WarningKind::Missing,
@@ -1079,7 +1187,7 @@ impl Decoder {
                 self.drop_front(dup);
             }
             self.cursor = u64::try_from(end).unwrap_or(0);
-            return Ok(true);
+            return Ok(Fill::Ready);
         }
     }
 
@@ -1098,9 +1206,7 @@ impl Decoder {
             0
         };
         let from = match self.ts_per_frame {
-            Some(_) if tries + 1 < SEEK_TRIES && !self.linear_seeks => {
-                frame.saturating_sub(preroll)
-            }
+            Some(_) if tries + 1 < SEEK_TRIES => frame.saturating_sub(preroll),
             _ => 0,
         };
         self.reopen()?;
@@ -1129,6 +1235,153 @@ impl Decoder {
             prev_end: at_start.then_some(0),
             discard_first: self.lossy && !at_start,
             tries,
+        });
+        Ok(())
+    }
+
+    /// Feeds the current run (frames `next..next + run_len()`) to the seek index being recorded.
+    fn index_feed(&mut self) {
+        let (start, len, silence, ch) = (self.next, self.run_len(), self.silence, self.channels);
+        let Some(ib) = self.index.as_mut() else {
+            return;
+        };
+        loop {
+            let c = (ib.hashes.len() as u64 + 1) * INDEX_SPACING;
+            let w_end = c + CHECK_LEN;
+            if c >= start + len {
+                return;
+            }
+            let from = c.max(start);
+            let to = w_end.min(start + len);
+            let mut h = ib.open.unwrap_or(FNV_OFFSET);
+            if from < to {
+                // Silence first, then the buffered frames.
+                let zeros = (start + silence).saturating_sub(from).min(to - from);
+                for _ in 0..zeros * ch as u64 {
+                    h = fnv(h, &[0.0]);
+                }
+                let b0 = (from + zeros).saturating_sub(start + silence);
+                let b1 = to.saturating_sub(start + silence);
+                let at = |f: u64| self.buf_pos + usize::try_from(f).unwrap_or(0) * ch;
+                if b1 > b0
+                    && let Some(x) = self.buf.get(at(b0)..at(b1))
+                {
+                    h = fnv(h, x);
+                }
+            }
+            if w_end <= start + len {
+                ib.hashes.push(h);
+                ib.open = None;
+            } else {
+                ib.open = Some(h);
+                return;
+            }
+        }
+    }
+
+    /// After the probe's full decode: how seeks in this file can reach its timeline. A damaged
+    /// file's checkpoints after each piece of damage, and its last, must decode after a seek as
+    /// the probe decoded them; otherwise seeks decode from the start.
+    fn choose_seeking(&mut self, frames: u64) -> Result<Seeking, MediaError> {
+        let hashes = self.index.take().map(|b| b.hashes).unwrap_or_default();
+        if self.warnings.is_empty() || self.pcm {
+            return Ok(Seeking::Direct);
+        }
+        let index = Arc::new(SeekIndex { hashes });
+        let n = index.hashes.len() as u64;
+        let mut picks: Vec<u64> = self
+            .warnings
+            .iter()
+            .map(|w| (w.at + w.frames).div_ceil(INDEX_SPACING).max(1))
+            .chain(std::iter::once(n))
+            .filter(|&j| j >= 1 && j <= n && j * INDEX_SPACING + CHECK_LEN <= frames)
+            .collect();
+        picks.sort_unstable();
+        picks.dedup();
+        // Only the straight read's damage counts: a seek that misplaces it (the reason it
+        // fails verification) would record it at the wrong positions.
+        let warnings = self.warnings.clone();
+        let mut ok = true;
+        for j in picks {
+            if !self.verify_checkpoint(&index, j)? {
+                ok = false;
+                break;
+            }
+        }
+        self.warnings = warnings;
+        Ok(if ok {
+            Seeking::Indexed(index)
+        } else {
+            Seeking::FromStart
+        })
+    }
+
+    /// Seeks (the container's way) to checkpoint `j` and checks the frames there decode exactly
+    /// as the probe decoded them. On true the decoder is positioned just after the window.
+    fn verify_checkpoint(&mut self, index: &SeekIndex, j: u64) -> Result<bool, MediaError> {
+        let Some(&want) = usize::try_from(j - 1)
+            .ok()
+            .and_then(|i| index.hashes.get(i))
+        else {
+            return Ok(false);
+        };
+        self.seek_with(j * INDEX_SPACING, 0)?;
+        if self.fill_prepared(VERIFY_BUDGET)? != Fill::Ready {
+            return Ok(false);
+        }
+        let mut buf = vec![0.0; usize::try_from(CHECK_LEN).unwrap_or(0) * self.channels];
+        let mut got = 0;
+        while got < buf.len() / self.channels {
+            let n = self.read(buf.get_mut(got * self.channels..).unwrap_or_default())?;
+            if n == 0 {
+                return Ok(false);
+            }
+            got += n;
+        }
+        Ok(fnv(FNV_OFFSET, &buf) == want)
+    }
+
+    /// Runs a pending seek's decoding within `budget`; `Ready` also when nothing is pending.
+    fn fill_prepared(&mut self, budget: u64) -> Result<Fill, MediaError> {
+        if self.resync.is_none() {
+            return Ok(Fill::Ready);
+        }
+        self.fill(Some(budget))
+    }
+
+    /// A seek in an indexed file: from the nearest checkpoint before `frame` that still
+    /// decodes as probed, decode forward; if none of the nearest few does, from the start.
+    fn seek_indexed(&mut self, index: &SeekIndex, frame: u64) -> Result<(), MediaError> {
+        let top = (frame.saturating_sub(CHECK_LEN) / INDEX_SPACING).min(index.hashes.len() as u64);
+        for j in (1..=top).rev().take(CHECKPOINT_TRIES) {
+            let seen = self.warnings.len();
+            if self.verify_checkpoint(index, j)? {
+                return self.forward_to(frame);
+            }
+            // What a misplacing seek met is not on the probe's timeline.
+            self.warnings.truncate(seen.max(self.reported));
+        }
+        self.seek_with(frame, SEEK_TRIES - 1)
+    }
+
+    /// From a position reached by reading through (just after a verified checkpoint), moves on
+    /// to `frame` by decoding forward, as part of the next reads or `prepare` calls.
+    fn forward_to(&mut self, frame: u64) -> Result<(), MediaError> {
+        let ahead = frame.saturating_sub(self.next);
+        if ahead < self.run_len() {
+            self.drop_front(ahead);
+            self.next = frame;
+            return Ok(());
+        }
+        let cursor = i64::try_from(self.cursor).unwrap_or(i64::MAX);
+        self.buf.clear();
+        self.buf_pos = 0;
+        self.silence = 0;
+        self.next = frame;
+        self.resync = Some(Resync {
+            prev_end: Some(cursor),
+            discard_first: false,
+            tries: SEEK_TRIES - 1,
         });
         Ok(())
     }
@@ -1183,7 +1436,15 @@ impl FrameSource for Decoder {
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), MediaError> {
-        self.seek_with(frame, 0)
+        match self.seeking.clone() {
+            Seeking::Direct => self.seek_with(frame, 0),
+            Seeking::Indexed(index) => self.seek_indexed(&index, frame),
+            Seeking::FromStart => self.seek_with(frame, SEEK_TRIES - 1),
+        }
+    }
+
+    fn prepare(&mut self, budget: u64) -> Result<bool, MediaError> {
+        Ok(self.fill_prepared(budget)? != Fill::Pending)
     }
 
     fn read(&mut self, out: &mut [f32]) -> Result<usize, MediaError> {
@@ -1253,7 +1514,7 @@ mod tests {
             let full = preload(Media::Path(fixture(name))).unwrap();
             let frames = full.info().frames;
             let all = full.samples();
-            let mut src = open_source(Media::Path(fixture(name)), false).unwrap();
+            let mut src = open_source(Media::Path(fixture(name)), Seeking::Direct).unwrap();
             let aac = name == "tone.m4a";
             let mut worst = 0.0f32;
             // Start, inside the pre-roll, packet edges (1024 AAC/Vorbis, 1152 MP3, 4096 FLAC),
@@ -1310,9 +1571,9 @@ mod tests {
         }
     }
 
-    /// A damaged file seeks onto the same timeline its probe, preload and a straight read give:
-    /// silence where frames are missing, every other frame bit-exact, around and inside the
-    /// damage.
+    /// A damaged file seeks onto the same timeline its probe, preload and a straight read give,
+    /// bit for bit, from offsets all over the file and around and inside the damage, whichever
+    /// way the probe chose to seek it. Also pins which formats get which way.
     #[test]
     fn damaged_files_seek_onto_the_probe_timeline() {
         let damage = |name: &str, at: usize, len: usize| {
@@ -1326,24 +1587,47 @@ mod tests {
             let b = std::fs::read(fixture(name)).unwrap();
             b.get(..b.len() * keep / 4).unwrap().to_vec()
         };
+        let finding = |name: &str| {
+            std::fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fuzz-findings")
+                    .join(name),
+            )
+            .unwrap()
+        };
         let cases = [
-            ("flac", damage("tone.flac", 13_832, 16)),
-            ("flac", damage("tone.flac", 10_374, 16)),
-            ("flac", cut("tone.flac", 3)),
-            ("ogg", damage("tone-4s.ogg", 10_888, 16)),
-            ("m4a", damage("tone.m4a", 5_964, 16)),
-            ("mp3", damage("tone.mp3", 4_619, 300)),
+            ("flac", damage("tone.flac", 13_832, 16), "indexed"),
+            ("flac", damage("tone.flac", 10_374, 16), "indexed"),
+            ("flac", cut("tone.flac", 3), "indexed"),
+            ("ogg", damage("tone-4s.ogg", 10_888, 16), "indexed"),
+            // AAC noise substitution never decodes identically after a seek.
+            ("m4a", damage("tone.m4a", 5_964, 16), "from start"),
+            ("mp3", damage("tone.mp3", 4_619, 300), "indexed"),
+            ("mp3", damage("tone.mp3", 6_158, 300), "indexed"),
+            // symphonia's MP3 reader places frames after this damage differently after a seek.
+            (
+                "mp3",
+                finding("mp3-damage-reads-differently-after-seek.mp3"),
+                "from start",
+            ),
         ];
-        for (ext, bytes) in cases {
+        for (ext, bytes, want) in cases {
             let media =
                 || Media::Reader(Box::new(io::Cursor::new(bytes.clone())), Some(ext.into()));
             let probed = probe_media(media()).unwrap();
             assert!(!probed.warnings.is_empty(), "{ext}: damage found");
+            let got = match probed.seeking {
+                Seeking::Indexed(_) => "indexed",
+                Seeking::FromStart => "from start",
+                Seeking::Direct => "direct",
+            };
+            assert_eq!(got, want, "{ext}: seeking");
             let full = preload(media()).unwrap();
             let all = full.samples();
             let frames = full.info().frames;
-            let mut src = open_source(media(), true).unwrap();
-            let mut targets = vec![0, 1, frames / 2, frames - 1];
+            let mut src = open_source(media(), probed.seeking.clone()).unwrap();
+            let mut targets: Vec<u64> = (0..frames).step_by(997).collect();
+            targets.push(frames - 1);
             for w in &probed.warnings {
                 for t in [
                     w.at.saturating_sub(700),
@@ -1371,30 +1655,70 @@ mod tests {
                 assert_eq!(got, n, "{ext} at {at}: frames");
                 let start = at as usize * 2;
                 let want = &all[start..start + n * 2];
-                // AAC noise substitution is never bit-identical after a seek (see above).
-                let tol = if ext == "m4a" { 2.5e-3 } else { 0.0 };
-                if let Some(i) = buf[..n * 2]
-                    .iter()
-                    .zip(want)
-                    .position(|(a, b)| (a - b).abs() > tol)
-                {
+                if let Some(i) = buf[..n * 2].iter().zip(want).position(|(a, b)| a != b) {
                     panic!("{ext} at {at}: sample {i} is {} not {}", buf[i], want[i]);
-                }
-                // Silence where frames are missing is exact for every codec.
-                for w in probed
-                    .warnings
-                    .iter()
-                    .filter(|w| w.kind == WarningKind::Missing)
-                {
-                    for (j, x) in buf[..n * 2].chunks(2).enumerate() {
-                        let p = at + j as u64;
-                        if (w.at..w.at + w.frames).contains(&p) {
-                            assert_eq!(x, [0.0, 0.0], "{ext}: frame {p} in the gap");
-                        }
-                    }
                 }
             }
         }
+    }
+
+    /// Review H-R1: a seek deep into an indexed damaged file decodes from a checkpoint near the
+    /// target, not from the start.
+    #[test]
+    fn indexed_seeks_decode_a_bounded_amount() {
+        let mut b = std::fs::read(fixture("tone-4s.ogg")).unwrap();
+        for x in b.get_mut(10_888..10_904).unwrap() {
+            *x ^= 0x5a;
+        }
+        let media = || Media::Reader(Box::new(io::Cursor::new(b.clone())), Some("ogg".into()));
+        let probed = probe_media(media()).unwrap();
+        assert!(matches!(probed.seeking, Seeking::Indexed(_)));
+        let mut d = Decoder::open(media()).unwrap();
+        d.seeking = probed.seeking.clone();
+        for at in [170_000u64, 140_000, 100_000] {
+            let before = d.decoded;
+            d.seek(at).unwrap();
+            let mut buf = vec![0.0; 2 * 256];
+            assert_eq!(d.read(&mut buf).unwrap(), 256);
+            let cost = d.decoded - before;
+            // Pre-roll and the checkpoint window, then at most one spacing forward (plus packet
+            // rounding): far less than the `at` frames a decode from the start takes.
+            assert!(
+                cost < 2 * SEEK_PREROLL + 2 * INDEX_SPACING,
+                "seek to {at} decoded {cost}"
+            );
+        }
+    }
+
+    /// Review L-R1: damage met inside a seek (here a file that probed clean but is now damaged:
+    /// the packet holding the target no longer decodes) is reported, not just silenced.
+    #[test]
+    fn damage_met_during_a_seek_is_reported() {
+        let mut b = std::fs::read(fixture("tone.m4a")).unwrap();
+        for x in b.get_mut(5_964..5_980).unwrap() {
+            *x ^= 0x5a;
+        }
+        let mut src = open_source(
+            Media::Reader(Box::new(io::Cursor::new(b)), None),
+            Seeking::Direct,
+        )
+        .unwrap();
+        src.seek(17_500).unwrap();
+        let mut buf = vec![0.0; 2 * 100];
+        assert_eq!(src.read(&mut buf).unwrap(), 100);
+        assert!(
+            buf.iter().all(|&x| x == 0.0),
+            "the damaged packet plays as silence"
+        );
+        let w = src.take_warnings();
+        assert!(
+            w.contains(&MediaWarning {
+                kind: WarningKind::Missing,
+                at: 17_408,
+                frames: 1_024
+            }),
+            "{w:?}"
+        );
     }
 
     /// Without frame-exact timestamps, positions are counted and a seek decodes forward from the

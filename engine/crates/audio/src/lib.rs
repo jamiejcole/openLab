@@ -19,8 +19,9 @@ mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{
-    DEFAULT_PRELOAD_BUDGET, Media, MediaError, MediaInfo, MediaRead, MediaWarning, Preloaded,
-    Probed, WarningKind, preload, preload_within, probe, probe_media,
+    DEFAULT_PRELOAD_BUDGET, INDEX_SPACING, Media, MediaError, MediaInfo, MediaRead, MediaWarning,
+    Preloaded, Probed, SeekIndex, Seeking, WarningKind, preload, preload_within, probe,
+    probe_media,
 };
 #[doc(hidden)]
 pub use fuzzing::fuzz_decode;
@@ -36,8 +37,8 @@ pub use mixer::{
 pub use offline::OfflineRenderer;
 pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
 pub use stream::{
-    DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer,
-    PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
+    DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,
+    DiskStreamer, PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
 };
 
 /// Crate version, as set in the workspace manifest.

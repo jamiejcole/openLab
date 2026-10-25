@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::decode::{Media, MediaError, MediaInfo, MediaWarning, contain, open_source};
+use crate::decode::{Media, MediaError, MediaInfo, MediaWarning, Seeking, contain, open_source};
 use crate::mixer::{VoiceId, VoiceStart};
 use crate::plan::{Exit, MAX_SLICES, Plays, Slice, StreamLink};
 use crate::resample::Pipeline;
@@ -30,6 +30,9 @@ pub const DEFAULT_MAX_STREAMS: usize = 256;
 /// while the device still has to be fed a block ahead (up to 8192 frames = 170 ms at 48 kHz).
 /// 250 ms covers that with margin.
 pub const DEFAULT_EXIT_MS: u32 = 250;
+/// Per-step seek decoding: 65536 frames (1.4 s at 48 kHz) take a few ms to decode, so the
+/// worker gets back to its other streams long before their rings (2 s) run low.
+pub const DEFAULT_STEP_FRAMES: u64 = 1 << 16;
 /// Frames decoded per step; workers visit their streams round-robin, one chunk each.
 const CHUNK_FRAMES: usize = 4096;
 /// Most warnings kept per stream.
@@ -49,6 +52,10 @@ pub struct StreamerConfig {
     /// Length of each loop exit's buffer (see [`StreamLink`]): how long the worker has, after a
     /// devamp leaves a loop, to refill the ring with the continuation.
     pub exit_ms: u32,
+    /// Most source frames one stream decodes towards a seek target in one worker step, so a
+    /// long seek (a damaged file decoding from its start) never holds up the worker's other
+    /// streams.
+    pub step_frames: u64,
 }
 
 impl StreamerConfig {
@@ -59,19 +66,20 @@ impl StreamerConfig {
             buffer_ms: DEFAULT_BUFFER_MS,
             max_streams: DEFAULT_MAX_STREAMS,
             exit_ms: DEFAULT_EXIT_MS,
+            step_frames: DEFAULT_STEP_FRAMES,
         }
     }
 }
 
-/// What to stream: `info` and `warnings` are the file's probe result (the worker checks the
-/// file still matches; a file with warnings seeks by decoding from the start, so it plays on
-/// the probe's timeline), `slices` its playback plan from [`plan`](crate::plan()) in device
-/// frames.
+/// What to stream: `info` and `seeking` are the file's probe result ([`Probed`](crate::Probed);
+/// the worker checks the file still matches, and seeks as the probe found so a damaged file
+/// plays on the probe's timeline), `slices` its playback plan from [`plan`](crate::plan()) in
+/// device frames.
 #[derive(Debug)]
 pub struct StreamRequest {
     pub media: Media,
     pub info: MediaInfo,
-    pub warnings: Vec<MediaWarning>,
+    pub seeking: Seeking,
     pub slices: Vec<Slice>,
 }
 
@@ -291,10 +299,30 @@ impl DiskStreamer {
     /// Creates the stream's ring and hands the stream to a worker. Does no I/O here; checks the
     /// slice table against `info` and the stream limit.
     pub fn prepare(&mut self, req: StreamRequest) -> Result<PreparedStream, MediaError> {
+        let worker = self
+            .workers
+            .get(self.next % self.workers.len())
+            .ok_or(MediaError::Worker)?;
+        self.next = self.next.wrapping_add(1);
+        let wake = worker.tx.clone();
+        let (task, prepared) = self.task(req, wake)?;
+        worker
+            .tx
+            .send(Msg::Add(task))
+            .map_err(|_| MediaError::Worker)?;
+        Ok(prepared)
+    }
+
+    /// The task a worker runs for `req`, and the stream it fills.
+    fn task(
+        &self,
+        req: StreamRequest,
+        wake: Sender<Msg>,
+    ) -> Result<(Box<Task>, PreparedStream), MediaError> {
         let StreamRequest {
             media,
             info,
-            warnings,
+            seeking,
             slices,
         } = req;
         let total = info.frames_at(self.config.device_rate);
@@ -325,7 +353,7 @@ impl DiskStreamer {
             link: Arc::clone(&link),
             producer,
             media: Some(media),
-            damaged: !warnings.is_empty(),
+            seeking,
             info,
             device_rate: self.config.device_rate,
             slices: slices.clone(),
@@ -340,30 +368,25 @@ impl DiskStreamer {
             )
             .unwrap_or(0),
             exits_built: false,
+            exits_todo: None,
+            exit_wip: None,
+            exits_done: Vec::new(),
+            step_frames: self.config.step_frames.max(1),
             handled_cut: None,
             cut: None,
             scratch: vec![0.0; CHUNK_FRAMES * ch],
             _permit: permit,
         });
-        let worker = self
-            .workers
-            .get(self.next % self.workers.len())
-            .ok_or(MediaError::Worker)?;
-        self.next = self.next.wrapping_add(1);
-        worker
-            .tx
-            .send(Msg::Add(task))
-            .map_err(|_| MediaError::Worker)?;
-        Ok(PreparedStream {
-            source,
-            channels: info.channels,
-            slices,
-            link,
-            handle: StreamHandle {
-                shared,
-                wake: worker.tx.clone(),
+        Ok((
+            task,
+            PreparedStream {
+                source,
+                channels: info.channels,
+                slices,
+                link,
+                handle: StreamHandle { shared, wake },
             },
-        })
+        ))
     }
 }
 
@@ -429,6 +452,16 @@ fn run_worker(rx: Receiver<Msg>) {
     }
 }
 
+/// A loop exit buffer being decoded: the table unrolled from `target`, cursor at `entry`,
+/// `play`, `off`.
+struct ExitWip {
+    target: usize,
+    samples: Vec<f32>,
+    entry: usize,
+    play: u32,
+    off: u64,
+}
+
 enum Progress {
     Worked,
     Idle,
@@ -441,8 +474,8 @@ struct Task {
     link: Arc<StreamLink>,
     producer: Producer<f32>,
     media: Option<Media>,
-    /// The probe found damage: decode on the probe's timeline (see `open_source`).
-    damaged: bool,
+    /// How seeks reach the probe's timeline.
+    seeking: Seeking,
     info: MediaInfo,
     device_rate: u32,
     slices: Vec<Slice>,
@@ -461,6 +494,11 @@ struct Task {
     /// Frames per loop exit buffer, at the device rate.
     exit_frames: usize,
     exits_built: bool,
+    /// Loop exits still to build (`None`: not listed yet), the one being built, and those done.
+    exits_todo: Option<Vec<usize>>,
+    exit_wip: Option<ExitWip>,
+    exits_done: Vec<Exit>,
+    step_frames: u64,
     handled_cut: Option<u64>,
     /// A cut not reached yet: at ring position, jump to entry.
     cut: Option<(u64, usize)>,
@@ -479,7 +517,7 @@ impl Task {
     fn fill(&mut self) -> Result<Progress, MediaError> {
         if self.pipe.is_none() {
             let media = self.media.take().ok_or(MediaError::Worker)?;
-            let src = open_source(media, self.damaged)?;
+            let src = open_source(media, self.seeking.clone())?;
             if src.channels() != usize::from(self.info.channels)
                 || src.sample_rate() != self.info.sample_rate
             {
@@ -488,8 +526,7 @@ impl Task {
             self.pipe = Some(Pipeline::new(src, self.info.frames, self.device_rate)?);
         }
         if !self.exits_built {
-            self.build_exits()?;
-            self.exits_built = true;
+            return self.build_exits_step();
         }
         self.check_cut()?;
         let Some(s) = self.slices.get(self.entry).copied() else {
@@ -521,6 +558,10 @@ impl Task {
         let at = s.start + self.off;
         if pipe.position() != at {
             pipe.seek(at)?;
+        }
+        // A long seek continues over several steps, between the other streams' turns.
+        if !pipe.prepare(self.step_frames)? {
+            return Ok(Progress::Worked);
         }
         let buf = self.scratch.get_mut(..n * ch).ok_or(MediaError::Worker)?;
         let got = pipe.read(buf)?;
@@ -666,10 +707,8 @@ impl Task {
         (k, 0, 0)
     }
 
-    /// Decodes each loop exit's buffer (the first `exit_frames` after leaving the loop) and
-    /// publishes them on the link. Runs before the first ring write, so a voice can never reach
-    /// a loop boundary before its exit is ready.
-    fn build_exits(&mut self) -> Result<(), MediaError> {
+    /// The loop exits of the table: the entry each loop continues into.
+    fn exit_targets(&self) -> Vec<usize> {
         let mut targets: Vec<usize> = Vec::new();
         for (k, s) in self.slices.iter().enumerate() {
             let next_same = self.slices.get(k + 1).is_some_and(|n| n.index == s.index);
@@ -684,49 +723,79 @@ impl Task {
                 targets.push(target);
             }
         }
+        targets.reverse();
+        targets
+    }
+
+    /// One bounded step of decoding the loop exits' buffers (the first `exit_frames` after
+    /// leaving each loop): at most one chunk, or `step_frames` of seek decoding. They are
+    /// published on the link before the first ring write, so a voice can never reach a loop
+    /// boundary before its exit is ready.
+    fn build_exits_step(&mut self) -> Result<Progress, MediaError> {
+        if self.exits_todo.is_none() {
+            self.exits_todo = Some(self.exit_targets());
+        }
         let Some(pipe) = self.pipe.as_mut() else {
             return Err(MediaError::Worker);
         };
         let ch = pipe.channels();
-        let mut exits = Vec::with_capacity(targets.len());
-        for target in targets {
-            let mut samples: Vec<f32> = Vec::with_capacity(self.exit_frames * ch);
-            let (mut k, mut play) = (target, 0u32);
-            while samples.len() < self.exit_frames * ch {
-                let Some(s) = self.slices.get(k).copied() else {
-                    break;
-                };
-                let need = (self.exit_frames - samples.len() / ch)
-                    .min(usize::try_from(s.frames).unwrap_or(usize::MAX));
-                if pipe.position() != s.start {
-                    pipe.seek(s.start)?;
+        let want = self.exit_frames * ch;
+        let wip = match self.exit_wip.take() {
+            Some(w) => w,
+            None => match self.exits_todo.as_mut().and_then(Vec::pop) {
+                Some(target) => ExitWip {
+                    target,
+                    samples: Vec::with_capacity(want),
+                    entry: target,
+                    play: 0,
+                    off: 0,
+                },
+                None => {
+                    self.link.set_exits(std::mem::take(&mut self.exits_done));
+                    self.exits_built = true;
+                    return Ok(Progress::Worked);
                 }
-                let mut left = need;
-                while left > 0 {
-                    let n = left.min(CHUNK_FRAMES);
-                    let buf = self.scratch.get_mut(..n * ch).ok_or(MediaError::Worker)?;
-                    if pipe.read(buf)? < n {
-                        return Err(MediaError::Changed);
-                    }
-                    samples.extend_from_slice(buf);
-                    left -= n;
-                }
-                play = play.saturating_add(1);
-                if let Plays::Times(n) = s.plays
-                    && play >= n
-                {
-                    k += 1;
-                    play = 0;
-                }
-            }
-            exits.push(Exit {
-                target,
-                frames: samples.len() / ch,
-                samples: samples.into_boxed_slice(),
+            },
+        };
+        let mut wip = wip;
+        let slice = self.slices.get(wip.entry).copied();
+        let Some(s) = slice.filter(|_| wip.samples.len() < want) else {
+            self.exits_done.push(Exit {
+                target: wip.target,
+                frames: wip.samples.len() / ch,
+                samples: wip.samples.into_boxed_slice(),
             });
+            return Ok(Progress::Worked);
+        };
+        let at = s.start + wip.off;
+        if pipe.position() != at {
+            pipe.seek(at)?;
         }
-        self.link.set_exits(exits);
-        Ok(())
+        if !pipe.prepare(self.step_frames)? {
+            self.exit_wip = Some(wip);
+            return Ok(Progress::Worked);
+        }
+        let n = CHUNK_FRAMES
+            .min(usize::try_from(s.frames - wip.off).unwrap_or(usize::MAX))
+            .min((want - wip.samples.len()) / ch);
+        let buf = self.scratch.get_mut(..n * ch).ok_or(MediaError::Worker)?;
+        if pipe.read(buf)? < n {
+            return Err(MediaError::Changed);
+        }
+        wip.samples.extend_from_slice(buf);
+        wip.off += n as u64;
+        if wip.off == s.frames {
+            wip.off = 0;
+            wip.play = wip.play.saturating_add(1);
+            if let Plays::Times(m) = s.plays
+                && wip.play >= m
+            {
+                wip.entry += 1;
+                wip.play = 0;
+            }
+        }
+        self.exit_wip = Some(wip);
+        Ok(Progress::Worked)
     }
 }
 
@@ -749,7 +818,7 @@ mod tests {
         let req = |slices| StreamRequest {
             media: Media::Path("/nonexistent".into()),
             info,
-            warnings: Vec::new(),
+            seeking: Seeking::Direct,
             slices,
         };
         let slice = |start, frames, plays| Slice {
@@ -782,7 +851,7 @@ mod tests {
             .prepare(StreamRequest {
                 media: Media::Path("/nonexistent/x.wav".into()),
                 info,
-                warnings: Vec::new(),
+                seeking: Seeking::Direct,
                 slices: vec![Slice {
                     index: 0,
                     start: 0,
@@ -805,7 +874,7 @@ mod tests {
             .prepare(StreamRequest {
                 media,
                 info,
-                warnings: Vec::new(),
+                seeking: Seeking::Direct,
                 slices: vec![Slice {
                     index: 0,
                     start: 0,
@@ -827,6 +896,69 @@ mod tests {
         assert!(p.source.is_abandoned());
     }
 
+    /// Review H-R1: a seek that decodes a long way (here a damaged file seeking by decoding from
+    /// its start) is split across worker steps, so the other streams on the worker get their
+    /// turns while it runs. Steps are driven by hand: no threads, no clocks.
+    #[test]
+    fn a_long_seek_never_holds_up_the_other_streams_on_its_worker() {
+        let mut c = StreamerConfig::new(44_100);
+        c.step_frames = 4_096;
+        let d = DiskStreamer::new(c).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let flac =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.flac");
+        let info = crate::decode::probe(&flac).unwrap().info;
+        let one = |range: std::ops::Range<u64>| {
+            vec![Slice {
+                index: 0,
+                start: range.start,
+                frames: range.end - range.start,
+                plays: Plays::Times(1),
+            }]
+        };
+        // B starts 20000 frames in and has to decode all of them first.
+        let (mut b, pb) = d
+            .task(
+                StreamRequest {
+                    media: Media::Path(flac),
+                    info,
+                    seeking: Seeking::FromStart,
+                    slices: one(20_000..22_050),
+                },
+                tx.clone(),
+            )
+            .unwrap();
+        let pre = crate::decode::Preloaded::from_samples(2, 44_100, vec![0.25; 2 * 10_000]);
+        let (mut a, pa) = d
+            .task(
+                StreamRequest {
+                    media: Media::Preloaded(pre.clone()),
+                    info: pre.info(),
+                    seeking: Seeking::Direct,
+                    slices: one(0..10_000),
+                },
+                tx,
+            )
+            .unwrap();
+        // Round-robin, as the worker does: B, A, B, A, ...
+        let mut b_steps = 0;
+        while !pb.handle.is_primed() {
+            assert!(
+                matches!(b.step(), Progress::Worked),
+                "{:?}",
+                pb.handle.error()
+            );
+            b_steps += 1;
+            assert!(matches!(a.step(), Progress::Worked | Progress::Idle));
+            assert!(b_steps < 100, "B never got there");
+        }
+        // A was served from its first turn, long before B reached its target.
+        assert!(pa.handle.frames_written() >= 4_096);
+        // Open, exit list, then at least 20000 / 4096 bounded seek steps.
+        assert!(b_steps >= 6, "B's seek took only {b_steps} steps");
+        assert_eq!(pb.handle.error(), None);
+    }
+
     #[test]
     fn stream_limit_is_enforced_and_released() {
         let mut c = StreamerConfig::new(48_000);
@@ -837,7 +969,7 @@ mod tests {
         let req = |media| StreamRequest {
             media,
             info,
-            warnings: Vec::new(),
+            seeking: Seeking::Direct,
             slices: vec![Slice {
                 index: 0,
                 start: 0,
