@@ -284,8 +284,10 @@ fn devamps_the_voice_cannot_carry_out_are_reported_and_change_nothing() {
     );
 }
 
+/// The same devamp again is answered again (the cue engine re-sends a pending one after a
+/// resume); one with the other `stop` is reported as ignored. Playback follows the first.
 #[test]
-fn a_second_devamp_while_one_is_armed_is_reported() {
+fn a_second_devamp_while_one_is_armed_is_answered_or_ignored() {
     let (mut ctl, mut r) = setup(config(1));
     let slices = plan(0..200, &[100], &[Plays::Times(1), Plays::Infinite], 0).unwrap();
     let mut ring: Vec<f32> = (0..100).map(marker).collect();
@@ -293,25 +295,16 @@ fn a_second_devamp_while_one_is_armed_is_reported() {
         ring.extend((100..200).map(marker));
     }
     start_sliced(&mut ctl, 0, &ring, slices, Fade::NONE);
-    ctl.send(
-        120,
-        CommandKind::Devamp {
-            voice: ID,
-            stop: true,
-        },
-    );
-    ctl.send(
-        150,
-        CommandKind::Devamp {
-            voice: ID,
-            stop: true,
-        },
-    );
+    for (at, stop) in [(120, true), (150, true), (160, false)] {
+        ctl.send(at, CommandKind::Devamp { voice: ID, stop });
+    }
     let out = render(&mut r, 400);
     assert!(out[200..].iter().all(|&s| s == 0.0));
     let ev = events(&mut ctl);
+    let scheduled = Event::DevampScheduled { voice: ID, at: 200 };
+    assert_eq!(ev.iter().filter(|e| **e == scheduled).count(), 2, "{ev:?}");
     assert!(
-        ev.contains(&Event::DevampIgnored { voice: ID, at: 150 }),
+        ev.contains(&Event::DevampIgnored { voice: ID, at: 160 }),
         "{ev:?}"
     );
     assert!(ev.contains(&finished(200)));
