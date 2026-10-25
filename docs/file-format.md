@@ -138,6 +138,12 @@ Windows absolute paths written with backslashes (`C:\Show\a.wav`, `\\server\shar
 converted to forward slashes on load. Any other backslash is kept as part of a file name, because
 macOS allows it (`"sfx/Door\\Slam.wav"` in JSON is the file `Door\Slam.wav`).
 
+openLab writes the paths it creates in Unicode NFC (macOS file systems report names decomposed, NFD)
+and compares media paths ignoring NFC/NFD form and letter case, so a file written on macOS and opened
+on Windows (or the reverse) still matches. A native Windows relative path (`media\a.wav`) is
+converted to forward slashes when the path is created. Paths already in a file are read as written.
+See `docs/persistence.md`.
+
 ### 4.4 Output patches
 
 A patch is a named set of logical outputs that Audio cues play to. Which device channels those

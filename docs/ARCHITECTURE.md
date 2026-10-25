@@ -141,6 +141,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - **Save** is atomic: write `name.openlab.tmp` in the same directory, `fsync`, rename over the original.
 - **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>.openlab`. On launch, a recovery file newer than the show file triggers a restore prompt.
 - **Backups**: on each manual save, the previous version is kept in `<app-support>/openLab/Backups/<workspace-id>/` (rolling, default 20).
+- Details of the I/O (file names, rotation, recovery decision, settings schema, relink flow): `docs/persistence.md`. Pure logic is in `openlab-core`; file work is in `crates/engine/src/persist/`. Saves clone the workspace and run on a writer thread, never the control thread.
 - **Per-machine settings** (device mapping for each workspace's patches, preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
 
 ## 6. UI protocol (engine ↔ UI)
@@ -228,6 +229,8 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | thiserror | error types | MIT/Apache-2.0 |
 | tracing (+ appender) | logging (never on audio thread) | MIT |
 | dirs | per-platform app-support paths | MIT/Apache-2.0 |
+| unicode-normalization | NFC normalisation of media paths (core; pure) | MIT/Apache-2.0 |
+| tempfile (dev) | temp dirs in persistence tests | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
 
