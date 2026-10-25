@@ -9,17 +9,64 @@ use crate::model::{CueId, CueListId};
 
 use super::time::SampleTime;
 
-/// Engine settings that come from the machine, not the show file.
+/// Highest device rate the engine accepts (the mixer's limit).
+pub const MAX_SAMPLE_RATE: u32 = 384_000;
+
+/// Engine settings that come from the machine, not the show file. Built with [`EngineConfig::new`],
+/// which checks them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EngineConfig {
-    /// The audio device rate; every show time is converted at this rate.
-    pub sample_rate: NonZeroU32,
-    /// Deadlines up to this many samples after `now` are carried out in the call that sees them,
-    /// so their commands carry their exact sample even though the control loop wakes with jitter.
-    /// The control loop sets it to at most one block (the mixer must never hold voice starts
-    /// beyond the next block) and calls [`Input::Tick`] once `now + lookahead` reaches
-    /// [`CueEngine::next_deadline`](super::CueEngine::next_deadline).
-    pub lookahead: SampleTime,
+    sample_rate: NonZeroU32,
+    lookahead: SampleTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EngineConfigError {
+    #[error("sample rate {0} Hz is outside 1 to {MAX_SAMPLE_RATE} Hz")]
+    SampleRate(u32),
+    #[error("lookahead of {lookahead} samples is longer than one second ({max} samples)")]
+    Lookahead {
+        lookahead: SampleTime,
+        max: SampleTime,
+    },
+}
+
+impl EngineConfig {
+    /// `sample_rate` is the audio device rate (1 to [`MAX_SAMPLE_RATE`] Hz); every show time is
+    /// converted at it.
+    ///
+    /// `lookahead` is how far ahead of `now` a call commits deadlines: those in
+    /// `now .. now + lookahead` (end excluded; lookahead 0 = only `now` and earlier). So their
+    /// commands carry their exact sample even though the control loop wakes with jitter. The
+    /// control loop sets it to one block (the mixer must never hold voice starts beyond the next
+    /// block) and calls [`Input::Tick`] once `now + lookahead > next_deadline()`. At most one
+    /// second of samples.
+    pub fn new(sample_rate: u32, lookahead: SampleTime) -> Result<Self, EngineConfigError> {
+        let rate = NonZeroU32::new(sample_rate)
+            .filter(|r| r.get() <= MAX_SAMPLE_RATE)
+            .ok_or(EngineConfigError::SampleRate(sample_rate))?;
+        let max = SampleTime::from(sample_rate);
+        if lookahead > max {
+            return Err(EngineConfigError::Lookahead { lookahead, max });
+        }
+        Ok(Self {
+            sample_rate: rate,
+            lookahead,
+        })
+    }
+
+    pub fn sample_rate(&self) -> NonZeroU32 {
+        self.sample_rate
+    }
+
+    pub fn lookahead(&self) -> SampleTime {
+        self.lookahead
+    }
+
+    /// The last sample a call at `now` commits deadlines on.
+    pub(super) fn horizon(&self, now: SampleTime) -> SampleTime {
+        now.saturating_add(self.lookahead.saturating_sub(1))
+    }
 }
 
 /// Identifies one run of a cue's action: from load or start until it stops. Unique for the

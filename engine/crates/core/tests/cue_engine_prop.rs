@@ -9,7 +9,6 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroU32;
 
 use common::*;
 use openlab_core::*;
@@ -112,10 +111,7 @@ proptest! {
     ) {
         let mut ws = workspace(build(&specs));
         ws.settings.min_go_interval = f64::from(min_go) * 0.3;
-        let mut engine = CueEngine::new(EngineConfig {
-            sample_rate: NonZeroU32::new(1000).unwrap(),
-            lookahead,
-        });
+        let mut engine = CueEngine::new(EngineConfig::new(1000, lookahead).unwrap());
         let list = list_id(1);
         let mut now: SampleTime = 0;
         // The state of every cue as the reported changes tell it.
@@ -179,7 +175,8 @@ proptest! {
                 }
             };
             let actions = engine.handle(&ws, input, now);
-            let horizon = now + lookahead;
+            // Deadlines in `now .. now + lookahead` are committed (end excluded).
+            let horizon = now + lookahead.saturating_sub(1);
 
             let mut starts = 0usize;
             for action in &actions {

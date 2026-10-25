@@ -4,10 +4,17 @@ How cues run: lifecycle states, timing, continue modes, GO and the playhead. Arc
 
 Status: M2.1–M2.3 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, PB-01, PB-02, PB-05, CL-06 engine side). Groups (M2.4), control cues (M2.5), Fade cues (M2.6), panic and pause/resume all (M2.7) and static broken-cue detection (M2.8) come later; see [Not yet](#not-yet).
 
+> **Pending decision (review M2, put to the user):** two behaviours below are provisional defaults, not settled semantics:
+> 1. **Second trigger on an active cue** (Start/GO/continue on a pre-waiting, running, post-waiting or stopping cue) restarts it: hard stop and a new run. QLab 5 makes this a per-cue setting.
+> 2. **A cue that breaks mid-play cancels its armed continue** (auto-continue post-wait and auto-follow), so the chain stops at the broken cue.
+>
+> Both may change once decided; the tests pinning them (`go_on_a_running_cue_restarts_it`, the restart rows of the transition table, `event_failure_breaks_every_running_state`) will change with them.
+
 ## Shape
 
 ```rust
-let mut engine = CueEngine::new(EngineConfig { sample_rate, lookahead });
+let config = EngineConfig::new(sample_rate, lookahead)?; // checked: 1..=384000 Hz, lookahead ≤ 1 s
+let mut engine = CueEngine::new(config);
 let actions: Vec<Action> = engine.handle(&workspace, input, now);
 let wake: Option<SampleTime> = engine.next_deadline();
 ```
@@ -28,8 +35,8 @@ let wake: Option<SampleTime> = engine.next_deadline();
 ### Deadlines, lookahead and late ticks
 
 - Every timer is an absolute sample deadline. Each transition is computed **at its deadline sample `T`**, never at the time of the call: a successor triggered by a timer that expired at `T` starts its pre-wait at `T`, whenever the call happens. Late calls never make later cues drift.
-- A call carries out every deadline up to its **horizon**, `now + lookahead`, earliest first (ties: the cue started first goes first, so causes come before effects).
-- `EngineConfig::lookahead` (samples) lets a deadline that falls inside the next block be committed on its exact sample even though the control loop wakes with jitter. The control loop sets it to at most one block (the mixer must never hold voice starts beyond the next block, docs/audio.md) and calls `Tick` once `now + lookahead >= next_deadline()`. Deadlines inside the window are committed: an operator input in the same call cannot withdraw them (exactly like commands already in the mixer's queue), so a stop issued at `now` for a voice committed to start at `T > now` is sent for `T`, and a pause freezes timers at `now`.
+- A call carries out every deadline in `..now + lookahead` (end excluded; with lookahead 0, every deadline up to and including `now`), earliest first (ties: the cue started first goes first, so causes come before effects).
+- `EngineConfig::lookahead` (samples) lets a deadline that falls inside the next block be committed on its exact sample even though the control loop wakes with jitter. The control loop sets it to one block: with `now = samples_rendered + block`, the window `now .. now + block` is exactly the next block, so no voice start lands beyond it (docs/audio.md). It calls `Tick` once `now + lookahead > next_deadline()`. `EngineConfig::new` refuses a lookahead longer than one second of samples and rates outside 1 to 384000 Hz. Deadlines inside the window are committed: an operator input in the same call cannot withdraw them (exactly like commands already in the mixer's queue), so a stop issued at `now` for a voice committed to start at `T > now` is sent for `T`, and a pause freezes timers at `now`.
 - **Late rule**: a voice whose deadline `T` has already passed (`T < now`, a late tick) starts at `max(T, now) = now`, from its start offset (the head of the sound is not cut), with a `LateStart { late_by }` warning. Its state change still reports `at: T`, and every timer derived from it counts from `T`.
 
 ## States (CUE-04)

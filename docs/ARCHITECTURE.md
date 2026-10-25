@@ -77,7 +77,7 @@ Keep the crate count at three. Add a module before adding a crate.
 - The control thread never "sleeps until" a cue time. It computes target sample times and sends **time-stamped commands** (`StartVoice { at: SampleTime, .. }`) to the audio thread, which applies them at the exact sample within the block. This is what makes simultaneous starts sample-accurate.
 - GO handling: control receives GO → `start = now_sample + one block` → sends commands. Latency = queue hop + ≤1 block.
 - The control loop wakes on (a) inbox message, (b) the next scheduled deadline, or (c) a 5 ms tick, whichever comes first, to advance state transitions (pre-wait → running, auto-continue, etc.). State transitions are computed from sample time, so wake jitter never shifts audio.
-- The cue engine carries out deadlines up to `now + lookahead` (at most one block), so a deadline inside the next block is committed on its exact sample despite wake jitter; a deadline already passed starts at `now` without shifting later cues. Details: `docs/cue-engine.md`.
+- The cue engine carries out deadlines before `now + lookahead` (lookahead = one block, end excluded), so a deadline inside the next block is committed on its exact sample despite wake jitter; a deadline already passed starts at `now` without shifting later cues. Details: `docs/cue-engine.md`.
 
 ### 3.3 The core is pure (NFR-41, QA-02)
 

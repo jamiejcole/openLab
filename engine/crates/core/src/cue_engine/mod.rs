@@ -57,7 +57,7 @@ impl Ctx<'_> {
     }
 
     fn secs(&self, seconds: f64, config: &EngineConfig) -> SampleTime {
-        seconds_to_samples(seconds, config.sample_rate)
+        seconds_to_samples(seconds, config.sample_rate())
     }
 }
 
@@ -85,7 +85,7 @@ impl CueEngine {
         let mut cx = Ctx {
             ws,
             now,
-            horizon: now.saturating_add(self.config.lookahead),
+            horizon: self.config.horizon(now),
             budget: limit,
             limit,
             out: Vec::new(),
