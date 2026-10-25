@@ -18,6 +18,7 @@ mod offline;
 mod plan;
 mod resample;
 mod stream;
+mod waveform;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{
@@ -42,6 +43,11 @@ pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_fram
 pub use stream::{
     DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,
     DiskStreamer, PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
+};
+
+pub use waveform::{
+    BASE_FRAMES, Level, MAX_RANGE_BUCKETS, PEAK_SCALE, Peak, Waveform, WaveformBuilder,
+    WaveformError, WaveformResult, build_waveform,
 };
 
 /// Crate version, as set in the workspace manifest.
