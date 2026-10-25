@@ -259,7 +259,7 @@ mod tests {
         let p = Preloaded::from_samples(1, rate, samples);
         let frames = p.info().frames;
         Pipeline::new(
-            open_source(Media::Preloaded(p)).unwrap(),
+            open_source(Media::Preloaded(p), false).unwrap(),
             frames,
             device_rate,
         )
@@ -360,7 +360,12 @@ mod tests {
             .collect();
         let open = || {
             let p = Preloaded::from_samples(2, 48_000, src.clone());
-            Pipeline::new(open_source(Media::Preloaded(p)).unwrap(), 30_000, 44_100).unwrap()
+            Pipeline::new(
+                open_source(Media::Preloaded(p), false).unwrap(),
+                30_000,
+                44_100,
+            )
+            .unwrap()
         };
         let through = read_all(&mut open());
         assert_eq!(through.len(), 2 * 27_563);
@@ -401,8 +406,12 @@ mod tests {
     fn a_source_shorter_than_probed_is_truncated() {
         for (rate, device) in [(48_000, 48_000), (44_100, 48_000)] {
             let p = Preloaded::from_samples(1, rate, sine(10_000, rate, 440.0));
-            let mut pipe =
-                Pipeline::new(open_source(Media::Preloaded(p)).unwrap(), 20_000, device).unwrap();
+            let mut pipe = Pipeline::new(
+                open_source(Media::Preloaded(p), false).unwrap(),
+                20_000,
+                device,
+            )
+            .unwrap();
             let mut buf = vec![0.0; 777];
             let r = loop {
                 match pipe.read(&mut buf) {
@@ -449,7 +458,8 @@ mod tests {
             let p = Preloaded::from_samples(2, from, src);
             let frames = p.info().frames;
             let mut pipe =
-                Pipeline::new(open_source(Media::Preloaded(p)).unwrap(), frames, to).unwrap();
+                Pipeline::new(open_source(Media::Preloaded(p), false).unwrap(), frames, to)
+                    .unwrap();
             let mut buf = vec![0.0; 4096 * 2];
             let t = std::time::Instant::now();
             while pipe.read(&mut buf).unwrap() > 0 {}

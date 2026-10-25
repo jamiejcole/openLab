@@ -414,6 +414,11 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// where seeks could not follow (the stream now ends at the container's end trim).
 /// `flac-readable-only-from-start.flac`: only the first frame is readable, and symphonia's FLAC
 /// reader gives it back when reading from the start but not after a seek.
+/// `alac-empty-packets*.m4a`: damaged packets decode to nothing; during a seek those empty runs
+/// were taken as covering their position, so a target inside the damage could not be found.
+/// `mp3-damage-reads-differently-after-seek.mp3`: after damage symphonia's MP3 reader counts
+/// and trims frames differently after a seek; a damaged file now seeks by reading from the
+/// start.
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
 /// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
 /// count (a panic with overflow checks on, as here); contained as a typed error.

@@ -63,12 +63,15 @@ impl StreamerConfig {
     }
 }
 
-/// What to stream: `info` is the file's probe result (the worker checks the file still matches),
-/// `slices` its playback plan from [`plan`](crate::plan()) in device frames.
+/// What to stream: `info` and `warnings` are the file's probe result (the worker checks the
+/// file still matches; a file with warnings seeks by decoding from the start, so it plays on
+/// the probe's timeline), `slices` its playback plan from [`plan`](crate::plan()) in device
+/// frames.
 #[derive(Debug)]
 pub struct StreamRequest {
     pub media: Media,
     pub info: MediaInfo,
+    pub warnings: Vec<MediaWarning>,
     pub slices: Vec<Slice>,
 }
 
@@ -291,6 +294,7 @@ impl DiskStreamer {
         let StreamRequest {
             media,
             info,
+            warnings,
             slices,
         } = req;
         let total = info.frames_at(self.config.device_rate);
@@ -321,6 +325,7 @@ impl DiskStreamer {
             link: Arc::clone(&link),
             producer,
             media: Some(media),
+            damaged: !warnings.is_empty(),
             info,
             device_rate: self.config.device_rate,
             slices: slices.clone(),
@@ -436,6 +441,8 @@ struct Task {
     link: Arc<StreamLink>,
     producer: Producer<f32>,
     media: Option<Media>,
+    /// The probe found damage: decode on the probe's timeline (see `open_source`).
+    damaged: bool,
     info: MediaInfo,
     device_rate: u32,
     slices: Vec<Slice>,
@@ -472,7 +479,7 @@ impl Task {
     fn fill(&mut self) -> Result<Progress, MediaError> {
         if self.pipe.is_none() {
             let media = self.media.take().ok_or(MediaError::Worker)?;
-            let src = open_source(media)?;
+            let src = open_source(media, self.damaged)?;
             if src.channels() != usize::from(self.info.channels)
                 || src.sample_rate() != self.info.sample_rate
             {
@@ -742,6 +749,7 @@ mod tests {
         let req = |slices| StreamRequest {
             media: Media::Path("/nonexistent".into()),
             info,
+            warnings: Vec::new(),
             slices,
         };
         let slice = |start, frames, plays| Slice {
@@ -774,6 +782,7 @@ mod tests {
             .prepare(StreamRequest {
                 media: Media::Path("/nonexistent/x.wav".into()),
                 info,
+                warnings: Vec::new(),
                 slices: vec![Slice {
                     index: 0,
                     start: 0,
@@ -796,6 +805,7 @@ mod tests {
             .prepare(StreamRequest {
                 media,
                 info,
+                warnings: Vec::new(),
                 slices: vec![Slice {
                     index: 0,
                     start: 0,
@@ -822,15 +832,12 @@ mod tests {
         let mut c = StreamerConfig::new(48_000);
         c.max_streams = 1;
         let mut d = DiskStreamer::new(c).unwrap();
-        let info = MediaInfo {
-            channels: 1,
-            sample_rate: 48_000,
-            frames: 100,
-            duration: Duration::from_millis(2),
-        };
-        let req = || StreamRequest {
-            media: Media::Path("/nonexistent/x.wav".into()),
+        let pre = crate::decode::Preloaded::from_samples(1, 48_000, vec![0.25; 100]);
+        let info = pre.info();
+        let req = |media| StreamRequest {
+            media,
             info,
+            warnings: Vec::new(),
             slices: vec![Slice {
                 index: 0,
                 start: 0,
@@ -838,15 +845,31 @@ mod tests {
                 plays: Plays::Times(1),
             }],
         };
-        let a = d.prepare(req()).unwrap();
-        assert_eq!(d.prepare(req()).err(), Some(MediaError::TooManyStreams));
-        // The failed stream's task is dropped by its worker, releasing the slot.
-        assert!(a.handle.wait_primed(Duration::from_secs(10)).is_err());
+        // A healthy stream holds its slot until its handle and ring are dropped.
+        let a = d.prepare(req(Media::Preloaded(pre.clone()))).unwrap();
+        assert!(
+            a.handle
+                .wait_written(u64::MAX, Duration::from_secs(10))
+                .unwrap()
+        );
+        assert_eq!(
+            d.prepare(req(Media::Preloaded(pre.clone()))).err(),
+            Some(MediaError::TooManyStreams)
+        );
         drop(a);
         let deadline = Instant::now() + Duration::from_secs(10);
         while d.open_streams() != 0 && Instant::now() < deadline {
             std::thread::yield_now();
         }
-        assert!(d.prepare(req()).is_ok());
+        // A failed stream releases its slot too.
+        let b = d
+            .prepare(req(Media::Path("/nonexistent/x.wav".into())))
+            .unwrap();
+        assert!(b.handle.wait_primed(Duration::from_secs(10)).is_err());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while d.open_streams() != 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(d.prepare(req(Media::Preloaded(pre))).is_ok());
     }
 }
