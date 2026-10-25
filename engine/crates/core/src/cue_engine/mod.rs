@@ -7,7 +7,10 @@
 //! the sample time, and returns the [`Action`]s to carry out. Semantics are specified in
 //! `docs/cue-engine.md`.
 
+mod control;
+mod fade;
 mod group;
+mod level;
 mod playhead;
 mod rng;
 mod run;
@@ -16,6 +19,7 @@ mod types;
 
 use std::collections::{BTreeMap, HashSet};
 
+pub use level::{LevelParam, curve_shape, db_to_gain, ramp_gain};
 pub use time::*;
 pub use types::*;
 
@@ -25,7 +29,7 @@ use crate::tree;
 
 use playhead::Playhead;
 use rng::SplitMix64;
-use run::{Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
+use run::{DevampWait, Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 
 /// Cue starts allowed per call on top of the workspace's cue count. Without trigger cycles a call
 /// starts each cue at most once, so only a cycle reaches the limit.
@@ -45,6 +49,8 @@ pub struct CueEngine {
     rng: SplitMix64,
     /// The child each random group picked last, so it is not picked twice in a row.
     last_random: BTreeMap<CueId, CueId>,
+    /// Arm/Disarm cue changes the model does not show yet (see `Action::SetArmed`).
+    armed: BTreeMap<CueId, bool>,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -83,6 +89,7 @@ impl CueEngine {
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
             last_random: BTreeMap::new(),
+            armed: BTreeMap::new(),
         }
     }
 
@@ -103,6 +110,7 @@ impl CueEngine {
             out: Vec::new(),
             vacated: Vec::new(),
         };
+        self.sync_armed(&cx);
         self.sync_model(&mut cx);
         self.sync_playheads(&mut cx);
         self.advance(&mut cx);
@@ -245,6 +253,8 @@ impl CueEngine {
             }
             Input::ActionEnded { cue, run, at } => self.action_ended(cue, run, at, cx),
             Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
+            Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
+            Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
         }
     }
 
@@ -331,15 +341,9 @@ impl CueEngine {
 
     fn go(&mut self, list: CueListId, cx: &mut Ctx) {
         let ignored = |reason, cx: &mut Ctx| cx.out.push(Action::GoIgnored { list, reason });
-        let Some(cues) = cx
-            .ws
-            .cue_lists
-            .iter()
-            .find(|l| l.id == list)
-            .map(|l| &l.cues)
-        else {
+        if !cx.ws.cue_lists.iter().any(|l| l.id == list) {
             return ignored(GoIgnoredReason::UnknownList, cx);
-        };
+        }
         let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
         // A clock that went backwards (device restart) never blocks GO.
         if let Some(last) = self.last_go
@@ -348,21 +352,10 @@ impl CueEngine {
         {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
-        let Some(path) = self
-            .playhead(list)
-            .and_then(|id| playhead::locate(cues, id))
-        else {
+        if !self.go_on(list, cx.now, cx) {
             return ignored(GoIgnoredReason::NoCue, cx);
-        };
-        let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
-            return ignored(GoIgnoredReason::NoCue, cx);
-        };
+        }
         self.last_go = Some(cx.now);
-        self.start(cue.id, cx.now, cx);
-        // The playhead skips the rest of the cue's continue chain, as the model stands now, or
-        // enters a "start first and enter" group.
-        let next = playhead::after_go(&path);
-        self.move_playhead(list, next, cx);
     }
 
     fn navigate(&mut self, list: CueListId, cx: &mut Ctx, step: fn(&mut Playhead, &[Cue]) -> bool) {
@@ -477,22 +470,11 @@ impl CueEngine {
         };
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
-        self.slots.insert(
-            cue,
-            Slot::Active(Run {
-                run,
-                seq,
-                phase: Phase::PreWait { until },
-                action_offset,
-                post_wait: None,
-                follow: false,
-                voice,
-                paused_at: None,
-                stop_end: None,
-                broken: None,
-                group: matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default),
-            }),
-        );
+        let group = matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default);
+        let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
+        new.action_offset = action_offset;
+        new.voice = voice;
+        self.slots.insert(cue, Slot::Active(new));
         self.report(cue, before, at, cx);
         self.adopt_parents(cue, at, cx);
     }
@@ -579,6 +561,11 @@ impl CueEngine {
                 offset: run.position(now),
             });
         }
+        // A paused Fade cue holds its ramps where they are.
+        if let Some(fade) = run.fade.clone() {
+            let seq = run.seq;
+            self.hold_fade(cue, seq, &fade, now, true, cx);
+        }
         self.report(cue, before, now, cx);
     }
 
@@ -615,6 +602,9 @@ impl CueEngine {
                 from: offset,
             };
         }
+        if run.fade.is_some() {
+            self.resume_fade(cue, at, cx);
+        }
         self.report(cue, before, at, cx);
     }
 
@@ -636,7 +626,7 @@ impl CueEngine {
         }
         let run = self.new_run();
         let offset = cx.secs(time, &self.config);
-        let voice = has_voice(model);
+        let voice = self.is_armed(model) && matches!(model.kind, CueKind::Audio { .. });
         if voice {
             let pre_wait = cx.secs(model.pre_wait, &self.config);
             cx.out.push(Action::LoadVoice {
@@ -686,10 +676,21 @@ impl CueEngine {
         run.voice = Voice::None;
         let follow = run.follow;
         let seq = run.seq;
+        // The voice ended before the devamp's deadline was carried out (it left the loop
+        // there): the Devamp cue's next cue still starts, on the devamp sample.
+        let devamp = run.devamp.take();
         self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
         if follow {
             self.continue_after(cue, at, cx);
+        }
+        if let Some(DevampWait {
+            by,
+            start_next: true,
+            at: Some(left),
+        }) = devamp
+        {
+            self.continue_after(by, left.min(at), cx);
         }
         self.child_action_done(cue, seq, at, cx);
     }
@@ -702,8 +703,12 @@ impl CueEngine {
             .find_cue(cue)
             .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
         let current = match self.slots.get(&cue) {
+            // Nor a running fade (it owns no voice either).
             Some(Slot::Active(run)) => {
-                run.run == run_id && run.broken.is_none() && run.group.is_none()
+                run.run == run_id
+                    && run.broken.is_none()
+                    && run.group.is_none()
+                    && run.fade.is_none()
             }
             Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
             Some(Slot::Broken(_)) | None => false,
@@ -725,6 +730,7 @@ impl CueEngine {
                 run.voice = Voice::None;
                 run.stop_end = None;
                 run.follow = false;
+                run.devamp = None;
                 if matches!(run.phase, Phase::Action { .. }) {
                     run.phase = Phase::Done;
                 }
@@ -747,8 +753,9 @@ impl CueEngine {
     /// Carries out every deadline up to the horizon, earliest first, each at its own sample.
     fn advance(&mut self, cx: &mut Ctx) {
         // Each step consumes a pending deadline. Deadlines come only from starts (bounded by the
-        // budget) and a run's own progress (at most three per run), so this ends; the guard is a
-        // second line of defence against a bug turning into a hung show.
+        // budget), a run's own progress (pre-wait, action end, post-wait) and devamp answers (at
+        // most one per run), so this ends; the guard is a second line of defence against a bug
+        // turning into a hung show.
         let mut guard = self
             .slots
             .len()
@@ -792,6 +799,16 @@ impl CueEngine {
             self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         }
+        if let Some(d) = run.devamp
+            && d.at.is_some_and(|left| left <= at)
+        {
+            // The voice leaves its loop here: the Devamp cue's next cue starts on this sample.
+            run.devamp = None;
+            if d.start_next {
+                self.continue_after(d.by, at, cx);
+            }
+            return;
+        }
         if let Phase::PreWait { until } = run.phase {
             if until <= at {
                 self.begin_action(cue, at, cx);
@@ -810,6 +827,14 @@ impl CueEngine {
             run.phase = Phase::Done;
             let follow = run.follow;
             let seq = run.seq;
+            if run.fade.is_some() {
+                self.fade_finish(cue, at, cx);
+                // Stopping its target stopped the Fade cue too (it is inside the group); that
+                // stop reported it.
+                if !matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.seq == seq) {
+                    return;
+                }
+            }
             self.settle(cue, at, cx);
             self.report(cue, before, at, cx);
             if follow {
@@ -833,13 +858,13 @@ impl CueEngine {
         // A run that broke during its pre-wait skips its action but keeps its timing.
         let broken = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
         let act = match &model.kind {
-            _ if !model.armed || broken => Act::Silent(0),
+            _ if !self.is_armed(model) || broken => Act::Silent(0),
             CueKind::Audio { .. } => Act::Voice,
             CueKind::Wait { duration } => Act::Silent(cx.secs(*duration, &self.config)),
             CueKind::Memo => Act::Silent(0),
             CueKind::Group { .. } => Act::Group,
-            CueKind::Fade { .. }
-            | CueKind::Start { .. }
+            CueKind::Fade { duration, .. } => Act::Fade(cx.secs(*duration, &self.config)),
+            CueKind::Start { .. }
             | CueKind::Stop { .. }
             | CueKind::Pause { .. }
             | CueKind::Load { .. }
@@ -847,8 +872,8 @@ impl CueEngine {
             | CueKind::Devamp { .. }
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
-            | CueKind::Disarm { .. }
-            | CueKind::Network { .. } => {
+            | CueKind::Disarm { .. } => Act::Control,
+            CueKind::Network { .. } => {
                 cx.warn(EngineWarning::Unsupported { cue });
                 Act::Silent(0)
             }
@@ -879,7 +904,7 @@ impl CueEngine {
                     from: offset,
                 };
             }
-            Act::Silent(_) | Act::Group => {
+            Act::Silent(_) | Act::Group | Act::Fade(_) | Act::Control => {
                 if run.voice == Voice::Loaded {
                     cx.out.push(Action::UnloadVoice { cue, run: run.run });
                 }
@@ -889,7 +914,8 @@ impl CueEngine {
         run.phase = Phase::Action {
             start: at,
             end: match act {
-                Act::Silent(d) => Some(at.saturating_add(d.saturating_sub(offset))),
+                Act::Silent(d) | Act::Fade(d) => Some(at.saturating_add(d.saturating_sub(offset))),
+                Act::Control => Some(at),
                 Act::Voice | Act::Group => None,
             },
         };
@@ -898,8 +924,12 @@ impl CueEngine {
         run.follow = !broken && continue_mode == ContinueMode::AutoFollow;
         self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
-        if act == Act::Group {
-            self.start_children(cue, at, cx);
+        // The cue is in its action while it acts, so a trigger cycle back to it is ignored.
+        match act {
+            Act::Group => self.start_children(cue, at, cx),
+            Act::Fade(_) => self.fade_begin(cue, at, cx),
+            Act::Control => self.control(cue, at, cx),
+            Act::Voice | Act::Silent(_) => {}
         }
     }
 
@@ -942,8 +972,12 @@ impl CueEngine {
         cx: &mut Ctx,
     ) -> Option<Slot> {
         let slot = self.slots.remove(&cue)?;
-        if matches!(slot, Slot::Active(_)) {
+        if let Slot::Active(run) = &slot {
             cx.vacated.push((cue, at, exit));
+            // A Fade cue stopped mid-fade leaves its targets' levels where they are.
+            if let Some(fade) = &run.fade {
+                self.hold_fade(cue, run.seq, fade, at.max(cx.now), false, cx);
+            }
         }
         Some(slot)
     }
@@ -982,10 +1016,6 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
     }
 }
 
-fn has_voice(cue: &Cue) -> bool {
-    cue.armed && matches!(cue.kind, CueKind::Audio { .. })
-}
-
 fn next_sibling(ws: &Workspace, cue: CueId) -> Option<CueId> {
     let path = tree::find_path(ws, cue)?;
     let (parents, index) = path.split()?;
@@ -1001,6 +1031,10 @@ enum Act {
     Voice,
     /// Completes after this many samples.
     Silent(SampleTime),
+    /// Fades its target's levels; completes after this many samples.
+    Fade(SampleTime),
+    /// Acts on its target at once and completes.
+    Control,
     /// Runs the group's children; completes when none is busy.
     Group,
 }

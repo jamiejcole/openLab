@@ -137,24 +137,26 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 
 /// Where the playhead goes after a GO on the cue at `path` (its continue chain, as the model
 /// stands, is skipped):
-/// - an armed "start first and enter" group with children: into the group, to the cue after its
+/// - an armed (as `armed` says) "start first and enter" group with children: into the group, to the cue after its
 ///   first child's continue chain;
 /// - otherwise the cue after the cue's continue chain among its siblings (inside timeline,
 ///   playlist and random groups the children's continue modes are ignored, so the next
 ///   sibling); past the last sibling, out of the group, to the cue after the group's own
 ///   continue chain (and so on up); past the end of the list, `None`. A disarmed group is skipped
 ///   as a unit like any disarmed cue.
-pub(super) fn after_go(path: &[(&[Cue], usize)]) -> Option<CueId> {
+pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -> Option<CueId> {
     let &(level, index) = path.last()?;
-    if let Some(Cue {
-        armed: true,
-        kind:
-            CueKind::Group {
-                mode: GroupMode::StartFirstAndEnter,
-                children,
-            },
-        ..
-    }) = level.get(index)
+    if let Some(
+        group @ Cue {
+            kind:
+                CueKind::Group {
+                    mode: GroupMode::StartFirstAndEnter,
+                    children,
+                },
+            ..
+        },
+    ) = level.get(index)
+        && armed(group)
         && let Some(c) = children.get(chain_end(children, 0, true).saturating_add(1))
     {
         return Some(c.id);
