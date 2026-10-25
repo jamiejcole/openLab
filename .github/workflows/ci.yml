@@ -55,6 +55,18 @@ jobs:
           manifest-path: engine/Cargo.toml
           rust-version: ${{ steps.toolchain.outputs.version }}
 
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine/fuzz
+      - run: cargo install cargo-fuzz --locked
+      - run: make fuzz FUZZ_TIME=60
+
   mac:
     name: macOS app
     runs-on: xcode-27
