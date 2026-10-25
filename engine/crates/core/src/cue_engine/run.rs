@@ -77,11 +77,16 @@ pub(super) struct Run {
     pub paused_at: Option<SampleTime>,
     /// Stopping with a fade-out that ends on this sample.
     pub stop_end: Option<SampleTime>,
+    /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
+    /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
+    pub broken: Option<BrokenReason>,
 }
 
 impl Run {
     pub fn state(&self) -> CueState {
-        if self.paused_at.is_some() {
+        if self.broken.is_some() {
+            CueState::Broken
+        } else if self.paused_at.is_some() {
             CueState::Paused
         } else if self.stop_end.is_some() {
             CueState::Stopping

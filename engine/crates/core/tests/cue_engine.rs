@@ -357,9 +357,9 @@ fn zero_wait_auto_continue_chain_starts_on_one_sample() {
 
 #[test]
 fn self_triggering_cycle_stops_at_the_chain_limit() {
-    // Two cues with one id (invalid, but the engine must survive it): each start of the first
-    // continues to the "next" one, which is itself again.
-    let a = timed(memo(1), 0.0, 0.0, AC);
+    // Two cues with one id (invalid, but the engine must survive it): each time the first
+    // completes it follows on to the "next" one, which is itself again.
+    let a = timed(memo(1), 0.0, 0.0, AF);
     let mut rig = Rig::new(vec![a.clone(), a]);
     let limit = CueEngine::chain_limit(&rig.ws);
     let go = rig.go(0);
@@ -511,21 +511,39 @@ fn go_on_unknown_list_is_ignored() {
 }
 
 #[test]
-fn go_on_a_running_cue_restarts_it() {
+fn go_on_an_active_cue_is_ignored_but_moves_the_playhead() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     rig.go(0);
-    let first = rig.engine.run_of(id(1)).unwrap();
+    let run = rig.engine.run_of(id(1)).unwrap();
     rig.at(10, Input::PlayheadPrevious { list: list() });
     let go = rig.go(500);
-    assert!(go.contains(&Action::StopVoice {
-        cue: id(1),
-        run: first,
-        at: 500,
-        fade: None
-    }));
-    let second = rig.engine.run_of(id(1)).unwrap();
-    assert_ne!(first, second);
-    assert_eq!(voice_starts(&go), vec![(id(1), 500)]);
+    assert!(go.iter().all(|a| !is_voice_action(a)));
+    assert!(changes(&go, 1).is_empty());
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(1),
+            state: CueState::Running
+        }]
+    );
+    assert_eq!(rig.engine.run_of(id(1)), Some(run));
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn continue_into_an_active_cue_is_ignored() {
+    // [A, A] (duplicate ids): A's auto-continue targets itself while it is still running.
+    let a = timed(memo(1), 0.0, 0.0, AC);
+    let mut rig = Rig::new(vec![a.clone(), a]);
+    let go = rig.go(0);
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(1),
+            state: CueState::Running
+        }]
+    );
+    assert_eq!(rig.state(1), CueState::Idle);
 }
 
 #[test]
@@ -1096,6 +1114,13 @@ fn stale_and_unknown_feedback_is_ignored() {
     let mut rig = Rig::new(vec![sound(1)]);
     rig.start(0, 1);
     let old = rig.engine.run_of(id(1)).unwrap();
+    rig.at(
+        90,
+        Input::Stop {
+            cue: id(1),
+            fade_out: None,
+        },
+    );
     rig.start(100, 1);
     let new = rig.engine.run_of(id(1)).unwrap();
     let ended = |cue, run| Input::ActionEnded { cue, run, at: 150 };
@@ -1378,7 +1403,7 @@ fn every_transition_table_row() {
         (F::Loaded, O::Load, S::Loaded, V::UnloadThenLoad, None),
         (F::Loaded, O::Reset, S::Idle, V::Unload, None),
 
-        (F::PreWaiting, O::Start, S::PreWaiting, V::Nothing, None),
+        (F::PreWaiting, O::Start, S::PreWaiting, V::Nothing, Some(EngineWarning::TriggerIgnored { cue: id(1), state: S::PreWaiting })),
         (F::PreWaiting, O::Stop, S::Idle, V::Nothing, None),
         (F::PreWaiting, O::StopFade, S::Idle, V::Nothing, None),
         (F::PreWaiting, O::Pause, S::Paused, V::Nothing, None),
@@ -1386,7 +1411,7 @@ fn every_transition_table_row() {
         (F::PreWaiting, O::Load, S::PreWaiting, V::Nothing, Some(EngineWarning::LoadIgnored { cue: id(1) })),
         (F::PreWaiting, O::Reset, S::Idle, V::Nothing, None),
 
-        (F::Running, O::Start, S::PreWaiting, V::Stop, None),
+        (F::Running, O::Start, S::Running, V::Nothing, Some(EngineWarning::TriggerIgnored { cue: id(1), state: S::Running })),
         (F::Running, O::Stop, S::Idle, V::Stop, None),
         (F::Running, O::StopFade, S::Stopping, V::StopFade, None),
         (F::Running, O::Pause, S::Paused, V::Pause, None),
@@ -1402,7 +1427,7 @@ fn every_transition_table_row() {
         (F::Paused, O::Load, S::Paused, V::Nothing, Some(EngineWarning::LoadIgnored { cue: id(1) })),
         (F::Paused, O::Reset, S::Idle, V::Stop, None),
 
-        (F::PostWaiting, O::Start, S::PreWaiting, V::Nothing, None),
+        (F::PostWaiting, O::Start, S::PostWaiting, V::Nothing, Some(EngineWarning::TriggerIgnored { cue: id(1), state: S::PostWaiting })),
         (F::PostWaiting, O::Stop, S::Idle, V::Nothing, None),
         (F::PostWaiting, O::StopFade, S::Idle, V::Nothing, None),
         (F::PostWaiting, O::Pause, S::Paused, V::Nothing, None),
@@ -1410,7 +1435,7 @@ fn every_transition_table_row() {
         (F::PostWaiting, O::Load, S::PostWaiting, V::Nothing, Some(EngineWarning::LoadIgnored { cue: id(1) })),
         (F::PostWaiting, O::Reset, S::Idle, V::Nothing, None),
 
-        (F::Stopping, O::Start, S::PreWaiting, V::Stop, None),
+        (F::Stopping, O::Start, S::Stopping, V::Nothing, Some(EngineWarning::TriggerIgnored { cue: id(1), state: S::Stopping })),
         (F::Stopping, O::Stop, S::Idle, V::Stop, None),
         (F::Stopping, O::StopFade, S::Idle, V::Stop, None),
         (F::Stopping, O::Pause, S::Stopping, V::Nothing, None),
@@ -1467,16 +1492,6 @@ fn table_start_from_loaded_keeps_the_run() {
     }));
 }
 
-#[test]
-fn table_restart_reports_idle_then_pre_waiting() {
-    let mut rig = table_rig(Setup::Running);
-    let actions = rig.start(2200, 1);
-    assert_eq!(
-        changes(&actions, 1),
-        vec![(CueState::Idle, 2200), (CueState::PreWaiting, 2200)]
-    );
-}
-
 // Event rows of the table.
 
 #[test]
@@ -1514,13 +1529,15 @@ fn event_fade_out_completes() {
 #[test]
 fn event_failure_breaks_every_running_state() {
     // The failed run's voice is released at once, so nothing can keep sounding (review H1).
-    for (from, voice) in [
-        (Setup::Loaded, V::Unload),
-        (Setup::PreWaiting, V::Nothing),
-        (Setup::Running, V::Stop),
-        (Setup::Paused, V::Stop),
-        (Setup::PostWaiting, V::Nothing),
-        (Setup::Stopping, V::Stop),
+    // Cue 1 auto-continues 5 s after its action start: a failure keeps that schedule, except
+    // where it was already cancelled (stopping) or is held by a pause.
+    for (from, voice, continues_at) in [
+        (Setup::Loaded, V::Unload, None),
+        (Setup::PreWaiting, V::Nothing, Some(7500)),
+        (Setup::Running, V::Stop, Some(6000)),
+        (Setup::Paused, V::Stop, None),
+        (Setup::PostWaiting, V::Nothing, Some(6000)),
+        (Setup::Stopping, V::Stop, None),
     ] {
         let mut rig = table_rig(from);
         let run = rig.engine.run_of(id(1)).unwrap();
@@ -1538,8 +1555,130 @@ fn event_failure_breaks_every_running_state() {
             "{from:?}"
         );
         assert_eq!(voice_kinds(&failed), expected_voice(voice), "{from:?}");
-        assert!(rig.tick(100_000).is_empty(), "{from:?}");
-        assert_eq!(rig.state(2), CueState::Idle, "{from:?}");
+        let later = rig.tick(100_000);
+        assert!(later.iter().all(|a| !is_voice_action(a)), "{from:?}");
+        assert!(changes(&later, 1).is_empty(), "{from:?}");
+        assert_eq!(running_at(&later, 2), continues_at, "{from:?}");
+        assert_eq!(rig.state(1), CueState::Broken, "{from:?}");
+        assert_eq!(
+            rig.engine.broken_reason(id(1)),
+            Some(BrokenReason::DeviceLost),
+            "{from:?}"
+        );
+    }
+}
+
+fn break_cue(rig: &mut Rig, now: SampleTime) -> Vec<Action> {
+    let run = rig.engine.run_of(id(1)).unwrap();
+    rig.at(
+        now,
+        Input::ActionFailed {
+            cue: id(1),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    )
+}
+
+#[test]
+fn broken_cue_keeps_its_auto_continue_on_the_exact_sample() {
+    // Break during the pre-wait: the action is skipped, the timing is kept.
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 2.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 0.0,
+        },
+    );
+    rig.go(0);
+    break_cue(&mut rig, 500);
+    assert_eq!(rig.engine.next_deadline(), Some(1000));
+    let tick = rig.tick(1000);
+    assert!(tick.iter().all(|a| !is_voice_action(a)));
+    assert_eq!(rig.state(1), CueState::Broken);
+    assert_eq!(rig.engine.next_deadline(), Some(3000));
+    assert!(rig.tick(2999).is_empty());
+    assert_eq!(running_at(&rig.tick(3000), 2), Some(3000));
+    assert_eq!(rig.state(1), CueState::Broken);
+
+    // Break while running.
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 2.0, AC), memo(2)]);
+    rig.go(0);
+    rig.tick(1000);
+    break_cue(&mut rig, 1500);
+    assert_eq!(running_at(&rig.tick(3000), 2), Some(3000));
+}
+
+#[test]
+fn broken_paused_cue_keeps_its_continue_held_until_resumed() {
+    // A failure does not change when the continue fires: the pause still holds it.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 2.0, AC), memo(2)]);
+    rig.go(0);
+    rig.at(500, Input::Pause { cue: id(1) });
+    break_cue(&mut rig, 600);
+    assert!(rig.tick(10_000).is_empty());
+    let resume = rig.at(10_500, Input::Resume { cue: id(1) });
+    assert!(resume.iter().all(|a| !is_voice_action(a)));
+    assert_eq!(rig.state(1), CueState::Broken);
+    // 1.5 s of post-wait were left at the pause.
+    assert_eq!(rig.engine.next_deadline(), Some(12_000));
+    assert_eq!(running_at(&rig.tick(12_000), 2), Some(12_000));
+}
+
+#[test]
+fn broken_cue_never_auto_follows() {
+    // Break during pre-wait, while running, and while paused.
+    for setup in 0..3 {
+        let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, AF), memo(2)]);
+        rig.go(0);
+        match setup {
+            0 => {}
+            1 => {
+                rig.tick(1000);
+            }
+            _ => {
+                rig.tick(1000);
+                rig.at(1200, Input::Pause { cue: id(1) });
+            }
+        }
+        break_cue(&mut rig, 1500);
+        rig.tick(100_000);
+        rig.at(100_000, Input::Resume { cue: id(1) });
+        rig.tick(200_000);
+        assert_eq!(rig.state(2), CueState::Idle, "setup {setup}");
+        assert_eq!(rig.state(1), CueState::Broken, "setup {setup}");
+        assert_eq!(rig.engine.next_deadline(), None, "setup {setup}");
+    }
+}
+
+#[test]
+fn stop_or_reset_on_a_broken_cue_cancels_its_pending_continue() {
+    for stop in [true, false] {
+        let mut rig = Rig::new(vec![timed(sound(1), 0.0, 2.0, AC), memo(2)]);
+        rig.go(0);
+        break_cue(&mut rig, 500);
+        let input = if stop {
+            Input::Stop {
+                cue: id(1),
+                fade_out: None,
+            }
+        } else {
+            Input::Reset { cue: id(1) }
+        };
+        let actions = rig.at(1000, input);
+        assert!(actions.iter().all(|a| !is_voice_action(a)));
+        assert_eq!(
+            rig.state(1),
+            if stop {
+                CueState::Broken
+            } else {
+                CueState::Idle
+            }
+        );
+        assert_eq!(rig.engine.next_deadline(), None);
+        assert!(rig.tick(100_000).is_empty());
+        assert_eq!(rig.state(2), CueState::Idle);
     }
 }
 
