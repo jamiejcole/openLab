@@ -65,5 +65,15 @@ make mac         # generate project + build app (includes universal engine)
 - Message style: short imperative subject with area prefix, e.g. `core: add continue-mode state transitions`, `audio: equal-power fade curve`, `mac: cue list outline view`.
 - Don't push, rebase shared history, or force anything unless the orchestrator asks.
 
+## Workflow
+- The orchestrator follows `.claude/skills/orchestrate/SKILL.md`: brief → `implementer` agent → verify → `pr-reviewer` agent (adversarial, High/Medium/Low) → fix → merge → push → CI.
+- Agent definitions: `.claude/agents/implementer.md`, `.claude/agents/pr-reviewer.md`. High and Medium review findings block merge.
+
+## Known environment facts
+- Test targets deploy at macOS 14.0 (XCTest requires it); the app itself stays at 12.0.
+- XCUITest needs macOS Automation Mode; on a dev machine the first run may prompt the user for authorisation.
+- The engine build phase (`mac/scripts/build-engine.sh`) ad-hoc signs the engine; Xcode doesn't sign nested binaries in `Contents/MacOS`.
+- CI's mac job runs on the `xcode-27` runner image (preview) with Xcode 27.1 pinned; fallback is `macos-26` + Xcode 26.x.
+
 ## Reporting back (subagents)
 End with: what was done, files touched, tests added and their result (paste the summary line), any deviations from ARCHITECTURE.md, and open questions.
