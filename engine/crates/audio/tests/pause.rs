@@ -782,23 +782,132 @@ fn resume_mid_tail_crossfades_into_the_pause_point() {
     }
 }
 
-/// Review M4: a devamp accepted before the pause is rescheduled on resume, under the new id.
-#[test]
-fn devamp_before_a_pause_is_rescheduled_on_resume() {
+fn devamp(voice: u64, stop: bool) -> CommandKind {
+    CommandKind::Devamp {
+        voice: VoiceId(voice),
+        stop,
+    }
+}
+
+/// Starts voice 1 at 0 on an infinite 100-frame loop followed by one more slice.
+fn start_vamp(ctl: &mut MixerController) {
     let slices = plan(0..300, &[100], &[Plays::Infinite, Plays::Times(1)], 0).unwrap();
-    let ring: Vec<f32> = (0..20).flat_map(|_| (0..100).map(marker)).collect();
-    let (mut ctl, mut r) = setup(config(1));
-    let mut v = voice(&ctl, 1, source(&ring), 1);
+    let ring: Vec<f32> = (0..20)
+        .flat_map(|_| (0..100).map(marker))
+        .chain((100..300).map(marker))
+        .collect();
+    let mut v = voice(ctl, 1, source(&ring), 1);
     v.slices = slices;
-    send_start(&mut ctl, 0, v);
-    ctl.send(
-        140,
-        CommandKind::Devamp {
-            voice: VoiceId(1),
-            stop: true,
-        },
-    );
+    send_start(ctl, 0, v);
+}
+
+fn scheduled(voice: u64, at: u64) -> Event {
+    Event::DevampScheduled {
+        voice: VoiceId(voice),
+        at,
+    }
+}
+
+/// A repeated devamp (same `stop`) is answered again at the same boundary; one with the other
+/// `stop` is ignored. Neither changes playback.
+#[test]
+fn repeated_devamp_is_idempotent() {
+    for stop in [true, false] {
+        let (mut ctl, mut r) = setup(config(1));
+        // A two-play loop, devamped in its last play: continuing needs no stream link.
+        let slices = plan(0..300, &[100], &[Plays::Times(2), Plays::Times(1)], 0).unwrap();
+        let mut v = voice(&ctl, 1, source(&unrolled(&slices)), 1);
+        v.slices = slices;
+        send_start(&mut ctl, 0, v);
+        ctl.send(140, devamp(1, stop));
+        ctl.send(160, devamp(1, stop));
+        ctl.send(170, devamp(1, !stop));
+        ctl.send(199, devamp(1, stop));
+        let out = render(&mut r, 600, BLOCKS);
+        let mut want = vec![
+            Event::LoopReached {
+                voice: VoiceId(1),
+                at: 100,
+                slice: 0,
+                count: 1,
+            },
+            scheduled(1, 200),
+            scheduled(1, 200),
+            Event::DevampIgnored {
+                voice: VoiceId(1),
+                at: 170,
+            },
+            scheduled(1, 200),
+            Event::SliceEnded {
+                voice: VoiceId(1),
+                at: 200,
+                slice: 0,
+            },
+        ];
+        if stop {
+            want.push(finished(1, 200, FinishReason::OutPoint));
+            assert!(out[200..].iter().all(|&s| s == 0.0));
+        } else {
+            // One devamp, carried out once: the next slice plays straight through.
+            let next: Vec<f32> = (100..300).map(marker).collect();
+            assert_eq!(&out[200..400], &next[..]);
+            want.push(Event::SliceEnded {
+                voice: VoiceId(1),
+                at: 400,
+                slice: 1,
+            });
+            want.push(finished(1, 400, FinishReason::OutPoint));
+        }
+        assert_eq!(events(&mut ctl), want, "stop: {stop}");
+    }
+}
+
+/// The cue engine's sequence (docs/cue-engine.md, M4.2 contract): a devamp pending across a
+/// pause is re-sent for the fresh id after the resume. Exactly one `DevampScheduled` answers
+/// each devamp sent, the re-sent one with the corrected sample, and the loop is left there.
+#[test]
+fn devamp_resent_after_resume_gets_one_answer_for_the_new_id() {
+    let (mut ctl, mut r) = setup(config(1));
+    start_vamp(&mut ctl);
+    ctl.send(140, devamp(1, true));
     ctl.send(150, pause(1));
+    ctl.send(1000, resume(1, 4));
+    ctl.send(1000, devamp(4, true));
+    let out = render(&mut r, 1500, BLOCKS);
+    assert_eq!(
+        events(&mut ctl),
+        vec![
+            Event::LoopReached {
+                voice: VoiceId(1),
+                at: 100,
+                slice: 0,
+                count: 1
+            },
+            scheduled(1, 200),
+            scheduled(4, 1050),
+            Event::SliceEnded {
+                voice: VoiceId(4),
+                at: 1050,
+                slice: 0
+            },
+            finished(4, 1050, FinishReason::OutPoint),
+        ]
+    );
+    assert!(out[1050..].iter().all(|&s| s == 0.0));
+    assert_ne!(out[1049], 0.0);
+}
+
+/// Devamps sent while paused (new, or repeats of the pending one) are answered once, on the
+/// resume, under the new id.
+#[test]
+fn devamps_while_paused_are_answered_once_on_resume() {
+    let (mut ctl, mut r) = setup(config(1));
+    start_vamp(&mut ctl);
+    ctl.send(140, devamp(1, true));
+    ctl.send(150, pause(1));
+    ctl.send(400, devamp(1, true));
+    ctl.send(500, devamp(1, true));
+    ctl.send(600, devamp(1, false));
     ctl.send(1000, resume(1, 4));
     render(&mut r, 1500, BLOCKS);
     assert_eq!(
@@ -810,14 +919,12 @@ fn devamp_before_a_pause_is_rescheduled_on_resume() {
                 slice: 0,
                 count: 1
             },
-            Event::DevampScheduled {
+            scheduled(1, 200),
+            Event::DevampIgnored {
                 voice: VoiceId(1),
-                at: 200
+                at: 600,
             },
-            Event::DevampScheduled {
-                voice: VoiceId(4),
-                at: 1050
-            },
+            scheduled(4, 1050),
             Event::SliceEnded {
                 voice: VoiceId(4),
                 at: 1050,
