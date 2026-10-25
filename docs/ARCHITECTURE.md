@@ -222,7 +222,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | rubato | resampling | MIT |
 | rtrb | lock-free SPSC queues | MIT/Apache-2.0 |
 | crossbeam-channel | control-thread inbox | MIT/Apache-2.0 |
-| assert_no_alloc | RT allocation guard (debug/test) | BSD-2-Clause |
+| assert_no_alloc | RT allocation guard (debug/test; a normal dependency of openlab-audio for the debug device-callback guard) | BSD-1-Clause |
 | rosc | OSC encode/decode | MIT/Apache-2.0 |
 | tokio, tokio-tungstenite | async networking, WebSocket | MIT |
 | serde, serde_json | serialisation | MIT/Apache-2.0 |

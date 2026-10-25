@@ -250,7 +250,8 @@ impl DeviceMonitor {
         self.shared.callback_faults.load(Ordering::Relaxed)
     }
 
-    /// Allocations `assert_no_alloc` caught in the callback (M3.12; always 0 until it is wired).
+    /// Allocations `assert_no_alloc` caught in the callback (debug builds with its allocator
+    /// installed; always 0 otherwise).
     pub fn alloc_violations(&self) -> u64 {
         self.shared.alloc_violations.load(Ordering::Relaxed)
     }
@@ -376,13 +377,26 @@ impl OutputHost {
         self.device_channels
     }
 
-    /// Fills one host buffer (interleaved, `device_channels` per frame). Real-time safe. Never panics: a panic outside the
+    /// Fills one host buffer (interleaved, `device_channels` per frame). Real-time safe; in
+    /// debug builds it runs under `assert_no_alloc` (M3.12). Never panics: a panic outside the
     /// mixer's own guard leaves the buffer silent and counts a callback fault.
     pub fn render<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
-        let result = catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time)));
+        #[cfg(debug_assertions)]
+        let before = assert_no_alloc::violation_count();
+        let result =
+            no_alloc_in_debug(|| catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time))));
         if result.is_err() {
             out.fill(S::SILENCE);
             self.shared.callback_faults.fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(debug_assertions)]
+        {
+            let caught = assert_no_alloc::violation_count().wrapping_sub(before);
+            if caught > 0 {
+                self.shared
+                    .alloc_violations
+                    .fetch_add(u64::from(caught), Ordering::Relaxed);
+            }
         }
     }
 
@@ -461,6 +475,14 @@ impl OutputHost {
     }
 }
 
+/// `f` under `assert_no_alloc` in debug builds (M3.12); just `f` in release.
+fn no_alloc_in_debug<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(debug_assertions)]
+    return assert_no_alloc::assert_no_alloc(f);
+    #[cfg(not(debug_assertions))]
+    return f();
+}
+
 impl Drop for OutputHost {
     fn drop(&mut self) {
         if let Some(parts) = self.parts.take()
@@ -516,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_in_the_mixer_is_caught_by_its_own_guard() {
+    fn a_panic_in_the_mixer_is_caught_and_counted_as_an_allocation_in_debug() {
         let (_ctl, mut mixer) = Mixer::new(MixerConfig::default()).unwrap();
         mixer.panic_next = true;
         let (mut host, link) = OutputHost::new(mixer, 2);
@@ -525,6 +547,10 @@ mod tests {
         assert!(buf.iter().all(|x| *x == 0.0));
         // The mixer's catch_unwind handled it: not a callback fault.
         assert_eq!(link.monitor().callback_faults(), 0);
+        // The panic payload allocates inside the callback: debug builds count it (M3.12).
+        if cfg!(debug_assertions) {
+            assert!(link.monitor().alloc_violations() > 0);
+        }
     }
 
     #[test]
@@ -537,6 +563,9 @@ mod tests {
         assert!(buf.iter().all(|x| *x == 0));
         let m = link.monitor();
         assert_eq!(m.callback_faults(), 1);
+        if cfg!(debug_assertions) {
+            assert!(m.alloc_violations() > 0);
+        }
         // The next callback renders normally and the mixer still comes back.
         host.render(&mut buf, None);
         assert_eq!(m.callback_faults(), 1);
