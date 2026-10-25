@@ -30,12 +30,13 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
 - [x] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
 - [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06] — saves clone the workspace and run `save_show` on the writer thread, never the control thread (serialise + verify-reload costs up to ~1 s on minimum spec; from M1-A review L6)
-- [ ] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
-- [ ] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
+- [x] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
+- [x] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
 - [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32] — includes converting native Windows relative paths (backslashes) to forward slashes when a path is created; the loader only converts Windows absolute paths (M1-A review L2)
 - [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
 - [x] M1.9 Fuzz target: show-file loader [QA-04]
-- [ ] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
+- [x] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
+- [ ] M1.12 Commands for the rest of the model so undo covers it (ED-07 says "including routing and settings"): workspace settings, output and network patches, cue lists (add/remove/rename/reorder), and fine-grained cue edits that fader drags can coalesce into one undo step [ED-07] — from M1-B; M1.5/M1.6 cover the cue tree and per-cue properties only
 - [ ] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
 
 ## M2 — Cue engine (pure logic, virtual clock)
