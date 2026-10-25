@@ -69,9 +69,10 @@ impl EngineConfig {
     }
 }
 
-/// Identifies one run of a cue's action: from load or start until it stops. Unique for the
-/// engine's lifetime, so it can be used as the mixer's voice id. Feedback carries it back, and
-/// feedback whose run is no longer current is ignored.
+/// Identifies one voice segment of a cue's run: from load or start until it stops or pauses, and
+/// again from each resume (which gets a fresh id). Unique for the engine's lifetime, so it can be
+/// used as the mixer's voice id. Feedback carries it back, and feedback whose id is no longer
+/// current (an earlier run, or the segment before a resume) is ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub u64);
 
@@ -220,7 +221,10 @@ pub enum Action {
     /// Resume the run's voice on sample `at` from `offset` samples into the action.
     ResumeVoice {
         cue: CueId,
+        /// The resumed segment's id; feedback from now on must carry it.
         run: RunId,
+        /// The id the voice had when it was paused.
+        paused: RunId,
         at: SampleTime,
         offset: SampleTime,
     },

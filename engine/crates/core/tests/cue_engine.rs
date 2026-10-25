@@ -809,24 +809,14 @@ fn pause_and_resume_keep_the_remaining_post_wait_and_voice_position() {
         ]
     );
     let resume = rig.at(5500, Input::Resume { cue: id(1) });
-    assert!(resume.contains(&Action::ResumeVoice {
-        cue: id(1),
-        run,
-        at: 5500,
-        offset: 500
-    }));
+    assert_eq!(resumed(&resume), [(5500, 500)]);
     assert_eq!(rig.engine.next_deadline(), Some(7000));
     assert_eq!(running_at(&rig.tick(7000), 2), Some(7000));
     // A second pause measures from where the first left off.
     rig.at(8000, Input::Pause { cue: id(1) });
-    assert!(
-        rig.at(9000, Input::Resume { cue: id(1) })
-            .contains(&Action::ResumeVoice {
-                cue: id(1),
-                run,
-                at: 9000,
-                offset: 3000
-            })
+    assert_eq!(
+        resumed(&rig.at(9000, Input::Resume { cue: id(1) })),
+        [(9000, 3000)]
     );
 }
 
@@ -1092,13 +1082,11 @@ fn start_on_a_paused_cue_resumes_it() {
     let run = rig.engine.run_of(id(1)).unwrap();
     rig.at(100, Input::Pause { cue: id(1) });
     let start = rig.start(300, 1);
-    assert!(start.contains(&Action::ResumeVoice {
-        cue: id(1),
-        run,
-        at: 300,
-        offset: 100
-    }));
-    assert_eq!(rig.engine.run_of(id(1)), Some(run));
+    assert_eq!(resumed(&start), [(300, 100)]);
+    // The resumed segment has its own id and names the one it continues.
+    let fresh = rig.engine.run_of(id(1)).unwrap();
+    assert_ne!(fresh, run);
+    assert_eq!(resume_ids(&start), [(fresh, run)]);
 }
 
 // ----- feedback -----
@@ -1569,12 +1557,8 @@ fn resume_with_a_clock_that_went_back_resumes_where_it_paused() {
     let run = rig.engine.run_of(id(1)).unwrap();
     rig.at(5000, Input::Pause { cue: id(1) });
     let resume = rig.at(100, Input::Resume { cue: id(1) });
-    assert!(resume.contains(&Action::ResumeVoice {
-        cue: id(1),
-        run,
-        at: 100,
-        offset: 5000
-    }));
+    assert_eq!(resumed(&resume), [(100, 5000)]);
+    assert_eq!(resume_ids(&resume)[0].1, run);
 }
 
 #[test]
@@ -1647,15 +1631,9 @@ fn end_report_dated_during_a_pause_is_ignored() {
     assert!(rig.ended(520, 1, 500).is_empty());
     assert_eq!(rig.state(1), CueState::Paused);
     assert_eq!(rig.state(2), CueState::Idle);
-    assert!(
-        rig.at(1000, Input::Resume { cue: id(1) })
-            .contains(&Action::ResumeVoice {
-                cue: id(1),
-                run,
-                at: 1000,
-                offset: 500
-            })
-    );
+    let resume = rig.at(1000, Input::Resume { cue: id(1) });
+    assert_eq!(resumed(&resume), [(1000, 500)]);
+    assert_eq!(resume_ids(&resume)[0].1, run);
 }
 
 #[test]
@@ -1733,4 +1711,51 @@ fn config_is_checked() {
     let ok = EngineConfig::new(48_000, 48_000).unwrap();
     assert_eq!((ok.sample_rate().get(), ok.lookahead()), (48_000, 48_000));
     assert!(EngineConfig::new(MAX_SAMPLE_RATE, 0).is_ok());
+}
+
+#[test]
+fn end_report_of_a_pause_arriving_after_resume_is_ignored() {
+    // Review M1': a pause carried out as a stop reports its end late, after a quick resume.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
+    rig.start(0, 1);
+    let paused_run = rig.engine.run_of(id(1)).unwrap();
+    rig.at(500, Input::Pause { cue: id(1) });
+    rig.at(600, Input::Resume { cue: id(1) });
+    let late = rig.at(
+        610,
+        Input::ActionEnded {
+            cue: id(1),
+            run: paused_run,
+            at: 500,
+        },
+    );
+    assert!(late.is_empty());
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.state(2), CueState::Idle);
+    // The resumed voice's own end still completes the cue and follows.
+    let ended = rig.ended(1000, 1, 900);
+    assert_eq!(changes(&ended, 1), vec![(CueState::Idle, 900)]);
+    assert_eq!(running_at(&ended, 2), Some(900));
+}
+
+/// `(at, offset)` of every ResumeVoice.
+fn resumed(actions: &[Action]) -> Vec<(SampleTime, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::ResumeVoice { at, offset, .. } => Some((*at, *offset)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `(run, paused)` of every ResumeVoice.
+fn resume_ids(actions: &[Action]) -> Vec<(RunId, RunId)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::ResumeVoice { run, paused, .. } => Some((*run, *paused)),
+            _ => None,
+        })
+        .collect()
 }
