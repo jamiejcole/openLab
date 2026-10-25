@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
-use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
+use crate::cue::{Cue, FadeLevels, Hotkey};
 use crate::cue::{
     CueKind, CueLevels, MAX_CHANNELS, MAX_DB, MAX_TIME, OscArg, SILENCE_DB, SliceMarker,
 };
@@ -792,19 +792,12 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
     Some(component)
 }
 
-/// Fades act on audio levels (a Group fades its children); Devamp needs slices or a playlist
-/// (which it lets finish its current child). Other control cues accept any target.
+/// Fades act on audio levels (a Group fades its children); Devamp needs slices. Other control
+/// cues accept any target.
 fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
         CueKind::Fade { .. } => matches!(target, CueKind::Audio { .. } | CueKind::Group { .. }),
-        CueKind::Devamp { .. } => matches!(
-            target,
-            CueKind::Audio { .. }
-                | CueKind::Group {
-                    mode: GroupMode::Playlist { .. },
-                    ..
-                }
-        ),
+        CueKind::Devamp { .. } => matches!(target, CueKind::Audio { .. }),
         _ => true,
     }
 }

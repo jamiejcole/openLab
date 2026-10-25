@@ -17,6 +17,4 @@ unicode-normalization = "0.1.26"
 uuid = { version = "1.29.0", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
-# Only to check that the cue engine's ramp maths matches the mixer's (tests/level_maths.rs).
-openlab-audio = { version = "0.0.1", path = "../audio" }
 proptest = "1.12.0"
