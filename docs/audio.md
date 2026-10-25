@@ -2,13 +2,13 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18). Meters (M3.7) and the device layer (M3.8) are not built yet.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7). The device layer (M3.8) is not built yet.
 
 ## Threads and queues
 
 `Mixer::new(config)` returns a pair:
 
-- **`MixerController`** (control thread) schedules time-stamped `Command`s, polls `Event`s, frees returned voice starts, and reads the clock (`samples_rendered`) and counters (faults, underrun frames, dropped events, leaked starts, pending-full blocks).
+- **`MixerController`** (control thread) schedules time-stamped `Command`s, polls `Event`s, frees returned voice starts, and reads the clock (`samples_rendered`), counters (faults, underrun frames, dropped events, leaked starts, pending-full blocks, xruns) and meters (see Meters and xruns).
 - **`Mixer`** (audio thread) renders with `process(out, frames)` into an interleaved `f32` buffer. The device callback and the offline renderer call `process_guarded`, which wraps `process` in `catch_unwind`: on a panic the block is silent, the fault counter goes up, and the clock still advances (ARCHITECTURE §3.4).
 
 They share only preallocated `rtrb` SPSC queues and atomics:
@@ -60,7 +60,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 - `pump` drains the return queue first, which keeps it within its capacity.
 - If it were ever full anyway, the mixer leaks the box rather than freeing it on the audio thread, and counts the leak (`leaked_starts`, expected to stay 0).
 
-**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), pause and resume (`no_allocation_across_pause_and_resume`, `tests/pause.rs`), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
+**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), pause and resume (`no_allocation_across_pause_and_resume`, `tests/pause.rs`), meters on 64 voices with their reads (`no_allocation_with_meters_active_on_64_voices`), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
 
 ## Timing (NFR-21, NFR-22)
 
@@ -283,6 +283,35 @@ Custom curves are out of scope for v0.0.1 (REQUIREMENTS §21).
 - **Fade-in** over `N` frames: `env_in(p) = ramp(0 → 1)` at step `p`. Frame 0 is exactly 0.0 and frame `N` is exactly 1.0.
 - **Fade-out** over `N` frames with `play_frames = L`: `env_out(p) = ramp(1 → 0)` at step `p + N + 1 − L`, for steps ≥ 0. Frame `L − 1 − N` is exactly 1.0 and the **last played frame, `L − 1`, is exactly 0.0**. A fade-out longer than the playback starts part way along its curve. A fade-out without `L` is rejected (`BadFade`).
 - When both fades overlap, their envelopes multiply. A `Ramp` on the voice master (e.g. a Fade cue) multiplies with them.
+
+## Meters and xruns (AUD-19, NFR-27, ARCHITECTURE §3.1, §3.5)
+
+The control thread reads meters at any rate (the engine samples them at ≤30 Hz). A read takes the peak since the previous read and resets it, so a peak landing between two reads shows in the next one, whatever the block sizes. Reads never block the audio thread.
+
+**Metering points.**
+
+| Meter | Point | Read with |
+|---|---|---|
+| Device output `d` | `out[d]` in the signal path: what goes to the device, after the patch, delay, output level, mute, polarity and master | `read_output_meters_into(&mut [f32])`, `output_meters()` |
+| Voice cue output `o` | the voice's own contribution to `bus_P[o]`: after crosspoints, cue-output level, voice master, stop fade, integrated fades and pause declick; before the patch matrix | `read_voice_meters_into(&mut [VoiceId], &mut [f32])`, `voice_meters()` |
+
+Values are absolute linear peaks (`linear_to_db` for display). NaN samples count as 0.0 and ±∞ reads as `f32::MAX`, so a meter is always finite and non-negative.
+
+**Mechanism.** The audio thread tracks peaks in plain `f32`s while rendering and publishes them at the end of each `process` call: one `fetch_max` per non-silent meter on an `AtomicU32` (device outputs) or `AtomicU64` (voices). Non-negative finite floats order like their bit patterns, so `fetch_max` on the bits is a float max. The reader takes them with `swap(0)`. With 64 voices × 2 routed cue outputs and 64 device outputs, a block costs at most 128 + 64 = 192 atomic read-modify-writes; a voice start, end or re-keying resume adds a few stores. Nothing is per sample.
+
+**Voice attribution.** Each voice-pool slot has its meters, one per cue output, and publishes the `VoiceId` it holds. A slot's *epoch* changes whenever it gets a new id (a start, or a resume with `new_id`), and every voice peak carries its epoch in its top 32 bits:
+
+- `fetch_max` therefore never mixes two voices' peaks; a peak is reported only under the id whose epoch it carries, never under another voice's id.
+- When the epoch changes, unread peaks of the old one move to a second word per meter, so a voice that ended or was re-keyed since the last read gets one more entry with its last non-zero peaks under its old id, even if its slot was reused meanwhile.
+- The reader remembers each slot's id and epoch from its previous read. A voice it never saw (it started and ended between two reads) is not reported, and when a slot changes hands twice between two reads, the earlier voice's last peaks are dropped. At 30 Hz that is a voice shorter than about 33 ms.
+- The slot's `(id, epoch, active)` is published with a sequence lock: the audio thread writes without waiting, and the reader retries (64 times, then leaves the slot for its next read).
+- Every active voice has an entry on every read: a paused voice is present with 0.0 once its declick tail has played; a resumed voice reports under its new id from the resume on.
+- `voice_meter_capacity()` (two per slot) sizes the buffers for a complete read. Slots that do not fit are left for the next read. The `_into` reads allocate nothing.
+- An epoch is a per-slot `u32`; after 2³² reuses of one slot it wraps and that slot can drop one read's peaks.
+
+Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per slot, about 40 bytes (identity and the reader's copy). Default config (128 voices × 2 outputs): about 10 KB. The maximum (4096 voices × 64 outputs): about 5.4 MB, small next to those voices' input buffers.
+
+**Xruns.** `xruns()` is a monotonic count of xruns reported by the device layer. The device callback calls `Mixer::note_xruns(count)` when the host reports one (or the device layer sees a gap in the callback timestamps; detecting it is M3.8's job); `Mixer::xrun_notifier()` returns an `XrunNotifier` (clone, `Send + Sync`) for the host's error callback on another thread. Both are one atomic add, so real-time safe. Voice underruns are not xruns; they are counted in `underrun_frames`. The offline driver injects xruns with `OfflineRenderer::inject_xruns(count)`. Logging the count and showing it to the operator are M4.7/M5 work.
 
 ## Offline render driver (QA-03, ARCHITECTURE §3.6)
 

@@ -87,7 +87,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M3.4 Levels, routing matrix, ganging, output patches (level/mute/delay/polarity), masters [AUD-06, AUD-07, AUD-08, PB-11] — cue outputs beyond the patch's output count are silent (kept in the model)
 - [x] M3.5 Fade ramps + curves (linear, equal-power, S, log, exp); integrated fade in/out; trims [AUD-09, AUD-10, AUD-11]
 - [x] M3.6 Slices, loops (N / infinite), devamp [AUD-12, CT-16] — mixer and disk-stream side; the Devamp cue itself is M2.5
-- [ ] M3.7 Meters + xrun counter [AUD-19, NFR-27]
+- [x] M3.7 Meters + xrun counter [AUD-19, NFR-27] — mixer side: device-output and per-voice cue-output peaks (read-and-reset, epoch-tagged attribution), `xruns()` with `Mixer::note_xruns` / `XrunNotifier` for M3.8 to wire; sampling to clients is M4.7/M5 (docs/audio.md, Meters and xruns)
 - [ ] M3.8 Device layer (cpal): device list, sample rate / buffer size, up to 64 outputs, hot-unplug/replug recovery [AUD-01, AUD-03, AUD-21, NFR-08]
 - [ ] M3.9 Waveform overview data (peaks at multiple zoom levels, computed off the audio thread) [AUD-14]
 - [ ] M3.10 CPU budget test: 64 stereo voices with fades ≥ 10× real time on the Intel CI runner [NFR-23, QA-06]

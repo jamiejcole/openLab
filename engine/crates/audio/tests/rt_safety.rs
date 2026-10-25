@@ -441,3 +441,61 @@ fn a_full_command_burst_applies_in_one_block_without_allocating() {
     assert!((out[64 + 240] - 0.25).abs() < 1e-6);
     assert_eq!(ctl.pending_full_blocks(), 0);
 }
+
+/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
+/// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
+/// caller buffers all run without allocating.
+#[test]
+fn no_allocation_with_meters_active_on_64_voices() {
+    let cfg = MixerConfig {
+        output_channels: 64,
+        max_block_frames: 256,
+        max_voices: 64,
+        ..MixerConfig::default()
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let stereo: Vec<f32> = (0..4000)
+        .flat_map(|i| [i as f32 * 1e-4, -(i as f32) * 1e-4])
+        .collect();
+    for id in 0..64u64 {
+        let mut v = voice(&ctl, id, source(&stereo), 2);
+        // Spread the voices over the device outputs through the patch.
+        v.set_crosspoint(0, (id % 64) as usize, 1.0);
+        if id % 4 == 0 {
+            v.play_frames = Some(500 + id * 10);
+        }
+        send_start(&mut ctl, id, v);
+    }
+    // Reuse the slots of the voices that end early.
+    for id in 0..16u64 {
+        start(&mut ctl, 2000 + id, 100 + id, source(&stereo), 2);
+    }
+    for id in (1..64u64).step_by(4) {
+        ctl.send(1000, CommandKind::PauseVoice { voice: VoiceId(id) });
+        ctl.send(
+            1500,
+            CommandKind::ResumeVoice {
+                voice: VoiceId(id),
+                new_id: VoiceId(1000 + id),
+            },
+        );
+    }
+    let cap = ctl.voice_meter_capacity();
+    let (mut ids, mut peaks, mut outs) = (vec![VoiceId(0); cap], vec![0.0; cap * 64], [0.0; 64]);
+    let mut out = vec![0.0; 64 * 300];
+    let mut entries = 0;
+    for _ in 0..12 {
+        ctl.pump();
+        no_alloc(|| {
+            r.render_into(&mut out, &[1, 64, 7, 228]);
+            r.inject_xruns(1);
+            assert_eq!(ctl.read_output_meters_into(&mut outs), 64);
+            entries += ctl.read_voice_meters_into(&mut ids, &mut peaks);
+        });
+        assert!(outs.iter().all(|p| p.is_finite()));
+    }
+    assert!(entries >= 64 * 12 - 64);
+    assert_eq!(ctl.xruns(), 12);
+    assert_eq!(ctl.faults(), 0);
+    assert_eq!(ctl.leaked_starts(), 0);
+}

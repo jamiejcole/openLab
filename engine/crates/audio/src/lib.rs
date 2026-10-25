@@ -11,6 +11,7 @@ mod controller;
 mod decode;
 mod fuzzing;
 mod gain;
+mod meter;
 mod mixer;
 mod mp4_check;
 mod offline;
@@ -30,6 +31,7 @@ pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, SILENCE_DB, db_to_linear, linear_to_db, ramp_value,
     sanitize_gain,
 };
+pub use meter::XrunNotifier;
 pub use mixer::{
     COMMAND_CAPACITY, CommandKind, ConfigError, Event, FinishReason, GainTarget, MAX_BLOCK_FRAMES,
     MAX_OUTPUT_CHANNELS, MAX_PATCHES, MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer, MixerConfig,
