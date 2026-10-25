@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::controller::MixerController;
-use crate::gain::{Curve, Fade, Param, ramp_value, sanitize_gain};
+use crate::gain::{Curve, CurveRamp, Fade, Param, ramp_value, sanitize_gain};
 use crate::meter::{Meters, XrunNotifier, next_epoch, track};
 use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 
@@ -476,12 +476,14 @@ enum Target {
     Count,
 }
 
-/// Integrated fade-out gain for a frame with `r` frames after it.
-fn fade_out_gain(fout: Fade, r: Option<u64>, refade: Option<Refade>) -> f32 {
+/// Integrated fade-out gain for a frame with `r` frames after it, evaluated by `ramp`.
+fn fade_out_gain(ramp: &mut CurveRamp, fout: Fade, r: Option<u64>, refade: Option<Refade>) -> f32 {
     match (r, refade) {
-        (Some(r), Some(f)) => ramp_value(f.from, 0.0, f.len.saturating_sub(r), f.len, fout.curve),
+        (Some(r), Some(f)) => {
+            ramp.value_of(f.from, 0.0, f.len, fout.curve, f.len.saturating_sub(r))
+        }
         (Some(r), None) if fout.frames > 0 && r <= fout.frames => {
-            ramp_value(1.0, 0.0, fout.frames - r, fout.frames, fout.curve)
+            ramp.value_of(1.0, 0.0, fout.frames, fout.curve, fout.frames - r)
         }
         _ => 1.0,
     }
@@ -529,6 +531,9 @@ struct Voice {
     exit: Option<(usize, usize)>,
     fade_in: Fade,
     fade_out: Fade,
+    /// Evaluators of the integrated fade-in and fade-out (or refade) curves.
+    env_in: CurveRamp,
+    env_out: CurveRamp,
     master: Param,
     stop: Param,
     stop_end: Option<SampleTime>,
@@ -580,6 +585,8 @@ impl Voice {
             exit: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
+            env_in: CurveRamp::new(0.0, 1.0, 0, Curve::Linear),
+            env_out: CurveRamp::new(1.0, 0.0, 0, Curve::Linear),
             master: Param::new(1.0),
             stop: Param::new(1.0),
             stop_end: None,
@@ -1127,7 +1134,8 @@ impl Voice {
                             Some(j) => rem.at(j),
                             None => rem.first.map(|r| r.saturating_add(1)),
                         };
-                        let from = fade_out_gain(self.fade_out, last, self.refade);
+                        let from =
+                            fade_out_gain(&mut self.env_out, self.fade_out, last, self.refade);
                         rem.split = got;
                         rem.after = self.remaining();
                         self.refade = match rem.after {
@@ -1200,7 +1208,7 @@ impl Voice {
     }
 
     /// Multiplies the integrated fade envelope into `gain` for the `got` frames read from `pos0`.
-    fn apply_envelope(&self, gain: &mut [f32], pos0: u64, got: usize, rem: &Remaining) {
+    fn apply_envelope(&mut self, gain: &mut [f32], pos0: u64, got: usize, rem: &Remaining) {
         let (fin, fout) = (self.fade_in, self.fade_out);
         let in_active = fin.frames > 0 && pos0 < fin.frames;
         // The fade-out covers a frame with at most `fout.frames` frames after it.
@@ -1217,7 +1225,7 @@ impl Voice {
         for (j, g) in gain.iter_mut().take(got).enumerate() {
             let p = pos0 + j as u64;
             if in_active && p < fin.frames {
-                *g *= ramp_value(0.0, 1.0, p, fin.frames, fin.curve);
+                *g *= self.env_in.value_of(0.0, 1.0, fin.frames, fin.curve, p);
             }
             if out_active {
                 let refade = if j < rem.split {
@@ -1225,7 +1233,7 @@ impl Voice {
                 } else {
                     rem.refade_after
                 };
-                *g *= fade_out_gain(fout, rem.at(j), refade);
+                *g *= fade_out_gain(&mut self.env_out, fout, rem.at(j), refade);
             }
         }
     }
