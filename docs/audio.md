@@ -2,7 +2,7 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7); waveform overview data (M3.9); the device layer (M3.8). The engine's use of it (reopen policy, settings, warnings) is M4.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7); waveform overview data (M3.9); the device layer with `assert_no_alloc` around its callback (M3.8, M3.12). The engine's use of it (reopen policy, settings, warnings) is M4.
 
 ## Threads and queues
 
@@ -351,6 +351,8 @@ Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `
 - A buffer that is not whole frames gets its tail silenced and is counted as `bad_buffer`. So is a buffer in a format the stream was not opened with.
 - The whole body runs inside `catch_unwind` on top of the mixer's own guard. A panic outside the mixer leaves the buffer silent and is counted in `callback_faults`.
 
+**Debug allocation guard (M3.12, NFR-02).** In debug builds the callback body runs inside `assert_no_alloc::assert_no_alloc`. `assert_no_alloc` is a normal dependency with `warn_debug`: a violation is counted rather than aborting, so a debug build survives a mixer panic, whose unwinding allocates. That fault path is already loud, and it includes the M3-A L3 case where a `Box<VoiceStart>` is freed during unwinding. The callback adds the thread-local violation count to `DeviceMonitor::alloc_violations()`. On a violation the crate writes one line to stderr, on the audio thread, and only in a build that is already faulty. **Detection needs the binary to install `assert_no_alloc::AllocDisabler` as its global allocator in debug builds**; the engine binary does this in M4.2. Release builds skip the wrapper entirely.
+
 **Errors and loss (NFR-08).** cpal's error callback, which runs on a host thread and sometimes on the audio thread, maps each error kind to a `HostError` and calls `ErrorReporter::report`. That is one or two atomic writes and never allocates; cpal's own error value may free its message string when it is dropped.
 
 | cpal kind | `HostError` | Effect |
@@ -426,4 +428,3 @@ A real unplug cannot be automated here; it is checked by hand. The `#[ignore]`d 
 
 - Short loops seek once per play (see the costs above). A loop cache (keep a short loop's frames after its first play) would remove those seeks and make looped AAC plays bit-identical (M3.13).
 - AAC priming frames are not trimmed (symphonia does not read MP4 edit lists) (M3.14).
-- `assert_no_alloc` around the device callback in debug builds is wired with the device layer (M3.12, with M3.8). It is a dev-dependency today.
