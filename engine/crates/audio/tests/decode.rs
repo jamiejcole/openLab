@@ -352,3 +352,27 @@ fn non_finite_and_absurd_float_samples_are_made_safe() {
     ));
     assert_eq!(got, [0.0, 0.0, 0.0, 16.0, -16.0, 0.5, -2.0]);
 }
+
+/// Headers that would overflow symphonia 0.6.1's `u16` frame-size arithmetic are rejected before
+/// symphonia parses them (with overflow checks on, as in tests and fuzzing, it would panic).
+#[test]
+fn pcm_headers_symphonia_would_overflow_on_are_rejected_first() {
+    let header_error = |r: Result<openlab_audio::MediaInfo, MediaError>| matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header:"));
+    let finding =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/wav-channel-overflow.wav");
+    assert!(header_error(probe(&finding)), "{:?}", probe(&finding));
+    let reader = |b: Vec<u8>| Media::Reader(Box::new(Cursor::new(b)), None);
+    // WAV: 65535 channels; 16 channels of 65535 bits.
+    let mut w = wav(&tone(10, RATE), 2, RATE, Pcm::I16);
+    w[22..24].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert!(header_error(probe_media(reader(w.clone()))));
+    w[22..24].copy_from_slice(&16u16.to_le_bytes());
+    w[34..36].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert!(header_error(probe_media(reader(w))));
+    // AIFF COMM: 65535 channels.
+    let mut a = aiff(&tone(10, RATE), 2, RATE, Pcm::I16);
+    a[20..22].copy_from_slice(&u16::MAX.to_be_bytes());
+    assert!(header_error(probe_media(reader(a))));
+    // Valid headers pass, and the reader is rewound for symphonia.
+    assert!(probe_media(reader(aiff(&tone(10, RATE), 2, RATE, Pcm::I24))).is_ok());
+}
