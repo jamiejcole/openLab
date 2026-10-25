@@ -53,6 +53,9 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 
 **Every source file** starts with `SPDX-License-Identifier: GPL-3.0-or-later` (in a comment).
 
+## Behaviour decisions
+- Functional behaviour is grounded in QLab 5. When the brief doesn't settle a behaviour question, follow QLab 5 and say so in your report; if QLab's behaviour is unclear to you, report it as an open question instead of guessing.
+
 ## Style
 - Match surrounding code. Small focused modules. Boring over clever. No speculative abstractions, no scaffolding for future features.
 - Comments explain *why*, not *what*.

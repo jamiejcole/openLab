@@ -76,3 +76,4 @@ Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-ba
 - v0.0.1 = audio-only rehearsal on macOS; video is v0.0.2; lighting deferred; Windows UI tech decided later (engine CI on Windows from day one).
 - macOS 12 minimum, 2014 Mac mini is the performance target; no hardware testing until much later — perf budgets in CI stand in.
 - Push to `origin main` freely after verified merges.
+- Functional/behaviour questions (what a cue does on a second trigger, after a failure, etc.): ask the user when available; if they're not responding, decide by how QLab 5 behaves (the project replicates QLab), state which QLab behaviour was followed in the next status update, and record it in the relevant doc. Still escalate when QLab's behaviour is unclear, conflicts with ARCHITECTURE.md or safety, or for architecture/scope/dependency questions.

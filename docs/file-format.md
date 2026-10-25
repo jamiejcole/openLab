@@ -190,8 +190,8 @@ A destination for Network cues.
 | `flagged` | bool | Marked for attention. |
 | `armed` | bool | A disarmed cue is skipped when triggered but stays visible. |
 | `pre_wait` | seconds | Delay between the cue being triggered and its action starting. |
-| `post_wait` | seconds | Delay used by `auto_continue`/`auto_follow` before the next cue. |
-| `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one starts. `auto_follow`: start the next cue `post_wait` after this one's action finishes. |
+| `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise. |
+| `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. See [cue-engine.md](cue-engine.md). |
 | `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `osc`: `null` or an OSC address that starts the cue. |
 | `kind` | object | What the cue does: `{"type": …, …}`, §5.3. |
 
