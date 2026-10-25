@@ -8,11 +8,23 @@
 #![deny(clippy::indexing_slicing)]
 
 mod controller;
+mod decode;
+mod fuzzing;
 mod gain;
 mod mixer;
 mod offline;
+mod plan;
+mod resample;
+mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
+pub use decode::{
+    DEFAULT_PRELOAD_BUDGET, INDEX_SPACING, Media, MediaError, MediaInfo, MediaRead, MediaWarning,
+    Preloaded, Probed, SeekIndex, Seeking, WarningKind, preload, preload_within, probe,
+    probe_media,
+};
+#[doc(hidden)]
+pub use fuzzing::fuzz_decode;
 pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, SILENCE_DB, db_to_linear, linear_to_db, ramp_value,
     sanitize_gain,
@@ -23,6 +35,11 @@ pub use mixer::{
     OutputSettings, PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
 };
 pub use offline::OfflineRenderer;
+pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
+pub use stream::{
+    DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,
+    DiskStreamer, PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
+};
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

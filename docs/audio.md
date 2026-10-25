@@ -2,7 +2,7 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11). Decoding/disk streaming (M3.3), loops (M3.6), meters (M3.7) and the device layer (M3.8) are not built yet.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6). Meters (M3.7) and the device layer (M3.8) are not built yet.
 
 ## Threads and queues
 
@@ -60,7 +60,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 - `pump` drains the return queue first, which keeps it within its capacity.
 - If it were ever full anyway, the mixer leaks the box rather than freeing it on the audio thread, and counts the leak (`leaked_starts`, expected to stay 0).
 
-**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set.
+**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
 
 ## Timing (NFR-21, NFR-22)
 
@@ -84,7 +84,9 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 | `crosspoints` | row-major `[input][cue output]`, `channels × output_channels` |
 | `skip_frames` | frames discarded from the source first (in point) |
 | `play_frames` | frames played after the skip (out point); `None` = until end of stream |
-| `fade_in`, `fade_out` | integrated fades (see below); a fade-out requires `play_frames` |
+| `fade_in`, `fade_out` | integrated fades (see below); a fade-out requires `play_frames` or `slices` |
+| `slices` | slice table (see Slices, loops and devamp); replaces `play_frames`, which must then be `None`. Empty = play `play_frames` once |
+| `link` | devamp link to the disk stream filling `source` (set by `PreparedStream::into_voice`) |
 
 `VoiceStart::new(voice, source, channels, cue_outputs)` starts with **all crosspoints at 0 (silent)**, cue outputs and master at 1.0, and patch 0. Set routes with `set_crosspoint`. The first source frame plays on sample `at` exactly, so voices started with the same `at` begin on the same output frame.
 
@@ -94,14 +96,15 @@ A start is **rejected** with `Event::VoiceRejected`, and the box is returned, fo
 - `DuplicateId`: the id is already active.
 - `BadChannelCount`: `channels` is 0 or above `max_voice_channels`.
 - `BadRouting`: the patch index is out of range, or a routing vector has the wrong length.
-- `BadFade`: a fade-out without `play_frames`.
+- `BadFade`: a fade-out without `play_frames` or `slices`.
+- `BadSlices`: a slice table combined with `play_frames` or `skip_frames` (the table carries its own start), with an empty slice or `Times(0)`, or with more than `MAX_SLICES` (256) entries.
 
 Nothing panics.
 
 A voice **ends** with `Event::VoiceFinished { at, reason }`, where `at` is the first sample after its last:
 
 - `EndOfStream`: the producer was dropped and every whole frame has been consumed. Dropping the producer is the end-of-stream marker.
-- `OutPoint`: `play_frames` frames have been played.
+- `OutPoint`: `play_frames` frames have been played, or the slice table's last play ended (or a devamp stop).
 - `Stopped`: `StopVoice` with `fade.frames == 0` cuts on sample `at` exactly. With a fade, the voice's stop gain ramps to 0 over `fade.frames`. The voice finishes at `at + fade.frames`, the first sample where that gain is exactly 0. Nothing after that point is read or counted as underrun.
 
 **Underrun**: if the source has fewer frames than needed and has not ended:
@@ -111,6 +114,75 @@ A voice **ends** with `Event::VoiceFinished { at, reason }`, where `at` is the f
 - Playback resumes when data arrives. Missing frames are not skipped: the voice resumes where it left off, so its fades stay aligned with the audio.
 
 **Trims** (AUD-11): the disk thread normally seeks to the in point; `skip_frames`/`play_frames` give the same sample-exact in and out points on the mixer side.
+
+## Decoding (AUD-04)
+
+`decode.rs` wraps symphonia 0.6. It runs on disk and I/O threads only, never on the audio thread.
+
+- **Formats**: WAV and AIFF PCM (integer and float; 16/24/32-bit int and 32-bit float tested), FLAC, ALAC (M4A), MP3, AAC (M4A), Ogg Vorbis (optional, §21). 1–64 channels, 1–384000 Hz; anything else is `Unsupported`.
+- `probe(path)` / `probe_media(media)` return `Probed { info: MediaInfo { channels, sample_rate, frames, duration }, warnings }`. **`frames` is exact** on the playback timeline: a PCM header's length is checked by decoding the tail; every compressed file is decoded once in full and counted. The full decode also finds any damage, so it is known when the cue loads, not during the show.
+- **Damaged files play, with warnings** (`MediaWarning { kind, at, frames }`, positions in frames at the file's rate on the playback timeline, each reported once, at most 256 per file):
+  - `Missing`: frames the container skipped (a FLAC frame failing its CRC, a lost Ogg page, a spliced file) or a packet that did not decode (AAC, MP3). They **play as silence of their length**, so every later frame keeps its position and seeks, loops and slices land exactly. Damage in the first packets makes silence from position 0.
+  - `Repeated`: frames repeating positions already played; dropped.
+  - `Truncated`: the file has `frames` fewer frames than its header declares and plays to its real end, `at` (the probed length). For lossy formats the missing frames may lie anywhere (an MP3 frame the reader skipped).
+  - `Unreadable`: the container keeps failing (16 errors in a row) or its timestamps jump by more than a minute: the file plays to `at`.
+  - Only a file with nothing playable is an error (`Unsupported`, `Corrupt`, `Io`, `NotFound`).
+  - **Seeking a damaged file** (`Probed::seeking`, pass it in `StreamRequest`). After damage, symphonia's readers can place frames differently after a seek than when reading through, so a damaged file's seeks are checked against the probe's own decode:
+    - The probe's full decode records a **seek index**: a hash of the 256 timeline frames at every 8192nd frame (`INDEX_SPACING`), 8 bytes per checkpoint.
+    - `Seeking::Indexed`: a seek goes to the nearest checkpoint before its target, checks that the 256 frames there decode exactly as the probe decoded them, and decodes forward at most 8192 frames. If that checkpoint does not match, it tries the two before it, then decodes from the start. The probe verifies the checkpoint after each piece of damage and the last one before choosing this.
+    - `Seeking::FromStart`: those checks failed, so seeks decode forward from the start. The probe adds a `SlowSeeks` warning and `Probed::preload_advised()` is true: preload the file if it fits the budget.
+    - `Seeking::Direct`: undamaged files (and PCM files that are only truncated) use the container's own seeks.
+    - Seen per format (tested bit-exact against preload from offsets all over the file and around the damage): FLAC and Vorbis get `Indexed`; MP3 gets `Indexed`, or `FromStart` when the reader misplaces frames after the damage; AAC always gets `FromStart`, because noise substitution never decodes identically after a seek.
+    - However a seek decodes, a disk worker does at most `step_frames` (`DEFAULT_STEP_FRAMES`, 65536 frames) of it per step and then serves its other streams, so one slow seek never starves them.
+  - Known limits: symphonia's FLAC reader stops at damage in a very short file (reported as `Truncated`); an Ogg file whose damage also defeats symphonia's length scan has no declared length, so audio lost at its end cannot be reported. In a damaged Vorbis file the page after a lost page plays in the lost page's place and the silence comes one page later (symphonia's Ogg reader); straight playback, preload and seeks all agree on that timeline, which the warning describes.
+- Errors are typed (`MediaError`): `NotFound`, `Io`, `Unsupported`, `Corrupt`, `Truncated { expected, actual }` (a stream's file has become shorter than its probe), `Changed` (the file no longer matches its probe), `BadSlices`, `TooManyStreams`, `Worker`, `TooLarge`. A panic inside symphonia (a decoder bug hit by malformed data) is caught and becomes `Corrupt`; it never takes a thread down.
+- **Positions.** Position 0 is the first playable frame. The decoder applies every packet's encoder delay and padding itself (the same way for every codec), so an MP3 with LAME gapless info has its original length and Vorbis follows its granule positions. The stream ends at the container's end trim (the packet it trims padding off), even if damage left more data after it. A packet never counts for more than its container duration, whether or not it decodes (a failed packet is silence of that duration), so the timeline does not depend on decoder state; this also drops AAC padding past the MP4's length. AAC priming is not trimmed: symphonia does not read the edit list, so AAC files start with the encoder's priming frames (about 1000–2000).
+- **Continuity.** When the track's time base is a whole fraction of a frame (every format above), each packet's position comes from its timestamp; a gap before it is filled with silence (`Missing`), an overlap is dropped (`Repeated`). Position 0 is the container's start. Otherwise positions are counted, and a seek decodes forward from the start (an MP4 whose timescale is not a multiple of the rate, e.g. 90000 at 44.1 kHz; also any seek the container refuses): every loop seam then costs time proportional to its position in the file, so preload such files if they loop. A seek into a gap gives the same silence as reading through.
+- **Seeking is sample-accurate.** A seek starts a fresh container reader and a fresh decoder (symphonia 0.6.1's FLAC reader returns stale frames after some seeks; its AAC `reset` keeps state), seeks to a pre-roll before the target (8192 frames for lossy codecs, none for lossless), drops the first packet after a mid-file lossy seek (it lacks its predecessor's overlap or bit reservoir), and discards frames up to the target by position. A seek that lands after its target is retried with twice the pre-roll, then from the start; one the container refuses decodes forward from the start. Afterwards every format yields exactly the frames a decode from the start yields, except AAC files that use noise substitution (ffmpeg's encoder does): those bands are pseudo-random and differ by under 0.003 after a mid-file seek.
+- **Headers are checked first**: a WAV `fmt ` or AIFF `COMM` chunk with 0 or more than 64 channels, or more than 64 bits per sample, is `Corrupt` before symphonia parses it (its frame-size arithmetic overflows on such headers).
+- **Samples are made safe**: a non-finite sample (NaN, ±∞, possible in float files) becomes 0.0 and the rest are clamped to ±16.0 (+24 dBFS, the mixer's gain ceiling), so one bad sample can never poison a mix bus or the resampler.
+- `preload(media)` decodes a whole file into memory (`Preloaded`, AUD-05), at the file's rate; `bytes()` reports its size. It uses at most `DEFAULT_PRELOAD_BUDGET` (512 MiB, about 46 minutes of 48 kHz stereo); `preload_within(media, max_bytes)` sets another budget. The declared length is checked before decoding and the decoded length while decoding (a small compressed file can expand far beyond what it declares); over budget, or an allocation the system refuses, is `TooLarge { bytes, limit }`. The engine decides whether the cue then streams or is reported. The decode buffer is kept as is, with no final copy.
+
+## Disk streaming and preload (AUD-05, ARCHITECTURE §3.1, §3.5)
+
+`DiskStreamer::new(StreamerConfig)` starts a pool of disk workers (default 2) that decode and resample each stream into its voice's ring, about `buffer_ms` (default 2000) ahead.
+
+- `prepare(StreamRequest { media, info, seeking, slices })` (`info` and `seeking` from the probe) checks the slice table against `info` and the open-stream limit (`max_streams`, default 256), creates the ring, and hands the stream to a worker. It does no I/O; the worker opens the file. It returns a `PreparedStream`; `into_voice(voice, cue_outputs)` makes the silent `VoiceStart` (with `slices` and `link`) and keeps the `StreamHandle`. Dropping the handle cancels the stream.
+- **Primed** (`is_primed`): the first chunk (4096 frames, or the whole stream if shorter) is in the ring; the cue is loaded. `is_finished`: every frame of the plan is in the ring. `frames_written`, `cuts`, and blocking `wait_*` helpers for I/O threads and tests (never the control thread).
+- **Resampling** (`resample.rs`): rubato's synchronous FFT resampler when the file rate differs from the device rate, a pass-through otherwise. Device frame `p` is the signal at `p / device rate`, whether reached by reading or by seeking (a seek restarts the resampler on a chunk boundary one chunk early and discards its delay). The length is exactly `round(frames · device rate / file rate)` (`MediaInfo::frames_at`).
+- **Loops** are unrolled into the ring: at each loop point the worker seeks back ahead of time, so a loop's own seam never waits on the disk. Trims and start offsets are seeks too.
+- Each worker step is bounded: one 4096-frame chunk, or `step_frames` of seek decoding, or one chunk of a loop exit's buffer. Streams take turns round-robin.
+- **Loop exits.** Leaving a loop early (devamp) is the one place the ring cannot be ahead: it is FIFO and full of loop plays that will not be heard. So before its first ring write, the worker decodes each loop exit's continuation (the slice table unrolled from the slice after the loop) for `exit_ms` (`DEFAULT_EXIT_MS`, 250 ms) into an exit buffer published on the voice's `StreamLink`. At the exit the voice plays that buffer while it drops the stale plays from the ring, and the worker refills the ring from where the buffer ends. The worker therefore has the whole 250 ms to notice the freed ring (5 ms poll), seek (fresh demuxer and pre-roll, up to about 10 ms on long compressed files) and decode its first chunk, with up to one 8192-frame device block (170 ms at 48 kHz) still taken ahead. Memory: one buffer per distinct loop exit, 250 ms × channels × 4 bytes (96 KB for stereo at 48 kHz). A devamp while a previous exit's buffer is still playing is ignored (`DevampIgnored`). `StreamHandle::last_resume` tells where the continuation starts in the ring (diagnostics and tests).
+- **Preload** streams `Media::Preloaded` through the same resampler and ring, so it plays exactly as streaming does (tested sample for sample).
+- **Damage while streaming** is handled exactly as the probe handles it: missing frames play as silence and every warning met is listed by `StreamHandle::warnings()` (damage the probe reported shows up again; anything else is new, i.e. the file changed after its probe). The stream reads nothing past the probed length, so damage beyond a file's playable end is never reached.
+- **Failures.** A stream that cannot continue (a read error, a file that became shorter than its probe or no longer matches it, a worker panic) sets `StreamHandle::error` and lets go of its ring. The error is published only after the ring's producer is dropped, so once a caller sees it the voice is certain to play out what was written and end with `EndOfStream`. A file that ends before its probed length is `Truncated`, never padded with silence: silence is only ever played for damage that is also reported.
+- **Underrun**: a slow disk gives the mixer's underrun behaviour (silence, counted, resumes where it left off).
+- Dropping the `DiskStreamer` tells the workers to stop and does not wait for them, so a worker blocked on a stalled disk cannot hang the caller.
+- Cost per loop-point seek (release, 10-minute files): about 0.03 ms WAV, 0.1 ms FLAC, 0.6–0.8 ms MP3/AAC, 1.6 ms Vorbis.
+
+## Slices, loops and devamp (AUD-11, AUD-12, CT-16)
+
+`plan(range, marks, plays, start)` builds a slice table in device frames: the in/out range cut at `marks`, `plays[i]` (`Times(n ≥ 1)` or `Infinite`) for slice `i` (empty = each once), starting at `start` inside the range. A start inside a looping slice splits it into a one-play entry and an entry for the remaining plays, with the same `index`. Bad input is a `PlanError`; `total_frames` is `None` if anything loops forever.
+
+The same table drives the disk stream (which unrolls it into the ring) and the voice (which counts frames to find boundaries), so both agree exactly. Events, with the exact sample `at`:
+
+| Event | When |
+|---|---|
+| `LoopReached { slice, count, at }` | a play of `slice` ended and it plays again from `at`; `count` plays done so far |
+| `SliceEnded { slice, at }` | the slice's last play ended; the next slice, if any, starts on `at` |
+| `DevampScheduled { at }` | a devamp was accepted; `at` is where the voice leaves the loop unless an underrun intervenes |
+| `DevampIgnored { at }` | a devamp that cannot be carried out (no such voice playing, no slice table, a devamp already under way, or no `link` when one is needed); playback is unchanged |
+
+Voices without a slice table report only `VoiceFinished`.
+
+**Devamp** (`CommandKind::Devamp { voice, stop }`, CT-16) leaves the current loop at the end of the play under way when the command applies (a devamp on a loop boundary sample exits at the end of the play that starts there):
+
+- `stop: true` ends the voice there (`SliceEnded`, then `VoiceFinished { reason: OutPoint }`).
+- `stop: false` continues with the next slice. If more plays of the loop may already be in the ring, the voice publishes the boundary on its `StreamLink` and at the boundary plays the loop exit's buffer (see Loop exits); the disk worker stops unrolling there, writes the continuation from the end of the exit buffer, and publishes where it starts; the voice skips the stale frames in between. This holds however full the ring is and however close to the boundary the devamp comes (tested at 1 frame, 85 ms and 4096 frames before it). A devamp before the ring reaches the boundary skips nothing.
+- To start the next cue when the loop ends, the engine uses `DevampScheduled.at` (schedule the start in the block containing it) or reacts to `SliceEnded`.
+- If the disk worker cannot place the boundary in the table, the stream fails (`BadSlices`) and the voice ends, rather than waiting forever.
+
+**Integrated fade-out with slices** follows the planned end: it ends on the last frame of the table's last play. A voice heading into an infinite loop has no known end, so no fade-out applies until a devamp continues it into a finite part. If a devamp leaves fewer frames than the fade-out's length, the fade restarts from the gain the last frame before the jump had and reaches exactly 0.0 on the new last frame, with the same curve: the gain never jumps. A devamp stop ends at the loop boundary without the fade-out.
 
 ## Signal path (ARCHITECTURE §3.5)
 
@@ -202,5 +274,7 @@ Custom curves are out of scope for v0.0.1 (REQUIREMENTS §21).
 
 ## Not yet built
 
+- Short loops seek once per play (see the costs above). A loop cache (keep a short loop's frames after its first play) would remove those seeks and make looped AAC plays bit-identical (M3.13).
+- AAC priming frames are not trimmed (symphonia does not read MP4 edit lists) (M3.14).
 - `assert_no_alloc` around the device callback in debug builds is wired with the device layer (M3.12, with M3.8). It is a dev-dependency today.
 - Curve evaluation calls `sin`/`cos`/`exp_m1` per sample during ramps. If the M3.10 CPU budget needs it, switch to incremental recurrences.
