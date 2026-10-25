@@ -318,6 +318,7 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **CL-05** cue lists only (carts later).
 - **CUE-09** hotkey and OSC triggers only.
 - **CT-10** audio level fades only (video fades in v0.0.2).
+- **WS-06**: per-cue-type defaults deferred with CUE-10.
 - **CT-30**: OSC send only; raw UDP/TCP string messages and OSC parameter fades later.
 - **PB-10** OSC/network output override only (MIDI/timecode not yet present).
 - **PB-12** wall clock only.
