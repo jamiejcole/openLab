@@ -19,11 +19,12 @@ Prerequisites (macOS 12 or later to run; building needs a Mac with Xcode):
 - For development: `rustup toolchain install nightly`, `cargo install cargo-fuzz cargo-deny`
 
 ```
-make lint        # cargo fmt --check, clippy -D warnings, cargo deny, swift format lint
+make lint        # SPDX headers, cargo fmt --check, clippy -D warnings, cargo deny, swift format lint
 make test        # all Rust tests + macOS unit and UI tests
 make test-rust   # Rust tests only (also works on Windows with cargo)
 make test-mac    # generate the Xcode project and run macOS unit and UI tests
 make mac         # build the Release app with a universal engine: build/Build/Products/Release/openLab.app
+make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, valid signature
 ```
 
 The Xcode project is generated from `mac/project.yml` and is not committed; run `cd mac && xcodegen` to open it in
