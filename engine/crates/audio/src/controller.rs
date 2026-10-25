@@ -105,27 +105,31 @@ impl MixerController {
     /// Schedules a command for sample `at`. Never drops it: if it is beyond the lookahead or the
     /// queue is full, it waits on the control thread until a later [`MixerController::pump`].
     pub fn send(&mut self, at: SampleTime, kind: CommandKind) {
-        self.hold(at, vec![Command { at, kind }]);
+        self.hold(vec![(at, kind)]);
         self.pump();
     }
 
     /// Schedules commands that must reach the mixer together: they are released in one queue
-    /// write, so the mixer sees all of them or none.
-    pub fn send_batch(&mut self, cmds: Vec<Command>) -> Result<(), BatchTooLarge> {
+    /// write, so the mixer sees all of them or none. Among equal `at`, every command applies in
+    /// send order, whether it was sent alone or in a batch.
+    pub fn send_batch(
+        &mut self,
+        cmds: Vec<(SampleTime, CommandKind)>,
+    ) -> Result<(), BatchTooLarge> {
         if cmds.len() > COMMAND_CAPACITY {
             return Err(BatchTooLarge);
         }
-        if let Some(at) = cmds.iter().map(|c| c.at).min() {
-            self.hold(at, cmds);
+        if !cmds.is_empty() {
+            self.hold(cmds);
             self.pump();
         }
         Ok(())
     }
 
     /// Moves every member of a gang by the same dB offset, keeping their relative levels
-    /// (AUD-08). `members` pairs each gain with its current level in dB; members at silence stay
-    /// silent and results are capped at [`MAX_GAIN_DB`]. Sent as one batch, so the gang moves on
-    /// the same sample.
+    /// (AUD-08). `members` pairs each gain with its current level in dB; members at silence (or
+    /// with a NaN level or offset) are silent and results are capped at [`MAX_GAIN_DB`]. Sent as
+    /// one batch, so the gang moves on the same sample.
     pub fn ramp_gang(
         &mut self,
         at: SampleTime,
@@ -137,31 +141,43 @@ impl MixerController {
         let cmds = members
             .iter()
             .map(|&(target, db)| {
-                let gain = if db <= SILENCE_DB {
+                let moved = db + delta_db;
+                let gain = if db <= SILENCE_DB || moved.is_nan() {
                     0.0
                 } else {
-                    db_to_linear((db + delta_db).min(MAX_GAIN_DB))
+                    db_to_linear(moved.min(MAX_GAIN_DB))
                 };
-                Command {
-                    at,
-                    kind: CommandKind::Ramp {
-                        voice,
-                        target,
-                        gain,
-                        fade,
-                    },
-                }
+                let kind = CommandKind::Ramp {
+                    voice,
+                    target,
+                    gain,
+                    fade,
+                };
+                (at, kind)
             })
             .collect();
         self.send_batch(cmds)
     }
 
-    fn hold(&mut self, at: SampleTime, cmds: Vec<Command>) {
-        self.seq += 1;
+    /// Stamps each command with its send order and holds the batch, keyed by its earliest `at`.
+    fn hold(&mut self, cmds: Vec<(SampleTime, CommandKind)>) {
+        let first = self.seq + 1;
+        let cmds: Vec<Command> = cmds
+            .into_iter()
+            .map(|(at, kind)| {
+                self.seq += 1;
+                Command {
+                    at,
+                    seq: self.seq,
+                    kind,
+                }
+            })
+            .collect();
+        let at = cmds.iter().map(|c| c.at).min().unwrap_or(0);
         self.held_commands += cmds.len();
         self.held.push(Held {
             at,
-            seq: self.seq,
+            seq: first,
             cmds,
         });
     }

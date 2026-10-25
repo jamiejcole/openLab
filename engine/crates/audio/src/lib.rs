@@ -18,9 +18,9 @@ pub use gain::{
     sanitize_gain,
 };
 pub use mixer::{
-    COMMAND_CAPACITY, Command, CommandKind, ConfigError, Event, FinishReason, GainTarget,
-    MAX_BLOCK_FRAMES, MAX_OUTPUT_CHANNELS, MAX_PATCHES, MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer,
-    MixerConfig, OutputSettings, PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
+    COMMAND_CAPACITY, CommandKind, ConfigError, Event, FinishReason, GainTarget, MAX_BLOCK_FRAMES,
+    MAX_OUTPUT_CHANNELS, MAX_PATCHES, MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer, MixerConfig,
+    OutputSettings, PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
 };
 pub use offline::OfflineRenderer;
 

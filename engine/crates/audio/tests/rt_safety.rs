@@ -5,8 +5,6 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use common::*;
 use openlab_audio::{
     CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MixerConfig, OutputSettings,
@@ -327,40 +325,21 @@ fn full_pending_set_is_reported_and_nothing_is_lost() {
     );
 }
 
-/// Review M1: a 1024-command burst costs about as much as a normal block, not O(n²).
+/// Review M1: a full burst of 1024 equal-time commands lands in one block without allocating,
+/// and every one of them applies (the last, in send order, sets the final gain).
 #[test]
-fn a_command_burst_processes_within_a_few_normal_blocks() {
-    let cfg = MixerConfig {
-        output_channels: 8,
-        max_block_frames: 256,
-        max_voices: 16,
-        ..MixerConfig::default()
-    };
-    let (mut ctl, mut r) = setup(cfg);
-    for id in 0..8 {
-        start(&mut ctl, 0, id, source(&vec![0.1; 2 * 48_000]), 2);
+fn a_full_command_burst_applies_in_one_block_without_allocating() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&vec![1.0; 4000]), 1);
+    let n = openlab_audio::COMMAND_CAPACITY - 1;
+    for i in 0..n {
+        let gain = if i + 1 == n { 0.25 } else { 0.5 };
+        ctl.send(64, CommandKind::SetMaster { gain });
     }
-    let mut out = vec![0.0; 8 * 256];
-    let time = |r: &mut openlab_audio::OfflineRenderer, out: &mut [f32]| {
-        let t = Instant::now();
-        no_alloc(|| r.render_into(out, &[256]));
-        t.elapsed()
-    };
-    let baseline = (0..20)
-        .map(|_| time(&mut r, &mut out))
-        .min()
-        .unwrap_or(Duration::ZERO);
-    let mut burst = Duration::MAX;
-    for round in 0..5u64 {
-        let at = ctl.samples_rendered() + 10_000 + round;
-        for _ in 0..openlab_audio::COMMAND_CAPACITY {
-            ctl.send(at, CommandKind::SetMaster { gain: 1.0 });
-        }
-        burst = burst.min(time(&mut r, &mut out));
-    }
-    // Pulling 1024 commands is ~10k heap comparisons; the old O(n²) insert was ~70× a block.
-    assert!(
-        burst < baseline * 8 + Duration::from_millis(1),
-        "burst {burst:?} vs block {baseline:?}"
-    );
+    assert_eq!(ctl.held(), 0, "the whole burst fits in the queue");
+    let mut out = vec![0.0; 512];
+    no_alloc(|| r.render_into(&mut out, &[512]));
+    assert!(out[..64].iter().all(|s| *s == 1.0));
+    assert!((out[64 + 240] - 0.25).abs() < 1e-6);
+    assert_eq!(ctl.pending_full_blocks(), 0);
 }

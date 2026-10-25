@@ -214,11 +214,13 @@ pub enum CommandKind {
     },
 }
 
-/// A command applied at sample `at` (or at the start of the next block if `at` has passed).
+/// A command on its way to the mixer: applied at sample `at` (or at the start of the next block
+/// if `at` has passed). `seq` is the controller's send order, the tiebreak among equal `at`.
 #[derive(Debug)]
-pub struct Command {
-    pub at: SampleTime,
-    pub kind: CommandKind,
+pub(crate) struct Command {
+    pub(crate) at: SampleTime,
+    pub(crate) seq: u64,
+    pub(crate) kind: CommandKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -550,7 +552,11 @@ impl DelayLine {
         let d = frames.min(self.buf.len() - 1);
         if self.xfade < self.xfade_len {
             self.next = Some(d);
-        } else if d != self.delay {
+            return;
+        }
+        // A request queued by the crossfade that just ended is superseded by this one.
+        self.next = None;
+        if d != self.delay {
             self.old_delay = self.delay;
             self.delay = d;
             self.xfade = 0;
@@ -623,7 +629,6 @@ pub struct Mixer {
     commands: Consumer<Command>,
     /// Earliest `(at, seq)` on top. Never grows past [`PENDING_CAPACITY`].
     pending: BinaryHeap<Pending>,
-    seq: u64,
     pending_full: bool,
     outbox: Outbox,
     voices: Vec<Voice>,
@@ -691,7 +696,6 @@ impl Mixer {
             now: 0,
             commands: cmd_rx,
             pending: BinaryHeap::with_capacity(PENDING_CAPACITY),
-            seq: 0,
             pending_full: false,
             outbox: Outbox {
                 events: ev_tx,
@@ -800,11 +804,10 @@ impl Mixer {
     fn pull_commands(&mut self) {
         while self.pending.len() < PENDING_CAPACITY {
             let Ok(cmd) = self.commands.pop() else { break };
-            // `seq` keeps queue order among equal times.
-            self.seq += 1;
+            // The controller's send order breaks ties, however batches and held commands arrive.
             self.pending.push(Pending {
                 at: cmd.at,
-                seq: self.seq,
+                seq: cmd.seq,
                 cmd,
             });
         }
@@ -1243,5 +1246,26 @@ mod tests {
         }
         d.tick(1.0);
         assert_eq!((d.old_delay, d.delay, d.next), (20, 40, None));
+    }
+
+    /// Review 2 M2: a change on the exact sample a crossfade ends supersedes the queued one.
+    #[test]
+    fn delay_change_on_the_sample_a_crossfade_ends_wins() {
+        let mut d = DelayLine::new(100, 10);
+        d.set_delay(20);
+        for _ in 0..3 {
+            d.tick(1.0);
+        }
+        d.set_delay(40);
+        for _ in 0..7 {
+            d.tick(1.0);
+        }
+        // Crossfade done, queued 40 not yet consumed.
+        assert_eq!((d.xfade, d.next), (10, Some(40)));
+        d.set_delay(60);
+        for _ in 0..30 {
+            d.tick(1.0);
+        }
+        assert_eq!((d.delay, d.next), (60, None));
     }
 }
