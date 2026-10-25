@@ -18,7 +18,10 @@ mod resample;
 mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
-pub use decode::{Media, MediaError, MediaInfo, MediaRead, Preloaded, preload, probe, probe_media};
+pub use decode::{
+    DEFAULT_PRELOAD_BUDGET, Media, MediaError, MediaInfo, MediaRead, Preloaded, preload,
+    preload_within, probe, probe_media,
+};
 #[doc(hidden)]
 pub use fuzzing::fuzz_decode;
 pub use gain::{
