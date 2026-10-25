@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-26
+          - name: macOS Intel
+            os: macos-26-intel
+          - name: Windows x64
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v7
+      # Installs the toolchain pinned in engine/rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  cargo-deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: engine/Cargo.toml
+          rust-version: "1.99.1"
+
+  mac:
+    name: macOS app
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app
+      # ARCHITECTURE §11: an Xcode whose SDK cannot target macOS 12.0 must not be adopted.
+      - name: Check SDK still supports macOS 12.0
+        run: |
+          min=$(/usr/libexec/PlistBuddy -c "Print :SupportedTargets:macosx:MinimumDeploymentTarget" \
+            "$(xcrun --sdk macosx --show-sdk-path)/SDKSettings.plist")
+          echo "SDK minimum deployment target: $min"
+          if [ "$(printf '%s\n' "$min" 12.0 | sort -V | tail -1)" != "12.0" ]; then
+            echo "::error::Selected SDK minimum deployment target $min is above macOS 12.0"
+            exit 1
+          fi
+      - run: brew install xcodegen
+      - run: rustup toolchain install
+        working-directory: engine
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - run: swift format lint --strict -r mac/
+      - run: make test-mac
