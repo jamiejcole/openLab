@@ -23,6 +23,8 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 - Commit with plain `git commit -m "<area>: <imperative summary>"`. Logical commits. **Never add Co-authored-by or any AI-attribution trailer.** Do not push.
 
 ## Report
+If the brief gives a report file path, write the full report to that file (Write tool or heredoc) before ending — report delivery to the orchestrator can fail, the file is the reliable copy.
+
 What was done; files touched; tests added and the result summary lines; deviations from ARCHITECTURE.md (should be none — if any, why); new tasks added to PROGRESS.md; open questions.
 
 If you are later sent review findings, fix every High and Medium (or argue concretely why a finding is wrong), add a regression test per fixed defect, re-run checks, commit, and report per finding.

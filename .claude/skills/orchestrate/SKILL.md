@@ -31,6 +31,8 @@ Verification: <commands + expected evidence>
 
 Never paste large file contents into briefs — point at paths.
 
+Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-back delivery can fail; read the file if no report arrives.
+
 ## 3. Verify the report (don't trust it)
 - Check the commits exist and `git diff --stat` matches the claim.
 - Run `make lint` and `make test-rust` (or `make test`) yourself on the branch.
