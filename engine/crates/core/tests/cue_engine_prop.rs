@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Property tests for the cue engine: random lists (including duplicate ids, which make trigger
-//! cycles) and random input sequences, with edits and stale feedback mixed in. `handle` never
-//! panics, every cue has exactly the state last reported for it, playheads stay valid, the chain
-//! bound holds and every due deadline is carried out. The full suite is M2.9.
+//! Property tests for the cue engine: random lists with nested groups of every mode (including
+//! duplicate ids, which make trigger cycles) and random input sequences, with edits (deletes,
+//! moves out of groups, reorders, mode changes) and stale feedback mixed in. `handle` never
+//! panics, every cue has exactly the state last reported for it, playheads stay valid, a running
+//! group always has a child that is not idle, the chain bound holds and every due deadline is
+//! carried out. The full suite is M2.9.
 
 mod common;
 
@@ -23,6 +25,10 @@ struct Spec {
     armed: bool,
     /// Reuse the previous cue's id.
     dup: bool,
+    /// Nesting level wanted (clamped to the groups open at this point).
+    level: u8,
+    /// Group mode, for groups.
+    group_mode: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -41,19 +47,25 @@ fn spec() -> impl Strategy<Value = Spec> {
         0u8..3,
         any::<bool>(),
         prop::bool::weighted(0.1),
+        0u8..4,
+        0u8..7,
     )
-        .prop_map(|(kind, pre, post, mode, armed, dup)| Spec {
-            kind,
-            pre,
-            post,
-            mode,
-            armed,
-            dup,
-        })
+        .prop_map(
+            |(kind, pre, post, mode, armed, dup, level, group_mode)| Spec {
+                kind,
+                pre,
+                post,
+                mode,
+                armed,
+                dup,
+                level,
+                group_mode,
+            },
+        )
 }
 
 fn step() -> impl Strategy<Value = Step> {
-    (0u64..1500, 0u8..15, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
+    (0u64..1500, 0u8..18, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
 }
 
 fn mode(n: u8) -> ContinueMode {
@@ -64,20 +76,55 @@ fn mode(n: u8) -> ContinueMode {
     }
 }
 
+fn group_mode(n: u8) -> GroupMode {
+    match n % 7 {
+        0 => GroupMode::Timeline,
+        1 => GroupMode::StartFirstAndEnter,
+        2 => GroupMode::StartFirstAndGoToNext,
+        3 => GroupMode::StartRandom,
+        4 => GroupMode::Playlist {
+            loop_: false,
+            shuffle: false,
+        },
+        5 => GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        _ => GroupMode::Playlist {
+            loop_: true,
+            shuffle: true,
+        },
+    }
+}
+
+fn attach(stack: &mut [Cue], top: &mut Vec<Cue>, c: Cue) {
+    match stack.last_mut().map(|g| &mut g.kind) {
+        Some(CueKind::Group { children, .. }) => children.push(c),
+        _ => top.push(c),
+    }
+}
+
 fn build(specs: &[Spec]) -> Vec<Cue> {
-    let mut cues: Vec<Cue> = Vec::new();
+    let mut top: Vec<Cue> = Vec::new();
+    // Groups still open, outermost first.
+    let mut open: Vec<Cue> = Vec::new();
+    let mut last_id: Option<u128> = None;
     for (i, s) in specs.iter().enumerate() {
-        let n = match cues.last() {
-            Some(last) if s.dup => last.id.0.as_u128(),
+        let n = match last_id {
+            Some(last) if s.dup => last,
             _ => i as u128 + 1,
         };
+        last_id = Some(n);
         let kind = match s.kind {
             0 => CueKind::Memo,
             1 => CueKind::Wait {
                 duration: f64::from(s.post) * 0.7,
             },
             2 => audio(),
-            _ => group(vec![]),
+            _ => CueKind::Group {
+                mode: group_mode(s.group_mode),
+                children: vec![],
+            },
         };
         let mut c = cue(n, kind);
         c.number = Some(format!("{i}"));
@@ -85,17 +132,68 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         c.post_wait = f64::from(s.post) * 0.5;
         c.continue_mode = mode(s.mode);
         c.armed = s.armed;
-        cues.push(c);
+        let level = usize::from(s.level).min(open.len());
+        while open.len() > level {
+            let g = open.pop().unwrap();
+            attach(&mut open, &mut top, g);
+        }
+        if matches!(c.kind, CueKind::Group { .. }) {
+            open.push(c);
+        } else {
+            attach(&mut open, &mut top, c);
+        }
     }
-    cues
+    while let Some(g) = open.pop() {
+        attach(&mut open, &mut top, g);
+    }
+    top
+}
+
+/// Every cue, depth-first.
+fn flatten(cues: &[Cue], out: &mut Vec<CueId>) {
+    for c in cues {
+        out.push(c.id);
+        flatten(c.children(), out);
+    }
+}
+
+fn all_ids(ws: &Workspace) -> Vec<CueId> {
+    let mut out = Vec::new();
+    flatten(&ws.cue_lists[0].cues, &mut out);
+    out
+}
+
+/// Removes the first cue with this id, anywhere.
+fn take(cues: &mut Vec<Cue>, id: CueId) -> Option<Cue> {
+    if let Some(i) = cues.iter().position(|c| c.id == id) {
+        return Some(cues.remove(i));
+    }
+    cues.iter_mut().find_map(|c| match &mut c.kind {
+        CueKind::Group { children, .. } => take(children, id),
+        _ => None,
+    })
+}
+
+fn find_mut(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
+    for c in cues {
+        if c.id == id {
+            return Some(c);
+        }
+        if let CueKind::Group { children, .. } = &mut c.kind
+            && let Some(found) = find_mut(children, id)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn pick(ws: &Workspace, a: u8) -> CueId {
-    let cues = &ws.cue_lists[0].cues;
-    if cues.is_empty() || a == u8::MAX {
+    let ids = all_ids(ws);
+    if ids.is_empty() || a == u8::MAX {
         cue_id(999)
     } else {
-        cues[usize::from(a) % cues.len()].id
+        ids[usize::from(a) % ids.len()]
     }
 }
 
@@ -104,19 +202,19 @@ proptest! {
 
     #[test]
     fn engine_invariants(
-        specs in prop::collection::vec(spec(), 0..8),
+        specs in prop::collection::vec(spec(), 0..12),
         steps in prop::collection::vec(step(), 1..40),
         lookahead in 0u64..32,
         min_go in 0u8..3,
     ) {
         let mut ws = workspace(build(&specs));
         ws.settings.min_go_interval = f64::from(min_go) * 0.3;
-        let mut engine = CueEngine::new(EngineConfig::new(1000, lookahead).unwrap());
+        let mut engine = CueEngine::new(EngineConfig::new(1000, lookahead, 7).unwrap());
         let list = list_id(1);
         let mut now: SampleTime = 0;
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
-        let mut seen: BTreeSet<CueId> = ws.cue_lists[0].cues.iter().map(|c| c.id).collect();
+        let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
 
         for s in &steps {
             now += s.dt;
@@ -143,14 +241,34 @@ proptest! {
                     cue: (s.b % 4 != 0).then_some(target),
                 },
                 11 => {
-                    // Model edit: delete a top-level cue.
-                    let cues = &mut ws.cue_lists[0].cues;
-                    if !cues.is_empty() {
-                        let i = usize::from(s.a) % cues.len();
-                        cues.remove(i);
+                    // Model edit: delete a cue anywhere.
+                    take(&mut ws.cue_lists[0].cues, target);
+                    Input::Tick
+                }
+                15 => {
+                    // Model edit: move a cue to the end of the top level.
+                    if let Some(c) = take(&mut ws.cue_lists[0].cues, target) {
+                        ws.cue_lists[0].cues.push(c);
                     }
                     Input::Tick
                 }
+                16 => {
+                    // Model edit: reverse a group's children, or change its mode.
+                    if let Some(CueKind::Group { mode, children }) =
+                        find_mut(&mut ws.cue_lists[0].cues, target).map(|c| &mut c.kind)
+                    {
+                        if s.b % 2 == 0 {
+                            children.reverse();
+                        } else {
+                            *mode = group_mode(s.b / 2);
+                        }
+                    }
+                    Input::Tick
+                }
+                17 => Input::SetPlayheadByNumber {
+                    list,
+                    number: format!("{}", s.b % 12),
+                },
                 12 => Input::ActionEnded {
                     cue: target,
                     run: if s.b % 3 == 0 {
@@ -167,7 +285,7 @@ proptest! {
                 },
                 _ => {
                     // Model edit: change a cue's timing and continue mode.
-                    if let Some(c) = ws.cue_lists[0].cues.iter_mut().find(|c| c.id == target) {
+                    if let Some(c) = find_mut(&mut ws.cue_lists[0].cues, target) {
                         c.post_wait = f64::from(s.b % 4) * 0.25;
                         c.continue_mode = mode(s.b);
                     }
@@ -211,11 +329,33 @@ proptest! {
             for (id, _) in engine.cue_states() {
                 prop_assert!(ws.find_cue(id).is_some());
             }
-            // The playhead is past the end or on a top-level cue of its list.
+            // The playhead is past the end or on a position of its list (a top-level cue or one
+            // inside "start first and enter" groups).
             if let Some(p) = engine.playhead(list) {
-                prop_assert!(ws.cue_lists[0].cues.iter().any(|c| c.id == p));
+                prop_assert!(CueEngine::playhead_positions(&ws, list).contains(&p));
+                prop_assert_eq!(engine.standing_by(&ws, list).map(|c| c.id), Some(p));
             } else {
                 prop_assert!(engine.standing_by(&ws, list).is_none());
+            }
+            // No stranded group: a running group has a child that is not idle or loaded. Only
+            // meaningful when ids are unique (a duplicate shares its runtime).
+            let ids = all_ids(&ws);
+            let unique: BTreeSet<CueId> = ids.iter().copied().collect();
+            if unique.len() == ids.len() {
+                for id in &ids {
+                    let Some(c) = ws.find_cue(*id) else { continue };
+                    if matches!(c.kind, CueKind::Group { .. })
+                        && engine.state(*id) == CueState::Running
+                    {
+                        prop_assert!(
+                            c.children().iter().any(|k| !matches!(
+                                engine.state(k.id),
+                                CueState::Idle | CueState::Loaded
+                            )),
+                            "group {} runs with no busy child", id
+                        );
+                    }
+                }
             }
             // Everything due has been done.
             prop_assert!(engine.next_deadline().is_none_or(|d| d > horizon));

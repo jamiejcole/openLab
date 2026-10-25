@@ -2,6 +2,8 @@
 
 //! A cue's runtime: its timers and action progress, kept as absolute sample deadlines.
 
+use crate::model::CueId;
+
 use super::time::SampleTime;
 use super::types::{BrokenReason, CueState, RunId};
 
@@ -80,6 +82,54 @@ pub(super) struct Run {
     /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
     /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
+    /// Set for Group cues: how the group runs its children.
+    pub group: Option<GroupRun>,
+}
+
+/// How a cue's runtime ended, as its group sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Exit {
+    /// The action completed and nothing is pending.
+    Completed,
+    /// It broke (a group: a child broke during its run).
+    Broken,
+    /// Stopped, reset or deleted.
+    Stopped,
+}
+
+/// A Group cue's part of its run. Its action lasts while any of its children is busy (has a
+/// runtime that is not idle, loaded or settled broken).
+#[derive(Clone, Debug, Default)]
+pub(super) struct GroupRun {
+    /// Running because a child was started on its own while the group was idle: it tracks its
+    /// children but starts none and fires no continue.
+    pub adopted: bool,
+    /// Stopping with a fade: ends when its last busy child has stopped.
+    pub stopping: bool,
+    /// A child broke during this run, so the group does not auto-follow.
+    pub failed: bool,
+    /// How the last busy child left while the group was paused; the group ends on resume.
+    pub pending: Option<Exit>,
+    /// A playlist's current child completed or broke while the group was paused (its report
+    /// was in flight): the playlist moves on when the group resumes.
+    pub advance: bool,
+    pub playlist: Option<PlaylistRun>,
+}
+
+/// Where a playlist group is in its pass.
+#[derive(Clone, Debug, Default)]
+pub(super) struct PlaylistRun {
+    /// The child playing now and its run's `seq`, so a late report of an earlier run of the same
+    /// child (a one-child loop) cannot move the playlist on twice.
+    pub current: Option<(CueId, u64)>,
+    /// Unshuffled pass: the index the current child had among the group's children when it
+    /// started (the next child is the one after it as the group stands, or the one that took its
+    /// place if it was removed).
+    pub index: usize,
+    /// Shuffled pass: the pass's order (fixed when the pass starts) and the current position.
+    /// Empty for an unshuffled pass.
+    pub order: Vec<CueId>,
+    pub pos: usize,
 }
 
 impl Run {
@@ -88,7 +138,7 @@ impl Run {
             CueState::Broken
         } else if self.paused_at.is_some() {
             CueState::Paused
-        } else if self.stop_end.is_some() {
+        } else if self.stop_end.is_some() || self.is_group_stopping() {
             CueState::Stopping
         } else {
             match self.phase {
@@ -97,6 +147,10 @@ impl Run {
                 Phase::Done => CueState::PostWaiting,
             }
         }
+    }
+
+    pub fn is_group_stopping(&self) -> bool {
+        self.group.as_ref().is_some_and(|g| g.stopping)
     }
 
     /// The next sample something happens on by itself; `None` while paused or waiting on

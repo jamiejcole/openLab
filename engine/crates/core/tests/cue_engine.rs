@@ -12,7 +12,7 @@ use openlab_core::*;
 const RATE: u32 = 1000;
 
 fn config(lookahead: SampleTime) -> EngineConfig {
-    EngineConfig::new(RATE, lookahead).unwrap()
+    EngineConfig::new(RATE, lookahead, 1).unwrap()
 }
 
 fn memo(n: u128) -> Cue {
@@ -431,8 +431,19 @@ fn disarmed_cue_skips_its_action_but_keeps_timing_and_continue() {
 
 #[test]
 fn unsupported_kind_warns_completes_at_once_and_continues() {
-    let g = timed(cue(1, group(vec![sound(10)])), 0.0, 0.0, AF);
-    let mut rig = Rig::new(vec![g, memo(2)]);
+    // Control cues come with M2.5.
+    let start = timed(
+        cue(
+            1,
+            CueKind::Start {
+                target: Some(id(10)),
+            },
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![start, memo(2), sound(10)]);
     let go = rig.go(0);
     assert_eq!(
         warnings(&go),
@@ -660,9 +671,12 @@ fn next_and_previous_move_without_firing() {
 
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(2))));
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(3))));
+    // Into the group's children (docs/cue-engine.md, Playhead).
+    assert_eq!(moved(&next(&mut rig)), Some(Some(id(30))));
     assert_eq!(moved(&next(&mut rig)), Some(None));
     assert!(next(&mut rig).is_empty());
-    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(3))));
+    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(30))));
+    previous(&mut rig);
     previous(&mut rig);
     previous(&mut rig);
     assert_eq!(rig.playhead(), Some(id(1)));
@@ -702,18 +716,18 @@ fn jump_by_id_and_number() {
 #[test]
 fn bad_jumps_warn_and_leave_the_playhead() {
     let mut rig = numbered_rig();
-    // A cue inside a group is not a playhead position (yet: M2.4).
+    // A cue that is not in the list.
     assert_eq!(
         rig.at(
             0,
             Input::SetPlayhead {
                 list: list(),
-                cue: Some(id(30))
+                cue: Some(id(999))
             }
         ),
         vec![Action::Warning(EngineWarning::NotInList {
             list: list(),
-            cue: id(30)
+            cue: id(999)
         })]
     );
     assert_eq!(
@@ -721,12 +735,12 @@ fn bad_jumps_warn_and_leave_the_playhead() {
             0,
             Input::SetPlayheadByNumber {
                 list: list(),
-                number: "3.1".into()
+                number: "nope".into()
             }
         ),
         vec![Action::Warning(EngineWarning::NumberNotFound {
             list: list(),
-            number: "3.1".into()
+            number: "nope".into()
         })]
     );
     let other = list_id(9);
@@ -1833,23 +1847,23 @@ fn lookahead_window_excludes_its_end() {
 #[test]
 fn config_is_checked() {
     assert_eq!(
-        EngineConfig::new(0, 0),
+        EngineConfig::new(0, 0, 0),
         Err(EngineConfigError::SampleRate(0))
     );
     assert_eq!(
-        EngineConfig::new(MAX_SAMPLE_RATE + 1, 0),
+        EngineConfig::new(MAX_SAMPLE_RATE + 1, 0, 0),
         Err(EngineConfigError::SampleRate(MAX_SAMPLE_RATE + 1))
     );
     assert_eq!(
-        EngineConfig::new(48_000, 48_001),
+        EngineConfig::new(48_000, 48_001, 0),
         Err(EngineConfigError::Lookahead {
             lookahead: 48_001,
             max: 48_000
         })
     );
-    let ok = EngineConfig::new(48_000, 48_000).unwrap();
+    let ok = EngineConfig::new(48_000, 48_000, 0).unwrap();
     assert_eq!((ok.sample_rate().get(), ok.lookahead()), (48_000, 48_000));
-    assert!(EngineConfig::new(MAX_SAMPLE_RATE, 0).is_ok());
+    assert!(EngineConfig::new(MAX_SAMPLE_RATE, 0, 0).is_ok());
 }
 
 #[test]
