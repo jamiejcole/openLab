@@ -16,15 +16,17 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [x] M0.5 LICENSE (GPLv3), `.gitignore`, README with build instructions [NFR-42, NFR-43]
 
 ## M1 — Core model & show file (`openlab-core`, persistence in `engine`)
-- [ ] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
-- [ ] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
-- [ ] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
+- [x] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
+- [x] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
+- [x] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
 - [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06]
 - [ ] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
 - [ ] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
 - [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32]
 - [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
 - [ ] M1.9 Fuzz target: show-file loader [QA-04]
+- [ ] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
+- [ ] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
 
 ## M2 — Cue engine (pure logic, virtual clock)
 - [ ] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
