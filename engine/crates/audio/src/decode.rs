@@ -317,6 +317,76 @@ impl FrameSource for MemorySource {
     }
 }
 
+/// Chunks looked at before giving up on finding a WAV `fmt ` / AIFF `COMM` chunk (symphonia then
+/// decides what the file is).
+const HEADER_CHUNKS: usize = 64;
+
+/// Rejects WAV and AIFF headers whose channel count or sample size is outside what openLab plays,
+/// before symphonia sees them: symphonia 0.6.1 computes `(bits / 8) * channels` in `u16`, which
+/// overflows on such headers (a panic with overflow checks on). Other data is left to symphonia.
+/// Leaves `r` at the start.
+fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
+    let found = find_pcm_format(r);
+    r.seek(SeekFrom::Start(0))
+        .map_err(|e| MediaError::Io(e.to_string()))?;
+    match found {
+        Some((channels, bits))
+            if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 =>
+        {
+            Err(MediaError::Corrupt(format!(
+                "header: {channels} channels of {bits} bits"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Channel count and bits per sample from a RIFF/WAVE `fmt ` or AIFF/AIFC `COMM` chunk, if the
+/// stream starts with one of those containers. Read errors count as "not found".
+fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16)> {
+    let mut head = [0u8; 12];
+    r.read_exact(&mut head).ok()?;
+    let (big_endian, want): (bool, &[u8; 4]) = match (head.get(0..4)?, head.get(8..12)?) {
+        (b"RIFF", b"WAVE") => (false, b"fmt "),
+        (b"FORM", b"AIFF" | b"AIFC") => (true, b"COMM"),
+        _ => return None,
+    };
+    for _ in 0..HEADER_CHUNKS {
+        let mut ch = [0u8; 8];
+        r.read_exact(&mut ch).ok()?;
+        let size = [ch[4], ch[5], ch[6], ch[7]];
+        let size = if big_endian {
+            u32::from_be_bytes(size)
+        } else {
+            u32::from_le_bytes(size)
+        };
+        if &ch[..4] == want {
+            let mut body = [0u8; 16];
+            let n = usize::try_from(size).unwrap_or(usize::MAX).min(16);
+            r.read_exact(body.get_mut(..n)?).ok()?;
+            let u16_at = |i: usize| {
+                let b = [*body.get(i)?, *body.get(i + 1)?];
+                Some(if big_endian {
+                    u16::from_be_bytes(b)
+                } else {
+                    u16::from_le_bytes(b)
+                })
+            };
+            // WAV fmt: tag, channels, rate(4), byte rate(4), block align, bits.
+            // AIFF COMM: channels, frames(4), bits.
+            return if big_endian {
+                Some((u16_at(0)?, u16_at(6)?))
+            } else {
+                Some((u16_at(2)?, u16_at(14).unwrap_or(0)))
+            };
+        }
+        // Chunks are padded to an even length.
+        let skip = i64::from(size) + i64::from(size & 1);
+        r.seek(SeekFrom::Current(skip)).ok()?;
+    }
+    None
+}
+
 /// Adapts a [`MediaRead`] to symphonia's source trait.
 struct ReaderSource {
     inner: Box<dyn MediaRead>,
@@ -398,7 +468,10 @@ impl Decoder {
                     hint.with_extension(ext);
                 }
                 match File::open(&path) {
-                    Ok(f) => Box::new(f),
+                    Ok(mut f) => {
+                        check_pcm_header(&mut f)?;
+                        Box::new(f)
+                    }
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {
                         return Err(MediaError::NotFound(path));
                     }
@@ -413,6 +486,7 @@ impl Decoder {
                 inner
                     .seek(SeekFrom::Start(0))
                     .map_err(|e| MediaError::Io(e.to_string()))?;
+                check_pcm_header(&mut inner)?;
                 Box::new(ReaderSource { inner, len })
             }
             Media::Preloaded(_) => {
