@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 
+pub mod media;
+
 use assert_no_alloc::{AllocDisabler, assert_no_alloc, violation_count};
 use openlab_audio::{
     CommandKind, Mixer, MixerConfig, MixerController, OfflineRenderer, VoiceId, VoiceStart,

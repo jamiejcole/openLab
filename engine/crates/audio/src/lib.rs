@@ -8,11 +8,21 @@
 #![deny(clippy::indexing_slicing)]
 
 mod controller;
+mod decode;
 mod gain;
 mod mixer;
 mod offline;
+mod plan;
+mod resample;
+mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
+pub use decode::{Media, MediaError, MediaInfo, MediaRead, Preloaded, preload, probe, probe_media};
+pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
+pub use stream::{
+    DEFAULT_BUFFER_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer, PreparedStream,
+    StreamHandle, StreamRequest, StreamerConfig,
+};
 pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, SILENCE_DB, db_to_linear, linear_to_db, ramp_value,
     sanitize_gain,
