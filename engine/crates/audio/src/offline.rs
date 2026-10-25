@@ -18,6 +18,11 @@ impl OfflineRenderer {
         &mut self.mixer
     }
 
+    /// Reports `count` xruns as a device would (tests of the xrun counter, NFR-27).
+    pub fn inject_xruns(&mut self, count: u64) {
+        self.mixer.note_xruns(count);
+    }
+
     /// Renders `frames` interleaved frames using block sizes cycled from `blocks` (empty = one
     /// block; zero sizes count as 1).
     pub fn render(&mut self, frames: usize, blocks: &[usize]) -> Vec<f32> {
