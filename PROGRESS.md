@@ -16,11 +16,8 @@ If the session was cut off, resume with the `orchestrate` skill. Both branches b
   - M2 add to v1: OutputPatch per-output level/mute/delay/polarity + patch master; crosspoint/cue-output mute; settings: global master, transport hotkey map, auto-number start/increment. CT-30 raw UDP/TCP strings OUT of v0.0.1 (§21).
   - M3 bounds: times ≤ 24 h, channel_count 1..=64, autosave 5 s–1 h, min_go 0–10 s, panic 0–60 s, slices sorted/deduped/in-range, indices in range.
   - M4 untick WS-01. Lows: Windows-shaped-only path conversion, fuzz dict/artifacts/pinned nightly, lint fuzz crate, doc fixes, M1.4 saves on writer thread.
-- **M3-A** (M3.1, M3.2, M3.4, M3.5 + M3.11) — branch `worktree-agent-a2975cec37287bb34` (worktree `.claude/worktrees/agent-a2975cec37287bb34`). Review: 1 High, 5 Medium. Fixes requested:
-  - H1 start/routing race → StartVoice carries full initial routing + patch index (boxed, returned via return queue); never unity by default; gang/multi-commands atomic. Fold in M3.11 per-voice patch.
-  - M1 O(log n) pending queue ordered by (at, seq). M2 controller scheduling horizon (default 500 ms, `pump(now)`), pending-full counter/event. M3 delay retarget crossfade click. M4 gain ceiling +24 dB. M5 missing error-path/no_alloc tests. All Lows.
-  - Output level/mute/polarity move AFTER the delay line (instant operator mute).
-- Merging both will conflict on `engine/Cargo.lock` (regenerate) and possibly PROGRESS.md.
+- **M3-A** — MERGED to main (2 review rounds; all High/Medium fixed). Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.
+- Merging M1-A may conflict on `engine/Cargo.lock` (regenerate) and PROGRESS.md.
 - Next after merge: M1-B (M1.5, M1.6, M1.10 commands/undo), M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), M3-B (M3.3 decode/streaming, M3.6 loops), then M2.
 - Process notes: agent hand-back delivery can fail — briefs give a report path (`<scratchpad>/reports/<batch>.md`); `.claude/settings.local.json` holds the Bash allowlist (local only).
 
