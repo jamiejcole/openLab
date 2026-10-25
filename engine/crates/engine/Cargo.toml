@@ -12,3 +12,12 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+dirs = "7.0.0"
+openlab-core = { version = "0.0.1", path = "../core" }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+uuid = { version = "1.29.0", default-features = false }

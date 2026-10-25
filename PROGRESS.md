@@ -14,7 +14,8 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - **M3-A** — MERGED. Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.
 - **M3-B** (M3.3, M3.6, M3.15 decode fuzz, M3.16) — MERGED (Opus impl + review, 3 rounds: H1 devamp starvation, H-R1 damaged-file seek cost; 3 Mediums fixed). User decision: damaged media plays with warnings (`Probed { info, warnings }`), only unplayable files fail. For M2/M4.2 wiring: `probe` fully decodes compressed files (1–2 s per 30-min file) — never call it on the control thread; auto-preload files with `preload_advised()` within budget; workspace-wide preload budget (L-R3).
 - **M1-B** (M1.5, M1.6, M1.10) — MERGED (PR #1, 1 review round: 0 High / 0 Medium). Lows for later: no-op edits recorded as undo steps (do with M1.12); commands don't check references by design, so the M2 cue engine must tolerate self-targets/trigger cycles; every transaction clones the workspace as rollback snapshot (revisit with M1.12 coalescing); `Command` wire format needs protocol fixtures + `docs/protocol.md` in M4.1.
-- Next: M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), then M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
+- **M1-C** (M1.4, M1.7, M1.8, M1.11) — implemented: pure logic in core (`media_path`, `backup`, `recovery`, `settings`, `relink`), I/O in `engine/src/persist/`; see `docs/persistence.md`. Pending review.
+- Next: M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
 - Process notes: agent hand-back delivery can fail — briefs give a report path (`<scratchpad>/reports/<batch>.md`); `.claude/settings.local.json` holds the Bash allowlist (local only).
 
 ---
@@ -30,15 +31,21 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
 - [x] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
 - [x] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
-- [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06] — saves clone the workspace and run `save_show` on the writer thread, never the control thread (serialise + verify-reload costs up to ~1 s on minimum spec; from M1-A review L6)
+- [x] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06] — saves clone the workspace and run `save_show` on the writer thread, never the control thread (serialise + verify-reload costs up to ~1 s on minimum spec; from M1-A review L6)
 - [x] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
 - [x] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
-- [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32] — includes converting native Windows relative paths (backslashes) to forward slashes when a path is created; the loader only converts Windows absolute paths (M1-A review L2)
-- [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
+- [x] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32] — includes converting native Windows relative paths (backslashes) to forward slashes when a path is created; the loader only converts Windows absolute paths (M1-A review L2)
+- [x] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
 - [x] M1.9 Fuzz target: show-file loader [QA-04]
 - [x] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
 - [ ] M1.12 Commands for the rest of the model so undo covers it (ED-07 says "including routing and settings"): workspace settings, output and network patches, cue lists (add/remove/rename/reorder), and fine-grained cue edits that fader drags can coalesce into one undo step [ED-07] — from M1-B; M1.5/M1.6 cover the cue tree and per-cue properties only
-- [ ] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
+- [x] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
+
+- [ ] M1.13 Recovery for a show file that cannot be loaded: `check_recovery` needs the workspace id, which comes from the show file. Add a scan of `Recovery/` (list ids, times, names) so a corrupt or deleted show file can still be recovered, and a way to read a backup's workspace id from its folder name. [NFR-05] — from M1-C
+- [ ] M1.14 Per-machine settings: the UI-owned parts (window layout, recent files) are not in `MachineSettings`; decide where they live (UI defaults vs. `settings.json`) when M5 needs them. [WS-06] — from M1-C
+- [ ] M1.15 Windows: `write_atomic` relies on `rename` replacing an open/locked destination (antivirus or indexer holding the file can make it fail transiently); add a short bounded retry once Windows CI runs the persistence tests. [NFR-04, NFR-31] — from M1-C
+
+- [ ] M1.16 M1-C review Lows left open: (L3) atomic replace swaps the inode, so mode/ownership/xattrs/Finder tags are lost and a symlinked or read-only show file is replaced on Unix — preserve metadata or document; (L4) a backup `.tmp` left by a crash is never rotated and a backwards clock step can make the newest backup rotate out first; (L6) `///x` on Posix parses as a `//` share root and drive-relative `C:foo` is a plain relative name; (L7) `scan_folder` is bounded by depth/count but not time or directory count — run it off the control thread and consider a deadline; crash-leftover `*.tmp` files beside a show are never cleaned — from M1-C review
 
 ## M2 — Cue engine (pure logic, virtual clock)
 - [ ] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
@@ -82,7 +89,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M4.1 Protocol types in core, golden fixtures, `docs/protocol.md` [NFR-41]
 - [ ] M4.2 Control thread: wires CueEngine ↔ mixer ↔ disk threads; scheduling per ARCHITECTURE §3.2 [NFR-20, NFR-21, NFR-22, NFR-11]
 - [ ] M4.3 WebSocket server: token auth, snapshot, model_changed/runtime/progress/meters, revision gaps [NFR-01]
-- [ ] M4.4 Workspace requests: new/open/save/save-as/revert, recent files, recovery prompt flow [WS-02, WS-08, NFR-05]
+- [ ] M4.4 Workspace requests: new/open/save/save-as/revert, recent files, recovery prompt flow [WS-02, WS-08, NFR-05] — wire `persist::SaveWriter` (clone workspace on control thread; pass `now_ms`; call `autosave_due` each tick), `check_recovery` on open, `load_machine_settings` at start; this is where NFR-04/05/06 and WS-03/06/07 become end-user behaviour and can be ticked
 - [ ] M4.5 OSC server: UDP+TCP 53000, QLab-compatible v0.0.1 subset, passcode, updates; `docs/osc.md` [NET-01, NET-02, NET-05, TRG-03, DOC-02]
 - [ ] M4.6 Network (OSC send) cue + OSC output override [CT-30, PB-10]
 - [ ] M4.7 Show log to disk, status (CPU, engine load, disk, xruns, devices), local crash capture [DX-02, DX-03, DX-04]
