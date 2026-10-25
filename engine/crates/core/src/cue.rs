@@ -60,9 +60,10 @@ pub enum CueColor {
 #[serde(rename_all = "snake_case")]
 pub enum ContinueMode {
     DoNotContinue,
-    /// Start the next cue when this one starts (after its post-wait).
+    /// Start the next cue when this one's post-wait elapses, counted from the start of its
+    /// action (after the pre-wait); post-wait 0 = when the action starts.
     AutoContinue,
-    /// Start the next cue when this one's action completes (after its post-wait).
+    /// Start the next cue when this one's action completes; the post-wait is not used.
     AutoFollow,
 }
 
