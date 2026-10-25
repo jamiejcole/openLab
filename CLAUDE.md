@@ -38,6 +38,7 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - No real-time sleeps or wall-clock dependence in tests — use the virtual clock / offline render driver.
 - Integration-test support modules (`tests/common/mod.rs`) start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`: clippy's in-test allowances only cover `#[test]` fns and `#[cfg(test)]` items.
 - All tests, `fmt` and `clippy -D warnings` must pass before you report a task done.
+- Also run `cargo clippy --target x86_64-pc-windows-gnu --workspace --all-targets -- -D warnings` (Windows-only unused imports break CI). Tests that compare paths as strings must expect Windows `\` separators or convert with `to_portable`; macOS (APFS) refuses non-UTF-8 file names.
 
 **Contracts:**
 - Protocol change → update Rust types in core, regenerate fixtures in `engine/fixtures/protocol/`, update Swift `Codable` types, update `docs/protocol.md`. Same commit.
