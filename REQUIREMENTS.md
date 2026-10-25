@@ -47,7 +47,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **NFR-33** Linux MAY be supported later; nothing in the design should preclude it.
 
 ### 1.4 Maintainability & openness
-- [ ] **NFR-40** `v0.0.1` Workspace file format is open, documented, versioned, human-readable and diff-friendly (text-based), with automatic forward migration of older versions.
+- [x] **NFR-40** `v0.0.1` Workspace file format is open, documented, versioned, human-readable and diff-friendly (text-based), with automatic forward migration of older versions.
 - [ ] **NFR-41** `v0.0.1` Core engine logic (cue model, scheduling, state machine, routing, fades) is UI-independent and testable headlessly.
 - [ ] **NFR-42** `v0.0.1` Licensed GPLv3-or-later. All dependencies must be GPLv3-compatible. LICENSE file and SPDX headers present.
 - [ ] **NFR-43** `v0.0.1` Reproducible builds via a single documented command per platform; CI builds every commit.
@@ -80,14 +80,14 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ---
 
 ## 4. Cue Model (common to all cues)
-- [ ] **CUE-01** `v0.0.1` Fields: number (free text, unique within workspace or empty), name, notes, colour, flag, armed/disarmed.
+- [x] **CUE-01** `v0.0.1` Fields: number (free text, unique within workspace or empty), name, notes, colour, flag, armed/disarmed.
 - [ ] **CUE-02** `v0.0.1` Timing: pre-wait, action (duration), post-wait.
 - [ ] **CUE-03** `v0.0.1` Continue modes: do not continue, auto-continue (after pre-wait/post-wait), auto-follow (after action completes).
 - [ ] **CUE-04** `v0.0.1` Lifecycle states: idle, loaded, pre-waiting, running, paused, post-waiting, fading, stopping, broken — with defined, tested transitions.
 - [ ] **CUE-05** `v0.0.1` Operations on any cue: start, stop, pause, resume, load, load-to-time, reset, preview/audition.
 - [ ] **CUE-06** `v0.0.1` Broken state with human-readable reason(s), shown in the list and the inspector.
 - [ ] **CUE-07** `v0.0.1` Disarmed cues are skipped/ignored when triggered (still visible).
-- [ ] **CUE-08** `v0.0.1` Unique persistent internal ID per cue, independent of cue number (used by targets, OSC, scripts).
+- [x] **CUE-08** `v0.0.1` Unique persistent internal ID per cue, independent of cue number (used by targets, OSC, scripts).
 - [ ] **CUE-09** `v0.0.1` Hotkey, MIDI, OSC, timecode and wall-clock triggers assignable per cue (see §10).
 - [ ] **CUE-10** Default settings per cue type, configurable per workspace.
 
@@ -303,7 +303,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ## 20. Documentation
 - [ ] **DOC-01** `v0.0.1` User manual (getting started, every cue type, show-day checklist).
 - [ ] **DOC-02** `v0.0.1` OSC API reference.
-- [ ] **DOC-03** `v0.0.1` Workspace file format specification.
+- [x] **DOC-03** `v0.0.1` Workspace file format specification.
 - [ ] **DOC-04** `v0.0.1` Contributor guide (build, architecture, testing rules).
 
 ---
@@ -318,6 +318,8 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **CL-05** cue lists only (carts later).
 - **CUE-09** hotkey and OSC triggers only.
 - **CT-10** audio level fades only (video fades in v0.0.2).
+- **WS-06**: per-cue-type defaults deferred with CUE-10.
+- **CT-30**: OSC send only; raw UDP/TCP string messages and OSC parameter fades later.
 - **PB-10** OSC/network output override only (MIDI/timecode not yet present).
 - **PB-12** wall clock only.
 - **AUD-01** CoreAudio and WASAPI; ASIO later.
