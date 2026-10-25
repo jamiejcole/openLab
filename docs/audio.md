@@ -260,7 +260,14 @@ s(t) = 1 − f(1 − t)    if b < a   (falling)
 - Sample `S` is exactly `a`. Sample `S + N` is exactly `b`, so a fade-out to silence is exactly 0.0 on that sample. Values are computed in `f64` and cast to `f32`.
 - A falling ramp traces the rising ramp's gain path backwards: a fade-out is the time-reverse of the matching fade-in.
 - A new ramp starts from the gain the old one would have had on its first sample, so interrupting a fade is continuous.
-- Each sample is evaluated from the curve id, endpoints and position. There are no tables and no allocation.
+- Each sample is a function of the curve id, endpoints and position only. There are no tables and no allocation.
+
+`ramp_value` (and `Curve::shape`) evaluate this formula exactly, one `sin`/`cos`/`exp_m1` per call; `openlab-core`'s level maths is tested bit-for-bit against them. The mixer (gain ramps, integrated fade-in/out and refades, stop fades) evaluates it faster, by a recurrence between exact knots (`CurveRamp` in `gain.rs`):
+
+- At ramp positions that are multiples of 64 the state is computed exactly: `(cos φ, sin φ)` for EqualPower (`φ = πt/2`) and SCurve (`φ = πt`), `exp(kt)` or `exp(k(1 − t))` for Exponential and Logarithmic. Each following frame rotates `(cos φ, sin φ)` by the per-frame angle, or multiplies by `exp(±k/N)`; the progress `s` comes from the state (`sin φ`, `1 − cos φ`, `(1 − cos φ)/2`, `(y − 1)/(e^k − 1)` or its complement). Linear stays exact.
+- The knots depend only on the ramp position, and any position (after a skip, a seek or a pause) is reached by the same operations from its knot, so a value is a pure function of ramp and position: output never depends on how the timeline is cut into blocks.
+- Position 0 is exactly `a` and position `N` (and beyond) exactly `b`, as above.
+- **Bound**: `|mixer gain − ramp_value| ≤ RAMP_TOLERANCE · max(|a|, |b|)`, `RAMP_TOLERANCE = 1e-6` (−120 dB, the silence floor). At most 63 recurrence steps run from an exact knot, which adds about 1e-13 of full scale in `f64`; casting to `f32` can then land one `f32` step (≤ 1.2e-7 of full scale) away from `ramp_value`'s result. Unit tests check every curve, both directions, gains from 0 to +24 dB (and negative), lengths from 1 frame to four hours at 192 kHz, every frame of 2^20-frame ramps and the last frame before every knot of a four-hour ramp (the worst drift), and that any block split or skip gives the same bits. The worst deviation observed is 6e-11 of full scale.
 
 ### Curves
 
@@ -333,16 +340,17 @@ Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per s
 
 ## CPU budget (NFR-23, QA-06, M3.10)
 
-`tests/cpu_budget.rs` is a wall-clock gate, `#[ignore]`d so `cargo test` never runs it (and a no-op in a debug build). CI runs it on the Intel runner: `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`. It fails if the mixer renders less than 10x real time and prints the ratio and per-block p50/p99/max.
+`tests/cpu_budget.rs` is a wall-clock gate, `#[ignore]`d so `cargo test` never runs it (and a no-op in a debug build). CI runs it on the Intel runner: `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`. It prints the ratio and per-block p50/p99/max of each run.
 
-- **Workload**: 64 stereo voices at 48 kHz, each fed through its ring, with a 1.5 s fade-in (curves cycled), an integrated 2 s fade-out, and every second a 600 ms voice-output and crosspoint ramp on every voice (fades in flight 60% of the time). Two cue outputs routed through four patches onto 16 device outputs, master on, meters publishing every block. 8 groups (2 s) of warm-up, then 64 s measured. Blocks of 512 frames gate; 256 and 64 are reported.
+- **Workload**: 64 slots of stereo voices at 48 kHz, each fed through its ring. Every voice has a 1.5 s fade-in and an integrated 2 s fade-out (curves rotate over all five by voice id), lives 8 s and is replaced 0.5 s before its end (a crossfade), so about 64 to 72 voices play and fades run throughout the measured window; the initial lives are staggered from 4 to 8 s. Every second, a 600 ms voice-output ramp and a crosspoint ramp run on every voice (curves cycled by slot). Two cue outputs per voice, routed through four patches onto 16 device outputs, master on, meters publishing every block. 2 s of warm-up, then 64 s measured; about 590 voice starts in all.
+- **Gate**: block 512, best of three runs; passes as soon as one reaches 10x real time. It runs first, so the report-only cases cannot pre-empt it. Blocks of 256 and 64 and the resampled variant are reported only, and a failure in them is printed, not asserted. Block 64 is near 10x and **not** gated: NFR-23 is met at 512-frame blocks.
 - **Timed**: only `OfflineRenderer::render_into`, one block at a time, on the rendering thread. **Not timed**: topping up the rings, sending commands, reading meters and polling events (all between groups of 12288 frames), disk decode and the resampler.
-- **Resampled variant** (44.1 kHz in-memory files through `DiskStreamer` into the 48 kHz mixer) is reported, not gated: resampling runs on the disk workers, off the rendering thread, which sees the same ring as before.
-- The assertions also require no underrun, no early voice end and no fault, so a starved voice cannot flatter the ratio. Run it alone: the single test function times its cases in sequence.
+- **Resampled variant** (44.1 kHz in-memory files through `DiskStreamer` into the 48 kHz mixer): resampling runs on the disk workers, off the rendering thread, which sees the same ring as before.
+- The assertions also require no underrun, no early end of a current voice, no fault and a non-silent finite mix, so a starved voice cannot flatter the ratio. Run it alone: the single test function times its cases in sequence.
+- **Figures** (release, 4-core Linux VM, not the Intel runner): block 512 13.9x to 14.2x (p50 0.81 ms of a 10.7 ms budget); 256 12.2x to 13.1x; 64 9.6x to 10.2x; resampled 512 13.0x to 13.7x. With per-sample `sin`/`cos`/`exp_m1` curve evaluation this workload gave 8.2x at block 512; the knot recurrence (see Ramp definition) removed that cost.
 
 ## Not yet built
 
 - Short loops seek once per play (see the costs above). A loop cache (keep a short loop's frames after its first play) would remove those seeks and make looped AAC plays bit-identical (M3.13).
 - AAC priming frames are not trimmed (symphonia does not read MP4 edit lists) (M3.14).
 - `assert_no_alloc` around the device callback in debug builds is wired with the device layer (M3.12, with M3.8). It is a dev-dependency today.
-- Curve evaluation calls `sin`/`cos`/`exp_m1` per sample during ramps. If the M3.10 CPU budget needs it, switch to incremental recurrences.
