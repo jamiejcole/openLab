@@ -496,13 +496,19 @@ impl CueEngine {
                     ..
                 })) if g.advance => {
                     g.advance = false;
-                    g.pending = None;
                     true
                 }
                 _ => false,
             };
             if advance {
                 self.playlist_next(*id, at, cx);
+                // A child started: the result recorded during the pause no longer applies.
+                // None started (that was the last child): the group ends with it below.
+                if self.any_busy_child(cx.ws, *id)
+                    && let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(id)
+                {
+                    g.pending = None;
+                }
             }
             let pending = match self.slots.get(id) {
                 Some(Slot::Active(Run {
