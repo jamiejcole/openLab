@@ -394,24 +394,32 @@ fn start_cue_on_a_broken_target_warns() {
 }
 
 #[test]
-fn control_cue_with_a_missing_target_warns_and_keeps_its_timing() {
+fn control_cue_with_a_missing_target_is_broken_and_keeps_its_auto_continue() {
+    // M2.8: a missing or unset target makes the cue broken before it runs. GO does not start
+    // it, but its auto-continue keeps its timing; it never auto-follows.
     let mut rig = Rig::new(vec![
-        timed(start_cue(1, 99), 0.0, 0.0, AF),
+        timed(start_cue(1, 99), 0.0, 0.5, AC),
         timed(cue(2, CueKind::Start { target: None }), 0.0, 0.0, AF),
         memo(3),
     ]);
-    let go = rig.go(0);
     assert_eq!(
-        warnings(&go),
-        vec![
-            EngineWarning::TargetMissing {
-                cue: id(1),
-                target: id(99)
-            },
-            EngineWarning::NoTarget { cue: id(2) },
-        ]
+        rig.engine.problems(id(1)),
+        &[CueProblem::TargetMissing { target: id(99) }]
     );
-    assert_eq!(starts(&go), vec![(id(1), 0), (id(2), 0), (id(3), 0)]);
+    assert_eq!(rig.engine.problems(id(2)), &[CueProblem::NoTarget]);
+    let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+    assert!(starts(&go).is_empty());
+    let tick = rig.tick(500);
+    // Cue 1's continue starts cue 2 (broken: no start, and no follow to cue 3).
+    assert_eq!(
+        warnings(&tick),
+        vec![EngineWarning::CueBroken { cue: id(2) }]
+    );
+    assert!(starts(&tick).is_empty());
+    assert_eq!(rig.state(3), CueState::Idle);
+    assert_eq!(rig.state(1), CueState::Broken);
+    assert!(rig.engine.next_deadline().is_none());
 }
 
 #[test]
@@ -721,17 +729,33 @@ fn start_cycle_is_cut_within_the_call_and_never_refires() {
 }
 
 #[test]
-fn a_start_cue_targeting_itself_is_ignored_while_it_acts() {
+fn a_start_cue_targeting_itself_is_broken() {
     let mut rig = Rig::new(vec![start_cue(1, 1), memo(2)]);
+    assert_eq!(rig.engine.problems(id(1)), &[CueProblem::TargetSelf]);
     let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+    assert_eq!(rig.state(1), CueState::Broken);
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn a_start_cue_retargeted_to_itself_in_its_pre_wait_does_not_act() {
+    // Broken while it pre-waits: its action is skipped when it comes (M2.8).
+    let mut rig = Rig::new(vec![timed(start_cue(1, 2), 1.0, 0.0, DNC), memo(2)]);
+    rig.go(0);
+    rig.find_mut(1).kind.set_target(Some(id(1)));
+    let edit = rig.tick(10);
+    assert!(changes(&edit, 1).is_empty(), "keeps its runtime state");
+    assert_eq!(rig.state(1), CueState::PreWaiting);
+    let tick = rig.tick(1000);
+    assert_eq!(changes(&tick, 1), vec![(CueState::Broken, 1000)]);
+    assert!(starts(&tick).is_empty());
+    assert!(warnings(&tick).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
     assert_eq!(
-        warnings(&go),
-        vec![EngineWarning::TriggerIgnored {
-            cue: id(1),
-            state: CueState::Running
-        }]
+        rig.engine.cue_states().collect::<Vec<_>>(),
+        vec![(id(1), CueState::Broken)]
     );
-    assert_eq!(rig.state(1), CueState::Idle);
 }
 
 #[test]
@@ -877,13 +901,7 @@ fn goto_across_lists_moves_and_goes_on_the_targets_list() {
 fn goto_with_a_missing_target_warns() {
     let mut rig = Rig::new(vec![goto_cue(1, 99, true), memo(2)]);
     let go = rig.go(0);
-    assert_eq!(
-        warnings(&go),
-        vec![EngineWarning::TargetMissing {
-            cue: id(1),
-            target: id(99)
-        }]
-    );
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
     assert_eq!(rig.playhead(), Some(id(2)));
 }
 
@@ -949,12 +967,12 @@ fn arm_cue_on_a_group_changes_where_go_enters_it() {
 fn arm_cue_with_a_missing_target_warns() {
     let mut rig = Rig::new(vec![arm_cue(1, 99, true)]);
     assert_eq!(
-        warnings(&rig.go(0)),
-        vec![EngineWarning::TargetMissing {
-            cue: id(1),
-            target: id(99)
-        }]
+        rig.engine.problems(id(1)),
+        &[CueProblem::TargetMissing { target: id(99) }]
     );
+    let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+    assert!(set_armed(&go).is_empty());
 }
 
 // ----- Devamp (CT-16) -----
@@ -1160,13 +1178,14 @@ fn devamp_deadline_moves_with_a_pause() {
 #[test]
 fn devamp_of_a_memo_is_the_wrong_kind() {
     let mut rig = Rig::new(vec![memo(1), devamp_cue(2, 1, true, false)]);
+    assert_eq!(
+        rig.engine.problems(id(2)),
+        &[CueProblem::TargetWrongKind { target: id(1) }]
+    );
     rig.set_playhead(0, 2);
     assert_eq!(
         warnings(&rig.go(0)),
-        vec![EngineWarning::TargetWrongKind {
-            cue: id(2),
-            target: id(1)
-        }]
+        vec![EngineWarning::CueBroken { cue: id(2) }]
     );
 }
 
@@ -1234,24 +1253,40 @@ fn devamp_of_a_playlist_that_does_not_loop_is_ignored() {
 
 #[test]
 fn devamp_of_other_groups_or_idle_playlists() {
+    // Only a playlist group is a valid Devamp target; any other group makes it broken.
     let mut rig = Rig::new(vec![
         grp(1, GroupMode::Timeline, vec![wait(2, 1.0)]),
         devamp_cue(3, 1, false, false),
+        grp(4, playlist(true), vec![wait(5, 1.0)]),
+        devamp_cue(6, 4, false, false),
     ]);
+    assert_eq!(
+        rig.engine.problems(id(3)),
+        &[CueProblem::TargetWrongKind { target: id(1) }]
+    );
     rig.set_playhead(0, 3);
     assert_eq!(
         warnings(&rig.go(0)),
+        vec![EngineWarning::CueBroken { cue: id(3) }]
+    );
+    rig.set_playhead(0, 6);
+    assert_eq!(
+        warnings(&rig.go(0)),
         vec![EngineWarning::TargetNotRunning {
-            cue: id(3),
-            target: id(1)
+            cue: id(6),
+            target: id(4)
         }]
     );
-    rig.start(10, 1);
-    rig.set_playhead(20, 3);
-    assert_eq!(
-        warnings(&rig.go(20)),
-        vec![EngineWarning::DevampIgnored { cue: id(1) }]
-    );
+    // An edit that makes the target a timeline group breaks the Devamp cue at the next call.
+    if let CueKind::Group { mode, .. } = &mut rig.find_mut(4).kind {
+        *mode = GroupMode::Timeline;
+    }
+    let edit = rig.tick(10);
+    assert_eq!(changes(&edit, 6), vec![(CueState::Broken, 10)]);
+    assert!(edit.contains(&Action::ProblemsChanged {
+        cue: id(6),
+        problems: vec![CueProblem::TargetWrongKind { target: id(4) }],
+    }));
 }
 
 // ----- review round 1 -----

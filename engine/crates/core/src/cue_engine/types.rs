@@ -4,8 +4,11 @@
 
 use std::num::NonZeroU32;
 
-use crate::cue::{FadeCurve, FadeSpec};
-use crate::model::{CueId, CueListId};
+use std::fmt;
+
+use crate::cue::{FadeCurve, FadeSpec, MediaRef};
+use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
+use crate::settings::PatchResolution;
 
 use super::level::LevelParam;
 use super::time::SampleTime;
@@ -166,6 +169,130 @@ pub enum Input {
         cue: CueId,
         run: RunId,
     },
+    /// Panic (PB-03): every cue fades out over the workspace's `panic_duration` and stops; a
+    /// second Panic during that fade stops everything at once.
+    Panic,
+    /// Pause every active cue (PB-04).
+    PauseAll,
+    /// Resume every paused cue (PB-04).
+    ResumeAll,
+    /// Availability of a media file, from the binary's probe (M3). Every Audio cue whose `media`
+    /// is this reference uses it. Damaged-but-playable media is `Available` (its warnings are
+    /// the binary's to show).
+    MediaStatus {
+        media: MediaRef,
+        status: MediaStatus,
+    },
+    /// Where an output patch can play now (`resolve_patch` against the devices present, M1-C).
+    /// Every resolution but `Mapped` breaks the Audio cues on that patch.
+    PatchStatus {
+        patch: PatchId,
+        resolution: PatchResolution,
+    },
+}
+
+/// What the binary knows about a media file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaStatus {
+    /// Not probed (yet), or forgotten: the engine assumes it plays.
+    Unknown,
+    /// Probed and playable (possibly with damage warnings).
+    Available,
+    /// Not found on disk.
+    Missing,
+    /// Found but cannot be played; `reason` is the probe's message.
+    Unsupported { reason: String },
+}
+
+/// Why a cue cannot run, found without running it (CUE-06, NFR-07). A cue may have several.
+/// `Display` gives an English sentence for logs; the UI localises from the variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CueProblem {
+    /// A targeting cue with no target set.
+    NoTarget,
+    /// The target is not in the workspace.
+    TargetMissing {
+        target: CueId,
+    },
+    /// The cue targets itself.
+    TargetSelf,
+    /// The target is a kind this cue cannot act on (a Fade needs an Audio or Group cue, a Devamp
+    /// an Audio cue or a playlist group).
+    TargetWrongKind {
+        target: CueId,
+    },
+    /// An Audio cue with no media file.
+    NoMedia,
+    MediaMissing {
+        media: MediaRef,
+    },
+    MediaUnsupported {
+        media: MediaRef,
+        reason: String,
+    },
+    /// An Audio cue's patch is not in the workspace.
+    PatchMissing {
+        patch: PatchId,
+    },
+    /// An Audio cue's patch has no device to play on (`resolution` is never `Mapped`).
+    DeviceUnavailable {
+        patch: PatchId,
+        resolution: PatchResolution,
+    },
+    /// A Network cue's destination is not in the workspace.
+    NetworkPatchMissing {
+        patch: NetworkPatchId,
+    },
+}
+
+impl fmt::Display for CueProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTarget => write!(f, "no target set"),
+            Self::TargetMissing { target } => write!(f, "target {target} does not exist"),
+            Self::TargetSelf => write!(f, "targets itself"),
+            Self::TargetWrongKind { target } => {
+                write!(f, "target {target} is the wrong kind of cue")
+            }
+            Self::NoMedia => write!(f, "no media file"),
+            Self::MediaMissing { media } => write!(f, "media file {} not found", media.as_str()),
+            Self::MediaUnsupported { media, reason } => {
+                write!(
+                    f,
+                    "media file {} cannot be played: {reason}",
+                    media.as_str()
+                )
+            }
+            Self::PatchMissing { patch } => write!(f, "patch {patch} does not exist"),
+            Self::DeviceUnavailable { patch, resolution } => match resolution {
+                PatchResolution::Unmapped => {
+                    write!(f, "patch {patch} is not mapped to a device on this machine")
+                }
+                PatchResolution::DeviceMissing { device } => {
+                    write!(
+                        f,
+                        "audio device \"{device}\" of patch {patch} is not present"
+                    )
+                }
+                PatchResolution::ChannelsMissing {
+                    device,
+                    needed,
+                    available,
+                } => write!(
+                    f,
+                    "audio device \"{device}\" has {available} outputs; patch {patch} needs {needed}"
+                ),
+                PatchResolution::OutputCountMismatch { mapped, outputs } => write!(
+                    f,
+                    "patch {patch} has {outputs} outputs but its mapping lists {mapped}"
+                ),
+                PatchResolution::Mapped { .. } => write!(f, "patch {patch} is available"),
+            },
+            Self::NetworkPatchMissing { patch } => {
+                write!(f, "network patch {patch} does not exist")
+            }
+        }
+    }
 }
 
 /// The single state reported for a cue (CUE-04).
@@ -182,6 +309,7 @@ pub enum CueState {
     Fading,
     /// Fading out before it stops.
     Stopping,
+    /// It broke while it ran, or it has static problems (`CueProblem`) and no runtime.
     Broken,
 }
 
@@ -192,7 +320,8 @@ impl CueState {
     }
 }
 
-/// Why a cue is broken. Static detection (missing media, device, target) comes with M2.8.
+/// Why a cue broke while it ran (feedback). Problems found without running it are
+/// [`CueProblem`]s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrokenReason {
     /// The mixer refused the voice.
@@ -300,6 +429,12 @@ pub enum Action {
         cue: CueId,
         armed: bool,
     },
+    /// The cue's static problems changed (CUE-06): `problems` is the full new list, empty when
+    /// it is no longer broken. A cue that has problems and no runtime reports `broken`.
+    ProblemsChanged {
+        cue: CueId,
+        problems: Vec<CueProblem>,
+    },
     Warning(EngineWarning),
 }
 
@@ -331,7 +466,9 @@ pub enum EngineWarning {
         list: CueListId,
         number: String,
     },
-    /// A broken cue was asked to start or load; it stays broken until reset.
+    /// A broken cue was asked to start or load. A cue broken at run time stays broken until
+    /// reset and its start does nothing; one with static problems stays broken until they are
+    /// fixed, and its start keeps its timing (its auto-continue fires).
     CueBroken {
         cue: CueId,
     },

@@ -145,7 +145,9 @@ impl CueEngine {
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
-        let next = playhead::after_go(&path, |c| self.is_armed(c));
+        // A broken cue's action is skipped as a disarmed one's (a broken Devamp cue starts no
+        // next cue).
+        let next = playhead::after_go(&path, |c| self.is_armed(c) && !self.has_problems(c.id));
         self.move_playhead(list, next, cx);
         true
     }
