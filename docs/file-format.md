@@ -19,19 +19,24 @@ it, and `engine/fixtures/show/` holds a sample file for every format version.
 - **Optional values** are written as `null` when absent.
 - **Ids** are UUIDs in lowercase hyphenated form (`"7d1c…-…"`). openLab never derives behaviour from
   an id's value; it only compares them. Ids are stable for the life of the object.
-- **Times** are seconds as JSON numbers (`f64`), never negative. Integers are accepted (`2` = `2.0`).
+- **Times** are seconds as JSON numbers (`f64`), from 0 to 24 hours (86 400 s) unless a field says
+  otherwise. Integers are accepted (`2` = `2.0`).
 - **Levels** are decibels (`f64`). `-120.0` or lower means silence (−∞); openLab writes `-120.0` for
   silence. The highest level is `+12.0`.
-- **Indices** (cue outputs, file channels) are 0-based integers.
+- **Indices** (cue outputs, file channels) are 0-based integers. A patch, cue or file has at most 64
+  channels.
+- **Mute** flags sit beside a level and keep it, so unmuting restores the level.
 
 ### What the reader accepts
 
-- **Unknown keys are ignored**, so a file written by a slightly newer openLab that only added keys
-  still opens (the added data is dropped on the next save).
+- **Unknown keys are ignored**, so stray keys added by hand do not stop a file opening; they are
+  dropped on the next save. (A file from a newer openLab is still refused by its `format_version`.)
 - **Missing keys are an error**: every field below is required unless it says otherwise.
 - A leading UTF-8 byte-order mark and `\r\n` line endings are accepted (files edited on Windows).
-- Backslashes in media paths are converted to forward slashes (see §4.3).
+- Windows absolute media paths are converted to forward slashes (see §4.3).
 - Files larger than 64 MiB, or nested deeper than the JSON parser's limit of 128 levels, are refused.
+  A hostile file near the size limit made of tiny array elements can briefly need over 1 GB of
+  memory while loading; realistic show files need a small fraction of their size.
 
 ## 2. Versioning and migration
 
@@ -44,7 +49,7 @@ The top level of every file is:
 }
 ```
 
-- `format_version` is a positive integer. It changes whenever the meaning or shape of the file
+- `format_version` is an integer, 0 or greater. It changes whenever the meaning or shape of the file
   changes in a way an older reader would get wrong. Every change bumps it by exactly one.
 - **Newer than supported:** openLab refuses the file with a message naming both the file's version
   and the newest version it supports. It never guesses at a newer format.
@@ -71,14 +76,23 @@ cue, and the cue shows as broken where it cannot run.
 | Malformed JSON, wrong types, missing keys, unknown cue type | Refused (message includes line and column where possible) |
 | Two cues, cue lists, patches or network patches with the same id | Refused |
 | Cues nested more than 32 levels deep (a top-level cue is level 1) | Refused |
+| A Start, or GoTo with `then_go`, that would start itself again: through a chain of such cues of any length, or by starting a group that contains it | Warning; the cue shows as broken |
 | Two cues with the same `number` | Warning; the later cue (list order, then depth-first through groups) loses its number |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
-| A negative time | Warning; set to `0` |
+| A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
+| An OSC `float` argument too large for 32 bits | Warning; set to `0` |
 | An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
+| Slice markers out of order | Warning; sorted |
+| A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
+| Two slice markers at the same time | Warning; the second is removed |
+| A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
+| A patch output delay outside 0–1000 ms | Warning; clamped |
+| More Audio cue outputs than its patch has; a crosspoint naming a cue output that does not exist or a file channel of 64 or more; a gang naming a missing cue output; Fade levels naming output or channel 64 or more | Warning; those entries are removed |
+| Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue; every
 other targeting cue may target any cue except itself.
@@ -103,17 +117,23 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `min_go_interval` | seconds | GOs closer together than this are ignored (double-GO protection). `0` = off. |
-| `panic_duration` | seconds | Fade-out time of Panic. |
-| `autosave_interval` | seconds | How often unsaved changes are written to the recovery file. `0` = off. |
+| `min_go_interval` | seconds, 0–10 | GOs closer together than this are ignored (double-GO protection). `0` = off. |
+| `panic_duration` | seconds, 0–60 | Fade-out time of Panic. |
+| `autosave_interval` | seconds, 5–3600 | How often unsaved changes are written to the recovery file. |
 | `osc_passcode` | string or `null` | Passcode OSC clients must send with `/connect`. `null` = no passcode. |
+| `master_db` | level | Global master. |
+| `hotkeys` | object | Transport keys: `go`, `stop_all` (Stop All / Panic), `pause_all`, `resume_all`, `playhead_next`, `playhead_previous`. Each is `null` (no key) or a hotkey object (§5.1). New workspaces get space, escape, `[`, `]`, down and up. |
+| `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
+| `auto_number_increment` | number, above 0 up to 1 000 000 | Step between auto-numbered cues. |
 
 ### 4.3 Media paths
 
-A media path is a string with **forward slashes only**. It is relative to the folder containing the
+A media path uses **forward slashes** as separators. It is relative to the folder containing the
 show file when the media is inside that folder (`"media/thunder.wav"`), otherwise absolute
-(`"/Volumes/Show/thunder.wav"`, `"C:/Show/thunder.wav"`). Backslashes read from a file are
-converted to forward slashes, so a file written by hand on Windows opens on macOS.
+(`"/Volumes/Show/thunder.wav"`, `"C:/Show/thunder.wav"`, `"//server/share/thunder.wav"`).
+Windows absolute paths written with backslashes (`C:\Show\a.wav`, `\\server\share\a.wav`) are
+converted to forward slashes on load. Any other backslash is kept as part of a file name, because
+macOS allows it (`"sfx/Door\\Slam.wav"` in JSON is the file `Door\Slam.wav`).
 
 ### 4.4 Output patches
 
@@ -124,7 +144,8 @@ outputs reach is configured per machine.
 |---|---|---|
 | `id` | UUID | |
 | `name` | string | |
-| `channel_count` | integer | Number of outputs in the patch. |
+| `master_db` | level | Patch master. |
+| `outputs` | array of outputs | 1 to 64 entries; the patch's channel count is the length. Each is `{"level_db": level, "mute": bool, "delay_ms": 0–1000, "polarity_inverted": bool}`. |
 
 ### 4.5 Network patches
 
@@ -173,7 +194,8 @@ Option on macOS).
 
 - **Fade spec** `{"duration": seconds, "curve": curve}`. A duration of `0` means no fade.
 - **Curve**: `"linear"`, `"equal_power"`, `"s_curve"`, `"logarithmic"`, `"exponential"`.
-- **Crosspoint** `{"input": file channel, "output": cue output, "db": level}`.
+- **Crosspoint** `{"input": file channel, "output": cue output, "db": level, "mute": bool}`. In a
+  Fade cue's levels a crosspoint has no `mute`.
 - A **target** is a cue id or `null` (not yet chosen; the cue shows as broken until set).
 
 ### 5.3 Cue kinds
@@ -187,10 +209,10 @@ Option on macOS).
 | `start_time` | seconds | Trim in point, from the start of the file. |
 | `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be after `start_time`. |
 | `fade_in`, `fade_out` | fade spec | Fades built into the cue. |
-| `slices` | array of `{"time", "play_count"}` | Slice markers, seconds from the start of the file. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
+| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
 | `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
 | `levels.master_db` | level | Cue master. |
-| `levels.output_db` | array of levels | One per cue output. Cue output `i` feeds output `i` of the patch. |
+| `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most as many as the patch has outputs. Cue output `i` feeds output `i` of the patch. |
 | `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. |
 | `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |
@@ -204,7 +226,7 @@ Option on macOS).
 | `curve` | curve | |
 | `levels.master_db` | level or `null` | `null` = leave the master alone. |
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
-| `levels.crosspoints` | array of crosspoints | Listed crosspoints fade to their `db`; others are left alone. |
+| `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db`; others are left alone. Mutes are never changed by a fade. |
 | `stop_target_when_done` | bool | Stop the target when the fade completes. |
 
 **`group`** — contains cues.
@@ -237,7 +259,7 @@ Option on macOS).
 | Field | Type | Meaning |
 |---|---|---|
 | `destination` | network patch id | |
-| `address` | string | OSC address, e.g. `"/lx/go"`. |
+| `address` | string | OSC address, e.g. `"/lx/go"`. (v0.0.1 sends OSC only; raw UDP/TCP strings come later.) |
 | `args` | array | Typed arguments: `{"type": "int", "value": i32}`, `{"type": "float", "value": f32}`, `{"type": "string", "value": string}`, `{"type": "bool", "value": bool}`. |
 
 ## 6. Annotated example
@@ -255,10 +277,27 @@ mode. The notes after the listing refer to the numbered lines.
       "min_go_interval": 0.5,                            // (2)
       "panic_duration": 3.0,
       "autosave_interval": 30.0,
-      "osc_passcode": "1234"
+      "osc_passcode": "1234",
+      "master_db": -2.0,
+      "hotkeys": {
+        "go": { "key": "space", "modifiers": { "shift": false, "control": false, "alt": false, "command": false } },
+        "stop_all": { … },
+        "pause_all": null,                               // (2a)
+        …
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 0.5
     },
     "patches": [
-      { "id": "00000000-0000-0000-0000-000000000001", "name": "Main PA", "channel_count": 2 }
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main PA",
+        "master_db": 0.0,
+        "outputs": [
+          { "level_db": 0.0, "mute": false, "delay_ms": 0.0, "polarity_inverted": false },
+          { "level_db": -1.5, "mute": false, "delay_ms": 2.5, "polarity_inverted": true }
+        ]
+      }
     ],
     "network_patches": [ … ],
     "cue_lists": [
@@ -299,10 +338,13 @@ mode. The notes after the listing refer to the numbered lines.
               "last_slice_play_count": 1,
               "levels": {
                 "master_db": -6.0,
-                "output_db": [0.0, -3.0],
+                "outputs": [
+                  { "db": 0.0, "mute": false },
+                  { "db": -3.0, "mute": true }           // (7a)
+                ],
                 "crosspoints": [                         // (7)
-                  { "input": 0, "output": 0, "db": 0.0 },
-                  { "input": 1, "output": 1, "db": 0.0 }
+                  { "input": 0, "output": 0, "db": 0.0, "mute": false },
+                  { "input": 1, "output": 1, "db": 0.0, "mute": false }
                 ],
                 "gangs": [[0, 1]]
               },
@@ -339,12 +381,14 @@ line here for space; openLab writes one field per line.)
 
 1. Read first. A file with a higher number is refused rather than misread.
 2. Times are seconds: GOs less than half a second apart are ignored.
+   (2a) No key is assigned to Pause All in this show.
 3. When this cue starts, the next cue starts too (after this cue's post-wait of 0 s).
 4. The `type` key selects the cue kind; the other keys in `kind` belong to that kind.
 5. Relative to the show file's folder, forward slashes on every platform.
 6. The slice from 30 s to 60 s loops until a Devamp cue releases it; then the rest of the file
    (60 s to the 182.25 s out point) plays once.
 7. File channel 1 → cue output 1 and channel 2 → cue output 2 at 0 dB; no other routing.
+   (7a) Cue output 2 is muted; unmuting brings it back at −3 dB.
 8. Targets are cue ids, so renumbering cues never breaks them.
 9. `-120` is silence: this fade takes the preshow music out.
 10. Output 1 is left alone; output 2 fades to −10 dB.

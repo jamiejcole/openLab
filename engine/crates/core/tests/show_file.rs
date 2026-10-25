@@ -217,23 +217,32 @@ fn unknown_fields_are_ignored() {
 }
 
 #[test]
-fn windows_paths_are_normalised_on_load() {
+fn windows_absolute_paths_are_normalised_on_load() {
     let text = V1_EXAMPLE
-        .replacen("\"media/preshow.wav\"", r#""media\\preshow.wav""#, 1)
+        .replacen("\"media/preshow.wav\"", r#""Door\\Slam.wav""#, 1)
         .replacen(
             "\"/Volumes/Show/sfx/thunder.aif\"",
             r#""C:\\Show\\sfx\\thunder.aif""#,
             1,
+        )
+        .replacen(
+            "\"media/walkin/01.mp3\"",
+            r#""\\\\server\\share\\01.mp3""#,
+            1,
         );
-    assert!(text.contains(r"media\\preshow.wav"));
+    assert!(text.contains(r"Door\\Slam.wav"));
     let ws = load_show(&text).unwrap().workspace;
     let media = |n| match &ws.find_cue(cue_id(n)).unwrap().kind {
         CueKind::Audio { media, .. } => media.clone().unwrap(),
         _ => panic!("not audio"),
     };
-    assert_eq!(media(2).as_str(), "media/preshow.wav");
+    // A backslash is a legal macOS file-name character; only Windows-shaped paths convert.
+    assert_eq!(media(2).as_str(), r"Door\Slam.wav");
     assert_eq!(media(11).as_str(), "C:/Show/sfx/thunder.aif");
-    assert_eq!(MediaRef::new(r"a\b\c.wav").as_str(), "a/b/c.wav");
+    assert_eq!(media(21).as_str(), "//server/share/01.mp3");
+    assert_eq!(MediaRef::new(r"a\b\c.wav").as_str(), r"a\b\c.wav");
+    assert_eq!(MediaRef::new(r"d:\x.wav").as_str(), "d:/x.wav");
+    assert_eq!(MediaRef::new(r"1:\x.wav").as_str(), r"1:\x.wav");
 }
 
 #[test]
@@ -257,13 +266,21 @@ fn save_refuses_a_workspace_that_would_not_load() {
 }
 
 // --- Round-trip property -------------------------------------------------------------------
+//
+// Numbers are mostly in range, sometimes any f64/f32 at all (NaN, infinities, huge, subnormal).
+// The property: after `repair`, any workspace saves, loads back unchanged, and saves to the same
+// bytes again; and repairing it a second time changes nothing.
+
+fn num(in_range: std::ops::RangeInclusive<f64>) -> impl Strategy<Value = f64> {
+    prop_oneof![3 => in_range, 1 => proptest::num::f64::ANY]
+}
 
 fn time() -> impl Strategy<Value = f64> {
-    0.0..1.0e5f64
+    num(0.0..=MAX_TIME)
 }
 
 fn level() -> impl Strategy<Value = f64> {
-    SILENCE_DB..=MAX_DB
+    num(SILENCE_DB..=MAX_DB)
 }
 
 fn text() -> impl Strategy<Value = String> {
@@ -288,32 +305,45 @@ fn fade_spec() -> impl Strategy<Value = FadeSpec> {
     (time(), curve()).prop_map(|(duration, curve)| FadeSpec { duration, curve })
 }
 
+fn index() -> impl Strategy<Value = u32> {
+    prop_oneof![4 => 0u32..4, 1 => 0u32..70]
+}
+
 fn crosspoint() -> impl Strategy<Value = Crosspoint> {
-    (0u32..8, 0u32..8, level()).prop_map(|(input, output, db)| Crosspoint { input, output, db })
+    (index(), index(), level(), any::<bool>()).prop_map(|(input, output, db, mute)| Crosspoint {
+        input,
+        output,
+        db,
+        mute,
+    })
 }
 
 fn audio_kind() -> impl Strategy<Value = CueKind> {
+    let outputs = vec(
+        (level(), any::<bool>()).prop_map(|(db, mute)| CueOutput { db, mute }),
+        0..5,
+    );
     let levels = (
         level(),
-        vec(level(), 0..4),
+        outputs,
         vec(crosspoint(), 0..3),
-        vec(vec(0u32..8, 0..3), 0..2),
+        vec(vec(index(), 0..3), 0..2),
     )
-        .prop_map(|(master_db, output_db, crosspoints, gangs)| CueLevels {
+        .prop_map(|(master_db, outputs, crosspoints, gangs)| CueLevels {
             master_db,
-            output_db,
+            outputs,
             crosspoints,
             gangs,
         });
     let slices = vec(
         (time(), any::<u32>()).prop_map(|(time, play_count)| SliceMarker { time, play_count }),
-        0..3,
+        0..4,
     );
     (
         option::of(text().prop_map(MediaRef::new)),
         (0u128..3).prop_map(patch_id),
         time(),
-        option::of(0.001..1.0e3f64),
+        option::of(time()),
         (fade_spec(), fade_spec()),
         slices,
         any::<u32>(),
@@ -325,7 +355,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
                 media,
                 patch,
                 start_time,
-                length,
+                end_time,
                 (fade_in, fade_out),
                 slices,
                 last,
@@ -336,7 +366,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
                     media,
                     patch,
                     start_time,
-                    end_time: length.map(|l| start_time + l),
+                    end_time,
                     fade_in,
                     fade_out,
                     slices,
@@ -349,10 +379,15 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
 }
 
 fn fade_kind() -> impl Strategy<Value = CueKind> {
+    let crosspoint = (index(), index(), level()).prop_map(|(input, output, db)| FadeCrosspoint {
+        input,
+        output,
+        db,
+    });
     let levels = (
         option::of(level()),
         vec(option::of(level()), 0..4),
-        vec(crosspoint(), 0..3),
+        vec(crosspoint, 0..3),
     )
         .prop_map(|(master_db, output_db, crosspoints)| FadeLevels {
             master_db,
@@ -373,7 +408,8 @@ fn fade_kind() -> impl Strategy<Value = CueKind> {
 fn osc_arg() -> impl Strategy<Value = OscArg> {
     prop_oneof![
         any::<i32>().prop_map(|value| OscArg::Int { value }),
-        (-1.0e6f32..1.0e6).prop_map(|value| OscArg::Float { value }),
+        prop_oneof![3 => -1.0e6f32..1.0e6, 1 => proptest::num::f32::ANY]
+            .prop_map(|value| OscArg::Float { value }),
         text().prop_map(|value| OscArg::String { value }),
         any::<bool>().prop_map(|value| OscArg::Bool { value }),
     ]
@@ -441,15 +477,18 @@ fn continue_mode() -> impl Strategy<Value = ContinueMode> {
     ]
 }
 
-fn triggers() -> impl Strategy<Value = Triggers> {
+fn hotkey() -> impl Strategy<Value = Hotkey> {
     let modifiers = any::<[bool; 4]>().prop_map(|[shift, control, alt, command]| Modifiers {
         shift,
         control,
         alt,
         command,
     });
-    let hotkey = (text(), modifiers).prop_map(|(key, modifiers)| Hotkey { key, modifiers });
-    (option::of(hotkey), option::of(text())).prop_map(|(hotkey, osc)| Triggers { hotkey, osc })
+    (text(), modifiers).prop_map(|(key, modifiers)| Hotkey { key, modifiers })
+}
+
+fn triggers() -> impl Strategy<Value = Triggers> {
+    (option::of(hotkey()), option::of(text())).prop_map(|(hotkey, osc)| Triggers { hotkey, osc })
 }
 
 /// A cue with id and number left for [`assign_ids`]; `number` is `Some` when it should get one.
@@ -493,12 +532,18 @@ fn any_cue() -> impl Strategy<Value = Cue> {
     })
 }
 
+/// Unique ids; numbers are unique too, except that some cues share number "7" so the
+/// duplicate-number repair is exercised.
 fn assign_ids(cues: &mut [Cue], next: &mut u128) {
     for cue in cues {
         *next += 1;
         cue.id = cue_id(*next);
         if cue.number.is_some() {
-            cue.number = Some(format!("{next}"));
+            cue.number = Some(if next.is_multiple_of(5) {
+                "7".into()
+            } else {
+                format!("n{next}")
+            });
         }
         if let CueKind::Group { children, .. } = &mut cue.kind {
             assign_ids(children, next);
@@ -506,23 +551,80 @@ fn assign_ids(cues: &mut [Cue], next: &mut u128) {
     }
 }
 
+fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
+    let hotkeys = vec(option::of(hotkey()), 6).prop_map(|keys| {
+        let [
+            go,
+            stop_all,
+            pause_all,
+            resume_all,
+            playhead_next,
+            playhead_previous,
+        ] = <[Option<Hotkey>; 6]>::try_from(keys).unwrap();
+        TransportHotkeys {
+            go,
+            stop_all,
+            pause_all,
+            resume_all,
+            playhead_next,
+            playhead_previous,
+        }
+    });
+    (
+        (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
+        option::of(text()),
+        level(),
+        hotkeys,
+        (num(0.0..=100.0), num(0.1..=10.0)),
+    )
+        .prop_map(
+            |(
+                (min_go_interval, panic_duration, autosave_interval),
+                osc_passcode,
+                master_db,
+                hotkeys,
+                (start, step),
+            )| {
+                WorkspaceSettings {
+                    min_go_interval,
+                    panic_duration,
+                    autosave_interval,
+                    osc_passcode,
+                    master_db,
+                    hotkeys,
+                    auto_number_start: start,
+                    auto_number_increment: step,
+                }
+            },
+        )
+}
+
+fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
+    let output = (
+        level(),
+        any::<bool>(),
+        num(0.0..=MAX_DELAY_MS),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(level_db, mute, delay_ms, polarity_inverted)| PatchOutput {
+                level_db,
+                mute,
+                delay_ms,
+                polarity_inverted,
+            },
+        );
+    (text(), level(), vec(output, 0..5))
+}
+
 fn any_workspace() -> impl Strategy<Value = Workspace> {
-    let settings = (time(), time(), time(), option::of(text())).prop_map(
-        |(min_go_interval, panic_duration, autosave_interval, osc_passcode)| WorkspaceSettings {
-            min_go_interval,
-            panic_duration,
-            autosave_interval,
-            osc_passcode,
-        },
-    );
     let list = (text(), vec(any_cue(), 0..5));
-    let patch = (text(), 0u32..65);
     let network_patch = (text(), text(), any::<u16>(), any::<bool>());
     (
         text(),
-        settings,
+        any_settings(),
         vec(list, 0..3),
-        vec(patch, 0..3),
+        vec(any_patch(), 0..3),
         vec(network_patch, 0..3),
     )
         .prop_map(|(name, settings, lists, patches, network_patches)| {
@@ -545,10 +647,11 @@ fn any_workspace() -> impl Strategy<Value = Workspace> {
             ws.patches = patches
                 .into_iter()
                 .enumerate()
-                .map(|(i, (name, channel_count))| OutputPatch {
+                .map(|(i, (name, master_db, outputs))| OutputPatch {
                     id: patch_id(i as u128),
                     name,
-                    channel_count,
+                    master_db,
+                    outputs,
                 })
                 .collect();
             ws.network_patches = network_patches
@@ -572,7 +675,11 @@ fn any_workspace() -> impl Strategy<Value = Workspace> {
 
 proptest! {
     #[test]
-    fn save_then_load_round_trips(ws in any_workspace()) {
+    fn repaired_workspaces_save_and_load_back_unchanged(mut ws in any_workspace()) {
+        repair(&mut ws);
+        let repaired = ws.clone();
+        repair(&mut ws);
+        prop_assert_eq!(&ws, &repaired, "repair is not idempotent");
         let text = save_show(&ws).unwrap();
         let loaded = load_show(&text).unwrap();
         prop_assert_eq!(&loaded.workspace, &ws);

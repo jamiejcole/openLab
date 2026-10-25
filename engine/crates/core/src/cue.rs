@@ -10,6 +10,10 @@ use crate::model::{CueId, NetworkPatchId, PatchId};
 pub const SILENCE_DB: f64 = -120.0;
 /// Highest level a fader may hold. Validation clamps anything above it.
 pub const MAX_DB: f64 = 12.0;
+/// Longest time any time field may hold (24 h). Validation clamps anything above it.
+pub const MAX_TIME: f64 = 24.0 * 60.0 * 60.0;
+/// Most channels a patch, cue or media file may have (AUD-03).
+pub const MAX_CHANNELS: u32 = 64;
 
 /// One cue. Fields common to every kind live here; the rest is in `kind`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,7 +80,7 @@ pub struct Hotkey {
     pub modifiers: Modifiers,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Modifiers {
     pub shift: bool,
     pub control: bool,
@@ -103,14 +107,23 @@ pub struct FadeSpec {
 }
 
 /// Path to a media file as stored in the show file: forward slashes, relative to the show
-/// file's folder or absolute (NFR-32). Backslashes are converted on construction and on load.
+/// file's folder or absolute (NFR-32). Windows absolute paths (`C:\…`, `\\server\…`) are
+/// converted to forward slashes on construction and on load. Other backslashes are kept: they are
+/// legal in macOS file names. Converting a native relative Windows path is the caller's job (M1.7).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct MediaRef(String);
 
 impl MediaRef {
     pub fn new(path: impl Into<String>) -> Self {
-        Self(path.into().replace('\\', "/"))
+        let path = path.into();
+        let bytes = path.as_bytes();
+        let drive = matches!(bytes, [letter, b':', b'\\', ..] if letter.is_ascii_alphabetic());
+        if drive || path.starts_with(r"\\") {
+            Self(path.replace('\\', "/"))
+        } else {
+            Self(path)
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -133,33 +146,52 @@ pub struct SliceMarker {
 }
 
 /// A routing-matrix crosspoint: file channel `input` → cue output `output`, both 0-based.
+/// Muting keeps `db`, so unmuting restores the level.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Crosspoint {
     pub input: u32,
     pub output: u32,
     pub db: f64,
+    pub mute: bool,
+}
+
+/// One cue output's level. Muting keeps `db`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CueOutput {
+    pub db: f64,
+    pub mute: bool,
 }
 
 /// An Audio cue's levels and routing (AUD-06, AUD-08).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CueLevels {
     pub master_db: f64,
-    /// One level per cue output; cue output `i` feeds output `i` of the cue's patch.
-    pub output_db: Vec<f64>,
+    /// Cue output `i` feeds output `i` of the cue's patch, so there are at most as many as the
+    /// patch has outputs.
+    pub outputs: Vec<CueOutput>,
     /// Sparse: crosspoints not listed are silent.
     pub crosspoints: Vec<Crosspoint>,
     /// Sets of cue output indices whose levels move together.
     pub gangs: Vec<Vec<u32>>,
 }
 
-/// The levels a Fade cue moves its target to. Only parameters that are set are faded.
+/// A crosspoint level a Fade cue moves to.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FadeCrosspoint {
+    pub input: u32,
+    pub output: u32,
+    pub db: f64,
+}
+
+/// The levels a Fade cue moves its target to. Only parameters that are set are faded; mutes are
+/// never changed by a fade.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FadeLevels {
     pub master_db: Option<f64>,
     /// Indexed by cue output; `None` leaves that output alone.
     pub output_db: Vec<Option<f64>>,
     /// Listed crosspoints fade to their `db`; unlisted ones are left alone.
-    pub crosspoints: Vec<Crosspoint>,
+    pub crosspoints: Vec<FadeCrosspoint>,
 }
 
 /// How a Group starts its children (CT-22).

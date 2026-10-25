@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::cue::Cue;
+use crate::cue::{Cue, Hotkey, Modifiers};
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
@@ -74,12 +74,28 @@ pub struct CueList {
     pub cues: Vec<Cue>,
 }
 
-/// A logical output. Mapping to device channels is per machine (WS-07), not stored here.
+/// A named set of logical outputs (AUD-07). Mapping to device channels is per machine (WS-07),
+/// not stored here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputPatch {
     pub id: PatchId,
     pub name: String,
-    pub channel_count: u32,
+    /// Patch master level (PB-11).
+    pub master_db: f64,
+    /// One entry per output; the patch's channel count is its length, 1 to [`MAX_CHANNELS`].
+    ///
+    /// [`MAX_CHANNELS`]: crate::MAX_CHANNELS
+    pub outputs: Vec<PatchOutput>,
+}
+
+/// One output of a patch. Muting keeps `level_db`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PatchOutput {
+    pub level_db: f64,
+    pub mute: bool,
+    /// Speaker-alignment delay, milliseconds.
+    pub delay_ms: f64,
+    pub polarity_inverted: bool,
 }
 
 /// A destination for Network cues.
@@ -102,12 +118,50 @@ pub enum NetworkProtocol {
 /// Settings that travel with the show file (WS-06). Times in seconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSettings {
-    /// Double-GO protection: GOs closer together than this are ignored (PB-02). 0 = off.
+    /// Double-GO protection: GOs closer together than this are ignored (PB-02). 0 to 10 s; 0 = off.
     pub min_go_interval: f64,
-    /// Panic fade-out time (PB-03).
+    /// Panic fade-out time (PB-03), 0 to 60 s.
     pub panic_duration: f64,
-    /// Autosave period while dirty. 0 = off.
+    /// Autosave period while dirty (NFR-05), 5 s to 1 h.
     pub autosave_interval: f64,
     /// Required by `/connect` before OSC control is accepted (NET-02). `None` = open.
     pub osc_passcode: Option<String>,
+    /// Global master level (PB-11).
+    pub master_db: f64,
+    pub hotkeys: TransportHotkeys,
+    /// Number given to the first auto-numbered cue (ED-08).
+    pub auto_number_start: f64,
+    /// Step between auto-numbered cues; greater than 0.
+    pub auto_number_increment: f64,
+}
+
+/// Remappable transport keys (TRG-01). `None` = no key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransportHotkeys {
+    pub go: Option<Hotkey>,
+    /// Stop All / Panic.
+    pub stop_all: Option<Hotkey>,
+    pub pause_all: Option<Hotkey>,
+    pub resume_all: Option<Hotkey>,
+    pub playhead_next: Option<Hotkey>,
+    pub playhead_previous: Option<Hotkey>,
+}
+
+impl Default for TransportHotkeys {
+    fn default() -> Self {
+        let key = |key: &str| {
+            Some(Hotkey {
+                key: key.into(),
+                modifiers: Modifiers::default(),
+            })
+        };
+        Self {
+            go: key("space"),
+            stop_all: key("escape"),
+            pause_all: key("["),
+            resume_all: key("]"),
+            playhead_next: key("down"),
+            playhead_previous: key("up"),
+        }
+    }
 }
