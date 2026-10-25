@@ -91,7 +91,10 @@ cue, and the cue shows as broken where it cannot run.
 | Two slice markers at the same time | Warning; the second is removed |
 | A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
 | A patch output delay outside 0–1000 ms | Warning; clamped |
-| More Audio cue outputs than its patch has; a crosspoint naming a cue output that does not exist or a file channel of 64 or more; a gang naming a missing cue output; Fade levels naming output or channel 64 or more | Warning; those entries are removed |
+| More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
+| More than 64 cue outputs; a crosspoint or gang naming channel or output 64 or more; Fade levels naming output or channel 64 or more | Warning; those entries are removed |
+| The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
+| A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue; every
@@ -212,9 +215,9 @@ Option on macOS).
 | `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
 | `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
 | `levels.master_db` | level | Cue master. |
-| `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most as many as the patch has outputs. Cue output `i` feeds output `i` of the patch. |
-| `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. |
-| `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. |
+| `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 64. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
+| `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. Each input/output pair appears at most once. |
+| `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. An output is in at most one gang. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |
 
 **`fade`** — moves a target's levels to new values.

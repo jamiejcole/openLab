@@ -166,8 +166,8 @@ pub struct CueOutput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CueLevels {
     pub master_db: f64,
-    /// Cue output `i` feeds output `i` of the cue's patch, so there are at most as many as the
-    /// patch has outputs.
+    /// Cue output `i` feeds output `i` of the cue's patch. At most [`MAX_CHANNELS`]; outputs
+    /// beyond the patch's are kept but silent.
     pub outputs: Vec<CueOutput>,
     /// Sparse: crosspoints not listed are silent.
     pub crosspoints: Vec<Crosspoint>,

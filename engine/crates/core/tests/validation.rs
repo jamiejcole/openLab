@@ -524,18 +524,26 @@ fn slices_without_end_time_only_need_to_be_after_start() {
     assert_eq!(audio_parts(&ws, 1).1, vec![slice(8e4, 1)]);
 }
 
-#[test]
-fn routing_indices_beyond_channel_counts_are_dropped() {
-    let xp = |input, output| Crosspoint {
+fn xp(input: u32, output: u32, db: f64) -> Crosspoint {
+    Crosspoint {
         input,
         output,
-        db: 0.0,
+        db,
         mute: false,
-    };
+    }
+}
+
+#[test]
+fn routing_beyond_64_channels_is_dropped() {
     let a = audio_with(|levels, _, _, _| {
-        levels.outputs = vec![out(0.0), out(-1.0), out(-2.0)]; // patch 1 has 2 outputs
-        levels.crosspoints = vec![xp(0, 0), xp(1, 2), xp(64, 0), xp(63, 1)];
-        levels.gangs = vec![vec![0, 1], vec![2, 5]];
+        levels.outputs = vec![out(0.0); 66];
+        levels.crosspoints = vec![
+            xp(0, 0, 0.0),
+            xp(64, 0, 0.0),
+            xp(0, 64, 0.0),
+            xp(63, 63, 0.0),
+        ];
+        levels.gangs = vec![vec![0, 1], vec![70, 64]];
     });
     let f = CueKind::Fade {
         target: Some(cue_id(1)),
@@ -553,11 +561,12 @@ fn routing_indices_beyond_channel_counts_are_dropped() {
         stop_target_when_done: false,
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
+    ws.patches = vec![patch(1, 64)];
     let dropped = |n, field, count| warning(n, IssueKind::IndexOutOfRange { field, count });
     assert_eq!(
         repair(&mut ws),
         vec![
-            dropped(1, "levels.outputs", 1),
+            dropped(1, "levels.outputs", 2),
             dropped(1, "levels.crosspoints", 2),
             dropped(1, "levels.gangs", 2),
             dropped(2, "levels.output_db", 2),
@@ -565,9 +574,105 @@ fn routing_indices_beyond_channel_counts_are_dropped() {
         ]
     );
     let levels = audio_parts(&ws, 1).0;
-    assert_eq!(levels.outputs, vec![out(0.0), out(-1.0)]);
-    assert_eq!(levels.crosspoints, vec![xp(0, 0), xp(63, 1)]);
+    assert_eq!(levels.outputs.len(), 64);
+    assert_eq!(levels.crosspoints, vec![xp(0, 0, 0.0), xp(63, 63, 0.0)]);
     assert_eq!(levels.gangs, vec![vec![0, 1]]);
+}
+
+#[test]
+fn routing_survives_a_patch_shrunk_and_restored() {
+    // Regression (review 2, M1): shrinking a patch used to delete the routing of its cues.
+    let routed = audio_with(|levels, _, _, _| {
+        levels.outputs = vec![out(0.0), out(-1.0), out(-2.0), out(-3.0)];
+        levels.crosspoints = vec![xp(0, 0, 0.0), xp(1, 3, -6.0)];
+        levels.gangs = vec![vec![2, 3]];
+    });
+    let original = audio_parts(&workspace(vec![cue(1, routed.clone())]), 1).0;
+    let mut ws = workspace(vec![cue(1, routed)]);
+    ws.patches = vec![patch(1, 1)];
+    let shrunk = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(
+        shrunk.warnings,
+        vec![warning(1, IssueKind::UnpatchedOutputs { count: 3 })]
+    );
+    let mut ws = shrunk.workspace;
+    ws.patches = vec![patch(1, 4)];
+    let restored = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(restored.warnings, vec![]);
+    assert_eq!(audio_parts(&restored.workspace, 1).0, original);
+}
+
+#[test]
+fn repeated_crosspoints_and_gang_members_are_removed() {
+    let a = audio_with(|levels, _, _, _| {
+        levels.crosspoints = vec![xp(0, 0, 0.0), xp(0, 0, -6.0), xp(1, 1, 0.0)];
+        levels.gangs = vec![vec![0, 1, 0], vec![1]];
+    });
+    let f = CueKind::Fade {
+        target: Some(cue_id(1)),
+        duration: 1.0,
+        curve: FadeCurve::Linear,
+        levels: FadeLevels {
+            master_db: None,
+            output_db: vec![],
+            crosspoints: vec![
+                FadeCrosspoint {
+                    input: 0,
+                    output: 1,
+                    db: -3.0,
+                },
+                FadeCrosspoint {
+                    input: 0,
+                    output: 1,
+                    db: -9.0,
+                },
+            ],
+        },
+        stop_target_when_done: false,
+    };
+    let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
+    let repeated = |n, field, count| warning(n, IssueKind::DuplicateEntries { field, count });
+    assert_eq!(
+        repair(&mut ws),
+        vec![
+            repeated(1, "levels.crosspoints", 1),
+            repeated(1, "levels.gangs", 2),
+            repeated(2, "levels.crosspoints", 1),
+        ]
+    );
+    let levels = audio_parts(&ws, 1).0;
+    // The first entry wins.
+    assert_eq!(levels.crosspoints, vec![xp(0, 0, 0.0), xp(1, 1, 0.0)]);
+    assert_eq!(levels.gangs, vec![vec![0, 1]]);
+    assert_eq!(repair(&mut ws), vec![], "repair is idempotent");
+}
+
+#[test]
+fn invalid_hotkey_names_warn() {
+    let key = |k: &str| {
+        Some(Hotkey {
+            key: k.into(),
+            modifiers: Modifiers::default(),
+        })
+    };
+    let mut memo = cue(1, CueKind::Memo);
+    memo.triggers.hotkey = key("Space");
+    let mut ok = cue(2, CueKind::Memo);
+    ok.triggers.hotkey = key("f5");
+    let mut ws = workspace(vec![memo, ok]);
+    ws.settings.hotkeys.go = key("");
+    ws.settings.hotkeys.stop_all = key("page down");
+    let bad = |cue: Option<u128>, field| {
+        issue(Severity::Warning, cue, IssueKind::InvalidHotkey { field })
+    };
+    assert_eq!(
+        validate(&ws),
+        vec![
+            bad(None, "settings.hotkeys.go"),
+            bad(None, "settings.hotkeys.stop_all"),
+            bad(Some(1), "triggers.hotkey"),
+        ]
+    );
 }
 
 #[test]
@@ -622,6 +727,26 @@ fn start_cycles_of_any_length_warn() {
         validate(&ws),
         vec![cycle(1), cycle(2), cycle(3), cycle(4), cycle(6)]
     );
+}
+
+#[test]
+fn long_start_chains_validate_in_linear_time() {
+    // Regression (review 2, H1): one search per cue made a 40k-cue chain take a minute.
+    // 200k cues is about the most a 64 MiB file can hold.
+    const N: u128 = 200_000;
+    let start = |target| CueKind::Start {
+        target: Some(cue_id(target)),
+    };
+    let mut cues: Vec<Cue> = (1..N).map(|n| cue(n, start(n + 1))).collect();
+    cues.push(cue(N, start(1))); // close the loop: every cue is in one cycle
+    let ws = workspace(cues);
+    let began = std::time::Instant::now();
+    let issues = validate(&ws);
+    let elapsed = began.elapsed();
+    assert_eq!(issues.len(), N as usize);
+    assert!(issues.iter().all(|i| i.kind == IssueKind::TriggerCycle));
+    // Linear: well under a second even in debug. The quadratic version needed hours.
+    assert!(elapsed.as_secs() < 10, "validate took {elapsed:?}");
 }
 
 #[test]

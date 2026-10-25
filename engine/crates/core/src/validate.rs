@@ -7,11 +7,12 @@
 //! After [`repair`], every number in the workspace is finite and in range, so the workspace
 //! always saves and loads back unchanged.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
-use crate::cue::{Cue, FadeLevels};
+use crate::cue::{Cue, FadeLevels, Hotkey};
 use crate::cue::{
     CueKind, CueLevels, MAX_CHANNELS, MAX_DB, MAX_TIME, OscArg, SILENCE_DB, SliceMarker,
 };
@@ -89,6 +90,13 @@ pub enum IssueKind {
     SlicesUnsorted,
     /// `count` entries of `field` referred to channels or outputs that do not exist; removed.
     IndexOutOfRange { field: &'static str, count: usize },
+    /// The Audio cue has `count` more outputs than its patch; they are kept but silent.
+    UnpatchedOutputs { count: usize },
+    /// `count` repeated entries of `field` were removed (the first is kept).
+    DuplicateEntries { field: &'static str, count: usize },
+    /// A hotkey's key name is empty or has upper-case letters, whitespace or control
+    /// characters, so it would never fire. Left as is.
+    InvalidHotkey { field: &'static str },
     /// A patch had no outputs (one was added) or more than [`MAX_CHANNELS`] (extras removed).
     PatchChannelCount { patch: PatchId },
     /// A patch level or delay was out of range; it was clamped.
@@ -140,6 +148,13 @@ impl fmt::Display for ValidationIssue {
                     "{count} {field} entries refer to missing channels; removed"
                 )
             }
+            IssueKind::UnpatchedOutputs { count } => {
+                write!(f, "{count} outputs beyond the patch's outputs are silent")
+            }
+            IssueKind::DuplicateEntries { field, count } => {
+                write!(f, "{count} repeated {field} entries removed")
+            }
+            IssueKind::InvalidHotkey { field } => write!(f, "invalid key name in {field}"),
             IssueKind::PatchChannelCount { patch } => write!(
                 f,
                 "patch {} must have 1 to {MAX_CHANNELS} outputs; corrected",
@@ -198,6 +213,12 @@ fn clamp(value: &mut f64, lo: f64, hi: f64) -> bool {
     let changed = fixed != *value;
     *value = fixed;
     changed
+}
+
+/// Removes later items whose key was already seen; returns how many were removed.
+fn dedupe<T, K: Eq + Hash>(items: &mut Vec<T>, key: impl Fn(&T) -> K) -> usize {
+    let mut seen = HashSet::new();
+    retain_counted(items, |item| seen.insert(key(item)))
 }
 
 /// Removes items failing `keep`; returns how many were removed.
@@ -266,6 +287,25 @@ impl Checker {
         }
     }
 
+    fn duplicates(&mut self, cue_id: Option<CueId>, field: &'static str, count: usize) {
+        if count > 0 {
+            self.warn(cue_id, IssueKind::DuplicateEntries { field, count });
+        }
+    }
+
+    fn hotkey(&mut self, cue_id: Option<CueId>, field: &'static str, hotkey: Option<&Hotkey>) {
+        if let Some(hotkey) = hotkey {
+            let key = &hotkey.key;
+            if key.is_empty()
+                || key
+                    .chars()
+                    .any(|c| c.is_uppercase() || c.is_whitespace() || c.is_control())
+            {
+                self.warn(cue_id, IssueKind::InvalidHotkey { field });
+            }
+        }
+    }
+
     fn settings(&mut self, s: &mut WorkspaceSettings) {
         self.time_in(
             None,
@@ -289,6 +329,20 @@ impl Checker {
             3600.0,
         );
         self.level(None, "settings.master_db", &mut s.master_db);
+        let keys = &s.hotkeys;
+        for (field, key) in [
+            ("settings.hotkeys.go", &keys.go),
+            ("settings.hotkeys.stop_all", &keys.stop_all),
+            ("settings.hotkeys.pause_all", &keys.pause_all),
+            ("settings.hotkeys.resume_all", &keys.resume_all),
+            ("settings.hotkeys.playhead_next", &keys.playhead_next),
+            (
+                "settings.hotkeys.playhead_previous",
+                &keys.playhead_previous,
+            ),
+        ] {
+            self.hotkey(None, field, key.as_ref());
+        }
         if clamp(&mut s.auto_number_start, 0.0, MAX_AUTO_NUMBER) {
             self.warn(
                 None,
@@ -365,6 +419,7 @@ impl Checker {
                     cue.number = Some(number);
                 }
             }
+            self.hotkey(id, "triggers.hotkey", cue.triggers.hotkey.as_ref());
             self.time(id, "pre_wait", &mut cue.pre_wait);
             self.time(id, "post_wait", &mut cue.post_wait);
             self.kind_values(id, &mut cue.kind);
@@ -486,27 +541,38 @@ impl Checker {
     }
 
     fn cue_levels(&mut self, id: Option<CueId>, levels: &mut CueLevels, patch_outputs: usize) {
+        let max = MAX_CHANNELS as usize;
         self.level(id, "levels.master_db", &mut levels.master_db);
-        let extra = levels.outputs.len().saturating_sub(patch_outputs);
-        levels.outputs.truncate(patch_outputs);
+        let extra = levels.outputs.len().saturating_sub(max);
+        levels.outputs.truncate(max);
         self.count(id, "levels.outputs", extra);
+        // Outputs the patch lacks are kept (silent at runtime), so shrinking a patch by mistake
+        // and restoring it later loses no routing.
+        let unpatched = levels.outputs.len().saturating_sub(patch_outputs);
+        if unpatched > 0 {
+            self.warn(id, IssueKind::UnpatchedOutputs { count: unpatched });
+        }
         for output in &mut levels.outputs {
             self.level(id, "levels.outputs.db", &mut output.db);
         }
-        let outputs = levels.outputs.len();
         let dropped = retain_counted(&mut levels.crosspoints, |c| {
-            c.input < MAX_CHANNELS && (c.output as usize) < outputs
+            c.input < MAX_CHANNELS && c.output < MAX_CHANNELS
         });
         self.count(id, "levels.crosspoints", dropped);
+        let duplicates = dedupe(&mut levels.crosspoints, |c| (c.input, c.output));
+        self.duplicates(id, "levels.crosspoints", duplicates);
         for crosspoint in &mut levels.crosspoints {
             self.level(id, "levels.crosspoints.db", &mut crosspoint.db);
         }
-        let mut dropped = 0;
+        let (mut dropped, mut seen, mut duplicates) = (0, HashSet::new(), 0);
         for gang in &mut levels.gangs {
-            dropped += retain_counted(gang, |&i| (i as usize) < outputs);
+            dropped += retain_counted(gang, |&i| i < MAX_CHANNELS);
+            // An output belongs to at most one gang; the first wins.
+            duplicates += retain_counted(gang, |&i| seen.insert(i));
         }
         levels.gangs.retain(|gang| !gang.is_empty());
         self.count(id, "levels.gangs", dropped);
+        self.duplicates(id, "levels.gangs", duplicates);
     }
 
     fn fade_levels(&mut self, id: Option<CueId>, levels: &mut FadeLevels) {
@@ -524,6 +590,8 @@ impl Checker {
             c.input < MAX_CHANNELS && c.output < MAX_CHANNELS
         });
         self.count(id, "levels.crosspoints", dropped);
+        let duplicates = dedupe(&mut levels.crosspoints, |c| (c.input, c.output));
+        self.duplicates(id, "levels.crosspoints", duplicates);
         for crosspoint in &mut levels.crosspoints {
             self.level(id, "levels.crosspoints.db", &mut crosspoint.db);
         }
@@ -536,6 +604,7 @@ impl Checker {
                 by_id.entry(cue.id).or_insert(cue);
             });
         }
+        let cycles = TriggerGraph::new(workspace);
         let patches: HashSet<PatchId> = workspace.patches.iter().map(|p| p.id).collect();
         let network_patches: HashSet<NetworkPatchId> =
             workspace.network_patches.iter().map(|p| p.id).collect();
@@ -555,7 +624,8 @@ impl Checker {
                 }
                 if let Some(target) = starts(&cue.kind)
                     && target != cue.id
-                    && reaches(&by_id, target, cue.id)
+                    && cycles.component(cue.id).is_some()
+                    && cycles.component(cue.id) == cycles.component(target)
                 {
                     self.warn(id, IssueKind::TriggerCycle);
                 }
@@ -592,25 +662,105 @@ fn starts(kind: &CueKind) -> Option<CueId> {
     }
 }
 
-/// Whether starting `from` can lead to `to` starting: through Start/GoTo-and-GO targets, and
-/// through groups to all their children (whatever the mode, to stay on the safe side).
-// ponytail: one search per triggering cue, O(n·(n+e)); fine for thousands of cues, use SCCs if not.
-fn reaches(by_id: &HashMap<CueId, &Cue>, from: CueId, to: CueId) -> bool {
-    let mut stack = vec![from];
-    let mut seen = HashSet::new();
-    while let Some(id) = stack.pop() {
-        if id == to {
-            return true;
+/// What starts what: Start/GoTo-and-GO cues start their target, and a group may start any of
+/// its children (whatever the mode, to stay on the safe side). A triggering cue is in a cycle
+/// exactly when it shares a strongly connected component with its target.
+struct TriggerGraph {
+    component: HashMap<CueId, usize>,
+}
+
+impl TriggerGraph {
+    fn new(workspace: &Workspace) -> Self {
+        let mut cues: Vec<&Cue> = Vec::new();
+        let mut node: HashMap<CueId, usize> = HashMap::new();
+        for list in &workspace.cue_lists {
+            visit(&list.cues, &mut |cue| {
+                if let Entry::Vacant(entry) = node.entry(cue.id) {
+                    entry.insert(cues.len());
+                    cues.push(cue);
+                }
+            });
         }
-        if !seen.insert(id) {
+        let successors: Vec<Vec<usize>> = cues
+            .iter()
+            .map(|cue| {
+                let children = cue.children().iter().map(|c| c.id);
+                children
+                    .chain(starts(&cue.kind))
+                    .filter_map(|id| node.get(&id).copied())
+                    .collect()
+            })
+            .collect();
+        let components = strongly_connected(&successors).unwrap_or_default();
+        let component = node
+            .into_iter()
+            .filter_map(|(id, n)| Some((id, *components.get(n)?)))
+            .collect();
+        Self { component }
+    }
+
+    fn component(&self, id: CueId) -> Option<usize> {
+        self.component.get(&id).copied()
+    }
+}
+
+/// Tarjan's algorithm, iterative so a long chain cannot overflow the stack. O(nodes + edges).
+/// Returns each node's component number; `None` only if `successors` names a node that does not
+/// exist, which the graph built above never does.
+fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
+    let n = successors.len();
+    let mut index: Vec<Option<usize>> = vec![None; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut component = vec![0; n];
+    let mut stack = Vec::new();
+    // (node, next edge to follow); edge 0 means the node is being entered.
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    let (mut next_index, mut next_component) = (0, 0);
+    for root in 0..n {
+        if index.get(root)?.is_some() {
             continue;
         }
-        if let Some(cue) = by_id.get(&id) {
-            stack.extend(cue.children().iter().map(|child| child.id));
-            stack.extend(starts(&cue.kind));
+        work.push((root, 0));
+        while let Some((v, edge)) = work.pop() {
+            if edge == 0 {
+                *index.get_mut(v)? = Some(next_index);
+                *low.get_mut(v)? = next_index;
+                next_index += 1;
+                stack.push(v);
+                *on_stack.get_mut(v)? = true;
+            }
+            if let Some(&w) = successors.get(v)?.get(edge) {
+                work.push((v, edge + 1));
+                match *index.get(w)? {
+                    None => work.push((w, 0)),
+                    Some(w_index) if *on_stack.get(w)? => {
+                        let v_low = low.get_mut(v)?;
+                        *v_low = (*v_low).min(w_index);
+                    }
+                    Some(_) => {}
+                }
+                continue;
+            }
+            let v_low = *low.get(v)?;
+            if Some(v_low) == *index.get(v)? {
+                loop {
+                    let w = stack.pop()?;
+                    *on_stack.get_mut(w)? = false;
+                    *component.get_mut(w)? = next_component;
+                    if w == v {
+                        break;
+                    }
+                }
+                next_component += 1;
+            }
+            if let Some(&(parent, _)) = work.last() {
+                let parent_low = low.get_mut(parent)?;
+                *parent_low = (*parent_low).min(v_low);
+            }
         }
     }
-    false
+    Some(component)
 }
 
 /// Fades act on audio levels (a Group fades its children); Devamp needs slices. Other control
