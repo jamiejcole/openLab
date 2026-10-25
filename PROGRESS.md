@@ -24,7 +24,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [ ] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
 - [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32]
 - [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
-- [ ] M1.9 Fuzz target: show-file loader [QA-04]
+- [x] M1.9 Fuzz target: show-file loader [QA-04]
 - [ ] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
 - [ ] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
 
