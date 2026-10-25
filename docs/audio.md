@@ -127,6 +127,7 @@ A voice **ends** with `Event::VoiceFinished { at, reason }`, where `at` is the f
   - `Truncated`: the file has `frames` fewer frames than its header declares and plays to its real end, `at` (the probed length). For lossy formats the missing frames may lie anywhere (an MP3 frame the reader skipped).
   - `Unreadable`: the container keeps failing (16 errors in a row) or its timestamps jump by more than a minute: the file plays to `at`.
   - Only a file with nothing playable is an error (`Unsupported`, `Corrupt`, `Io`, `NotFound`).
+  - Headers symphonia 0.6.1 would overflow on are rejected as `Corrupt` before it parses them: WAV/AIFF channel count and sample size, and MP4 `stts` tables whose sample counts or durations overflow.
   - **Seeking a damaged file** (`Probed::seeking`, pass it in `StreamRequest`). After damage, symphonia's readers can place frames differently after a seek than when reading through, so a damaged file's seeks are checked against the probe's own decode:
     - The probe's full decode records a **seek index**: a hash of the 256 timeline frames at every 8192nd frame (`INDEX_SPACING`), 8 bytes per checkpoint.
     - `Seeking::Indexed`: a seek goes to the nearest checkpoint before its target, checks that the 256 frames there decode exactly as the probe decoded them, and decodes forward at most 8192 frames. If that checkpoint does not match, it tries the two before it, then decodes from the start. The probe verifies the checkpoint after each piece of damage and the last one before choosing this.
