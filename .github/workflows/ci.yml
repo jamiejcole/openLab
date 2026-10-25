@@ -39,6 +39,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
+      # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
+      # Release-only (a debug build is far slower), gated on the slowest runner.
+      # Report-only until the Intel runner has margin over 10x (PROGRESS M3.10/M3.19): a
+      # shared runner at ~10.4x would fail main on noise. Read the figure in the step log.
+      - name: CPU budget gate
+        if: matrix.os == 'macos-26-intel'
+        continue-on-error: true
+        run: cargo test --release --locked -p openlab-audio --test cpu_budget -- --ignored --nocapture
 
   cargo-deny:
     runs-on: ubuntu-24.04

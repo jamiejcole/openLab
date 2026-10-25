@@ -8,7 +8,8 @@ mod common;
 use common::*;
 use openlab_audio::{
     CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MAX_GAIN, MixerConfig,
-    OutputSettings, RejectReason, SILENCE_DB, VoiceId, VoiceStart, db_to_linear, ramp_value,
+    OutputSettings, RAMP_TOLERANCE, RejectReason, SILENCE_DB, VoiceId, VoiceStart, db_to_linear,
+    ramp_value,
 };
 use proptest::prelude::*;
 
@@ -241,6 +242,63 @@ fn integrated_fade_in_starts_at_exact_zero() {
             }
             assert!(out[301] > 0.0);
             assert!(out[400..].iter().all(|s| *s == 1.0));
+        }
+    }
+}
+
+/// The mixer evaluates curves by recurrence between exact knots (docs/audio.md): long ramps,
+/// fade-ins and fade-outs stay within `RAMP_TOLERANCE` of `ramp_value`, land exactly, and do
+/// not depend on the block size.
+#[test]
+fn long_curved_ramps_and_fades_are_within_tolerance_and_block_size_independent() {
+    const FADE: u64 = 3001;
+    for curve in CURVES {
+        let mut first: Option<Vec<f32>> = None;
+        for &blocks in PATTERNS {
+            let (mut ctl, mut r) = setup(config(1));
+            let mut v = voice(&ctl, 1, mono_dc(20_000), 1);
+            v.gain = 4.0;
+            v.fade_in = Fade::new(FADE, curve);
+            v.fade_out = Fade::new(FADE, curve);
+            v.play_frames = Some(15_000);
+            send_start(&mut ctl, 0, v);
+            ctl.send(
+                5000,
+                ramp(1, GainTarget::Master, 0.25, Fade::new(FADE, curve)),
+            );
+            let out = r.render(16_000, blocks);
+            let near = |k: usize, want: f32, scale: f32| {
+                let err = (f64::from(out[k]) - f64::from(want)).abs();
+                assert!(
+                    err <= RAMP_TOLERANCE * f64::from(scale),
+                    "{curve:?} {blocks:?} frame {k}: {} vs {want}",
+                    out[k]
+                );
+            };
+            for k in 0..=FADE as usize {
+                near(k, 4.0 * ramp_value(0.0, 1.0, k as u64, FADE, curve), 4.0);
+                near(5000 + k, ramp_value(4.0, 0.25, k as u64, FADE, curve), 4.0);
+                near(
+                    11_998 + k,
+                    0.25 * ramp_value(1.0, 0.0, k as u64, FADE, curve),
+                    0.25,
+                );
+            }
+            assert_eq!(out[0], 0.0);
+            assert_eq!(
+                out[5000 + FADE as usize],
+                0.25,
+                "{curve:?} lands on the target"
+            );
+            assert_eq!(out[14_999], 0.0, "{curve:?} last frame is silent");
+            match &first {
+                None => first = Some(out),
+                Some(f) => assert!(
+                    f.iter().zip(&out).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{curve:?} {blocks:?} differs from {:?}",
+                    PATTERNS[0]
+                ),
+            }
         }
     }
 }
