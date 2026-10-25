@@ -9,11 +9,11 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 ---
 
 ## M0 — Foundations
-- [ ] M0.1 Cargo workspace with `core`, `audio`, `engine` crates; lints per ARCHITECTURE §10; SPDX headers [NFR-41, NFR-42]
-- [ ] M0.2 `mac/` XcodeGen project (AppKit app, unit + UI test targets, macOS 12.0 target), engine build phase producing a universal binary [NFR-30]
-- [ ] M0.3 Makefile (`lint`, `test`, `test-rust`, `mac`, `dmg`) [NFR-43]
-- [ ] M0.4 CI: Rust fmt/clippy/test on macOS arm64, macOS Intel, Windows; `cargo deny`; mac build + tests; pinned Xcode [QA-07, NFR-31, NFR-42]
-- [ ] M0.5 LICENSE (GPLv3), `.gitignore`, README with build instructions [NFR-42, NFR-43]
+- [x] M0.1 Cargo workspace with `core`, `audio`, `engine` crates; lints per ARCHITECTURE §10; SPDX headers [NFR-41, NFR-42]
+- [x] M0.2 `mac/` XcodeGen project (AppKit app, unit + UI test targets, macOS 12.0 target), engine build phase producing a universal binary [NFR-30]
+- [x] M0.3 Makefile (`lint`, `test`, `test-rust`, `mac`, `dmg`) [NFR-43]
+- [ ] M0.4 CI: Rust fmt/clippy/test on macOS arm64, macOS Intel, Windows; `cargo deny`; mac build + tests; pinned Xcode [QA-07, NFR-31, NFR-42] — workflow written; tick after its first green run on GitHub
+- [x] M0.5 LICENSE (GPLv3), `.gitignore`, README with build instructions [NFR-42, NFR-43]
 
 ## M1 — Core model & show file (`openlab-core`, persistence in `engine`)
 - [ ] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
