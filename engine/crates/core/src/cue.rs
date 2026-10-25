@@ -109,7 +109,7 @@ pub struct FadeSpec {
 /// Path to a media file as stored in the show file: forward slashes, relative to the show
 /// file's folder or absolute (NFR-32). Windows absolute paths (`C:\…`, `\\server\…`) are
 /// converted to forward slashes on construction and on load. Other backslashes are kept: they are
-/// legal in macOS file names. Converting a native relative Windows path is the caller's job (M1.7).
+/// legal in macOS file names. Native paths from the OS go through `portable_ref`, which also converts relative Windows paths.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct MediaRef(String);

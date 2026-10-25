@@ -6,18 +6,28 @@
 
 #![forbid(unsafe_code)]
 
+mod backup;
 mod command;
 mod cue;
 mod history;
+mod media_path;
 mod model;
+mod recovery;
+mod relink;
+mod settings;
 mod show_file;
 mod tree;
 mod validate;
 
+pub use backup::*;
 pub use command::*;
 pub use cue::*;
 pub use history::*;
+pub use media_path::*;
 pub use model::*;
+pub use recovery::*;
+pub use relink::*;
+pub use settings::*;
 pub use show_file::*;
 pub use validate::*;
 
