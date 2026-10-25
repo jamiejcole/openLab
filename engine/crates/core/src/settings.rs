@@ -116,39 +116,35 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
         warnings.push(format!(
             "settings for more than {MAX_WORKSPACES} workspaces; the extra ones were dropped"
         ));
-        let keep: Vec<String> = settings
-            .workspaces
-            .keys()
-            .take(MAX_WORKSPACES)
-            .cloned()
-            .collect();
-        settings.workspaces.retain(|key, _| keep.contains(key));
-    }
-    let mut dropped_workspaces = Vec::new();
-    for (workspace, machine) in &mut settings.workspaces {
-        if Uuid::parse_str(workspace).is_err() {
-            dropped_workspaces.push(workspace.clone());
-            continue;
+        let first_extra = settings.workspaces.keys().nth(MAX_WORKSPACES).cloned();
+        if let Some(key) = first_extra {
+            settings.workspaces.split_off(&key);
         }
-        let mut bad_patches = Vec::new();
-        for (patch, mapping) in &machine.patches {
-            if let Some(reason) = mapping_problem(patch, mapping) {
+    }
+    // Keys are rebuilt in the one spelling lookups use (lower-case, hyphenated).
+    let mut workspaces = BTreeMap::new();
+    for (workspace, machine) in std::mem::take(&mut settings.workspaces) {
+        let Ok(workspace_id) = Uuid::parse_str(&workspace) else {
+            warnings.push(format!(
+                "settings for \"{workspace}\" dropped: not a workspace id"
+            ));
+            continue;
+        };
+        let mut patches = BTreeMap::new();
+        for (patch, mapping) in machine.patches {
+            if let Some(reason) = mapping_problem(&patch, &mapping) {
                 warnings.push(format!(
                     "workspace {workspace}, patch {patch}: {reason}; mapping dropped"
                 ));
-                bad_patches.push(patch.clone());
+            } else if let Ok(patch_id) = Uuid::parse_str(&patch) {
+                patches.entry(patch_id.to_string()).or_insert(mapping);
             }
         }
-        for patch in bad_patches {
-            machine.patches.remove(&patch);
-        }
+        workspaces
+            .entry(workspace_id.to_string())
+            .or_insert(WorkspaceMachineSettings { patches });
     }
-    for workspace in dropped_workspaces {
-        warnings.push(format!(
-            "settings for \"{workspace}\" dropped: not a workspace id"
-        ));
-        settings.workspaces.remove(&workspace);
-    }
+    settings.workspaces = workspaces;
 }
 
 fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
@@ -412,6 +408,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![&good_patch]
         );
+    }
+
+    #[test]
+    fn upper_case_ids_are_normalised_so_lookups_match() {
+        let (w, p) = (ws(0xabc), pid(0xdef));
+        let text = format!(
+            r#"{{"settings_version": 1, "workspaces": {{"{}": {{"patches": {{"{}":
+                {{"device": "A", "channels": [1]}}}}}}}}}}"#,
+            w.to_string().to_uppercase(),
+            p.to_string().to_uppercase()
+        );
+        let loaded = load_settings(&text);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(
+            loaded.settings.patch_mapping(w, p),
+            Some(&mapping("A", &[1]))
+        );
+    }
+
+    #[test]
+    fn too_many_workspaces_are_truncated_quickly() {
+        let mut settings = MachineSettings::default();
+        for n in 0..(MAX_WORKSPACES as u128 + 50) {
+            settings
+                .workspaces
+                .insert(ws(n).to_string(), WorkspaceMachineSettings::default());
+        }
+        let loaded = load_settings(&save_settings(&settings).unwrap());
+        assert_eq!(loaded.settings.workspaces.len(), MAX_WORKSPACES);
+        assert_eq!(loaded.warnings.len(), 1);
     }
 
     #[test]

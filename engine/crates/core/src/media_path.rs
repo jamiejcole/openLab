@@ -119,6 +119,18 @@ pub fn paths_equal(a: &str, b: &str) -> bool {
     comparison_key(a) == comparison_key(b)
 }
 
+/// A short, stable name for a path: 16 hex digits of FNV-1a over its [`comparison_key`], so the
+/// same file spelled differently (case, NFD, `..`) gets the same name on every run and platform.
+/// Used to keep per-copy backups and recovery files apart.
+pub fn path_hash(portable: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in comparison_key(portable).bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// The last component of a portable path, or `""`.
 pub fn file_name(portable: &str) -> &str {
     portable
@@ -278,6 +290,19 @@ mod tests {
         );
         // Hangul and Vietnamese compose too.
         assert!(paths_equal("\u{1112}\u{1161}\u{11ab}.wav", "\u{d55c}.wav"));
+    }
+
+    #[test]
+    fn path_hash_is_stable_and_spelling_independent() {
+        assert_eq!(
+            path_hash("/Show/a.openlab"),
+            path_hash("/show/./x/../A.OPENLAB")
+        );
+        assert_eq!(path_hash("/Caf\u{e9}"), path_hash("/Cafe\u{301}"));
+        assert_ne!(path_hash("/Show/a.openlab"), path_hash("/Show/b.openlab"));
+        assert_eq!(path_hash("/Show/a.openlab").len(), 16);
+        // Pinned so file names stay valid across releases.
+        assert_eq!(path_hash(""), "cbf29ce484222325");
     }
 
     #[test]
