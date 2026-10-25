@@ -6,6 +6,21 @@
 /// Levels at or below this are silence (ARCHITECTURE §4).
 pub const SILENCE_DB: f64 = -120.0;
 
+/// Safety ceiling for every gain the mixer applies (the show model itself stops at +12 dB).
+pub const MAX_GAIN_DB: f64 = 24.0;
+
+/// [`MAX_GAIN_DB`] as linear amplitude.
+pub const MAX_GAIN: f32 = 15.848_932;
+
+/// Makes a gain safe to apply: NaN is silence, everything else is clamped to ±[`MAX_GAIN`].
+pub fn sanitize_gain(g: f32) -> f32 {
+    if g.is_nan() {
+        0.0
+    } else {
+        g.clamp(-MAX_GAIN, MAX_GAIN)
+    }
+}
+
 /// Converts dB to linear amplitude. At or below [`SILENCE_DB`] (and NaN) is exactly 0.0.
 pub fn db_to_linear(db: f64) -> f32 {
     if db.is_nan() || db <= SILENCE_DB {
@@ -46,9 +61,9 @@ pub enum Curve {
 }
 
 impl Curve {
-    /// Rising shape `f(t)` for `t` in `[0, 1]` (clamped).
+    /// Rising shape `f(t)` for `t` in `[0, 1]` (clamped; NaN counts as 0).
     pub fn shape(self, t: f64) -> f64 {
-        let t = t.clamp(0.0, 1.0);
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
         let v = match self {
             Curve::Linear => t,
             Curve::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),
@@ -218,6 +233,24 @@ mod tests {
         assert!((linear_to_db(0.5) + 6.0206).abs() < 1e-4);
         for db in [-100.0, -40.0, -3.0, 0.0, 6.0] {
             assert!((linear_to_db(db_to_linear(db)) - db).abs() < 1e-4, "{db}");
+        }
+    }
+
+    #[test]
+    fn gain_ceiling_and_sanitize() {
+        assert!((db_to_linear(MAX_GAIN_DB) - MAX_GAIN).abs() < 1e-5);
+        assert_eq!(sanitize_gain(f32::NAN), 0.0);
+        assert_eq!(sanitize_gain(1e10), MAX_GAIN);
+        assert_eq!(sanitize_gain(f32::INFINITY), MAX_GAIN);
+        assert_eq!(sanitize_gain(-1e10), -MAX_GAIN);
+        assert_eq!(sanitize_gain(0.5), 0.5);
+        assert_eq!(sanitize_gain(0.0), 0.0);
+    }
+
+    #[test]
+    fn curve_shape_of_nan_is_zero() {
+        for c in ALL {
+            assert_eq!(c.shape(f64::NAN), 0.0, "{c:?}");
         }
     }
 
