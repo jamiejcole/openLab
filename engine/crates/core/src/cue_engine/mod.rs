@@ -109,6 +109,14 @@ impl CueEngine {
             .min()
     }
 
+    /// Whether a `Tick` at `now` has a deadline to carry out: the control loop's wake rule. A
+    /// deadline is due once it falls inside the call's window (`..now + lookahead`, end excluded,
+    /// and always `now` itself, so with lookahead 0 a deadline at `now` is due at `now`).
+    pub fn is_due(&self, now: SampleTime) -> bool {
+        self.next_deadline()
+            .is_some_and(|d| d <= self.config.horizon(now))
+    }
+
     pub fn state(&self, cue: CueId) -> CueState {
         self.slots.get(&cue).map_or(CueState::Idle, Slot::state)
     }

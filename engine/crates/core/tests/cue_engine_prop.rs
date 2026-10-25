@@ -219,6 +219,7 @@ proptest! {
             }
             // Everything due has been done.
             prop_assert!(engine.next_deadline().is_none_or(|d| d > horizon));
+            prop_assert!(!engine.is_due(now));
         }
     }
 }

@@ -1759,3 +1759,22 @@ fn resume_ids(actions: &[Action]) -> Vec<(RunId, RunId)> {
         })
         .collect()
 }
+
+#[test]
+fn wake_rule_ticks_a_deadline_at_now_on_time() {
+    // Review L6: with lookahead 0 a deadline at `now` must be due at `now`, not a wake later.
+    let mut rig = Rig::new(vec![timed(sound(1), 1.6, 0.0, DNC)]);
+    rig.start(0, 1);
+    assert!(!rig.engine.is_due(1599));
+    assert!(rig.engine.is_due(1600));
+    let tick = rig.tick(1600);
+    assert_eq!(voice_starts(&tick), vec![(id(1), 1600)]);
+    assert!(warnings(&tick).is_empty());
+    assert!(!rig.engine.is_due(u64::MAX));
+
+    // With lookahead the window's end is excluded.
+    let mut rig = Rig::with_config(vec![timed(sound(1), 1.6, 0.0, DNC)], config(10));
+    rig.start(0, 1);
+    assert!(!rig.engine.is_due(1590));
+    assert!(rig.engine.is_due(1591));
+}
