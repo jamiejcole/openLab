@@ -198,6 +198,35 @@ pub fn repair(workspace: &mut Workspace) -> Vec<ValidationIssue> {
     checker.issues
 }
 
+/// Issues `cues` would raise on their own if placed at `depth` (a top-level cue is depth 1):
+/// ranges, slices, hotkeys, nesting, and duplicate ids or numbers among themselves. Does not
+/// look at the rest of the workspace, nor at references. Commands use it so an edit never
+/// introduces something [`repair`] would have to fix. The caller bounds the nesting first
+/// (this recurses).
+pub(crate) fn subtree_issues(
+    workspace: &Workspace,
+    cues: &[Cue],
+    depth: usize,
+) -> Vec<ValidationIssue> {
+    let mut checker = Checker::default();
+    for patch in &workspace.patches {
+        checker.patch_outputs.insert(patch.id, patch.outputs.len());
+    }
+    let mut repaired = cues.to_vec();
+    checker.cues(&mut repaired, depth);
+    // Some repairs are silent (levels below silence, empty gangs, empty numbers). Whatever
+    // repair would change counts, so a command's result always saves and loads back unchanged.
+    let reported =
+        (checker.issues.iter()).any(|i| !matches!(i.kind, IssueKind::UnpatchedOutputs { .. }));
+    if !reported && repaired != cues {
+        checker.warn(
+            cues.first().map(|cue| cue.id),
+            IssueKind::InvalidValue { field: "cue" },
+        );
+    }
+    checker.issues
+}
+
 fn duplicates<T: Copy + Eq + Hash>(ids: impl Iterator<Item = T>) -> Vec<T> {
     let mut seen = HashSet::new();
     ids.filter(|id| !seen.insert(*id)).collect()
@@ -773,7 +802,7 @@ fn can_target(source: &CueKind, target: &CueKind) -> bool {
     }
 }
 
-fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
+pub(crate) fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
     for cue in cues {
         f(cue);
         visit(cue.children(), f);

@@ -302,6 +302,43 @@ pub enum CueKind {
 }
 
 impl CueKind {
+    /// Sets the target of a targeting kind. Returns `false`, changing nothing, for kinds that
+    /// have no target.
+    pub fn set_target(&mut self, new: Option<CueId>) -> bool {
+        match self {
+            Self::Fade { target, .. }
+            | Self::Start { target }
+            | Self::Stop { target, .. }
+            | Self::Pause { target }
+            | Self::Load { target, .. }
+            | Self::Reset { target }
+            | Self::Devamp { target, .. }
+            | Self::GoTo { target, .. }
+            | Self::Arm { target }
+            | Self::Disarm { target } => {
+                *target = new;
+                true
+            }
+            Self::Audio { .. }
+            | Self::Group { .. }
+            | Self::Wait { .. }
+            | Self::Memo
+            | Self::Network { .. } => false,
+        }
+    }
+
+    /// Whether this kind has a target to set, even if none is set yet.
+    pub fn has_target(&self) -> bool {
+        !matches!(
+            self,
+            Self::Audio { .. }
+                | Self::Group { .. }
+                | Self::Wait { .. }
+                | Self::Memo
+                | Self::Network { .. }
+        )
+    }
+
     /// The target of a targeting kind, if one is set.
     pub fn target(&self) -> Option<CueId> {
         match self {
