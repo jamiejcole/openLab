@@ -6,6 +6,7 @@
 use std::f64::consts::TAU;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// The reference stereo tone the compressed fixtures were made from (see fixtures/generate.sh):
@@ -142,11 +143,14 @@ fn extended(x: f64) -> [u8; 10] {
     b
 }
 
-/// Writes `bytes` to a fresh file under the test temp dir.
+/// Writes `bytes` to a fresh file under the test temp dir. Every call gets its own file, so tests
+/// running in parallel never rewrite a file another test is streaming.
 pub fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("media-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(name);
+    let p = dir.join(format!("{n}-{name}"));
     std::fs::write(&p, bytes).unwrap();
     p
 }
@@ -228,6 +232,53 @@ impl Read for GatedReader {
 }
 
 impl Seek for GatedReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// How a [`FailingReader`] fails once a read reaches its offset.
+#[derive(Clone, Copy, Debug)]
+pub enum Failure {
+    /// An I/O error, as from a disk that went away.
+    Error,
+    /// A panic, standing in for a decoder bug triggered by the data.
+    Panic,
+}
+
+/// Reads normally up to byte `at`, then fails every read that reaches it. Simulates a read
+/// error part way through a stream.
+pub struct FailingReader {
+    inner: Cursor<Vec<u8>>,
+    at: u64,
+    failure: Failure,
+}
+
+impl FailingReader {
+    pub fn new(bytes: Vec<u8>, at: u64, failure: Failure) -> Self {
+        FailingReader {
+            inner: Cursor::new(bytes),
+            at,
+            failure,
+        }
+    }
+}
+
+impl Read for FailingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let pos = self.inner.position();
+        if pos >= self.at {
+            match self.failure {
+                Failure::Error => return Err(std::io::Error::other("injected read error")),
+                Failure::Panic => panic!("injected panic"),
+            }
+        }
+        let limit = ((self.at - pos) as usize).min(buf.len());
+        self.inner.read(&mut buf[..limit])
+    }
+}
+
+impl Seek for FailingReader {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         self.inner.seek(pos)
     }

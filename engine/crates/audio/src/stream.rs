@@ -12,12 +12,11 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::decode::{Media, MediaError, MediaInfo, open_source};
+use crate::decode::{Media, MediaError, MediaInfo, contain, open_source};
 use crate::mixer::{VoiceId, VoiceStart};
 use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 use crate::resample::Pipeline;
@@ -129,6 +128,8 @@ impl StreamHandle {
         self.shared.lock().finished
     }
 
+    /// Why the stream failed. Once this is set the stream has let go of its ring, so the voice
+    /// plays what was written and then ends with `FinishReason::EndOfStream`.
     pub fn error(&self) -> Option<MediaError> {
         self.shared.lock().error.clone()
     }
@@ -142,6 +143,9 @@ impl StreamHandle {
     pub fn cuts(&self) -> u64 {
         self.shared.lock().cuts
     }
+
+    // The `wait_*` helpers block (with a timeout): for I/O helper threads and tests, never the
+    // control thread (ARCHITECTURE §3.1).
 
     /// Blocks until at least `n` devamp cuts are made.
     pub fn wait_cuts(&self, n: u64, timeout: Duration) -> Result<bool, MediaError> {
@@ -209,9 +213,9 @@ impl Drop for Permit {
     }
 }
 
+/// A worker thread, reached through its message channel. Never joined (see `Drop`).
 struct Worker {
     tx: Sender<Msg>,
-    join: Option<JoinHandle<()>>,
 }
 
 pub struct DiskStreamer {
@@ -229,14 +233,11 @@ impl DiskStreamer {
         let mut workers = Vec::with_capacity(config.workers);
         for i in 0..config.workers {
             let (tx, rx) = mpsc::channel();
-            let join = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("openlab-disk-{i}"))
                 .spawn(move || run_worker(rx))
                 .map_err(|_| MediaError::Worker)?;
-            workers.push(Worker {
-                tx,
-                join: Some(join),
-            });
+            workers.push(Worker { tx });
         }
         Ok(DiskStreamer {
             config,
@@ -328,20 +329,19 @@ impl DiskStreamer {
 }
 
 impl Drop for DiskStreamer {
+    /// Tells the workers to stop and does not wait: a worker blocked in a read on a stalled
+    /// disk must not hang the caller. Each worker exits after its current step, dropping its
+    /// streams (their voices then end).
     fn drop(&mut self) {
         for w in &self.workers {
             let _ = w.tx.send(Msg::Shutdown);
-        }
-        for w in &mut self.workers {
-            if let Some(j) = w.join.take() {
-                let _ = j.join();
-            }
         }
     }
 }
 
 fn run_worker(rx: Receiver<Msg>) {
     let mut tasks: Vec<Box<Task>> = Vec::new();
+    let mut failed: Vec<(Arc<Shared>, MediaError)> = Vec::new();
     loop {
         loop {
             match rx.try_recv() {
@@ -359,7 +359,16 @@ fn run_worker(rx: Receiver<Msg>) {
             }
             Progress::Idle => true,
             Progress::Done => false,
+            Progress::Failed(e) => {
+                failed.push((Arc::clone(&t.shared), e));
+                false
+            }
         });
+        // Published only now that the failed tasks (and their ring producers) are dropped: once
+        // a caller sees the error, the voice is certain to end after the frames already written.
+        for (shared, e) in failed.drain(..) {
+            shared.update(|s| s.error = Some(e));
+        }
         if worked {
             continue;
         }
@@ -384,6 +393,7 @@ enum Progress {
     Worked,
     Idle,
     Done,
+    Failed(MediaError),
 }
 
 struct Task {
@@ -416,13 +426,7 @@ impl Task {
         if self.shared.cancelled.load(Ordering::Acquire) || self.producer.is_abandoned() {
             return Progress::Done;
         }
-        match self.fill() {
-            Ok(p) => p,
-            Err(e) => {
-                self.shared.update(|s| s.error = Some(e));
-                Progress::Done
-            }
-        }
+        contain(|| self.fill()).unwrap_or_else(Progress::Failed)
     }
 
     fn fill(&mut self) -> Result<Progress, MediaError> {
@@ -436,7 +440,7 @@ impl Task {
             }
             self.pipe = Some(Pipeline::new(src, self.info.frames, self.device_rate)?);
         }
-        self.check_cut();
+        self.check_cut()?;
         let Some(s) = self.slices.get(self.entry).copied() else {
             // Stay until the voice lets go of the ring: a devamp may still need a cut.
             if !self.shared.lock().finished {
@@ -505,13 +509,14 @@ impl Task {
 
     /// Handles a devamp cut the voice published: find the loop entry it ends and the slice to
     /// continue with, then cut now (stale frames already in the ring) or when the write cursor
-    /// reaches the boundary.
-    fn check_cut(&mut self) {
+    /// reaches the boundary. A cut that matches no loop of the table fails the stream, so the
+    /// voice waiting for the continuation ends instead of waiting forever.
+    fn check_cut(&mut self) -> Result<(), MediaError> {
         let Some(d) = self.link.cut_requested() else {
-            return;
+            return Ok(());
         };
         if self.cut.is_some() || self.handled_cut == Some(d) {
-            return;
+            return Ok(());
         }
         self.handled_cut = Some(d);
         let (mut k, mut pos) = self.origin;
@@ -531,7 +536,9 @@ impl Task {
                 Plays::Infinite => break Some(k),
             }
         };
-        let Some(k) = found else { return };
+        let Some(k) = found else {
+            return Err(MediaError::BadSlices);
+        };
         let index = self.slices.get(k).map(|s| s.index);
         let target = (k + 1..self.slices.len())
             .find(|&i| self.slices.get(i).map(|s| s.index) != index)
@@ -541,6 +548,7 @@ impl Task {
         } else {
             self.jump(target);
         }
+        Ok(())
     }
 
     /// Continues with entry `target` from the current ring position and tells the voice where.
@@ -619,6 +627,37 @@ mod tests {
             .unwrap();
         let r = p.handle.wait_primed(Duration::from_secs(10));
         assert_eq!(r, Err(MediaError::NotFound("/nonexistent/x.wav".into())));
+    }
+
+    #[test]
+    fn a_cut_outside_the_table_fails_the_stream() {
+        let mut d = DiskStreamer::new(StreamerConfig::new(48_000)).unwrap();
+        let pre = crate::decode::Preloaded::from_samples(1, 48_000, vec![0.25; 1000]);
+        let info = pre.info();
+        let media = Media::Preloaded(pre);
+        let p = d
+            .prepare(StreamRequest {
+                media,
+                info,
+                slices: vec![Slice {
+                    index: 0,
+                    start: 0,
+                    frames: 1000,
+                    plays: Plays::Times(1),
+                }],
+            })
+            .unwrap();
+        assert!(
+            p.handle
+                .wait_written(u64::MAX, Duration::from_secs(10))
+                .unwrap()
+        );
+        // Past the end of the table: there is no loop to leave.
+        p.link.request_cut(5_000);
+        let r = p.handle.wait_cuts(1, Duration::from_secs(10));
+        assert_eq!(r, Err(MediaError::BadSlices));
+        // The stream let go of the ring, so the voice playing it ends.
+        assert!(p.source.is_abandoned());
     }
 
     #[test]

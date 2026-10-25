@@ -222,7 +222,9 @@ pub enum CommandKind {
     },
     /// Leave the current loop at the end of the current play (CT-16): `stop` ends the voice
     /// there, otherwise playback continues with the next slice. Only for voices with a slice
-    /// table; continuing out of a loop also needs the voice's `link`.
+    /// table; continuing out of a loop also needs the voice's `link`. A devamp the voice cannot
+    /// carry out is reported as [`Event::DevampIgnored`]. The integrated fade-out follows the
+    /// planned end, so a devamp stop ends at the loop boundary without it.
     Devamp {
         voice: VoiceId,
         stop: bool,
@@ -296,6 +298,9 @@ pub enum Event {
     /// A devamp was accepted. `at` is where the voice leaves the loop if no underrun intervenes;
     /// the matching `SliceEnded` carries the actual sample.
     DevampScheduled { voice: VoiceId, at: SampleTime },
+    /// A devamp the voice cannot carry out: it has no slice table, a devamp is already under
+    /// way, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged.
+    DevampIgnored { voice: VoiceId, at: SampleTime },
 }
 
 #[derive(Debug, Default)]
@@ -370,7 +375,9 @@ enum Devamp {
     Stop,
     /// `cut`: the disk stream was asked to stop unrolling the loop, so stale frames must be
     /// skipped once it says where the continuation starts.
-    Continue { cut: bool },
+    Continue {
+        cut: bool,
+    },
 }
 
 /// What happened at the end of a play.
@@ -522,9 +529,7 @@ impl Voice {
         let mut i = k + 1;
         while let (Some(t), Some(next)) = (tail, self.slice(i)) {
             tail = match next.plays {
-                Plays::Times(n) => {
-                    Some(t.saturating_add(next.frames.saturating_mul(u64::from(n))))
-                }
+                Plays::Times(n) => Some(t.saturating_add(next.frames.saturating_mul(u64::from(n)))),
                 Plays::Infinite => None,
             };
             i += 1;
@@ -589,7 +594,12 @@ impl Voice {
     /// Arms a devamp at the end of the current play (CT-16). Ignored without a slice table,
     /// while a devamp is already under way, or when continuing out of a loop has no link.
     fn request_devamp(&mut self, stop: bool, t: SampleTime, outbox: &mut Outbox) {
+        let ignored = Event::DevampIgnored {
+            voice: self.id,
+            at: t,
+        };
         if !self.has_slices() || self.devamp.is_some() || self.awaiting.is_some() {
+            outbox.emit(ignored);
             return;
         }
         let more_plays = self.plays_left != Some(0)
@@ -607,7 +617,10 @@ impl Voice {
                 .saturating_add(self.left);
             match self.link() {
                 Some(link) => link.request_cut(at),
-                None => return,
+                None => {
+                    outbox.emit(ignored);
+                    return;
+                }
             }
             Devamp::Continue { cut: true }
         } else {
@@ -712,10 +725,7 @@ impl Voice {
                     }
                     _ => {
                         // Without its producer the continuation will never come.
-                        let abandoned = self
-                            .start
-                            .as_ref()
-                            .is_none_or(|s| s.source.is_abandoned());
+                        let abandoned = self.start.as_ref().is_none_or(|s| s.source.is_abandoned());
                         break if abandoned {
                             ReadOutcome::Ended(FinishReason::EndOfStream)
                         } else {
@@ -1227,8 +1237,7 @@ impl Mixer {
         } else if !s.slices.is_empty()
             && (s.play_frames.is_some()
                 || s.slices.len() > MAX_SLICES
-                || s
-                    .slices
+                || s.slices
                     .iter()
                     .any(|x| x.frames == 0 || x.plays == Plays::Times(0)))
         {
