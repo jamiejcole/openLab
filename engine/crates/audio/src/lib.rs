@@ -29,8 +29,8 @@ pub use decode::{
 #[doc(hidden)]
 pub use fuzzing::fuzz_decode;
 pub use gain::{
-    Curve, Fade, MAX_GAIN, MAX_GAIN_DB, SILENCE_DB, db_to_linear, linear_to_db, ramp_value,
-    sanitize_gain,
+    Curve, Fade, MAX_GAIN, MAX_GAIN_DB, RAMP_TOLERANCE, SILENCE_DB, db_to_linear, linear_to_db,
+    ramp_value, sanitize_gain,
 };
 pub use meter::XrunNotifier;
 pub use mixer::{
