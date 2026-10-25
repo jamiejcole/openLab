@@ -224,10 +224,26 @@ pub enum CommandKind {
     /// there, otherwise playback continues with the next slice. Only for voices with a slice
     /// table; continuing out of a loop also needs the voice's `link`. A devamp the voice cannot
     /// carry out is reported as [`Event::DevampIgnored`]. The integrated fade-out follows the
-    /// planned end, so a devamp stop ends at the loop boundary without it.
+    /// planned end, so a devamp stop ends at the loop boundary without it. On a paused voice the
+    /// [`Event::DevampScheduled`] is sent when it resumes.
     Devamp {
         voice: VoiceId,
         stop: bool,
+    },
+    /// Pause a playing voice on this sample (CUE-05). It keeps its source, position and state,
+    /// consumes nothing and outputs silence (after a de-zipper-length declick fade-out) until
+    /// [`CommandKind::ResumeVoice`]. Ignored for an unknown or already paused voice.
+    PauseVoice {
+        voice: VoiceId,
+    },
+    /// Resume the paused voice `voice` on this sample from exactly where it paused (with a
+    /// declick fade-in), re-keyed as `new_id`: from here on commands address it, and its events
+    /// carry it, as `new_id`. Ignored if `voice` is not paused; a `new_id` already in use by
+    /// another voice is reported as [`Event::VoiceRejected`] for `new_id` with
+    /// [`RejectReason::DuplicateId`], and the voice stays paused as `voice`.
+    ResumeVoice {
+        voice: VoiceId,
+        new_id: VoiceId,
     },
 }
 
@@ -411,6 +427,34 @@ struct Refade {
     len: u64,
 }
 
+/// A paused voice (CUE-05). The fade-out tail plays the frames that follow the pause point
+/// without consuming them, so the voice resumes from exactly where it paused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Paused {
+    /// Sample the pause took effect on.
+    at: SampleTime,
+    /// Declick fade-out frames rendered so far, of `len` (0 for a voice paused before it was
+    /// heard).
+    done: u64,
+    len: u64,
+}
+
+impl Paused {
+    /// Declick gain of the tail's frame `j`: falls from 1 and is exactly 0 on frame `len - 1`.
+    fn gain(&self, j: u64) -> f32 {
+        ramp_value(1.0, 0.0, j + 1, self.len, Curve::Linear)
+    }
+
+    /// The tail gain the listener last heard (1.0 if nothing of the tail has been rendered).
+    fn level(&self) -> f32 {
+        if self.len == 0 {
+            1.0
+        } else {
+            ramp_value(1.0, 0.0, self.done, self.len, Curve::Linear)
+        }
+    }
+}
+
 /// Integrated fade-out gain for a frame with `r` frames after it.
 fn fade_out_gain(fout: Fade, r: Option<u64>, refade: Option<Refade>) -> f32 {
     match (r, refade) {
@@ -475,6 +519,13 @@ struct Voice {
     /// Not yet rendered: gain sets apply without de-zipper.
     fresh: bool,
     underrunning: bool,
+    /// `Some` while paused; then nothing is read and no gain advances.
+    paused: Option<Paused>,
+    /// Declick gain: ramps up from the tail's level on resume, 1.0 otherwise.
+    declick: Param,
+    /// A devamp accepted while paused, reported (`DevampScheduled`) on resume when its sample
+    /// is known.
+    devamp_unreported: bool,
 }
 
 impl Voice {
@@ -506,6 +557,9 @@ impl Voice {
             input: vec![0.0; max_channels * block],
             fresh: false,
             underrunning: false,
+            paused: None,
+            declick: Param::new(1.0),
+            devamp_unreported: false,
         }
     }
 
@@ -600,6 +654,9 @@ impl Voice {
         }
         self.fresh = true;
         self.underrunning = false;
+        self.paused = None;
+        self.declick.set(1.0);
+        self.devamp_unreported = false;
         self.start = Some(s);
         self.enter(0);
     }
@@ -666,10 +723,130 @@ impl Voice {
             Devamp::Continue { cut: false }
         };
         self.devamp = Some(mode);
+        if self.paused.is_some() {
+            // Where it leaves the loop is known only once it resumes.
+            self.devamp_unreported = true;
+            return;
+        }
         outbox.emit(Event::DevampScheduled {
             voice: self.id,
             at: t.saturating_add(self.left),
         });
+    }
+
+    /// Pauses on sample `t` with a declick tail of `dezip` frames (none if nothing has been
+    /// heard yet). Gains, fades and the stop fade freeze where they are.
+    fn pause(&mut self, t: SampleTime, dezip: u64) {
+        if self.paused.is_none() {
+            self.paused = Some(Paused {
+                at: t,
+                done: 0,
+                len: if self.fresh { 0 } else { dezip },
+            });
+        }
+    }
+
+    /// Resumes on sample `t` as `id` (nothing if not paused). Everything timed in samples (the
+    /// stop fade's end) moves by the time spent paused.
+    fn resume(&mut self, t: SampleTime, id: VoiceId, dezip: u64, outbox: &mut Outbox) {
+        let Some(p) = self.paused.take() else {
+            return;
+        };
+        self.stop_end = self
+            .stop_end
+            .map(|e| e.saturating_add(t.saturating_sub(p.at)));
+        // Ramp up from what was last heard, so resuming mid-tail never jumps.
+        let level = self.declick.current() * p.level();
+        if level != 1.0 {
+            self.declick.set(level);
+            self.declick.ramp_to(1.0, dezip, Curve::Linear);
+        }
+        self.id = id;
+        if let Some(s) = self.start.as_mut() {
+            s.voice = id;
+        }
+        if std::mem::take(&mut self.devamp_unreported) && self.devamp.is_some() {
+            outbox.emit(Event::DevampScheduled {
+                voice: id,
+                at: t.saturating_add(self.left),
+            });
+        }
+    }
+
+    /// Copies up to `n` frames that will play next, starting `from` frames ahead, into `input`
+    /// without consuming them (an `rtrb` read chunk dropped uncommitted leaves the ring as it
+    /// was). Stops at the voice's end, at a devamp boundary and where the ring runs out; the rest
+    /// up to `n` is silence. Returns the frames copied.
+    fn peek(&mut self, from: u64, n: usize, block: usize) -> usize {
+        let ch = self.channels;
+        // A pending devamp jumps at the end of this play; beyond it only the exit could be peeked.
+        let limit = if self.devamp.is_some() || self.exit.is_some() {
+            self.left
+        } else {
+            self.remaining().map_or(u64::MAX, |r| r.saturating_add(1))
+        };
+        let want = usize::try_from(limit.saturating_sub(from))
+            .unwrap_or(usize::MAX)
+            .min(n);
+        let from = usize::try_from(from).unwrap_or(usize::MAX);
+        let Voice {
+            start,
+            input,
+            exit,
+            awaiting,
+            skip,
+            ..
+        } = self;
+        let mut got = 0;
+        if let Some((target, done)) = *exit {
+            if let Some(e) = start
+                .as_ref()
+                .and_then(|s| s.link.as_deref())
+                .and_then(|l| l.exit(target))
+            {
+                let first = done.saturating_add(from);
+                got = e.frames.saturating_sub(first).min(want);
+                if let Some(src) = e.samples.get(first * ch..(first + got) * ch) {
+                    for (f, frame) in src.chunks_exact(ch).enumerate() {
+                        for (c, &x) in frame.iter().enumerate() {
+                            if let Some(s) = input.get_mut(c * block + f) {
+                                *s = x;
+                            }
+                        }
+                    }
+                } else {
+                    got = 0;
+                }
+            }
+        } else if awaiting.is_none()
+            && let Some(src) = start.as_mut().map(|s| &mut s.source)
+        {
+            // Frames still to be skipped come first in the ring.
+            let first = usize::try_from(*skip)
+                .unwrap_or(usize::MAX)
+                .saturating_add(from);
+            let avail = src.slots() / ch;
+            got = avail.saturating_sub(first).min(want);
+            if got > 0
+                && let Ok(chunk) = src.read_chunk((first + got) * ch)
+            {
+                let (a, b) = chunk.as_slices();
+                for (k, &x) in a.iter().chain(b).skip(first * ch).enumerate() {
+                    if let Some(s) = input.get_mut((k % ch) * block + k / ch) {
+                        *s = x;
+                    }
+                }
+                // Dropped without a commit: nothing is consumed.
+            } else {
+                got = 0;
+            }
+        }
+        for c in 0..ch {
+            if let Some(rest) = input.get_mut(c * block + got..c * block + n) {
+                rest.fill(0.0);
+            }
+        }
+        got
     }
 
     /// The current play ended just before sample `at`.
@@ -958,6 +1135,7 @@ impl Voice {
     }
 
     fn finish(&mut self, at: SampleTime, reason: FinishReason, outbox: &mut Outbox) {
+        self.paused = None;
         if let Some(start) = self.start.take() {
             outbox.give_back(start);
             outbox.emit(Event::VoiceFinished {
@@ -1278,7 +1456,8 @@ impl Mixer {
             CommandKind::StopVoice { voice, fade } => {
                 let Mixer { voices, outbox, .. } = self;
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
-                    if fade.frames == 0 {
+                    // A paused voice is silent already: any stop cuts it at once.
+                    if fade.frames == 0 || v.paused.is_some() {
                         v.finish(t, FinishReason::Stopped, outbox);
                     } else {
                         v.stop.ramp_to(0.0, fade.frames, fade.curve);
@@ -1346,6 +1525,38 @@ impl Mixer {
                     None => outbox.emit(Event::DevampIgnored { voice, at: t }),
                 }
             }
+            CommandKind::PauseVoice { voice } => {
+                if let Some(v) = self.voice_mut(voice) {
+                    v.pause(t, dezip);
+                }
+            }
+            CommandKind::ResumeVoice { voice, new_id } => self.resume_voice(voice, new_id, t),
+        }
+    }
+
+    fn resume_voice(&mut self, voice: VoiceId, new_id: VoiceId, t: SampleTime) {
+        let dezip = self.dezip;
+        let Mixer { voices, outbox, .. } = self;
+        let Some(k) = voices
+            .iter()
+            .position(|v| v.is_active() && v.id == voice && v.paused.is_some())
+        else {
+            return;
+        };
+        let taken = voices
+            .iter()
+            .enumerate()
+            .any(|(i, v)| i != k && v.is_active() && v.id == new_id);
+        if taken {
+            outbox.emit(Event::VoiceRejected {
+                voice: new_id,
+                at: t,
+                reason: RejectReason::DuplicateId,
+            });
+            return;
+        }
+        if let Some(v) = voices.get_mut(k) {
+            v.resume(t, new_id, dezip, outbox);
         }
     }
 
@@ -1413,6 +1624,10 @@ impl Mixer {
 
         patches.iter_mut().for_each(|p| p.live = false);
         for v in voices.iter_mut().filter(|v| v.is_active()) {
+            // A paused voice past its declick tail contributes nothing and is not visited.
+            if v.paused.is_some_and(|p| p.done >= p.len) {
+                continue;
+            }
             let Some(p) = patches.get_mut(v.patch) else {
                 continue;
             };
@@ -1422,7 +1637,11 @@ impl Mixer {
                     b.iter_mut().take(len).for_each(|s| *s = 0.0);
                 }
             }
-            render_voice(v, len, t0, block, &mut p.bus, scratch, outbox);
+            if v.paused.is_some() {
+                render_tail(v, len, block, &mut p.bus, scratch);
+            } else {
+                render_voice(v, len, t0, block, &mut p.bus, scratch, outbox);
+            }
         }
 
         let Some(tmp) = scratch.tmp.get_mut(..len) else {
@@ -1516,6 +1735,10 @@ fn render_voice(
         v.stop.fill(tmp);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
     }
+    if v.declick.is_ramping() || v.declick.current() != 1.0 {
+        v.declick.fill(tmp);
+        vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
+    }
     v.apply_envelope(vg, pos0, got, &rem);
 
     let Voice {
@@ -1589,6 +1812,62 @@ fn render_voice(
     }
     if let Some((at, reason)) = end {
         v.finish(at, reason, outbox);
+    }
+}
+
+/// Renders the declick fade-out of a paused voice: the frames after its pause point, peeked
+/// without consuming them, at the gains it had when it paused (none of them advance), times the
+/// falling declick ramp and the integrated fade envelope those frames would have had.
+fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut Scratch) {
+    let Some(p) = v.paused else { return };
+    let n = usize::try_from(p.len.saturating_sub(p.done))
+        .unwrap_or(usize::MAX)
+        .min(len);
+    let got = v.peek(p.done, n, block);
+    let Some(vg) = s.vgain.get_mut(..n) else {
+        return;
+    };
+    let g = v.master.current() * v.stop.current() * v.declick.current();
+    for (j, x) in vg.iter_mut().enumerate() {
+        *x = g * p.gain(p.done + j as u64);
+    }
+    let rem = Remaining {
+        first: v.remaining().map(|r| r.saturating_sub(p.done)),
+        split: usize::MAX,
+        after: None,
+        refade_first: v.refade,
+        refade_after: None,
+    };
+    v.apply_envelope(vg, v.pos.saturating_add(p.done), got, &rem);
+
+    let Voice {
+        cue_out,
+        xp,
+        input,
+        channels,
+        ..
+    } = v;
+    let (outs, ch) = (cue_out.len(), *channels);
+    for (o, co) in cue_out.iter().enumerate() {
+        let co = co.current();
+        let Some(bo) = bus.get_mut(o * block..o * block + got) else {
+            continue;
+        };
+        for i in 0..ch {
+            let g = xp.get(i * outs + o).map_or(0.0, |x| x.current()) * co;
+            let Some(inp) = input.get(i * block..i * block + got) else {
+                continue;
+            };
+            if g == 0.0 {
+                continue;
+            }
+            for ((b, x), h) in bo.iter_mut().zip(inp).zip(vg.iter()) {
+                *b += x * g * h;
+            }
+        }
+    }
+    if let Some(p) = v.paused.as_mut() {
+        p.done += n as u64;
     }
 }
 
