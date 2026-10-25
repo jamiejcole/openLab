@@ -122,18 +122,22 @@ struct Workload {
 }
 
 impl Workload {
-    fn new(feed: Feed) -> Self {
+    fn new(feed: Feed) -> Result<Self, String> {
         let (streamer, shared) = match feed {
             Feed::Resampled => {
-                let s = DiskStreamer::new(StreamerConfig::new(RATE)).unwrap();
+                let s = DiskStreamer::new(StreamerConfig::new(RATE))
+                    .map_err(|e| format!("disk streamer: {e:?}"))?;
                 let src = tone(72 * 44_100, 44_100);
                 let bytes = wav(&src, 2, 44_100, Pcm::F32);
                 let media = Media::Reader(Box::new(Cursor::new(bytes)), Some("wav".into()));
-                (Some(s), Some(preload(media).unwrap()))
+                (
+                    Some(s),
+                    Some(preload(media).map_err(|e| format!("preload: {e:?}"))?),
+                )
             }
             Feed::Rings => (None, None),
         };
-        Self {
+        Ok(Self {
             streamer,
             shared,
             next_id: 0,
@@ -141,26 +145,34 @@ impl Workload {
             slot_end: vec![0; VOICES as usize],
             live: Vec::new(),
             started: 0,
-        }
+        })
     }
 
     /// Starts a voice of `life` frames in `slot` at frame `at`. The curves rotate with the
     /// voice's id, so every curve runs in both directions throughout the window.
-    fn spawn(&mut self, ctl: &mut MixerController, slot: usize, at: u64, life: u64) {
+    fn spawn(
+        &mut self,
+        ctl: &mut MixerController,
+        slot: usize,
+        at: u64,
+        life: u64,
+    ) -> Result<(), String> {
         let id = self.next_id;
         self.next_id += 1;
         self.started += 1;
         let vid = VoiceId(id);
         let (mut v, ring, handle) = match (&self.shared, self.streamer.as_mut()) {
             (Some(p), Some(d)) => {
-                let info = probe_media(Media::Preloaded(p.clone())).unwrap().info;
+                let info = probe_media(Media::Preloaded(p.clone()))
+                    .map_err(|e| format!("probe: {e:?}"))?
+                    .info;
                 let slices = plan(
                     0..life.min(info.frames_at(RATE)),
                     &[],
                     &[Plays::Times(1)],
                     0,
                 )
-                .unwrap();
+                .map_err(|e| format!("plan: {e:?}"))?;
                 let prepared = d
                     .prepare(StreamRequest {
                         media: Media::Preloaded(p.clone()),
@@ -168,7 +180,7 @@ impl Workload {
                         seeking: openlab_audio::Seeking::Direct,
                         slices,
                     })
-                    .unwrap();
+                    .map_err(|e| format!("prepare: {e:?}"))?;
                 let (v, h) = prepared.into_voice(vid, ctl.cue_outputs());
                 (v, None, Some(h))
             }
@@ -204,15 +216,17 @@ impl Workload {
             ring,
             handle,
         });
+        Ok(())
     }
 
     /// Initial lives are staggered from 4 s to 8 s, so starts, fade-ins and fade-outs spread
     /// evenly over the window from the first group on.
-    fn start_all(&mut self, ctl: &mut MixerController) {
+    fn start_all(&mut self, ctl: &mut MixerController) -> Result<(), String> {
         for slot in 0..VOICES as usize {
             let life = LIFE / 2 + LIFE / 2 * slot as u64 / VOICES;
-            self.spawn(ctl, slot, 0, life);
+            self.spawn(ctl, slot, 0, life)?;
         }
+        Ok(())
     }
 
     /// Control-thread work for the group starting at `now`: replace ending voices, retire ended
@@ -220,7 +234,7 @@ impl Workload {
     fn service(&mut self, ctl: &mut MixerController, now: u64) -> Result<(), String> {
         for slot in 0..VOICES as usize {
             if now + OVERLAP >= self.slot_end[slot] {
-                self.spawn(ctl, slot, now, LIFE);
+                self.spawn(ctl, slot, now, LIFE)?;
             }
         }
         self.live.retain(|l| now <= l.end + GROUP as u64);
@@ -269,8 +283,8 @@ fn run(block: usize, feed: Feed) -> Result<Stats, String> {
         }
     }
     ctl.send(0, CommandKind::SetMaster { gain: 0.9 });
-    let mut w = Workload::new(feed);
-    w.start_all(&mut ctl);
+    let mut w = Workload::new(feed).map_err(|e| format!("setup: {e}"))?;
+    w.start_all(&mut ctl).map_err(|e| format!("setup: {e}"))?;
 
     let mut out = vec![0.0f32; GROUP * DEVICE_OUTPUTS];
     let mut times = Vec::with_capacity(MEASURED_GROUPS * (GROUP / block));
@@ -381,7 +395,7 @@ fn report(name: &str, block: usize, s: &Stats) {
 fn report_only(name: &str, block: usize, feed: Feed) {
     match run(block, feed) {
         Ok(s) => report(name, block, &s),
-        Err(e) => println!("{name} block={block:>3}: not measured ({e})"),
+        Err(e) => println!("{name} block={block:>3}: not measured: {e}"),
     }
 }
 
