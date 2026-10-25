@@ -1357,6 +1357,7 @@ struct Patch {
 /// The real-time mixer. Create with [`Mixer::new`], move to the audio thread, call
 /// [`Mixer::process_guarded`] from the device callback.
 pub struct Mixer {
+    rate: u32,
     outputs: usize,
     block: usize,
     max_voice_channels: usize,
@@ -1430,6 +1431,7 @@ impl Mixer {
 
         let identity = |k: usize| if k / outs == k % outs { 1.0 } else { 0.0 };
         let mixer = Mixer {
+            rate: sample_rate,
             outputs: outs,
             block,
             max_voice_channels,
@@ -1479,6 +1481,11 @@ impl Mixer {
 
     pub fn output_channels(&self) -> usize {
         self.outputs
+    }
+
+    /// The rate this mixer was built for ([`MixerConfig::sample_rate`]); a device must run at it.
+    pub fn sample_rate(&self) -> u32 {
+        self.rate
     }
 
     /// Sample time of the next frame to be rendered.
