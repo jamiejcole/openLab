@@ -9,6 +9,7 @@
 mod backup;
 mod command;
 mod cue;
+mod cue_engine;
 mod history;
 mod media_path;
 mod model;
@@ -22,6 +23,7 @@ mod validate;
 pub use backup::*;
 pub use command::*;
 pub use cue::*;
+pub use cue_engine::*;
 pub use history::*;
 pub use media_path::*;
 pub use model::*;

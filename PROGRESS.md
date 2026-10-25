@@ -50,15 +50,23 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M1.16 M1-C review Lows left open: (L3) atomic replace swaps the inode, so mode/ownership/xattrs/Finder tags are lost and a symlinked or read-only show file is replaced on Unix — preserve metadata or document; (L4) a backup `.tmp` left by a crash is never rotated and a backwards clock step can make the newest backup rotate out first; (L6) `///x` on Posix parses as a `//` share root and drive-relative `C:foo` is a plain relative name; (L7) `scan_folder` is bounded by depth/count but not time or directory count — run it off the control thread and consider a deadline; crash-leftover `*.tmp` files beside a show are never cleaned — from M1-C review
 
 ## M2 — Cue engine (pure logic, virtual clock)
-- [ ] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
-- [ ] M2.2 Pre-wait / action / post-wait timing and continue modes (do-not-continue, auto-continue, auto-follow) [CUE-02, CUE-03]
-- [ ] M2.3 Playhead, GO, double-GO protection, playhead navigation [PB-01, PB-02, PB-05, CL-06]
+- [x] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
+- [x] M2.2 Pre-wait / action / post-wait timing and continue modes (do-not-continue, auto-continue, auto-follow) [CUE-02, CUE-03]
+- [x] M2.3 Playhead, GO, double-GO protection, playhead navigation [PB-01, PB-02, PB-05, CL-06]
 - [ ] M2.4 Group cues: timeline, start-first-and-enter, start-first-and-go-to-next, playlist (loop/shuffle), random [CT-22]
 - [ ] M2.5 Control cues: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo [CT-11..CT-21] — CueEngine must still bound chained triggering at runtime (depth/iteration limit): load-time validation warns on Start/GoTo cycles, but edits can create them too (M1-A review M1)
 - [ ] M2.6 Fade cue logic (audio levels; stop-target-when-done) [CT-10] — ignore Fade `output_db`/crosspoint indices beyond the target's outputs (validation only bounds them by 64; M1-A review 2 L4)
 - [ ] M2.7 Panic (fade all, second press = hard stop), Pause All / Resume All [PB-03, PB-04]
 - [ ] M2.8 Broken-cue detection (missing media, missing device, invalid target) [CUE-06, NFR-07]
-- [ ] M2.9 Property tests over random workspaces + input sequences [QA-01, QA-02]
+- [ ] M2.9 Property tests over random workspaces + input sequences [QA-01, QA-02] — a small engine proptest exists (`tests/cue_engine_prop.rs`): extend it, don't duplicate it
+- [ ] M2.10 Preview/audition operation on a cue (CUE-05 remainder; PB-09): plays to an audition output without triggering continues — found missing in M2.1
+- [ ] M2.11 Playhead inside groups and jump-by-number to grouped cues (with M2.4): M2.3 limits the playhead to top-level cues
+- [ ] M2.12 Cue engine cleanups from the M2-A review (Lows):
+  - L3: if a trigger cycle in the call's first deadline pass used up the chain budget, a GO's start is dropped with only a `ChainLimit` warning while `last_go` and the playhead still advance. Check the budget before committing the GO, or report `GoIgnored`.
+  - L4: `LoadVoice.offset` uses the pre-wait at load time, `StartVoice.offset` the pre-wait at start; editing the pre-wait of a cue loaded to a time makes the primed stream disagree with the start offset. Freeze the pre-wait/action split at load (keep `action_offset` in `Loaded`).
+  - L5: every call with an active cue builds a set of all cue ids and recounts the tree for `chain_limit`; fine at expected sizes, skip when the workspace revision is unchanged once revisions exist (M4).
+- [x] M2.13 Decided (user): a second trigger on an active cue is ignored (`TriggerIgnored`; paused cues resume); a cue that breaks keeps its auto-continue on schedule and never auto-follows — rules in docs/cue-engine.md
+- [ ] M2.14 Per-cue second-trigger options (e.g. restart, stop, pause/resume; QLab 5 has such a setting) — default today: ignored (M2.13)
 
 ## M3 — Audio engine (`openlab-audio`)
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]
@@ -77,6 +85,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M3.15 Fuzz target: decoders (probe, preload, stream, seek; whatever probes must play as probed) [QA-04] — from M3-B; findings are kept in `crates/audio/tests/fuzz-findings/` and replayed by `cargo test`
 - [x] M3.16 symphonia 0.6.1 RIFF/AIFF readers compute `(bits / 8) * channels` in `u16` (`wave/chunks.rs:100`, `common.rs`), which overflows on absurd headers (a panic with overflow checks, as in cargo-fuzz). WAV `fmt ` and AIFF `COMM` channel count (1–64) and bits (≤ 64) are now checked before symphonia sees the file (`Corrupt`); `tests/fuzz-findings/wav-channel-overflow.wav` no longer reaches symphonia. Same class in the MP4 reader: `stts` sums sample counts in `u32` and count x delta in `u64` unchecked (`symphonia-format-isomp4-0.6.1/src/atoms/stts.rs:41`); `mp4_check.rs` walks moov>trak>mdia>minf>stbl (depth/box/entry limits, no allocation from file lengths) and rejects overflowing tables as `Corrupt` before symphonia parses them; `tests/fuzz-findings/mp4-stts-overflow.m4a`. Report both upstream when convenient [QA-04] — from M3-B review M3
 - [ ] M3.17 Minimum loop length: `plan()` accepts 1-frame loops, but each play of a looping slice costs a seek (fresh demuxer plus pre-roll, about 8 ms near the end of a 30 min MP3) and one `LoopReached` event, so very short loops in long compressed files underrun and sub-ms loops can fill the event queue. Enforce a minimum (or warn) until M3.13's loop cache [AUD-12] — from M3-B review L3
+- [ ] M3.18 Voice pause/resume in the mixer (`CommandKind` has no pause): the cue engine emits `PauseVoice`/`ResumeVoice` with the action offset (CUE-05). Either add a sample-exact pause that keeps the voice and its ring, or have M4.2 stop and restart from `offset` (costs a seek; the engine ignores the stop's end report, and the resumed voice gets a fresh id) — from M2-A
 - Note (M3-B review L6): M3.3 is ticked, but AAC in MP4 still plays its encoder priming (M3.14), so AUD-04 is not complete for AAC.
 - Cleanup notes from the M3-B re-review (Low, not done):
   - L-R2: loop exit buffers are one per distinct exit (`exit_ms` × channels × 4 B each, up to 255 of them: ~24 MB stereo, ~780 MB at 64 channels), allocated without a fallible check and built before priming. Cap the total, or build lazily for the next few loops.
@@ -89,7 +98,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 
 ## M4 — Engine service (`openlab-engine`)
 - [ ] M4.1 Protocol types in core, golden fixtures, `docs/protocol.md` [NFR-41]
-- [ ] M4.2 Control thread: wires CueEngine ↔ mixer ↔ disk threads; scheduling per ARCHITECTURE §3.2 [NFR-20, NFR-21, NFR-22, NFR-11]
+- [ ] M4.2 Control thread: wires CueEngine ↔ mixer ↔ disk threads; scheduling per ARCHITECTURE §3.2 [NFR-20, NFR-21, NFR-22, NFR-11] — see docs/cue-engine.md: set `EngineConfig::lookahead` to one block (window end excluded) and tick when `engine.is_due(now)` (`next_deadline() < now + max(lookahead, 1)`); `RunId` can be the `VoiceId` (each `ResumeVoice` carries a fresh `run` plus the `paused` id it continues; tag later feedback with the fresh one); map `VoiceFinished` → `ActionEnded` and `VoiceRejected`/stream errors → `ActionFailed`; `LoadVoice`/`UnloadVoice` prepare/release streams; the mixer has no pause (M3.18): if `PauseVoice` is carried out as a stop, its `VoiceFinished { Stopped }` is not the action ending — forwarding it is harmless (the engine ignores ends dated at or after the pause while paused, and any report for the paused id after the resume), and `ResumeVoice` restarts from `offset` as a new voice with the fresh id; a dropped `VoiceFinished` (`dropped_events` > 0) leaves an audio cue running forever — reconcile; keep cues near the playhead primed (§3.5)
 - [ ] M4.3 WebSocket server: token auth, snapshot, model_changed/runtime/progress/meters, revision gaps [NFR-01]
 - [ ] M4.4 Workspace requests: new/open/save/save-as/revert, recent files, recovery prompt flow [WS-02, WS-08, NFR-05] — wire `persist::SaveWriter` (clone workspace on control thread; pass `now_ms`; call `autosave_due` each tick), `check_recovery` on open, `load_machine_settings` at start; this is where NFR-04/05/06 and WS-03/06/07 become end-user behaviour and can be ticked
 - [ ] M4.5 OSC server: UDP+TCP 53000, QLab-compatible v0.0.1 subset, passcode, updates; `docs/osc.md` [NET-01, NET-02, NET-05, TRG-03, DOC-02]
