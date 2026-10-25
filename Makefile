@@ -2,7 +2,10 @@
 XCODEBUILD := xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build
 SPDX := SPDX-License-Identifier: GPL-3.0-or-later
 
-.PHONY: lint test test-rust test-mac mac verify-bundle dmg project
+FUZZ_TIME ?= 30
+FUZZ_TOOLCHAIN ?= nightly
+
+.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz
 
 lint:
 	@missing=$$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' Makefile | xargs grep -L "$(SPDX)"); \
@@ -10,12 +13,20 @@ lint:
 	cd engine && cargo fmt --all --check
 	cd engine && cargo clippy --workspace --all-targets -- -D warnings
 	cd engine && cargo deny check
+	cd engine/fuzz && cargo fmt --check && cargo clippy --locked -- -D warnings
 	swift format lint --strict -r mac/
 
 test: test-rust test-mac
 
 test-rust:
 	cd engine && cargo test --workspace
+
+# Short fuzz run per target (nightly + cargo-fuzz). Fixtures and fuzz/seeds seed the corpus;
+# crashes land in engine/fuzz/artifacts/.
+fuzz:
+	mkdir -p engine/fuzz/corpus/show_file
+	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run show_file fuzz/corpus/show_file fixtures/show fuzz/seeds \
+		-- -max_total_time=$(FUZZ_TIME) -dict=fuzz/show_file.dict
 
 test-mac: project
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test

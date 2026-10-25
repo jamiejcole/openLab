@@ -229,6 +229,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | tracing (+ appender) | logging (never on audio thread) | MIT |
 | dirs | per-platform app-support paths | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
+| libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
 
 ## 13. Windows readiness (NFR-31)
 

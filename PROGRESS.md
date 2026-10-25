@@ -31,23 +31,25 @@ If the session was cut off, resume with the `orchestrate` skill. Both branches b
 - [x] M0.5 LICENSE (GPLv3), `.gitignore`, README with build instructions [NFR-42, NFR-43]
 
 ## M1 — Core model & show file (`openlab-core`, persistence in `engine`)
-- [ ] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
-- [ ] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
-- [ ] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
-- [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06]
+- [x] M1.1 Workspace / cue list / cue model with all v0.0.1 cue kinds, stable UUIDs, targets by id [WS-01, CL-01, CUE-01, CUE-02, CUE-03, CUE-07, CUE-08]
+- [x] M1.2 Validation of loaded models (unique ids/numbers, valid targets, ranges) with structured warnings [NFR-03, CUE-06]
+- [x] M1.3 JSON show file: serialise/deserialise, `format_version`, migration chain, fixtures, `docs/file-format.md` [NFR-40, NFR-32, DOC-03]
+- [ ] M1.4 Atomic save, rolling backups, autosave/recovery files [NFR-04, NFR-05, NFR-06] — saves clone the workspace and run `save_show` on the writer thread, never the control thread (serialise + verify-reload costs up to ~1 s on minimum spec; from M1-A review L6)
 - [ ] M1.5 Command model with inverses, transactions, undo/redo stacks [ED-07]
 - [ ] M1.6 Editing commands: add/remove/move/reparent cues, set properties, batch set, paste, renumber, auto-numbering [ED-03, ED-04, ED-05, ED-08]
-- [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32]
+- [ ] M1.7 Media path handling: relative/absolute, cross-platform, relink (single + find-in-folder) [WS-03, NFR-32] — includes converting native Windows relative paths (backslashes) to forward slashes when a path is created; the loader only converts Windows absolute paths (M1-A review L2)
 - [ ] M1.8 Per-machine settings + logical patch → device mapping [WS-06, WS-07]
-- [ ] M1.9 Fuzz target: show-file loader [QA-04]
+- [x] M1.9 Fuzz target: show-file loader [QA-04]
+- [ ] M1.10 Editing commands uphold model invariants: refuse nesting beyond `MAX_GROUP_DEPTH`, non-finite times/levels and duplicate ids (otherwise `save_show` refuses to write) [NFR-03] — from M1.1–M1.3
+- [ ] M1.11 Unicode normalisation (NFC/NFD) and case-insensitive comparison of media paths across macOS/Windows [NFR-32] — from M1.3; with M1.7
 
 ## M2 — Cue engine (pure logic, virtual clock)
 - [ ] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
 - [ ] M2.2 Pre-wait / action / post-wait timing and continue modes (do-not-continue, auto-continue, auto-follow) [CUE-02, CUE-03]
 - [ ] M2.3 Playhead, GO, double-GO protection, playhead navigation [PB-01, PB-02, PB-05, CL-06]
 - [ ] M2.4 Group cues: timeline, start-first-and-enter, start-first-and-go-to-next, playlist (loop/shuffle), random [CT-22]
-- [ ] M2.5 Control cues: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo [CT-11..CT-21]
-- [ ] M2.6 Fade cue logic (audio levels; stop-target-when-done) [CT-10]
+- [ ] M2.5 Control cues: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo [CT-11..CT-21] — CueEngine must still bound chained triggering at runtime (depth/iteration limit): load-time validation warns on Start/GoTo cycles, but edits can create them too (M1-A review M1)
+- [ ] M2.6 Fade cue logic (audio levels; stop-target-when-done) [CT-10] — ignore Fade `output_db`/crosspoint indices beyond the target's outputs (validation only bounds them by 64; M1-A review 2 L4)
 - [ ] M2.7 Panic (fade all, second press = hard stop), Pause All / Resume All [PB-03, PB-04]
 - [ ] M2.8 Broken-cue detection (missing media, missing device, invalid target) [CUE-06, NFR-07]
 - [ ] M2.9 Property tests over random workspaces + input sequences [QA-01, QA-02]
@@ -56,7 +58,7 @@ If the session was cut off, resume with the `orchestrate` skill. Both branches b
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]
 - [x] M3.2 Mixer: voice pool, time-stamped commands, sample-accurate starts/stops [NFR-21, NFR-22]
 - [ ] M3.3 Decode (WAV, AIFF, FLAC, MP3, AAC; OGG optional) + resample + disk streaming threads + priming + preload-to-RAM [AUD-04, AUD-05]
-- [x] M3.4 Levels, routing matrix, ganging, output patches (level/mute/delay/polarity), masters [AUD-06, AUD-07, AUD-08, PB-11]
+- [x] M3.4 Levels, routing matrix, ganging, output patches (level/mute/delay/polarity), masters [AUD-06, AUD-07, AUD-08, PB-11] — cue outputs beyond the patch's output count are silent (kept in the model)
 - [x] M3.5 Fade ramps + curves (linear, equal-power, S, log, exp); integrated fade in/out; trims [AUD-09, AUD-10, AUD-11]
 - [ ] M3.6 Slices, loops (N / infinite), devamp [AUD-12, CT-16]
 - [ ] M3.7 Meters + xrun counter [AUD-19, NFR-27]
@@ -87,11 +89,11 @@ If the session was cut off, resume with the `orchestrate` skill. Both branches b
 - [ ] M5.4 Cue list `NSOutlineView`: columns, groups, colours, flags, state icons (not colour-only), 2,000-cue performance [CL-02, CL-03, ED-13, UI-04, NFR-24]
 - [ ] M5.5 Sidebar: cue lists, Active Cues panel with per-cue controls, wall clock [CL-01, CL-05, PB-07, PB-12]
 - [ ] M5.6 Inspector: basics (number, name, notes, colour, timings, continue mode, target) [ED-01, CUE-01..CUE-03]
-- [ ] M5.7 Inspector: triggers (hotkey, OSC) [CUE-09, TRG-01, TRG-03]
+- [ ] M5.7 Inspector: triggers (hotkey, OSC) [CUE-09, TRG-01, TRG-03] — define hotkey conflict precedence (cue trigger vs. transport key vs. another cue) and warn on conflicts (M1-A review 2 L2)
 - [ ] M5.8 Inspector: time & loops with waveform editor (trims, fades, slices) [AUD-10, AUD-11, AUD-12, AUD-14]
 - [ ] M5.9 Inspector: audio levels + routing matrix; Fade cue settings [AUD-06, AUD-08, CT-10]
 - [ ] M5.10 Editing: drag-drop files, reorder, drop-to-target, multi-select batch edit, copy/paste, undo/redo, renumber, find, fade-this-out, keyboard operation [ED-02..ED-05, ED-07..ED-10, ED-12]
-- [ ] M5.11 Transport: GO/Stop/Panic/Pause/Resume, remappable hotkeys [PB-01..PB-05, TRG-01]
+- [ ] M5.11 Transport: GO/Stop/Panic/Pause/Resume, remappable hotkeys [PB-01..PB-05, TRG-01] — transport keys follow the same conflict precedence as M5.7
 - [ ] M5.12 Show Mode, quit confirmation [SM-01, SM-03, SM-05]
 - [ ] M5.13 Preferences: audio device, sample rate/buffer, autosave, backups, GO protection, panic time; patch editor + device mapping [UI-01, AUD-21, AUD-07, WS-07]
 - [ ] M5.14 Warnings panel, log view, status display, relink missing media [DX-01, DX-02, DX-03, WS-03]

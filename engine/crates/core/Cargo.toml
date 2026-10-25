@@ -8,3 +8,12 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+thiserror = "2.0.21"
+uuid = { version = "1.29.0", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+proptest = "1.12.0"
