@@ -35,6 +35,7 @@ make mac         # generate project + build app (includes universal engine)
 **Tests:**
 - Every change ships with tests. Every bug fix ships with a regression test that failed before the fix.
 - No real-time sleeps or wall-clock dependence in tests — use the virtual clock / offline render driver.
+- Integration-test support modules (`tests/common/mod.rs`) start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`: clippy's in-test allowances only cover `#[test]` fns and `#[cfg(test)]` items.
 - All tests, `fmt` and `clippy -D warnings` must pass before you report a task done.
 
 **Contracts:**

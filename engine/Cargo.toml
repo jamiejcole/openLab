@@ -9,8 +9,19 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
-# ARCHITECTURE §10: no unwrap/expect/panic in non-test code (clippy.toml allows them in tests).
+# ARCHITECTURE §10. clippy.toml relaxes unwrap/expect/panic/print in tests.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+# Symbolicated backtraces in crash reports without full debug info. Keep panic = "unwind" (the default):
+# the audio callback relies on catch_unwind (ARCHITECTURE §3.4).
+debug = "line-tables-only"
