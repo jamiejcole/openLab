@@ -15,6 +15,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::controller::MixerController;
 use crate::gain::{Curve, Fade, Param, ramp_value, sanitize_gain};
+use crate::meter::{Meters, XrunNotifier, next_epoch, track};
 use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 
 /// Absolute time in frames at the device rate since the mixer started (ARCHITECTURE §3.2).
@@ -332,6 +333,8 @@ pub(crate) struct Shared {
     pub(crate) dropped_events: AtomicU64,
     pub(crate) leaked_starts: AtomicU64,
     pub(crate) pending_full_blocks: AtomicU64,
+    pub(crate) xruns: AtomicU64,
+    pub(crate) meters: Meters,
 }
 
 /// Audio-thread side of the queues back to the controller.
@@ -548,10 +551,16 @@ struct Voice {
     /// Planar `[channel][frame]`, the de-zipper length per channel: the crossfaded tail.
     xbuf: Vec<f32>,
     xstride: usize,
+    /// Pool slot index: where this voice's meters live.
+    slot: usize,
+    /// Meter epoch of the current id (see `meter.rs`).
+    epoch: u32,
+    /// Peak per cue output since the last meter flush.
+    meter: Vec<f32>,
 }
 
 impl Voice {
-    fn new(outputs: usize, max_channels: usize, block: usize, dezip: usize) -> Self {
+    fn new(slot: usize, outputs: usize, max_channels: usize, block: usize, dezip: usize) -> Self {
         Voice {
             id: VoiceId(0),
             start: None,
@@ -585,6 +594,9 @@ impl Voice {
             devamp_due: false,
             xbuf: vec![0.0; max_channels * dezip],
             xstride: dezip,
+            slot,
+            epoch: 0,
+            meter: vec![0.0; outputs],
         }
     }
 
@@ -654,7 +666,12 @@ impl Voice {
     }
 
     /// Takes over a validated start, copying its routing into the voice's gains.
-    fn begin(&mut self, s: Box<VoiceStart>) {
+    fn begin(&mut self, s: Box<VoiceStart>, meters: &Meters) {
+        // A new epoch: peaks the previous voice left unread stay its own.
+        meters.flush_voice(self.slot, self.epoch, &mut self.meter);
+        meters.retire(self.slot);
+        self.epoch = next_epoch(self.epoch);
+        meters.assign(self.slot, s.voice, self.epoch, true);
         self.id = s.voice;
         self.channels = usize::from(s.channels);
         self.patch = usize::from(s.patch);
@@ -815,6 +832,14 @@ impl Voice {
             }
             self.declick.set(0.0);
             self.declick.ramp_to(1.0, dezip, Curve::Linear);
+        }
+        if id != self.id {
+            // Peaks so far belong to the old id; from here on they are the new id's.
+            let meters = &outbox.shared.meters;
+            meters.flush_voice(self.slot, self.epoch, &mut self.meter);
+            meters.retire(self.slot);
+            self.epoch = next_epoch(self.epoch);
+            meters.assign(self.slot, id, self.epoch, true);
         }
         self.id = id;
         if let Some(s) = self.start.as_mut() {
@@ -1208,6 +1233,10 @@ impl Voice {
     fn finish(&mut self, at: SampleTime, reason: FinishReason, outbox: &mut Outbox) {
         self.paused = None;
         if let Some(start) = self.start.take() {
+            // Its last peaks are read once more under its own id (same epoch, now inactive).
+            let meters = &outbox.shared.meters;
+            meters.flush_voice(self.slot, self.epoch, &mut self.meter);
+            meters.assign(self.slot, self.id, self.epoch, false);
             outbox.give_back(start);
             outbox.emit(Event::VoiceFinished {
                 voice: self.id,
@@ -1298,6 +1327,11 @@ struct Scratch {
     og: Vec<f32>,
     tmp: Vec<f32>,
     master: Vec<f32>,
+    /// One voice's contribution to one cue output, for its meter.
+    acc: Vec<f32>,
+    /// Frames summed into `acc` (what metering costs per sample).
+    #[cfg(test)]
+    metered: u64,
 }
 
 /// One output patch: a cue output → device output matrix and its cue-output bus.
@@ -1332,6 +1366,8 @@ pub struct Mixer {
     master: Param,
     /// Planar `[device output][frame]`.
     dev: Vec<f32>,
+    /// Peak per device output since the last meter flush.
+    out_peak: Vec<f32>,
     scratch: Scratch,
     #[cfg(test)]
     pub(crate) panic_next: bool,
@@ -1379,7 +1415,10 @@ impl Mixer {
         // Every start the mixer can hold at once: queued, pending, playing, plus one in flight.
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            meters: Meters::new(outs, max_voices, outs),
+            ..Shared::default()
+        });
 
         let identity = |k: usize| if k / outs == k % outs { 1.0 } else { 0.0 };
         let mixer = Mixer {
@@ -1397,7 +1436,7 @@ impl Mixer {
                 shared: Arc::clone(&shared),
             },
             voices: (0..max_voices)
-                .map(|_| Voice::new(outs, max_voice_channels, block, dezip as usize))
+                .map(|k| Voice::new(k, outs, max_voice_channels, block, dezip as usize))
                 .collect(),
             patches: (0..patches)
                 .map(|_| Patch {
@@ -1413,11 +1452,15 @@ impl Mixer {
                 .collect(),
             master: Param::new(1.0),
             dev: vec![0.0; outs * block],
+            out_peak: vec![0.0; outs],
             scratch: Scratch {
                 vgain: vec![0.0; block],
                 og: vec![0.0; block],
                 tmp: vec![0.0; block],
                 master: vec![0.0; block],
+                acc: vec![0.0; block],
+                #[cfg(test)]
+                metered: 0,
             },
             #[cfg(test)]
             panic_next: false,
@@ -1435,12 +1478,28 @@ impl Mixer {
         self.now
     }
 
+    /// Records `count` xruns the host reported (NFR-27). Real-time safe: one atomic add. Voice
+    /// underruns are not xruns; they are counted separately (`underrun_frames`).
+    pub fn note_xruns(&self, count: u64) {
+        self.outbox.shared.xruns.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// A handle that records xruns from any thread (e.g. the device's error callback).
+    pub fn xrun_notifier(&self) -> XrunNotifier {
+        XrunNotifier::new(Arc::clone(&self.outbox.shared))
+    }
+
     /// [`Mixer::process`] inside `catch_unwind`. On a panic the block is silent, the fault count
     /// goes up and the clock still advances. Returns false on a fault.
     pub fn process_guarded(&mut self, out: &mut [f32], frames: usize) -> bool {
         let start = self.now;
         let ok = catch_unwind(AssertUnwindSafe(|| self.process(out, frames))).is_ok();
         if !ok {
+            // Peaks still held locally from the faulted call are dropped (its output was
+            // replaced with silence). A voice that finished earlier in that call has already
+            // published its own.
+            self.out_peak.fill(0.0);
+            self.voices.iter_mut().for_each(|v| v.meter.fill(0.0));
             out.fill(0.0);
             self.now = start + frames.min(out.len() / self.outputs) as u64;
             self.outbox
@@ -1468,6 +1527,12 @@ impl Mixer {
             let n = (chunk.len() / ch).min(frames - done);
             self.process_chunk(chunk, n);
             done += n;
+        }
+        // One atomic per non-silent meter per call (ended voices flushed when they finished).
+        let meters = &self.outbox.shared.meters;
+        meters.flush_outputs(&mut self.out_peak);
+        for v in self.voices.iter_mut().filter(|v| v.is_active()) {
+            meters.flush_voice(v.slot, v.epoch, &mut v.meter);
         }
         self.outbox
             .shared
@@ -1663,7 +1728,7 @@ impl Mixer {
         };
         let free = self.voices.iter_mut().find(|v| !v.is_active());
         match (reject, free) {
-            (None, Some(v)) => v.begin(s),
+            (None, Some(v)) => v.begin(s, &self.outbox.shared.meters),
             (reason, _) => {
                 let voice = s.voice;
                 self.outbox.give_back(s);
@@ -1689,6 +1754,7 @@ impl Mixer {
             delays,
             master,
             dev,
+            out_peak,
             scratch,
             ..
         } = self;
@@ -1755,14 +1821,16 @@ impl Mixer {
             return;
         };
         master.fill(mb);
-        for ((dv, g), dl) in dev
+        for (((dv, g), dl), pk) in dev
             .chunks_exact_mut(block)
             .zip(out_gain.iter_mut())
             .zip(delays.iter_mut())
+            .zip(out_peak.iter_mut())
         {
             g.fill(tmp);
             for ((y, gg), m) in dv.iter_mut().zip(tmp.iter()).zip(mb.iter()) {
                 *y = dl.tick(*y) * gg * m;
+                track(pk, *y);
             }
         }
 
@@ -1799,10 +1867,11 @@ fn render_voice(
         (x, n, v.peek(from, n, Target::Xfade))
     });
     let (got, outcome, rem) = v.read(live, len, block, t0, outbox);
-    let (Some(vg), Some(og), Some(tmp)) = (
+    let (Some(vg), Some(og), Some(tmp), Some(acc)) = (
         s.vgain.get_mut(..len),
         s.og.get_mut(..len),
         s.tmp.get_mut(..len),
+        s.acc.get_mut(..len),
     ) else {
         return;
     };
@@ -1849,6 +1918,7 @@ fn render_voice(
         xp,
         input,
         channels,
+        meter,
         ..
     } = v;
     let (outs, ch) = (cue_out.len(), *channels);
@@ -1868,6 +1938,7 @@ fn render_voice(
         let Some(bo) = bus.get_mut(o * block..o * block + len) else {
             continue;
         };
+        acc.fill(0.0);
         for i in 0..ch {
             let Some(p) = xp.get_mut(i * outs + o) else {
                 continue;
@@ -1879,9 +1950,24 @@ fn render_voice(
             let Some(inp) = input.get(i * block..i * block + len) else {
                 continue;
             };
-            for (((b, x), g), h) in bo.iter_mut().zip(inp).zip(tmp.iter()).zip(og.iter()) {
-                *b += x * g * h;
+            for ((((b, a), x), g), h) in bo
+                .iter_mut()
+                .zip(acc.iter_mut())
+                .zip(inp)
+                .zip(tmp.iter())
+                .zip(og.iter())
+            {
+                let y = x * g * h;
+                *b += y;
+                *a += y;
             }
+        }
+        if let Some(m) = meter.get_mut(o) {
+            acc.iter().for_each(|y| track(m, *y));
+        }
+        #[cfg(test)]
+        {
+            s.metered += acc.len() as u64;
         }
     }
     v.fresh = false;
@@ -1927,7 +2013,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         .unwrap_or(usize::MAX)
         .min(len);
     let got = v.peek(p.done, n, Target::Input(block));
-    let Some(vg) = s.vgain.get_mut(..n) else {
+    let (Some(vg), Some(acc)) = (s.vgain.get_mut(..n), s.acc.get_mut(..n)) else {
         return;
     };
     let g = v.master.current() * v.stop.current() * v.declick.current();
@@ -1948,14 +2034,21 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         xp,
         input,
         channels,
+        meter,
         ..
     } = v;
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter().enumerate() {
         let co = co.current();
+        // As in `render_voice`: an output nothing reaches costs nothing (Pause All on many
+        // voices × outputs renders every tail in one block).
+        if co == 0.0 || (0..ch).all(|i| xp.get(i * outs + o).is_none_or(|x| x.current() == 0.0)) {
+            continue;
+        }
         let Some(bo) = bus.get_mut(o * block..o * block + got) else {
             continue;
         };
+        acc.fill(0.0);
         for i in 0..ch {
             let g = xp.get(i * outs + o).map_or(0.0, |x| x.current()) * co;
             let Some(inp) = input.get(i * block..i * block + got) else {
@@ -1964,9 +2057,18 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
             if g == 0.0 {
                 continue;
             }
-            for ((b, x), h) in bo.iter_mut().zip(inp).zip(vg.iter()) {
-                *b += x * g * h;
+            for (((b, a), x), h) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(vg.iter()) {
+                let y = x * g * h;
+                *b += y;
+                *a += y;
             }
+        }
+        if let Some(m) = meter.get_mut(o) {
+            acc.iter().for_each(|y| track(m, *y));
+        }
+        #[cfg(test)]
+        {
+            s.metered += acc.len() as u64;
         }
     }
     if let Some(p) = v.paused.as_mut() {
@@ -2049,6 +2151,66 @@ mod tests {
         assert!(r.mixer_mut().process_guarded(&mut buf, 64));
         assert!(buf.iter().all(|s| *s == 0.5));
         assert_eq!(ctl.faults(), 1);
+    }
+
+    #[test]
+    fn a_pause_tail_meters_only_the_outputs_it_reaches() {
+        let cfg = MixerConfig {
+            output_channels: 8,
+            ..MixerConfig::default()
+        };
+        let (mut ctl, mixer) = Mixer::new(cfg).unwrap();
+        let (mut tx, rx) = RingBuffer::new(8192);
+        tx.push_entire_slice(&[0.5; 8192]).unwrap();
+        let mut v = VoiceStart::new(VoiceId(1), rx, 1, 8);
+        v.set_crosspoint(0, 2, 1.0);
+        ctl.send(0, CommandKind::StartVoice(Box::new(v)));
+        ctl.send(1000, CommandKind::PauseVoice { voice: VoiceId(1) });
+        let mut r = OfflineRenderer::new(mixer);
+        r.render(1000, &[]);
+        ctl.voice_meters();
+        let before = r.mixer_mut().scratch.metered;
+        let out = r.render(1000, &[]);
+        // The 240-frame declick tail on the one routed output, nothing for the other seven.
+        assert_eq!(r.mixer_mut().scratch.metered - before, 240);
+        let peaks = ctl.voice_meters();
+        assert_eq!(peaks.len(), 1);
+        assert!(
+            peaks[0]
+                .1
+                .iter()
+                .enumerate()
+                .all(|(o, p)| (o == 2) == (*p > 0.0))
+        );
+        assert!(
+            out.chunks(8)
+                .all(|f| f.iter().enumerate().all(|(o, x)| o == 2 || *x == 0.0))
+        );
+    }
+
+    #[test]
+    fn a_faulted_block_reports_no_meter_peaks() {
+        let (mut ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut tx, rx) = RingBuffer::new(4096);
+        tx.push_entire_slice(&[0.5; 4096]).unwrap();
+        let mut v = VoiceStart::new(VoiceId(1), rx, 1, 2);
+        v.set_crosspoint(0, 0, 1.0);
+        ctl.send(0, CommandKind::StartVoice(Box::new(v)));
+        let mut r = OfflineRenderer::new(mixer);
+        r.render(64, &[]);
+        assert_eq!(ctl.output_meters(), vec![0.5, 0.0]);
+        assert_eq!(ctl.voice_meters(), vec![(VoiceId(1), vec![0.5, 0.0])]);
+
+        // Peaks tracked before a panic mid-block were never heard.
+        let m = r.mixer_mut();
+        m.out_peak[1] = 0.75;
+        m.voices[0].meter[1] = 0.75;
+        m.panic_next = true;
+        let mut buf = vec![1.0; 128];
+        assert!(!m.process_guarded(&mut buf, 64));
+        assert!(m.process_guarded(&mut buf, 64));
+        assert_eq!(ctl.output_meters(), vec![0.5, 0.0]);
+        assert_eq!(ctl.voice_meters(), vec![(VoiceId(1), vec![0.5, 0.0])]);
     }
 
     #[test]

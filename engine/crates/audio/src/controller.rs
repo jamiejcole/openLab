@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use rtrb::{Consumer, Producer};
 
 use crate::gain::{Fade, MAX_GAIN_DB, SILENCE_DB, db_to_linear};
+use crate::meter::MeterReader;
 use crate::mixer::{
     COMMAND_CAPACITY, Command, CommandKind, Event, GainTarget, SampleTime, Shared, VoiceId,
     VoiceStart,
@@ -73,6 +74,7 @@ pub struct MixerController {
     held: BinaryHeap<Held>,
     held_commands: usize,
     seq: u64,
+    meters: MeterReader,
 }
 
 impl MixerController {
@@ -88,6 +90,7 @@ impl MixerController {
             commands,
             events,
             returns,
+            meters: MeterReader::new(Arc::clone(&shared)),
             shared,
             cue_outputs,
             lookahead,
@@ -252,5 +255,64 @@ impl MixerController {
     /// Blocks in which commands had to wait because the mixer's pending set was full.
     pub fn pending_full_blocks(&self) -> u64 {
         self.shared.pending_full_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Xruns the device layer has reported so far (NFR-27). Monotonic. Voice underruns are not
+    /// xruns; see [`MixerController::underrun_frames`].
+    pub fn xruns(&self) -> u64 {
+        self.shared.xruns.load(Ordering::Relaxed)
+    }
+
+    /// Takes the peak absolute sample of each device output since the last read (AUD-19), as
+    /// sent to the device: after patch, output level, mute, polarity, delay and master. Fills
+    /// `out[d]` for device output `d` and returns how many it filled; outputs beyond `out` are
+    /// not read and keep their peaks. Never blocks the audio thread; allocates nothing.
+    pub fn read_output_meters_into(&mut self, out: &mut [f32]) -> usize {
+        self.meters.read_outputs(out)
+    }
+
+    /// [`MixerController::read_output_meters_into`] for every device output.
+    pub fn output_meters(&mut self) -> Vec<f32> {
+        let mut out = vec![0.0; self.meters.device_outputs()];
+        self.meters.read_outputs(&mut out);
+        out
+    }
+
+    /// Entries a full voice-meter read can produce: two per voice slot (a voice that ended or
+    /// was re-keyed since the last read, and the slot's current voice).
+    pub fn voice_meter_capacity(&self) -> usize {
+        self.meters.capacity()
+    }
+
+    /// Takes each voice's peak per cue output since the last read (AUD-19). The meter point is
+    /// the voice's contribution to its patch's cue-output bus: after crosspoints, cue-output
+    /// level, voice master, fades, stop fade and pause declick; before the patch matrix.
+    ///
+    /// Entry `k` is `ids[k]` with peaks `peaks[k * cue_outputs()..(k + 1) * cue_outputs()]`;
+    /// returns the number of entries. Every active voice (paused ones included) has an entry. A
+    /// voice that ended, or was re-keyed by a resume, since the last read gets one more entry
+    /// with its last non-zero peaks under its old id. Peaks are never reported under another
+    /// voice's id; they are dropped for a voice this reader never saw (it started and ended
+    /// between two reads) and for the earlier voice when its slot changed hands twice between
+    /// two reads. Slots whose entries do not fit are left for the next read, which starts at
+    /// the first of them; size `ids` to [`MixerController::voice_meter_capacity`] to read all at
+    /// once.
+    /// Never blocks the audio thread; allocates nothing.
+    pub fn read_voice_meters_into(&mut self, ids: &mut [VoiceId], peaks: &mut [f32]) -> usize {
+        self.meters.read_voices(ids, peaks)
+    }
+
+    /// [`MixerController::read_voice_meters_into`] collected into `(voice, peaks)` pairs.
+    pub fn voice_meters(&mut self) -> Vec<(VoiceId, Vec<f32>)> {
+        let outs = self.cue_outputs;
+        let cap = self.meters.capacity();
+        let mut ids = vec![VoiceId(0); cap];
+        let mut peaks = vec![0.0; cap * outs];
+        let n = self.meters.read_voices(&mut ids, &mut peaks);
+        ids.into_iter()
+            .take(n)
+            .zip(peaks.chunks(outs.max(1)))
+            .map(|(id, p)| (id, p.to_vec()))
+            .collect()
     }
 }
