@@ -223,9 +223,10 @@ pub enum CommandKind {
     /// Leave the current loop at the end of the current play (CT-16): `stop` ends the voice
     /// there, otherwise playback continues with the next slice. Only for voices with a slice
     /// table; continuing out of a loop also needs the voice's `link`. A devamp the voice cannot
-    /// carry out is reported as [`Event::DevampIgnored`]. The integrated fade-out follows the
-    /// planned end, so a devamp stop ends at the loop boundary without it. On a paused voice the
-    /// [`Event::DevampScheduled`] is sent when it resumes.
+    /// carry out is reported as [`Event::DevampIgnored`]. A devamp equal to the one already
+    /// pending (same `stop`) is answered again with [`Event::DevampScheduled`]. The integrated
+    /// fade-out follows the planned end, so a devamp stop ends at the loop boundary without it.
+    /// On a paused voice the [`Event::DevampScheduled`] is sent when it resumes.
     Devamp {
         voice: VoiceId,
         stop: bool,
@@ -317,8 +318,9 @@ pub enum Event {
     /// the matching `SliceEnded` carries the actual sample.
     DevampScheduled { voice: VoiceId, at: SampleTime },
     /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
-    /// devamp is already under way, or leaving a loop needs a disk-stream `link` it does not
-    /// have. Playback is unchanged.
+    /// different devamp (other `stop`) is pending, a loop exit is still being carried out, or
+    /// leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged.
+    /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
 }
 
@@ -541,6 +543,8 @@ struct Voice {
     declick: Param,
     /// See [`Xfade`].
     xfade: Option<Xfade>,
+    /// Devamp requests arrived while paused; the resume answers them.
+    devamp_due: bool,
     /// Planar `[channel][frame]`, the de-zipper length per channel: the crossfaded tail.
     xbuf: Vec<f32>,
     xstride: usize,
@@ -578,6 +582,7 @@ impl Voice {
             paused: None,
             declick: Param::new(1.0),
             xfade: None,
+            devamp_due: false,
             xbuf: vec![0.0; max_channels * dezip],
             xstride: dezip,
         }
@@ -677,6 +682,7 @@ impl Voice {
         self.paused = None;
         self.declick.set(1.0);
         self.xfade = None;
+        self.devamp_due = false;
         self.start = Some(s);
         self.enter(0);
     }
@@ -701,8 +707,9 @@ impl Voice {
         self.start.as_ref().and_then(|s| s.link.as_deref())
     }
 
-    /// Arms a devamp at the end of the current play (CT-16). Ignored without a slice table,
-    /// while a devamp is already under way, or when continuing out of a loop has no link.
+    /// Arms a devamp at the end of the current play (CT-16). Ignored without a slice table, while
+    /// a different devamp is pending or a loop exit is under way, or when continuing out of a
+    /// loop has no link.
     fn request_devamp(&mut self, stop: bool, t: SampleTime, outbox: &mut Outbox) {
         let ignored = Event::DevampIgnored {
             voice: self.id,
@@ -710,12 +717,18 @@ impl Voice {
         };
         // While the last devamp's exit is under way the voice's ring position is not yet the
         // continuation's, so a new cut point could not be computed.
-        if !self.has_slices()
-            || self.devamp.is_some()
-            || self.awaiting.is_some()
-            || self.exit.is_some()
-        {
+        if !self.has_slices() || self.awaiting.is_some() || self.exit.is_some() {
             outbox.emit(ignored);
+            return;
+        }
+        // The same devamp again (the cue engine re-sends a pending one after a resume) is
+        // answered again; a different one cannot be carried out as well.
+        if let Some(pending) = self.devamp {
+            if (pending == Devamp::Stop) == stop {
+                self.announce_devamp(t, outbox);
+            } else {
+                outbox.emit(ignored);
+            }
             return;
         }
         let more_plays = self.plays_left != Some(0)
@@ -743,8 +756,14 @@ impl Voice {
             Devamp::Continue { cut: false }
         };
         self.devamp = Some(mode);
+        self.announce_devamp(t, outbox);
+    }
+
+    /// Answers a devamp request applied on `t` with where the voice leaves the loop. A paused
+    /// voice does not know that yet: its resume answers, once however many requests came in.
+    fn announce_devamp(&mut self, t: SampleTime, outbox: &mut Outbox) {
         if self.paused.is_some() {
-            // Where it leaves the loop is known only once it resumes, which reports it.
+            self.devamp_due = true;
             return;
         }
         outbox.emit(Event::DevampScheduled {
@@ -801,8 +820,9 @@ impl Voice {
         if let Some(s) = self.start.as_mut() {
             s.voice = id;
         }
-        // The resume moves where a pending devamp leaves the loop (and renames the voice).
-        if self.devamp.is_some() {
+        // Answers requests made while paused. A devamp answered before the pause is not
+        // announced again: the cue engine re-sends it for the resumed id and gets its answer.
+        if std::mem::take(&mut self.devamp_due) && self.devamp.is_some() {
             outbox.emit(Event::DevampScheduled {
                 voice: id,
                 at: t.saturating_add(self.left),
