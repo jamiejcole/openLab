@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The cue engine: cue lifecycle, timing, continue modes, GO and playheads (ARCHITECTURE §3.3).
+//! The cue engine: cue lifecycle, timing, continue modes, groups, GO and playheads
+//! (ARCHITECTURE §3.3).
 //!
 //! Pure and deterministic: [`CueEngine::handle`] takes the current workspace, one [`Input`] and
 //! the sample time, and returns the [`Action`]s to carry out. Semantics are specified in
 //! `docs/cue-engine.md`.
 
+mod group;
 mod playhead;
+mod rng;
 mod run;
 mod time;
 mod types;
@@ -21,7 +24,8 @@ use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
 use playhead::Playhead;
-use run::{Loaded, Phase, Run, Slot, Voice};
+use rng::SplitMix64;
+use run::{Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 
 /// Cue starts allowed per call on top of the workspace's cue count. Without trigger cycles a call
 /// starts each cue at most once, so only a cycle reaches the limit.
@@ -37,6 +41,10 @@ pub struct CueEngine {
     last_go: Option<SampleTime>,
     next_run: u64,
     next_seq: u64,
+    /// Random groups and shuffled playlists draw from this, seeded from the config.
+    rng: SplitMix64,
+    /// The child each random group picked last, so it is not picked twice in a row.
+    last_random: BTreeMap<CueId, CueId>,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -49,6 +57,8 @@ struct Ctx<'w> {
     budget: usize,
     limit: usize,
     out: Vec<Action>,
+    /// Runtimes that ended since groups last looked: `(cue, at, how)`.
+    vacated: Vec<(CueId, SampleTime, Exit)>,
 }
 
 impl Ctx<'_> {
@@ -71,6 +81,8 @@ impl CueEngine {
             last_go: None,
             next_run: 1,
             next_seq: 0,
+            rng: SplitMix64::new(config.seed()),
+            last_random: BTreeMap::new(),
         }
     }
 
@@ -89,13 +101,28 @@ impl CueEngine {
             budget: limit,
             limit,
             out: Vec::new(),
+            vacated: Vec::new(),
         };
         self.sync_model(&mut cx);
         self.sync_playheads(&mut cx);
         self.advance(&mut cx);
         self.apply(input, &mut cx);
+        self.drain(&mut cx);
         self.advance(&mut cx);
+        self.settle_groups(&mut cx);
         cx.out
+    }
+
+    /// Safety net: ends groups left running with no busy child (see `sweep_groups`) and carries
+    /// out what that triggers. Each round ends at least one group's action and starts only within
+    /// the call's budget, so this ends; the guard is a second line of defence.
+    fn settle_groups(&mut self, cx: &mut Ctx) {
+        let mut guard = self.slots.len().saturating_add(1);
+        while guard > 0 && self.sweep_groups(cx) {
+            guard -= 1;
+            self.drain(cx);
+            self.advance(cx);
+        }
     }
 
     /// The earliest sample at which a timer of a cue expires, if any.
@@ -152,12 +179,20 @@ impl CueEngine {
     /// The standing-by cue of a list (CL-06), looked up in `ws`.
     pub fn standing_by<'w>(&self, ws: &'w Workspace, list: CueListId) -> Option<&'w Cue> {
         let id = self.playhead(list)?;
+        let cues = &ws.cue_lists.iter().find(|l| l.id == list)?.cues;
+        let path = playhead::locate(cues, id)?;
+        let &(level, index) = path.last()?;
+        level.get(index)
+    }
+
+    /// The cues of a list the playhead can stand on, in order: top-level cues and, depth-first,
+    /// the cues inside "start first and enter" groups.
+    pub fn playhead_positions(ws: &Workspace, list: CueListId) -> Vec<CueId> {
         ws.cue_lists
             .iter()
-            .find(|l| l.id == list)?
-            .cues
-            .iter()
-            .find(|c| c.id == id)
+            .find(|l| l.id == list)
+            .map(|l| playhead::positions(&l.cues))
+            .unwrap_or_default()
     }
 
     /// Most cue starts one call carries out: the workspace's cue count plus [`CHAIN_MARGIN`].
@@ -180,27 +215,27 @@ impl CueEngine {
             }
             Input::Stop { cue, fade_out } => {
                 if self.known(cue, cx) {
-                    self.stop(cue, fade_out, cx);
+                    self.stop_tree(cue, fade_out, cx);
                 }
             }
             Input::Pause { cue } => {
                 if self.known(cue, cx) {
-                    self.pause(cue, cx);
+                    self.pause_tree(cue, cx);
                 }
             }
             Input::Resume { cue } => {
                 if self.known(cue, cx) {
-                    self.resume(cue, cx.now, cx);
+                    self.resume_tree(cue, cx.now, cx);
                 }
             }
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
-                    self.load(cue, time, cx);
+                    self.load_tree(cue, time, cx);
                 }
             }
             Input::Reset { cue } => {
                 if self.known(cue, cx) {
-                    self.reset(cue, cx);
+                    self.reset_tree(cue, cx);
                 }
             }
             Input::PlayheadNext { list } => self.navigate(list, cx, Playhead::next),
@@ -224,7 +259,8 @@ impl CueEngine {
 
     // ----- model edits -----
 
-    /// Stops and forgets cues that are no longer in the workspace.
+    /// Stops and forgets cues that are no longer in the workspace, then lets their groups react
+    /// (and ends groups an edit left with no busy child).
     fn sync_model(&mut self, cx: &mut Ctx) {
         if self.slots.is_empty() {
             return;
@@ -233,21 +269,37 @@ impl CueEngine {
         for list in &cx.ws.cue_lists {
             collect_ids(&list.cues, &mut present);
         }
+        self.last_random.retain(|group, _| present.contains(group));
+        // Gone, or now a cue of the other sort (group or not) than the one running: a runtime
+        // only fits the kind it was started as.
+        let ws = cx.ws;
         let gone: Vec<CueId> = self
             .slots
-            .keys()
-            .filter(|id| !present.contains(*id))
-            .copied()
+            .iter()
+            .filter(|(id, slot)| {
+                !present.contains(*id)
+                    || matches!(slot, Slot::Active(run) if run.group.is_some()
+                        != ws.find_cue(**id).is_some_and(|c| matches!(c.kind, CueKind::Group { .. })))
+            })
+            .map(|(id, _)| *id)
             .collect();
         for cue in gone {
             let before = self.state(cue);
-            if let Some(slot) = self.slots.remove(&cue) {
+            if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
                 release(cue, &slot, cx);
                 if matches!(slot, Slot::Active(_)) {
                     cx.warn(EngineWarning::CueRemoved { cue });
                 }
             }
             self.report(cue, before, cx.now, cx);
+        }
+        self.drain(cx);
+        // Each round removes at least one group's run and starts nothing; the guard is a second
+        // line of defence.
+        let mut guard = self.slots.len().saturating_add(1);
+        while guard > 0 && self.sweep_groups(cx) {
+            guard -= 1;
+            self.drain(cx);
         }
     }
 
@@ -297,26 +349,20 @@ impl CueEngine {
         {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
-        let Some(index) = self
+        let Some(path) = self
             .playhead(list)
-            .and_then(|id| cues.iter().position(|c| c.id == id))
+            .and_then(|id| playhead::locate(cues, id))
         else {
             return ignored(GoIgnoredReason::NoCue, cx);
         };
-        let Some(cue) = cues.get(index) else {
+        let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
             return ignored(GoIgnoredReason::NoCue, cx);
         };
         self.last_go = Some(cx.now);
         self.start(cue.id, cx.now, cx);
-        // The playhead skips the rest of the cue's continue chain, as the model stands now.
-        let mut last = index;
-        while let Some(c) = cues.get(last)
-            && c.continue_mode != ContinueMode::DoNotContinue
-            && last.saturating_add(1) < cues.len()
-        {
-            last += 1;
-        }
-        let next = cues.get(last.saturating_add(1)).map(|c| c.id);
+        // The playhead skips the rest of the cue's continue chain, as the model stands now, or
+        // enters a "start first and enter" group.
+        let next = playhead::after_go(&path);
         self.move_playhead(list, next, cx);
     }
 
@@ -351,7 +397,7 @@ impl CueEngine {
             return cx.warn(EngineWarning::UnknownList { list });
         };
         if let Some(id) = cue
-            && !cues.iter().any(|c| c.id == id)
+            && !playhead::positions(cues).contains(&id)
         {
             return cx.warn(EngineWarning::NotInList { list, cue: id });
         }
@@ -368,11 +414,19 @@ impl CueEngine {
         else {
             return cx.warn(EngineWarning::UnknownList { list });
         };
-        match cues
+        let numbered = |c: &&Cue| c.number.as_deref() == Some(number.as_str());
+        if let Some(cue) = playhead::position_cues(cues).into_iter().find(numbered) {
+            return self.move_playhead(list, Some(cue.id), cx);
+        }
+        // A cue it cannot stand on (inside a group of another mode).
+        let deep = cx
+            .ws
+            .cue_lists
             .iter()
-            .find(|c| c.number.as_deref() == Some(number.as_str()))
-        {
-            Some(cue) => self.move_playhead(list, Some(cue.id), cx),
+            .find(|l| l.id == list)
+            .and_then(|l| find_numbered(&l.cues, &number));
+        match deep {
+            Some(cue) => cx.warn(EngineWarning::NotInList { list, cue }),
             None => cx.warn(EngineWarning::NumberNotFound { list, number }),
         }
     }
@@ -407,7 +461,7 @@ impl CueEngine {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
             Some(Slot::Active(run)) if run.paused_at.is_some() => {
-                return self.resume(cue, at, cx);
+                return self.resume_tree(cue, at, cx);
             }
             Some(Slot::Active(run)) => {
                 return cx.warn(EngineWarning::TriggerIgnored {
@@ -447,23 +501,41 @@ impl CueEngine {
                 paused_at: None,
                 stop_end: None,
                 broken: None,
+                group: matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default),
             }),
         );
         self.report(cue, before, at, cx);
+        self.adopt_parents(cue, at, cx);
     }
 
-    fn stop(&mut self, cue: CueId, fade_out: Option<FadeSpec>, cx: &mut Ctx) {
+    /// Stops one cue (a group: itself only; `stop_tree` stops its descendants first).
+    fn stop_one(&mut self, cue: CueId, fade_out: Option<FadeSpec>, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
         let frames = fade_out.map_or(0, |f| cx.secs(f.duration, &self.config));
+        let busy_children = self.any_busy_child(cx.ws, cue);
         match self.slots.get_mut(&cue) {
             None | Some(Slot::Broken(_)) => return,
             Some(Slot::Active(run)) if run.broken.is_some() => {
                 // It owns no voice; stopping cancels its pending auto-continue.
                 if let Some(reason) = run.broken {
                     self.slots.insert(cue, Slot::Broken(reason));
+                    cx.vacated.push((cue, now, Exit::Stopped));
                 }
                 return self.report(cue, before, now, cx);
+            }
+            // A group whose children are fading out ends when the last of them has stopped.
+            Some(Slot::Active(run @ Run { group: Some(_), .. }))
+                if frames > 0 && busy_children && run.paused_at.is_none() =>
+            {
+                if let Some(g) = run.group.as_mut()
+                    && !g.stopping
+                {
+                    g.stopping = true;
+                    run.post_wait = None;
+                    run.follow = false;
+                    return self.report(cue, before, now, cx);
+                }
             }
             Some(Slot::Active(run))
                 if frames > 0
@@ -489,19 +561,19 @@ impl CueEngine {
             }
             Some(_) => {}
         }
-        if let Some(slot) = self.slots.remove(&cue) {
+        if let Some(slot) = self.remove_slot(cue, now, Exit::Stopped, cx) {
             release(cue, &slot, cx);
         }
         self.report(cue, before, now, cx);
     }
 
-    fn pause(&mut self, cue: CueId, cx: &mut Ctx) {
+    fn pause_one(&mut self, cue: CueId, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
-        if run.paused_at.is_some() || run.stop_end.is_some() {
+        if run.paused_at.is_some() || run.stop_end.is_some() || run.is_group_stopping() {
             return;
         }
         run.paused_at = Some(now);
@@ -517,7 +589,7 @@ impl CueEngine {
     }
 
     /// Resumes a paused cue as of sample `at`: every timer keeps the time it had left.
-    fn resume(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+    fn resume_one(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
         let fresh = self.new_run();
@@ -584,9 +656,9 @@ impl CueEngine {
         self.report(cue, before, cx.now, cx);
     }
 
-    fn reset(&mut self, cue: CueId, cx: &mut Ctx) {
+    fn reset_one(&mut self, cue: CueId, cx: &mut Ctx) {
         let before = self.state(cue);
-        if let Some(slot) = self.slots.remove(&cue) {
+        if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
             release(cue, &slot, cx);
         }
         self.report(cue, before, cx.now, cx);
@@ -608,7 +680,7 @@ impl CueEngine {
             return;
         }
         if run.stop_end.is_some() {
-            self.slots.remove(&cue);
+            self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         }
         let (Phase::Action { start, end: None }, Voice::Started { .. }) = (run.phase, run.voice)
@@ -619,18 +691,27 @@ impl CueEngine {
         run.phase = Phase::Done;
         run.voice = Voice::None;
         let follow = run.follow;
-        self.settle(cue);
+        let seq = run.seq;
+        self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
         if follow {
             self.continue_after(cue, at, cx);
         }
+        self.child_action_done(cue, seq, at, cx);
     }
 
     fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
         let before = self.state(cue);
+        // A group owns no voice, so no feedback can concern it.
+        let group = cx
+            .ws
+            .find_cue(cue)
+            .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
         let current = match self.slots.get(&cue) {
-            Some(Slot::Active(run)) => run.run == run_id && run.broken.is_none(),
-            Some(Slot::Loaded(loaded)) => loaded.run == run_id,
+            Some(Slot::Active(run)) => {
+                run.run == run_id && run.broken.is_none() && run.group.is_none()
+            }
+            Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
             Some(Slot::Broken(_)) | None => false,
         };
         if !current {
@@ -653,14 +734,18 @@ impl CueEngine {
                 if matches!(run.phase, Phase::Action { .. }) {
                     run.phase = Phase::Done;
                 }
+                let seq = run.seq;
                 self.slots.insert(cue, Slot::Active(run));
-                self.settle(cue);
+                self.settle(cue, cx.now, cx);
+                self.report(cue, before, cx.now, cx);
+                // A playlist moves on past a child that broke.
+                self.child_action_done(cue, seq, cx.now, cx);
             }
             Slot::Loaded(_) | Slot::Broken(_) => {
                 self.slots.insert(cue, Slot::Broken(reason));
+                self.report(cue, before, cx.now, cx);
             }
         }
-        self.report(cue, before, cx.now, cx);
     }
 
     // ----- timers -----
@@ -685,6 +770,7 @@ impl CueEngine {
             }
             guard -= 1;
             self.step(cue, at, cx);
+            self.drain(cx);
         }
     }
 
@@ -709,7 +795,7 @@ impl CueEngine {
             return;
         };
         if run.stop_end.is_some_and(|end| end <= at) {
-            self.slots.remove(&cue);
+            self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         }
         if let Phase::PreWait { until } = run.phase {
@@ -720,7 +806,7 @@ impl CueEngine {
         }
         if run.post_wait.is_some_and(|p| p <= at) {
             run.post_wait = None;
-            self.settle(cue);
+            self.settle(cue, at, cx);
             self.report(cue, before, at, cx);
             return self.continue_after(cue, at, cx);
         }
@@ -729,33 +815,36 @@ impl CueEngine {
         {
             run.phase = Phase::Done;
             let follow = run.follow;
-            self.settle(cue);
+            let seq = run.seq;
+            self.settle(cue, at, cx);
             self.report(cue, before, at, cx);
             if follow {
                 self.continue_after(cue, at, cx);
             }
+            self.child_action_done(cue, seq, at, cx);
         }
     }
 
     /// The pre-wait has elapsed: the action starts on sample `at`.
     fn begin_action(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
-        let Some(model) = cx.ws.find_cue(cue) else {
+        let ws = cx.ws;
+        let Some(model) = ws.find_cue(cue) else {
             // Cannot happen (missing cues are dropped at the start of each call), but a run left
             // due would never let the deadline loop move on.
-            self.slots.remove(&cue);
+            self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         };
         let post_wait = cx.secs(model.post_wait, &self.config);
         // A run that broke during its pre-wait skips its action but keeps its timing.
         let broken = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
-        let duration = match &model.kind {
-            _ if !model.armed || broken => Some(0),
-            CueKind::Audio { .. } => None,
-            CueKind::Wait { duration } => Some(cx.secs(*duration, &self.config)),
-            CueKind::Memo => Some(0),
+        let act = match &model.kind {
+            _ if !model.armed || broken => Act::Silent(0),
+            CueKind::Audio { .. } => Act::Voice,
+            CueKind::Wait { duration } => Act::Silent(cx.secs(*duration, &self.config)),
+            CueKind::Memo => Act::Silent(0),
+            CueKind::Group { .. } => Act::Group,
             CueKind::Fade { .. }
-            | CueKind::Group { .. }
             | CueKind::Start { .. }
             | CueKind::Stop { .. }
             | CueKind::Pause { .. }
@@ -767,16 +856,17 @@ impl CueEngine {
             | CueKind::Disarm { .. }
             | CueKind::Network { .. } => {
                 cx.warn(EngineWarning::Unsupported { cue });
-                Some(0)
+                Act::Silent(0)
             }
         };
+        let continue_mode = group::effective_continue(ws, model);
         let now = cx.now;
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
         let offset = run.action_offset;
-        match duration {
-            None => {
+        match act {
+            Act::Voice => {
                 let voice_at = at.max(now);
                 if at < now {
                     cx.warn(EngineWarning::LateStart {
@@ -795,7 +885,7 @@ impl CueEngine {
                     from: offset,
                 };
             }
-            Some(_) => {
+            Act::Silent(_) | Act::Group => {
                 if run.voice == Voice::Loaded {
                     cx.out.push(Action::UnloadVoice { cue, run: run.run });
                 }
@@ -804,32 +894,64 @@ impl CueEngine {
         }
         run.phase = Phase::Action {
             start: at,
-            end: duration.map(|d| at.saturating_add(d.saturating_sub(offset))),
+            end: match act {
+                Act::Silent(d) => Some(at.saturating_add(d.saturating_sub(offset))),
+                Act::Voice | Act::Group => None,
+            },
         };
-        run.post_wait = (model.continue_mode == ContinueMode::AutoContinue)
+        run.post_wait = (continue_mode == ContinueMode::AutoContinue)
             .then(|| at.saturating_add(post_wait.saturating_sub(offset)));
-        run.follow = !broken && model.continue_mode == ContinueMode::AutoFollow;
-        self.settle(cue);
+        run.follow = !broken && continue_mode == ContinueMode::AutoFollow;
+        self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
+        if act == Act::Group {
+            self.start_children(cue, at, cx);
+        }
     }
 
-    /// Triggers the cue after `cue` in its list or group, on sample `at`.
+    /// Triggers the cue after `cue` in its list or group, on sample `at`. Inside timeline,
+    /// playlist and random groups the group runs its children, so nothing is triggered.
     fn continue_after(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+        if !group::chains_siblings(cx.ws, cue) {
+            return;
+        }
         if let Some(next) = next_sibling(cx.ws, cue) {
             self.start(next, at, cx);
         }
     }
 
-    /// Forgets a run that has nothing left to do; a broken one stays broken.
-    fn settle(&mut self, cue: CueId) {
+    /// Forgets a run that has nothing left to do (on sample `at`); a broken one stays broken.
+    fn settle(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         if let Some(Slot::Active(run)) = self.slots.get(&cue)
             && run.is_finished()
         {
+            let failed = run.group.as_ref().is_some_and(|g| g.failed);
+            let exit = if run.broken.is_some() || failed {
+                Exit::Broken
+            } else {
+                Exit::Completed
+            };
             match run.broken {
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };
+            cx.vacated.push((cue, at, exit));
         }
+    }
+
+    /// Removes a cue's runtime; if it was active, its group hears that it ended on `at`.
+    fn remove_slot(
+        &mut self,
+        cue: CueId,
+        at: SampleTime,
+        exit: Exit,
+        cx: &mut Ctx,
+    ) -> Option<Slot> {
+        let slot = self.slots.remove(&cue)?;
+        if matches!(slot, Slot::Active(_)) {
+            cx.vacated.push((cue, at, exit));
+        }
+        Some(slot)
     }
 
     fn report(&self, cue: CueId, before: CueState, at: SampleTime, cx: &mut Ctx) {
@@ -878,15 +1000,51 @@ fn next_sibling(ws: &Workspace, cue: CueId) -> Option<CueId> {
         .map(|c| c.id)
 }
 
-fn collect_ids(cues: &[Cue], ids: &mut HashSet<CueId>) {
-    for cue in cues {
-        ids.insert(cue.id);
-        collect_ids(cue.children(), ids);
+/// What a cue's action does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    /// Plays a voice; completes on feedback.
+    Voice,
+    /// Completes after this many samples.
+    Silent(SampleTime),
+    /// Runs the group's children; completes when none is busy.
+    Group,
+}
+
+/// Every cue in `cues`, depth-first. Iterative, so nesting depth cannot overflow the stack.
+fn each_cue(cues: &[Cue], mut f: impl FnMut(&Cue)) {
+    let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
+    while let Some(level) = stack.last_mut() {
+        match level.next() {
+            Some(cue) => {
+                f(cue);
+                stack.push(cue.children().iter());
+            }
+            None => {
+                stack.pop();
+            }
+        }
     }
 }
 
+fn collect_ids(cues: &[Cue], ids: &mut HashSet<CueId>) {
+    each_cue(cues, |c| {
+        ids.insert(c.id);
+    });
+}
+
 fn count_cues(cues: &[Cue]) -> usize {
-    cues.iter()
-        .map(|c| count_cues(c.children()).saturating_add(1))
-        .fold(0, usize::saturating_add)
+    let mut n = 0usize;
+    each_cue(cues, |_| n = n.saturating_add(1));
+    n
+}
+
+fn find_numbered(cues: &[Cue], number: &str) -> Option<CueId> {
+    let mut found = None;
+    each_cue(cues, |c| {
+        if found.is_none() && c.number.as_deref() == Some(number) {
+            found = Some(c.id);
+        }
+    });
+    found
 }
