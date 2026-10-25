@@ -9,7 +9,7 @@ use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, GroupMode};
 use crate::model::{CueId, Workspace};
 use crate::tree;
 
-use super::run::{Exit, GroupRun, Phase, PlaylistRun, Run, Slot, Voice};
+use super::run::{Exit, GroupRun, Phase, PlaylistRun, Run, Slot};
 use super::time::SampleTime;
 use super::{Ctx, CueEngine};
 
@@ -159,7 +159,8 @@ impl CueEngine {
         Some(pick)
     }
 
-    /// Starts the playlist's next child on `at` (its first when nothing has played yet). Broken
+    /// Starts the playlist's next child on `at` (its first when nothing has played yet); a
+    /// devamped playlist starts none, so it completes with its current child. Broken
     /// children are skipped; after the last child a looping playlist starts a new pass (shuffled
     /// afresh). Stops trying after a pass in which nothing could start, or when the chain budget
     /// is spent, so a playlist of broken or zero-length children cannot spin.
@@ -179,7 +180,7 @@ impl CueEngine {
                 paused_at: None,
                 phase: Phase::Action { .. },
                 ..
-            })) if !g.stopping && !g.adopted => g.playlist.take(),
+            })) if !g.stopping && !g.adopted && g.devamp.is_none() => g.playlist.take(),
             _ => return,
         };
         // A pass began in this call: ending it again means a whole pass in which nothing started.
@@ -353,6 +354,8 @@ impl CueEngine {
             return self.report(group, before, at, cx);
         }
         let follow = run.follow && !g.failed && !g.adopted;
+        // A devamped playlist that asked for it starts the cue after the Devamp cue now.
+        let devamp_next = g.devamp.take().filter(|(_, next)| *next).map(|(by, _)| by);
         run.phase = Phase::Done;
         run.follow = false;
         let seq = run.seq;
@@ -360,6 +363,9 @@ impl CueEngine {
         self.report(group, before, at, cx);
         if follow {
             self.continue_after(group, at, cx);
+        }
+        if let Some(by) = devamp_next {
+            self.continue_after(by, at, cx);
         }
         self.child_action_done(group, seq, at, cx);
     }
@@ -417,28 +423,16 @@ impl CueEngine {
                     };
                     let seq = self.next_seq;
                     self.next_seq = self.next_seq.saturating_add(1);
-                    self.slots.insert(
-                        group,
-                        Slot::Active(Run {
-                            run,
-                            seq,
-                            phase: Phase::Action {
-                                start: at,
-                                end: None,
-                            },
-                            action_offset: 0,
-                            post_wait: None,
-                            follow: false,
-                            voice: Voice::None,
-                            paused_at: None,
-                            stop_end: None,
-                            broken: None,
-                            group: Some(GroupRun {
-                                adopted: true,
-                                ..GroupRun::default()
-                            }),
-                        }),
-                    );
+                    let adopted = GroupRun {
+                        adopted: true,
+                        ..GroupRun::default()
+                    };
+                    let phase = Phase::Action {
+                        start: at,
+                        end: None,
+                    };
+                    self.slots
+                        .insert(group, Slot::Active(Run::new(run, seq, phase, Some(adopted))));
                     self.report(group, before, at, cx);
                 }
             }
