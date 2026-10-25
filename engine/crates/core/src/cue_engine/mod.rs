@@ -501,6 +501,7 @@ impl CueEngine {
     fn resume(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
+        let fresh = self.new_run();
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
@@ -513,12 +514,17 @@ impl CueEngine {
         run.shift(at.saturating_sub(paused_at));
         if let (Voice::Started { .. }, Phase::Action { .. }) = (run.voice, run.phase) {
             let voice_at = at.max(now);
+            // The resumed voice is a new segment with its own id: feedback still on its way for
+            // the paused one (e.g. the end report of a pause carried out as a stop) is then
+            // stale and ignored, whenever it arrives.
             cx.out.push(Action::ResumeVoice {
                 cue,
-                run: run.run,
+                run: fresh,
+                paused: run.run,
                 at: voice_at,
                 offset,
             });
+            run.run = fresh;
             run.voice = Voice::Started {
                 at: voice_at,
                 from: offset,
