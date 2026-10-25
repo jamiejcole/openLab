@@ -6,18 +6,13 @@
 
 mod common;
 
-use std::num::NonZeroU32;
-
 use common::*;
 use openlab_core::*;
 
 const RATE: u32 = 1000;
 
 fn config(lookahead: SampleTime) -> EngineConfig {
-    EngineConfig {
-        sample_rate: NonZeroU32::new(RATE).unwrap(),
-        lookahead,
-    }
+    EngineConfig::new(RATE, lookahead).unwrap()
 }
 
 fn memo(n: u128) -> Cue {
@@ -1706,4 +1701,36 @@ fn voice_position_counts_from_a_late_start() {
         pause_offset(&rig.at(1500, Input::Pause { cue: id(1) })),
         Some(250)
     );
+}
+
+#[test]
+fn lookahead_window_excludes_its_end() {
+    // With lookahead one block, `now .. now + block` is the next block; its end is the first
+    // sample of the block after, which is not committed yet (review L2).
+    let mut rig = Rig::with_config(vec![timed(sound(1), 1.6, 0.0, DNC)], config(10));
+    rig.start(0, 1);
+    assert!(rig.tick(1590).is_empty());
+    assert_eq!(voice_starts(&rig.tick(1591)), vec![(id(1), 1600)]);
+}
+
+#[test]
+fn config_is_checked() {
+    assert_eq!(
+        EngineConfig::new(0, 0),
+        Err(EngineConfigError::SampleRate(0))
+    );
+    assert_eq!(
+        EngineConfig::new(MAX_SAMPLE_RATE + 1, 0),
+        Err(EngineConfigError::SampleRate(MAX_SAMPLE_RATE + 1))
+    );
+    assert_eq!(
+        EngineConfig::new(48_000, 48_001),
+        Err(EngineConfigError::Lookahead {
+            lookahead: 48_001,
+            max: 48_000
+        })
+    );
+    let ok = EngineConfig::new(48_000, 48_000).unwrap();
+    assert_eq!((ok.sample_rate().get(), ok.lookahead()), (48_000, 48_000));
+    assert!(EngineConfig::new(MAX_SAMPLE_RATE, 0).is_ok());
 }
