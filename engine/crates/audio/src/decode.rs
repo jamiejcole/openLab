@@ -111,6 +111,12 @@ pub enum MediaError {
     TooManyStreams,
     /// A worker thread could not be started or has stopped.
     Worker,
+    /// Preloading needs more memory than its budget (`bytes` is at least what it would take),
+    /// or the memory could not be had. Stream the file instead, or report the cue.
+    TooLarge {
+        bytes: u64,
+        limit: u64,
+    },
 }
 
 impl fmt::Display for MediaError {
@@ -127,6 +133,12 @@ impl fmt::Display for MediaError {
             MediaError::BadSlices => f.write_str("slice table does not fit the file"),
             MediaError::TooManyStreams => f.write_str("too many open streams"),
             MediaError::Worker => f.write_str("disk worker unavailable"),
+            MediaError::TooLarge { bytes, limit } => {
+                write!(
+                    f,
+                    "preload needs {bytes} bytes, over its {limit}-byte budget"
+                )
+            }
         }
     }
 }
@@ -176,8 +188,8 @@ impl fmt::Debug for Media {
 #[derive(Debug)]
 pub struct Preloaded {
     info: MediaInfo,
-    /// Interleaved, `info.frames × info.channels`.
-    samples: Arc<[f32]>,
+    /// Interleaved, `info.frames × info.channels`. Kept as the decode buffer (no final copy).
+    samples: Vec<f32>,
 }
 
 impl Preloaded {
@@ -186,7 +198,7 @@ impl Preloaded {
         let frames = (samples.len() / usize::from(channels)) as u64;
         Arc::new(Preloaded {
             info: MediaInfo::new(channels, rate, frames),
-            samples: samples.into(),
+            samples,
         })
     }
 
@@ -201,7 +213,7 @@ impl Preloaded {
 
     /// Memory held by the decoded samples.
     pub fn bytes(&self) -> usize {
-        std::mem::size_of_val(&*self.samples)
+        self.samples.capacity() * std::mem::size_of::<f32>()
     }
 }
 
@@ -225,26 +237,72 @@ pub fn probe_media(media: Media) -> Result<MediaInfo, MediaError> {
     }
 }
 
-/// Decodes the whole of `media` into memory. Blocking: call from an I/O thread.
+/// Memory one preload may use by default (512 MiB: about 46 minutes of 48 kHz stereo).
+pub const DEFAULT_PRELOAD_BUDGET: u64 = 512 << 20;
+
+/// Decodes the whole of `media` into memory, within [`DEFAULT_PRELOAD_BUDGET`]. Blocking: call
+/// from an I/O thread.
 pub fn preload(media: Media) -> Result<Arc<Preloaded>, MediaError> {
+    preload_within(media, DEFAULT_PRELOAD_BUDGET)
+}
+
+/// As [`preload`], using at most `max_bytes` for the samples. The container's declared length is
+/// checked before decoding, and the decoded length while decoding (a small compressed file can
+/// expand to far more than it declares), so going over is a [`MediaError::TooLarge`], never an
+/// allocation failure that aborts the process.
+pub fn preload_within(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
     if let Media::Preloaded(p) = media {
         return Ok(p);
     }
-    contain(|| decode_all(media))
+    contain(|| decode_all(media, max_bytes))
 }
 
-fn decode_all(media: Media) -> Result<Arc<Preloaded>, MediaError> {
+const SAMPLE_BYTES: u64 = std::mem::size_of::<f32>() as u64;
+
+fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
     let mut d = Decoder::open(media)?;
     let ch = d.channels;
-    let mut samples = Vec::new();
+    let limit = max_bytes;
+    let too_large = |samples: u64| MediaError::TooLarge {
+        bytes: samples.saturating_mul(SAMPLE_BYTES),
+        limit,
+    };
+    let max_samples = usize::try_from(max_bytes / SAMPLE_BYTES).unwrap_or(usize::MAX);
+    let mut samples: Vec<f32> = Vec::new();
+    if let Some(declared) = d.declared {
+        let want = declared.saturating_mul(ch as u64);
+        if want > max_samples as u64 {
+            return Err(too_large(want));
+        }
+        let want = usize::try_from(want).unwrap_or(usize::MAX);
+        samples
+            .try_reserve_exact(want)
+            .map_err(|_| too_large(want as u64))?;
+    }
     let mut chunk = vec![0.0; 4096 * ch];
     loop {
         let n = d.read(&mut chunk)?;
         if n == 0 {
             break;
         }
+        let need = samples.len().saturating_add(n * ch);
+        if need > max_samples {
+            return Err(too_large(need as u64));
+        }
+        if need > samples.capacity() {
+            // Grow geometrically, but never past the budget.
+            let cap = samples
+                .capacity()
+                .saturating_mul(2)
+                .max(need)
+                .min(max_samples);
+            samples
+                .try_reserve_exact(cap - samples.len())
+                .map_err(|_| too_large(cap as u64))?;
+        }
         samples.extend_from_slice(chunk.get(..n * ch).unwrap_or_default());
     }
+    samples.shrink_to_fit();
     let frames = (samples.len() / ch) as u64;
     if let Some(expected) = d.declared.filter(|&e| e > frames && !d.lossy) {
         return Err(MediaError::Truncated {
@@ -255,7 +313,7 @@ fn decode_all(media: Media) -> Result<Arc<Preloaded>, MediaError> {
     let channels = u16::try_from(ch).unwrap_or(0);
     Ok(Arc::new(Preloaded {
         info: MediaInfo::new(channels, d.rate, frames),
-        samples: samples.into(),
+        samples,
     }))
 }
 

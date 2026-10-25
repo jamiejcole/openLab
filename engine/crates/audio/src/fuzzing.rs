@@ -25,6 +25,8 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
     }
     match preload(media()) {
         Ok(p) if p.info() == info => {}
+        // Over the memory budget is a legitimate outcome (the cue streams instead).
+        Err(MediaError::TooLarge { .. }) => {}
         other => {
             return Err(format!(
                 "probe {info:?} but preload {:?}",

@@ -376,3 +376,43 @@ fn pcm_headers_symphonia_would_overflow_on_are_rejected_first() {
     // Valid headers pass, and the reader is rewound for symphonia.
     assert!(probe_media(reader(aiff(&tone(10, RATE), 2, RATE, Pcm::I24))).is_ok());
 }
+
+/// Preload stays within its memory budget: over it is a typed error, never an allocation abort.
+#[test]
+fn preload_is_bounded_by_its_budget() {
+    use openlab_audio::preload_within;
+    // Declared size: the header claims 100 M stereo frames (800 MB of f32) but holds 100. The
+    // budget check refuses it before decoding (a decode would end in `Truncated`).
+    let mut w = wav(&tone(100, RATE), 2, RATE, Pcm::I16);
+    w[4..8].copy_from_slice(&(36 + 400_000_000u32).to_le_bytes());
+    w[40..44].copy_from_slice(&400_000_000u32.to_le_bytes());
+    let r = preload_within(
+        Media::Reader(Box::new(Cursor::new(w)), Some("wav".into())),
+        1 << 20,
+    );
+    assert!(
+        matches!(
+            r,
+            Err(MediaError::TooLarge {
+                bytes: 800_000_000,
+                limit: 1_048_576
+            })
+        ),
+        "{:?}",
+        r.map(|p| p.info())
+    );
+    // Expanding stream: this MP4 declares 22050 frames (176400 bytes) but decodes 24576
+    // (196608 bytes); the decoded length is checked as it grows.
+    let finding =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/alac-short-index.m4a");
+    let r = preload_within(Media::Path(finding.clone()), 180_000);
+    assert!(
+        matches!(r, Err(MediaError::TooLarge { limit: 180_000, bytes }) if bytes > 180_000),
+        "{:?}",
+        r.map(|p| p.info())
+    );
+    // At the budget it fits, with no slack beyond the samples.
+    let p = preload_within(Media::Path(finding), 196_608).unwrap();
+    assert_eq!(p.bytes(), 196_608);
+    assert_eq!(openlab_audio::DEFAULT_PRELOAD_BUDGET, 512 << 20);
+}
