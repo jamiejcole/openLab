@@ -36,7 +36,11 @@ fn layout_under_app_support() {
     let id = example().id;
     let root = env.root.path().join("support").join("openLab");
     assert_eq!(env.dirs.settings_path(), root.join("settings.json"));
-    let key = openlab_core::path_hash(&env.show_path().to_string_lossy());
+    // Keyed the way show files spell paths: on Windows that turns `\` into `/` first.
+    let key = openlab_core::path_hash(&openlab_core::to_portable(
+        &env.show_path().to_string_lossy(),
+        openlab_core::PathStyle::host(),
+    ));
     assert_eq!(
         env.dirs.backups_dir(id, &env.show_path()),
         root.join("Backups").join(format!("{id}-{key}"))
