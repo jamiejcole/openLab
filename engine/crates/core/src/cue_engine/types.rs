@@ -7,7 +7,6 @@ use std::num::NonZeroU32;
 use crate::cue::{FadeCurve, FadeSpec};
 use crate::model::{CueId, CueListId};
 
-use super::level::LevelParam;
 use super::time::SampleTime;
 
 /// Highest device rate the engine accepts (the mixer's limit).
@@ -153,19 +152,6 @@ pub enum Input {
         run: RunId,
         reason: BrokenReason,
     },
-    /// Feedback (`DevampScheduled`): the devamp sent for this run's voice was accepted; the voice
-    /// leaves its loop on sample `at`.
-    DevampScheduled {
-        cue: CueId,
-        run: RunId,
-        at: SampleTime,
-    },
-    /// Feedback (`DevampIgnored`): the devamp sent for this run's voice cannot be carried out
-    /// (no loop to leave); playback is unchanged.
-    DevampIgnored {
-        cue: CueId,
-        run: RunId,
-    },
 }
 
 /// The single state reported for a cue (CUE-04).
@@ -178,7 +164,7 @@ pub enum CueState {
     Paused,
     /// The action is complete; the post-wait is still counting down to the next cue.
     PostWaiting,
-    /// Its action is under way and a running Fade cue is moving its levels.
+    /// Its levels are being faded (entered from M2.6 Fade cues; not produced yet).
     Fading,
     /// Fading out before it stops.
     Stopping,
@@ -271,35 +257,6 @@ pub enum Action {
         list: CueListId,
         reason: GoIgnoredReason,
     },
-    /// Ramp one gain of the run's voice to `gain` (linear amplitude, as the mixer's `Ramp`) over
-    /// `frames` samples from sample `at`, with `curve`. The mixer starts the ramp from the value
-    /// the gain has on `at`, so an interrupted ramp continues smoothly. `frames` 0 sets the gain
-    /// (de-zippered, or at once on the voice's start sample).
-    Ramp {
-        cue: CueId,
-        run: RunId,
-        at: SampleTime,
-        param: LevelParam,
-        gain: f32,
-        frames: SampleTime,
-        curve: FadeCurve,
-    },
-    /// Leave the run's voice's current loop at the end of the play under way when the command
-    /// applies on sample `at` (the mixer's `Devamp`); `stop` ends the voice there. The audio side
-    /// answers with [`Input::DevampScheduled`] or [`Input::DevampIgnored`].
-    DevampVoice {
-        cue: CueId,
-        run: RunId,
-        at: SampleTime,
-        stop: bool,
-    },
-    /// An Arm/Disarm cue changed whether `cue` is armed. The binary applies it to the model as a
-    /// runtime change (not an undo step); the engine honours it at once, and until the model
-    /// shows it.
-    SetArmed {
-        cue: CueId,
-        armed: bool,
-    },
     Warning(EngineWarning),
 }
 
@@ -362,31 +319,6 @@ pub enum EngineWarning {
     },
     /// A running cue was deleted from the workspace and has been stopped.
     CueRemoved {
-        cue: CueId,
-    },
-    /// A control or Fade cue acted with no target set; it did nothing.
-    NoTarget {
-        cue: CueId,
-    },
-    /// A control or Fade cue's target is not in the workspace; it did nothing.
-    TargetMissing {
-        cue: CueId,
-        target: CueId,
-    },
-    /// A Fade or Devamp cue's target is a kind it cannot act on; it did nothing.
-    TargetWrongKind {
-        cue: CueId,
-        target: CueId,
-    },
-    /// A Fade or Devamp cue's target (or, for a Fade on a group, every audio cue in it) was not
-    /// playing when it acted; it did nothing.
-    TargetNotRunning {
-        cue: CueId,
-        target: CueId,
-    },
-    /// A devamp of `cue` could not be carried out: the audio side ignored it (no loop to leave),
-    /// a devamp of it is already under way, or it is a playlist group that does not loop.
-    DevampIgnored {
         cue: CueId,
     },
 }
