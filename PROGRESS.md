@@ -65,7 +65,8 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
   - L3: if a trigger cycle in the call's first deadline pass used up the chain budget, a GO's start is dropped with only a `ChainLimit` warning while `last_go` and the playhead still advance. Check the budget before committing the GO, or report `GoIgnored`.
   - L4: `LoadVoice.offset` uses the pre-wait at load time, `StartVoice.offset` the pre-wait at start; editing the pre-wait of a cue loaded to a time makes the primed stream disagree with the start offset. Freeze the pre-wait/action split at load (keep `action_offset` in `Loaded`).
   - L5: every call with an active cue builds a set of all cue ids and recounts the tree for `chain_limit`; fine at expected sizes, skip when the workspace revision is unchanged once revisions exist (M4).
-- [ ] M2.13 Decide (user): second trigger on an active cue (restart today; QLab 5 has a per-cue setting) and whether a cue that breaks mid-play keeps its armed continue (cancelled today) — review M2, see the pending-decision note in docs/cue-engine.md
+- [x] M2.13 Decided (user): a second trigger on an active cue is ignored (`TriggerIgnored`; paused cues resume); a cue that breaks keeps its auto-continue on schedule and never auto-follows — rules in docs/cue-engine.md
+- [ ] M2.14 Per-cue second-trigger options (e.g. restart, stop, pause/resume; QLab 5 has such a setting) — default today: ignored (M2.13)
 
 ## M3 — Audio engine (`openlab-audio`)
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]

@@ -130,7 +130,8 @@ impl CueEngine {
     pub fn broken_reason(&self, cue: CueId) -> Option<BrokenReason> {
         match self.slots.get(&cue)? {
             Slot::Broken(reason) => Some(*reason),
-            Slot::Loaded(_) | Slot::Active(_) => None,
+            Slot::Active(run) => run.broken,
+            Slot::Loaded(_) => None,
         }
     }
 
@@ -386,7 +387,8 @@ impl CueEngine {
 
     // ----- operations (CUE-05) -----
 
-    /// Starts `cue` at sample `at`: a restart if it is running, a resume if it is paused.
+    /// Starts `cue` at sample `at`. A paused cue resumes; an already active one ignores the
+    /// trigger (second-trigger rule, docs/cue-engine.md).
     fn start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         if cx.budget == 0 {
             return cx.warn(EngineWarning::ChainLimit {
@@ -401,8 +403,17 @@ impl CueEngine {
         let before = self.state(cue);
         let (run, offset, voice) = match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+            Some(Slot::Active(run)) if run.broken.is_some() => {
+                return cx.warn(EngineWarning::CueBroken { cue });
+            }
             Some(Slot::Active(run)) if run.paused_at.is_some() => {
                 return self.resume(cue, at, cx);
+            }
+            Some(Slot::Active(run)) => {
+                return cx.warn(EngineWarning::TriggerIgnored {
+                    cue,
+                    state: run.state(),
+                });
             }
             Some(Slot::Loaded(loaded)) => (
                 loaded.run,
@@ -413,16 +424,8 @@ impl CueEngine {
                     Voice::None
                 },
             ),
-            Some(Slot::Active(_)) => {
-                if let Some(old) = self.slots.remove(&cue) {
-                    release(cue, &old, cx);
-                }
-                self.report(cue, before, at, cx);
-                (self.new_run(), 0, Voice::None)
-            }
             None => (self.new_run(), 0, Voice::None),
         };
-        let before = self.state(cue);
         let pre_wait = cx.secs(model.pre_wait, &self.config);
         let (until, action_offset) = if offset < pre_wait {
             (at.saturating_add(pre_wait - offset), 0)
@@ -443,6 +446,7 @@ impl CueEngine {
                 voice,
                 paused_at: None,
                 stop_end: None,
+                broken: None,
             }),
         );
         self.report(cue, before, at, cx);
@@ -454,6 +458,13 @@ impl CueEngine {
         let frames = fade_out.map_or(0, |f| cx.secs(f.duration, &self.config));
         match self.slots.get_mut(&cue) {
             None | Some(Slot::Broken(_)) => return,
+            Some(Slot::Active(run)) if run.broken.is_some() => {
+                // It owns no voice; stopping cancels its pending auto-continue.
+                if let Some(reason) = run.broken {
+                    self.slots.insert(cue, Slot::Broken(reason));
+                }
+                return self.report(cue, before, now, cx);
+            }
             Some(Slot::Active(run))
                 if frames > 0
                     && run.stop_end.is_none()
@@ -547,6 +558,9 @@ impl CueEngine {
         };
         match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+            Some(Slot::Active(run)) if run.broken.is_some() => {
+                return cx.warn(EngineWarning::CueBroken { cue });
+            }
             Some(Slot::Active(_)) => return cx.warn(EngineWarning::LoadIgnored { cue }),
             Some(Slot::Loaded(_)) | None => {}
         }
@@ -615,19 +629,38 @@ impl CueEngine {
     fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
         let before = self.state(cue);
         let current = match self.slots.get(&cue) {
-            Some(Slot::Active(run)) => run.run == run_id,
+            Some(Slot::Active(run)) => run.run == run_id && run.broken.is_none(),
             Some(Slot::Loaded(loaded)) => loaded.run == run_id,
             Some(Slot::Broken(_)) | None => false,
         };
-        if current {
-            // Silence and free the failed run now: a broken cue owns no voice, so nothing can
-            // keep sounding after it (a failed stream still plays out its ring otherwise).
-            if let Some(old) = self.slots.remove(&cue) {
-                release(cue, &old, cx);
-            }
-            self.slots.insert(cue, Slot::Broken(reason));
-            self.report(cue, before, cx.now, cx);
+        if !current {
+            return;
         }
+        // Silence and free the failed run now: a broken cue owns no voice, so nothing can keep
+        // sounding after it (a failed stream still plays out its ring otherwise).
+        let Some(old) = self.slots.remove(&cue) else {
+            return;
+        };
+        release(cue, &old, cx);
+        match old {
+            // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
+            // schedule. Auto-follow waits for a successful completion, so it never fires.
+            Slot::Active(mut run) => {
+                run.broken = Some(reason);
+                run.voice = Voice::None;
+                run.stop_end = None;
+                run.follow = false;
+                if matches!(run.phase, Phase::Action { .. }) {
+                    run.phase = Phase::Done;
+                }
+                self.slots.insert(cue, Slot::Active(run));
+                self.settle(cue);
+            }
+            Slot::Loaded(_) | Slot::Broken(_) => {
+                self.slots.insert(cue, Slot::Broken(reason));
+            }
+        }
+        self.report(cue, before, cx.now, cx);
     }
 
     // ----- timers -----
@@ -714,8 +747,10 @@ impl CueEngine {
             return self.report(cue, before, at, cx);
         };
         let post_wait = cx.secs(model.post_wait, &self.config);
+        // A run that broke during its pre-wait skips its action but keeps its timing.
+        let broken = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
         let duration = match &model.kind {
-            _ if !model.armed => Some(0),
+            _ if !model.armed || broken => Some(0),
             CueKind::Audio { .. } => None,
             CueKind::Wait { duration } => Some(cx.secs(*duration, &self.config)),
             CueKind::Memo => Some(0),
@@ -773,7 +808,8 @@ impl CueEngine {
         };
         run.post_wait = (model.continue_mode == ContinueMode::AutoContinue)
             .then(|| at.saturating_add(post_wait.saturating_sub(offset)));
-        run.follow = model.continue_mode == ContinueMode::AutoFollow;
+        run.follow = !broken && model.continue_mode == ContinueMode::AutoFollow;
+        self.settle(cue);
         self.report(cue, before, at, cx);
     }
 
@@ -784,12 +820,15 @@ impl CueEngine {
         }
     }
 
-    /// Forgets a run that has nothing left to do.
+    /// Forgets a run that has nothing left to do; a broken one stays broken.
     fn settle(&mut self, cue: CueId) {
         if let Some(Slot::Active(run)) = self.slots.get(&cue)
             && run.is_finished()
         {
-            self.slots.remove(&cue);
+            match run.broken {
+                Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
+                None => self.slots.remove(&cue),
+            };
         }
     }
 

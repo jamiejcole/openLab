@@ -4,11 +4,10 @@ How cues run: lifecycle states, timing, continue modes, GO and the playhead. Arc
 
 Status: M2.1–M2.3 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, PB-01, PB-02, PB-05, CL-06 engine side). Groups (M2.4), control cues (M2.5), Fade cues (M2.6), panic and pause/resume all (M2.7) and static broken-cue detection (M2.8) come later; see [Not yet](#not-yet).
 
-> **Pending decision (review M2, put to the user):** two behaviours below are provisional defaults, not settled semantics:
-> 1. **Second trigger on an active cue** (Start/GO/continue on a pre-waiting, running, post-waiting or stopping cue) restarts it: hard stop and a new run. QLab 5 makes this a per-cue setting.
-> 2. **A cue that breaks mid-play cancels its armed continue** (auto-continue post-wait and auto-follow), so the chain stops at the broken cue.
->
-> Both may change once decided; the tests pinning them (`go_on_a_running_cue_restarts_it`, the restart rows of the transition table, `event_failure_breaks_every_running_state`) will change with them.
+Two rules decided by the user (M2.13):
+
+1. **Second trigger is ignored.** Start, GO or a continue on a cue that is already active (pre-waiting, running, post-waiting, fading or stopping) does nothing: no restart, no voice action, timers untouched; it reports a `TriggerIgnored { cue, state }` warning. GO still counts as a GO and moves the playhead as usual. A trigger on a **paused** cue resumes it. Per-cue second-trigger options are a later feature (M2.14).
+2. **Auto-continue does not depend on success; auto-follow does.** A cue that breaks keeps its auto-continue, which fires the next cue on its original schedule (action start + post-wait), also when it breaks during the pre-wait (then the action is skipped, as for a disarmed cue, and the timing kept). A broken cue never fires its auto-follow. It reports `broken` while the continue is pending; Stop or Reset cancels the pending continue as on any cue. Its voice is released the moment it breaks.
 
 ## Shape
 
@@ -53,11 +52,11 @@ Each cue reports exactly one state:
 | `post-waiting` | The action is complete; the post-wait is still counting down to the next cue. |
 | `fading` | Defined for Fade cues (M2.6); nothing enters it yet. |
 | `stopping` | Fading out before it stops (a stop with a fade). |
-| `broken` | Failed; does nothing until reset. Reasons: `voice_rejected`, `stream_failed`, `device_lost` (feedback). Static detection is M2.8. |
+| `broken` | Failed; owns no voice and cannot start until reset. Its pending auto-continue still fires on schedule. Reasons: `voice_rejected`, `stream_failed`, `device_lost` (feedback). Static detection is M2.8. |
 
 Internally a started cue is a **run**: `{pre-wait deadline, action progress (start, end if known), post-wait deadline, paused-at, fade-out end}`. Post-wait is a timer owned by the cue, not a phase: a cue is `running` while its post-wait elapses, and `post-waiting` only once its action has completed and the post-wait has not. The reported state is derived: paused › stopping › pre-waiting › running › post-waiting.
 
-A start always reports `pre-waiting` first, even for a zero pre-wait (followed by `running` in the same call). A restart reports `idle` and then `pre-waiting`.
+A start always reports `pre-waiting` first, even for a zero pre-wait (followed by `running` in the same call).
 
 Each voice segment has a `RunId`, unique for the engine's lifetime (the binary can use it as the mixer `VoiceId`). Loading or starting creates it; starting a loaded cue keeps it; **every resume gives the run a fresh id** (`ResumeVoice { run: fresh, paused: previous }`), so feedback still on its way for the paused segment is stale whenever it arrives. `run_of(cue)` is the current id.
 
@@ -71,9 +70,9 @@ Started at `S` with pre-wait `P`, post-wait `W`:
 - **Auto-continue**: the next cue is triggered at `A + W` (post-wait counted from the action start; `W = 0` triggers it at `A`). The post-wait timer is armed when the action starts.
 - **Auto-follow**: the next cue is triggered when the action completes: at the `at` of `ActionEnded` (clamped to no earlier than `A`), or at `A + duration` for known durations. The post-wait is ignored.
 - "The next cue" is the cue after this one in its list (or group) **when the trigger fires**. The last cue triggers nothing.
-- Triggering a cue is the Start operation (so a running successor restarts and a paused one resumes).
+- Triggering a cue is the Start operation (so an active successor ignores it and a paused one resumes).
 - A cue is finished (idle) when its action is complete and no post-wait or fade-out is pending.
-- Stopping or resetting a cue cancels its pending post-wait and its auto-follow. A cue that breaks cancels them too.
+- Stopping or resetting a cue cancels its pending post-wait and its auto-follow. A cue that breaks cancels its auto-follow but keeps its auto-continue (rule 2 above).
 
 ### Load to time
 
@@ -89,7 +88,7 @@ Zero-wait chains run inside one call: an auto-continue chain of zero waits start
 ## GO and double-GO (PB-01, PB-02)
 
 - `Go { list }` starts the cue at the list's playhead at `now` and moves the playhead to the cue after the last cue of its continue chain: from the playhead cue, every following cue reached through auto-continue/auto-follow (as the model stands) is skipped. If the chain runs to the end of the list, the playhead goes past the end.
-- GO on a cue that is already running restarts it (hard stop of the old run, a new run from the start). GO on a paused cue resumes it. GO on a broken cue does not start it (`CueBroken` warning) but still counts as a GO and moves the playhead on, so the show can continue with the next GO.
+- GO on a cue that is already active is ignored for that cue (`TriggerIgnored`), but the GO counts and the playhead moves on. GO on a paused cue resumes it. GO on a broken cue does not start it (`CueBroken` warning) but still counts as a GO and moves the playhead on, so the show can continue with the next GO.
 - Ignored GOs report `GoIgnored { reason }`: `no_cue` (playhead past the end, or empty list), `unknown_list`, or `double_go`.
 - **Double-GO**: a GO less than `min_go_interval` after the previous **accepted** GO (in samples, any list) is ignored; one exactly at the interval is accepted. Ignored GOs do not restart the interval. 0 = off. If `now` is earlier than the last accepted GO (clock restart), the GO is accepted.
 
@@ -107,12 +106,12 @@ Zero-wait chains run inside one call: an auto-continue chain of zero waits start
 |---|---|---|---|---|---|---|---|
 | idle | pre-waiting (new run) | idle | idle | idle | idle | loaded, `LoadVoice` | idle |
 | loaded | pre-waiting (same run, loaded offset) | idle, `UnloadVoice` | idle, `UnloadVoice` | loaded | loaded | loaded (reload: `UnloadVoice`, `LoadVoice`, new run) | idle, `UnloadVoice` |
-| pre-waiting | restart: idle → pre-waiting | idle (action and continue cancelled) | idle | paused | pre-waiting | pre-waiting, `LoadIgnored` | idle |
-| running | restart, `StopVoice` | idle, `StopVoice` | stopping, `StopVoice` with fade (silent actions: idle at once) | paused, `PauseVoice` | running | running, `LoadIgnored` | idle, `StopVoice` |
+| pre-waiting | pre-waiting, `TriggerIgnored` | idle (action and continue cancelled) | idle | paused | pre-waiting | pre-waiting, `LoadIgnored` | idle |
+| running | running, `TriggerIgnored` | idle, `StopVoice` | stopping, `StopVoice` with fade (silent actions: idle at once) | paused, `PauseVoice` | running | running, `LoadIgnored` | idle, `StopVoice` |
 | paused | resumes (as Resume) | idle, `StopVoice` | idle, `StopVoice` (hard) | paused | the frozen state, `ResumeVoice` | paused, `LoadIgnored` | idle, `StopVoice` |
-| post-waiting | restart | idle (next cue cancelled) | idle | paused | post-waiting | post-waiting, `LoadIgnored` | idle |
-| stopping | restart, `StopVoice` (hard) | idle, `StopVoice` (hard) | idle, `StopVoice` (hard) | stopping | stopping | stopping, `LoadIgnored` | idle, `StopVoice` (hard) |
-| broken | broken, `CueBroken` | broken | broken | broken | broken | broken, `CueBroken` | idle |
+| post-waiting | post-waiting, `TriggerIgnored` | idle (next cue cancelled) | idle | paused | post-waiting | post-waiting, `LoadIgnored` | idle |
+| stopping | stopping, `TriggerIgnored` | idle, `StopVoice` (hard) | idle, `StopVoice` (hard) | stopping | stopping | stopping, `LoadIgnored` | idle, `StopVoice` (hard) |
+| broken | broken, `CueBroken` | broken (pending auto-continue cancelled) | broken (same) | broken (its timers freeze) | broken (its timers continue) | broken, `CueBroken` | idle (pending auto-continue cancelled) |
 
 Events:
 
@@ -123,18 +122,18 @@ Events:
 | running | action completes at `T` (feedback, or known duration) | post-waiting if a post-wait is pending, else idle; auto-follow triggers the next cue at `T` |
 | post-waiting | post-wait elapses at `T` | idle; next cue triggered at `T` |
 | stopping | fade-out ends (`stop at + fade frames`, or `ActionEnded` first) | idle |
-| loaded, any active | `ActionFailed` for the current run | broken: the run's voice is released at once (`StopVoice`, or `UnloadVoice` if it never started), timers and continue cancelled. A broken cue owns no voice, so Stop and Reset have nothing left to silence |
+| loaded, any active | `ActionFailed` for the current run | broken: the run's voice is released at once (`StopVoice`, or `UnloadVoice` if it never started). Auto-follow is cancelled; a pending or still-to-be-armed auto-continue fires on its original schedule (a pre-waiting cue skips its action at the action start and arms the post-wait as usual; a paused one stays held until resumed). A broken cue owns no voice, so Stop and Reset have nothing left to silence |
 | paused | time passes | paused (nothing runs) |
 | any non-idle | cue deleted from the workspace | idle; `StopVoice`/`UnloadVoice`, `CueRemoved` warning if it was active |
 
 - **Pause** freezes every timer at `now`; **resume** at `R` moves every pending deadline `R − now_paused` later, so pre-wait, action and post-wait keep exactly the time they had left. `PauseVoice`/`ResumeVoice` carry the position the voice has actually reached in the action (`offset`, counted from the voice's real start sample, so a late start or a pause before a start committed in the lookahead window is exact), so the binary can pause in the mixer or stop and restart from the offset.
 - **Stop with fade** fades a playing voice out over the fade's length (`StopVoice.fade`) and ends the cue when the fade ends — without waiting for feedback, which can be lost if the event queue overflows. A second stop is a hard stop.
-- A stop, pause or restart never lands before the voice's own start sample (`at` = `max(now, voice start)`), so in the mixer it cannot be overtaken by a start already committed.
+- A stop or pause never lands before the voice's own start sample (`at` = `max(now, voice start)`), so in the mixer it cannot be overtaken by a start already committed.
 - Operations on a cue id that is not in the workspace warn `UnknownCue` and do nothing.
 
 ## Feedback
 
-- `ActionEnded { cue, run, at }` (from `VoiceFinished`) and `ActionFailed { cue, run, reason }` are matched on **cue and run**. Feedback for an idle cue, an unknown cue, or an old run (the cue has been stopped, restarted or reset since) is ignored without any action.
+- `ActionEnded { cue, run, at }` (from `VoiceFinished`) and `ActionFailed { cue, run, reason }` are matched on **cue and run**. Feedback for an idle cue, an unknown cue, or an old run (the cue has been stopped, reset, resumed or started again since) is ignored without any action.
 - `ActionEnded` completes an audio action at `at` (clamped to no earlier than its start), or ends a fade-out stop. While the cue is paused, an `ActionEnded` dated at or after the pause sample is ignored: a paused voice cannot end by itself, so such a report comes from carrying out the pause (e.g. as a stop). An end dated before the pause (the voice ended just before the pause applied) still completes the action and fires auto-follow. Once the cue has resumed, reports for the paused segment carry its old id and are ignored like any stale id, so a pause's late end report can never complete the resumed cue. A genuine end of the resumed voice carries the fresh id and completes the cue as usual (a binary that resumes a voice which had already ended reports that end with the fresh id). A hard stop forgets the run immediately, so the voice's `Stopped` report that follows is stale and ignored.
 - `LoopReached`/`DevampScheduled` are not inputs yet (Devamp is M2.5).
 
@@ -148,7 +147,7 @@ Each call compares the workspace with what the engine knows:
 
 ## Warnings
 
-`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`. They are structured so the UI can localise them.
+`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken`, `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`. They are structured so the UI can localise them.
 
 ## Not yet
 

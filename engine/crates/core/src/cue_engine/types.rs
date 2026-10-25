@@ -278,6 +278,12 @@ pub enum EngineWarning {
     CueBroken {
         cue: CueId,
     },
+    /// Start/GO/continue on a cue that is already active (pre-waiting, running, post-waiting,
+    /// fading or stopping) does nothing; `state` is the state it was in.
+    TriggerIgnored {
+        cue: CueId,
+        state: CueState,
+    },
     /// Load on a cue that is running (pre-waiting through stopping) does nothing.
     LoadIgnored {
         cue: CueId,
