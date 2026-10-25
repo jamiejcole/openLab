@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# XcodeGen spec. Generate with `xcodegen` in this directory; the .xcodeproj is not committed.
+name: openLab
+options:
+  bundleIdPrefix: dev.openlab
+  deploymentTarget:
+    macOS: "12.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  openLab:
+    type: application
+    platform: macOS
+    sources:
+      - openLab
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLab
+        PRODUCT_NAME: openLab
+        ENABLE_APP_SANDBOX: NO
+        # The engine build script reads ../engine and writes engine/target.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Licensed under the GNU GPL v3 or later."
+    postCompileScripts:
+      - name: Build openlab-engine
+        script: '"$SRCROOT/scripts/build-engine.sh"'
+        basedOnDependencyAnalysis: false
+    scheme:
+      testTargets:
+        - openLabTests
+        - openLabUITests
+  openLabTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - openLabTests
+    dependencies:
+      - target: openLab
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabTests
+        # XCTest itself requires macOS 14; the app stays at 12.0.
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+  openLabUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - openLabUITests
+    dependencies:
+      - target: openLab
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabUITests
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        TEST_TARGET_NAME: openLab
