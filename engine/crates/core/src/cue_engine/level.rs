@@ -69,6 +69,20 @@ pub fn ramp_gain(from: f32, to: f32, pos: u64, len: u64, curve: FadeCurve) -> f3
     (a + (b - a) * s) as f32
 }
 
+/// A gain a Fade cue has set or is moving, as [`CueEngine::fade_ramps`](super::CueEngine::fade_ramps)
+/// reports it on a sample: what a voice restarted there needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelRamp {
+    pub param: LevelParam,
+    /// The gain (linear) on that sample.
+    pub value: f32,
+    /// Where the ramp is going; equal to `value` once it has ended.
+    pub to: f32,
+    /// The sample the ramp ends on; at or before the sample asked about when it is not moving.
+    pub end: SampleTime,
+    pub curve: FadeCurve,
+}
+
 /// A gain a Fade cue has set or is moving: a ramp from `from` on sample `start` to `to` on
 /// `start + frames`, then `to`.
 #[derive(Clone, Copy, Debug, PartialEq)]

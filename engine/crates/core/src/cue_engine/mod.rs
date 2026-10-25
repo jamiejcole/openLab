@@ -19,7 +19,7 @@ mod types;
 
 use std::collections::{BTreeMap, HashSet};
 
-pub use level::{LevelParam, curve_shape, db_to_gain, ramp_gain};
+pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
 pub use time::*;
 pub use types::*;
 
@@ -49,7 +49,7 @@ pub struct CueEngine {
     rng: SplitMix64,
     /// The child each random group picked last, so it is not picked twice in a row.
     last_random: BTreeMap<CueId, CueId>,
-    /// Arm/Disarm cue changes the model does not show yet (see `Action::SetArmed`).
+    /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
 }
 
@@ -110,7 +110,7 @@ impl CueEngine {
             out: Vec::new(),
             vacated: Vec::new(),
         };
-        self.sync_armed(&cx);
+        self.sync_armed();
         self.sync_model(&mut cx);
         self.sync_playheads(&mut cx);
         self.advance(&mut cx);
@@ -522,7 +522,7 @@ impl CueEngine {
                 if let (Voice::Started { at: started, .. }, Some(curve)) =
                     (run.voice, fade_out.map(|f| f.curve))
                 {
-                    let at = now.max(started);
+                    let at = run.commit(now.max(started), cx.horizon);
                     cx.out.push(Action::StopVoice {
                         cue,
                         run: run.run,
@@ -552,13 +552,17 @@ impl CueEngine {
         if run.paused_at.is_some() || run.stop_end.is_some() || run.is_group_stopping() {
             return;
         }
+        // Not before a command already committed for the voice in the lookahead window (a ramp,
+        // a devamp): the pause comes after it, and the timers freeze there.
+        let now = now.max(run.floor(cx.horizon));
         run.paused_at = Some(now);
         if let (Voice::Started { at: started, .. }, Phase::Action { .. }) = (run.voice, run.phase) {
+            let at = run.commit(now.max(started), cx.horizon);
             cx.out.push(Action::PauseVoice {
                 cue,
                 run: run.run,
-                at: now.max(started),
-                offset: run.position(now),
+                at,
+                offset: run.position(at),
             });
         }
         // A paused Fade cue holds its ramps where they are.
@@ -580,12 +584,15 @@ impl CueEngine {
         let Some(paused_at) = run.paused_at.take() else {
             return;
         };
-        // Where the action was frozen; a resume dated before the pause (a trigger from a late
-        // deadline) resumes as of the pause.
+        // Where the action was frozen. A resume dated before the pause (a trigger from a late
+        // deadline, or an input before a pause committed in the lookahead window) resumes as of
+        // the pause: nothing for the voice goes backwards in time.
+        let at = at.max(run::after_restart(paused_at, cx.horizon));
         let offset = run.position(paused_at);
         run.shift(at.saturating_sub(paused_at));
+        let mut devamp = None;
         if let (Voice::Started { .. }, Phase::Action { .. }) = (run.voice, run.phase) {
-            let voice_at = at.max(now);
+            let voice_at = run.commit(at.max(now), cx.horizon);
             // The resumed voice is a new segment with its own id: feedback still on its way for
             // the paused one (e.g. the end report of a pause carried out as a stop) is then
             // stale and ignored, whenever it arrives.
@@ -601,7 +608,19 @@ impl CueEngine {
                 at: voice_at,
                 from: offset,
             };
+            // A devamp still pending is sent again for the resumed segment (QLab keeps it
+            // through a pause); answers for the paused segment's id are stale.
+            if let Some(d) = run.devamp.as_mut() {
+                d.at = None;
+                devamp = Some(Action::DevampVoice {
+                    cue,
+                    run: fresh,
+                    at: voice_at,
+                    stop: d.stop,
+                });
+            }
         }
+        cx.out.extend(devamp);
         if run.fade.is_some() {
             self.resume_fade(cue, at, cx);
         }
@@ -688,6 +707,7 @@ impl CueEngine {
             by,
             start_next: true,
             at: Some(left),
+            ..
         }) = devamp
         {
             self.continue_after(by, left.min(at), cx);
@@ -878,7 +898,13 @@ impl CueEngine {
                 Act::Silent(0)
             }
         };
-        let continue_mode = group::effective_continue(ws, model);
+        // QLab: a Devamp cue's "start next cue" is its continue, fired when the loop is left
+        // (see `devamp`), so its own continue mode does not also start the next cue.
+        let continue_mode = if starts_next_on_devamp(model, self.is_armed(model)) {
+            ContinueMode::DoNotContinue
+        } else {
+            group::effective_continue(ws, model)
+        };
         let now = cx.now;
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
@@ -886,7 +912,7 @@ impl CueEngine {
         let offset = run.action_offset;
         match act {
             Act::Voice => {
-                let voice_at = at.max(now);
+                let voice_at = run.commit(at.max(now), cx.horizon);
                 if at < now {
                     cx.warn(EngineWarning::LateStart {
                         cue,
@@ -1006,7 +1032,8 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
             Voice::Started { at, .. } => cx.out.push(Action::StopVoice {
                 cue,
                 run: run.run,
-                at: cx.now.max(at),
+                // Never before a command already committed for the voice.
+                at: cx.now.max(at).max(run.floor(cx.horizon)),
                 fade: None,
             }),
             Voice::Loaded => cx.out.push(Action::UnloadVoice { cue, run: run.run }),
@@ -1014,6 +1041,19 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
         },
         Slot::Loaded(_) | Slot::Broken(_) => {}
     }
+}
+
+/// Whether `cue` is an armed Devamp cue that starts its next cue when the loop is left; that
+/// replaces its own continue mode (and counts as a continue for the playhead).
+pub(super) fn starts_next_on_devamp(cue: &Cue, armed: bool) -> bool {
+    armed
+        && matches!(
+            cue.kind,
+            CueKind::Devamp {
+                start_next_cue: true,
+                ..
+            }
+        )
 }
 
 fn next_sibling(ws: &Workspace, cue: CueId) -> Option<CueId> {

@@ -900,37 +900,24 @@ fn disarm_is_seen_by_the_rest_of_the_same_chain() {
 }
 
 #[test]
-fn disarm_holds_in_later_calls_until_the_model_shows_it() {
-    let mut rig = Rig::new(vec![arm_cue(1, 3, false), arm_cue(2, 3, true), sound(3)]);
-    rig.go(0);
-    // The binary has not applied it yet: the engine still treats cue 3 as disarmed.
-    assert!(voice_starts(&rig.start(100, 3)).is_empty());
-    assert!(
-        rig.at(
-            200,
-            Input::Load {
-                cue: id(3),
-                time: 0.0
-            }
-        )
-        .iter()
-        .all(|a| !matches!(a, Action::LoadVoice { .. }))
-    );
-    rig.at(250, Input::Reset { cue: id(3) });
-    // The binary applies it; the engine and the model agree.
+fn disarm_lasts_for_the_call_then_the_model_rules() {
+    let mut rig = Rig::new(vec![
+        timed(arm_cue(1, 3, false), 0.0, 0.0, AC),
+        timed(load_cue(2, 3, 0.0), 0.0, 0.0, AC),
+        sound(3),
+    ]);
+    // In the same chain the Load and the start see cue 3 disarmed: no LoadVoice, no voice.
+    let go = rig.go(0);
+    assert_eq!(set_armed(&go), vec![(id(3), false)]);
+    assert!(go.iter().all(|a| !matches!(a, Action::LoadVoice { .. })));
+    assert!(voice_starts(&go).is_empty());
+    // The binary applies it before the next call; the engine and the model agree.
     rig.find_mut(3).armed = false;
-    rig.tick(300);
     assert!(voice_starts(&rig.start(400, 3)).is_empty());
     rig.stop(450, 3);
-    // An operator edit that arms the cue again now counts.
+    // An operator edit that arms the cue again counts at once.
     rig.find_mut(3).armed = true;
     assert_eq!(voice_starts(&rig.start(500, 3)), vec![(id(3), 500)]);
-    rig.stop(600, 3);
-    // Disarm again, then the Arm cue arms it before the model saw the disarm.
-    rig.set_playhead(700, 1);
-    assert_eq!(set_armed(&rig.go(700)), vec![(id(3), false)]);
-    assert_eq!(set_armed(&rig.go(800)), vec![(id(3), true)]);
-    assert_eq!(voice_starts(&rig.start(900, 3)), vec![(id(3), 900)]);
 }
 
 #[test]
@@ -943,16 +930,19 @@ fn arming_an_armed_cue_does_nothing() {
 
 #[test]
 fn arm_cue_on_a_group_changes_where_go_enters_it() {
-    let mut g = grp(2, GroupMode::StartFirstAndEnter, vec![sound(3), sound(4)]);
+    // Arm, then a GoTo-and-GO onto the group in the same chain: GO enters it.
+    let mut g = grp(3, GroupMode::StartFirstAndEnter, vec![sound(4), sound(5)]);
     g.armed = false;
-    let mut rig = Rig::new(vec![arm_cue(1, 2, true), g, memo(5)]);
+    let mut rig = Rig::new(vec![
+        timed(arm_cue(1, 3, true), 0.0, 0.0, AC),
+        goto_cue(2, 3, true),
+        g,
+        memo(6),
+    ]);
     let go = rig.go(0);
-    assert_eq!(set_armed(&go), vec![(id(2), true)]);
-    assert_eq!(rig.playhead(), Some(id(2)));
-    // Armed now (in the engine): GO enters the group.
-    let go = rig.go(100);
-    assert_eq!(voice_starts(&go), vec![(id(3), 100)]);
-    assert_eq!(rig.playhead(), Some(id(4)));
+    assert_eq!(set_armed(&go), vec![(id(3), true)]);
+    assert_eq!(voice_starts(&go), vec![(id(4), 0)]);
+    assert_eq!(rig.playhead(), Some(id(5)));
 }
 
 #[test]
@@ -1157,7 +1147,12 @@ fn devamp_deadline_moves_with_a_pause() {
     );
     rig.pause(1000, 1);
     assert!(rig.engine.next_deadline().is_none());
-    rig.at(3000, Input::Resume { cue: id(1) });
+    // On resume the devamp is sent again for the resumed voice, which answers afresh.
+    let resume = rig.at(3000, Input::Resume { cue: id(1) });
+    assert_eq!(devamps(&resume), vec![(id(1), 3000, false)]);
+    assert!(rig.engine.next_deadline().is_none());
+    let run = rig.run(1);
+    scheduled(&mut rig, 3010, run, 7000);
     assert_eq!(rig.engine.next_deadline(), Some(7000));
     assert_eq!(starts(&rig.tick(7000)), vec![(id(3), 7000)]);
 }
@@ -1257,4 +1252,151 @@ fn devamp_of_other_groups_or_idle_playlists() {
         warnings(&rig.go(20)),
         vec![EngineWarning::DevampIgnored { cue: id(1) }]
     );
+}
+
+// ----- review round 1 -----
+
+fn voice_times(actions: &[Action]) -> Vec<(&'static str, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::PauseVoice { at, .. } => Some(("pause", *at)),
+            Action::ResumeVoice { at, .. } => Some(("resume", *at)),
+            Action::StopVoice { at, .. } => Some(("stop", *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_resume_is_never_dated_before_a_committed_pause() {
+    // Review M1: the Pause cue's PauseVoice is committed for 1050.
+    let mut rig = Rig::with_lookahead(vec![sound(1), timed(pause_cue(2, 1), 0.05, 0.0, DNC)], 100);
+    rig.start(0, 1);
+    assert_eq!(voice_times(&rig.start(1000, 2)), vec![("pause", 1050)]);
+    let resume = rig.at(1010, Input::Resume { cue: id(1) });
+    assert_eq!(voice_times(&resume), vec![("resume", 1050)]);
+    assert!(
+        resume
+            .iter()
+            .any(|a| matches!(a, Action::ResumeVoice { offset: 1050, .. }))
+    );
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+#[test]
+fn a_stop_is_never_dated_before_a_committed_pause() {
+    let mut rig = Rig::with_lookahead(vec![sound(1), timed(pause_cue(2, 1), 0.05, 0.0, DNC)], 100);
+    rig.start(0, 1);
+    rig.start(1000, 2);
+    assert_eq!(voice_times(&rig.stop(1010, 1)), vec![("stop", 1050)]);
+}
+
+fn scheduled(rig: &mut Rig, now: SampleTime, run: RunId, at: SampleTime) -> Vec<Action> {
+    rig.at(
+        now,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at,
+        },
+    )
+}
+
+#[test]
+fn a_pending_devamp_is_sent_again_for_the_resumed_voice() {
+    // Review M2: the answer for the voice before the pause is stale after the resume.
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    let old = rig.run(1);
+    rig.pause(110, 1);
+    let resume = rig.at(120, Input::Resume { cue: id(1) });
+    let fresh = rig.run(1);
+    assert_ne!(old, fresh);
+    assert!(resume.iter().any(|a| matches!(
+        a,
+        Action::DevampVoice { run, at: 120, stop: false, .. } if *run == fresh
+    )));
+    assert!(scheduled(&mut rig, 130, old, 5000).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
+    scheduled(&mut rig, 140, fresh, 6000);
+    assert_eq!(starts(&rig.tick(6000)), vec![(id(3), 6000)]);
+}
+
+#[test]
+fn a_devamp_answered_before_a_pause_is_sent_again_on_resume() {
+    let mut rig = devamp_rig(true, true, 0);
+    rig.go(100);
+    let old = rig.run(1);
+    scheduled(&mut rig, 110, old, 5000);
+    rig.pause(1000, 1);
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    let fresh = rig.run(1);
+    assert_eq!(devamps(&resume), vec![(id(1), 2000, true)]);
+    // The old answer no longer counts: nothing is due until the new one comes.
+    assert!(rig.engine.next_deadline().is_none());
+    scheduled(&mut rig, 2010, fresh, 7000);
+    assert_eq!(starts(&rig.tick(7000)), vec![(id(3), 7000)]);
+}
+
+#[test]
+fn a_devamped_target_stopped_while_paused_starts_nothing() {
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    let old = rig.run(1);
+    scheduled(&mut rig, 110, old, 5000);
+    rig.pause(1000, 1);
+    rig.stop(2000, 1);
+    assert!(rig.engine.next_deadline().is_none());
+    assert!(starts(&rig.tick(10_000)).is_empty());
+}
+
+#[test]
+fn go_on_a_devamp_with_start_next_skips_the_cue_it_will_start() {
+    // Review M3: the Devamp cue counts as auto-continuing into its next cue.
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    assert_eq!(rig.playhead(), Some(id(4)));
+    // Without "start next cue" the next cue stands by as usual.
+    let mut rig = devamp_rig(false, false, 0);
+    rig.go(100);
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+#[test]
+fn start_next_supersedes_the_devamp_cues_own_continue() {
+    // Review M4: the next cue starts once, on the devamp sample, not also at the action start.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(devamp_cue(2, 1, true, false), 0.0, 0.0, AC),
+        memo(3),
+        memo(4),
+    ]);
+    rig.start(0, 1);
+    rig.set_playhead(0, 2);
+    let go = rig.go(100);
+    assert_eq!(starts(&go), vec![(id(2), 100)]);
+    let run = rig.run(1);
+    scheduled(&mut rig, 150, run, 5000);
+    assert_eq!(starts(&rig.tick(5000)), vec![(id(3), 5000)]);
+    // Without "start next cue" its own continue applies.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(devamp_cue(2, 1, false, false), 0.0, 0.0, AF),
+        memo(3),
+    ]);
+    rig.start(0, 1);
+    rig.set_playhead(0, 2);
+    assert_eq!(starts(&rig.go(100)), vec![(id(2), 100), (id(3), 100)]);
+}
+
+#[test]
+fn an_operator_edit_after_a_disarm_counts_on_the_next_call() {
+    // Review L2: the binary applies SetArmed before the next call, so the override ends there;
+    // a user edit flipping `armed` back right after is honoured.
+    let mut rig = Rig::new(vec![arm_cue(1, 2, false), sound(2)]);
+    assert_eq!(set_armed(&rig.go(0)), vec![(id(2), false)]);
+    rig.find_mut(2).armed = false; // the binary applies it
+    rig.find_mut(2).armed = true; // the operator arms it again before the next call
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(2), 100)]);
 }

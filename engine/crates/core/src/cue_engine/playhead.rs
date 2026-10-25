@@ -157,7 +157,7 @@ pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -
         },
     ) = level.get(index)
         && armed(group)
-        && let Some(c) = children.get(chain_end(children, 0, true).saturating_add(1))
+        && let Some(c) = children.get(chain_end(children, 0, true, &armed).saturating_add(1))
     {
         return Some(c.id);
     }
@@ -175,18 +175,20 @@ pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -
             ),
         };
         level
-            .get(chain_end(level, index, chains).saturating_add(1))
+            .get(chain_end(level, index, chains, &armed).saturating_add(1))
             .map(|c| c.id)
     })
 }
 
 /// Index of the last cue of the continue chain that starts at `index` (just `index` when the
-/// level's continue modes do not chain).
-fn chain_end(level: &[Cue], index: usize, chains: bool) -> usize {
+/// level's continue modes do not chain). An armed Devamp cue with "start next cue" continues
+/// into its next cue (it starts it when the loop is left).
+fn chain_end(level: &[Cue], index: usize, chains: bool, armed: &impl Fn(&Cue) -> bool) -> usize {
     let mut last = index;
     while chains
         && let Some(c) = level.get(last)
-        && c.continue_mode != ContinueMode::DoNotContinue
+        && (c.continue_mode != ContinueMode::DoNotContinue
+            || super::starts_next_on_devamp(c, armed(c)))
         && last.saturating_add(1) < level.len()
     {
         last += 1;

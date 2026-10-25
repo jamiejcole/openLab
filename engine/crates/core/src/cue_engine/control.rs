@@ -79,7 +79,8 @@ impl CueEngine {
         cx.now = now;
     }
 
-    /// Whether a cue counts as armed: an Arm/Disarm cue's change wins until the model shows it.
+    /// Whether a cue counts as armed: an Arm/Disarm cue's change wins for the rest of the call
+    /// that made it (the binary applies it to the model before the next call).
     pub(super) fn is_armed(&self, cue: &Cue) -> bool {
         self.armed.get(&cue.id).copied().unwrap_or(cue.armed)
     }
@@ -99,11 +100,10 @@ impl CueEngine {
         cx.out.push(Action::SetArmed { cue: target, armed });
     }
 
-    /// Drops Arm/Disarm changes the model now shows (or whose cue is gone).
-    pub(super) fn sync_armed(&mut self, cx: &Ctx) {
-        let ws = cx.ws;
-        self.armed
-            .retain(|id, armed| ws.find_cue(*id).is_some_and(|c| c.armed != *armed));
+    /// A new call: the binary has applied the last call's `SetArmed` changes to the model
+    /// (M4.2 contract), so the model rules again, including any edit made since.
+    pub(super) fn sync_armed(&mut self) {
+        self.armed.clear();
     }
 
     /// GoTo: the playhead of the target's list moves to the target; with "and GO", a GO
@@ -186,15 +186,17 @@ impl CueEngine {
                 if run.devamp.is_some() {
                     return cx.warn(EngineWarning::DevampIgnored { cue: target });
                 }
+                let at = run.commit(at.max(now).max(started), cx.horizon);
                 cx.out.push(Action::DevampVoice {
                     cue: target,
                     run: run.run,
-                    at: at.max(now).max(started),
+                    at,
                     stop,
                 });
                 run.devamp = Some(DevampWait {
                     by,
                     start_next,
+                    stop,
                     at: None,
                 });
             }
