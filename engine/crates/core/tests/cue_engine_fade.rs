@@ -521,7 +521,7 @@ fn a_fade_of_a_pre_waiting_or_broken_target_does_nothing() {
 }
 
 #[test]
-fn fade_with_missing_or_wrong_targets_warns() {
+fn fade_with_missing_or_wrong_targets_is_broken() {
     let mut rig = Rig::new(vec![
         memo(1),
         master_fade(2, 1.0, 0.0),
@@ -538,23 +538,21 @@ fn fade_with_missing_or_wrong_targets_warns() {
         fade_to(4, 99, 1.0, FadeCurve::Linear, master(0.0), true),
     ]);
     assert_eq!(
-        warnings(&rig.start(0, 2)),
-        vec![EngineWarning::TargetWrongKind {
-            cue: id(2),
-            target: id(1)
-        }]
+        rig.engine.problems(id(2)),
+        &[CueProblem::TargetWrongKind { target: id(1) }]
     );
+    assert_eq!(rig.engine.problems(id(3)), &[CueProblem::NoTarget]);
     assert_eq!(
-        warnings(&rig.start(0, 3)),
-        vec![EngineWarning::NoTarget { cue: id(3) }]
+        rig.engine.problems(id(4)),
+        &[CueProblem::TargetMissing { target: id(99) }]
     );
-    assert_eq!(
-        warnings(&rig.start(0, 4)),
-        vec![EngineWarning::TargetMissing {
-            cue: id(4),
-            target: id(99)
-        }]
-    );
+    for n in [2, 3, 4] {
+        assert_eq!(
+            warnings(&rig.start(0, n)),
+            vec![EngineWarning::CueBroken { cue: id(n) }]
+        );
+        assert_eq!(rig.engine.state(id(n)), CueState::Broken);
+    }
 }
 
 #[test]

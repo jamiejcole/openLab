@@ -2,7 +2,7 @@
 
 How cues run: lifecycle states, timing, continue modes, groups, GO and the playhead. Architecture context: [ARCHITECTURE §3.2–3.3](ARCHITECTURE.md#32-clock-and-scheduling-nfr-202122). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: M2.1–M2.6, M2.11, M2.15 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01, PB-02, PB-05, CL-06 engine side). Panic and pause/resume all (M2.7) and static broken-cue detection (M2.8) come later; see [Not yet](#not-yet).
+Status: M2.1–M2.8, M2.11, M2.15 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, CUE-06 and NFR-07 engine side, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01..PB-05, CL-06 engine side). See [Not yet](#not-yet).
 
 Two rules decided by the user (M2.13):
 
@@ -22,7 +22,7 @@ let wake: Option<SampleTime> = engine.next_deadline();
 - **Randomness** (random groups, shuffled playlists) comes from a SplitMix64 generator in core, seeded with `EngineConfig::seed`. Tests pass a fixed seed and are reproducible; the engine binary seeds it from OS entropy at startup (M4.2), so shows differ between runs.
 - `handle` gets the **current** workspace every call. It first applies edits made since the last call (see [Model edits](#model-edits)), then carries out due deadlines, then the input, then deadlines again.
 - `Action`s are core types; the engine binary turns voice actions into mixer and disk-stream commands (M4.2). Core does not depend on `openlab-audio`.
-- Queries: `state(cue)`, `cue_states()` (every non-idle cue), `broken_reason(cue)`, `run_of(cue)`, `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`, `fade_level(cue, param, at)`, `fade_ramps(cue, at)` (see [Fade cues](#fade-cues-ct-10)).
+- Queries: `state(cue)`, `cue_states()` (every non-idle cue, statically broken ones included), `broken_reason(cue)` (a break at run time), `problems(cue)` and `broken_cues()` (static problems, see [Broken cues](#broken-cues-cue-06-nfr-07)), `panic_end()` (see [Panic](#panic-pb-03)), `run_of(cue)`, `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`, `fade_level(cue, param, at)`, `fade_ramps(cue, at)` (see [Fade cues](#fade-cues-ct-10)).
 - One engine per open workspace. A newly opened workspace gets a new engine; call `handle(ws, Tick, now)` once so the playheads are reported.
 
 ## Time
@@ -54,7 +54,7 @@ Each cue reports exactly one state:
 | `post-waiting` | The action is complete; the post-wait is still counting down to the next cue. |
 | `fading` | An audio cue in its action whose levels a running Fade cue is moving (see [Fade cues](#fade-cues-ct-10)). |
 | `stopping` | Fading out before it stops (a stop with a fade). |
-| `broken` | Failed; owns no voice and cannot start until reset. Its pending auto-continue still fires on schedule. Reasons: `voice_rejected`, `stream_failed`, `device_lost` (feedback). Static detection is M2.8. |
+| `broken` | Cannot run. **At run time** (feedback): owns no voice and cannot start until reset; its pending auto-continue still fires on schedule. Reasons: `voice_rejected`, `stream_failed`, `device_lost`. **Static** (problems found before it runs: missing media, device or target; see [Broken cues](#broken-cues-cue-06-nfr-07)): reported while the cue has no runtime, until the problems are fixed. |
 
 Internally a started cue is a **run**: `{pre-wait deadline, action progress (start, end if known), post-wait deadline, paused-at, fade-out end}`. Post-wait is a timer owned by the cue, not a phase: a cue is `running` while its post-wait elapses, and `post-waiting` only once its action has completed and the post-wait has not. The reported state is derived: broken › paused › stopping › fading › pre-waiting › running › post-waiting.
 
@@ -141,7 +141,7 @@ Groups nest to `MAX_GROUP_DEPTH` (validation and commands enforce it). The engin
 ## GO and double-GO (PB-01, PB-02)
 
 - `Go { list }` starts the cue at the list's playhead at `now` and moves the playhead to the cue after the last cue of its continue chain: from the playhead cue, every following cue reached through auto-continue/auto-follow (as the model stands) is skipped. If the chain runs to the end of the list, the playhead goes past the end. Groups: GO on an armed "start first and enter" group moves the playhead **into** it, to the child after the first child's continue chain (a disarmed one starts nothing and is skipped as a unit, like any disarmed cue). GO on a cue inside a group (any mode, as in QLab 5) starts that cue only; its idle groups run adopted (see Groups). The playhead then moves to the cue after its continue chain among its siblings: in "start first" groups the children's continue modes chain; in timeline, playlist and random groups they are ignored, so it is the next sibling. Past the group's last child the playhead leaves the group to the cue after the **group's** continue chain (and so on outwards; the group's own auto-continue/follow targets are skipped as at the top level).
-- GO on a cue that is already active is ignored for that cue (`TriggerIgnored`), but the GO counts and the playhead moves on. GO on a paused cue resumes it. GO on a broken cue does not start it (`CueBroken` warning) but still counts as a GO and moves the playhead on, so the show can continue with the next GO.
+- GO on a cue that is already active is ignored for that cue (`TriggerIgnored`), but the GO counts and the playhead moves on. GO on a paused cue resumes it. GO on a broken cue does not start it (`CueBroken` warning) but still counts as a GO and moves the playhead on, so the show can continue with the next GO. A cue with static problems keeps its timing, so its auto-continue fires (see [Broken cues](#broken-cues-cue-06-nfr-07)).
 - Ignored GOs report `GoIgnored { reason }`: `no_cue` (playhead past the end, or empty list), `unknown_list`, or `double_go`.
 - The GO of a GoTo cue with "and GO" works the same way on the target's list, dated on the GoTo cue's action start, but it is not an operator GO: double-GO protection never blocks it and it does not restart the interval (see [GoTo](#goto-ct-17)).
 - **Double-GO**: a GO less than `min_go_interval` after the previous **accepted** GO (in samples, any list) is ignored; one exactly at the interval is accepted. Ignored GOs do not restart the interval. 0 = off. If `now` is earlier than the last accepted GO (clock restart), the GO is accepted.
@@ -166,7 +166,7 @@ Groups nest to `MAX_GROUP_DEPTH` (validation and commands enforce it). The engin
 | paused | resumes (as Resume) | idle, `StopVoice` | idle, `StopVoice` (hard) | paused | the frozen state, `ResumeVoice` | paused, `LoadIgnored` | idle, `StopVoice` |
 | post-waiting | post-waiting, `TriggerIgnored` | idle (next cue cancelled) | idle | paused | post-waiting | post-waiting, `LoadIgnored` | idle |
 | stopping | stopping, `TriggerIgnored` | idle, `StopVoice` (hard) | idle, `StopVoice` (hard) | stopping | stopping | stopping, `LoadIgnored` | idle, `StopVoice` (hard) |
-| broken | broken, `CueBroken` | broken (pending auto-continue cancelled) | broken (same) | broken (its timers freeze) | broken (its timers continue) | broken, `CueBroken` | idle (pending auto-continue cancelled) |
+| broken | broken, `CueBroken` (static problems: its timing runs, see [Broken cues](#broken-cues-cue-06-nfr-07)) | broken (pending auto-continue cancelled) | broken (same) | broken (its timers freeze) | broken (its timers continue) | broken, `CueBroken` | idle (pending auto-continue cancelled); a cue with static problems stays broken |
 
 Events:
 
@@ -201,7 +201,7 @@ A control cue is a cue like any other (pre-wait, post-wait, continue mode, opera
 
 - The operation is dated on `A`: an operation in the lookahead window acts on its own sample (`StopVoice { at: A }`, not `now`); a late one (`A < now`) acts at `now`, except a start, which is dated `A` like any trigger so later timing keeps its schedule (the late rule then applies to voices).
 - The cue is still in its action while it acts, so a trigger from its target back to it is ignored (`TriggerIgnored`).
-- **Target checks at run time**: no target set → `NoTarget`; a target not in the workspace → `TargetMissing`. The cue then does nothing, but its timing and continue apply as usual. Static broken-cue detection is M2.8.
+- **Targets**: a cue with no target, a missing target, itself as target or a target of the wrong kind has static problems (see [Broken cues](#broken-cues-cue-06-nfr-07)): it is `broken` and its action never runs. The run-time checks (`NoTarget`, `TargetMissing`, `TargetWrongKind`: the cue does nothing, its timing and continue apply) remain as a second line of defence.
 - Targets that are groups use the group operations ([Operations on a group](#operations-on-a-group)): Stop/Pause/Load/Reset reach every descendant, Start starts the group in its mode, a target inside a group runs its idle groups adopted.
 
 | Cue | Action at `A` |
@@ -254,6 +254,46 @@ Audio levels only in v0.0.1 (§21). A Fade is **absolute** (QLab): over its dura
 - **Not playing**: if nothing it targets is playing at `A`, the Fade warns `TargetNotRunning` and does nothing, but still runs its duration (its timing and continue apply, as in QLab; "stop target when done" then stops the target on `E` if it is running by then). A target of another kind: `TargetWrongKind`; none or missing: `NoTarget`/`TargetMissing`.
 - Feedback never breaks a Fade cue (it owns no voice).
 
+## Broken cues (CUE-06, NFR-07)
+
+Problems that keep a cue from running are found **before it is triggered** (NFR-07), so the operator sees them in the list, the inspector and the pre-show check. Core does no I/O: the binary reports what it learns about media and devices as inputs; target and reference problems come from the model. A cue can have several problems (`CueProblem`, in this order: target, media, patch/device):
+
+| Problem | Cue kinds | From |
+|---|---|---|
+| `no_target` | targeting cues (Fade, Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm) | the model: target not set |
+| `target_missing { target }` | targeting cues | the model: target not in the workspace |
+| `target_self` | targeting cues | the model: the cue targets itself |
+| `target_wrong_kind { target }` | Fade (needs Audio or Group), Devamp (needs Audio or a playlist group) | the model (the same rule as load-time validation) |
+| `no_media` | Audio | the model: no file assigned |
+| `media_missing { media }`, `media_unsupported { media, reason }` | Audio | `Input::MediaStatus` for the cue's media reference |
+| `patch_missing { patch }` | Audio | the model: patch not in the workspace |
+| `device_unavailable { patch, resolution }` | Audio | `Input::PatchStatus`: any resolution but `mapped` (unmapped, device missing, channels missing, output count mismatch) |
+| `network_patch_missing { patch }` | Network | the model: destination not in the workspace |
+
+- **Not problems**: damaged media that plays (M3 probe warnings: the binary reports it `available` and shows its warnings itself); a trigger cycle (load-time validation warns; the engine bounds it at run time, see [Chains](#chains-and-the-chain-bound), since a timed loop of Start cues is legitimate); a disarmed cue (it is still broken if it has problems). A **group** is never broken because of its children (QLab shows the broken child, not the group).
+- **Inputs**: `MediaStatus { media, status }` with `status` `available`, `missing`, `unsupported { reason }` or `unknown` (forgets the report: assumed playable), keyed by the cue's `MediaRef` exactly as stored, so every Audio cue on that reference shares it. `PatchStatus { patch, resolution }` with `resolve_patch`'s `PatchResolution`. Nothing reported yet = no problem: the engine cannot know a file is missing until the binary says so.
+- **Recomputed** at the start of every call (so model edits count at once: a deleted target breaks its control cues, a retarget fixes them) and after each status input. Each cue whose problems changed gets `ProblemsChanged { cue, problems }` (the full new list; empty = fixed) and, if its reported state changed, `StateChanged` (`idle` ↔ `broken`) dated `now`. The first call reports every broken cue. A deleted broken cue reports `idle` once.
+- **State**: a cue with problems and no runtime reports `broken`. A cue with a runtime keeps reporting its runtime state (a playing cue whose file is reported missing plays on; whatever the audio side then does arrives as feedback) and reports `broken` when its runtime ends. A **loaded** cue that gets problems is unloaded (`UnloadVoice`) and reports `broken`. A cue that gets problems during its pre-wait skips its action when the pre-wait ends (as below) and reports `broken` from then.
+- **Triggering** (Start, GO, a continue, a Start/GoTo cue): a cue with problems does not start (`CueBroken` warning) but keeps its timing exactly like a disarmed cue (user decision, M2.13): pre-wait, then its action is skipped, then its post-wait. Its auto-continue fires on schedule; it never auto-follows; it reports `broken` throughout (no `pre-waiting`). GO moves the playhead past its continue chain as usual. A broken Devamp cue sends no devamp, so its "start next cue" never fires and, as for a disarmed one, its own continue mode applies (also for the playhead). Stop or Reset cancels its pending continue. A group with such a child runs the child's timing and, as for a child that broke at run time, does not auto-follow. Fixing the problems while that run is pending does not start the skipped action; the run ends as it was. Load warns `CueBroken` and loads nothing. Reset does not clear static problems.
+- **Pre-show** (NFR-07, M4.8): `broken_cues()` lists every cue with problems and its problems, in id order. Breaks at run time are not static and are in `broken_reason(cue)` / `cue_states()`.
+- `CueProblem` implements `Display` with an English sentence for logs; the UI localises from the variant (CUE-06 "human-readable").
+
+## Panic (PB-03)
+
+`Input::Panic` stops everything, as QLab's Panic: every cue of every list, at every depth.
+
+- **Fade**: every playing voice (an audio cue in its action, not paused) gets `StopVoice { at, fade: { frames: E − at, curve: PANIC_CURVE } }`, with `E = now + panic_duration` and `at` as for any stop (no earlier than `now`, the voice's start or a committed command), so every voice reaches silence and **stops on the same sample `E`**; the cue reports `stopping` and goes `idle` on `E` without waiting for feedback. `PANIC_CURVE` is linear (the setting has only a duration). The stop gain multiplies the voice's other gains, so the fade starts from wherever the voice is.
+- **Takeover**: a Fade cue moving levels is stopped, which holds its ramps where they are (see [Fade cues](#fade-cues-ct-10)); the panic then fades the voice out from there. A cue already fading out with a stop that would end after `E` gets the panic's `StopVoice` (the mixer restarts the stop gain's ramp from its current value, so it ends on `E`); one that ends on or before `E` keeps its stop.
+- **Everything else stops at once**: pre-waiting, post-waiting, paused (a paused voice is silent: hard stop), loaded (`UnloadVoice`) and silent cues (Wait, Memo, control, Fade). So nothing pending fires: pre-waits, post-wait auto-continues, auto-follows, a Devamp cue's "start next cue" (also when the voice would leave its loop during the panic fade), playlists moving on, "stop target when done". A group in its action with a child still fading reports `stopping` and goes idle when its last child stops (on `E`). A cue broken at run time with a pending auto-continue stays broken; the continue is cancelled.
+- **Second press**: a Panic before `E` (while `panic_end()` is `Some(E)` and `now < E`) hard-stops everything at once, including cues started since. `panic_duration` 0 is always that hard stop. A Panic on or after `E` is a new panic with its own fade.
+- **After it**: nothing is active, loaded or pending (`next_deadline()` is `None`, `cue_states()` holds only broken cues, `panic_end()` is `None` from the first call on or after `E`). Fade levels go with their runs. Playheads do not move. Arm/Disarm overrides only last for the call that made them anyway.
+- **GO during the panic fade** is accepted and starts cues normally (QLab does not lock the workspace during a panic); the panic's end does not touch them, a second Panic does. Panic does not touch double-GO protection: a GO within `min_go_interval` of the last accepted GO is still ignored.
+
+## Pause All and Resume All (PB-04)
+
+- `Input::PauseAll` pauses every active cue of every list at every depth, groups before their children, with the Pause operation (so every pause rule holds: timers, voices `PauseVoice`, Fade cues holding their ramps, devamps kept). Stopping, loaded, idle and broken cues are left as they are (as Pause leaves them).
+- `Input::ResumeAll` resumes **every** paused cue, however it was paused (Pause All, a Pause cue, the operator), as QLab's Resume All does; groups first, so a group resumes with its paused children (the group rules for resume apply, incl. a playlist moving on). Every resume gives the run a fresh `RunId` and re-sends a pending devamp, as Resume does. With nothing paused it does nothing.
+
 ## Actions for the binary (M4.2 contract)
 
 Besides the voice actions above:
@@ -261,6 +301,8 @@ Besides the voice actions above:
 - `Ramp { cue, run, at, param, gain, frames, curve }` → mixer `Ramp { voice: run, target: param (Master / CueOutput(o) / Crosspoint{input, output}), gain, fade: Fade { frames, curve } }` (curves map one to one). The binary must not apply gangs to it (the Fade's values are already per output).
 - `DevampVoice { cue, run, at, stop }` → mixer `Devamp { voice: run, stop }` at `at`; its `DevampScheduled`/`DevampIgnored` events go back as `Input::DevampScheduled { cue, run, at }` / `Input::DevampIgnored { cue, run }` for that voice. After a `ResumeVoice` the engine re-sends a pending devamp for the fresh run: a binary that pauses by stop and restart sends it to the restarted voice; one with a native pause that kept the first devamp answers it with the `DevampScheduled` it has (tagged with the fresh run), not with `DevampIgnored`.
 - `SetArmed { cue, armed }` → set the cue's `armed` in the model as a runtime change (not an undo step) **before the next `handle` call**: the engine honours it only for the rest of the call that made it. (A later save then stores it; see PROGRESS M2.17.)
+- **Availability inputs** (M2.8): send `Input::MediaStatus { media, status }` for each media reference the workspace uses once the probe (M3, off the control thread) has an answer: on workspace open, when a cue gets a new file, on relink, and when a file disappears or comes back (file-system watching, or a failed stream); damaged-but-playable files are `available`. Send `Input::PatchStatus { patch, resolution }` with `resolve_patch` for each patch on open, when the device list changes (hot-plug, device loss) and when the operator edits a patch mapping (WS-07). A binary that plays an unmapped patch on a default device sends the `mapped` resolution it uses. Show `ProblemsChanged` in the list and inspector (CUE-06) and use `broken_cues()` for the pre-show check (M4.8). A device lost while voices play still reports `ActionFailed { reason: device_lost }` for those runs.
+- **Panic** (PB-03): `Input::Panic` for the Panic / Stop All transport key and protocol command; it carries out its own `StopVoice` fades (no separate mixer panic is needed). `Input::PauseAll` / `Input::ResumeAll` for the Pause All / Resume All keys.
 - A voice that the binary pauses by stopping and restarting (M3.18) must restart with the Fade levels and ramps the engine reports with `fade_ramps(cue, at)` on the resume sample: start with each `value`, then send `Ramp { gain: to, frames: end − at, curve }` for each one still moving (`end > at`; a fresh curve from there, like a resumed Fade). Fade ramps on a paused voice must apply as on a playing one.
 
 ## Feedback
@@ -283,12 +325,13 @@ Each call compares the workspace with what the engine knows:
 
 ## Warnings
 
-`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken`, `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`. They are structured so the UI can localise them.
+`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken` (a start or load of a broken cue), `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`. They are structured so the UI can localise them.
 
 ## Not yet
 
 - **Groups**: playlist crossfades and per-group options beyond loop/shuffle.
 - **Network** cues (M4.6): their action completes at once with an `Unsupported` warning and does nothing; pre-wait, post-wait and continue mode apply.
 - **Target** cues (CT-18) are not in v0.0.1; video fades (CT-10 video part) are v0.0.2.
-- **Panic / Pause All / Resume All** (M2.7), **static broken detection** (M2.8), **preview/audition** (CUE-05/PB-09).
+- **Preview/audition** (CUE-05/PB-09).
+- **Network reachability** of a Network cue's destination (NFR-07 "unreachable network targets"): only a missing destination is a problem until Network cues run (M4.6).
 - **Priming**: `Loaded` means "loaded by an operation"; keeping cues near the playhead primed (ARCHITECTURE §3.5) is the binary's job (M4.2).

@@ -444,7 +444,7 @@ impl CueEngine {
     // ----- operations on a cue and everything inside it (CUE-05) -----
 
     /// The cue's descendants, if it is a group in the workspace.
-    fn inside(&self, cue: CueId, cx: &Ctx) -> Vec<CueId> {
+    pub(super) fn inside(&self, cue: CueId, cx: &Ctx) -> Vec<CueId> {
         cx.ws.find_cue(cue).map(descendants).unwrap_or_default()
     }
 

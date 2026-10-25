@@ -7,6 +7,7 @@
 //! the sample time, and returns the [`Action`]s to carry out. Semantics are specified in
 //! `docs/cue-engine.md`.
 
+mod broken;
 mod control;
 mod fade;
 mod group;
@@ -15,16 +16,19 @@ mod playhead;
 mod rng;
 mod run;
 mod time;
+mod transport;
 mod types;
 
 use std::collections::{BTreeMap, HashSet};
 
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
 pub use time::*;
+pub use transport::PANIC_CURVE;
 pub use types::*;
 
 use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec};
-use crate::model::{CueId, CueListId, Workspace};
+use crate::model::{CueId, CueListId, PatchId, Workspace};
+use crate::settings::PatchResolution;
 use crate::tree;
 
 use playhead::Playhead;
@@ -51,6 +55,14 @@ pub struct CueEngine {
     last_random: BTreeMap<CueId, CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
+    /// Static problems of every cue that has any (CUE-06), recomputed each call.
+    problems: BTreeMap<CueId, Vec<CueProblem>>,
+    /// Media availability the binary reported, by media reference (`Unknown` is not kept).
+    media: BTreeMap<String, MediaStatus>,
+    /// Where each patch can play, as the binary last reported.
+    patches: BTreeMap<PatchId, PatchResolution>,
+    /// The sample the panic fade under way ends on.
+    panic_end: Option<SampleTime>,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -90,6 +102,10 @@ impl CueEngine {
             rng: SplitMix64::new(config.seed()),
             last_random: BTreeMap::new(),
             armed: BTreeMap::new(),
+            problems: BTreeMap::new(),
+            media: BTreeMap::new(),
+            patches: BTreeMap::new(),
+            panic_end: None,
         }
     }
 
@@ -111,6 +127,12 @@ impl CueEngine {
             vacated: Vec::new(),
         };
         self.sync_armed();
+        if self.panic_end.is_some_and(|end| now >= end) {
+            self.panic_end = None;
+        }
+        // Before the runtimes follow the edits, so a deleted cue loses its problems while its
+        // runtime still gives its state, and reports idle once.
+        self.sync_problems(&mut cx);
         self.sync_model(&mut cx);
         self.sync_playheads(&mut cx);
         self.advance(&mut cx);
@@ -152,16 +174,41 @@ impl CueEngine {
             .is_some_and(|d| d <= self.config.horizon(now))
     }
 
+    /// The cue's reported state: its runtime's, else `broken` if it has static problems, else
+    /// idle.
     pub fn state(&self, cue: CueId) -> CueState {
-        self.slots.get(&cue).map_or(CueState::Idle, Slot::state)
+        match self.slots.get(&cue) {
+            Some(slot) => slot.state(),
+            None if self.has_problems(cue) => CueState::Broken,
+            None => CueState::Idle,
+        }
     }
 
     /// Every cue that is not idle, in id order.
     pub fn cue_states(&self) -> impl Iterator<Item = (CueId, CueState)> + '_ {
-        self.slots.iter().map(|(id, slot)| (*id, slot.state()))
+        let mut all: BTreeMap<CueId, CueState> = self
+            .slots
+            .iter()
+            .map(|(id, slot)| (*id, slot.state()))
+            .collect();
+        for id in self.problems.keys() {
+            all.entry(*id).or_insert(CueState::Broken);
+        }
+        all.into_iter()
     }
 
-    /// Why a cue is broken, if it is.
+    /// The cue's static problems (CUE-06); empty when it has none.
+    pub fn problems(&self, cue: CueId) -> &[CueProblem] {
+        self.problems.get(&cue).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every cue with static problems and its problems, in id order: what the pre-show check
+    /// lists (NFR-07). Runtime breaks are in `broken_reason`.
+    pub fn broken_cues(&self) -> impl Iterator<Item = (CueId, &[CueProblem])> + '_ {
+        self.problems.iter().map(|(id, p)| (*id, p.as_slice()))
+    }
+
+    /// Why a cue broke while it ran, if it did (static problems: `problems`).
     pub fn broken_reason(&self, cue: CueId) -> Option<BrokenReason> {
         match self.slots.get(&cue)? {
             Slot::Broken(reason) => Some(*reason),
@@ -255,6 +302,11 @@ impl CueEngine {
             Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
+            Input::Panic => self.panic(cx),
+            Input::PauseAll => self.pause_all(cx),
+            Input::ResumeAll => self.resume_all(cx),
+            Input::MediaStatus { media, status } => self.media_status(media.as_str(), status, cx),
+            Input::PatchStatus { patch, resolution } => self.patch_status(patch, resolution, cx),
         }
     }
 
@@ -439,7 +491,7 @@ impl CueEngine {
         let before = self.state(cue);
         let (run, offset, voice) = match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
-            Some(Slot::Active(run)) if run.broken.is_some() => {
+            Some(Slot::Active(run)) if run.is_broken() => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
             Some(Slot::Active(run)) if run.paused_at.is_some() => {
@@ -474,6 +526,12 @@ impl CueEngine {
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
         new.voice = voice;
+        // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
+        // so its auto-continue fires on schedule (user decision, M2.13).
+        if self.has_problems(cue) {
+            cx.warn(EngineWarning::CueBroken { cue });
+            new.static_broken = true;
+        }
         self.slots.insert(cue, Slot::Active(new));
         self.report(cue, before, at, cx);
         self.adopt_parents(cue, at, cx);
@@ -495,6 +553,8 @@ impl CueEngine {
                 }
                 return self.report(cue, before, now, cx);
             }
+            // Started broken: it owns no voice; stopping ends it (and its pending continue).
+            Some(Slot::Active(run)) if run.static_broken => {}
             // A group whose children are fading out ends when the last of them has stopped.
             // Only during its action: a group that has not reached it (pre-wait) stops at once,
             // so its pending action can never start children after the stop.
@@ -532,6 +592,8 @@ impl CueEngine {
                     run.stop_end = Some(at.saturating_add(frames));
                     run.post_wait = None;
                     run.follow = false;
+                    // A stopped target cancels a pending devamp and its next cue.
+                    run.devamp = None;
                     return self.report(cue, before, now, cx);
                 }
             }
@@ -633,10 +695,13 @@ impl CueEngine {
         };
         match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
-            Some(Slot::Active(run)) if run.broken.is_some() => {
+            Some(Slot::Active(run)) if run.is_broken() => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
             Some(Slot::Active(_)) => return cx.warn(EngineWarning::LoadIgnored { cue }),
+            Some(Slot::Loaded(_)) | None if self.has_problems(cue) => {
+                return cx.warn(EngineWarning::CueBroken { cue });
+            }
             Some(Slot::Loaded(_)) | None => {}
         }
         let before = self.state(cue);
@@ -725,10 +790,7 @@ impl CueEngine {
         let current = match self.slots.get(&cue) {
             // Nor a running fade (it owns no voice either).
             Some(Slot::Active(run)) => {
-                run.run == run_id
-                    && run.broken.is_none()
-                    && run.group.is_none()
-                    && run.fade.is_none()
+                run.run == run_id && !run.is_broken() && run.group.is_none() && run.fade.is_none()
             }
             Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
             Some(Slot::Broken(_)) | None => false,
@@ -875,8 +937,11 @@ impl CueEngine {
             return self.report(cue, before, at, cx);
         };
         let post_wait = cx.secs(model.post_wait, &self.config);
-        // A run that broke during its pre-wait skips its action but keeps its timing.
-        let broken = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
+        // A run that broke during its pre-wait, or a cue that has static problems now, skips its
+        // action but keeps its timing.
+        let problems = self.has_problems(cue);
+        let broken =
+            problems || matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.is_broken());
         let act = match &model.kind {
             _ if !self.is_armed(model) || broken => Act::Silent(0),
             CueKind::Audio { .. } => Act::Voice,
@@ -899,8 +964,9 @@ impl CueEngine {
             }
         };
         // QLab: a Devamp cue's "start next cue" is its continue, fired when the loop is left
-        // (see `devamp`), so its own continue mode does not also start the next cue.
-        let continue_mode = if starts_next_on_devamp(model, self.is_armed(model)) {
+        // (see `devamp`), so its own continue mode does not also start the next cue. A broken
+        // one sends no devamp, so, like a disarmed one, its own continue mode applies.
+        let continue_mode = if starts_next_on_devamp(model, self.is_armed(model) && !broken) {
             ContinueMode::DoNotContinue
         } else {
             group::effective_continue(ws, model)
@@ -910,6 +976,9 @@ impl CueEngine {
             return;
         };
         let offset = run.action_offset;
+        if problems && run.broken.is_none() {
+            run.static_broken = true;
+        }
         match act {
             Act::Voice => {
                 let voice_at = run.commit(at.max(now), cx.horizon);
@@ -976,7 +1045,7 @@ impl CueEngine {
             && run.is_finished()
         {
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
-            let exit = if run.broken.is_some() || failed {
+            let exit = if run.is_broken() || failed {
                 Exit::Broken
             } else {
                 Exit::Completed
@@ -1080,7 +1149,7 @@ enum Act {
 }
 
 /// Every cue in `cues`, depth-first. Iterative, so nesting depth cannot overflow the stack.
-fn each_cue(cues: &[Cue], mut f: impl FnMut(&Cue)) {
+fn each_cue<'a>(cues: &'a [Cue], mut f: impl FnMut(&'a Cue)) {
     let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
     while let Some(level) = stack.last_mut() {
         match level.next() {
