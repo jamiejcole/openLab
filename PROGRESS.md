@@ -12,7 +12,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 
 - **M1-A** (M1.1–M1.3, M1.9) — MERGED (3 review rounds). Core model, validation/repair (idempotent, linear SCC cycle check), show-file load/save in core.
 - **M3-A** — MERGED. Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.
-- **M3-B** (M3.3 decode/streaming/preload, M3.6 slices/loops/devamp, decode fuzz) — Opus implementer finishing it on local branch `m3b-decode-streaming` (from `wip/m3b-decode-streaming`). Found on the WIP: `stream_errors_are_typed_and_end_the_voice` hangs; `every_format_streams_from_a_seek_point_like_a_full_decode` fails on OGG seek accuracy; all other audio tests pass. Then Opus review, fix, merge.
+- **M3-B** (M3.3 decode/streaming/preload, M3.6 slices/loops/devamp, decode fuzz) — implemented on local branch `m3b-decode-streaming` (main merged in); WIP hang and OGG seek failure root-caused and fixed. Next: Opus review, fix, merge.
 - **M1-B** (M1.5, M1.6, M1.10) — MERGED (PR #1, 1 review round: 0 High / 0 Medium). Lows for later: no-op edits recorded as undo steps (do with M1.12); commands don't check references by design, so the M2 cue engine must tolerate self-targets/trigger cycles; every transaction clones the workspace as rollback snapshot (revisit with M1.12 coalescing); `Command` wire format needs protocol fixtures + `docs/protocol.md` in M4.1.
 - Next: M3-B finish, then M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), then M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
 - Process notes: agent hand-back delivery can fail — briefs give a report path (`<scratchpad>/reports/<batch>.md`); `.claude/settings.local.json` holds the Bash allowlist (local only).
@@ -54,15 +54,19 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 ## M3 — Audio engine (`openlab-audio`)
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]
 - [x] M3.2 Mixer: voice pool, time-stamped commands, sample-accurate starts/stops [NFR-21, NFR-22]
-- [ ] M3.3 Decode (WAV, AIFF, FLAC, MP3, AAC; OGG optional) + resample + disk streaming threads + priming + preload-to-RAM [AUD-04, AUD-05]
+- [x] M3.3 Decode (WAV, AIFF, FLAC, MP3, AAC; OGG optional) + resample + disk streaming threads + priming + preload-to-RAM [AUD-04, AUD-05] — engine wiring (probe on load, Loaded state) comes with M2
 - [x] M3.4 Levels, routing matrix, ganging, output patches (level/mute/delay/polarity), masters [AUD-06, AUD-07, AUD-08, PB-11] — cue outputs beyond the patch's output count are silent (kept in the model)
 - [x] M3.5 Fade ramps + curves (linear, equal-power, S, log, exp); integrated fade in/out; trims [AUD-09, AUD-10, AUD-11]
-- [ ] M3.6 Slices, loops (N / infinite), devamp [AUD-12, CT-16]
+- [x] M3.6 Slices, loops (N / infinite), devamp [AUD-12, CT-16] — mixer and disk-stream side; the Devamp cue itself is M2.5
 - [ ] M3.7 Meters + xrun counter [AUD-19, NFR-27]
 - [ ] M3.8 Device layer (cpal): device list, sample rate / buffer size, up to 64 outputs, hot-unplug/replug recovery [AUD-01, AUD-03, AUD-21, NFR-08]
 - [ ] M3.9 Waveform overview data (peaks at multiple zoom levels, computed off the audio thread) [AUD-14]
 - [ ] M3.10 CPU budget test: 64 stereo voices with fades ≥ 10× real time on the Intel CI runner [NFR-23, QA-06]
 - [x] M3.11 Per-voice output patch selection: `VoiceStart.patch` picks one of `MixerConfig.patches` cue-output → device-output matrices [AUD-07] — from M3.4, done in the M3-A review fixes
+- [ ] M3.13 Loop cache: keep a short loop slice's decoded frames after its first play and unroll later plays from memory, instead of a seek (fresh demuxer + pre-roll, 0.03–1.6 ms) per play. Makes tight loops cheap and looped AAC plays bit-identical (noise substitution differs after each seek) [AUD-12, NFR-23] — from M3-B
+- [ ] M3.14 Trim AAC encoder priming/padding in MP4 (edit list / iTunSMPB): symphonia 0.6.1's isomp4 reader ignores them, so AAC cues start ~1000–2000 frames late [AUD-04] — from M3-B; may need an upstream fix or a small atom reader
+- [x] M3.15 Fuzz target: decoders (probe, preload, stream, seek; whatever probes must play as probed) [QA-04] — from M3-B; findings are kept in `crates/audio/tests/fuzz-findings/` and replayed by `cargo test`
+- [ ] M3.16 symphonia 0.6.1 WAV reader overflows `u16` on a huge channel count (`wave/chunks.rs:100`): wraps in release, panics with overflow checks (contained as `Corrupt`, replayed in `tests/fuzz-findings/`). cargo-fuzz enables overflow checks, so the CI fuzz smoke can stop on it: report upstream / bump symphonia, or pre-check the WAV `fmt ` channel count [QA-04] — from M3-B
 - [ ] M3.12 Wrap the device callback in `assert_no_alloc` in debug builds (today a dev-dependency used by the offline-render tests) [NFR-02] — from M3.1, do with M3.8. Also: a panic inside `apply`/`start_voice` while a `Box<VoiceStart>` is a local frees it on the audio thread during unwinding. This happens only on the fault path, which already allocates for the panic payload; it is the same fault-path RT budget (M3-A review 2, L3)
 
 ## M4 — Engine service (`openlab-engine`)

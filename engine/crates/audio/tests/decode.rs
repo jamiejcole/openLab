@@ -8,6 +8,7 @@
 mod common;
 
 use std::io::Cursor;
+use std::path::Path;
 
 use common::media::*;
 use common::*;
@@ -311,13 +312,16 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
     }
 }
 
-/// Inputs the decode fuzz target once failed on (tests/fixtures/fuzz/, one file per finding).
+/// Inputs the decode fuzz target once failed on (tests/fuzz-findings/, one file per finding; kept out of the
+/// seed corpus so the fuzzer does not stop on findings that are contained but not fixed upstream).
 /// `alac-short-index.m4a`: the MP4 index declares fewer frames than decode; seeking past the
 /// declared length was refused by the container and taken for end of file.
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
+/// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
+/// count (a panic with overflow checks on, as here); contained as a typed error.
 #[test]
 fn fuzz_findings_stay_fixed() {
-    let dir = fixture("fuzz");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
     let mut n = 0;
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
@@ -332,8 +336,19 @@ fn fuzz_findings_stay_fixed() {
 
 #[test]
 fn non_finite_and_absurd_float_samples_are_made_safe() {
-    let samples = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30, 0.5, -2.0];
+    let samples = [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1e30,
+        -1e30,
+        0.5,
+        -2.0,
+    ];
     let bytes = wav(&samples, 1, RATE, Pcm::F32);
-    let got = decode_all(Media::Reader(Box::new(Cursor::new(bytes)), Some("wav".into())));
+    let got = decode_all(Media::Reader(
+        Box::new(Cursor::new(bytes)),
+        Some("wav".into()),
+    ));
     assert_eq!(got, [0.0, 0.0, 0.0, 16.0, -16.0, 0.5, -2.0]);
 }

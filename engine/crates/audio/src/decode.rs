@@ -900,6 +900,25 @@ mod tests {
         }
     }
 
+    /// Without frame-exact timestamps, positions are counted and a seek decodes forward from the
+    /// start: slower, equally exact.
+    #[test]
+    fn counted_positions_seek_exactly() {
+        for name in ["tone.flac", "tone.mp3", "tone.ogg"] {
+            let full = preload(Media::Path(fixture(name))).unwrap();
+            let all = full.samples();
+            let mut d = Decoder::open(Media::Path(fixture(name))).unwrap();
+            d.ts_per_frame = None;
+            for at in [9_000u64, 0, 4_097, 21_000] {
+                d.seek(at).unwrap();
+                let mut buf = vec![0.0; 2 * 500];
+                assert_eq!(d.read(&mut buf).unwrap(), 500, "{name} at {at}");
+                let start = at as usize * 2;
+                assert_eq!(&buf[..], &all[start..start + 1000], "{name} at {at}");
+            }
+        }
+    }
+
     #[test]
     fn scale_round_is_exact_and_saturates() {
         assert_eq!(scale_round(44_100, 48_000, 44_100), 48_000);
