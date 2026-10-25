@@ -365,3 +365,15 @@ fn hardware_smoke_default_output() {
     assert!(mixer.now() > 0);
     println!("errors {:?}", monitor.take_errors());
 }
+
+#[test]
+fn handles_can_cross_threads() {
+    fn send<T: Send>() {}
+    fn send_sync<T: Send + Sync>() {}
+    send::<OutputHost>();
+    send::<openlab_audio::HostLink>();
+    send_sync::<openlab_audio::DeviceMonitor>();
+    send_sync::<openlab_audio::ErrorReporter>();
+    #[cfg(feature = "device")]
+    send::<openlab_audio::OutputStream>();
+}
