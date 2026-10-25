@@ -12,9 +12,9 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 
 - **M1-A** (M1.1–M1.3, M1.9) — MERGED (3 review rounds). Core model, validation/repair (idempotent, linear SCC cycle check), show-file load/save in core.
 - **M3-A** — MERGED. Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.
-- **M3-B** (M3.3 decode/streaming/preload, M3.6 slices/loops/devamp, decode fuzz) — implemented on local branch `m3b-decode-streaming` (main merged in); WIP hang and OGG seek failure root-caused and fixed. Next: Opus review, fix, merge.
+- **M3-B** (M3.3, M3.6, M3.15 decode fuzz, M3.16) — MERGED (Opus impl + review, 3 rounds: H1 devamp starvation, H-R1 damaged-file seek cost; 3 Mediums fixed). User decision: damaged media plays with warnings (`Probed { info, warnings }`), only unplayable files fail. For M2/M4.2 wiring: `probe` fully decodes compressed files (1–2 s per 30-min file) — never call it on the control thread; auto-preload files with `preload_advised()` within budget; workspace-wide preload budget (L-R3).
 - **M1-B** (M1.5, M1.6, M1.10) — MERGED (PR #1, 1 review round: 0 High / 0 Medium). Lows for later: no-op edits recorded as undo steps (do with M1.12); commands don't check references by design, so the M2 cue engine must tolerate self-targets/trigger cycles; every transaction clones the workspace as rollback snapshot (revisit with M1.12 coalescing); `Command` wire format needs protocol fixtures + `docs/protocol.md` in M4.1.
-- Next: M3-B finish, then M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), then M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
+- Next: M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), then M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
 - Process notes: agent hand-back delivery can fail — briefs give a report path (`<scratchpad>/reports/<batch>.md`); `.claude/settings.local.json` holds the Bash allowlist (local only).
 
 ---
@@ -74,6 +74,8 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
   - L-R3: `DEFAULT_PRELOAD_BUDGET` is per preload; the engine wiring (M2) needs a workspace-wide preload budget.
   - L-R4: decode fuzz throughput fell (mutated inputs are mostly damaged, and damaged seeks verify checkpoints or decode from the start); consider fewer seeks for damaged inputs in `fuzz_decode`.
   - L-R5: a devamp while a loop exit's buffer is still playing (within `exit_ms` of leaving a loop) is ignored (`DevampIgnored`); e.g. vamp A, a bridge under 250 ms, vamp C.
+  - L-R6: a long damaged file classed `Seeking::FromStart` (all damaged AAC) still gaps in its own deep loops/start offsets (other cues unaffected); a 30-min stereo file exceeds the 512 MiB default preload budget. M2 wiring: show `SlowSeeks` prominently on the cue, consider a larger budget when `preload_advised()`.
+  - L-R7: a seek-index checkpoint whose 256-frame window is digital silence verifies at any alignment; skip all-zero/near-constant checkpoints when verifying.
 - [ ] M3.12 Wrap the device callback in `assert_no_alloc` in debug builds (today a dev-dependency used by the offline-render tests) [NFR-02] — from M3.1, do with M3.8. Also: a panic inside `apply`/`start_voice` while a `Box<VoiceStart>` is a local frees it on the audio thread during unwinding. This happens only on the fault path, which already allocates for the panic payload; it is the same fault-path RT budget (M3-A review 2, L3)
 
 ## M4 — Engine service (`openlab-engine`)
