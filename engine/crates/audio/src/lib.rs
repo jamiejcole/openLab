@@ -12,6 +12,7 @@ mod decode;
 mod fuzzing;
 mod gain;
 mod mixer;
+mod mp4_check;
 mod offline;
 mod plan;
 mod resample;

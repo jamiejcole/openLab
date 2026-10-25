@@ -699,6 +699,7 @@ impl Decoder {
                 match File::open(&path) {
                     Ok(mut f) => {
                         check_pcm_header(&mut f)?;
+                        crate::mp4_check::check_mp4_stts(&mut f)?;
                         Box::new(f)
                     }
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -716,6 +717,7 @@ impl Decoder {
                     .seek(SeekFrom::Start(0))
                     .map_err(|e| MediaError::Io(e.to_string()))?;
                 check_pcm_header(&mut inner)?;
+                crate::mp4_check::check_mp4_stts(&mut inner)?;
                 Box::new(ReaderSource { inner, len })
             }
             Media::Preloaded(_) => {

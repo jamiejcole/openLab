@@ -434,6 +434,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
 /// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
 /// count (a panic with overflow checks on, as here); contained as a typed error.
+/// `mp4-stts-overflow.m4a`: symphonia 0.6.1's `stts` reader sums sample counts in `u32`; the table
+/// is rejected before symphonia parses it (see `pre_checked_mp4_stts_finding_is_rejected`).
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -535,4 +537,17 @@ fn preload_is_bounded_by_its_budget() {
     let p = preload_within(media(), need).unwrap();
     assert_eq!(p.bytes() as u64, need);
     assert_eq!(openlab_audio::DEFAULT_PRELOAD_BUDGET, 512 << 20);
+}
+
+/// The MP4 `stts` finding is refused by the pre-check, so symphonia's overflowing arithmetic is
+/// never reached (with overflow checks on, as here, it would panic).
+#[test]
+fn pre_checked_mp4_stts_finding_is_rejected() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/mp4-stts-overflow.m4a");
+    let r = probe(&path);
+    assert!(
+        matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header: mp4")),
+        "{r:?}"
+    );
 }
