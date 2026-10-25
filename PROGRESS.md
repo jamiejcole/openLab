@@ -69,6 +69,11 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M3.16 symphonia 0.6.1 RIFF/AIFF readers compute `(bits / 8) * channels` in `u16` (`wave/chunks.rs:100`, `common.rs`), which overflows on absurd headers (a panic with overflow checks, as in cargo-fuzz). WAV `fmt ` and AIFF `COMM` channel count (1–64) and bits (≤ 64) are now checked before symphonia sees the file (`Corrupt`); `tests/fuzz-findings/wav-channel-overflow.wav` no longer reaches symphonia. Report upstream when convenient [QA-04] — from M3-B review M3
 - [ ] M3.17 Minimum loop length: `plan()` accepts 1-frame loops, but each play of a looping slice costs a seek (fresh demuxer plus pre-roll, about 8 ms near the end of a 30 min MP3) and one `LoopReached` event, so very short loops in long compressed files underrun and sub-ms loops can fill the event queue. Enforce a minimum (or warn) until M3.13's loop cache [AUD-12] — from M3-B review L3
 - Note (M3-B review L6): M3.3 is ticked, but AAC in MP4 still plays its encoder priming (M3.14), so AUD-04 is not complete for AAC.
+- Cleanup notes from the M3-B re-review (Low, not done):
+  - L-R2: loop exit buffers are one per distinct exit (`exit_ms` × channels × 4 B each, up to 255 of them: ~24 MB stereo, ~780 MB at 64 channels), allocated without a fallible check and built before priming. Cap the total, or build lazily for the next few loops.
+  - L-R3: `DEFAULT_PRELOAD_BUDGET` is per preload; the engine wiring (M2) needs a workspace-wide preload budget.
+  - L-R4: decode fuzz throughput fell (mutated inputs are mostly damaged, and damaged seeks verify checkpoints or decode from the start); consider fewer seeks for damaged inputs in `fuzz_decode`.
+  - L-R5: a devamp while a loop exit's buffer is still playing (within `exit_ms` of leaving a loop) is ignored (`DevampIgnored`); e.g. vamp A, a bridge under 250 ms, vamp C.
 - [ ] M3.12 Wrap the device callback in `assert_no_alloc` in debug builds (today a dev-dependency used by the offline-render tests) [NFR-02] — from M3.1, do with M3.8. Also: a panic inside `apply`/`start_voice` while a `Box<VoiceStart>` is a local frees it on the audio thread during unwinding. This happens only on the fault path, which already allocates for the panic payload; it is the same fault-path RT budget (M3-A review 2, L3)
 
 ## M4 — Engine service (`openlab-engine`)

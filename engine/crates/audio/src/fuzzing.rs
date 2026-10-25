@@ -4,7 +4,9 @@
 
 use std::io::Cursor;
 
-use crate::decode::{Media, MediaError, open_source, preload, probe_media};
+use crate::decode::{
+    Media, MediaError, MediaWarning, Seeking, WarningKind, open_source, preload, probe_media,
+};
 use crate::resample::Pipeline;
 
 /// Device rate the pipeline resamples to: most inputs then go through the resampler.
@@ -26,7 +28,8 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
         return Err(format!("probe accepted {info:?}"));
     }
     match preload(media()) {
-        Ok(p) if p.info() == info && p.warnings() == probed.warnings.as_slice() => {}
+        // The probe also says when seeks will be slow; damage itself must match.
+        Ok(p) if p.info() == info && p.warnings() == damage(&probed.warnings).as_slice() => {}
         // Over the memory budget is a legitimate outcome (the cue streams instead).
         Err(MediaError::TooLarge { .. }) => {}
         other => {
@@ -36,12 +39,20 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
             ));
         }
     }
-    stream(media(), info.frames, !probed.warnings.is_empty())
+    stream(media(), info.frames, probed.seeking.clone())
         .map_err(|e| format!("probe {info:?} but streaming: {e}"))
 }
 
-fn stream(media: Media, frames: u64, damaged: bool) -> Result<(), MediaError> {
-    let mut pipe = Pipeline::new(open_source(media, damaged)?, frames, DEVICE_RATE)?;
+fn damage(warnings: &[MediaWarning]) -> Vec<MediaWarning> {
+    warnings
+        .iter()
+        .filter(|w| w.kind != WarningKind::SlowSeeks)
+        .copied()
+        .collect()
+}
+
+fn stream(media: Media, frames: u64, seeking: Seeking) -> Result<(), MediaError> {
+    let mut pipe = Pipeline::new(open_source(media, seeking)?, frames, DEVICE_RATE)?;
     let ch = pipe.channels();
     let mut buf = vec![0.0; 1024 * ch];
     while pipe.read(&mut buf)? > 0 {}

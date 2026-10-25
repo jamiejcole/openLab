@@ -135,7 +135,19 @@ fn warning(kind: WarningKind, at: u64, frames: u64) -> MediaWarning {
 fn load_damaged(bytes: Vec<u8>, ext: &str, want: &[MediaWarning]) -> (Probed, Vec<f32>) {
     let media = || Media::Reader(Box::new(Cursor::new(bytes.clone())), Some(ext.into()));
     let probed = probe_media(media()).unwrap();
-    assert_eq!(probed.warnings, want, "{ext}");
+    let damage: Vec<MediaWarning> = probed
+        .warnings
+        .iter()
+        .filter(|w| w.kind != WarningKind::SlowSeeks)
+        .copied()
+        .collect();
+    assert_eq!(damage, want, "{ext}");
+    // A file whose seeks would be slow says so, and is advised to be preloaded.
+    let slow = probed
+        .warnings
+        .iter()
+        .any(|w| w.kind == WarningKind::SlowSeeks);
+    assert_eq!(slow, probed.preload_advised(), "{ext}");
     let pre = preload(media()).unwrap();
     assert_eq!((pre.info(), pre.warnings()), (probed.info, want), "{ext}");
     // Whatever probes streams and seeks too.

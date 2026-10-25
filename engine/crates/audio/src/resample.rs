@@ -177,6 +177,12 @@ impl Pipeline {
         Ok(got)
     }
 
+    /// Does at most about `budget` source frames of a pending seek's decoding; true once the
+    /// next `read` is cheap.
+    pub(crate) fn prepare(&mut self, budget: u64) -> Result<bool, MediaError> {
+        self.src.prepare(budget)
+    }
+
     /// Damage the source met since the last call.
     pub(crate) fn take_warnings(&mut self) -> Vec<MediaWarning> {
         self.src.take_warnings()
@@ -246,7 +252,7 @@ fn produce(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{Media, Preloaded, open_source};
+    use crate::decode::{Media, Preloaded, Seeking, open_source};
     use std::f64::consts::TAU;
 
     fn sine(frames: usize, rate: u32, freq: f64) -> Vec<f32> {
@@ -259,7 +265,7 @@ mod tests {
         let p = Preloaded::from_samples(1, rate, samples);
         let frames = p.info().frames;
         Pipeline::new(
-            open_source(Media::Preloaded(p), false).unwrap(),
+            open_source(Media::Preloaded(p), Seeking::Direct).unwrap(),
             frames,
             device_rate,
         )
@@ -361,7 +367,7 @@ mod tests {
         let open = || {
             let p = Preloaded::from_samples(2, 48_000, src.clone());
             Pipeline::new(
-                open_source(Media::Preloaded(p), false).unwrap(),
+                open_source(Media::Preloaded(p), Seeking::Direct).unwrap(),
                 30_000,
                 44_100,
             )
@@ -407,7 +413,7 @@ mod tests {
         for (rate, device) in [(48_000, 48_000), (44_100, 48_000)] {
             let p = Preloaded::from_samples(1, rate, sine(10_000, rate, 440.0));
             let mut pipe = Pipeline::new(
-                open_source(Media::Preloaded(p), false).unwrap(),
+                open_source(Media::Preloaded(p), Seeking::Direct).unwrap(),
                 20_000,
                 device,
             )
@@ -457,9 +463,12 @@ mod tests {
                 .collect();
             let p = Preloaded::from_samples(2, from, src);
             let frames = p.info().frames;
-            let mut pipe =
-                Pipeline::new(open_source(Media::Preloaded(p), false).unwrap(), frames, to)
-                    .unwrap();
+            let mut pipe = Pipeline::new(
+                open_source(Media::Preloaded(p), Seeking::Direct).unwrap(),
+                frames,
+                to,
+            )
+            .unwrap();
             let mut buf = vec![0.0; 4096 * 2];
             let t = std::time::Instant::now();
             while pipe.read(&mut buf).unwrap() > 0 {}
