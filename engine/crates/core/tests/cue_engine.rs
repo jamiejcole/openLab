@@ -1641,3 +1641,34 @@ fn failed_paused_voice_is_stopped() {
     }));
     assert_eq!(rig.state(1), CueState::Broken);
 }
+
+#[test]
+fn end_report_dated_during_a_pause_is_ignored() {
+    // A pause built as stop + restart reports the stop as the voice ending (review M1).
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
+    rig.start(0, 1);
+    let run = rig.engine.run_of(id(1)).unwrap();
+    rig.at(500, Input::Pause { cue: id(1) });
+    assert!(rig.ended(520, 1, 500).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert!(
+        rig.at(1000, Input::Resume { cue: id(1) })
+            .contains(&Action::ResumeVoice {
+                cue: id(1),
+                run,
+                at: 1000,
+                offset: 500
+            })
+    );
+}
+
+#[test]
+fn end_before_the_pause_still_completes_and_follows() {
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
+    rig.start(0, 1);
+    rig.at(500, Input::Pause { cue: id(1) });
+    let ended = rig.ended(520, 1, 480);
+    assert_eq!(changes(&ended, 1), vec![(CueState::Idle, 480)]);
+    assert_eq!(running_at(&ended, 2), Some(480));
+}

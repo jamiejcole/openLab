@@ -571,6 +571,11 @@ impl CueEngine {
         if run.run != run_id {
             return;
         }
+        // A paused voice cannot end by itself; an end dated at or after the pause is the pause
+        // being carried out (e.g. as a stop), not the action completing.
+        if run.paused_at.is_some_and(|paused| at >= paused) {
+            return;
+        }
         if run.stop_end.is_some() {
             self.slots.remove(&cue);
             return self.report(cue, before, at, cx);

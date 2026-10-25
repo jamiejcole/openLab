@@ -128,7 +128,7 @@ Events:
 ## Feedback
 
 - `ActionEnded { cue, run, at }` (from `VoiceFinished`) and `ActionFailed { cue, run, reason }` are matched on **cue and run**. Feedback for an idle cue, an unknown cue, or an old run (the cue has been stopped, restarted or reset since) is ignored without any action.
-- `ActionEnded` completes an audio action at `at` (clamped to no earlier than its start), or ends a fade-out stop. A hard stop forgets the run immediately, so the voice's `Stopped` report that follows is stale and ignored.
+- `ActionEnded` completes an audio action at `at` (clamped to no earlier than its start), or ends a fade-out stop. While the cue is paused, an `ActionEnded` dated at or after the pause sample is ignored: a paused voice cannot end by itself, so such a report comes from carrying out the pause (e.g. as a stop). An end dated before the pause (the voice ended just before the pause applied) still completes the action and fires auto-follow. A hard stop forgets the run immediately, so the voice's `Stopped` report that follows is stale and ignored.
 - `LoopReached`/`DevampScheduled` are not inputs yet (Devamp is M2.5).
 
 ## Model edits
