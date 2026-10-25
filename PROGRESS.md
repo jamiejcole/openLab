@@ -12,7 +12,8 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 
 - **M1-A** (M1.1–M1.3, M1.9) — MERGED (3 review rounds). Core model, validation/repair (idempotent, linear SCC cycle check), show-file load/save in core.
 - **M3-A** — MERGED. Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.
-- **M3-B** (M3.3 decode/streaming/preload, M3.6 slices/loops/devamp, decode fuzz) — implementer running in a worktree (Opus); report → `<scratchpad>/reports/M3-B.md`; then review (Opus, RT-critical), fix, merge.
+- **M3-B** (M3.3 decode/streaming/preload, M3.6 slices/loops/devamp, decode fuzz) — in progress; unreviewed WIP snapshot (may not build) pushed to branch `wip/m3b-decode-streaming`. Finish, review (RT-critical), fix, merge.
+- **M1-B** (M1.5, M1.6, M1.10) — may be in progress as a cloud-agent PR from branch `m1b-commands-undo`; check open PRs before starting it.
 - Next: M1-B (M1.5, M1.6, M1.10 commands/undo), M1-C (M1.4, M1.7, M1.8, M1.11 persistence I/O), then M2. Low from M1-A review3: SCC tests lack small multi-cycle/tail cases — add with M2.5.
 - Process notes: agent hand-back delivery can fail — briefs give a report path (`<scratchpad>/reports/<batch>.md`); `.claude/settings.local.json` holds the Bash allowlist (local only).
 
