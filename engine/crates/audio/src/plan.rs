@@ -79,9 +79,7 @@ pub fn plan(
         }
         prev = m;
     }
-    if !(plays.is_empty() || plays.len() == marks.len() + 1)
-        || plays.contains(&Plays::Times(0))
-    {
+    if !(plays.is_empty() || plays.len() == marks.len() + 1) || plays.contains(&Plays::Times(0)) {
         return Err(PlanError::Plays);
     }
     if !range.contains(&start) {
@@ -229,8 +227,13 @@ mod tests {
 
     #[test]
     fn start_inside_a_looping_slice_splits_it() {
-        let p = plan(0..1000, &[200, 500], &[Plays::Times(1), Plays::Times(3), Plays::Times(1)], 300)
-            .unwrap();
+        let p = plan(
+            0..1000,
+            &[200, 500],
+            &[Plays::Times(1), Plays::Times(3), Plays::Times(1)],
+            300,
+        )
+        .unwrap();
         assert_eq!(
             p,
             vec![
@@ -251,7 +254,10 @@ mod tests {
         assert_eq!(plan(0..10, &[0], &[], 0), Err(PlanError::Marks));
         assert_eq!(plan(0..10, &[5, 5], &[], 0), Err(PlanError::Marks));
         assert_eq!(plan(0..10, &[10], &[], 0), Err(PlanError::Marks));
-        assert_eq!(plan(0..10, &[5], &[Plays::Times(1)], 0), Err(PlanError::Plays));
+        assert_eq!(
+            plan(0..10, &[5], &[Plays::Times(1)], 0),
+            Err(PlanError::Plays)
+        );
         assert_eq!(
             plan(0..10, &[5], &[Plays::Times(0), Plays::Times(1)], 0),
             Err(PlanError::Plays)

@@ -9,6 +9,7 @@
 
 mod controller;
 mod decode;
+mod fuzzing;
 mod gain;
 mod mixer;
 mod offline;
@@ -18,11 +19,8 @@ mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{Media, MediaError, MediaInfo, MediaRead, Preloaded, preload, probe, probe_media};
-pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
-pub use stream::{
-    DEFAULT_BUFFER_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer, PreparedStream,
-    StreamHandle, StreamRequest, StreamerConfig,
-};
+#[doc(hidden)]
+pub use fuzzing::fuzz_decode;
 pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, SILENCE_DB, db_to_linear, linear_to_db, ramp_value,
     sanitize_gain,
@@ -33,6 +31,11 @@ pub use mixer::{
     OutputSettings, PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
 };
 pub use offline::OfflineRenderer;
+pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
+pub use stream::{
+    DEFAULT_BUFFER_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer, PreparedStream,
+    StreamHandle, StreamRequest, StreamerConfig,
+};
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -15,9 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use symphonia::core::codecs::audio::well_known::{
-    CODEC_ID_AAC, CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3, CODEC_ID_OPUS, CODEC_ID_VORBIS,
+    CODEC_ID_AAC, CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3, CODEC_ID_OPUS, CODEC_ID_PCM_MULAW,
+    CODEC_ID_PCM_S32LE, CODEC_ID_VORBIS,
 };
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
@@ -28,8 +29,25 @@ use symphonia::core::units::{TimeBase, Timestamp};
 use crate::mixer::{MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS};
 
 /// Frames decoded and thrown away before a seek target, so decoders with inter-frame state (MP3
-/// bit reservoir, MDCT overlap) are warm when the wanted frame comes out.
-const SEEK_PREROLL: u64 = 4096;
+/// bit reservoir, MDCT overlap) are warm when the wanted frame comes out. Covers the packet a
+/// lossy seek drops whole (a Vorbis packet is at most 4096 frames) plus warm-up.
+const SEEK_PREROLL: u64 = 8192;
+/// Seek attempts for one target: a seek that lands after its target is retried with twice the
+/// pre-roll, and the last attempt decodes forward from the start.
+const SEEK_TRIES: u32 = 4;
+
+/// Largest sample magnitude passed on (+24 dBFS, the mixer's gain ceiling). Float files can hold
+/// NaN, infinities or absurd values; any of them would poison a mix bus (NaN + x = NaN) or break
+/// the resampler's FFT. Non-finite samples become silence, the rest are clamped.
+pub(crate) const SAMPLE_LIMIT: f32 = 16.0;
+
+fn sanitize_sample(x: f32) -> f32 {
+    if x.is_finite() {
+        x.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
+    } else {
+        0.0
+    }
+}
 
 /// What [`probe`] learns about a file. `frames` is exact (counted by decoding where the container
 /// cannot be trusted).
@@ -187,6 +205,13 @@ impl Preloaded {
     }
 }
 
+/// Runs third-party decoding code so that a panic in it (a decoder bug hit by malformed input)
+/// is a [`MediaError::Corrupt`] for this file instead of taking the calling thread down.
+pub(crate) fn contain<T>(f: impl FnOnce() -> Result<T, MediaError>) -> Result<T, MediaError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into())))
+}
+
 /// Probes `path` and returns its exact format and length. Blocking: call from an I/O thread.
 pub fn probe(path: &Path) -> Result<MediaInfo, MediaError> {
     probe_media(Media::Path(path.to_path_buf()))
@@ -196,10 +221,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo, MediaError> {
 pub fn probe_media(media: Media) -> Result<MediaInfo, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(p.info),
-        other => {
-            let mut d = Decoder::open(other)?;
-            d.exact_info()
-        }
+        other => contain(|| Decoder::open(other)?.exact_info()),
     }
 }
 
@@ -208,6 +230,10 @@ pub fn preload(media: Media) -> Result<Arc<Preloaded>, MediaError> {
     if let Media::Preloaded(p) = media {
         return Ok(p);
     }
+    contain(|| decode_all(media))
+}
+
+fn decode_all(media: Media) -> Result<Arc<Preloaded>, MediaError> {
     let mut d = Decoder::open(media)?;
     let ch = d.channels;
     let mut samples = Vec::new();
@@ -275,7 +301,9 @@ impl FrameSource for MemorySource {
         let ch = self.channels();
         let left = self.data.info.frames - self.pos;
         let n = (out.len() / ch).min(usize::try_from(left).unwrap_or(usize::MAX));
-        let start = usize::try_from(self.pos).unwrap_or(usize::MAX).saturating_mul(ch);
+        let start = usize::try_from(self.pos)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(ch);
         let src = self
             .data
             .samples
@@ -318,24 +346,47 @@ impl MediaSource for ReaderSource {
 }
 
 struct Decoder {
-    format: Box<dyn FormatReader>,
+    /// `None` only if reopening for a seek failed (the error was returned then).
+    format: Option<Box<dyn FormatReader>>,
+    hint: Hint,
     decoder: Box<dyn AudioDecoder>,
+    /// To make a fresh decoder on every seek: symphonia's AAC `reset` leaves state behind.
+    params: AudioCodecParameters,
     track: u32,
     time_base: Option<TimeBase>,
-    start_ts: i64,
     rate: u32,
     channels: usize,
-    /// Length from the container; trusted only for lossless codecs.
+    /// Timestamp units per frame, when every frame starts on a whole timestamp. Positions then
+    /// come from packet timestamps, so a seek lands exactly. `None`: positions are counted from
+    /// the start, and a seek decodes forward from the start.
+    ts_per_frame: Option<i64>,
+    /// The track's first timestamp, where a seek to the start goes.
+    start_ts: i64,
+    /// Timestamp position, in frames, of the first playable frame (position 0).
+    origin: i64,
+    /// Length from the container; trusted only for PCM (see `exact_info`).
     declared: Option<u64>,
+    pcm: bool,
     lossy: bool,
-    /// Decoded interleaved samples not yet returned; `buf[buf_pos..]` starts at frame `next`.
+    /// Playable frames of the current packet, interleaved; `buf[buf_pos..]` starts at `next`.
     buf: Vec<f32>,
     buf_pos: usize,
-    /// File frame of the next sample returned.
+    /// Position of the next frame `read` returns.
     next: u64,
-    /// After a seek: the position of the next decoded packet comes from its timestamp.
-    resync: bool,
+    /// Position just after the last packet decoded: where the next packet must start.
+    cursor: u64,
+    /// Set by a seek until the packet holding the target frame is decoded.
+    resync: Option<Resync>,
     eof: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Resync {
+    /// A lossy decoder's first packet after a mid-file seek lacks its predecessor's state (MDCT
+    /// overlap, MP3 bit reservoir): it is dropped whole.
+    discard_first: bool,
+    /// Seeks so far for this target; each retry doubles the pre-roll, the last starts at 0.
+    tries: u32,
 }
 
 impl Decoder {
@@ -365,16 +416,13 @@ impl Decoder {
                 Box::new(ReaderSource { inner, len })
             }
             Media::Preloaded(_) => {
-                return Err(MediaError::Unsupported("preloaded media has no decoder".into()));
+                return Err(MediaError::Unsupported(
+                    "preloaded media has no decoder".into(),
+                ));
             }
         };
         let mss = MediaSourceStream::new(source, Default::default());
-        let format = symphonia::default::get_probe().probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )?;
+        let format = probe_format(&hint, mss)?;
         let track = format
             .default_track(TrackType::Audio)
             .ok_or_else(|| MediaError::Unsupported("no audio track".into()))?;
@@ -402,33 +450,69 @@ impl Decoder {
             CODEC_ID_OPUS,
         ]
         .contains(&params.codec);
-        let decoder =
-            symphonia::default::get_codecs().make_audio_decoder(params, &AudioDecoderOptions::default())?;
-        let (track_id, time_base, start_ts, declared) =
-            (track.id, track.time_base, track.start_ts.get(), track.num_frames);
-        Ok(Decoder {
-            format,
+        let pcm = (CODEC_ID_PCM_S32LE..=CODEC_ID_PCM_MULAW).contains(&params.codec);
+        let params = params.clone();
+        let decoder = make_decoder(&params)?;
+        let time_base = track.time_base;
+        let ts_per_frame = match time_base {
+            None => Some(1),
+            Some(tb) => {
+                let unit = u64::from(tb.numer.get()) * u64::from(rate);
+                let denom = u64::from(tb.denom.get());
+                (denom % unit == 0)
+                    .then(|| i64::try_from(denom / unit).ok())
+                    .flatten()
+            }
+        };
+        let (track_id, start_ts, declared) = (track.id, track.start_ts.get(), track.num_frames);
+        let mut d = Decoder {
+            format: Some(format),
+            hint,
             decoder,
+            params,
             track: track_id,
             time_base,
-            start_ts,
             rate,
             channels,
+            ts_per_frame,
+            start_ts,
+            origin: 0,
             declared,
+            pcm,
             lossy,
             buf: Vec::new(),
             buf_pos: 0,
             next: 0,
-            resync: false,
+            cursor: 0,
+            resync: None,
             eof: false,
-        })
+        };
+        d.find_origin()?;
+        Ok(d)
     }
 
-    /// Exact length: trusted lossless header lengths are checked by decoding the tail; anything
-    /// else is counted by decoding the whole file.
+    /// Decodes up to the first playable frame, which becomes position 0, and keeps its packet
+    /// buffered.
+    fn find_origin(&mut self) -> Result<(), MediaError> {
+        while let Some(abs) = self.decode_packet()? {
+            let kept = self.kept();
+            if kept > 0 {
+                if self.ts_per_frame.is_some() {
+                    self.origin = abs;
+                }
+                self.cursor = kept as u64;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Exact length: a PCM header's length is checked by decoding the tail; anything else
+    /// (compressed formats, where frames can be missing without the container noticing) is
+    /// counted by decoding the whole file, which also checks it has no gaps.
     fn exact_info(&mut self) -> Result<MediaInfo, MediaError> {
         let channels = u16::try_from(self.channels).unwrap_or(0);
-        let frames = match self.declared.filter(|_| !self.lossy) {
+        let frames = match self.declared.filter(|_| self.pcm) {
             Some(declared) => {
                 let tail = self
                     .seek(declared.saturating_sub(1))
@@ -449,7 +533,14 @@ impl Decoder {
                     }
                 }
             }
-            None => self.count_to_end()?,
+            None => {
+                let actual = self.count_to_end()?;
+                // A lossless container's length is exact: fewer frames means the file was cut.
+                match self.declared.filter(|&d| !self.lossy && actual < d) {
+                    Some(expected) => return Err(MediaError::Truncated { expected, actual }),
+                    None => actual,
+                }
+            }
         };
         if frames == 0 {
             return Err(MediaError::Corrupt("no audio frames".into()));
@@ -460,7 +551,7 @@ impl Decoder {
     /// Decodes to the end and returns the frame position reached.
     fn count_to_end(&mut self) -> Result<u64, MediaError> {
         loop {
-            self.next += ((self.buf.len() - self.buf_pos) / self.channels) as u64;
+            self.next += self.kept() as u64;
             self.buf_pos = self.buf.len();
             if !self.refill()? {
                 return Ok(self.next);
@@ -468,43 +559,45 @@ impl Decoder {
         }
     }
 
+    /// Frames in `buf` not yet returned.
+    fn kept(&self) -> usize {
+        self.buf.len().saturating_sub(self.buf_pos) / self.channels
+    }
+
+    /// Timestamp (or duration) `ts` in frames, rounded to the nearest frame.
     fn ts_to_frames(&self, ts: i64) -> i64 {
-        let rel = i128::from(ts) - i128::from(self.start_ts);
         let v = match self.time_base {
             Some(tb) => {
-                rel * i128::from(tb.numer.get()) * i128::from(self.rate)
-                    / i128::from(tb.denom.get())
+                let num = i128::from(ts) * i128::from(tb.numer.get()) * i128::from(self.rate);
+                let den = i128::from(tb.denom.get());
+                (2 * num + den).div_euclid(2 * den)
             }
-            None => rel,
+            None => i128::from(ts),
         };
         i64::try_from(v).unwrap_or(if v < 0 { i64::MIN } else { i64::MAX })
     }
 
-    fn frames_to_ts(&self, frames: u64) -> i64 {
-        let f = i128::from(frames);
-        let v = match self.time_base {
-            Some(tb) => {
-                f * i128::from(tb.denom.get())
-                    / (i128::from(tb.numer.get()) * i128::from(self.rate)).max(1)
-            }
-            None => f,
-        } + i128::from(self.start_ts);
+    /// Timestamp of position `frames`; only used when `ts_per_frame` is known.
+    fn frames_to_ts(&self, frames: u64, unit: i64) -> i64 {
+        let v = (i128::from(frames) + i128::from(self.origin)) * i128::from(unit);
         i64::try_from(v).unwrap_or(i64::MAX)
     }
 
-    /// Decodes the next packet of our track into `buf`, aligned so `buf[buf_pos]` is frame
-    /// `next`. Returns false at end of file.
-    fn refill(&mut self) -> Result<bool, MediaError> {
+    /// Decodes the next packet of our track into `buf`, with the packet's encoder delay and
+    /// padding trimmed. Returns the position of its first playable frame (`buf[buf_pos]`), or
+    /// `None` at the end of the stream.
+    fn decode_packet(&mut self) -> Result<Option<i64>, MediaError> {
         self.buf.clear();
         self.buf_pos = 0;
         while !self.eof {
-            let packet = match self.format.next_packet() {
+            let format = self.format.as_mut().ok_or(MediaError::Changed)?;
+            let packet = match format.next_packet() {
                 Ok(Some(p)) => p,
                 Ok(None) => {
                     self.eof = true;
                     break;
                 }
-                // A container cut short ends the stream; probe reports truncation separately.
+                // A container cut short ends the stream; the caller compares the length.
                 Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
                     self.eof = true;
                     break;
@@ -514,43 +607,182 @@ impl Decoder {
             if packet.track_id != self.track {
                 continue;
             }
-            let decoded = self.decoder.decode(&packet)?;
-            if decoded.spec().channels().count() != self.channels {
-                return Err(MediaError::Unsupported("channel count changes mid-file".into()));
-            }
-            let frames = decoded.frames();
-            decoded.copy_to_vec_interleaved(&mut self.buf);
-            // A decoder that applied the packet's gapless trim returns only the playable frames.
-            let first_ts = if frames as u64 == packet.dur.get() {
-                packet.pts.get().saturating_add_unsigned(packet.trim_start.get())
-            } else {
-                packet.pts.get()
-            };
-            if self.resync {
-                let first = self.ts_to_frames(first_ts);
-                let want = i64::try_from(self.next).unwrap_or(i64::MAX);
-                if first < want {
-                    // Drop frames before the seek target.
-                    let drop = usize::try_from(want - first).unwrap_or(usize::MAX);
-                    if drop >= frames {
-                        self.buf.clear();
+            let decoded = match self.decoder.decode(&packet) {
+                Ok(d) => d,
+                // The packet a lossy seek drops anyway may not decode without its predecessor.
+                Err(SymError::DecodeError(m)) => match &mut self.resync {
+                    Some(r) if r.discard_first => {
+                        r.discard_first = false;
                         continue;
                     }
-                    self.buf_pos = drop * self.channels;
-                } else if first > want {
-                    // The reader landed after the target: the gap is silence, keeping time.
-                    let gap = usize::try_from(first - want).unwrap_or(0).min(1 << 20);
-                    self.buf
-                        .splice(0..0, std::iter::repeat_n(0.0, gap * self.channels));
-                }
-                self.resync = false;
+                    _ => return Err(MediaError::Corrupt(m.to_string())),
+                },
+                Err(e) => return Err(e.into()),
+            };
+            if decoded.spec().channels().count() != self.channels {
+                return Err(MediaError::Unsupported(
+                    "channel count changes mid-file".into(),
+                ));
             }
-            if self.buf.len() > self.buf_pos {
+            let n = decoded.frames();
+            decoded.copy_to_vec_interleaved(&mut self.buf);
+            for x in &mut self.buf {
+                *x = sanitize_sample(*x);
+            }
+            let trim = |d: u64| -> usize {
+                let f = self.ts_to_frames(i64::try_from(d).unwrap_or(i64::MAX));
+                usize::try_from(f).unwrap_or(0)
+            };
+            let front = trim(packet.trim_start.get()).min(n);
+            let back = trim(packet.trim_end.get()).min(n - front);
+            self.buf.truncate((n - back) * self.channels);
+            self.buf_pos = front * self.channels;
+            let pos = match self.ts_per_frame {
+                Some(_) => self
+                    .ts_to_frames(packet.pts.get())
+                    .saturating_add(front as i64)
+                    .saturating_sub(self.origin),
+                None => i64::try_from(self.cursor).unwrap_or(i64::MAX),
+            };
+            return Ok(Some(pos));
+        }
+        Ok(None)
+    }
+
+    /// Decodes the next packet that holds frame `next`, aligned so `buf[buf_pos]` is that
+    /// frame. Returns false at the end of the stream.
+    fn refill(&mut self) -> Result<bool, MediaError> {
+        loop {
+            let Some(pos) = self.decode_packet()? else {
+                return Ok(false);
+            };
+            let kept = self.kept();
+            let end = pos.saturating_add(kept as i64);
+            if let Some(r) = self.resync {
+                // Counted positions need every packet, even the ones dropped here.
+                self.cursor = u64::try_from(end).unwrap_or(0);
+                if r.discard_first {
+                    self.resync = Some(Resync {
+                        discard_first: false,
+                        ..r
+                    });
+                    continue;
+                }
+                let want = i64::try_from(self.next).unwrap_or(i64::MAX);
+                if kept == 0 || end <= want {
+                    continue;
+                }
+                if pos > want {
+                    // The container landed after the target: retry from further back.
+                    if r.tries + 1 >= SEEK_TRIES {
+                        return Err(MediaError::Corrupt("cannot seek to frame".into()));
+                    }
+                    self.seek_with(self.next, r.tries + 1)?;
+                    continue;
+                }
+                let skip = usize::try_from(want - pos).unwrap_or(usize::MAX);
+                self.buf_pos += skip * self.channels;
+                self.resync = None;
                 return Ok(true);
             }
+            if kept == 0 {
+                continue;
+            }
+            let cursor = i64::try_from(self.cursor).unwrap_or(i64::MAX);
+            if pos != cursor {
+                // Frames are missing (a damaged frame the demuxer skipped) or repeated.
+                return Err(MediaError::Corrupt(format!(
+                    "discontinuity at frame {cursor} (next packet at {pos})"
+                )));
+            }
+            self.cursor = u64::try_from(end).unwrap_or(0);
+            return Ok(true);
         }
-        Ok(false)
     }
+
+    /// Seeks the container so that decoding reaches `frame` after a pre-roll.
+    fn seek_with(&mut self, frame: u64, tries: u32) -> Result<(), MediaError> {
+        self.buf.clear();
+        self.buf_pos = 0;
+        self.eof = false;
+        self.next = frame;
+        self.cursor = 0;
+        // Lossless decoders need no warm-up; any decoder gets more pre-roll on a retry.
+        let preroll = if self.lossy || tries > 0 {
+            SEEK_PREROLL << tries
+        } else {
+            0
+        };
+        let from = match self.ts_per_frame {
+            Some(_) if tries + 1 < SEEK_TRIES => frame.saturating_sub(preroll),
+            _ => 0,
+        };
+        self.reopen()?;
+        let at_start = if from == 0 {
+            true
+        } else {
+            let unit = self.ts_per_frame.unwrap_or(1);
+            let to = SeekTo::Timestamp {
+                ts: Timestamp::new(self.frames_to_ts(from, unit)),
+                track_id: self.track,
+            };
+            let format = self.format.as_mut().ok_or(MediaError::Changed)?;
+            match format.seek(SeekMode::Accurate, to) {
+                Ok(s) => s.actual_ts.get() <= self.start_ts,
+                // The container cannot seek there (its own length index can be shorter than
+                // what decodes): decode forward from the start instead.
+                Err(_) => {
+                    self.reopen()?;
+                    true
+                }
+            }
+        };
+        self.decoder = make_decoder(&self.params)?;
+        self.resync = Some(Resync {
+            discard_first: self.lossy && !at_start,
+            tries,
+        });
+        Ok(())
+    }
+
+    /// Replaces the container reader with a fresh one at the start of the same byte stream.
+    /// Every seek starts from a fresh reader: symphonia 0.6.1's FLAC reader keeps stale frame
+    /// fragments when a seek lands exactly on a frame start (the first frame, or any SEEKTABLE
+    /// point), and then returns frames from before the seek.
+    fn reopen(&mut self) -> Result<(), MediaError> {
+        let old = self.format.take().ok_or(MediaError::Changed)?;
+        let mut mss = old.into_inner();
+        mss.seek(SeekFrom::Start(0))
+            .map_err(|e| MediaError::Io(e.to_string()))?;
+        let format = probe_format(&self.hint, mss)?;
+        let same = format
+            .default_track(TrackType::Audio)
+            .is_some_and(|t| t.id == self.track);
+        if !same {
+            return Err(MediaError::Changed);
+        }
+        self.format = Some(format);
+        Ok(())
+    }
+}
+
+fn make_decoder(params: &AudioCodecParameters) -> Result<Box<dyn AudioDecoder>, MediaError> {
+    // Gapless trimming is applied in `decode_packet`, the same way for every codec: symphonia's
+    // decoders differ in whether they apply it.
+    let opts = AudioDecoderOptions::default().gapless(false);
+    Ok(symphonia::default::get_codecs().make_audio_decoder(params, &opts)?)
+}
+
+fn probe_format(
+    hint: &Hint,
+    mss: MediaSourceStream<'static>,
+) -> Result<Box<dyn FormatReader>, MediaError> {
+    Ok(symphonia::default::get_probe().probe(
+        hint,
+        mss,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    )?)
 }
 
 impl FrameSource for Decoder {
@@ -563,26 +795,7 @@ impl FrameSource for Decoder {
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), MediaError> {
-        let from = frame.saturating_sub(SEEK_PREROLL);
-        let to = SeekTo::Timestamp {
-            ts: Timestamp::new(self.frames_to_ts(from)),
-            track_id: self.track,
-        };
-        self.buf.clear();
-        self.buf_pos = 0;
-        self.eof = false;
-        self.next = frame;
-        match self.format.seek(SeekMode::Accurate, to) {
-            Ok(_) => {}
-            // Seeking past the end leaves nothing to read.
-            Err(SymError::SeekError(_)) if self.declared.is_some_and(|d| from >= d) => {
-                self.eof = true;
-            }
-            Err(e) => return Err(e.into()),
-        }
-        self.decoder.reset();
-        self.resync = true;
-        Ok(())
+        self.seek_with(frame, 0)
     }
 
     fn read(&mut self, out: &mut [f32]) -> Result<usize, MediaError> {
@@ -590,11 +803,10 @@ impl FrameSource for Decoder {
         let want = out.len() / ch;
         let mut got = 0;
         while got < want {
-            if self.buf_pos >= self.buf.len() && !self.refill()? {
+            if self.kept() == 0 && !self.refill()? {
                 break;
             }
-            let avail = (self.buf.len() - self.buf_pos) / ch;
-            let n = avail.min(want - got);
+            let n = self.kept().min(want - got);
             let src = self.buf.get(self.buf_pos..self.buf_pos + n * ch);
             let dst = out.get_mut(got * ch..(got + n) * ch);
             if let (Some(src), Some(dst)) = (src, dst) {
@@ -611,6 +823,82 @@ impl FrameSource for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    /// After any seek, every format yields exactly the frames a decode from the start has there.
+    #[test]
+    fn seeking_is_sample_accurate_for_every_format() {
+        for name in [
+            "tone.flac",
+            "tone-alac.m4a",
+            "tone.mp3",
+            "tone.m4a",
+            "tone.ogg",
+        ] {
+            let full = preload(Media::Path(fixture(name))).unwrap();
+            let frames = full.info().frames;
+            let all = full.samples();
+            let mut src = open_source(Media::Path(fixture(name))).unwrap();
+            let aac = name == "tone.m4a";
+            let mut worst = 0.0f32;
+            // Start, inside the pre-roll, packet edges (1024 AAC/Vorbis, 1152 MP3, 4096 FLAC),
+            // backwards, near and at the end.
+            for at in [
+                1,
+                0,
+                47,
+                500,
+                1023,
+                1024,
+                1152,
+                4095,
+                4096,
+                8191,
+                8192,
+                8193,
+                12_000,
+                7_000,
+                3,
+                20_000,
+                frames - 300,
+                frames - 1,
+                frames,
+            ] {
+                src.seek(at).unwrap();
+                let mut buf = vec![0.0; 600];
+                let mut got = 0;
+                while got < 300 {
+                    let n = src.read(&mut buf[got * 2..]).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got += n;
+                }
+                let want = (frames - at).min(300) as usize;
+                assert_eq!(got, want, "{name} at {at}: frames");
+                let start = at as usize * 2;
+                let err = buf[..got * 2]
+                    .iter()
+                    .zip(&all[start..start + got * 2])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f32::max);
+                // Bit-exact, except AAC after a mid-file seek: ffmpeg's AAC encoder uses noise
+                // substitution, which the decoder fills from a pseudo-random sequence that depends
+                // on everything decoded before.
+                if !aac || at < SEEK_PREROLL {
+                    assert_eq!(err, 0.0, "{name} at {at}");
+                }
+                worst = worst.max(err);
+            }
+            // Substituted noise is tiny; a one-frame shift of this tone would be over 0.03.
+            assert!(worst < 2.5e-3, "{name}: max error {worst}");
+        }
+    }
 
     #[test]
     fn scale_round_is_exact_and_saturates() {
