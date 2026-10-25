@@ -2,7 +2,7 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7). The device layer (M3.8) is not built yet.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7); waveform overview data (M3.9). The device layer (M3.8) is not built yet.
 
 ## Threads and queues
 
@@ -315,6 +315,17 @@ If `process` panics (a fault, ARCHITECTURE §3.4), the peaks it still held local
 Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per slot, about 40 bytes (identity and the reader's copy). Default config (128 voices × 2 outputs): about 10 KB. The maximum (4096 voices × 64 outputs): about 5.4 MB, small next to those voices' input buffers.
 
 **Xruns.** `xruns()` is a monotonic count of xruns reported by the device layer. The device callback calls `Mixer::note_xruns(count)` when the host reports one (or the device layer sees a gap in the callback timestamps; detecting it is M3.8's job); `Mixer::xrun_notifier()` returns an `XrunNotifier` (clone, `Send + Sync`) for the host's error callback on another thread. Both are one atomic add, so real-time safe. Voice underruns are not xruns; they are counted in `underrun_frames`. The offline driver injects xruns with `OfflineRenderer::inject_xruns(count)`. Logging the count and showing it to the operator are M4.7/M5 work.
+
+## Waveform overview (AUD-14)
+
+`waveform.rs` builds the data the waveform editor (M5.8) draws; the drawing and drag editing are not here. It runs on a worker thread, never the control or audio thread.
+
+- **Format.** `Waveform { sample_rate, frames, channels, levels }`. Level 0 holds one `Peak { min, max }` per `BASE_FRAMES` (256) frames per channel; each further level merges neighbouring buckets (factor 2, so a zoom step never loses more than 2x resolution) until a level has one bucket covering the file. The last bucket of a level may cover fewer frames. Peaks are `i16` (full scale = 32767; `Peak::min_f32`/`max_f32` convert): half the size of `f32`, and a pixel column needs no more precision. Samples are clamped to +-1 first (a float file's overs show as full scale) and NaN/+-inf count as 0.
+- **Size.** 4 bytes per bucket per channel, about twice level 0 over all levels: `frames / 256 x 2 x 4 x channels` bytes. A 30-minute stereo 48 kHz file (86.4 M frames) has 337,500 level-0 buckets and 20 levels: about 5.4 MB in all (2.7 MB for level 0).
+- **Positions are file frames at the file's own rate**, the unit the trims and slices use in the show file (`start_time`, `end_time` and slice `time` are seconds from the start of the file; `plan` takes them as frames), so `seconds x sample_rate` is the frame to ask for.
+- `WaveformBuilder::new(rate, channels, expected_frames)` / `push(interleaved)` / `finish()` is pure and takes chunks of any size (the result does not depend on the chunking). It reserves memory for `expected_frames` once and ignores frames beyond them, so a file longer than its probe cannot grow it.
+- `build_waveform(media, &info, &cancel)` decodes with the regular decoder (the same one the probe and streams use, no second path) and feeds the builder in 4096-frame reads. `info` is the file's probe (`Probed::info`; the caller has it from loading the cue, so the file is not probed twice). `cancel` is checked before every read: setting it gives `WaveformError::Cancelled`. Damaged media still gets a waveform: `WaveformResult { waveform, warnings }` carries the decoder's warnings (missing frames are silence in it). A file with fewer frames than probed gives a waveform of the frames it has and a `Truncated` warning; one with more is read only up to the probed length, as a stream is. Channels or rate that differ from `info` are `MediaError::Changed`; an unplayable file is `WaveformError::Media(..)`. A decoder panic is `Corrupt`.
+- `Waveform::range(channel, start, end, buckets)` returns `buckets` min/max pairs over frames `start..end` from the coarsest level that still has a source bucket per output bucket (level 0 if even that is too coarse: output buckets then repeat source buckets, so the editor reads samples directly at its finest zoom). `end` is clamped to the file; an output bucket takes in every source bucket it overlaps, so edges round outwards by up to one source bucket. Empty for an unknown channel, `buckets == 0`, or an empty or inverted range; never more buckets than frames or `MAX_RANGE_BUCKETS` (65536).
 
 ## Offline render driver (QA-03, ARCHITECTURE §3.6)
 
