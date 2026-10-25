@@ -120,7 +120,7 @@ Events:
 | paused | time passes | paused (nothing runs) |
 | any non-idle | cue deleted from the workspace | idle; `StopVoice`/`UnloadVoice`, `CueRemoved` warning if it was active |
 
-- **Pause** freezes every timer at `now`; **resume** at `R` moves every pending deadline `R − now_paused` later, so pre-wait, action and post-wait keep exactly the time they had left. `PauseVoice`/`ResumeVoice` carry the position in the action (`offset`), so the binary can pause in the mixer or stop and restart from the offset.
+- **Pause** freezes every timer at `now`; **resume** at `R` moves every pending deadline `R − now_paused` later, so pre-wait, action and post-wait keep exactly the time they had left. `PauseVoice`/`ResumeVoice` carry the position the voice has actually reached in the action (`offset`, counted from the voice's real start sample, so a late start or a pause before a start committed in the lookahead window is exact), so the binary can pause in the mixer or stop and restart from the offset.
 - **Stop with fade** fades a playing voice out over the fade's length (`StopVoice.fade`) and ends the cue when the fade ends — without waiting for feedback, which can be lost if the event queue overflows. A second stop is a hard stop.
 - A stop, pause or restart never lands before the voice's own start sample (`at` = `max(now, voice start)`), so in the mixer it cannot be overtaken by a start already committed.
 - Operations on a cue id that is not in the workspace warn `UnknownCue` and do nothing.
