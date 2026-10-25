@@ -9,8 +9,8 @@ use crate::cue::{Cue, CueKind};
 use crate::model::CueId;
 
 use super::group;
-use super::level::{self, Level, LevelParam};
-use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice};
+use super::level::{self, Level, LevelParam, LevelRamp};
+use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice, after_restart};
 use super::time::SampleTime;
 use super::types::{Action, EngineWarning};
 use super::{Ctx, CueEngine};
@@ -80,8 +80,9 @@ impl CueEngine {
                 continue;
             }
             fade.targets.push((c.id, run.seq));
-            // Never before the voice exists in the mixer, and the end stays on the fade's end.
-            let start = at.max(now).max(started);
+            // Never before the voice exists in the mixer or before a command already committed
+            // for it (another fade's ramp in the lookahead window); the end stays on the fade's.
+            let start = run.commit(at.max(now).max(started), cx.horizon);
             let frames = end.saturating_sub(start);
             for &(param, gain) in &wanted {
                 let from = run
@@ -172,19 +173,23 @@ impl CueEngine {
                 continue;
             }
             let voice = run.run;
+            let committed = run.floor(cx.horizon);
             let Some(level) = run.levels.get_mut(&r.param) else {
                 continue;
             };
             if level.owner != Some((cue, seq)) {
                 continue;
             }
-            // Not before the ramp's own start: a ramp committed for a later sample would
-            // otherwise overtake the hold in the mixer.
-            let when = at.max(level.start);
+            // Not before the ramp's own start, nor any other command committed for the voice:
+            // one committed for a later sample would otherwise overtake the hold in the mixer.
+            let when = at
+                .max(after_restart(level.start, cx.horizon))
+                .max(committed);
             if when >= level.end() {
                 level.owner = None;
                 continue;
             }
+            run.committed = when;
             let gain = level.value(when);
             *level = Level::held(gain, when, keep.then_some((cue, seq)));
             cx.out.push(Action::Ramp {
@@ -221,13 +226,18 @@ impl CueEngine {
                 continue;
             }
             let voice = target.run;
+            let committed = target.floor(cx.horizon);
             let Some(level) = target.levels.get_mut(&r.param) else {
                 continue;
             };
             if level.owner != Some((cue, seq)) {
                 continue;
             }
-            let start = at.max(now).max(level.start);
+            let start = at
+                .max(now)
+                .max(after_restart(level.start, cx.horizon))
+                .max(committed);
+            target.committed = start;
             let frames = end.saturating_sub(start);
             *level = Level {
                 owner: Some((cue, seq)),
@@ -277,6 +287,29 @@ impl CueEngine {
             Some(Slot::Active(run)) if run.seq == seq => run.levels.get_mut(&param),
             _ => None,
         }
+    }
+
+    /// Every gain Fade cues have set or are moving on cue `cue`, as of sample `at`: its value
+    /// then and, while it is still moving (`end > at`), where it is going, when and how. A voice
+    /// restarted on `at` (a pause carried out as stop and restart) starts with these values and
+    /// gets `Ramp { gain: to, frames: end − at, curve }` for each one still moving.
+    pub fn fade_ramps(&self, cue: CueId, at: SampleTime) -> Vec<LevelRamp> {
+        let Some(Slot::Active(run)) = self.slots.get(&cue) else {
+            return Vec::new();
+        };
+        run.levels
+            .iter()
+            .map(|(param, l)| {
+                let moving = at < l.end();
+                LevelRamp {
+                    param: *param,
+                    value: l.value(at),
+                    to: if moving { l.to } else { l.value(at) },
+                    end: l.end(),
+                    curve: l.curve,
+                }
+            })
+            .collect()
     }
 
     /// The gain (linear) a Fade cue has given parameter `param` of a playing audio cue, on

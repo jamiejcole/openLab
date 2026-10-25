@@ -86,6 +86,9 @@ pub(super) struct Run {
     pub paused_at: Option<SampleTime>,
     /// Stopping with a fade-out that ends on this sample.
     pub stop_end: Option<SampleTime>,
+    /// The latest sample a command for this run's voice was sent for. Commands in the lookahead
+    /// window are committed, so a later command for the voice is never dated before it.
+    pub committed: SampleTime,
     /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
     /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
@@ -109,6 +112,8 @@ pub(super) struct DevampWait {
     pub by: CueId,
     /// Start the cue after the Devamp cue when the loop is left.
     pub start_next: bool,
+    /// End the voice there ("stop target when slice ends").
+    pub stop: bool,
     /// Where the voice leaves the loop, once the audio side has said (`DevampScheduled`).
     pub at: Option<SampleTime>,
 }
@@ -195,6 +200,7 @@ impl Run {
             voice: Voice::None,
             paused_at: None,
             stop_end: None,
+            committed: 0,
             broken: None,
             group,
             levels: BTreeMap::new(),
@@ -258,6 +264,20 @@ impl Run {
         }
     }
 
+    /// The earliest sample a new command for the voice may be dated on, for a call that commits
+    /// up to `horizon`. A committed sample beyond the horizon can only come from a clock that went
+    /// back (device restart); it is then ignored, as double-GO ignores such a GO.
+    pub fn floor(&self, horizon: SampleTime) -> SampleTime {
+        after_restart(self.committed, horizon)
+    }
+
+    /// Dates a command for this run's voice: no earlier than `at` nor than any command already
+    /// committed for it (see `floor`).
+    pub fn commit(&mut self, at: SampleTime, horizon: SampleTime) -> SampleTime {
+        self.committed = at.max(self.floor(horizon));
+        self.committed
+    }
+
     /// Moves every pending deadline `by` samples later (resume after a pause).
     pub fn shift(&mut self, by: SampleTime) {
         let later = |t: SampleTime| t.saturating_add(by);
@@ -277,4 +297,9 @@ impl Run {
             d.at = d.at.map(later);
         }
     }
+}
+
+/// `t` if a call that commits up to `horizon` can have committed it, else 0 (the clock went back).
+pub(super) fn after_restart(t: SampleTime, horizon: SampleTime) -> SampleTime {
+    if t <= horizon { t } else { 0 }
 }

@@ -269,6 +269,8 @@ proptest! {
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
         let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
+        // The latest sample a command was sent for, per voice (run id), across calls.
+        let mut last_at: BTreeMap<RunId, SampleTime> = BTreeMap::new();
 
         for s in &steps {
             now += s.dt;
@@ -384,6 +386,22 @@ proptest! {
                     }
                     Action::SetArmed { cue, armed } => arm.push((*cue, *armed)),
                     _ => {}
+                }
+                // Commands for one voice never go backwards in time (committed ones cannot be
+                // withdrawn or overtaken); a resume continues the paused voice's sequence.
+                let timed = match action {
+                    Action::StartVoice { run, at, .. }
+                    | Action::StopVoice { run, at, .. }
+                    | Action::PauseVoice { run, at, .. }
+                    | Action::Ramp { run, at, .. }
+                    | Action::DevampVoice { run, at, .. } => Some((*run, *run, *at)),
+                    Action::ResumeVoice { run, paused, at, .. } => Some((*paused, *run, *at)),
+                    _ => None,
+                };
+                if let Some((before, after, at)) = timed {
+                    let previous = last_at.get(&before).copied().unwrap_or(0);
+                    prop_assert!(at >= previous, "voice {:?} went back from {} to {}", before, previous, at);
+                    last_at.insert(after, at);
                 }
             }
             prop_assert!(starts <= CueEngine::chain_limit(&ws));

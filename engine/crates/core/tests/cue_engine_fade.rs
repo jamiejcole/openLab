@@ -733,3 +733,55 @@ fn a_fade_that_stops_its_own_group_reports_once() {
     assert_eq!(voice_stops(&end), vec![(id(2), 1000, None)]);
     assert_eq!(rig.state(1), CueState::Idle);
 }
+
+// ----- review round 1 -----
+
+#[test]
+fn a_fade_taking_over_never_ramps_before_a_committed_ramp() {
+    // Review M1: Fade 2's ramp is committed for 1400 (lookahead); an operator Fade at 1100
+    // must not be dated before it, or the mixer would carry out the two the wrong way round.
+    let mut f2 = master_fade(2, 1.0, SILENCE_DB);
+    f2.pre_wait = 0.4;
+    let mut rig = Rig::with_lookahead(vec![sound(1), f2, master_fade(3, 1.0, 0.0)], 500);
+    rig.start(0, 1);
+    assert_eq!(
+        ramps(&rig.start(1000, 2)),
+        vec![ramp(1, 1400, M, 0.0, 1000)]
+    );
+    let take = rig.start(1100, 3);
+    // Fade 3 ends on 2100; its ramp starts on 1400 (from Fade 2's start value, 1.0).
+    assert_eq!(ramps(&take), vec![ramp(1, 1400, M, 1.0, 700)]);
+    assert_eq!(rig.level(1, M, 2100), Some(1.0));
+    rig.tick(2600);
+    assert_eq!(rig.level(1, M, 2600), Some(1.0));
+}
+
+#[test]
+fn in_progress_ramps_can_be_read_back_for_a_restart() {
+    // Review L4: what the binary needs to restart a voice mid-fade.
+    let mut rig = Rig::new(vec![sound(1), master_fade(2, 4.0, SILENCE_DB)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    assert_eq!(
+        rig.engine.fade_ramps(id(1), 1000),
+        vec![LevelRamp {
+            param: M,
+            value: 0.75,
+            to: 0.0,
+            end: 4000,
+            curve: FadeCurve::Linear,
+        }]
+    );
+    rig.pause(1000, 2);
+    assert_eq!(
+        rig.engine.fade_ramps(id(1), 2000),
+        vec![LevelRamp {
+            param: M,
+            value: 0.75,
+            to: 0.75,
+            end: 1000,
+            curve: FadeCurve::Linear,
+        }]
+    );
+    assert!(rig.engine.fade_ramps(id(2), 2000).is_empty());
+}

@@ -51,3 +51,72 @@ proptest! {
         );
     }
 }
+
+#[test]
+fn edge_values_match_the_mixer() {
+    for db in [
+        -120.0,
+        -120.000_000_1,
+        -119.999_999_9,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        12.0,
+        24.0,
+        30.0,
+        f64::MAX,
+    ] {
+        assert_eq!(
+            db_to_gain(db).to_bits(),
+            openlab_audio::db_to_linear(db).to_bits(),
+            "{db}"
+        );
+    }
+    let gains = [
+        0.0f32,
+        1.0,
+        0.5,
+        // Beyond the mixer's maximum gain; the mixer clamps when it applies, not here.
+        openlab_audio::MAX_GAIN * 2.0,
+        f32::NAN,
+        f32::INFINITY,
+    ];
+    for (core, audio) in CURVES {
+        for t in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.0,
+            0.0,
+            1.0,
+            2.0,
+        ] {
+            assert_eq!(
+                curve_shape(core, t).to_bits(),
+                audio.shape(t).to_bits(),
+                "{core:?} {t}"
+            );
+        }
+        for &from in &gains {
+            for &to in &gains {
+                for (pos, len) in [
+                    (0, 0),
+                    (1, 0),
+                    (0, 1),
+                    (1, 1),
+                    (5, 10),
+                    (10, 10),
+                    (u64::MAX, u64::MAX),
+                    (1, u64::MAX),
+                ] {
+                    assert_eq!(
+                        ramp_gain(from, to, pos, len, core).to_bits(),
+                        openlab_audio::ramp_value(from, to, pos, len, audio).to_bits(),
+                        "{core:?} {from}→{to} {pos}/{len}"
+                    );
+                }
+            }
+        }
+    }
+}
