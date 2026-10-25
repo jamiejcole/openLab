@@ -18,6 +18,7 @@ make lint        # cargo fmt --check, cargo clippy -D warnings, swift format lin
 make test        # all Rust tests + mac unit/UI tests
 make test-rust   # Rust only
 make mac         # generate project + build app (includes universal engine)
+make verify-bundle  # check the Release app is universal, minos 12.0, validly signed
 ```
 (Until the Makefile exists, use the underlying `cargo` / `xcodegen` / `xcodebuild` commands.)
 
