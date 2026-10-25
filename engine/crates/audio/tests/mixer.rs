@@ -552,10 +552,7 @@ fn gang_is_released_whole_when_the_queue_is_nearly_full() {
     assert!(out[2] < 1.0);
     assert!((out[150 * 2] - db_to_linear(-6.0)).abs() < 1e-6);
     let too_big: Vec<_> = (0..openlab_audio::COMMAND_CAPACITY + 1)
-        .map(|_| openlab_audio::Command {
-            at: 0,
-            kind: CommandKind::SetMaster { gain: 1.0 },
-        })
+        .map(|_| (0, CommandKind::SetMaster { gain: 1.0 }))
         .collect();
     assert!(ctl.send_batch(too_big).is_err());
 }
@@ -608,6 +605,30 @@ fn held_commands_land_on_their_exact_sample_when_pumped() {
     }
     assert_eq!(out[5000], 1.0);
     assert!(out[5001..].iter().all(|s| *s == 0.5));
+}
+
+/// Review 2 M4 (probe `order`): equal-`at` commands apply in send order even when one was held
+/// and a later one travelled in an earlier-keyed batch.
+#[test]
+fn equal_time_commands_apply_in_send_order_across_batches_and_held_commands() {
+    let cfg = MixerConfig {
+        lookahead_ms: 10,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    start(&mut ctl, 0, 1, mono_dc(20_000), 1);
+    ctl.send(5000, CommandKind::SetMaster { gain: 0.5 });
+    ctl.send_batch(vec![
+        (0, CommandKind::SetMaster { gain: 1.0 }),
+        (5000, CommandKind::SetMaster { gain: 0.2 }),
+    ])
+    .unwrap();
+    let mut out = Vec::new();
+    for _ in 0..40 {
+        ctl.pump();
+        out.extend(r.render(256, &[256]));
+    }
+    assert!((out[9000] - 0.2).abs() < 1e-6, "{}", out[9000]);
 }
 
 #[test]
@@ -704,6 +725,29 @@ fn gains_are_capped_at_the_ceiling() {
     {
         assert!((got - want).abs() < 1e-6, "{frame:?}");
     }
+
+    // Review 2 M1: a NaN level or offset in a gang move is silence, not the ceiling.
+    let (mut ctl, mut r) = setup(config(2));
+    let v = voice(&ctl, 1, source(&vec![0.01; 2 * 4000]), 2);
+    send_start(&mut ctl, 0, v);
+    ctl.ramp_gang(
+        0,
+        VoiceId(1),
+        &[(GainTarget::CueOutput(0), f64::NAN)],
+        0.0,
+        Fade::NONE,
+    )
+    .unwrap();
+    ctl.ramp_gang(
+        0,
+        VoiceId(1),
+        &[(GainTarget::CueOutput(1), 0.0)],
+        f64::NAN,
+        Fade::NONE,
+    )
+    .unwrap();
+    let out = r.render(100, &[64]);
+    assert!(out.iter().all(|s| *s == 0.0), "{:?}", &out[..4]);
 
     let (mut ctl, mut r) = setup(config(1));
     start(&mut ctl, 0, 1, source(&vec![0.01; 4000]), 1);

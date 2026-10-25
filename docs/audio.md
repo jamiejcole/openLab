@@ -29,6 +29,8 @@ Every command goes through a hold queue on the control thread, ordered by `(at, 
 - `send` never drops a command. If the command is beyond the horizon, or the queue is full, it waits on the control thread. `held()` reports how many are waiting.
 - The mixer only ever holds near-term commands, so a far-future schedule cannot delay a stop.
 - `send_batch` (and `ramp_gang`) publishes its commands with one queue write (`write_chunk_uninit` with a single commit): the mixer sees all of them or none. A batch larger than the queue (1024) is refused with `BatchTooLarge`.
+- Every command is stamped with its send order. The mixer uses that stamp to break ties between equal `at`, so equal-time commands apply in send order, whether they were sent alone, in a batch, or held first.
+- Held and pending commands cannot be withdrawn. **The engine must not schedule voice starts beyond the next block** (ARCHITECTURE §3.2: `start = now + one block`), so a Stop or Panic is never followed by a start that was already queued.
 
 ### Real-time rules
 
@@ -50,6 +52,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 - If the heap is full while commands wait in the queue, those commands apply late rather than being lost.
 - Each such block is counted (`pending_full_blocks`), and one `Event::PendingFull` is sent per episode.
 - With the horizon, the heap only fills when more than 4096 commands fall within the lookahead.
+- During such an episode, a batch can be pulled partly in one block and partly in the next. A gang due in that block may then move on different samples; the `PendingFull` event marks when this can happen.
 
 **Return queue.** A `VoiceStart` is boxed on the control thread and moved into the mixer inside `StartVoice`.
 
@@ -63,7 +66,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 
 - `SampleTime` is a `u64` frame count at the device rate. The mixer's clock is the number of frames it has rendered. It is published after each `process` call as `samples_rendered` (ARCHITECTURE §3.2).
 - Every command carries an absolute `at`. The mixer splits each block at command boundaries and applies a command **before rendering sample `at`**. A command whose `at` has already passed applies at the start of the next block.
-- Commands need not arrive in time order. Commands with equal `at` apply in the order they were sent.
+- Commands need not arrive in time order. Commands with equal `at` apply in the order they were sent (the controller's send stamp, across batches and held commands).
 - The result is independent of block size. A scripted command sequence renders identically for any pattern of block sizes, including size 1, primes, and blocks larger than `max_block_frames` (property test).
 
 ## Voices
