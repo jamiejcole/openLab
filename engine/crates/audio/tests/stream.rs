@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Disk streaming end to end through the offline renderer (AUD-04, AUD-05, AUD-11, AUD-12,
 //! CT-16): decode → resample → ring → mixer voice. Tests wait on stream signals (primed, frames
-//! written, devamp cut), never on timers; the timeouts are only failsafes.
+//! written, devamp cut), never on timers; the timeouts are only failsafes, and every loop is
+//! bounded. Every render runs with allocation forbidden.
 
 mod common;
 
@@ -18,7 +21,17 @@ use openlab_audio::{
 
 const SR: u32 = 48_000;
 const BLOCK: usize = 256;
-const FAILSAFE: Duration = Duration::from_secs(30);
+const FAILSAFE: Duration = Duration::from_secs(10);
+
+/// Renders `frames` (interleaved over the mixer's outputs) with allocation forbidden.
+fn render(r: &mut OfflineRenderer, frames: usize) -> Vec<f32> {
+    let ch = r.mixer_mut().output_channels();
+    let mut out = vec![0.0; frames * ch];
+    for chunk in out.chunks_mut(BLOCK * ch) {
+        no_alloc(|| r.render_into(chunk, &[chunk.len() / ch]));
+    }
+    out
+}
 
 fn streamer(buffer_ms: u32) -> DiskStreamer {
     let mut c = StreamerConfig::new(SR);
@@ -76,7 +89,7 @@ fn render_synced(
         let n = BLOCK.min(frames - done);
         let need = ctl.samples_rendered() + n as u64 + lead;
         assert!(h.wait_written(need, FAILSAFE).unwrap(), "stream stalled");
-        r.render_into(&mut out[done * ch..(done + n) * ch], &[n]);
+        no_alloc(|| r.render_into(&mut out[done * ch..(done + n) * ch], &[n]));
         ctl.pump();
         done += n;
     }
@@ -98,7 +111,10 @@ fn unrolled(slices: &[Slice]) -> Vec<f32> {
 }
 
 fn assert_plays(out: &[f32], at: usize, want: &[f32]) {
-    assert!(out[..at].iter().all(|&s| s == 0.0), "audio before the start");
+    assert!(
+        out[..at].iter().all(|&s| s == 0.0),
+        "audio before the start"
+    );
     for (i, (g, w)) in out[at..at + want.len()].iter().zip(want).enumerate() {
         assert_eq!(g, w, "frame {i} after the start");
     }
@@ -222,7 +238,7 @@ fn infinite_loop_without_drift(frames: usize) {
     let mut t = 0usize;
     while t < frames {
         assert!(h.wait_written(t as u64 + BLOCK as u64, FAILSAFE).unwrap());
-        r.render_into(&mut out, &[BLOCK]);
+        no_alloc(|| r.render_into(&mut out, &[BLOCK]));
         for (j, &s) in out.iter().enumerate() {
             let p = t + j;
             let want = if p < 200 { p } else { 200 + (p - 200) % 100 };
@@ -230,8 +246,15 @@ fn infinite_loop_without_drift(frames: usize) {
         }
         for e in events(&mut ctl) {
             match e {
-                Event::SliceEnded { at: 200, slice: 0, .. } => {}
-                Event::LoopReached { at, slice: 1, count, .. } => {
+                Event::SliceEnded {
+                    at: 200, slice: 0, ..
+                } => {}
+                Event::LoopReached {
+                    at,
+                    slice: 1,
+                    count,
+                    ..
+                } => {
                     loops += 1;
                     assert_eq!((count, at), (loops, 200 + 100 * loops), "loop drifted");
                 }
@@ -272,15 +295,24 @@ fn vamp(stop: bool, devamp_at: u64) -> (Vec<f32>, Vec<Event>) {
     // Let the ring fill, so the cut has to drop stale plays.
     assert!(h.wait_written(90_000, FAILSAFE).unwrap());
     let mut out = render_synced(&mut r, &mut ctl, &h, devamp_at as usize, 0);
-    ctl.send(devamp_at, CommandKind::Devamp { voice: VoiceId(1), stop });
+    ctl.send(
+        devamp_at,
+        CommandKind::Devamp {
+            voice: VoiceId(1),
+            stop,
+        },
+    );
     // The mixer takes the command in the next block and publishes the cut; wait for the disk.
     out.extend(render_synced(&mut r, &mut ctl, &h, BLOCK, 0));
     if !stop {
         assert!(h.wait_cuts(1, FAILSAFE).unwrap());
-        assert!(h.wait_written(u64::MAX, FAILSAFE).unwrap(), "continuation not written");
+        assert!(
+            h.wait_written(u64::MAX, FAILSAFE).unwrap(),
+            "continuation not written"
+        );
     }
     let rest = 5_000 - out.len();
-    out.extend(r.render(rest, &[BLOCK]));
+    out.extend(render(&mut r, rest));
     (out, events(&mut ctl))
 }
 
@@ -342,12 +374,18 @@ fn devamp_cuts_the_remaining_plays_of_a_finite_loop() {
     let slices = plan(0..3_000, &[1_000, 2_000], &plays, 0).unwrap();
     let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
     assert!(h.wait_written(u64::MAX, FAILSAFE).unwrap());
-    let mut out = r.render(1_500, &[BLOCK]);
-    ctl.send(1_500, CommandKind::Devamp { voice: VoiceId(1), stop: false });
-    out.extend(r.render(BLOCK, &[BLOCK]));
+    let mut out = render(&mut r, 1_500);
+    ctl.send(
+        1_500,
+        CommandKind::Devamp {
+            voice: VoiceId(1),
+            stop: false,
+        },
+    );
+    out.extend(render(&mut r, BLOCK));
     assert!(h.wait_cuts(1, FAILSAFE).unwrap());
     assert!(h.wait_written(u64::MAX, FAILSAFE).unwrap());
-    out.extend(r.render(5_000 - out.len(), &[BLOCK]));
+    out.extend(render(&mut r, 5_000 - out.len()));
     let want: Vec<f32> = (0..3_000).map(marker).collect();
     assert_plays(&out, 0, &want);
     assert!(events(&mut ctl).contains(&finished(3_000, FinishReason::OutPoint)));
@@ -363,7 +401,13 @@ fn devamp_before_the_ring_reaches_the_boundary_needs_no_skip() {
     let slices = plan(0..10_000, &[1_000, 9_000], &plays, 0).unwrap();
     let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
     let mut out = render_synced(&mut r, &mut ctl, &h, 1_280, 0);
-    ctl.send(1_280, CommandKind::Devamp { voice: VoiceId(1), stop: false });
+    ctl.send(
+        1_280,
+        CommandKind::Devamp {
+            voice: VoiceId(1),
+            stop: false,
+        },
+    );
     out.extend(render_synced(&mut r, &mut ctl, &h, BLOCK, 0));
     out.extend(render_synced(&mut r, &mut ctl, &h, 12_000 - out.len(), 0));
     assert!(h.cuts() == 1);
@@ -397,17 +441,20 @@ fn slow_disk_underrun_recovers_where_it_left_off() {
         slices,
         0,
     );
+    // The worker writes whole 4096-frame chunks; the third needs data behind the gate.
+    assert!(h.wait_written(8_192, FAILSAFE).unwrap());
+    assert_eq!(h.frames_written(), 8_192);
     // Play past what the stalled disk could deliver.
-    let mut out = r.render(20_000, &[BLOCK]);
+    let mut out = render(&mut r, 20_000);
     let ev = events(&mut ctl);
     let gap_at = match ev.as_slice() {
         [Event::Underrun { at, .. }] => *at,
         other => panic!("expected one underrun, got {other:?}"),
     };
-    assert!(gap_at > 0 && gap_at < 20_000);
+    assert_eq!(gap_at, 8_192);
     gate.open();
     assert!(h.wait_written(frames, FAILSAFE).unwrap());
-    out.extend(r.render(40_000, &[BLOCK]));
+    out.extend(render(&mut r, 40_000));
     // Remove the silent gap: what is left is the whole file, in order, nothing skipped.
     let gap = (20_000 - gap_at) as usize;
     let played: Vec<f32> = out[..gap_at as usize]
@@ -424,7 +471,10 @@ fn slow_disk_underrun_recovers_where_it_left_off() {
 #[test]
 fn preload_plays_the_same_as_streaming() {
     // 44.1 kHz source, so both paths resample; loops make both seek.
-    let path = temp_file("preload.wav", &wav(&tone(44_100, 44_100), 2, 44_100, Pcm::I16));
+    let path = temp_file(
+        "preload.wav",
+        &wav(&tone(44_100, 44_100), 2, 44_100, Pcm::I16),
+    );
     let info = probe(&path).unwrap();
     assert_eq!(info.frames_at(SR), 48_000);
     let plays = [Plays::Times(1), Plays::Times(3), Plays::Times(1)];
@@ -448,13 +498,23 @@ fn preload_plays_the_same_as_streaming() {
 
 #[test]
 fn resampled_stream_has_exact_length_and_frequency() {
-    let path = temp_file("resample.wav", &wav(&sine(44_100, 44_100, 1000.0, 0.5), 1, 44_100, Pcm::F32));
+    let path = temp_file(
+        "resample.wav",
+        &wav(&sine(44_100, 44_100, 1000.0, 0.5), 1, 44_100, Pcm::F32),
+    );
     let info = probe(&path).unwrap();
     let total = info.frames_at(SR);
     assert_eq!(total, 48_000);
     let (mut ctl, mut r) = setup(config(1));
     let mut d = streamer(100);
-    let h = start_stream(&mut d, &mut ctl, Media::Path(path), info, plan(0..total, &[], &[], 0).unwrap(), 0);
+    let h = start_stream(
+        &mut d,
+        &mut ctl,
+        Media::Path(path),
+        info,
+        plan(0..total, &[], &[], 0).unwrap(),
+        0,
+    );
     let out = render_synced(&mut r, &mut ctl, &h, 50_000, 0);
     assert!(events(&mut ctl).contains(&finished(48_000, FinishReason::OutPoint)));
     let f = frequency(&out[2_000..46_000], SR);
@@ -464,7 +524,13 @@ fn resampled_stream_has_exact_length_and_frequency() {
 /// Every format streams from a seek point exactly as a full decode has it there.
 #[test]
 fn every_format_streams_from_a_seek_point_like_a_full_decode() {
-    for name in ["tone.flac", "tone-alac.m4a", "tone.mp3", "tone.m4a", "tone.ogg"] {
+    for name in [
+        "tone.flac",
+        "tone-alac.m4a",
+        "tone.mp3",
+        "tone.m4a",
+        "tone.ogg",
+    ] {
         let info = probe(&fixture(name)).unwrap();
         let full = preload(Media::Path(fixture(name))).unwrap();
         let mut c = StreamerConfig::new(44_100);
@@ -476,7 +542,14 @@ fn every_format_streams_from_a_seek_point_like_a_full_decode() {
         };
         let (mut ctl, mut r) = setup(cfg);
         let slices = plan(7_000..15_000, &[], &[], 7_000).unwrap();
-        let h = start_stream(&mut d, &mut ctl, Media::Path(fixture(name)), info, slices, 0);
+        let h = start_stream(
+            &mut d,
+            &mut ctl,
+            Media::Path(fixture(name)),
+            info,
+            slices,
+            0,
+        );
         let out = render_synced(&mut r, &mut ctl, &h, 8_000, 0);
         let want = &full.samples()[7_000 * 2..15_000 * 2];
         let err = out
@@ -484,20 +557,18 @@ fn every_format_streams_from_a_seek_point_like_a_full_decode() {
             .zip(want)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f32::max);
-        // Lossless decodes are bit-exact after a seek. Lossy decoders restart from a pre-roll,
-        // which leaves differences far below audibility (an off-by-one frame would be ~0.05).
-        let tol = if name.contains("alac") || name.ends_with(".flac") { 0.0 } else { 1e-3 };
+        // Bit-exact, except AAC: ffmpeg's encoder uses noise substitution, which the decoder
+        // fills from a pseudo-random sequence that depends on everything decoded before (see
+        // `decode::tests`). An off-by-one frame would be over 0.03.
+        let tol = if name == "tone.m4a" { 1e-3 } else { 0.0 };
         assert!(err <= tol, "{name}: max error {err}");
     }
 }
 
 #[test]
-fn stream_errors_are_typed_and_end_the_voice() {
-    let (mut ctl, mut r) = setup(config(1));
+fn unplayable_streams_fail_with_a_typed_error() {
     let mut d = streamer(100);
     let one = |frames| plan(0..frames, &[], &[], 0).unwrap();
-
-    // Missing file.
     let info = MediaInfo {
         channels: 1,
         sample_rate: SR,
@@ -511,7 +582,10 @@ fn stream_errors_are_typed_and_end_the_voice() {
             slices: one(1000),
         })
         .unwrap();
-    assert!(matches!(p.handle.wait_primed(FAILSAFE), Err(MediaError::NotFound(_))));
+    assert!(matches!(
+        p.handle.wait_primed(FAILSAFE),
+        Err(MediaError::NotFound(_))
+    ));
 
     // The file no longer matches its probe.
     let (media, mut info) = marker_file("changed.wav", 1000);
@@ -524,36 +598,136 @@ fn stream_errors_are_typed_and_end_the_voice() {
         })
         .unwrap();
     assert_eq!(p.handle.wait_primed(FAILSAFE), Err(MediaError::Changed));
+}
 
-    // Corrupt data mid-file: the stream fails and the voice ends instead of hanging.
-    let mut bytes = std::fs::read(fixture("tone.flac")).unwrap();
-    let mid = bytes.len() / 2;
-    for b in &mut bytes[mid..mid + 2000] {
-        *b ^= 0x5a;
-    }
-    let path = temp_file("stream-corrupt.flac", &bytes);
-    let info = probe(&path).unwrap();
-    let mut c = StreamerConfig::new(44_100);
+/// Streams `media` (probed as `info`) as voice 1 from sample 0 until the stream fails. Then
+/// checks the voice played exactly what was written, ended on the next sample with
+/// `EndOfStream`, and that this took a bounded number of blocks. Returns the error.
+fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaError {
+    let mut c = StreamerConfig::new(device_rate);
     c.buffer_ms = 100;
-    let mut d44 = DiskStreamer::new(c).unwrap();
+    let mut d = DiskStreamer::new(c).unwrap();
     let cfg = openlab_audio::MixerConfig {
-        sample_rate: 44_100,
-        ..config(2)
+        sample_rate: device_rate,
+        ..config(1)
     };
-    let (mut ctl44, mut r44) = setup(cfg);
-    let h = start_stream(&mut d44, &mut ctl44, Media::Path(path), info, one(info.frames), 0);
-    let failed = loop {
-        match h.wait_written(ctl44.samples_rendered() + BLOCK as u64, FAILSAFE) {
-            Ok(true) => r44.render_into(&mut [0.0; BLOCK * 2], &[BLOCK]),
+    let (mut ctl, mut r) = setup(cfg);
+    let total = info.frames_at(device_rate);
+    let h = start_stream(
+        &mut d,
+        &mut ctl,
+        media,
+        info,
+        plan(0..total, &[], &[], 0).unwrap(),
+        0,
+    );
+    let mut out = Vec::new();
+    let mut failed = None;
+    for _ in 0..total / BLOCK as u64 + 2 {
+        match h.wait_written(ctl.samples_rendered() + BLOCK as u64, FAILSAFE) {
+            Ok(true) => out.extend(render(&mut r, BLOCK)),
             Ok(false) => panic!("stream stalled"),
-            Err(e) => break e,
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
         }
-    };
-    assert!(matches!(failed, MediaError::Corrupt(_) | MediaError::Changed), "{failed:?}");
-    assert_eq!(h.error(), Some(failed));
-    r44.render(30_000, &[BLOCK]);
-    assert!(events(&mut ctl44)
+    }
+    let failed = failed.expect("the stream failed");
+    assert_eq!(h.error(), Some(failed.clone()));
+    // The stream is gone: the voice plays out what is in the ring, then ends.
+    let written = h.frames_written();
+    assert!(written < total);
+    let left = (written - ctl.samples_rendered()) as usize;
+    out.extend(render(&mut r, left + BLOCK));
+    let ev = events(&mut ctl);
+    assert!(
+        ev.contains(&finished(written, FinishReason::EndOfStream)),
+        "{ev:?}"
+    );
+    assert!(out[written as usize..].iter().all(|&s| s == 0.0));
+    assert_eq!(ctl.underrun_frames(), 0);
+    failed
+}
+
+#[test]
+fn read_error_mid_stream_ends_the_voice() {
+    let frames = 200_000;
+    let bytes = wav(&markers(frames), 1, SR, Pcm::F32);
+    let info = probe(&temp_file("read-error.wav", &bytes)).unwrap();
+    let at = 44 + 100_000 * 4;
+    let reader = FailingReader::new(bytes, at, Failure::Error);
+    let e = play_until_failure(
+        Media::Reader(Box::new(reader), Some("wav".into())),
+        info,
+        SR,
+    );
+    assert!(matches!(e, MediaError::Io(_)), "{e:?}");
+}
+
+#[test]
+fn decoder_panic_mid_stream_is_contained() {
+    let frames = 200_000;
+    let bytes = wav(&markers(frames), 1, SR, Pcm::F32);
+    let info = probe(&temp_file("panic.wav", &bytes)).unwrap();
+    let reader = FailingReader::new(bytes, 44 + 100_000 * 4, Failure::Panic);
+    let e = play_until_failure(
+        Media::Reader(Box::new(reader), Some("wav".into())),
+        info,
+        SR,
+    );
+    assert!(matches!(e, MediaError::Corrupt(_)), "{e:?}");
+    // The worker survived: it still streams.
+    let mut d = streamer(100);
+    let (media, info) = marker_file("after-panic.wav", 1000);
+    let p = d
+        .prepare(StreamRequest {
+            media,
+            info,
+            slices: plan(0..1000, &[], &[], 0).unwrap(),
+        })
+        .unwrap();
+    assert!(p.handle.wait_written(u64::MAX, FAILSAFE).unwrap());
+}
+
+#[test]
+fn file_truncated_after_probe_ends_the_voice() {
+    for (rate, device_rate) in [(SR, SR), (44_100, SR)] {
+        let frames = 200_000;
+        let bytes = wav(&markers(frames), 1, rate, Pcm::F32);
+        let path = temp_file("shrinks.wav", &bytes);
+        let info = probe(&path).unwrap();
+        // The header still claims every frame; the data stops half way.
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        let e = play_until_failure(Media::Path(path), info, device_rate);
+        assert!(
+            matches!(e, MediaError::Truncated { expected: 200_000, actual } if actual < 110_000),
+            "{rate}: {e:?}"
+        );
+    }
+}
+
+#[test]
+fn file_corrupted_after_probe_ends_the_voice() {
+    let path = temp_file(
+        "damaged.flac",
+        &std::fs::read(fixture("tone.flac")).unwrap(),
+    );
+    let info = probe(&path).unwrap();
+    // Splice a whole frame out (see decode.rs `missing_frames_are_a_typed_error`).
+    let bytes = std::fs::read(&path).unwrap();
+    let syncs: Vec<usize> = bytes
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w == &[0xFF, 0xF8])
+        .map(|(i, _)| i)
+        .collect();
+    let spliced: Vec<u8> = bytes[..syncs[2]]
         .iter()
-        .any(|e| matches!(e, Event::VoiceFinished { reason: FinishReason::EndOfStream, .. })));
-    let _ = (&mut ctl, &mut r);
+        .chain(&bytes[syncs[3]..])
+        .copied()
+        .collect();
+    std::fs::write(&path, spliced).unwrap();
+    let e = play_until_failure(Media::Path(path), info, 44_100);
+    assert!(matches!(e, MediaError::Corrupt(_)), "{e:?}");
 }
