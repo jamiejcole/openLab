@@ -331,6 +331,15 @@ Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per s
 
 `OfflineRenderer::new(mixer)` calls `process_guarded` in a loop, writing into memory with no device and no sleeps. `render(frames, blocks)` / `render_into(buf, blocks)` cycle through a list of block sizes, so tests cover fixed sizes and variable sizes (CoreAudio may deliver varying sizes). `render_into` does not allocate, so tests wrap it in `assert_no_alloc`. Tests that schedule beyond the lookahead call `MixerController::pump()` between blocks, as the engine's control loop will.
 
+## CPU budget (NFR-23, QA-06, M3.10)
+
+`tests/cpu_budget.rs` is a wall-clock gate, `#[ignore]`d so `cargo test` never runs it (and a no-op in a debug build). CI runs it on the Intel runner: `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`. It fails if the mixer renders less than 10x real time and prints the ratio and per-block p50/p99/max.
+
+- **Workload**: 64 stereo voices at 48 kHz, each fed through its ring, with a 1.5 s fade-in (curves cycled), an integrated 2 s fade-out, and every second a 600 ms voice-output and crosspoint ramp on every voice (fades in flight 60% of the time). Two cue outputs routed through four patches onto 16 device outputs, master on, meters publishing every block. 8 groups (2 s) of warm-up, then 64 s measured. Blocks of 512 frames gate; 256 and 64 are reported.
+- **Timed**: only `OfflineRenderer::render_into`, one block at a time, on the rendering thread. **Not timed**: topping up the rings, sending commands, reading meters and polling events (all between groups of 12288 frames), disk decode and the resampler.
+- **Resampled variant** (44.1 kHz in-memory files through `DiskStreamer` into the 48 kHz mixer) is reported, not gated: resampling runs on the disk workers, off the rendering thread, which sees the same ring as before.
+- The assertions also require no underrun, no early voice end and no fault, so a starved voice cannot flatter the ratio. Run it alone: the single test function times its cases in sequence.
+
 ## Not yet built
 
 - Short loops seek once per play (see the costs above). A loop cache (keep a short loop's frames after its first play) would remove those seeks and make looped AAC plays bit-identical (M3.13).

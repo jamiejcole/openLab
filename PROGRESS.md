@@ -90,7 +90,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [x] M3.7 Meters + xrun counter [AUD-19, NFR-27] — mixer side: device-output and per-voice cue-output peaks (read-and-reset, epoch-tagged attribution), `xruns()` with `Mixer::note_xruns` / `XrunNotifier` for M3.8 to wire; sampling to clients is M4.7/M5 (docs/audio.md, Meters and xruns)
 - [ ] M3.8 Device layer (cpal): device list, sample rate / buffer size, up to 64 outputs, hot-unplug/replug recovery [AUD-01, AUD-03, AUD-21, NFR-08]
 - [x] M3.9 Waveform overview data (peaks at multiple zoom levels, computed off the audio thread) [AUD-14]
-- [ ] M3.10 CPU budget test: 64 stereo voices with fades ≥ 10× real time on the Intel CI runner [NFR-23, QA-06]
+- [ ] M3.10 CPU budget test: 64 stereo voices with fades ≥ 10× real time on the Intel CI runner [NFR-23, QA-06] (gate written; CI step pending)
 - [x] M3.11 Per-voice output patch selection: `VoiceStart.patch` picks one of `MixerConfig.patches` cue-output → device-output matrices [AUD-07] — from M3.4, done in the M3-A review fixes
 - [ ] M3.13 Loop cache: keep a short loop slice's decoded frames after its first play and unroll later plays from memory, instead of a seek (fresh demuxer + pre-roll, 0.03–1.6 ms) per play. Makes tight loops cheap and looped AAC plays bit-identical (noise substitution differs after each seek) [AUD-12, NFR-23] — from M3-B
 - [ ] M3.14 Trim AAC encoder priming in MP4 (edit list / iTunSMPB): symphonia 0.6.1's isomp4 reader ignores it, so AAC cues start ~1000–2000 frames late (end padding is trimmed to the container length since the M3-B review round) [AUD-04] — from M3-B; may need an upstream fix or a small atom reader
