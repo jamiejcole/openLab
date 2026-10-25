@@ -899,3 +899,65 @@ fn fade_out_stays_continuous_when_a_devamp_shortens_the_end() {
         }
     }
 }
+
+/// Review H1: a devamp out of an infinite loop whose plays fill the whole ring. The ring is
+/// FIFO and full of stale plays, so the continuation cannot be in it at the boundary; the voice
+/// plays the continuation's start from the loop exit's buffer while the stale frames are
+/// skipped and the worker refills. No waiting on the disk until the exit buffer is nearly used
+/// up: then only for the frames the next block needs.
+#[test]
+fn devamp_from_a_full_ring_never_starves_at_the_exit() {
+    const END: u64 = 10_000; // loop end
+    let exit = u64::from(SR) * u64::from(openlab_audio::DEFAULT_EXIT_MS) / 1000;
+    for devamp_at in [END - 1, END - 4_080, END - 4_096] {
+        let (media, info) = marker_file("full-ring.wav", 60_000);
+        let (mut ctl, mut r) = setup(config(1));
+        let mut d = streamer(2_000);
+        let plays = [Plays::Times(1), Plays::Infinite, Plays::Times(1)];
+        let slices = plan(0..60_000, &[1_000, END], &plays, 0).unwrap();
+        let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
+        // A full ring: 2 s of stale loop plays.
+        // As full as the worker fills it (it writes whole 4096-frame chunks).
+        assert!(h.wait_written(96_000 - 4_096, FAILSAFE).unwrap());
+        let mut out = render(&mut r, devamp_at as usize);
+        ctl.send(
+            devamp_at,
+            CommandKind::Devamp {
+                voice: VoiceId(1),
+                stop: false,
+            },
+        );
+        // Through the boundary and nearly all of the exit buffer, with no help from the disk.
+        let free_run = (END + exit - devamp_at) as usize / BLOCK * BLOCK;
+        out.extend(render(&mut r, free_run));
+        // From here the ring has to supply the continuation: wait only for what each block needs.
+        assert!(h.wait_cuts(1, FAILSAFE).unwrap());
+        let resume = h.last_resume().unwrap();
+        while out.len() < 60_000 + 2 * BLOCK {
+            let t = out.len() as u64 + BLOCK as u64;
+            let need = resume + t.saturating_sub(END + exit);
+            assert!(
+                h.wait_written(need.min(resume + 50_000 - exit), FAILSAFE)
+                    .unwrap()
+            );
+            out.extend(render(&mut r, BLOCK));
+        }
+        let want: Vec<f32> = (0..END).chain(END..60_000).map(marker).collect();
+        assert_plays(&out, 0, &want);
+        assert_eq!(ctl.underrun_frames(), 0, "devamp at {devamp_at}");
+        let ev = events(&mut ctl);
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Underrun { .. })),
+            "{ev:?}"
+        );
+        assert!(
+            ev.contains(&Event::DevampScheduled {
+                voice: VoiceId(1),
+                at: END
+            }),
+            "{ev:?}"
+        );
+        assert!(ev.contains(&slice_ended(END, 1)));
+        assert!(ev.contains(&finished(60_000, FinishReason::OutPoint)));
+    }
+}

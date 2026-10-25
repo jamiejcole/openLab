@@ -36,8 +36,8 @@ pub use mixer::{
 pub use offline::OfflineRenderer;
 pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
 pub use stream::{
-    DEFAULT_BUFFER_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer, PreparedStream,
-    StreamHandle, StreamRequest, StreamerConfig,
+    DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_WORKERS, DiskStreamer,
+    PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
 };
 
 /// Crate version, as set in the workspace manifest.
