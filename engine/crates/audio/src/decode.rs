@@ -974,6 +974,15 @@ impl Decoder {
     fn refill(&mut self) -> Result<bool, MediaError> {
         loop {
             let Some(mut pos) = self.decode_packet()? else {
+                // A seek that runs into the end before its target may have met a container that
+                // reads differently after a seek (symphonia's FLAC reader can stop short of
+                // damage it reads past from the start): decode forward from the start once.
+                if let Some(r) = self.resync
+                    && r.tries + 1 < SEEK_TRIES
+                {
+                    self.seek_with(self.next, SEEK_TRIES - 1)?;
+                    continue;
+                }
                 return Ok(false);
             };
             let len = i64::try_from(self.run_len()).unwrap_or(i64::MAX);

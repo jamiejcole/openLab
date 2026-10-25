@@ -412,6 +412,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `mp3-frames-after-end.mp3`: damage left frames after the packets the MP3 reader trims as end
 /// padding; their timestamps were taken for missing audio, extending the timeline past the end
 /// where seeks could not follow (the stream now ends at the container's end trim).
+/// `flac-readable-only-from-start.flac`: only the first frame is readable, and symphonia's FLAC
+/// reader gives it back when reading from the start but not after a seek.
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
 /// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
 /// count (a panic with overflow checks on, as here); contained as a typed error.
