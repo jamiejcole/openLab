@@ -12,3 +12,7 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Claude Code (local settings, agent worktrees)
+/.claude/settings.local.json
+/.claude/worktrees/
