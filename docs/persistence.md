@@ -12,9 +12,14 @@ the Unix epoch; nothing here reads the clock.
 
 ```
 <app-support>/openLab/settings.json                      per-machine settings
-<app-support>/openLab/Backups/<workspace-id>/<time>.openlab   rolling backups
-<app-support>/openLab/Recovery/<workspace-id>.openlab    autosave
+<app-support>/openLab/Backups/<workspace-id>-<path-hash>/<time>.openlab   rolling backups
+<app-support>/openLab/Recovery/<workspace-id>-<path-hash>.openlab         autosave
+<app-support>/openLab/Recovery/<workspace-id>.openlab                     autosave, never saved
 ```
+
+`<path-hash>` is `path_hash` of the show file's path: 16 hex digits (FNV-1a) of its comparison key, so
+it ignores case, NFC/NFD and `..`. Duplicating a show keeps its workspace id, so the id alone cannot
+tell the copies apart: with the hash, each copy has its own backups and its own recovery file.
 
 ## Saving (NFR-04)
 
@@ -24,20 +29,29 @@ the Unix epoch; nothing here reads the clock.
    refused with `PersistError::Serialize`; nothing is written, not even a backup.
 2. If `path` exists and `keep > 0`, its current bytes are copied into the backup folder. A failed
    backup is a warning in `SaveReport`, not a failed save.
-3. The new text is written to `<name>.openlab.tmp` beside the show file, fsynced, renamed over the
+3. The new text is written to `<name>.<pid>-<n>.tmp` beside the show file (unique per write, opened
+   with `create_new`, so it never follows a symlink or overwrites another file), fsynced, renamed over the
    original, and the folder is fsynced (Unix; best effort). On any error before the rename the temp
    file is removed, the original is untouched, and the backup made in step 2 is removed again so
    failed attempts do not push real backups out of the rotation.
-4. Old backups beyond `keep` are deleted; the recovery file is removed (the show file now holds
-   everything it did).
+4. Old backups beyond `keep` are deleted; the recovery files for this workspace and show path (and the
+   pre-first-save one) and their moved-aside stale files are removed. This happens only after the rename
+   and folder sync succeeded, so a failed save leaves the recovery file in place.
 
-A temp file left by a crash is overwritten by the next save. `write_atomic_with` takes a hook called
+A temp file left by a crash is ignored by the next save (it is not removed: a leftover cannot be told from another process's write in progress). `write_atomic_with` takes a hook called
 after the temp write and after the fsync, for failure-injection tests.
 
 Serialising plus the verify-reload costs up to about a second for a large show, so saves run on the
 writer thread: the control thread clones the `Workspace` and calls `SaveWriter::save` /
-`SaveWriter::autosave`, which return a channel with the result. Dropping the writer finishes queued
-jobs.
+`SaveWriter::autosave`, tagged with the workspace's edit revision, and gets a channel with the result.
+The queue is bounded by coalescing, because the disk may be slow or hung while autosave keeps firing:
+
+- one pending manual save per target file (a newer one replaces it; the old answer is `Superseded`);
+- one pending autosave (a newer one replaces it; the old answer is `Ok(None)`);
+- manual saves run before a pending autosave, and an autosave whose revision is not newer than the last
+  durably saved one is dropped (`Ok(None)`), so saved state never gets a recovery file;
+- dropping the writer finishes the running job and pending manual saves, and discards pending
+  autosaves.
 
 ## Backups (NFR-06)
 
@@ -51,17 +65,21 @@ off and leaves existing ones alone.
 
 - `autosave_due(dirty_since, last_autosave, now, interval)` says when to autosave; `interval` is the
   workspace's `autosave_interval`.
-- `write_recovery` writes `Recovery/<workspace-id>.openlab` atomically and never touches the show file.
+- `write_recovery` writes the bound recovery file atomically and never touches the show file.
   `clear_recovery` removes it (after a save or clean close).
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with
   `decide_recovery`:
 
 | Situation | Result |
 |---|---|
-| No recovery file | `None` |
+| No recovery file for this show path | `None` |
 | Recovery file newer than the show file, or the show file is missing | `Offer`, carrying the parsed workspace |
-| Recovery file not newer (equal counts as not newer) | `Stale`; the file is deleted |
-| Recovery file unreadable, invalid, or for another workspace | `Unusable { warning }`; the file is renamed `.corrupt` so the warning is not repeated |
+| Recovery file not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, newest 5 kept; **not deleted** (file times are unreliable on network and removable volumes). A successful save of the workspace deletes them. |
+| Recovery file unreadable, invalid, or for another workspace | `Unusable { warning }`; the file is renamed `.corrupt` (`.corrupt.1`, … if one exists) so the warning is not repeated and earlier evidence is kept |
+
+`check_recovery` also returns `other_copies`: recovery files with the same workspace id but another show
+path (a duplicated show, or work from before the first save). They are never offered to this file and
+never touched; M4.4 can show them as "recovery from another copy".
 
 The restore prompt itself is the UI's (M4.4).
 
@@ -84,7 +102,7 @@ The restore prompt itself is the UI's (M4.4).
 `channels[i]` is the device channel (0-based) for logical output `i` of the patch. `load_settings`
 never fails: unreadable content gives the defaults and a warning; invalid entries are dropped with a
 warning; `backup_keep` is clamped. The engine keeps a copy of a file that produced warnings as
-`settings.json.corrupt` before anything overwrites it. Unknown keys are ignored.
+`settings.json.corrupt` (`.corrupt.1`, … if one exists, a few at most) before anything overwrites it. Workspace and patch ids in the file are normalised to lower-case hyphenated form on load. Unknown keys are ignored.
 
 `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator
 once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch
