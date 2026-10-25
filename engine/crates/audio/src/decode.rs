@@ -391,11 +391,16 @@ pub(crate) trait FrameSource: Send {
     }
 }
 
-/// Opens `media` as a frame source. Blocking.
-pub(crate) fn open_source(media: Media) -> Result<Box<dyn FrameSource>, MediaError> {
+/// Opens `media` as a frame source. Blocking. `damaged`: its probe reported damage, so seeks
+/// decode forward from the start (see `Decoder::linear_seeks`).
+pub(crate) fn open_source(media: Media, damaged: bool) -> Result<Box<dyn FrameSource>, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(Box::new(MemorySource { data: p, pos: 0 })),
-        other => Ok(Box::new(Decoder::open(other)?)),
+        other => {
+            let mut d = Decoder::open(other)?;
+            d.linear_seeks = damaged;
+            Ok(Box::new(d))
+        }
     }
 }
 
@@ -575,6 +580,11 @@ struct Decoder {
     /// by `take_warnings`.
     warnings: Vec<MediaWarning>,
     reported: usize,
+    /// Seeks decode forward from the start, for a file the probe found damaged: after damage,
+    /// symphonia's readers can place frames differently after a seek than when reading through
+    /// (its MP3 reader counts and trims damaged frames differently), and only reading through
+    /// reproduces the probe's timeline.
+    linear_seeks: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -693,6 +703,7 @@ impl Decoder {
             silence: 0,
             warnings: Vec::new(),
             reported: 0,
+            linear_seeks: false,
         };
         d.find_origin()?;
         Ok(d)
@@ -993,13 +1004,17 @@ impl Decoder {
                 if r.discard_first {
                     self.resync = Some(Resync {
                         discard_first: false,
-                        prev_end: Some(end),
+                        prev_end: if len > 0 { Some(end) } else { r.prev_end },
                         ..r
                     });
                     continue;
                 }
                 let want = i64::try_from(self.next).unwrap_or(i64::MAX);
-                if len == 0 || end <= want {
+                // An empty run (a packet that decoded to nothing) covers no position.
+                if len == 0 {
+                    continue;
+                }
+                if end <= want {
                     self.resync = Some(Resync {
                         prev_end: Some(end),
                         ..r
@@ -1083,7 +1098,9 @@ impl Decoder {
             0
         };
         let from = match self.ts_per_frame {
-            Some(_) if tries + 1 < SEEK_TRIES => frame.saturating_sub(preroll),
+            Some(_) if tries + 1 < SEEK_TRIES && !self.linear_seeks => {
+                frame.saturating_sub(preroll)
+            }
             _ => 0,
         };
         self.reopen()?;
@@ -1236,7 +1253,7 @@ mod tests {
             let full = preload(Media::Path(fixture(name))).unwrap();
             let frames = full.info().frames;
             let all = full.samples();
-            let mut src = open_source(Media::Path(fixture(name))).unwrap();
+            let mut src = open_source(Media::Path(fixture(name)), false).unwrap();
             let aac = name == "tone.m4a";
             let mut worst = 0.0f32;
             // Start, inside the pre-roll, packet edges (1024 AAC/Vorbis, 1152 MP3, 4096 FLAC),
@@ -1325,7 +1342,7 @@ mod tests {
             let full = preload(media()).unwrap();
             let all = full.samples();
             let frames = full.info().frames;
-            let mut src = open_source(media()).unwrap();
+            let mut src = open_source(media(), true).unwrap();
             let mut targets = vec![0, 1, frames / 2, frames - 1];
             for w in &probed.warnings {
                 for t in [

@@ -36,11 +36,12 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
             ));
         }
     }
-    stream(media(), info.frames).map_err(|e| format!("probe {info:?} but streaming: {e}"))
+    stream(media(), info.frames, !probed.warnings.is_empty())
+        .map_err(|e| format!("probe {info:?} but streaming: {e}"))
 }
 
-fn stream(media: Media, frames: u64) -> Result<(), MediaError> {
-    let mut pipe = Pipeline::new(open_source(media)?, frames, DEVICE_RATE)?;
+fn stream(media: Media, frames: u64, damaged: bool) -> Result<(), MediaError> {
+    let mut pipe = Pipeline::new(open_source(media, damaged)?, frames, DEVICE_RATE)?;
     let ch = pipe.channels();
     let mut buf = vec![0.0; 1024 * ch];
     while pipe.read(&mut buf)? > 0 {}

@@ -57,10 +57,23 @@ fn start_stream(
     slices: Vec<Slice>,
     at: u64,
 ) -> StreamHandle {
+    start_warned(d, ctl, media, (info, Vec::new()), slices, at)
+}
+
+/// As `start_stream`, with the probe's warnings.
+fn start_warned(
+    d: &mut DiskStreamer,
+    ctl: &mut MixerController,
+    media: Media,
+    (info, warnings): (MediaInfo, Vec<MediaWarning>),
+    slices: Vec<Slice>,
+    at: u64,
+) -> StreamHandle {
     let p = d
         .prepare(StreamRequest {
             media,
             info,
+            warnings,
             slices,
         })
         .unwrap();
@@ -579,6 +592,7 @@ fn unplayable_streams_fail_with_a_typed_error() {
         .prepare(StreamRequest {
             media: Media::Path("/nonexistent/openlab.wav".into()),
             info,
+            warnings: Vec::new(),
             slices: one(1000),
         })
         .unwrap();
@@ -594,6 +608,7 @@ fn unplayable_streams_fail_with_a_typed_error() {
         .prepare(StreamRequest {
             media,
             info,
+            warnings: Vec::new(),
             slices: one(1000),
         })
         .unwrap();
@@ -684,6 +699,7 @@ fn decoder_panic_mid_stream_is_contained() {
         .prepare(StreamRequest {
             media,
             info,
+            warnings: Vec::new(),
             slices: plan(0..1000, &[], &[], 0).unwrap(),
         })
         .unwrap();
@@ -734,7 +750,7 @@ fn missing(at: u64, frames: u64) -> MediaWarning {
 /// Renders `frames` at 44.1 kHz from a stream started at 0, keeping a lead on the disk.
 fn play_44k(
     media: Media,
-    info: MediaInfo,
+    probed: (MediaInfo, Vec<MediaWarning>),
     slices: Vec<Slice>,
     frames: usize,
 ) -> (Vec<f32>, Vec<Event>, StreamHandle) {
@@ -746,7 +762,7 @@ fn play_44k(
         ..config(2)
     };
     let (mut ctl, mut r) = setup(cfg);
-    let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
+    let h = start_warned(&mut d, &mut ctl, media, probed, slices, 0);
     let out = render_synced(&mut r, &mut ctl, &h, frames, 0);
     (out, events(&mut ctl), h)
 }
@@ -764,7 +780,7 @@ fn damage_first_found_mid_stream_plays_as_silence_and_is_reported() {
     std::fs::write(&path, spliced_flac()).unwrap();
     let clean = preload(Media::Path(fixture("tone.flac"))).unwrap();
     let slices = plan(0..info.frames, &[], &[], 0).unwrap();
-    let (out, ev, h) = play_44k(Media::Path(path), info, slices, 23_000);
+    let (out, ev, h) = play_44k(Media::Path(path), (info, Vec::new()), slices, 23_000);
     assert_eq!(h.error(), None);
     assert_eq!(h.warnings(), vec![missing(8_192, 4_096)]);
     let c = clean.samples();
@@ -826,7 +842,12 @@ fn damaged_files_stream_and_loop_on_the_probe_timeline() {
             }
         }
         let frames = want.len() / 2 + 1_000;
-        let (out, _, h) = play_44k(media(), probed.info, slices, frames);
+        let (out, _, h) = play_44k(
+            media(),
+            (probed.info, probed.warnings.clone()),
+            slices,
+            frames,
+        );
         assert_eq!(h.error(), None, "{ext}");
         if let Some(i) = out.iter().zip(&want).position(|(a, b)| a != b) {
             panic!("{ext}: sample {i} is {} not {}", out[i], want[i]);
@@ -862,6 +883,7 @@ fn fade_out_stays_continuous_when_a_devamp_shortens_the_end() {
             .prepare(StreamRequest {
                 media: Media::Path(path.clone()),
                 info,
+                warnings: Vec::new(),
                 slices,
             })
             .unwrap();
