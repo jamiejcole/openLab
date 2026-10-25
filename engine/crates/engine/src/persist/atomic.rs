@@ -2,7 +2,7 @@
 
 //! Crash-safe file replacement (NFR-04).
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,7 +79,7 @@ fn sync_parent(path: &Path) {
         } else {
             parent
         };
-        if let Ok(dir) = File::open(parent) {
+        if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();
         }
     }

@@ -161,7 +161,15 @@ fn non_utf8_names_are_skipped_not_fatal() {
     set_media(&mut ws, &["old/unique.wav"]);
     let lib = env.root.path().join("lib");
     fs::create_dir_all(&lib).unwrap();
-    fs::write(lib.join(OsStr::from_bytes(b"bad\xff\xfe.wav")), b"x").unwrap();
+    if let Err(e) = fs::write(lib.join(OsStr::from_bytes(b"bad\xff\xfe.wav")), b"x") {
+        // APFS (macOS) only holds valid UTF-8 names and refuses the rest with EILSEQ. Any other
+        // failure is a real error, so the test cannot pass for the wrong reason.
+        assert!(
+            cfg!(target_os = "macos") && e.raw_os_error() == Some(92),
+            "creating a non-UTF-8 file name failed: {e}"
+        );
+        return;
+    }
     touch(&lib.join("unique.wav"));
     let found = find_in_folder(&ws, Some(&env.show_dir()), &lib, ScanLimits::default());
     assert_eq!(found.skipped, 1);
