@@ -2,7 +2,7 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6). Meters (M3.7) and the device layer (M3.8) are not built yet.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18). Meters (M3.7) and the device layer (M3.8) are not built yet.
 
 ## Threads and queues
 
@@ -60,7 +60,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 - `pump` drains the return queue first, which keeps it within its capacity.
 - If it were ever full anyway, the mixer leaks the box rather than freeing it on the audio thread, and counts the leak (`leaked_starts`, expected to stay 0).
 
-**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
+**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), pause and resume (`no_allocation_across_pause_and_resume`, `tests/pause.rs`), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
 
 ## Timing (NFR-21, NFR-22)
 
@@ -114,6 +114,19 @@ A voice **ends** with `Event::VoiceFinished { at, reason }`, where `at` is the f
 - Playback resumes when data arrives. Missing frames are not skipped: the voice resumes where it left off, so its fades stay aligned with the audio.
 
 **Trims** (AUD-11): the disk thread normally seeks to the in point; `skip_frames`/`play_frames` give the same sample-exact in and out points on the mixer side.
+
+### Pause and resume (CUE-05)
+
+`PauseVoice { voice }` on sample P and `ResumeVoice { voice, new_id }` on sample R keep the voice, its ring and all its state: the resumed voice plays exactly what the un-paused voice would have, shifted by R − P (tested sample for sample for ring-fed, disk-streamed, resampled, preloaded and looping voices). Every later event, `VoiceFinished` included, comes R − P later.
+
+- **Position.** On P the voice stops consuming: its next frame stays frame P's. On R it continues from that frame. The resampler runs on the disk thread, ahead of the ring, so a pause cannot disturb it. While paused the disk thread keeps the ring full as usual; a full ring just makes the stream wait its turn, so a paused voice never blocks a worker. A pause of any length resumes without underrun.
+- **Declick.** A cut would click, so the pause fades out over the de-zipper length D (5 ms) on samples P..P+D−1: those samples play the frames that follow the pause point, *peeked* from the ring without consuming them (an `rtrb` read chunk dropped without a commit leaves the ring unchanged), times a linear 1 → 0 ramp that is exactly 0 on sample P+D−1. If fewer than D frames can be peeked on P (the voice's end, a pending devamp's boundary, the end of a loop exit's buffer, or a ring holding less), the tail is that many frames long and still reaches exactly 0 on its last frame. The resume fades in over D (linear 0 → 1, exactly 1 on R+D) from frame P. Outside [P, P+D) and [R, R+D) the output equals the un-paused render shifted by R − P (tested; the two windows are tested too, across odd block splits).
+- **Frozen while paused.** The voice outputs silence (after the tail), reads nothing, reports no underrun and sends no events. Gain ramps, the stop fade and the integrated fades freeze; the tail uses the gains the voice had on P. After the resume each ramp completes its remaining frames, and a running stop fade ends R − P later.
+- **Edge cases.** A voice paused on its start sample (nothing heard yet) gets no tail and no fade-in: it plays exactly as if started on R. A resume during the tail (R < P+D) crossfades: the rest of the tail keeps playing on from where it was (frame P + (R − P) onwards, still fading out) while frame P fades in. The waveform therefore never jumps, but for those few ms two nearby stretches of audio overlap, and the tail takes the resumed frames' integrated fade envelope. Pause and resume on the same sample, before any of the tail has played, change nothing audible. A pause during that crossfade drops what is left of the old tail (at most D frames old). Equal-time commands apply in send order, so `StartVoice` then `PauseVoice` on one sample pauses the new voice, while the reverse order pauses nothing.
+- **Re-keying.** The cue engine gives every resumed segment a fresh id (its `RunId`), so the resume moves the voice from `voice` to `new_id`: afterwards commands for the old id are unknown-voice commands (ignored) and events carry `new_id`. A `new_id` held by another active voice is reported as `VoiceRejected { voice: new_id, reason: DuplicateId }` and the voice stays paused under its old id; resuming as its own id is allowed. That rejection is about the resume, not about the voice that already has `new_id`, which plays on untouched; the cue engine's ids are unique, so it is not expected to happen. The voice's `VoiceStart` (ring and routing) still goes back on the return queue exactly once, when the voice ends; the controller keeps no per-id state, and stream handles stay with the engine, keyed by whatever it keyed them by.
+- **Other commands while paused.** `StopVoice` ends it at once, with or without a fade (it is silent anyway): `VoiceFinished { Stopped }` for the paused id, on the stop's sample. `Ramp` applies and is heard from the resume (its de-zipper or fade starts there). `Devamp` (new or a repeat of the pending one) is accepted as for a playing voice (the disk stream may cut at once). Its answer waits for the resume, which sends exactly one `DevampScheduled { voice: new_id, at }` with the sample where the voice will leave the loop, however many devamps came in while paused. A devamp answered *before* the pause is not announced again by the resume (its `at` is then out of date): the cue engine re-sends the pending devamp for the fresh id after the resume, and that repeat is answered with the corrected `at`. One answer per devamp sent.
+- **Ignored**, with no event, as other commands for unknown voices: pausing an unknown or already paused voice, and resuming a voice that is unknown or not paused (no re-key either).
+- **Dating.** A `ResumeVoice` must be dated at or after its `PauseVoice`. One dated earlier applies first, to a voice that is not paused yet (or not started yet), and is ignored; the pause then applies and the voice stays paused, silent and under its old id, until another resume (tested). The cue engine guarantees it never sends one: commands for one voice never go backwards in time (docs/cue-engine.md), so a resume is never dated before its pause, even when the pause was dated at a start still in the lookahead.
 
 ## Decoding (AUD-04)
 
@@ -171,12 +184,14 @@ The same table drives the disk stream (which unrolls it into the ring) and the v
 |---|---|
 | `LoopReached { slice, count, at }` | a play of `slice` ended and it plays again from `at`; `count` plays done so far |
 | `SliceEnded { slice, at }` | the slice's last play ended; the next slice, if any, starts on `at` |
-| `DevampScheduled { at }` | a devamp was accepted; `at` is where the voice leaves the loop unless an underrun intervenes |
-| `DevampIgnored { at }` | a devamp that cannot be carried out (no such voice playing, no slice table, a devamp already under way, or no `link` when one is needed); playback is unchanged |
+| `DevampScheduled { at }` | a devamp was accepted, or the same devamp (same `stop`) was sent again while it is pending; `at` is where the voice leaves the loop unless an underrun intervenes |
+| `DevampIgnored { at }` | a devamp that cannot be carried out (no such voice playing, no slice table, a different devamp (other `stop`) pending, a loop exit still under way, or no `link` when one is needed); playback is unchanged |
 
 Voices without a slice table report only `VoiceFinished`.
 
 **Devamp** (`CommandKind::Devamp { voice, stop }`, CT-16) leaves the current loop at the end of the play under way when the command applies (a devamp on a loop boundary sample exits at the end of the play that starts there):
+
+- **Idempotent.** A devamp equal to the one pending (same `stop`) changes nothing (no second devamp, no new cut) and is answered with `DevampScheduled` at the pending boundary again. This is how the cue engine's re-sent devamp after a resume gets its answer for the fresh id (docs/cue-engine.md, M4.2 contract). A different `stop` while one is pending, or any devamp while a loop exit is still being carried out (exit buffer playing, or stale frames being skipped), is `DevampIgnored`.
 
 - `stop: true` ends the voice there (`SliceEnded`, then `VoiceFinished { reason: OutPoint }`).
 - `stop: false` continues with the next slice. If more plays of the loop may already be in the ring, the voice publishes the boundary on its `StreamLink` and at the boundary plays the loop exit's buffer (see Loop exits); the disk worker stops unrolling there, writes the continuation from the end of the exit buffer, and publishes where it starts; the voice skips the stale frames in between. This holds however full the ring is and however close to the boundary the devamp comes (tested at 1 frame, 85 ms and 4096 frames before it). A devamp before the ring reaches the boundary skips nothing.

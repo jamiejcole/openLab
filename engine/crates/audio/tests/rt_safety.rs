@@ -135,6 +135,104 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
     assert_eq!(ctl.dropped_events(), 0);
 }
 
+/// Pause and resume on every path (CUE-05): declick tails split across blocks, ramps on paused
+/// voices, re-keying, an id collision, stops while paused, a devamp while paused, a starving
+/// voice paused mid-underrun, and pause plus resume on the start sample.
+#[test]
+fn no_allocation_across_pause_and_resume() {
+    let cfg = MixerConfig {
+        output_channels: 4,
+        max_block_frames: 256,
+        max_voices: 40,
+        ..MixerConfig::default()
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let stereo: Vec<f32> = (0..6000)
+        .flat_map(|i| [i as f32 * 1e-4, -(i as f32) * 1e-4])
+        .collect();
+    let pause = |voice: u64| CommandKind::PauseVoice {
+        voice: VoiceId(voice),
+    };
+    let resume = |voice: u64, new_id: u64| CommandKind::ResumeVoice {
+        voice: VoiceId(voice),
+        new_id: VoiceId(new_id),
+    };
+    for id in 0..32u64 {
+        let mut v = voice(&ctl, id, source(&stereo), 2);
+        v.fade_in = Fade::new(100, Curve::EqualPower);
+        if id % 2 == 0 {
+            v.play_frames = Some(5000);
+            v.fade_out = Fade::new(400, Curve::SCurve);
+        }
+        send_start(&mut ctl, id * 3, v);
+        let fade = Fade::new(700, Curve::Exponential);
+        ctl.send(
+            200 + id,
+            CommandKind::Ramp {
+                voice: VoiceId(id),
+                target: GainTarget::Master,
+                gain: 0.3,
+                fade,
+            },
+        );
+        ctl.send(300 + id * 11, pause(id));
+        ctl.send(
+            900,
+            CommandKind::Ramp {
+                voice: VoiceId(id),
+                target: GainTarget::CueOutput(1),
+                gain: 0.5,
+                fade: Fade::NONE,
+            },
+        );
+        match id % 4 {
+            0 => ctl.send(1200 + id, resume(id, 100 + id)),
+            // Collides with voice 0's new id, then resumes properly.
+            1 => {
+                ctl.send(1300, resume(id, 100));
+                ctl.send(1400 + id, resume(id, 200 + id));
+            }
+            2 => ctl.send(
+                1000,
+                CommandKind::StopVoice {
+                    voice: VoiceId(id),
+                    fade: Fade::new(300, Curve::Linear),
+                },
+            ),
+            // Resumes inside its own declick tail.
+            _ => ctl.send(300 + id * 11 + 50, resume(id, 300 + id)),
+        }
+    }
+    let (_keep_open, starving) = open_source(1000, &[0.1; 200]);
+    start(&mut ctl, 0, 50, starving, 1);
+    ctl.send(400, pause(50));
+    ctl.send(800, resume(50, 51));
+    let (_keep_open2, rx) = open_source(1000, &[0.1; 200]);
+    start(&mut ctl, 10, 60, rx, 1);
+    ctl.send(10, pause(60));
+    ctl.send(10, resume(60, 61));
+
+    let mut out = vec![0.0; 4 * 8000];
+    no_alloc(|| r.render_into(&mut out, &[1, 64, 333, 7, 256, 128]));
+
+    assert!(out.iter().all(|s| s.is_finite()));
+    let ev = events(&mut ctl);
+    let finished = ev
+        .iter()
+        .filter(|e| matches!(e, Event::VoiceFinished { .. }))
+        .count();
+    assert_eq!(finished, 32);
+    assert!(ev.contains(&Event::VoiceRejected {
+        voice: VoiceId(100),
+        at: 1300,
+        reason: RejectReason::DuplicateId,
+    }));
+    assert_eq!(ctl.collect_returns(), 32);
+    assert_eq!(ctl.faults(), 0);
+    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.dropped_events(), 0);
+}
+
 #[test]
 fn underrun_outputs_silence_reports_and_recovers() {
     let (mut ctl, mut r) = setup(config(1));
