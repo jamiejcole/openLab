@@ -1,0 +1,1260 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+//! Control cues (M2.5, M2.15: CT-11..CT-17, CT-19..CT-21), per docs/cue-engine.md "Control
+//! cues". Virtual sample clock at 1 kHz: one second is 1000 samples.
+
+mod common;
+
+use common::*;
+use openlab_core::*;
+
+const RATE: u32 = 1000;
+
+use ContinueMode::{AutoContinue as AC, AutoFollow as AF, DoNotContinue as DNC};
+
+fn id(n: u128) -> CueId {
+    cue_id(n)
+}
+
+fn list() -> CueListId {
+    list_id(1)
+}
+
+fn memo(n: u128) -> Cue {
+    cue(n, CueKind::Memo)
+}
+
+fn wait(n: u128, seconds: f64) -> Cue {
+    cue(n, CueKind::Wait { duration: seconds })
+}
+
+fn sound(n: u128) -> Cue {
+    cue(n, audio())
+}
+
+fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
+    c.pre_wait = pre;
+    c.post_wait = post;
+    c.continue_mode = mode;
+    c
+}
+
+fn grp(n: u128, mode: GroupMode, children: Vec<Cue>) -> Cue {
+    cue(n, CueKind::Group { mode, children })
+}
+
+fn playlist(loop_: bool) -> GroupMode {
+    GroupMode::Playlist {
+        loop_,
+        shuffle: false,
+    }
+}
+
+fn t(target: u128) -> Option<CueId> {
+    Some(id(target))
+}
+
+fn start_cue(n: u128, target: u128) -> Cue {
+    cue(n, CueKind::Start { target: t(target) })
+}
+
+fn stop_cue(n: u128, target: u128, fade: f64) -> Cue {
+    cue(
+        n,
+        CueKind::Stop {
+            target: t(target),
+            fade_out: FadeSpec {
+                duration: fade,
+                curve: FadeCurve::Linear,
+            },
+        },
+    )
+}
+
+fn pause_cue(n: u128, target: u128) -> Cue {
+    cue(n, CueKind::Pause { target: t(target) })
+}
+
+fn load_cue(n: u128, target: u128, time: f64) -> Cue {
+    cue(
+        n,
+        CueKind::Load {
+            target: t(target),
+            load_to_time: time,
+        },
+    )
+}
+
+fn reset_cue(n: u128, target: u128) -> Cue {
+    cue(n, CueKind::Reset { target: t(target) })
+}
+
+fn goto_cue(n: u128, target: u128, then_go: bool) -> Cue {
+    cue(
+        n,
+        CueKind::GoTo {
+            target: t(target),
+            then_go,
+        },
+    )
+}
+
+fn devamp_cue(n: u128, target: u128, start_next: bool, stop: bool) -> Cue {
+    cue(
+        n,
+        CueKind::Devamp {
+            target: t(target),
+            start_next_cue: start_next,
+            stop_target_when_slice_ends: stop,
+        },
+    )
+}
+
+fn arm_cue(n: u128, target: u128, arm: bool) -> Cue {
+    let target = t(target);
+    cue(
+        n,
+        if arm {
+            CueKind::Arm { target }
+        } else {
+            CueKind::Disarm { target }
+        },
+    )
+}
+
+struct Rig {
+    ws: Workspace,
+    engine: CueEngine,
+}
+
+impl Rig {
+    fn new(cues: Vec<Cue>) -> Self {
+        Self::with_lookahead(cues, 0)
+    }
+
+    fn with_lookahead(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
+        let mut rig = Self {
+            ws: workspace(cues),
+            engine: CueEngine::new(EngineConfig::new(RATE, lookahead, 1).unwrap()),
+        };
+        rig.tick(0);
+        rig
+    }
+
+    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
+        self.engine.handle(&self.ws, input, now)
+    }
+
+    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
+        self.at(now, Input::Tick)
+    }
+
+    fn go(&mut self, now: SampleTime) -> Vec<Action> {
+        self.at(now, Input::Go { list: list() })
+    }
+
+    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Start { cue: id(n) })
+    }
+
+    fn pause(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Pause { cue: id(n) })
+    }
+
+    fn stop(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(
+            now,
+            Input::Stop {
+                cue: id(n),
+                fade_out: None,
+            },
+        )
+    }
+
+    fn run(&self, n: u128) -> RunId {
+        self.engine.run_of(id(n)).unwrap()
+    }
+
+    fn ended(&mut self, now: SampleTime, n: u128, at: SampleTime) -> Vec<Action> {
+        let run = self.run(n);
+        self.at(
+            now,
+            Input::ActionEnded {
+                cue: id(n),
+                run,
+                at,
+            },
+        )
+    }
+
+    fn failed(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        let run = self.run(n);
+        self.at(
+            now,
+            Input::ActionFailed {
+                cue: id(n),
+                run,
+                reason: BrokenReason::StreamFailed,
+            },
+        )
+    }
+
+    fn state(&self, n: u128) -> CueState {
+        self.engine.state(id(n))
+    }
+
+    fn playhead(&self) -> Option<CueId> {
+        self.engine.playhead(list())
+    }
+
+    fn set_playhead(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(
+            now,
+            Input::SetPlayhead {
+                list: list(),
+                cue: Some(id(n)),
+            },
+        )
+    }
+
+    fn find_mut(&mut self, n: u128) -> &mut Cue {
+        fn find(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
+            for c in cues {
+                if c.id == id {
+                    return Some(c);
+                }
+                if let CueKind::Group { children, .. } = &mut c.kind
+                    && let Some(found) = find(children, id)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let list = &mut self.ws.cue_lists[0].cues;
+        find(list, id(n)).unwrap()
+    }
+}
+
+fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `(cue, at)` of every start (a report of pre-waiting).
+fn starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StateChanged {
+                cue,
+                state: CueState::PreWaiting,
+                at,
+            } => Some((*cue, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn voice_starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StartVoice { cue, at, .. } => Some((*cue, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn voice_stops(actions: &[Action]) -> Vec<(CueId, SampleTime, Option<StopFade>)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StopVoice { cue, at, fade, .. } => Some((*cue, *at, *fade)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Warning(w) => Some(w.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn devamps(actions: &[Action]) -> Vec<(CueId, SampleTime, bool)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::DevampVoice { cue, at, stop, .. } => Some((*cue, *at, *stop)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn set_armed(actions: &[Action]) -> Vec<(CueId, bool)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::SetArmed { cue, armed } => Some((*cue, *armed)),
+            _ => None,
+        })
+        .collect()
+}
+
+// ----- Start (CT-11) -----
+
+#[test]
+fn start_cue_starts_its_target_when_its_action_starts() {
+    let mut rig = Rig::new(vec![
+        timed(start_cue(1, 3), 1.0, 0.0, DNC),
+        memo(2),
+        sound(3),
+    ]);
+    let go = rig.go(0);
+    assert!(voice_starts(&go).is_empty());
+    let tick = rig.tick(1000);
+    assert_eq!(voice_starts(&tick), vec![(id(3), 1000)]);
+    // Its own action completes at once.
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(3), CueState::Running);
+    // It did not move the playhead (GO did, to the cue after the Start cue).
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn start_cue_continue_modes_apply() {
+    // Auto-follow: the next cue starts when the Start cue's (instant) action completes.
+    let mut rig = Rig::new(vec![
+        timed(start_cue(1, 3), 0.0, 0.0, AF),
+        memo(2),
+        sound(3),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(1), 0), (id(3), 0), (id(2), 0)]);
+    // Auto-continue with a post-wait: the next cue starts at the post-wait.
+    let mut rig = Rig::new(vec![
+        timed(start_cue(1, 3), 0.0, 2.0, AC),
+        memo(2),
+        sound(3),
+    ]);
+    rig.go(0);
+    assert_eq!(rig.state(1), CueState::PostWaiting);
+    assert_eq!(starts(&rig.tick(2000)), vec![(id(2), 2000)]);
+}
+
+#[test]
+fn start_cue_on_an_active_target_is_ignored() {
+    let mut rig = Rig::new(vec![start_cue(1, 3), memo(2), sound(3)]);
+    rig.start(0, 3);
+    let run = rig.run(3);
+    let go = rig.go(100);
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(3),
+            state: CueState::Running
+        }]
+    );
+    assert!(voice_starts(&go).is_empty());
+    assert_eq!(rig.run(3), run);
+}
+
+#[test]
+fn start_cue_resumes_a_paused_target() {
+    let mut rig = Rig::new(vec![start_cue(1, 3), memo(2), sound(3)]);
+    rig.start(0, 3);
+    rig.pause(500, 3);
+    let go = rig.go(1000);
+    assert!(go.iter().any(|a| matches!(
+        a,
+        Action::ResumeVoice { cue, at: 1000, offset: 500, .. } if *cue == id(3)
+    )));
+    assert_eq!(rig.state(3), CueState::Running);
+}
+
+#[test]
+fn start_cue_on_a_broken_target_warns() {
+    let mut rig = Rig::new(vec![start_cue(1, 3), memo(2), sound(3)]);
+    rig.start(0, 3);
+    rig.failed(10, 3);
+    let go = rig.go(100);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(3) }]);
+    assert_eq!(rig.state(3), CueState::Broken);
+}
+
+#[test]
+fn control_cue_with_a_missing_target_warns_and_keeps_its_timing() {
+    let mut rig = Rig::new(vec![
+        timed(start_cue(1, 99), 0.0, 0.0, AF),
+        timed(cue(2, CueKind::Start { target: None }), 0.0, 0.0, AF),
+        memo(3),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(
+        warnings(&go),
+        vec![
+            EngineWarning::TargetMissing {
+                cue: id(1),
+                target: id(99)
+            },
+            EngineWarning::NoTarget { cue: id(2) },
+        ]
+    );
+    assert_eq!(starts(&go), vec![(id(1), 0), (id(2), 0), (id(3), 0)]);
+}
+
+#[test]
+fn disarmed_control_cue_does_nothing_but_keeps_its_timing() {
+    let mut stop = timed(stop_cue(1, 3, 0.0), 0.0, 1.0, AC);
+    stop.armed = false;
+    let mut rig = Rig::new(vec![stop, memo(2), sound(3)]);
+    rig.start(0, 3);
+    let go = rig.go(10);
+    assert!(voice_stops(&go).is_empty());
+    assert_eq!(rig.state(3), CueState::Running);
+    assert_eq!(starts(&rig.tick(1010)), vec![(id(2), 1010)]);
+}
+
+#[test]
+fn start_cue_on_a_group_starts_it_in_its_mode() {
+    let mut rig = Rig::new(vec![
+        start_cue(1, 2),
+        grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go), vec![(id(3), 0), (id(4), 0)]);
+    assert_eq!(rig.state(2), CueState::Running);
+}
+
+#[test]
+fn start_cue_on_a_child_runs_its_group_adopted() {
+    let mut rig = Rig::new(vec![
+        start_cue(1, 3),
+        grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go), vec![(id(3), 0)]);
+    assert_eq!(rig.state(2), CueState::Running);
+    rig.ended(100, 3, 50);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+// ----- Stop (CT-12) -----
+
+#[test]
+fn stop_cue_stops_its_target_with_its_fade() {
+    let mut rig = Rig::new(vec![stop_cue(1, 3, 2.0), memo(2), sound(3)]);
+    rig.start(0, 3);
+    let go = rig.go(500);
+    assert_eq!(
+        voice_stops(&go),
+        vec![(
+            id(3),
+            500,
+            Some(StopFade {
+                frames: 2000,
+                curve: FadeCurve::Linear
+            })
+        )]
+    );
+    assert_eq!(rig.state(3), CueState::Stopping);
+    assert_eq!(rig.state(1), CueState::Idle);
+    rig.tick(2499);
+    assert_eq!(rig.state(3), CueState::Stopping);
+    assert_eq!(changes(&rig.tick(2500), 3), vec![(CueState::Idle, 2500)]);
+}
+
+#[test]
+fn stop_cue_on_idle_paused_and_broken_targets() {
+    let mut rig = Rig::new(vec![stop_cue(1, 3, 2.0), memo(2), sound(3)]);
+    // Idle: nothing.
+    let go = rig.go(0);
+    assert!(go.iter().all(|a| !matches!(a, Action::StopVoice { .. })));
+    assert!(warnings(&go).is_empty());
+    // Paused: stopped at once (a stop with fade on a paused cue is hard).
+    rig.start(100, 3);
+    rig.pause(200, 3);
+    rig.set_playhead(300, 1);
+    let go = rig.go(300);
+    assert_eq!(voice_stops(&go), vec![(id(3), 300, None)]);
+    assert_eq!(rig.state(3), CueState::Idle);
+    // Broken: stays broken.
+    rig.start(400, 3);
+    rig.failed(410, 3);
+    rig.set_playhead(500, 1);
+    rig.go(500);
+    assert_eq!(rig.state(3), CueState::Broken);
+}
+
+#[test]
+fn stop_cue_in_the_lookahead_window_acts_on_its_own_sample() {
+    let mut rig = Rig::with_lookahead(
+        vec![
+            timed(stop_cue(1, 3, 0.0), 0.05, 0.0, DNC),
+            memo(2),
+            sound(3),
+        ],
+        100,
+    );
+    rig.start(0, 3);
+    let go = rig.go(0);
+    // The Stop cue's action starts on sample 50, inside this call's window.
+    assert_eq!(voice_stops(&go), vec![(id(3), 50, None)]);
+    assert_eq!(changes(&go, 3), vec![(CueState::Idle, 50)]);
+}
+
+#[test]
+fn stop_cue_on_a_group_stops_every_descendant() {
+    let mut rig = Rig::new(vec![
+        stop_cue(1, 2, 0.0),
+        grp(2, GroupMode::Timeline, vec![sound(3), wait(4, 5.0)]),
+    ]);
+    rig.start(0, 2);
+    rig.set_playhead(100, 1);
+    let go = rig.go(100);
+    assert_eq!(voice_stops(&go), vec![(id(3), 100, None)]);
+    for n in [2, 3, 4] {
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+}
+
+#[test]
+fn stop_cue_inside_the_group_it_stops() {
+    // A Stop cue that stops its own group stops itself too; its continue is cancelled.
+    let mut rig = Rig::new(vec![
+        grp(
+            2,
+            GroupMode::StartFirstAndGoToNext,
+            vec![
+                timed(sound(3), 0.0, 0.0, AC),
+                timed(stop_cue(4, 2, 0.0), 1.0, 0.0, AC),
+                memo(5),
+            ],
+        ),
+        memo(6),
+    ]);
+    rig.start(0, 2);
+    let tick = rig.tick(1000);
+    assert_eq!(voice_stops(&tick), vec![(id(3), 1000, None)]);
+    assert!(starts(&tick).is_empty());
+    for n in [2, 3, 4, 5, 6] {
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+}
+
+// ----- Pause (CT-13) -----
+
+#[test]
+fn pause_cue_pauses_its_target() {
+    let mut rig = Rig::new(vec![pause_cue(1, 3), memo(2), sound(3)]);
+    rig.start(0, 3);
+    let go = rig.go(400);
+    assert!(go.iter().any(|a| matches!(
+        a,
+        Action::PauseVoice { cue, at: 400, offset: 400, .. } if *cue == id(3)
+    )));
+    assert_eq!(rig.state(3), CueState::Paused);
+    // A Pause cue on a paused (or idle) target does nothing.
+    rig.set_playhead(500, 1);
+    let go = rig.go(500);
+    assert!(go.iter().all(|a| !matches!(a, Action::PauseVoice { .. })));
+    assert_eq!(rig.state(3), CueState::Paused);
+}
+
+#[test]
+fn pause_cue_on_a_group_pauses_its_descendants() {
+    let mut rig = Rig::new(vec![
+        pause_cue(1, 2),
+        grp(2, GroupMode::Timeline, vec![sound(3), wait(4, 5.0)]),
+    ]);
+    rig.start(0, 2);
+    rig.set_playhead(100, 1);
+    rig.go(100);
+    for n in [2, 3, 4] {
+        assert_eq!(rig.state(n), CueState::Paused);
+    }
+    // Resuming the group later keeps the Wait's remaining time.
+    rig.at(1100, Input::Resume { cue: id(2) });
+    assert_eq!(changes(&rig.tick(5999), 4), vec![]);
+    assert_eq!(changes(&rig.tick(6000), 4), vec![(CueState::Idle, 6000)]);
+}
+
+// ----- Load (CT-14) -----
+
+#[test]
+fn load_cue_loads_its_target_to_its_time() {
+    let mut rig = Rig::new(vec![
+        load_cue(1, 3, 2.5),
+        memo(2),
+        timed(sound(3), 1.0, 0.0, DNC),
+    ]);
+    let go = rig.go(0);
+    assert!(go.iter().any(|a| matches!(
+        a,
+        Action::LoadVoice { cue, offset: 1500, .. } if *cue == id(3)
+    )));
+    assert_eq!(rig.state(3), CueState::Loaded);
+    let start = rig.start(100, 3);
+    assert!(start.iter().any(|a| matches!(
+        a,
+        Action::StartVoice { cue, at: 100, offset: 1500, .. } if *cue == id(3)
+    )));
+}
+
+#[test]
+fn load_cue_on_an_active_or_broken_target_warns() {
+    let mut rig = Rig::new(vec![load_cue(1, 3, 0.0), memo(2), sound(3)]);
+    rig.start(0, 3);
+    assert_eq!(
+        warnings(&rig.go(10)),
+        vec![EngineWarning::LoadIgnored { cue: id(3) }]
+    );
+    rig.failed(20, 3);
+    rig.set_playhead(30, 1);
+    assert_eq!(
+        warnings(&rig.go(30)),
+        vec![EngineWarning::CueBroken { cue: id(3) }]
+    );
+}
+
+#[test]
+fn load_cue_on_a_group_loads_its_first_children() {
+    let mut rig = Rig::new(vec![
+        load_cue(1, 2, 0.0),
+        grp(
+            2,
+            GroupMode::StartFirstAndGoToNext,
+            vec![sound(3), sound(4)],
+        ),
+    ]);
+    rig.go(0);
+    assert_eq!(rig.state(2), CueState::Loaded);
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert_eq!(rig.state(4), CueState::Idle);
+}
+
+// ----- Reset (CT-15) -----
+
+#[test]
+fn reset_cue_resets_running_and_broken_targets() {
+    let mut rig = Rig::new(vec![reset_cue(1, 3), memo(2), sound(3)]);
+    rig.start(0, 3);
+    let go = rig.go(100);
+    assert_eq!(voice_stops(&go), vec![(id(3), 100, None)]);
+    assert_eq!(rig.state(3), CueState::Idle);
+    rig.start(200, 3);
+    rig.failed(210, 3);
+    rig.set_playhead(300, 1);
+    rig.go(300);
+    assert_eq!(rig.state(3), CueState::Idle);
+    assert!(rig.engine.broken_reason(id(3)).is_none());
+}
+
+#[test]
+fn reset_cue_on_a_group_resets_its_descendants() {
+    let mut rig = Rig::new(vec![
+        reset_cue(1, 2),
+        grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
+    ]);
+    rig.start(0, 2);
+    rig.failed(10, 3);
+    rig.set_playhead(100, 1);
+    rig.go(100);
+    for n in [2, 3, 4] {
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+}
+
+// ----- Wait (CT-20) and Memo (CT-21) -----
+
+#[test]
+fn wait_lasts_its_duration_and_memo_completes_at_once() {
+    let mut rig = Rig::new(vec![
+        timed(wait(1, 2.5), 0.0, 0.0, AF),
+        timed(memo(2), 0.0, 0.0, AF),
+        sound(3),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(1), 0)]);
+    rig.tick(2499);
+    assert_eq!(rig.state(1), CueState::Running);
+    let tick = rig.tick(2500);
+    assert_eq!(starts(&tick), vec![(id(2), 2500), (id(3), 2500)]);
+    assert_eq!(voice_starts(&tick), vec![(id(3), 2500)]);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+// ----- trigger cycles (runtime bound) -----
+
+fn chain_limit_hit(actions: &[Action]) -> bool {
+    warnings(actions)
+        .iter()
+        .any(|w| matches!(w, EngineWarning::ChainLimit { .. }))
+}
+
+#[test]
+fn start_cycle_is_cut_within_the_call_and_never_refires() {
+    let mut rig = Rig::new(vec![start_cue(1, 2), start_cue(2, 1), memo(3)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    let go = rig.go(0);
+    assert!(chain_limit_hit(&go));
+    assert!(starts(&go).len() <= limit);
+    assert!(rig.engine.next_deadline().is_none());
+    for n in [1, 2] {
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+    // Nothing carries over into later calls.
+    for now in [0, 1, 1000, 5000] {
+        assert!(starts(&rig.tick(now)).is_empty());
+    }
+}
+
+#[test]
+fn a_start_cue_targeting_itself_is_ignored_while_it_acts() {
+    let mut rig = Rig::new(vec![start_cue(1, 1), memo(2)]);
+    let go = rig.go(0);
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(1),
+            state: CueState::Running
+        }]
+    );
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn goto_cycle_is_cut_within_the_call_and_never_refires() {
+    let mut rig = Rig::new(vec![goto_cue(1, 2, true), goto_cue(2, 1, true), memo(3)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    let go = rig.go(0);
+    assert!(chain_limit_hit(&go));
+    assert!(starts(&go).len() <= limit);
+    assert!(rig.engine.next_deadline().is_none());
+    for now in [0, 10, 10_000] {
+        assert!(starts(&rig.tick(now)).is_empty());
+    }
+}
+
+#[test]
+fn start_cycle_with_time_in_it_runs_one_lap_per_period() {
+    // Not a hang: each lap takes a second, so every call does a bounded amount of work.
+    let mut rig = Rig::new(vec![
+        timed(start_cue(1, 2), 1.0, 0.0, DNC),
+        timed(start_cue(2, 1), 1.0, 0.0, DNC),
+    ]);
+    rig.go(0);
+    for lap in 1..=20u64 {
+        let tick = rig.tick(lap * 1000);
+        assert_eq!(starts(&tick).len(), 1, "lap {lap}");
+        assert!(!chain_limit_hit(&tick));
+        assert_eq!(rig.engine.next_deadline(), Some((lap + 1) * 1000));
+    }
+}
+
+#[test]
+fn a_cycle_through_audio_feedback_moves_with_the_mixer_clock() {
+    // A zero-length sound restarted by a Start cue on its auto-follow: every lap needs the
+    // mixer's end report, which is dated at the voice's real start, so time moves on.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), start_cue(2, 1)]);
+    rig.go(0);
+    let mut now = 0;
+    for _ in 0..10 {
+        now += 5;
+        let at = match rig.state(1) {
+            CueState::Running => now - 5,
+            s => panic!("{s:?}"),
+        };
+        let ended = rig.ended(now, 1, at);
+        let started = voice_starts(&ended);
+        assert_eq!(started.len(), 1);
+        assert!(started[0].1 >= now);
+        assert!(!chain_limit_hit(&ended));
+    }
+}
+
+// ----- GoTo (CT-17) -----
+
+#[test]
+fn goto_moves_the_playhead_without_starting_anything() {
+    let mut rig = Rig::new(vec![goto_cue(1, 4, false), memo(2), memo(3), sound(4)]);
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(1), 0)]);
+    assert_eq!(rig.playhead(), Some(id(4)));
+}
+
+#[test]
+fn goto_and_go_starts_the_target_and_moves_on() {
+    let mut rig = Rig::new(vec![
+        goto_cue(1, 3, true),
+        memo(2),
+        timed(sound(3), 0.0, 0.0, AF),
+        memo(4),
+        memo(5),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go), vec![(id(3), 0)]);
+    // The GO skipped the target's continue chain (3 → 4).
+    assert_eq!(rig.playhead(), Some(id(5)));
+}
+
+#[test]
+fn goto_and_go_is_not_an_operator_go() {
+    // QLab: a GoTo cue's GO is not blocked by double-GO protection and does not restart it.
+    let mut rig = Rig::new(vec![
+        timed(goto_cue(1, 3, true), 0.6, 0.0, DNC),
+        memo(2),
+        memo(3),
+        memo(4),
+        memo(5),
+    ]);
+    rig.ws.settings.min_go_interval = 1.0;
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(1), 0)]);
+    // The GoTo's GO at 600 is inside the interval of the operator GO at 0: it still happens.
+    let tick = rig.tick(600);
+    assert_eq!(starts(&tick), vec![(id(3), 600)]);
+    assert_eq!(rig.playhead(), Some(id(4)));
+    // The interval still counts from the operator GO at 0, not from 600.
+    assert!(rig.go(999).contains(&Action::GoIgnored {
+        list: list(),
+        reason: GoIgnoredReason::DoubleGo
+    }));
+    assert_eq!(starts(&rig.go(1000)), vec![(id(4), 1000)]);
+}
+
+#[test]
+fn goto_into_a_group_stands_on_the_child() {
+    let mut rig = Rig::new(vec![
+        goto_cue(1, 4, true),
+        grp(2, GroupMode::Timeline, vec![sound(3), sound(4), sound(5)]),
+        memo(6),
+    ]);
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go), vec![(id(4), 0)]);
+    // The group runs adopted; the playhead goes to the next sibling (timeline children do
+    // not chain).
+    assert_eq!(rig.state(2), CueState::Running);
+    assert_eq!(rig.playhead(), Some(id(5)));
+    // Without GO it just stands on the child.
+    let mut rig = Rig::new(vec![
+        goto_cue(1, 4, false),
+        grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
+    ]);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(4)));
+    assert_eq!(rig.state(4), CueState::Idle);
+}
+
+#[test]
+fn goto_across_lists_moves_and_goes_on_the_targets_list() {
+    let mut rig = Rig::new(vec![goto_cue(1, 21, true), memo(2)]);
+    rig.ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "Second".into(),
+        cues: vec![memo(20), sound(21), memo(22)],
+    });
+    rig.tick(0);
+    assert_eq!(rig.engine.playhead(list_id(2)), Some(id(20)));
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go), vec![(id(21), 0)]);
+    assert_eq!(rig.engine.playhead(list_id(2)), Some(id(22)));
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn goto_with_a_missing_target_warns() {
+    let mut rig = Rig::new(vec![goto_cue(1, 99, true), memo(2)]);
+    let go = rig.go(0);
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TargetMissing {
+            cue: id(1),
+            target: id(99)
+        }]
+    );
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+// ----- Arm / Disarm (CT-19) -----
+
+#[test]
+fn disarm_is_seen_by_the_rest_of_the_same_chain() {
+    let mut rig = Rig::new(vec![timed(arm_cue(1, 2, false), 0.0, 0.0, AC), sound(2)]);
+    let go = rig.go(0);
+    assert_eq!(set_armed(&go), vec![(id(2), false)]);
+    // Cue 2 was triggered by the auto-continue in the same call and skipped (no voice).
+    assert_eq!(starts(&go), vec![(id(1), 0), (id(2), 0)]);
+    assert!(voice_starts(&go).is_empty());
+}
+
+#[test]
+fn disarm_holds_in_later_calls_until_the_model_shows_it() {
+    let mut rig = Rig::new(vec![arm_cue(1, 3, false), arm_cue(2, 3, true), sound(3)]);
+    rig.go(0);
+    // The binary has not applied it yet: the engine still treats cue 3 as disarmed.
+    assert!(voice_starts(&rig.start(100, 3)).is_empty());
+    assert!(
+        rig.at(
+            200,
+            Input::Load {
+                cue: id(3),
+                time: 0.0
+            }
+        )
+        .iter()
+        .all(|a| !matches!(a, Action::LoadVoice { .. }))
+    );
+    rig.at(250, Input::Reset { cue: id(3) });
+    // The binary applies it; the engine and the model agree.
+    rig.find_mut(3).armed = false;
+    rig.tick(300);
+    assert!(voice_starts(&rig.start(400, 3)).is_empty());
+    rig.stop(450, 3);
+    // An operator edit that arms the cue again now counts.
+    rig.find_mut(3).armed = true;
+    assert_eq!(voice_starts(&rig.start(500, 3)), vec![(id(3), 500)]);
+    rig.stop(600, 3);
+    // Disarm again, then the Arm cue arms it before the model saw the disarm.
+    rig.set_playhead(700, 1);
+    assert_eq!(set_armed(&rig.go(700)), vec![(id(3), false)]);
+    assert_eq!(set_armed(&rig.go(800)), vec![(id(3), true)]);
+    assert_eq!(voice_starts(&rig.start(900, 3)), vec![(id(3), 900)]);
+}
+
+#[test]
+fn arming_an_armed_cue_does_nothing() {
+    let mut rig = Rig::new(vec![arm_cue(1, 2, true), sound(2)]);
+    let go = rig.go(0);
+    assert!(set_armed(&go).is_empty());
+    assert!(warnings(&go).is_empty());
+}
+
+#[test]
+fn arm_cue_on_a_group_changes_where_go_enters_it() {
+    let mut g = grp(2, GroupMode::StartFirstAndEnter, vec![sound(3), sound(4)]);
+    g.armed = false;
+    let mut rig = Rig::new(vec![arm_cue(1, 2, true), g, memo(5)]);
+    let go = rig.go(0);
+    assert_eq!(set_armed(&go), vec![(id(2), true)]);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    // Armed now (in the engine): GO enters the group.
+    let go = rig.go(100);
+    assert_eq!(voice_starts(&go), vec![(id(3), 100)]);
+    assert_eq!(rig.playhead(), Some(id(4)));
+}
+
+#[test]
+fn arm_cue_with_a_missing_target_warns() {
+    let mut rig = Rig::new(vec![arm_cue(1, 99, true)]);
+    assert_eq!(
+        warnings(&rig.go(0)),
+        vec![EngineWarning::TargetMissing {
+            cue: id(1),
+            target: id(99)
+        }]
+    );
+}
+
+// ----- Devamp (CT-16) -----
+
+/// A looping sound (1), the Devamp cue (2) and the cue after it (3).
+fn devamp_rig(start_next: bool, stop: bool, lookahead: SampleTime) -> Rig {
+    let mut rig = Rig::with_lookahead(
+        vec![
+            sound(1),
+            devamp_cue(2, 1, start_next, stop),
+            sound(3),
+            memo(4),
+        ],
+        lookahead,
+    );
+    rig.start(0, 1);
+    rig.set_playhead(0, 2);
+    rig
+}
+
+#[test]
+fn devamp_starts_the_cue_after_it_on_the_exact_devamp_sample() {
+    let mut rig = devamp_rig(true, false, 64);
+    let go = rig.go(100);
+    assert_eq!(devamps(&go), vec![(id(1), 100, false)]);
+    let run = rig.run(1);
+    let scheduled = rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 5000,
+        },
+    );
+    assert!(starts(&scheduled).is_empty());
+    assert_eq!(rig.engine.next_deadline(), Some(5000));
+    assert!(starts(&rig.tick(4000)).is_empty());
+    // The window of the call at 4950 holds sample 5000: the next cue starts exactly there.
+    let tick = rig.tick(4950);
+    assert_eq!(voice_starts(&tick), vec![(id(3), 5000)]);
+    // The looping sound plays on into its next slice.
+    assert_eq!(rig.state(1), CueState::Running);
+    // Its later end completes it as usual.
+    rig.ended(9000, 1, 8000);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn devamp_without_start_next_starts_nothing_and_passes_stop() {
+    let mut rig = devamp_rig(false, true, 0);
+    let go = rig.go(100);
+    assert_eq!(devamps(&go), vec![(id(1), 100, true)]);
+    let run = rig.run(1);
+    rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 5000,
+        },
+    );
+    assert!(starts(&rig.tick(5000)).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn devamp_ignored_by_the_audio_side_warns_and_starts_nothing() {
+    // QLab: a devamp of a cue that is not looping has nothing to leave.
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    let run = rig.run(1);
+    let ignored = rig.at(150, Input::DevampIgnored { cue: id(1), run });
+    assert_eq!(
+        warnings(&ignored),
+        vec![EngineWarning::DevampIgnored { cue: id(1) }]
+    );
+    assert!(rig.engine.next_deadline().is_none());
+    assert!(starts(&rig.tick(10_000)).is_empty());
+    // Stale feedback is ignored silently.
+    let stale = rig.at(
+        200,
+        Input::DevampScheduled {
+            cue: id(1),
+            run: RunId(9_999),
+            at: 300,
+        },
+    );
+    assert!(stale.is_empty());
+}
+
+#[test]
+fn devamp_feedback_after_the_voice_ended_still_starts_the_next_cue() {
+    // The end report raced the deadline: the next cue starts on the devamp sample.
+    let mut rig = devamp_rig(true, true, 0);
+    rig.go(100);
+    let run = rig.run(1);
+    rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 5000,
+        },
+    );
+    let ended = rig.at(
+        4000,
+        Input::ActionEnded {
+            cue: id(1),
+            run,
+            at: 4000,
+        },
+    );
+    assert_eq!(starts(&ended), vec![(id(3), 4000)]);
+}
+
+#[test]
+fn a_second_devamp_while_one_is_pending_is_ignored() {
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    rig.set_playhead(200, 2);
+    let again = rig.go(200);
+    assert!(devamps(&again).is_empty());
+    assert_eq!(
+        warnings(&again),
+        vec![EngineWarning::DevampIgnored { cue: id(1) }]
+    );
+}
+
+#[test]
+fn devamp_of_a_target_that_is_not_playing_warns() {
+    let not_running = EngineWarning::TargetNotRunning {
+        cue: id(2),
+        target: id(1),
+    };
+    // Idle.
+    let mut rig = Rig::new(vec![sound(1), devamp_cue(2, 1, true, false), sound(3)]);
+    rig.set_playhead(0, 2);
+    let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![not_running.clone()]);
+    assert!(devamps(&go).is_empty());
+    // Paused.
+    rig.start(10, 1);
+    rig.pause(20, 1);
+    rig.set_playhead(30, 2);
+    assert_eq!(warnings(&rig.go(30)), vec![not_running.clone()]);
+    // Pre-waiting.
+    rig.stop(40, 1);
+    rig.find_mut(1).pre_wait = 1.0;
+    rig.start(50, 1);
+    rig.set_playhead(60, 2);
+    assert_eq!(warnings(&rig.go(60)), vec![not_running.clone()]);
+    // Broken.
+    rig.stop(70, 1);
+    rig.find_mut(1).pre_wait = 0.0;
+    rig.start(80, 1);
+    rig.failed(90, 1);
+    rig.set_playhead(100, 2);
+    assert_eq!(warnings(&rig.go(100)), vec![not_running]);
+}
+
+#[test]
+fn devamp_of_a_stopped_target_never_starts_the_next_cue() {
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    let run = rig.run(1);
+    rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 5000,
+        },
+    );
+    rig.stop(2000, 1);
+    assert!(starts(&rig.tick(5000)).is_empty());
+}
+
+#[test]
+fn devamp_deadline_moves_with_a_pause() {
+    let mut rig = devamp_rig(true, false, 0);
+    rig.go(100);
+    let run = rig.run(1);
+    rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 5000,
+        },
+    );
+    rig.pause(1000, 1);
+    assert!(rig.engine.next_deadline().is_none());
+    rig.at(3000, Input::Resume { cue: id(1) });
+    assert_eq!(rig.engine.next_deadline(), Some(7000));
+    assert_eq!(starts(&rig.tick(7000)), vec![(id(3), 7000)]);
+}
+
+#[test]
+fn devamp_of_a_memo_is_the_wrong_kind() {
+    let mut rig = Rig::new(vec![memo(1), devamp_cue(2, 1, true, false)]);
+    rig.set_playhead(0, 2);
+    assert_eq!(
+        warnings(&rig.go(0)),
+        vec![EngineWarning::TargetWrongKind {
+            cue: id(2),
+            target: id(1)
+        }]
+    );
+}
+
+// ----- Devamp of a playlist group (M2.15) -----
+
+/// A looping playlist (1) of two one-second waits, auto-following to memo 4; the Devamp cue
+/// (5) and the cue after it (6).
+fn playlist_rig(looping: bool, start_next: bool) -> Rig {
+    let mut rig = Rig::new(vec![
+        timed(
+            grp(1, playlist(looping), vec![wait(2, 1.0), wait(3, 1.0)]),
+            0.0,
+            0.0,
+            AF,
+        ),
+        memo(4),
+        devamp_cue(5, 1, start_next, false),
+        memo(6),
+    ]);
+    rig.start(0, 1);
+    rig.set_playhead(0, 5);
+    rig
+}
+
+#[test]
+fn devamp_of_a_looping_playlist_finishes_the_current_child_then_completes() {
+    let mut rig = playlist_rig(true, true);
+    // Second pass, first child.
+    rig.tick(2000);
+    assert_eq!(rig.state(2), CueState::Running);
+    let go = rig.go(2500);
+    assert!(devamps(&go).is_empty());
+    assert!(warnings(&go).is_empty());
+    let tick = rig.tick(3000);
+    // The current child finished; the group completed instead of moving on: its auto-follow
+    // fires and the Devamp cue's next cue starts, both on that sample.
+    assert_eq!(starts(&tick), vec![(id(4), 3000), (id(6), 3000)]);
+    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 3000)]);
+    assert_eq!(rig.state(3), CueState::Idle);
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn devamp_of_a_paused_looping_playlist_completes_on_resume() {
+    let mut rig = playlist_rig(true, false);
+    rig.go(500);
+    rig.pause(600, 1);
+    rig.at(2000, Input::Resume { cue: id(1) });
+    let tick = rig.tick(2400);
+    assert_eq!(starts(&tick), vec![(id(4), 2400)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn devamp_of_a_playlist_that_does_not_loop_is_ignored() {
+    let mut rig = playlist_rig(false, true);
+    assert_eq!(
+        warnings(&rig.go(500)),
+        vec![EngineWarning::DevampIgnored { cue: id(1) }]
+    );
+    // It plays on to its last child, then completes as usual.
+    assert_eq!(starts(&rig.tick(1000)), vec![(id(3), 1000)]);
+    assert_eq!(starts(&rig.tick(2000)), vec![(id(4), 2000)]);
+}
+
+#[test]
+fn devamp_of_other_groups_or_idle_playlists() {
+    let mut rig = Rig::new(vec![
+        grp(1, GroupMode::Timeline, vec![wait(2, 1.0)]),
+        devamp_cue(3, 1, false, false),
+    ]);
+    rig.set_playhead(0, 3);
+    assert_eq!(
+        warnings(&rig.go(0)),
+        vec![EngineWarning::TargetNotRunning {
+            cue: id(3),
+            target: id(1)
+        }]
+    );
+    rig.start(10, 1);
+    rig.set_playhead(20, 3);
+    assert_eq!(
+        warnings(&rig.go(20)),
+        vec![EngineWarning::DevampIgnored { cue: id(1) }]
+    );
+}

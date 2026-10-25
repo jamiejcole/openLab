@@ -431,19 +431,21 @@ fn disarmed_cue_skips_its_action_but_keeps_timing_and_continue() {
 
 #[test]
 fn unsupported_kind_warns_completes_at_once_and_continues() {
-    // Control cues come with M2.5.
-    let start = timed(
+    // Network cues come with M4.6.
+    let send = timed(
         cue(
             1,
-            CueKind::Start {
-                target: Some(id(10)),
+            CueKind::Network {
+                destination: net_id(1),
+                address: "/go".into(),
+                args: vec![],
             },
         ),
         0.0,
         0.0,
         AF,
     );
-    let mut rig = Rig::new(vec![start, memo(2), sound(10)]);
+    let mut rig = Rig::new(vec![send, memo(2), sound(10)]);
     let go = rig.go(0);
     assert_eq!(
         warnings(&go),

@@ -2,7 +2,7 @@
 
 How cues run: lifecycle states, timing, continue modes, groups, GO and the playhead. Architecture context: [ARCHITECTURE §3.2–3.3](ARCHITECTURE.md#32-clock-and-scheduling-nfr-202122). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: M2.1–M2.4, M2.11 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, CT-22, PB-01, PB-02, PB-05, CL-06 engine side). Control cues (M2.5), Fade cues (M2.6), panic and pause/resume all (M2.7) and static broken-cue detection (M2.8) come later; see [Not yet](#not-yet).
+Status: M2.1–M2.6, M2.11, M2.15 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01, PB-02, PB-05, CL-06 engine side). Panic and pause/resume all (M2.7) and static broken-cue detection (M2.8) come later; see [Not yet](#not-yet).
 
 Two rules decided by the user (M2.13):
 
@@ -22,7 +22,7 @@ let wake: Option<SampleTime> = engine.next_deadline();
 - **Randomness** (random groups, shuffled playlists) comes from a SplitMix64 generator in core, seeded with `EngineConfig::seed`. Tests pass a fixed seed and are reproducible; the engine binary seeds it from OS entropy at startup (M4.2), so shows differ between runs.
 - `handle` gets the **current** workspace every call. It first applies edits made since the last call (see [Model edits](#model-edits)), then carries out due deadlines, then the input, then deadlines again.
 - `Action`s are core types; the engine binary turns voice actions into mixer and disk-stream commands (M4.2). Core does not depend on `openlab-audio`.
-- Queries: `state(cue)`, `cue_states()` (every non-idle cue), `broken_reason(cue)`, `run_of(cue)`, `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`.
+- Queries: `state(cue)`, `cue_states()` (every non-idle cue), `broken_reason(cue)`, `run_of(cue)`, `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`, `fade_level(cue, param, at)` (see [Fade cues](#fade-cues-ct-10)).
 - One engine per open workspace. A newly opened workspace gets a new engine; call `handle(ws, Tick, now)` once so the playheads are reported.
 
 ## Time
@@ -51,11 +51,11 @@ Each cue reports exactly one state:
 | `running` | The action is under way (post-wait may be counting too). |
 | `paused` | Pre-wait, action and post-wait are frozen. |
 | `post-waiting` | The action is complete; the post-wait is still counting down to the next cue. |
-| `fading` | Defined for Fade cues (M2.6); nothing enters it yet. |
+| `fading` | An audio cue in its action whose levels a running Fade cue is moving (see [Fade cues](#fade-cues-ct-10)). |
 | `stopping` | Fading out before it stops (a stop with a fade). |
 | `broken` | Failed; owns no voice and cannot start until reset. Its pending auto-continue still fires on schedule. Reasons: `voice_rejected`, `stream_failed`, `device_lost` (feedback). Static detection is M2.8. |
 
-Internally a started cue is a **run**: `{pre-wait deadline, action progress (start, end if known), post-wait deadline, paused-at, fade-out end}`. Post-wait is a timer owned by the cue, not a phase: a cue is `running` while its post-wait elapses, and `post-waiting` only once its action has completed and the post-wait has not. The reported state is derived: paused › stopping › pre-waiting › running › post-waiting.
+Internally a started cue is a **run**: `{pre-wait deadline, action progress (start, end if known), post-wait deadline, paused-at, fade-out end}`. Post-wait is a timer owned by the cue, not a phase: a cue is `running` while its post-wait elapses, and `post-waiting` only once its action has completed and the post-wait has not. The reported state is derived: broken › paused › stopping › fading › pre-waiting › running › post-waiting.
 
 A start always reports `pre-waiting` first, even for a zero pre-wait (followed by `running` in the same call).
 
@@ -66,7 +66,7 @@ Each voice segment has a `RunId`, unique for the engine's lifetime (the binary c
 Started at `S` with pre-wait `P`, post-wait `W`:
 
 - The action starts at `A = S + P`.
-- **Action duration**: Audio — unknown to core; the action completes on `ActionEnded` feedback (`VoiceFinished`), and a cue that loops forever never completes until it is stopped (or devamped, M2.5). Wait — its `duration`. Memo — 0. Group — until no child is busy (see [Groups](#groups-ct-22)). Disarmed cues (CUE-07) — 0: the action is skipped (no voice), but pre-wait, post-wait and continue mode still apply. Kinds not implemented yet — 0, with an `Unsupported` warning (see Not yet).
+- **Action duration**: Audio — unknown to core; the action completes on `ActionEnded` feedback (`VoiceFinished`), and a cue that loops forever never completes until it is stopped (or devamped, M2.5). Wait — its `duration` (CT-20). Memo — 0; it does nothing (CT-21). Group — until no child is busy (see [Groups](#groups-ct-22)). Fade — its `duration` (see [Fade cues](#fade-cues-ct-10)). Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm — 0: they act on their target when the action starts (see [Control cues](#control-cues-ct-11ct-19)). Disarmed cues (CUE-07, as the engine sees them: see Arm/Disarm) — 0: the action is skipped (no voice, no control action, no fade), but pre-wait, post-wait and continue mode still apply. Network cues (M4.6) — 0, with an `Unsupported` warning (see Not yet).
 - **Do not continue**: nothing else is triggered; the post-wait is not used.
 - **Auto-continue**: the next cue is triggered at `A + W` (post-wait counted from the action start; `W = 0` triggers it at `A`). The post-wait timer is armed when the action starts.
 - **Auto-follow**: the next cue is triggered when the action completes: at the `at` of `ActionEnded` (clamped to no earlier than `A`), or at `A + duration` for known durations. The post-wait is ignored.
@@ -84,7 +84,9 @@ Started at `S` with pre-wait `P`, post-wait `W`:
 
 ### Chains and the chain bound
 
-Zero-wait chains run inside one call: an auto-continue chain of zero waits starts every cue on the same sample. Commands do not check references (M1-B) and edits can create trigger cycles, so **each call starts at most `chain_limit(ws)` = number of cues in the workspace (all depths) + 64 cues**. Every start counts, including children started by their group (a looping playlist of zero-length children is such a cycle: it is cut at the limit and the group then completes). Without a cycle a call starts each cue at most once, so only a cycle reaches it. A start beyond the limit is dropped with a `ChainLimit` warning; the chain is cut, not deferred, so a cycle can never hang a call or keep re-firing on later ticks at the same sample. A cycle with time in it (non-zero waits) is not a hang and keeps running, one deadline per call. As a second line of defence the deadline loop has its own step guard.
+Zero-wait chains run inside one call: an auto-continue chain of zero waits starts every cue on the same sample. Commands do not check references (M1-B) and edits can create trigger cycles, so **each call starts at most `chain_limit(ws)` = number of cues in the workspace (all depths) + 64 cues**. Every start counts, including children started by their group (a looping playlist of zero-length children is such a cycle: it is cut at the limit and the group then completes). Without a cycle a call starts each cue at most once, so only a cycle reaches it. Start cues, GoTo-and-GO and Devamp's "start next cue" count like any start, so control-cue cycles (A starts B starts A, GoTo loops; load-time validation warns about them, edits can still make them) are bounded the same way. A start beyond the limit is dropped with a `ChainLimit` warning; the chain is cut, not deferred, so a cycle can never hang a call or keep re-firing on later ticks at the same sample. As a second line of defence the deadline loop has its own step guard.
+
+**Across calls**: a cycle that makes no time progress cannot outlive the call it starts in. All its deadlines lie on one sample, which falls inside that call's window, so the whole cycle runs (and is cut) there; nothing of it is left pending. A cycle can only reach a later call through time: a non-zero pre-wait, post-wait, Wait or Fade duration, which moves the timeline on (it keeps running, one lap per period, like any timed loop — not a hang, and Stop/Reset/panic end it), or through feedback from the mixer, which is dated at mixer time (an end report is no earlier than the voice's real start, which is never before the `now` of the call that started it; a devamp answer is no earlier than the devamp command). So every later lap is dated later than the last call's `now`. A cue that acts while its own action is under way also ignores a trigger back to itself (a Start cue targeting itself: `TriggerIgnored`).
 
 ## Groups (CT-22)
 
@@ -110,7 +112,7 @@ A Group cue is a cue like any other: its own pre-wait, post-wait and continue mo
 | Playlist | the first child (shuffled: the first of a shuffled pass) | ignored | after the group's continue chain |
 | Start random | one random child | ignored | after the group's continue chain |
 
-- **Playlist**: each next child starts on the sample the previous child's action completes (its pre-wait then counts). A child that breaks (feedback) moves the playlist on at the moment it breaks; a broken child that cannot start is skipped at once; both mark the run as not successful. Without loop the group completes after the last child. With loop it wraps to the first and never completes on its own (stop it; Devamp is M2.5). With shuffle each pass plays every child exactly once in a fresh random order. Unshuffled, the next child is the one after the current one as the group stands when the trigger fires (a reorder applies to the next child; a removed current child is followed by the child that took its place). Shuffled, a pass's order is fixed when the pass starts; children removed meanwhile are skipped and children added play from the next pass. A pass in which no child could start ends the playlist; so does the chain limit. A shuffled pass never opens with the child that closed the previous pass (when there are two or more). **Paused playlist**: if the current child's end or failure report arrives while the group is paused (it was in flight when the pause came: the end is dated before the pause), the playlist moves on when the group resumes — the next child starts on the resume sample, as if the playlist had moved on just as it was paused; if that was the last child (no loop), the group completes on the resume sample instead, with its continue as usual (auto-follow fires unless a child broke). A pause never ends a playlist early or skips its remaining children.
+- **Playlist**: each next child starts on the sample the previous child's action completes (its pre-wait then counts). A child that breaks (feedback) moves the playlist on at the moment it breaks; a broken child that cannot start is skipped at once; both mark the run as not successful. Without loop the group completes after the last child. With loop it wraps to the first and never completes on its own (stop it, or devamp it: see [Devamp](#devamp-ct-16)). With shuffle each pass plays every child exactly once in a fresh random order. Unshuffled, the next child is the one after the current one as the group stands when the trigger fires (a reorder applies to the next child; a removed current child is followed by the child that took its place). Shuffled, a pass's order is fixed when the pass starts; children removed meanwhile are skipped and children added play from the next pass. A pass in which no child could start ends the playlist; so does the chain limit. A shuffled pass never opens with the child that closed the previous pass (when there are two or more). **Paused playlist**: if the current child's end or failure report arrives while the group is paused (it was in flight when the pause came: the end is dated before the pause), the playlist moves on when the group resumes — the next child starts on the resume sample, as if the playlist had moved on just as it was paused; if that was the last child (no loop), the group completes on the resume sample instead, with its continue as usual (auto-follow fires unless a child broke). A pause never ends a playlist early or skips its remaining children.
 - **Random**: one child is picked uniformly from the seeded generator, never the child this group picked last time when it has another (QLab does not repeat a random child immediately); one child is always picked.
 
 ### A child started on its own
@@ -140,6 +142,7 @@ Groups nest to `MAX_GROUP_DEPTH` (validation and commands enforce it). The engin
 - `Go { list }` starts the cue at the list's playhead at `now` and moves the playhead to the cue after the last cue of its continue chain: from the playhead cue, every following cue reached through auto-continue/auto-follow (as the model stands) is skipped. If the chain runs to the end of the list, the playhead goes past the end. Groups: GO on an armed "start first and enter" group moves the playhead **into** it, to the child after the first child's continue chain (a disarmed one starts nothing and is skipped as a unit, like any disarmed cue). GO on a cue inside a group (any mode, as in QLab 5) starts that cue only; its idle groups run adopted (see Groups). The playhead then moves to the cue after its continue chain among its siblings: in "start first" groups the children's continue modes chain; in timeline, playlist and random groups they are ignored, so it is the next sibling. Past the group's last child the playhead leaves the group to the cue after the **group's** continue chain (and so on outwards; the group's own auto-continue/follow targets are skipped as at the top level).
 - GO on a cue that is already active is ignored for that cue (`TriggerIgnored`), but the GO counts and the playhead moves on. GO on a paused cue resumes it. GO on a broken cue does not start it (`CueBroken` warning) but still counts as a GO and moves the playhead on, so the show can continue with the next GO.
 - Ignored GOs report `GoIgnored { reason }`: `no_cue` (playhead past the end, or empty list), `unknown_list`, or `double_go`.
+- The GO of a GoTo cue with "and GO" works the same way on the target's list, dated on the GoTo cue's action start, but it is not an operator GO: double-GO protection never blocks it and it does not restart the interval (see [GoTo](#goto-ct-17)).
 - **Double-GO**: a GO less than `min_go_interval` after the previous **accepted** GO (in samples, any list) is ignored; one exactly at the interval is accepted. Ignored GOs do not restart the interval. 0 = off. If `now` is earlier than the last accepted GO (clock restart), the GO is accepted.
 
 ## Playhead (PB-05, CL-06)
@@ -191,11 +194,79 @@ Events:
 - Operations on a cue id that is not in the workspace warn `UnknownCue` and do nothing.
 - On a Group, every operation also reaches its descendants; see [Operations on a group](#operations-on-a-group).
 
+## Control cues (CT-11..CT-19)
+
+A control cue is a cue like any other (pre-wait, post-wait, continue mode, operations, second-trigger rule). At its **action start** `A` (after its own pre-wait) it acts on its target **as if the operator had done the operation** at that moment, and its own action then completes at once (so auto-follow fires at `A`). Its own continue mode applies as for any cue. Behaviour follows QLab 5.
+
+- The operation is dated on `A`: an operation in the lookahead window acts on its own sample (`StopVoice { at: A }`, not `now`); a late one (`A < now`) acts at `now`, except a start, which is dated `A` like any trigger so later timing keeps its schedule (the late rule then applies to voices).
+- The cue is still in its action while it acts, so a trigger from its target back to it is ignored (`TriggerIgnored`).
+- **Target checks at run time**: no target set → `NoTarget`; a target not in the workspace → `TargetMissing`. The cue then does nothing, but its timing and continue apply as usual. Static broken-cue detection is M2.8.
+- Targets that are groups use the group operations ([Operations on a group](#operations-on-a-group)): Stop/Pause/Load/Reset reach every descendant, Start starts the group in its mode, a target inside a group runs its idle groups adopted.
+
+| Cue | Action at `A` |
+|---|---|
+| Start (CT-11) | the Start operation on the target, dated `A`: idle/loaded → starts; paused → resumes; active → `TriggerIgnored`; broken → `CueBroken`. A disarmed target is skipped as on GO. |
+| Stop (CT-12) | Stop with the cue's fade (`fade_out`, duration 0 = hard stop). |
+| Pause (CT-13) | Pause (a paused or idle target is left as it is). |
+| Load (CT-14) | Load to `load_to_time` (an active target: `LoadIgnored`; broken: `CueBroken`). |
+| Reset (CT-15) | Reset (clears broken). It does not undo Arm/Disarm changes. |
+| Devamp (CT-16) | see [Devamp](#devamp-ct-16) |
+| GoTo (CT-17) | see [GoTo](#goto-ct-17) |
+| Arm / Disarm (CT-19) | see [Arm and Disarm](#arm-and-disarm-ct-19) |
+| Wait (CT-20) | nothing; its action lasts its duration |
+| Memo (CT-21) | nothing; its action completes at once |
+
+### GoTo (CT-17)
+
+- Moves the playhead of the **target's** cue list (any list of the workspace, not only the GoTo cue's own) to the target, at any depth (the playhead may stand on any cue, see [Playhead](#playhead-pb-05-cl-06)).
+- With "and GO" it then GOes on that list, dated `A`: the target starts and the playhead moves past its continue chain (or into an armed "start first and enter" group), exactly as an operator GO. As in QLab, this is not an operator GO: double-GO protection does not block it and it does not restart the double-GO interval.
+
+### Arm and Disarm (CT-19)
+
+- The engine cannot change the `&Workspace`. An Arm/Disarm cue emits `SetArmed { cue, armed }` and records the change as an **override** that the engine honours at once and in later calls until the model shows it: a Disarm followed by a trigger of the target in the same chain (or a later call) sees the target disarmed (its action is skipped, a Load sends no `LoadVoice`, GO does not enter a disarmed "start first and enter" group).
+- Only the target itself changes (a group's children keep theirs). A running target keeps running; the change applies to its next action. Arming an already armed cue (as the engine sees it) does nothing and emits nothing.
+- When a call sees the model show the change (or the cue gone), the override is dropped and the model rules again, so later operator edits of `armed` count.
+
+### Devamp (CT-16)
+
+- **Audio target** that is playing (in its action with a started voice; not paused, stopping or broken): emits `DevampVoice { cue: target, run, at: max(A, now, voice start), stop }` (`stop` = "stop target when slice ends"). The audio side answers:
+  - `DevampScheduled { at: L }`: the voice leaves its loop on `L`. With "start next cue", the cue **after the Devamp cue** (QLab: the Devamp cue then acts as if it auto-continued when the slice ends; looked up as for any continue when it fires) starts on exactly `L` — a deadline, so it lands on `L` inside the lookahead window, and late at `now` (with `L` as its timing) otherwise. The target plays on into its next slice (or ends there with `stop`) and completes on its end report as usual. If the end report comes before the deadline was carried out, the next cue still starts on `L`. A pause of the target moves `L` with the target's other timers.
+  - `DevampIgnored`: nothing to leave (no slice table, as for a cue that is not looping); `DevampIgnored { cue: target }` warning, no next cue.
+  - A stopped, reset, deleted or broken target cancels a pending devamp (and its next cue).
+- One devamp at a time per voice: a second Devamp while one is pending sends nothing and warns `DevampIgnored` (the audio side would ignore it, and its answer could not be told apart).
+- **Looping playlist group** (M2.15) that is running (not stopping, not adopted): it finishes its current child and then **completes** instead of moving on or wrapping; its continue applies (auto-follow fires unless a child broke), and with "start next cue" the cue after the Devamp cue starts on the same sample. A paused playlist completes when its child completes after the resume. "Stop target when slice ends" makes no difference for a playlist.
+- A group that is not a looping playlist (or is adopted, or already devamped): `DevampIgnored`, nothing changes. A target that is not running (idle, loaded, pre-waiting, paused, stopping, broken): `TargetNotRunning`. Any other kind: `TargetWrongKind`.
+
+## Fade cues (CT-10)
+
+Audio levels only in v0.0.1 (§21). A Fade is **absolute** (QLab): over its duration, with its curve, it moves the target's levels from their current values to the Fade's values.
+
+- **What it fades**: at its action start `A`, every **playing** audio cue it targets: the target itself, or for a Group target every audio cue inside it (any depth) that is playing then (absolute, the same values for each). Playing = in its action with a started voice (running, fading, paused or stopping), not broken. Cues that start later are not faded.
+- **Which levels**: the Fade's `master_db`, each set `output_db[o]` and each listed crosspoint, per target. Indices beyond that target's outputs (`output_db` past `outputs.len()`, a crosspoint output past it, a crosspoint input of 64 or more) are ignored; crosspoint inputs beyond the file's channels are ignored by the mixer. A muted output or crosspoint of the target is not faded (a fade never changes mutes, so its gain stays 0). An unlisted crosspoint of the target is silent and fades up from silence.
+- **Ramps**: per target and level, `Ramp { cue, run, at: S, param, gain, frames: E − S, curve }` with `S = max(A, now, voice start)` and `E = A + duration` (minus a load-to-time offset). So a ramp never names a voice before the mixer has it, a late fade starts late but still ends on `E`, and `gain` is linear (`db_to_gain`, the mixer's conversion). Duration 0 sets the levels on `S`.
+- **Current levels**: the mixer starts every ramp from the value the gain has on its first sample (docs/audio.md, Ramp definition), so a fade interrupted by another fade (or a second fade after a first) continues without a jump. The engine tracks the same thing: each running audio cue keeps the gains Fade cues have set or are moving, as `from → to over frames from start`, evaluated with the mixer's formula (`ramp_gain`, `curve_shape`, `db_to_gain`, compared bit for bit with `openlab-audio` in `tests/level_maths.rs`). Untouched levels are the model's. `fade_level(cue, param, at)` reads it (`None` = untouched). These levels belong to the cue's run: a stopped and restarted cue starts from the model's levels again (Reset restores its saved levels, CT-15).
+- **Ownership**: each level is moved by the Fade that last ramped it. A later Fade takes it over; the earlier Fade then no longer touches it (pausing or stopping it sends nothing for that level).
+- **Completion**: the Fade's action completes on `E` (auto-follow fires then); its targets have reached its values. With **stop target when done** the target (a group: with everything in it) is hard-stopped on `E` — exactly on the sample the ramp ends — before the auto-follow fires. It stops the target whatever it is doing then.
+- **Pause** of the Fade cue holds its ramps where they are on the pause sample `P` (`Ramp { at: max(P, ramp start), gain: current value, frames: 0 }`, the mixer's value on that sample, so nothing moves); **resume** at `R` ramps each held level from there to the Fade's value, ending on the Fade's shifted end (`E + R − P`), with the same curve over the remaining frames (continuous; the remaining path is a fresh curve from the held value, not the tail of the original one). **Stop** (or Reset, or deleting it) holds the ramps where they are and never stops the target. A held level whose ramp had already ended sends nothing.
+- **State**: the Fade cue reports `running` during its fade. Each audio cue it is moving reports `fading` (CUE-04) while it is in its action and a running, unpaused Fade with a non-zero ramp on it exists; it returns to `running` when that Fade completes, pauses or stops. Paused, stopping and broken take precedence. A group target reports its own state (`running`); its faded children report `fading`. Second triggers on a fading cue are ignored like on any active cue.
+- **Not playing**: if nothing it targets is playing at `A`, the Fade warns `TargetNotRunning` and does nothing, but still runs its duration (its timing and continue apply, as in QLab; "stop target when done" then stops the target on `E` if it is running by then). A target of another kind: `TargetWrongKind`; none or missing: `NoTarget`/`TargetMissing`.
+- Feedback never breaks a Fade cue (it owns no voice).
+
+## Actions for the binary (M4.2 contract)
+
+Besides the voice actions above:
+
+- `Ramp { cue, run, at, param, gain, frames, curve }` → mixer `Ramp { voice: run, target: param (Master / CueOutput(o) / Crosspoint{input, output}), gain, fade: Fade { frames, curve } }` (curves map one to one). The binary must not apply gangs to it (the Fade's values are already per output).
+- `DevampVoice { cue, run, at, stop }` → mixer `Devamp { voice: run, stop }` at `at`; its `DevampScheduled`/`DevampIgnored` events go back as `Input::DevampScheduled { cue, run, at }` / `Input::DevampIgnored { cue, run }` for that voice.
+- `SetArmed { cue, armed }` → set the cue's `armed` in the model as a runtime change (not an undo step), before the next `handle` call. The engine honours it until then; if the binary never applies it, the engine keeps honouring it until the model matches.
+- A voice that the binary pauses by stopping and restarting (M3.18) must restart with the levels the engine reports with `fade_level` on the resume sample (and ramps still in progress must be re-sent from there); Fade ramps on a paused voice must apply as on a playing one.
+
 ## Feedback
 
 - `ActionEnded { cue, run, at }` (from `VoiceFinished`) and `ActionFailed { cue, run, reason }` are matched on **cue and run**. Feedback for an idle cue, an unknown cue, or an old run (the cue has been stopped, reset, resumed or started again since) is ignored without any action.
 - `ActionEnded` completes an audio action at `at` (clamped to no earlier than its start), or ends a fade-out stop. While the cue is paused, an `ActionEnded` dated at or after the pause sample is ignored: a paused voice cannot end by itself, so such a report comes from carrying out the pause (e.g. as a stop). An end dated before the pause (the voice ended just before the pause applied) still completes the action and fires auto-follow. Once the cue has resumed, reports for the paused segment carry its old id and are ignored like any stale id, so a pause's late end report can never complete the resumed cue. A genuine end of the resumed voice carries the fresh id and completes the cue as usual (a binary that resumes a voice which had already ended reports that end with the fresh id). A hard stop forgets the run immediately, so the voice's `Stopped` report that follows is stale and ignored.
-- `LoopReached`/`DevampScheduled` are not inputs yet (Devamp is M2.5).
+- `DevampScheduled { cue, run, at }` and `DevampIgnored { cue, run }` answer a `DevampVoice` (see [Devamp](#devamp-ct-16)); they too are matched on cue and run and ignored when stale. `LoopReached`/`SliceEnded` are not inputs: the engine does not need them.
+- Feedback never concerns a Group or a running Fade cue (neither owns a voice); any naming one is ignored.
 
 ## Model edits
 
@@ -205,14 +276,17 @@ Each call compares the workspace with what the engine knows:
 - Changed times apply to **timers not yet started**: the pre-wait is fixed when the cue starts; the post-wait, a Wait duration and the continue mode (auto-follow) are fixed when the action starts. The next cue is looked up when the trigger fires.
 - Playheads follow edits as described above; double-GO reads `min_go_interval` at each GO.
 - **Running groups**: a deleted child is stopped like any deleted cue (if it was the group's last busy child, the group stops). A deleted group stops with all its descendants. A child added to a running timeline is not started (children start only when the action starts); a playlist plays it when it comes up (unshuffled) or from the next pass (shuffled). Reordering applies to children started later (see Playlist). A busy child moved out of its group keeps running on its own; a group left with no busy child by an edit (child moved out, mode changed) stops at once. A group's mode is read when its action starts and again whenever it acts (a playlist changed to another mode stops moving on and completes with its current child; loop and shuffle are read when it moves on or starts a pass; a child's continue is checked against the mode when it fires). A cue whose kind changes to or from Group while it runs is stopped.
+- **Control and Fade cues** read their target and settings when their action starts (a Fade's levels, curve and "stop target when done" are fixed then; its duration is fixed with its end).
+- **Arm/Disarm** changes the engine made (`SetArmed`) are honoured until the model shows them; at the start of each call, a change the model now shows (or whose cue is gone) is forgotten, and the model rules again.
 
 ## Warnings
 
-`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken`, `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`. They are structured so the UI can localise them.
+`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken`, `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`. They are structured so the UI can localise them.
 
 ## Not yet
 
-- **Groups**: playlist crossfades and per-group options beyond loop/shuffle; Devamp of a looping playlist (M2.5).
-- **Control cues** (M2.5: Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm), **Fade** (M2.6, which will enter `fading`) and **Network** cues (M4.6): their action completes at once with an `Unsupported` warning and does nothing; pre-wait, post-wait and continue mode apply. Wait and Memo are complete.
+- **Groups**: playlist crossfades and per-group options beyond loop/shuffle.
+- **Network** cues (M4.6): their action completes at once with an `Unsupported` warning and does nothing; pre-wait, post-wait and continue mode apply.
+- **Target** cues (CT-18) are not in v0.0.1; video fades (CT-10 video part) are v0.0.2.
 - **Panic / Pause All / Resume All** (M2.7), **static broken detection** (M2.8), **preview/audition** (CUE-05/PB-09).
 - **Priming**: `Loaded` means "loaded by an operation"; keeping cues near the playhead primed (ARCHITECTURE §3.5) is the binary's job (M4.2).
