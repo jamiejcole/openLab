@@ -428,7 +428,7 @@ fn pause_and_resume_of_unknown_or_unpaused_voices_are_ignored() {
 }
 
 #[test]
-fn resume_during_the_declick_fade_out_ramps_from_the_level_heard() {
+fn resume_during_the_declick_fade_out_never_jumps_the_gain() {
     let data = vec![1.0; 3000];
     let (mut ctl, mut r) = setup(config(1));
     start(&mut ctl, 0, 1, source(&data), 1);
@@ -691,4 +691,175 @@ fn long_pause_of_a_streamed_voice_resumes_without_underrun() {
     assert!(rest[43_000..].iter().all(|&s| s == 0.0));
     assert_eq!(ctl.underrun_frames(), 0);
     assert_eq!(events(&mut ctl), ended(2, total + 240_000));
+}
+
+// --- Review fixes -------------------------------------------------------------------------
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1e-6 * (1.0 + b.abs())
+}
+
+fn declick_out(j: u64, len: u64) -> f32 {
+    openlab_audio::ramp_value(1.0, 0.0, j + 1, len, Curve::Linear)
+}
+
+fn declick_in(j: u64) -> f32 {
+    openlab_audio::ramp_value(0.0, 1.0, j, D, Curve::Linear)
+}
+
+/// Review M3: the declick windows hold the frames after the pause point (not a repeated frame),
+/// at the frozen gains, across odd block splits.
+#[test]
+fn declick_windows_play_the_frames_after_the_pause_point() {
+    let data = ramp_signal(4000);
+    let scenario = |ctl: &mut MixerController| {
+        start(ctl, 0, 1, source(&data), 1);
+        ctl.send(0, master(1, 0.5, Fade::NONE));
+    };
+    let (p, r) = (1003u64, 2501u64);
+    let (mut ctl, mut rr) = setup(config(1));
+    scenario(&mut ctl);
+    let reference = render(&mut rr, 4000, BLOCKS);
+    for blocks in [&[1usize][..], &[3, 1, 7, 13], OTHER_BLOCKS] {
+        let (mut ctl, mut rr) = setup(config(1));
+        scenario(&mut ctl);
+        ctl.send(p, pause(1));
+        ctl.send(r, resume(1, 2));
+        let out = render(&mut rr, 4000 + (r - p) as usize, blocks);
+        assert_shifted(&out, &reference, p as usize, r as usize);
+        for j in 0..D {
+            let (o, w) = (out[(p + j) as usize], reference[(p + j) as usize]);
+            assert!(
+                close(o, w * declick_out(j, D)),
+                "tail frame {j}: {o} vs {w}"
+            );
+            let (o, w) = (out[(r + j) as usize], reference[(p + j) as usize]);
+            assert!(close(o, w * declick_in(j)), "fade-in frame {j}: {o} vs {w}");
+        }
+    }
+}
+
+/// Review M2: a resume during the declick fade-out crossfades from the tail (which keeps
+/// playing on from where it was) into the frame after the pause point, so the waveform never
+/// jumps.
+#[test]
+fn resume_mid_tail_crossfades_into_the_pause_point() {
+    let data = sine(6000, SR, 440.0, 0.8);
+    let natural = data
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    let (p, r) = (1000u64, 1020u64);
+    let (mut ctl, mut rr) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&data), 1);
+    let reference = render(&mut rr, 6000, BLOCKS);
+    for blocks in [&[1usize][..], BLOCKS, OTHER_BLOCKS] {
+        let (mut ctl, mut rr) = setup(config(1));
+        start(&mut ctl, 0, 1, source(&data), 1);
+        ctl.send(p, pause(1));
+        ctl.send(r, resume(1, 2));
+        let out = render(&mut rr, 6020, blocks);
+        let step = out[900..1400]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(step <= 1.5 * natural, "step {step} vs {natural}");
+        let lag = r - p;
+        for j in 0..D {
+            let tail = if lag + j < D {
+                reference[(p + lag + j) as usize] * declick_out(lag + j, D)
+            } else {
+                0.0
+            };
+            let want = reference[(p + j) as usize] * declick_in(j) + tail;
+            let o = out[(r + j) as usize];
+            assert!(
+                (o - want).abs() < 1e-5,
+                "crossfade frame {j}: {o} vs {want}"
+            );
+        }
+        assert_shifted(&out, &reference, p as usize, r as usize);
+    }
+}
+
+/// Review M4: a devamp accepted before the pause is rescheduled on resume, under the new id.
+#[test]
+fn devamp_before_a_pause_is_rescheduled_on_resume() {
+    let slices = plan(0..300, &[100], &[Plays::Infinite, Plays::Times(1)], 0).unwrap();
+    let ring: Vec<f32> = (0..20).flat_map(|_| (0..100).map(marker)).collect();
+    let (mut ctl, mut r) = setup(config(1));
+    let mut v = voice(&ctl, 1, source(&ring), 1);
+    v.slices = slices;
+    send_start(&mut ctl, 0, v);
+    ctl.send(
+        140,
+        CommandKind::Devamp {
+            voice: VoiceId(1),
+            stop: true,
+        },
+    );
+    ctl.send(150, pause(1));
+    ctl.send(1000, resume(1, 4));
+    render(&mut r, 1500, BLOCKS);
+    assert_eq!(
+        events(&mut ctl),
+        vec![
+            Event::LoopReached {
+                voice: VoiceId(1),
+                at: 100,
+                slice: 0,
+                count: 1
+            },
+            Event::DevampScheduled {
+                voice: VoiceId(1),
+                at: 200
+            },
+            Event::DevampScheduled {
+                voice: VoiceId(4),
+                at: 1050
+            },
+            Event::SliceEnded {
+                voice: VoiceId(4),
+                at: 1050,
+                slice: 0
+            },
+            finished(4, 1050, FinishReason::OutPoint),
+        ]
+    );
+}
+
+/// Review M1: a resume dated before its pause applies is for a voice that is not paused yet, so
+/// it is ignored and the voice stays paused (the engine must date it at or after the pause).
+#[test]
+fn resume_dated_before_its_pause_is_ignored() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 100, 1, source(&vec![0.5; 1000]), 1);
+    ctl.send(100, pause(1));
+    ctl.send(97, resume(1, 2));
+    let out = render(&mut r, 3000, BLOCKS);
+    assert!(out.iter().all(|&s| s == 0.0));
+    assert!(events(&mut ctl).is_empty());
+    // Still paused under its old id: a correctly dated resume plays it.
+    ctl.send(3000, resume(1, 2));
+    let out = render(&mut r, 2000, BLOCKS);
+    assert!(out[D as usize..1000].iter().all(|&s| s == 0.5));
+    assert_eq!(
+        events(&mut ctl),
+        vec![finished(2, 4000, FinishReason::EndOfStream)]
+    );
+}
+
+/// Review L1: with fewer than D frames to peek, the declick still reaches silence on the last.
+#[test]
+fn short_tail_reaches_silence_on_the_last_peekable_frame() {
+    let (_tx, rx) = open_source(2000, &vec![1.0; 1100]);
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, rx, 1);
+    ctl.send(1000, pause(1));
+    let out = render(&mut r, 1400, BLOCKS);
+    for j in 0..100 {
+        assert_eq!(out[1000 + j], declick_out(j as u64, 100), "frame {j}");
+    }
+    assert!(out[1100..].iter().all(|&s| s == 0.0));
+    assert_eq!(events(&mut ctl), vec![]);
 }
