@@ -933,7 +933,13 @@ impl Decoder {
                 *x = sanitize_sample(*x);
             }
             let front = trim_start.min(n);
-            let back = trim_end.min(n - front);
+            let mut back = trim_end.min(n - front);
+            // A packet is at most its container duration, whether or not it decodes (a failed
+            // one is silence of `dur`), so the timeline never depends on decoder state. This
+            // also drops an AAC stream's padding past its container length.
+            if dur > 0 && n - front - back > dur {
+                back = n - front - dur;
+            }
             self.buf.truncate((n - back) * self.channels);
             self.buf_pos = front * self.channels;
             return Ok(Some(pos_of(front)));

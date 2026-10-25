@@ -406,6 +406,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// seed corpus so the fuzzer does not stop on findings that are contained but not fixed upstream).
 /// `alac-short-index.m4a`: the MP4 index declares fewer frames than decode; seeking past the
 /// declared length was refused by the container and taken for end of file.
+/// `aac-damaged-tail.m4a`: damaged AAC packets decode or fail depending on decoder history, so
+/// a seek and a straight read ended at different lengths (a packet now counts its container
+/// duration either way).
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
 /// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
 /// count (a panic with overflow checks on, as here); contained as a typed error.
@@ -491,18 +494,23 @@ fn preload_is_bounded_by_its_budget() {
         "{:?}",
         r.map(|p| p.info())
     );
-    // Expanding stream: this MP4 declares 22050 frames (176400 bytes) but decodes 24576
-    // (196608 bytes); the decoded length is checked as it grows.
-    let finding =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/alac-short-index.m4a");
-    let r = preload_within(Media::Path(finding.clone()), 180_000);
+    // Growing past the budget while decoding: this damaged Ogg file has no declared length
+    // (the damage defeats symphonia's length scan), so only the decoded length can be checked.
+    let mut ogg = std::fs::read(fixture("tone-4s.ogg")).unwrap();
+    for x in &mut ogg[14_517..14_533] {
+        *x ^= 0x5a;
+    }
+    let media = || Media::Reader(Box::new(Cursor::new(ogg.clone())), Some("ogg".into()));
+    let frames = probe_media(media()).unwrap().info.frames;
+    let need = frames * 2 * 4;
+    let r = preload_within(media(), need - 1);
     assert!(
-        matches!(r, Err(MediaError::TooLarge { limit: 180_000, bytes }) if bytes > 180_000),
+        matches!(r, Err(MediaError::TooLarge { limit, bytes }) if limit == need - 1 && bytes > limit),
         "{:?}",
         r.map(|p| p.info())
     );
     // At the budget it fits, with no slack beyond the samples.
-    let p = preload_within(Media::Path(finding), 196_608).unwrap();
-    assert_eq!(p.bytes(), 196_608);
+    let p = preload_within(media(), need).unwrap();
+    assert_eq!(p.bytes() as u64, need);
     assert_eq!(openlab_audio::DEFAULT_PRELOAD_BUDGET, 512 << 20);
 }
