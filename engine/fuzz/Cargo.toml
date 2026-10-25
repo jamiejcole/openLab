@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-openlab-audio = { path = "../crates/audio" }
+openlab-audio = { path = "../crates/audio", default-features = false }
 openlab-core = { path = "../crates/core" }
 
 # Kept out of the engine workspace: it needs nightly and sanitizer flags.
