@@ -173,6 +173,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 ## 9. macOS app (Swift + AppKit)
 
 - **Swift 6, AppKit only, deployment target macOS 12.0.** No SwiftUI (immature tables/outlines on 12), no Observation framework (macOS 14+). Use Combine and delegates. The compiler's availability checking against 12.0 is the guard for Monterey.
+- **UI built in code** — no storyboards or XIBs (main menu included). Keeps diffs reviewable and avoids XML merge conflicts.
 - **No third-party Swift dependencies** without orchestrator approval. `URLSessionWebSocketTask` for the socket, `Codable` for messages.
 - **Structure**: `EngineClient` (socket, reconnect, message codec) → `WorkspaceStore` (mirrored model + runtime state, publishes changes) → AppKit view controllers. View controllers never talk to the socket directly.
 - **Main window layout follows QLab 5** (UI-07): toolbar and GO/standby area on top, cue list (`NSOutlineView`, view-based, cell reuse for ≥ 2,000 cues) in the centre, sidebar (cue lists, active cues, warnings), tabbed inspector at the bottom. Dark appearance by default.
