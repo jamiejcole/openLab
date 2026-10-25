@@ -102,7 +102,6 @@ fn top_up(tx: &mut Producer<f32>, src: &[f32], pos: &mut usize) {
 
 /// One playing voice instance: its feed and the frame it started and ends at.
 struct Live {
-    id: VoiceId,
     start: u64,
     end: u64,
     life: u64,
@@ -112,7 +111,6 @@ struct Live {
 
 /// Starts voice instances and keeps 64 slots occupied by replacing each voice as it ends.
 struct Workload {
-    feed: Feed,
     streamer: Option<DiskStreamer>,
     shared: Option<std::sync::Arc<openlab_audio::Preloaded>>,
     next_id: u64,
@@ -136,7 +134,6 @@ impl Workload {
             Feed::Rings => (None, None),
         };
         Self {
-            feed,
             streamer,
             shared,
             next_id: 0,
@@ -201,7 +198,6 @@ impl Workload {
         self.slot_voice[slot] = vid;
         self.slot_end[slot] = at + life;
         self.live.push(Live {
-            id: vid,
             start: at,
             end: at + life,
             life,
