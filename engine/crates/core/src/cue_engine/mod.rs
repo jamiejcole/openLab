@@ -598,6 +598,11 @@ impl CueEngine {
             Some(Slot::Broken(_)) | None => false,
         };
         if current {
+            // Silence and free the failed run now: a broken cue owns no voice, so nothing can
+            // keep sounding after it (a failed stream still plays out its ring otherwise).
+            if let Some(old) = self.slots.remove(&cue) {
+                release(cue, &old, cx);
+            }
             self.slots.insert(cue, Slot::Broken(reason));
             self.report(cue, before, cx.now, cx);
         }

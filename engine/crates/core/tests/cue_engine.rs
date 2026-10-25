@@ -1530,13 +1530,14 @@ fn event_fade_out_completes() {
 
 #[test]
 fn event_failure_breaks_every_running_state() {
-    for from in [
-        Setup::Loaded,
-        Setup::PreWaiting,
-        Setup::Running,
-        Setup::Paused,
-        Setup::PostWaiting,
-        Setup::Stopping,
+    // The failed run's voice is released at once, so nothing can keep sounding (review H1).
+    for (from, voice) in [
+        (Setup::Loaded, V::Unload),
+        (Setup::PreWaiting, V::Nothing),
+        (Setup::Running, V::Stop),
+        (Setup::Paused, V::Stop),
+        (Setup::PostWaiting, V::Nothing),
+        (Setup::Stopping, V::Stop),
     ] {
         let mut rig = table_rig(from);
         let run = rig.engine.run_of(id(1)).unwrap();
@@ -1553,6 +1554,7 @@ fn event_failure_breaks_every_running_state() {
             vec![(CueState::Broken, 2200)],
             "{from:?}"
         );
+        assert_eq!(voice_kinds(&failed), expected_voice(voice), "{from:?}");
         assert!(rig.tick(100_000).is_empty(), "{from:?}");
         assert_eq!(rig.state(2), CueState::Idle, "{from:?}");
     }
@@ -1578,4 +1580,64 @@ fn resume_with_a_clock_that_went_back_resumes_where_it_paused() {
         at: 100,
         offset: 5000
     }));
+}
+
+#[test]
+fn failed_running_voice_is_stopped_and_stop_reset_stay_safe() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    let run = rig.engine.run_of(id(1)).unwrap();
+    let failed = rig.at(
+        100,
+        Input::ActionFailed {
+            cue: id(1),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    assert_eq!(voice_kinds(&failed), vec![V::Stop]);
+    assert!(failed.contains(&Action::StopVoice {
+        cue: id(1),
+        run,
+        at: 100,
+        fade: None
+    }));
+    // The voice is gone; Stop and Reset have nothing left to silence and do not panic.
+    assert!(
+        rig.at(
+            110,
+            Input::Stop {
+                cue: id(1),
+                fade_out: None
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        changes(&rig.at(120, Input::Reset { cue: id(1) }), 1),
+        vec![(CueState::Idle, 120)]
+    );
+}
+
+#[test]
+fn failed_paused_voice_is_stopped() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    rig.at(100, Input::Pause { cue: id(1) });
+    let run = rig.engine.run_of(id(1)).unwrap();
+    let failed = rig.at(
+        110,
+        Input::ActionFailed {
+            cue: id(1),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    assert!(failed.contains(&Action::StopVoice {
+        cue: id(1),
+        run,
+        at: 110,
+        fade: None
+    }));
+    assert_eq!(rig.state(1), CueState::Broken);
 }
