@@ -6,6 +6,21 @@
 
 #![forbid(unsafe_code)]
 
+mod command;
+mod cue;
+mod history;
+mod model;
+mod show_file;
+mod tree;
+mod validate;
+
+pub use command::*;
+pub use cue::*;
+pub use history::*;
+pub use model::*;
+pub use show_file::*;
+pub use validate::*;
+
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

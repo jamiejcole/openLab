@@ -1,0 +1,53 @@
+{
+  "format_version": 0,
+  "workspace": {
+    "id": "0b5e0000-0000-4000-8000-000000000000",
+    "name": "Old Show",
+    "settings": {
+      "min_go_interval": 0.0,
+      "panic_duration": 5.0,
+      "autosave_interval": 30.0,
+      "osc_passcode": null,
+      "master_db": 0.0,
+      "hotkeys": {
+        "go": null,
+        "stop_all": null,
+        "pause_all": null,
+        "resume_all": null,
+        "playhead_next": null,
+        "playhead_previous": null
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 1.0
+    },
+    "patches": [],
+    "network_patches": [],
+    "lists": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "number": "1",
+            "name": "Welcome",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "kind": {
+              "type": "memo"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
