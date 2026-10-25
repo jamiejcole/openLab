@@ -8,3 +8,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+rtrb = "0.4.0"
+
+[dev-dependencies]
+# Count violations instead of aborting so a failing test names itself, in debug and release.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
+proptest = "1.12.0"
