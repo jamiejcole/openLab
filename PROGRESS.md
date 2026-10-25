@@ -12,7 +12,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [x] M0.1 Cargo workspace with `core`, `audio`, `engine` crates; lints per ARCHITECTURE §10; SPDX headers [NFR-41, NFR-42]
 - [x] M0.2 `mac/` XcodeGen project (AppKit app, unit + UI test targets, macOS 12.0 target), engine build phase producing a universal binary [NFR-30]
 - [x] M0.3 Makefile (`lint`, `test`, `test-rust`, `mac`, `dmg`) [NFR-43]
-- [ ] M0.4 CI: Rust fmt/clippy/test on macOS arm64, macOS Intel, Windows; `cargo deny`; mac build + tests; pinned Xcode [QA-07, NFR-31, NFR-42] — workflow written; tick after its first green run on GitHub
+- [x] M0.4 CI: Rust fmt/clippy/test on macOS arm64, macOS Intel, Windows; `cargo deny`; mac build + tests; pinned Xcode [QA-07, NFR-31, NFR-42]
 - [x] M0.5 LICENSE (GPLv3), `.gitignore`, README with build instructions [NFR-42, NFR-43]
 
 ## M1 — Core model & show file (`openlab-core`, persistence in `engine`)
@@ -80,6 +80,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [ ] M5.14 Warnings panel, log view, status display, relink missing media [DX-01, DX-02, DX-03, WS-03]
 - [ ] M5.15 UI scaling, `Localizable.strings`, VoiceOver basics on list + transport [UI-03, UI-06]
 - [ ] M5.16 XCUITest end-to-end flows against a real headless engine [QA-01]
+- [ ] M5.17 Reopen main window after close (Dock click / Window menu) [NFR-01 operator safety] — from M0 review (L6)
 
 ## M6 — Release v0.0.1
 - [ ] M6.1 Universal `.app` with embedded engine, ad-hoc signed, `.dmg` script, version stamping [DST-01, DST-03, NFR-30]
