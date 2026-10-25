@@ -58,14 +58,22 @@ jobs:
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-24.04
+    env:
+      # Pinned so a nightly regression cannot fail unrelated pushes; bump deliberately.
+      FUZZ_TOOLCHAIN: nightly-2026-10-15
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install nightly --profile minimal
+      - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine/fuzz
       - run: cargo install cargo-fuzz --locked
-      - run: make fuzz FUZZ_TIME=60
+      - run: make fuzz FUZZ_TIME=60 FUZZ_TOOLCHAIN="$FUZZ_TOOLCHAIN"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: engine/fuzz/artifacts/
 
   mac:
     name: macOS app
