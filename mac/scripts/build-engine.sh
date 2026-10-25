@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Xcode's PATH does not include rustup's proxies.
-export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 export MACOSX_DEPLOYMENT_TARGET=12.0
 
 cd "$SRCROOT/../engine"
@@ -25,4 +25,4 @@ else
 fi
 
 # Xcode signs the bundle but not this nested binary, and the linker only ad-hoc signs the arm64 slice.
-codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$dest/openlab-engine"
+codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --identifier dev.openlab.openlab-engine "$dest/openlab-engine"
