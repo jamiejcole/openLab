@@ -66,7 +66,13 @@ fn scan_walks_nested_folders_in_stable_order() {
     let rel: Vec<_> = scan
         .files
         .iter()
-        .map(|p| p.strip_prefix(&root).unwrap().to_str().unwrap().to_owned())
+        .map(|p| {
+            p.strip_prefix(&root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/")
+        })
         .collect();
     assert_eq!(
         rel,
@@ -223,7 +229,10 @@ fn find_in_folder_proposes_relinks_and_undo_restores() {
         outside_found.plan.matches,
         vec![Relink {
             cue: cues[1],
-            new: MediaRef::new(abs.to_str().unwrap())
+            new: MediaRef::new(openlab_core::to_portable(
+                abs.to_str().unwrap(),
+                openlab_core::PathStyle::host()
+            ))
         }]
     );
 
