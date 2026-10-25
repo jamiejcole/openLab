@@ -97,8 +97,8 @@ cue, and the cue shows as broken where it cannot run.
 | A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
-Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue; every
-other targeting cue may target any cue except itself.
+Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
+Playlist group; every other targeting cue may target any cue except itself.
 
 ## 4. The workspace
 

@@ -2,12 +2,19 @@
 
 //! A cue's runtime: its timers and action progress, kept as absolute sample deadlines.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::cue::FadeCurve;
 use crate::model::CueId;
 
+use super::level::{Level, LevelParam};
 use super::time::SampleTime;
 use super::types::{BrokenReason, CueState, RunId};
 
 /// Runtime of a cue that is not idle. Idle cues have no slot.
+// Runs live in one ordered map with an entry per non-idle cue; boxing them would add an
+// allocation per start for no gain.
+#[expect(clippy::large_enum_variant, reason = "few slots, one per non-idle cue")]
 #[derive(Clone, Debug)]
 pub(super) enum Slot {
     Loaded(Loaded),
@@ -79,11 +86,56 @@ pub(super) struct Run {
     pub paused_at: Option<SampleTime>,
     /// Stopping with a fade-out that ends on this sample.
     pub stop_end: Option<SampleTime>,
+    /// The latest sample a command for this run's voice was sent for. Commands in the lookahead
+    /// window are committed, so a later command for the voice is never dated before it.
+    pub committed: SampleTime,
     /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
     /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
     /// Set for Group cues: how the group runs its children.
     pub group: Option<GroupRun>,
+    /// Audio cues: the gains Fade cues have set or are moving (the model's levels apply to the
+    /// rest). They belong to this run and go with it.
+    pub levels: BTreeMap<LevelParam, Level>,
+    /// Audio cues: the Fade cues whose ramps are moving its levels now (it reports `fading`).
+    pub faders: BTreeSet<CueId>,
+    /// Audio cues: a devamp sent for its voice and not yet carried out.
+    pub devamp: Option<DevampWait>,
+    /// Fade cues, from their action start: what the fade is doing.
+    pub fade: Option<FadeRun>,
+}
+
+/// A devamp sent to a cue's voice by a Devamp cue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DevampWait {
+    /// The Devamp cue.
+    pub by: CueId,
+    /// Start the cue after the Devamp cue when the loop is left.
+    pub start_next: bool,
+    /// End the voice there ("stop target when slice ends").
+    pub stop: bool,
+    /// Where the voice leaves the loop, once the audio side has said (`DevampScheduled`).
+    pub at: Option<SampleTime>,
+}
+
+/// One gain a Fade cue ramps: on `cue`'s run `seq`, towards `gain`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FadeRamp {
+    pub cue: CueId,
+    pub seq: u64,
+    pub param: LevelParam,
+    pub gain: f32,
+}
+
+/// A Fade cue's part of its run.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct FadeRun {
+    pub ramps: Vec<FadeRamp>,
+    /// The audio cues (and runs) it fades.
+    pub targets: Vec<(CueId, u64)>,
+    /// Stop this cue (the Fade's target) when the fade completes.
+    pub stop_target: Option<CueId>,
+    pub curve: FadeCurve,
 }
 
 /// How a cue's runtime ended, as its group sees it.
@@ -108,6 +160,9 @@ pub(super) struct GroupRun {
     pub stopping: bool,
     /// A child broke during this run, so the group does not auto-follow.
     pub failed: bool,
+    /// A Devamp cue asked this playlist to finish its current child and then complete: the
+    /// Devamp cue, and whether it starts the cue after it then.
+    pub devamp: Option<(CueId, bool)>,
     /// How the last busy child left while the group was paused; the group ends on resume.
     pub pending: Option<Exit>,
     /// A playlist's current child completed or broke while the group was paused (its report
@@ -133,6 +188,28 @@ pub(super) struct PlaylistRun {
 }
 
 impl Run {
+    /// A run in `phase` with nothing else pending.
+    pub fn new(run: RunId, seq: u64, phase: Phase, group: Option<GroupRun>) -> Self {
+        Self {
+            run,
+            seq,
+            phase,
+            action_offset: 0,
+            post_wait: None,
+            follow: false,
+            voice: Voice::None,
+            paused_at: None,
+            stop_end: None,
+            committed: 0,
+            broken: None,
+            group,
+            levels: BTreeMap::new(),
+            faders: BTreeSet::new(),
+            devamp: None,
+            fade: None,
+        }
+    }
+
     pub fn state(&self) -> CueState {
         if self.broken.is_some() {
             CueState::Broken
@@ -140,6 +217,8 @@ impl Run {
             CueState::Paused
         } else if self.stop_end.is_some() || self.is_group_stopping() {
             CueState::Stopping
+        } else if !self.faders.is_empty() && matches!(self.phase, Phase::Action { .. }) {
+            CueState::Fading
         } else {
             match self.phase {
                 Phase::PreWait { .. } => CueState::PreWaiting,
@@ -167,7 +246,8 @@ impl Run {
             Phase::Action { end, .. } => end,
             Phase::Done => None,
         };
-        [phase, self.post_wait].into_iter().flatten().min()
+        let devamp = self.devamp.and_then(|d| d.at);
+        [phase, self.post_wait, devamp].into_iter().flatten().min()
     }
 
     /// Nothing left to do: the action is complete and no post-wait or fade-out is pending.
@@ -182,6 +262,20 @@ impl Run {
             Voice::Started { at: started, from } => from.saturating_add(at.saturating_sub(started)),
             Voice::None | Voice::Loaded => self.action_offset,
         }
+    }
+
+    /// The earliest sample a new command for the voice may be dated on, for a call that commits
+    /// up to `horizon`. A committed sample beyond the horizon can only come from a clock that went
+    /// back (device restart); it is then ignored, as double-GO ignores such a GO.
+    pub fn floor(&self, horizon: SampleTime) -> SampleTime {
+        after_restart(self.committed, horizon)
+    }
+
+    /// Dates a command for this run's voice: no earlier than `at` nor than any command already
+    /// committed for it (see `floor`).
+    pub fn commit(&mut self, at: SampleTime, horizon: SampleTime) -> SampleTime {
+        self.committed = at.max(self.floor(horizon));
+        self.committed
     }
 
     /// Moves every pending deadline `by` samples later (resume after a pause).
@@ -199,5 +293,13 @@ impl Run {
         };
         self.post_wait = self.post_wait.map(later);
         self.stop_end = self.stop_end.map(later);
+        if let Some(d) = self.devamp.as_mut() {
+            d.at = d.at.map(later);
+        }
     }
+}
+
+/// `t` if a call that commits up to `horizon` can have committed it, else 0 (the clock went back).
+pub(super) fn after_restart(t: SampleTime, horizon: SampleTime) -> SampleTime {
+    if t <= horizon { t } else { 0 }
 }
