@@ -294,8 +294,9 @@ impl MixerController {
     /// with its last non-zero peaks under its old id. Peaks are never reported under another
     /// voice's id; they are dropped for a voice this reader never saw (it started and ended
     /// between two reads) and for the earlier voice when its slot changed hands twice between
-    /// two reads. Slots whose entries do not fit are left for the next read; size `ids` to
-    /// [`MixerController::voice_meter_capacity`] to read all at once.
+    /// two reads. Slots whose entries do not fit are left for the next read, which starts at
+    /// the first of them; size `ids` to [`MixerController::voice_meter_capacity`] to read all at
+    /// once.
     /// Never blocks the audio thread; allocates nothing.
     pub fn read_voice_meters_into(&mut self, ids: &mut [VoiceId], peaks: &mut [f32]) -> usize {
         self.meters.read_voices(ids, peaks)

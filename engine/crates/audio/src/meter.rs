@@ -173,6 +173,8 @@ pub(crate) struct MeterReader {
     raw: Vec<[u64; 2]>,
     cur: Vec<f32>,
     prev: Vec<f32>,
+    /// Slot the next voice read starts at.
+    cursor: usize,
 }
 
 impl MeterReader {
@@ -184,6 +186,7 @@ impl MeterReader {
             raw: vec![[0; 2]; outs],
             cur: vec![0.0; outs],
             prev: vec![0.0; outs],
+            cursor: 0,
             shared,
         }
     }
@@ -207,32 +210,60 @@ impl MeterReader {
 
     /// See [`crate::MixerController::read_voice_meters_into`].
     pub(crate) fn read_voices(&mut self, ids: &mut [VoiceId], peaks: &mut [f32]) -> usize {
+        self.read_voices_with(ids, peaks, |_| {})
+    }
+
+    /// [`MeterReader::read_voices`], calling `between(slot)` after a slot's peak words are taken
+    /// and before its identity is read again: tests force the audio thread's interleavings there.
+    fn read_voices_with(
+        &mut self,
+        ids: &mut [VoiceId],
+        peaks: &mut [f32],
+        mut between: impl FnMut(usize),
+    ) -> usize {
         let MeterReader {
             shared,
             seen,
             raw,
             cur,
             prev,
+            cursor,
         } = self;
         let m = &shared.meters;
-        let outs = m.cue_outputs;
-        if outs == 0 {
+        let (outs, slots) = (m.cue_outputs, seen.len());
+        if outs == 0 || slots == 0 {
             return 0;
         }
         let cap = ids.len().min(peaks.len() / outs);
         let mut n = 0;
-        for (slot, last) in seen.iter_mut().enumerate() {
-            let row = m.voices.iter().skip(slot * outs).take(outs);
-            for (r, w) in raw.iter_mut().zip(row.clone()) {
-                *r = [
-                    w.live.swap(0, Ordering::Acquire),
-                    w.retired.swap(0, Ordering::Acquire),
-                ];
-            }
-            let Some(now) = m.ident(slot) else {
-                restore(row, raw);
+        // Starts where the last read stopped, so a short buffer serves every slot in turn.
+        let first = *cursor % slots;
+        for slot in (first..slots).chain(0..first) {
+            let Some(last) = seen.get_mut(slot) else {
                 continue;
             };
+            let Some(before) = m.ident(slot) else {
+                continue;
+            };
+            // A prior voice's entry is possible only if the slot changed hands since last time.
+            let need = 1 + usize::from(last.epoch != 0 && last.epoch != before.epoch);
+            if n + need > cap {
+                *cursor = slot;
+                return n;
+            }
+            let row = m.voices.iter().skip(slot * outs).take(outs);
+            for (r, w) in raw.iter_mut().zip(row.clone()) {
+                *r = [take(&w.live), take(&w.retired)];
+            }
+            between(slot);
+            // The identity must not have changed while the words were taken: a voice may have
+            // ended, been retired and replaced in between, and its last peaks would then be
+            // classified against the wrong epochs. Put everything back and try next time.
+            if m.ident(slot) != Some(before) {
+                restore(row, raw);
+                continue;
+            }
+            let now = before;
             let (mut any_cur, mut any_prev) = (false, false);
             for ((r, c), p) in raw.iter().zip(cur.iter_mut()).zip(prev.iter_mut()) {
                 *c = 0.0;
@@ -252,11 +283,6 @@ impl MeterReader {
             }
             let want_prev = any_prev && last.epoch != now.epoch;
             let want_cur = now.active || any_cur;
-            let need = usize::from(want_prev) + usize::from(want_cur);
-            if n + need > cap {
-                restore(row, raw);
-                break;
-            }
             for (want, id, vals) in [(want_prev, last.id, &*prev), (want_cur, now.id, &*cur)] {
                 if !want {
                     continue;
@@ -271,18 +297,28 @@ impl MeterReader {
             }
             *last = now;
         }
+        *cursor = first;
         n
     }
 }
 
-/// Puts swapped-out peaks back (a newer voice's peak, if one arrived meanwhile, wins).
+/// Takes a peak word, touching the cache line for writing only when it holds something.
+fn take(w: &AtomicU64) -> u64 {
+    if w.load(Ordering::Relaxed) == 0 {
+        0
+    } else {
+        w.swap(0, Ordering::Acquire)
+    }
+}
+
+/// Puts taken peak words back after the slot changed identity mid-read. Everything goes to
+/// `retired`: the audio thread may already have retired the epoch they carry, and a value put
+/// back into `live` would then be overwritten by the next epoch's first peak. The reader looks
+/// at both words alike, so a current-epoch value there is still reported under its id.
 fn restore<'a>(row: impl Iterator<Item = &'a Word>, raw: &[[u64; 2]]) {
-    for (w, [live, retired]) in row.zip(raw) {
-        if *live != 0 {
-            w.live.fetch_max(*live, Ordering::AcqRel);
-        }
-        if *retired != 0 {
-            w.retired.fetch_max(*retired, Ordering::AcqRel);
+    for (w, r) in row.zip(raw) {
+        for x in r.iter().filter(|x| **x != 0) {
+            w.retired.fetch_max(*x, Ordering::AcqRel);
         }
     }
 }
@@ -372,8 +408,85 @@ mod tests {
         assert_eq!(r.read_voices(&mut ids, &mut peaks), 1);
         assert_eq!((ids[0], peaks[0]), (VoiceId(1), 0.25));
         let (mut ids, mut peaks) = ([VoiceId(0); 2], [0.0; 2]);
+        // The next read starts where the last one stopped.
         assert_eq!(r.read_voices(&mut ids, &mut peaks), 2);
-        assert_eq!(&ids, &[VoiceId(1), VoiceId(2)]);
-        assert_eq!(&peaks, &[0.0, 0.75]);
+        assert_eq!(&ids, &[VoiceId(2), VoiceId(1)]);
+        assert_eq!(&peaks, &[0.75, 0.0]);
+    }
+
+    fn meters(slots: usize) -> (Arc<Shared>, MeterReader) {
+        let shared = Arc::new(Shared {
+            meters: Meters::new(1, slots, 1),
+            ..Shared::default()
+        });
+        let r = MeterReader::new(Arc::clone(&shared));
+        (shared, r)
+    }
+
+    fn read(r: &mut MeterReader, between: impl FnMut(usize)) -> Vec<(u64, f32)> {
+        let mut ids = vec![VoiceId(0); r.capacity()];
+        let mut peaks = vec![0.0; r.capacity()];
+        let n = r.read_voices_with(&mut ids, &mut peaks, between);
+        ids.iter()
+            .zip(&peaks)
+            .take(n)
+            .map(|(i, p)| (i.0, *p))
+            .collect()
+    }
+
+    /// The audio thread, as `Voice::finish` then `Voice::begin` drive it.
+    fn end_and_reuse(m: &Meters, last_peak: f32, new: u64, new_peak: f32) {
+        m.flush_voice(0, 1, &mut [last_peak]);
+        m.assign(0, VoiceId(1), 1, false);
+        m.retire(0);
+        m.assign(0, VoiceId(new), 2, true);
+        m.flush_voice(0, 2, &mut [new_peak]);
+    }
+
+    #[test]
+    fn a_voice_ended_and_replaced_mid_read_still_reports_its_last_peak_once() {
+        let (shared, mut r) = meters(1);
+        let m = &shared.meters;
+        m.assign(0, VoiceId(1), 1, true);
+        m.flush_voice(0, 1, &mut [0.25]);
+        assert_eq!(read(&mut r, |_| {}), vec![(1, 0.25)]);
+        m.flush_voice(0, 1, &mut [0.5]);
+        // The reader takes the words, then the voice ends and its slot is reused.
+        assert_eq!(read(&mut r, |_| end_and_reuse(m, 0.75, 2, 0.125)), vec![]);
+        assert_eq!(read(&mut r, |_| {}), vec![(1, 0.75), (2, 0.125)]);
+        assert_eq!(read(&mut r, |_| {}), vec![(2, 0.0)]);
+    }
+
+    #[test]
+    fn a_voice_rekeyed_mid_read_reports_under_each_id_once() {
+        let (shared, mut r) = meters(1);
+        let m = &shared.meters;
+        m.assign(0, VoiceId(1), 1, true);
+        assert_eq!(read(&mut r, |_| {}), vec![(1, 0.0)]);
+        m.flush_voice(0, 1, &mut [0.5]);
+        let rekey = |_| {
+            m.flush_voice(0, 1, &mut [0.25]);
+            m.retire(0);
+            m.assign(0, VoiceId(7), 2, true);
+            m.flush_voice(0, 2, &mut [0.375]);
+        };
+        assert_eq!(read(&mut r, rekey), vec![]);
+        assert_eq!(read(&mut r, |_| {}), vec![(1, 0.5), (7, 0.375)]);
+        assert_eq!(read(&mut r, |_| {}), vec![(7, 0.0)]);
+    }
+
+    #[test]
+    fn a_voice_ending_mid_read_is_reported_once() {
+        let (shared, mut r) = meters(1);
+        let m = &shared.meters;
+        m.assign(0, VoiceId(1), 1, true);
+        m.flush_voice(0, 1, &mut [0.5]);
+        let end = |_| {
+            m.flush_voice(0, 1, &mut [0.25]);
+            m.assign(0, VoiceId(1), 1, false);
+        };
+        assert_eq!(read(&mut r, end), vec![]);
+        assert_eq!(read(&mut r, |_| {}), vec![(1, 0.5)]);
+        assert_eq!(read(&mut r, |_| {}), vec![]);
     }
 }

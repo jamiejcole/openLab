@@ -443,7 +443,9 @@ fn xruns_are_counted_exactly_and_never_from_voice_underruns() {
 }
 
 /// Reads racing the audio thread never attribute a peak to the wrong voice: every voice plays a
-/// level unique to its id, through a small pool reused constantly.
+/// level unique to its id, through a small pool reused constantly. Limits: on x86 (TSO) this
+/// cannot catch a missing memory-ordering constraint, and it does not force the identity retry
+/// paths; the unit tests in `meter.rs` force those interleavings step by step.
 #[test]
 fn concurrent_reads_never_misattribute_a_peak() {
     let level = |id: u64| ((id % 251) + 1) as f32 / 512.0;
@@ -484,4 +486,34 @@ fn concurrent_reads_never_misattribute_a_peak() {
     }
     audio.join().unwrap();
     assert!(reported > 0);
+}
+
+#[test]
+fn a_short_buffer_serves_every_voice_in_turn() {
+    let (mut ctl, mut r) = setup(config(1));
+    for id in 0..4u64 {
+        start(
+            &mut ctl,
+            0,
+            id,
+            source(&dc(0.125 * (id + 1) as f32, 20_000)),
+            1,
+        );
+    }
+    render(&mut r, 100, &[]);
+    let (mut ids, mut peaks) = ([VoiceId(0); 3], [0.0; 3]);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let n = ctl.read_voice_meters_into(&mut ids, &mut peaks);
+        assert_eq!(n, 3);
+        seen.extend(ids.iter().zip(peaks).map(|(i, p)| (i.0, p)));
+    }
+    // Each read picks up where the last one stopped: 3 × 4 entries cover all voices 3 times.
+    for id in 0..4u64 {
+        let got: Vec<_> = seen.iter().filter(|e| e.0 == id).collect();
+        assert_eq!(got.len(), 3, "voice {id}: {seen:?}");
+        // Its first entry carries the peak; later ones what came after (nothing rendered).
+        assert_eq!(got[0].1, 0.125 * (id + 1) as f32);
+        assert!(got[1..].iter().all(|e| e.1 == 0.0));
+    }
 }
