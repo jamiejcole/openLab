@@ -1329,6 +1329,9 @@ struct Scratch {
     master: Vec<f32>,
     /// One voice's contribution to one cue output, for its meter.
     acc: Vec<f32>,
+    /// Frames summed into `acc` (what metering costs per sample).
+    #[cfg(test)]
+    metered: u64,
 }
 
 /// One output patch: a cue output → device output matrix and its cue-output bus.
@@ -1456,6 +1459,8 @@ impl Mixer {
                 tmp: vec![0.0; block],
                 master: vec![0.0; block],
                 acc: vec![0.0; block],
+                #[cfg(test)]
+                metered: 0,
             },
             #[cfg(test)]
             panic_next: false,
@@ -1490,7 +1495,9 @@ impl Mixer {
         let start = self.now;
         let ok = catch_unwind(AssertUnwindSafe(|| self.process(out, frames))).is_ok();
         if !ok {
-            // The faulted block was never heard: its partial peaks are not reported.
+            // Peaks still held locally from the faulted call are dropped (its output was
+            // replaced with silence). A voice that finished earlier in that call has already
+            // published its own.
             self.out_peak.fill(0.0);
             self.voices.iter_mut().for_each(|v| v.meter.fill(0.0));
             out.fill(0.0);
@@ -1958,6 +1965,10 @@ fn render_voice(
         if let Some(m) = meter.get_mut(o) {
             acc.iter().for_each(|y| track(m, *y));
         }
+        #[cfg(test)]
+        {
+            s.metered += acc.len() as u64;
+        }
     }
     v.fresh = false;
 
@@ -2029,6 +2040,11 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter().enumerate() {
         let co = co.current();
+        // As in `render_voice`: an output nothing reaches costs nothing (Pause All on many
+        // voices × outputs renders every tail in one block).
+        if co == 0.0 || (0..ch).all(|i| xp.get(i * outs + o).is_none_or(|x| x.current() == 0.0)) {
+            continue;
+        }
         let Some(bo) = bus.get_mut(o * block..o * block + got) else {
             continue;
         };
@@ -2049,6 +2065,10 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         }
         if let Some(m) = meter.get_mut(o) {
             acc.iter().for_each(|y| track(m, *y));
+        }
+        #[cfg(test)]
+        {
+            s.metered += acc.len() as u64;
         }
     }
     if let Some(p) = v.paused.as_mut() {
@@ -2131,6 +2151,41 @@ mod tests {
         assert!(r.mixer_mut().process_guarded(&mut buf, 64));
         assert!(buf.iter().all(|s| *s == 0.5));
         assert_eq!(ctl.faults(), 1);
+    }
+
+    #[test]
+    fn a_pause_tail_meters_only_the_outputs_it_reaches() {
+        let cfg = MixerConfig {
+            output_channels: 8,
+            ..MixerConfig::default()
+        };
+        let (mut ctl, mixer) = Mixer::new(cfg).unwrap();
+        let (mut tx, rx) = RingBuffer::new(8192);
+        tx.push_entire_slice(&[0.5; 8192]).unwrap();
+        let mut v = VoiceStart::new(VoiceId(1), rx, 1, 8);
+        v.set_crosspoint(0, 2, 1.0);
+        ctl.send(0, CommandKind::StartVoice(Box::new(v)));
+        ctl.send(1000, CommandKind::PauseVoice { voice: VoiceId(1) });
+        let mut r = OfflineRenderer::new(mixer);
+        r.render(1000, &[]);
+        ctl.voice_meters();
+        let before = r.mixer_mut().scratch.metered;
+        let out = r.render(1000, &[]);
+        // The 240-frame declick tail on the one routed output, nothing for the other seven.
+        assert_eq!(r.mixer_mut().scratch.metered - before, 240);
+        let peaks = ctl.voice_meters();
+        assert_eq!(peaks.len(), 1);
+        assert!(
+            peaks[0]
+                .1
+                .iter()
+                .enumerate()
+                .all(|(o, p)| (o == 2) == (*p > 0.0))
+        );
+        assert!(
+            out.chunks(8)
+                .all(|f| f.iter().enumerate().all(|(o, x)| o == 2 || *x == 0.0))
+        );
     }
 
     #[test]
