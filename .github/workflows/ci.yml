@@ -5,6 +5,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -40,10 +44,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - name: Read pinned toolchain
+        id: toolchain
+        run: |
+          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' engine/rust-toolchain.toml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: engine/Cargo.toml
-          rust-version: "1.99.1"
+          rust-version: ${{ steps.toolchain.outputs.version }}
 
   mac:
     name: macOS app
@@ -70,3 +80,5 @@ jobs:
           workspaces: engine
       - run: swift format lint --strict -r mac/
       - run: make test-mac
+      - run: make mac
+      - run: make verify-bundle
