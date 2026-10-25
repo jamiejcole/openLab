@@ -479,34 +479,34 @@ fn nav_rig() -> Rig {
 }
 
 #[test]
-fn next_and_previous_step_into_and_out_of_entered_groups() {
+fn next_and_previous_step_into_and_out_of_groups_of_every_mode() {
     let mut rig = nav_rig();
     let next = Input::PlayheadNext { list: list() };
     let previous = Input::PlayheadPrevious { list: list() };
     let mut seen = vec![rig.playhead()];
-    for _ in 0..6 {
+    for _ in 0..7 {
         rig.at(0, next.clone());
         seen.push(rig.playhead());
     }
     let ids = |ns: &[u128]| ns.iter().map(|n| Some(id(*n))).collect::<Vec<_>>();
-    let mut expected = ids(&[1, 2, 20, 21, 3, 4]);
+    let mut expected = ids(&[1, 2, 20, 21, 3, 4, 40]);
     expected.push(None);
     assert_eq!(seen, expected);
 
     let mut back = Vec::new();
-    for _ in 0..7 {
+    for _ in 0..8 {
         rig.at(0, previous.clone());
         back.push(rig.playhead());
     }
-    assert_eq!(back, ids(&[4, 3, 21, 20, 2, 1, 1]));
+    assert_eq!(back, ids(&[40, 4, 3, 21, 20, 2, 1, 1]));
     assert_eq!(
         CueEngine::playhead_positions(&rig.ws, list()),
-        vec![id(1), id(2), id(20), id(21), id(3), id(4)]
+        vec![id(1), id(2), id(20), id(21), id(3), id(4), id(40)]
     );
 }
 
 #[test]
-fn jumps_reach_cues_inside_entered_groups_only() {
+fn jumps_reach_cues_inside_groups_of_every_mode() {
     let mut rig = nav_rig();
     let jump = rig.at(
         0,
@@ -528,7 +528,7 @@ fn jumps_reach_cues_inside_entered_groups_only() {
         },
     );
     assert_eq!(moved(&jump), Some(Some(id(20))));
-    // Inside a timeline group: not a position.
+    // Inside a timeline group too (QLab 5: any child can stand by).
     let jump = rig.at(
         0,
         Input::SetPlayheadByNumber {
@@ -536,14 +536,92 @@ fn jumps_reach_cues_inside_entered_groups_only() {
             number: "4.1".into(),
         },
     );
+    assert_eq!(moved(&jump), Some(Some(id(40))));
+    // A cue of no list warns and leaves the playhead.
+    let jump = rig.at(
+        0,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(999)),
+        },
+    );
     assert_eq!(
         warnings(&jump),
         vec![EngineWarning::NotInList {
             list: list(),
-            cue: id(40)
+            cue: id(999)
         }]
     );
-    assert_eq!(rig.playhead(), Some(id(20)));
+    assert_eq!(rig.playhead(), Some(id(40)));
+}
+
+fn set_playhead(rig: &mut Rig, n: u128) {
+    rig.at(
+        0,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(n)),
+        },
+    );
+}
+
+#[test]
+fn go_on_a_timeline_child_starts_only_that_child_and_moves_to_its_sibling() {
+    let g = timed(
+        grp(
+            1,
+            TIMELINE,
+            vec![timed(wait(10, 1.0), 0.0, 0.0, AC), wait(11, 1.0), memo(12)],
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+    set_playhead(&mut rig, 10);
+    let go = rig.go(0);
+    // Children's continue modes are ignored in a timeline: 10's auto-continue starts nothing.
+    assert_eq!(starts(&go), vec![(id(10), 0)]);
+    assert_eq!(changes(&go, 1), vec![(CueState::Running, 0)]);
+    assert_eq!(rig.playhead(), Some(id(11)));
+    rig.go(100);
+    rig.go(200);
+    // Past the last child: out of the group, past its continue chain (2 is its auto-follow).
+    assert_eq!(rig.playhead(), Some(id(3)));
+    let tick = rig.tick(1100);
+    // Adopted: no auto-follow.
+    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1100)]);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn go_on_a_playlist_child_plays_only_that_child() {
+    let g = grp(
+        1,
+        playlist(false, false),
+        vec![wait(10, 1.0), wait(11, 1.0)],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    set_playhead(&mut rig, 10);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(11)));
+    let tick = rig.tick(1000);
+    assert!(starts(&tick).is_empty());
+    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1000)]);
+}
+
+#[test]
+fn go_on_a_go_to_next_child_chains_within_the_group() {
+    let g = grp(
+        1,
+        GO_NEXT,
+        vec![memo(10), timed(memo(11), 0.0, 0.0, AF), memo(12), memo(13)],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    set_playhead(&mut rig, 11);
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(11), 0), (id(12), 0)]);
+    assert_eq!(rig.playhead(), Some(id(13)));
 }
 
 #[test]
@@ -598,13 +676,14 @@ fn playhead_inside_a_group_follows_edits() {
     assert_eq!(moved(&rig.tick(0)), None);
     assert_eq!(rig.playhead(), Some(id(20)));
 
-    // Its group changes mode: no longer a position.
+    // Its group changes mode: still a position.
     let mut rig = nav_rig();
     set(&mut rig, 20);
     if let CueKind::Group { mode, .. } = &mut rig.cues_mut()[1].kind {
         *mode = TIMELINE;
     }
-    assert_eq!(moved(&rig.tick(0)), Some(Some(id(3))));
+    assert_eq!(moved(&rig.tick(0)), None);
+    assert_eq!(rig.playhead(), Some(id(20)));
 }
 
 // ----- playlist -----
@@ -1240,20 +1319,14 @@ fn a_running_cue_whose_id_now_names_a_group_is_stopped() {
 
 #[test]
 fn go_on_a_duplicate_id_stays_on_playhead_positions() {
-    // The playhead's id also occurs inside a go-to-next group; GO must not climb out through it.
+    // The playhead's id also occurs inside a group; the first occurrence (depth-first) is used.
     let inner = grp(1, GO_NEXT, vec![memo(2), memo(3)]);
     let mut rig = Rig::new(vec![inner, memo(2), memo(4)]);
-    rig.at(
-        0,
-        Input::SetPlayhead {
-            list: list(),
-            cue: Some(id(2)),
-        },
-    );
+    set_playhead(&mut rig, 2);
     rig.go(0);
     let p = rig.playhead();
     assert!(p.is_none_or(|p| CueEngine::playhead_positions(&rig.ws, list()).contains(&p)));
-    assert_eq!(p, Some(id(4)));
+    assert_eq!(p, Some(id(3)));
 }
 
 #[test]
@@ -1274,4 +1347,143 @@ fn nesting_beyond_the_limit_does_not_panic() {
     rig.at(20, Input::Resume { cue: id(1) });
     rig.stop(30, 1);
     assert_eq!(rig.engine.cue_states().count(), 0);
+}
+
+// ----- fix round 1 (M2-B review) -----
+
+fn fade(seconds: f64) -> Option<FadeSpec> {
+    Some(FadeSpec {
+        duration: seconds,
+        curve: FadeCurve::Linear,
+    })
+}
+
+#[test]
+fn fade_stop_on_a_pre_waiting_group_cancels_its_action() {
+    // Review H1: the pre-wait stayed armed and started every child after the stop.
+    let g = timed(grp(1, TIMELINE, vec![sound(10), sound(11)]), 1.0, 0.0, DNC);
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.go(0);
+    rig.start(100, 10);
+    let stop = rig.at(
+        200,
+        Input::Stop {
+            cue: id(1),
+            fade_out: fade(0.5),
+        },
+    );
+    // The group stops at once; the child it already had fades out as usual.
+    assert_eq!(changes(&stop, 1), vec![(CueState::Idle, 200)]);
+    assert_eq!(rig.state(10), CueState::Stopping);
+    assert_eq!(changes(&rig.tick(700), 10), vec![(CueState::Idle, 700)]);
+    let tick = rig.tick(1000);
+    assert!(voice_starts(&tick).is_empty(), "{tick:?}");
+    assert_eq!(rig.engine.cue_states().count(), 0);
+    assert_eq!(rig.engine.next_deadline(), None);
+}
+
+#[test]
+fn fade_stop_on_a_pre_waiting_cue_cancels_its_action() {
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, AF), memo(2)]);
+    rig.go(0);
+    let stop = rig.at(
+        200,
+        Input::Stop {
+            cue: id(1),
+            fade_out: fade(0.5),
+        },
+    );
+    assert_eq!(changes(&stop, 1), vec![(CueState::Idle, 200)]);
+    assert!(rig.tick(1000).is_empty());
+}
+
+fn paused_with_end_in_flight(loop_: bool, fail: bool) -> (Rig, Vec<Action>) {
+    // Review M1: a child's end (dated before the pause) arrives while the playlist is paused.
+    let g = grp(
+        1,
+        playlist(loop_, false),
+        vec![sound(10), sound(11), sound(12)],
+    );
+    let mut rig = Rig::new(vec![g]);
+    rig.go(0);
+    rig.at(1000, Input::Pause { cue: id(1) });
+    let run = rig.engine.run_of(id(10)).unwrap();
+    let input = if fail {
+        Input::ActionFailed {
+            cue: id(10),
+            run,
+            reason: BrokenReason::StreamFailed,
+        }
+    } else {
+        Input::ActionEnded {
+            cue: id(10),
+            run,
+            at: 990,
+        }
+    };
+    let report = rig.at(1010, input);
+    assert!(starts(&report).is_empty(), "nothing starts while paused");
+    assert_eq!(rig.state(1), CueState::Paused);
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    (rig, resume)
+}
+
+#[test]
+fn paused_looping_playlist_moves_on_at_resume_after_an_end_in_flight() {
+    let (rig, resume) = paused_with_end_in_flight(true, false);
+    assert_eq!(starts(&resume), vec![(id(11), 2000)]);
+    assert_eq!(voice_starts(&resume), vec![(id(11), 2000, 0)]);
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+#[test]
+fn paused_playlist_moves_on_at_resume_after_a_failure_in_flight() {
+    let (rig, resume) = paused_with_end_in_flight(true, true);
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(starts(&resume), vec![(id(11), 2000)]);
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+#[test]
+fn paused_non_looping_playlist_does_not_skip_its_remaining_children() {
+    let (mut rig, resume) = paused_with_end_in_flight(false, false);
+    assert_eq!(starts(&resume), vec![(id(11), 2000)]);
+    rig.ended(3000, 11, 3000);
+    assert_eq!(rig.state(12), CueState::Running);
+    let end = rig.ended(4000, 12, 4000);
+    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 4000)]);
+}
+
+#[test]
+fn go_on_a_disarmed_enter_group_skips_it_as_a_unit() {
+    // Review M2: the playhead went inside a group that started nothing.
+    let mut g = grp(1, ENTER, vec![memo(10), memo(11)]);
+    g.armed = false;
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    let go = rig.go(0);
+    assert_eq!(starts(&go), vec![(id(1), 0)]);
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn shuffled_loop_never_repeats_a_child_across_a_pass_boundary() {
+    // Review L2.
+    for seed in 0..200u64 {
+        let kids = (10..12).map(|n| wait(n, 1.0)).collect();
+        let mut rig = Rig::seeded(vec![grp(1, playlist(true, true), kids)], seed);
+        let mut all = rig.go(0);
+        for t in 1..8u64 {
+            all.extend(rig.tick(t * 1000));
+        }
+        let order: Vec<_> = starts(&all)
+            .into_iter()
+            .map(|(c, _)| c)
+            .filter(|c| *c != id(1))
+            .collect();
+        assert_eq!(order.len(), 8);
+        assert!(
+            order.windows(2).all(|w| w[0] != w[1]),
+            "seed {seed}: {order:?}"
+        );
+    }
 }

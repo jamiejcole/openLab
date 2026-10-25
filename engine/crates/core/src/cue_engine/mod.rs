@@ -185,8 +185,7 @@ impl CueEngine {
         level.get(index)
     }
 
-    /// The cues of a list the playhead can stand on, in order: top-level cues and, depth-first,
-    /// the cues inside "start first and enter" groups.
+    /// The cues of a list the playhead can stand on, in order: every cue, depth-first.
     pub fn playhead_positions(ws: &Workspace, list: CueListId) -> Vec<CueId> {
         ws.cue_lists
             .iter()
@@ -415,18 +414,8 @@ impl CueEngine {
             return cx.warn(EngineWarning::UnknownList { list });
         };
         let numbered = |c: &&Cue| c.number.as_deref() == Some(number.as_str());
-        if let Some(cue) = playhead::position_cues(cues).into_iter().find(numbered) {
-            return self.move_playhead(list, Some(cue.id), cx);
-        }
-        // A cue it cannot stand on (inside a group of another mode).
-        let deep = cx
-            .ws
-            .cue_lists
-            .iter()
-            .find(|l| l.id == list)
-            .and_then(|l| find_numbered(&l.cues, &number));
-        match deep {
-            Some(cue) => cx.warn(EngineWarning::NotInList { list, cue }),
+        match playhead::position_cues(cues).into_iter().find(numbered) {
+            Some(cue) => self.move_playhead(list, Some(cue.id), cx),
             None => cx.warn(EngineWarning::NumberNotFound { list, number }),
         }
     }
@@ -525,8 +514,13 @@ impl CueEngine {
                 return self.report(cue, before, now, cx);
             }
             // A group whose children are fading out ends when the last of them has stopped.
+            // Only during its action: a group that has not reached it (pre-wait) stops at once,
+            // so its pending action can never start children after the stop.
             Some(Slot::Active(run @ Run { group: Some(_), .. }))
-                if frames > 0 && busy_children && run.paused_at.is_none() =>
+                if frames > 0
+                    && busy_children
+                    && run.paused_at.is_none()
+                    && matches!(run.phase, Phase::Action { .. }) =>
             {
                 if let Some(g) = run.group.as_mut()
                     && !g.stopping
@@ -1037,14 +1031,4 @@ fn count_cues(cues: &[Cue]) -> usize {
     let mut n = 0usize;
     each_cue(cues, |_| n = n.saturating_add(1));
     n
-}
-
-fn find_numbered(cues: &[Cue], number: &str) -> Option<CueId> {
-    let mut found = None;
-    each_cue(cues, |c| {
-        if found.is_none() && c.number.as_deref() == Some(number) {
-            found = Some(c.id);
-        }
-    });
-    found
 }
