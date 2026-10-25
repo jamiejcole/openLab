@@ -730,6 +730,81 @@ fn start_cycles_of_any_length_warn() {
 }
 
 #[test]
+fn start_cycle_check_handles_shared_nodes_and_tails() {
+    let start = |target| CueKind::Start {
+        target: Some(cue_id(target)),
+    };
+    let go_to = |target| CueKind::GoTo {
+        target: Some(cue_id(target)),
+        then_go: true,
+    };
+    let ws = workspace(vec![
+        // A tail into a cycle (1 → 2 → 3 → 2): only the cycle warns.
+        cue(1, start(2)),
+        cue(2, start(3)),
+        cue(3, start(2)),
+        // Two cycles sharing cue 5 (a figure eight: 4 ↔ 5 ↔ 6), with a tail out of it to 8.
+        cue(4, start(5)),
+        cue(5, go_to(6)),
+        cue(
+            6,
+            CueKind::Group {
+                mode: GroupMode::Timeline,
+                children: vec![cue(7, start(4)), cue(70, start(5)), cue(71, start(8))],
+            },
+        ),
+        cue(8, start(9)),
+        cue(9, CueKind::Memo),
+        // Two separate two-cycles next to each other.
+        cue(10, start(11)),
+        cue(11, start(10)),
+        cue(12, go_to(13)),
+        cue(13, start(12)),
+    ]);
+    let cycle = |n| warning(n, IssueKind::TriggerCycle);
+    assert_eq!(
+        validate(&ws),
+        vec![
+            cycle(2),
+            cycle(3),
+            cycle(4),
+            cycle(5),
+            cycle(7),
+            cycle(70),
+            cycle(10),
+            cycle(11),
+            cycle(12),
+            cycle(13),
+        ]
+    );
+}
+
+#[test]
+fn devamp_may_target_a_playlist_group() {
+    let ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Group {
+                mode: GroupMode::Playlist {
+                    loop_: true,
+                    shuffle: false,
+                },
+                children: vec![cue(2, audio())],
+            },
+        ),
+        cue(
+            3,
+            CueKind::Devamp {
+                target: Some(cue_id(1)),
+                start_next_cue: true,
+                stop_target_when_slice_ends: false,
+            },
+        ),
+    ]);
+    assert_eq!(validate(&ws), vec![]);
+}
+
+#[test]
 fn long_start_chains_validate_in_linear_time() {
     // Regression (review 2, H1): one search per cue made a 40k-cue chain take a minute.
     // 200k cues is about the most a 64 MiB file can hold.
