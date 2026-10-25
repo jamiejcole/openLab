@@ -2,8 +2,10 @@
 
 //! The real-time mixer (ARCHITECTURE §3.4, §3.5). Everything reachable from [`Mixer::process`]
 //! runs on the audio thread: no allocation, locks, syscalls or logging. All buffers are sized in
-//! [`Mixer::new`]; sources that must be freed go back to the controller on the return queue.
+//! [`Mixer::new`]; voice starts that must be freed go back to the controller on the return queue.
 
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::BinaryHeap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::controller::MixerController;
-use crate::gain::{Curve, Fade, Param, ramp_value};
+use crate::gain::{Curve, Fade, Param, ramp_value, sanitize_gain};
 
 /// Absolute time in frames at the device rate since the mixer started (ARCHITECTURE §3.2).
 pub type SampleTime = u64;
@@ -23,8 +25,13 @@ pub struct VoiceId(pub u64);
 
 pub const MAX_OUTPUT_CHANNELS: usize = 64;
 pub const MAX_VOICE_CHANNELS: usize = 64;
-/// Capacity of the command queue and of the mixer's pending (time-sorted) command list.
+pub const MAX_PATCHES: usize = 64;
+pub const MAX_SAMPLE_RATE: u32 = 384_000;
+pub const MAX_BLOCK_FRAMES: usize = 8192;
+/// Capacity of the command queue; also the largest atomic batch.
 pub const COMMAND_CAPACITY: usize = 1024;
+/// Capacity of the mixer's time-ordered pending set.
+pub const PENDING_CAPACITY: usize = 4096;
 const EVENT_CAPACITY: usize = 1024;
 /// De-zipper length for gain changes without an explicit ramp, and delay-change crossfades.
 const DEZIP_SECONDS: f64 = 0.005;
@@ -34,12 +41,17 @@ const MAX_DELAY_SECONDS: u32 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MixerConfig {
     pub sample_rate: u32,
-    /// Device outputs. The mixer has the same number of cue outputs.
+    /// Device outputs. Every patch has this many cue outputs.
     pub output_channels: usize,
     /// Internal render chunk; any device block size is accepted and split into chunks this size.
     pub max_block_frames: usize,
     pub max_voices: usize,
     pub max_voice_channels: usize,
+    /// Output patches (cue output → device output matrices) a voice can be routed through.
+    pub patches: usize,
+    /// How far ahead of the clock the controller releases commands to the mixer; later ones are
+    /// held on the control thread until [`MixerController::pump`].
+    pub lookahead_ms: u32,
 }
 
 impl Default for MixerConfig {
@@ -50,6 +62,8 @@ impl Default for MixerConfig {
             max_block_frames: 1024,
             max_voices: 128,
             max_voice_channels: 8,
+            patches: 8,
+            lookahead_ms: 500,
         }
     }
 }
@@ -61,16 +75,20 @@ pub enum ConfigError {
     BlockFrames,
     Voices,
     VoiceChannels,
+    Patches,
+    Lookahead,
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            ConfigError::SampleRate => "sample rate must be non-zero",
+            ConfigError::SampleRate => "sample rate must be 1..=384000",
             ConfigError::OutputChannels => "output channels must be 1..=64",
-            ConfigError::BlockFrames => "max block frames must be non-zero",
-            ConfigError::Voices => "max voices must be non-zero",
+            ConfigError::BlockFrames => "max block frames must be 1..=8192",
+            ConfigError::Voices => "max voices must be 1..=4096",
             ConfigError::VoiceChannels => "max voice channels must be 1..=64",
+            ConfigError::Patches => "patches must be 1..=64",
+            ConfigError::Lookahead => "lookahead must be 10..=60000 ms",
         })
     }
 }
@@ -85,36 +103,63 @@ pub enum GainTarget {
     Crosspoint { input: u16, output: u16 },
 }
 
-/// Everything needed to start a voice. `source` carries interleaved f32 frames at the device rate;
-/// dropping its producer marks end of stream once the remaining frames are consumed.
+/// Everything needed to start a voice, including its complete initial routing, so a voice is
+/// audible only as intended from its first sample. `source` carries interleaved f32 frames at the
+/// device rate; dropping its producer marks end of stream. Boxed on the control thread and
+/// returned there for freeing.
 #[derive(Debug)]
 pub struct VoiceStart {
     pub voice: VoiceId,
     pub source: Consumer<f32>,
     pub channels: u16,
+    /// Output patch the voice's cue outputs go through.
+    pub patch: u16,
     /// Voice master gain (linear).
     pub gain: f32,
+    /// One gain per cue output (`output_channels` of them).
+    pub cue_outputs: Vec<f32>,
+    /// Row-major `[input][cue output]`, `channels × output_channels`.
+    pub crosspoints: Vec<f32>,
     /// Frames discarded from the source before playback (in point).
     pub skip_frames: u64,
     /// Frames played after the skip (out point); `None` plays to end of stream.
     pub play_frames: Option<u64>,
     pub fade_in: Fade,
-    /// Integrated fade-out ending on the last played frame. Needs `play_frames`.
+    /// Integrated fade-out ending on the last played frame. Requires `play_frames`.
     pub fade_out: Fade,
 }
 
 impl VoiceStart {
-    /// Unity gain, no trims or fades, identity crosspoints (input n → cue output n).
-    pub fn new(voice: VoiceId, source: Consumer<f32>, channels: u16) -> Self {
+    /// Silent routing (all crosspoints 0), unity cue outputs and master, patch 0, no trims or
+    /// fades. `cue_outputs` must equal the mixer's `output_channels`.
+    pub fn new(voice: VoiceId, source: Consumer<f32>, channels: u16, cue_outputs: usize) -> Self {
         VoiceStart {
             voice,
             source,
             channels,
+            patch: 0,
             gain: 1.0,
+            cue_outputs: vec![1.0; cue_outputs],
+            crosspoints: vec![0.0; usize::from(channels) * cue_outputs],
             skip_frames: 0,
             play_frames: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
+        }
+    }
+
+    /// Sets one crosspoint; out-of-range indices are ignored (returns false).
+    pub fn set_crosspoint(&mut self, input: usize, output: usize, gain: f32) -> bool {
+        let outs = self.cue_outputs.len();
+        if input >= usize::from(self.channels) || output >= outs {
+            return false;
+        }
+        match self.crosspoints.get_mut(input * outs + output) {
+            Some(g) => {
+                *g = gain;
+                true
+            }
+            None => false,
         }
     }
 }
@@ -140,7 +185,7 @@ impl Default for OutputSettings {
 
 #[derive(Debug)]
 pub enum CommandKind {
-    StartVoice(VoiceStart),
+    StartVoice(Box<VoiceStart>),
     /// `fade.frames == 0` cuts at the exact sample.
     StopVoice {
         voice: VoiceId,
@@ -155,6 +200,7 @@ pub enum CommandKind {
         fade: Fade,
     },
     SetPatchRouting {
+        patch: u16,
         cue_output: u16,
         device_output: u16,
         gain: f32,
@@ -187,9 +233,14 @@ pub enum RejectReason {
     PoolFull,
     DuplicateId,
     BadChannelCount,
+    /// Patch index out of range or routing vectors of the wrong length.
+    BadRouting,
+    /// A fade-out without `play_frames` has nothing to end on.
+    BadFade,
 }
 
 /// Small `Copy` notifications from the audio thread. `at` is the sample time it happened.
+/// Events from one block are not sorted by `at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     /// `at` is the first sample after the voice's last.
@@ -205,6 +256,9 @@ pub enum Event {
         at: SampleTime,
         reason: RejectReason,
     },
+    /// The pending set is full, so commands are waiting in the queue and may apply late.
+    /// One event per episode.
+    PendingFull { at: SampleTime },
 }
 
 #[derive(Debug, Default)]
@@ -213,32 +267,60 @@ pub(crate) struct Shared {
     pub(crate) faults: AtomicU64,
     pub(crate) underrun_frames: AtomicU64,
     pub(crate) dropped_events: AtomicU64,
-    pub(crate) leaked_sources: AtomicU64,
+    pub(crate) leaked_starts: AtomicU64,
+    pub(crate) pending_full_blocks: AtomicU64,
 }
 
 /// Audio-thread side of the queues back to the controller.
-struct Outbox {
-    events: Producer<Event>,
-    returns: Producer<Consumer<f32>>,
-    shared: Arc<Shared>,
+pub(crate) struct Outbox {
+    pub(crate) events: Producer<Event>,
+    pub(crate) returns: Producer<Box<VoiceStart>>,
+    pub(crate) shared: Arc<Shared>,
 }
 
 impl Outbox {
-    fn emit(&mut self, e: Event) {
+    pub(crate) fn emit(&mut self, e: Event) {
         if self.events.push(e).is_err() {
             self.shared.dropped_events.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    fn give_back(&mut self, source: Consumer<f32>) {
-        if let Err(PushError::Full(source)) = self.returns.push(source) {
+    pub(crate) fn give_back(&mut self, start: Box<VoiceStart>) {
+        if let Err(PushError::Full(start)) = self.returns.push(start) {
             // The return queue is sized so this cannot happen while the controller drains it;
             // leaking is the RT-safe fallback to freeing here.
-            std::mem::forget(source);
-            self.shared.leaked_sources.fetch_add(1, Ordering::Relaxed);
+            std::mem::forget(start);
+            self.shared.leaked_starts.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
+
+/// A command in the pending set, ordered so the heap's top is the earliest `(at, seq)`.
+struct Pending {
+    at: SampleTime,
+    seq: u64,
+    cmd: Command,
+}
+
+impl Ord for Pending {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        (other.at, other.seq).cmp(&(self.at, self.seq))
+    }
+}
+
+impl PartialOrd for Pending {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Pending {
+    fn eq(&self, other: &Self) -> bool {
+        (self.at, self.seq) == (other.at, other.seq)
+    }
+}
+
+impl Eq for Pending {}
 
 enum ReadOutcome {
     Full,
@@ -248,9 +330,10 @@ enum ReadOutcome {
 
 struct Voice {
     id: VoiceId,
-    /// `Some` while the voice is active.
-    source: Option<Consumer<f32>>,
+    /// `Some` while the voice is active; holds the source and goes back whole when it ends.
+    start: Option<Box<VoiceStart>>,
     channels: usize,
+    patch: usize,
     skip: u64,
     remaining: Option<u64>,
     play_frames: Option<u64>,
@@ -275,8 +358,9 @@ impl Voice {
     fn new(outputs: usize, max_channels: usize, block: usize) -> Self {
         Voice {
             id: VoiceId(0),
-            source: None,
+            start: None,
             channels: 0,
+            patch: 0,
             skip: 0,
             remaining: None,
             play_frames: None,
@@ -294,27 +378,33 @@ impl Voice {
         }
     }
 
-    fn start(&mut self, s: VoiceStart) {
-        let outs = self.cue_out.len();
+    fn is_active(&self) -> bool {
+        self.start.is_some()
+    }
+
+    /// Takes over a validated start, copying its routing into the voice's gains.
+    fn begin(&mut self, s: Box<VoiceStart>) {
         self.id = s.voice;
         self.channels = usize::from(s.channels);
+        self.patch = usize::from(s.patch);
         self.skip = s.skip_frames;
         self.remaining = s.play_frames;
         self.play_frames = s.play_frames;
         self.pos = 0;
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
-        self.master.set(sanitize(s.gain));
+        self.master.set(sanitize_gain(s.gain));
         self.stop.set(1.0);
         self.stop_end = None;
-        self.cue_out.iter_mut().for_each(|p| p.set(1.0));
-        for (k, p) in self.xp.iter_mut().enumerate() {
-            let (i, o) = (k / outs, k % outs);
-            p.set(if i == o { 1.0 } else { 0.0 });
+        for (p, g) in self.cue_out.iter_mut().zip(&s.cue_outputs) {
+            p.set(sanitize_gain(*g));
+        }
+        for (p, g) in self.xp.iter_mut().zip(&s.crosspoints) {
+            p.set(sanitize_gain(*g));
         }
         self.fresh = true;
         self.underrunning = false;
-        self.source = Some(s.source);
+        self.start = Some(s);
     }
 
     fn param_mut(&mut self, target: GainTarget) -> Option<&mut Param> {
@@ -333,10 +423,10 @@ impl Voice {
         }
     }
 
-    /// Reads up to `len` frames into `input`, zero-filling the rest.
-    fn read(&mut self, len: usize, block: usize) -> (usize, ReadOutcome) {
+    /// Reads up to `live` frames into `input` and zero-fills it up to `len`.
+    fn read(&mut self, live: usize, len: usize, block: usize) -> (usize, ReadOutcome) {
         let ch = self.channels;
-        let Some(src) = self.source.as_mut() else {
+        let Some(src) = self.start.as_mut().map(|s| &mut s.source) else {
             return (0, ReadOutcome::Ended(FinishReason::Stopped));
         };
         let mut avail = src.slots() / ch;
@@ -348,7 +438,7 @@ impl Voice {
                 avail -= s;
             }
         }
-        let mut want = len.min(avail);
+        let mut want = live.min(avail);
         if let Some(r) = self.remaining {
             want = want.min(usize::try_from(r).unwrap_or(usize::MAX));
         }
@@ -383,7 +473,7 @@ impl Voice {
                 return (got, ReadOutcome::Ended(FinishReason::OutPoint));
             }
         }
-        if got == len {
+        if got == live {
             return (got, ReadOutcome::Full);
         }
         // Check abandonment before re-reading slots, so frames pushed just before the producer
@@ -421,8 +511,8 @@ impl Voice {
     }
 
     fn finish(&mut self, at: SampleTime, reason: FinishReason, outbox: &mut Outbox) {
-        if let Some(src) = self.source.take() {
-            outbox.give_back(src);
+        if let Some(start) = self.start.take() {
+            outbox.give_back(start);
             outbox.emit(Event::VoiceFinished {
                 voice: self.id,
                 at,
@@ -438,6 +528,9 @@ struct DelayLine {
     delay: usize,
     old_delay: usize,
     xfade: u64,
+    xfade_len: u64,
+    /// A change requested mid-crossfade; starts when the running crossfade ends.
+    next: Option<usize>,
 }
 
 impl DelayLine {
@@ -448,12 +541,16 @@ impl DelayLine {
             delay: 0,
             old_delay: 0,
             xfade: xfade_len,
+            xfade_len,
+            next: None,
         }
     }
 
     fn set_delay(&mut self, frames: usize) {
         let d = frames.min(self.buf.len() - 1);
-        if d != self.delay {
+        if self.xfade < self.xfade_len {
+            self.next = Some(d);
+        } else if d != self.delay {
             self.old_delay = self.delay;
             self.delay = d;
             self.xfade = 0;
@@ -469,13 +566,21 @@ impl DelayLine {
         self.buf.get(i).copied().unwrap_or(0.0)
     }
 
-    fn tick(&mut self, x: f32, xfade_len: u64) -> f32 {
+    fn tick(&mut self, x: f32) -> f32 {
+        if self.xfade >= self.xfade_len
+            && let Some(d) = self.next.take()
+            && d != self.delay
+        {
+            self.old_delay = self.delay;
+            self.delay = d;
+            self.xfade = 0;
+        }
         if let Some(s) = self.buf.get_mut(self.write) {
             *s = x;
         }
         let mut y = self.tap(self.delay);
-        if self.xfade < xfade_len {
-            let a = self.xfade as f32 / xfade_len as f32;
+        if self.xfade < self.xfade_len {
+            let a = self.xfade as f32 / self.xfade_len as f32;
             y = self.tap(self.old_delay) * (1.0 - a) + y * a;
             self.xfade += 1;
         }
@@ -495,6 +600,18 @@ struct Scratch {
     master: Vec<f32>,
 }
 
+/// One output patch: a cue output → device output matrix and its cue-output bus.
+struct Patch {
+    /// Row-major `[cue output][device output]`.
+    gains: Vec<Param>,
+    /// Planar `[cue output][frame]`.
+    bus: Vec<f32>,
+    /// A voice wrote to `bus` in the current segment.
+    live: bool,
+    /// A routing change may still be ramping; unused patches must advance it.
+    dirty: bool,
+}
+
 /// The real-time mixer. Create with [`Mixer::new`], move to the audio thread, call
 /// [`Mixer::process_guarded`] from the device callback.
 pub struct Mixer {
@@ -504,17 +621,16 @@ pub struct Mixer {
     dezip: u64,
     now: SampleTime,
     commands: Consumer<Command>,
-    /// Sorted by `at`, latest first; the next due command is last. Never grows past capacity.
-    pending: Vec<Command>,
+    /// Earliest `(at, seq)` on top. Never grows past [`PENDING_CAPACITY`].
+    pending: BinaryHeap<Pending>,
+    seq: u64,
+    pending_full: bool,
     outbox: Outbox,
     voices: Vec<Voice>,
-    /// Row-major `[cue output][device output]`.
-    patch: Vec<Param>,
+    patches: Vec<Patch>,
     out_gain: Vec<Param>,
     delays: Vec<DelayLine>,
     master: Param,
-    /// Planar `[cue output][frame]`.
-    bus: Vec<f32>,
     /// Planar `[device output][frame]`.
     dev: Vec<f32>,
     scratch: Scratch,
@@ -531,37 +647,42 @@ impl Mixer {
             max_block_frames: block,
             max_voices,
             max_voice_channels,
+            patches,
+            lookahead_ms,
         } = config;
-        if sample_rate == 0 {
+        if !(1..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(ConfigError::SampleRate);
         }
         if !(1..=MAX_OUTPUT_CHANNELS).contains(&outs) {
             return Err(ConfigError::OutputChannels);
         }
-        if block == 0 {
+        if !(1..=MAX_BLOCK_FRAMES).contains(&block) {
             return Err(ConfigError::BlockFrames);
         }
-        if max_voices == 0 {
+        if !(1..=4096).contains(&max_voices) {
             return Err(ConfigError::Voices);
         }
         if !(1..=MAX_VOICE_CHANNELS).contains(&max_voice_channels) {
             return Err(ConfigError::VoiceChannels);
         }
+        if !(1..=MAX_PATCHES).contains(&patches) {
+            return Err(ConfigError::Patches);
+        }
+        if !(10..=60_000).contains(&lookahead_ms) {
+            return Err(ConfigError::Lookahead);
+        }
         let dezip = ((f64::from(sample_rate) * DEZIP_SECONDS).round() as u64).max(1);
         let max_delay = (sample_rate * MAX_DELAY_SECONDS) as usize;
+        let lookahead = u64::from(sample_rate) * u64::from(lookahead_ms) / 1000;
 
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
-        // Every source the mixer can hold at once: queued, pending, playing, plus one in flight.
-        let (ret_tx, ret_rx) = RingBuffer::new(2 * COMMAND_CAPACITY + max_voices + 1);
+        // Every start the mixer can hold at once: queued, pending, playing, plus one in flight.
+        let (ret_tx, ret_rx) =
+            RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared::default());
 
-        let mut patch = vec![Param::new(0.0); outs * outs];
-        for (k, p) in patch.iter_mut().enumerate() {
-            if k / outs == k % outs {
-                p.set(1.0);
-            }
-        }
+        let identity = |k: usize| if k / outs == k % outs { 1.0 } else { 0.0 };
         let mixer = Mixer {
             outputs: outs,
             block,
@@ -569,7 +690,9 @@ impl Mixer {
             dezip,
             now: 0,
             commands: cmd_rx,
-            pending: Vec::with_capacity(COMMAND_CAPACITY),
+            pending: BinaryHeap::with_capacity(PENDING_CAPACITY),
+            seq: 0,
+            pending_full: false,
             outbox: Outbox {
                 events: ev_tx,
                 returns: ret_tx,
@@ -578,13 +701,19 @@ impl Mixer {
             voices: (0..max_voices)
                 .map(|_| Voice::new(outs, max_voice_channels, block))
                 .collect(),
-            patch,
+            patches: (0..patches)
+                .map(|_| Patch {
+                    gains: (0..outs * outs).map(|k| Param::new(identity(k))).collect(),
+                    bus: vec![0.0; outs * block],
+                    live: false,
+                    dirty: false,
+                })
+                .collect(),
             out_gain: vec![Param::new(1.0); outs],
             delays: (0..outs)
                 .map(|_| DelayLine::new(max_delay, dezip))
                 .collect(),
             master: Param::new(1.0),
-            bus: vec![0.0; outs * block],
             dev: vec![0.0; outs * block],
             scratch: Scratch {
                 vgain: vec![0.0; block],
@@ -595,7 +724,7 @@ impl Mixer {
             #[cfg(test)]
             panic_next: false,
         };
-        let controller = MixerController::new(cmd_tx, ev_rx, ret_rx, shared);
+        let controller = MixerController::new(cmd_tx, ev_rx, ret_rx, shared, outs, lookahead);
         Ok((controller, mixer))
     }
 
@@ -653,13 +782,13 @@ impl Mixer {
         let mut pos = 0;
         while pos < n {
             let t = self.now + pos as u64;
-            while self.pending.last().is_some_and(|c| c.at <= t) {
-                if let Some(c) = self.pending.pop() {
-                    self.apply(c, t);
+            while self.pending.peek().is_some_and(|p| p.at <= t) {
+                if let Some(p) = self.pending.pop() {
+                    self.apply(p.cmd, t);
                 }
             }
-            let end = match self.pending.last() {
-                Some(c) if c.at < self.now + n as u64 => (c.at - self.now) as usize,
+            let end = match self.pending.peek() {
+                Some(p) if p.at < self.now + n as u64 => (p.at - self.now) as usize,
                 _ => n,
             };
             self.render(out, pos, end - pos);
@@ -669,11 +798,27 @@ impl Mixer {
     }
 
     fn pull_commands(&mut self) {
-        while self.pending.len() < self.pending.capacity() {
-            let Ok(c) = self.commands.pop() else { break };
-            // Equal times keep queue order: the new command goes before (= pops after) its peers.
-            let i = self.pending.partition_point(|p| p.at > c.at);
-            self.pending.insert(i, c);
+        while self.pending.len() < PENDING_CAPACITY {
+            let Ok(cmd) = self.commands.pop() else { break };
+            // `seq` keeps queue order among equal times.
+            self.seq += 1;
+            self.pending.push(Pending {
+                at: cmd.at,
+                seq: self.seq,
+                cmd,
+            });
+        }
+        if self.pending.len() >= PENDING_CAPACITY && !self.commands.is_empty() {
+            self.outbox
+                .shared
+                .pending_full_blocks
+                .fetch_add(1, Ordering::Relaxed);
+            if !self.pending_full {
+                self.pending_full = true;
+                self.outbox.emit(Event::PendingFull { at: self.now });
+            }
+        } else {
+            self.pending_full = false;
         }
     }
 
@@ -684,10 +829,7 @@ impl Mixer {
             CommandKind::StartVoice(s) => self.start_voice(s, t),
             CommandKind::StopVoice { voice, fade } => {
                 let Mixer { voices, outbox, .. } = self;
-                if let Some(v) = voices
-                    .iter_mut()
-                    .find(|v| v.source.is_some() && v.id == voice)
-                {
+                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     if fade.frames == 0 {
                         v.finish(t, FinishReason::Stopped, outbox);
                     } else {
@@ -709,11 +851,12 @@ impl Mixer {
                         _ => (fade.frames, fade.curve),
                     };
                     if let Some(p) = v.param_mut(target) {
-                        p.ramp_to(sanitize(gain), frames, curve);
+                        p.ramp_to(sanitize_gain(gain), frames, curve);
                     }
                 }
             }
             CommandKind::SetPatchRouting {
+                patch,
                 cue_output,
                 device_output,
                 gain,
@@ -721,18 +864,21 @@ impl Mixer {
                 let (o, d) = (usize::from(cue_output), usize::from(device_output));
                 if o < outs
                     && d < outs
-                    && let Some(p) = self.patch.get_mut(o * outs + d)
+                    && let Some(p) = self.patches.get_mut(usize::from(patch))
+                    && let Some(g) = p.gains.get_mut(o * outs + d)
                 {
-                    p.ramp_to(sanitize(gain), dezip, Curve::Linear);
+                    g.ramp_to(sanitize_gain(gain), dezip, Curve::Linear);
+                    p.dirty = true;
                 }
             }
             CommandKind::SetOutput { output, settings } => {
                 let o = usize::from(output);
-                let target = if settings.mute {
+                let level = if settings.mute {
                     0.0
                 } else {
-                    sanitize(settings.level)
-                } * if settings.invert { -1.0 } else { 1.0 };
+                    sanitize_gain(settings.level)
+                };
+                let target = level * if settings.invert { -1.0 } else { 1.0 };
                 if let Some(p) = self.out_gain.get_mut(o) {
                     p.ramp_to(target, dezip, Curve::Linear);
                 }
@@ -741,31 +887,38 @@ impl Mixer {
                 }
             }
             CommandKind::SetMaster { gain } => {
-                self.master.ramp_to(sanitize(gain), dezip, Curve::Linear)
+                self.master
+                    .ramp_to(sanitize_gain(gain), dezip, Curve::Linear)
             }
         }
     }
 
     fn voice_mut(&mut self, id: VoiceId) -> Option<&mut Voice> {
-        self.voices
-            .iter_mut()
-            .find(|v| v.source.is_some() && v.id == id)
+        self.voices.iter_mut().find(|v| v.is_active() && v.id == id)
     }
 
-    fn start_voice(&mut self, s: VoiceStart, t: SampleTime) {
-        let reject = if s.channels == 0 || usize::from(s.channels) > self.max_voice_channels {
+    fn start_voice(&mut self, s: Box<VoiceStart>, t: SampleTime) {
+        let ch = usize::from(s.channels);
+        let reject = if ch == 0 || ch > self.max_voice_channels {
             Some(RejectReason::BadChannelCount)
+        } else if usize::from(s.patch) >= self.patches.len()
+            || s.cue_outputs.len() != self.outputs
+            || s.crosspoints.len() != ch * self.outputs
+        {
+            Some(RejectReason::BadRouting)
+        } else if s.fade_out.frames > 0 && s.play_frames.is_none() {
+            Some(RejectReason::BadFade)
         } else if self.voice_mut(s.voice).is_some() {
             Some(RejectReason::DuplicateId)
         } else {
             None
         };
-        let free = self.voices.iter_mut().find(|v| v.source.is_none());
+        let free = self.voices.iter_mut().find(|v| !v.is_active());
         match (reject, free) {
-            (None, Some(v)) => v.start(s),
+            (None, Some(v)) => v.begin(s),
             (reason, _) => {
                 let voice = s.voice;
-                self.outbox.give_back(s.source);
+                self.outbox.give_back(s);
                 self.outbox.emit(Event::VoiceRejected {
                     voice,
                     at: t,
@@ -775,52 +928,73 @@ impl Mixer {
         }
     }
 
-    /// Renders frames `a..a + len` of the chunk: voices → cue-output bus → patch → outputs.
+    /// Renders frames `a..a + len` of the chunk: voices → patch buses → patch matrices →
+    /// delay → output gain → master.
     fn render(&mut self, out: &mut [f32], a: usize, len: usize) {
         let t0 = self.now + a as u64;
-        let (block, outs, dezip) = (self.block, self.outputs, self.dezip);
+        let (block, outs) = (self.block, self.outputs);
         let Mixer {
             voices,
             outbox,
-            patch,
+            patches,
             out_gain,
             delays,
             master,
-            bus,
             dev,
             scratch,
             ..
         } = self;
 
-        for b in bus.chunks_exact_mut(block) {
-            b.iter_mut().take(len).for_each(|s| *s = 0.0);
-        }
-        for v in voices.iter_mut().filter(|v| v.source.is_some()) {
-            render_voice(v, len, t0, block, bus, scratch, outbox);
+        patches.iter_mut().for_each(|p| p.live = false);
+        for v in voices.iter_mut().filter(|v| v.is_active()) {
+            let Some(p) = patches.get_mut(v.patch) else {
+                continue;
+            };
+            if !p.live {
+                p.live = true;
+                for b in p.bus.chunks_exact_mut(block) {
+                    b.iter_mut().take(len).for_each(|s| *s = 0.0);
+                }
+            }
+            render_voice(v, len, t0, block, &mut p.bus, scratch, outbox);
         }
 
         let Some(tmp) = scratch.tmp.get_mut(..len) else {
             return;
         };
-        for (d, dv) in dev.chunks_exact_mut(block).enumerate() {
-            let Some(dv) = dv.get_mut(..len) else {
-                continue;
-            };
-            dv.fill(0.0);
-            for (o, bo) in bus.chunks_exact(block).enumerate() {
-                let Some(p) = patch.get_mut(o * outs + d) else {
-                    continue;
-                };
-                if p.is_silent() {
-                    continue;
+        for dv in dev.chunks_exact_mut(block) {
+            dv.iter_mut().take(len).for_each(|s| *s = 0.0);
+        }
+        for p in patches.iter_mut() {
+            if !p.live {
+                if p.dirty {
+                    p.dirty = false;
+                    for g in p.gains.iter_mut().filter(|g| g.is_ramping()) {
+                        g.advance(len);
+                        p.dirty |= g.is_ramping();
+                    }
                 }
-                p.fill(tmp);
-                for ((y, x), g) in dv.iter_mut().zip(bo).zip(tmp.iter()) {
-                    *y += x * g;
+                continue;
+            }
+            p.dirty = false;
+            for (d, dv) in dev.chunks_exact_mut(block).enumerate() {
+                for (o, bo) in p.bus.chunks_exact(block).enumerate() {
+                    let Some(g) = p.gains.get_mut(o * outs + d) else {
+                        continue;
+                    };
+                    if g.is_silent() {
+                        continue;
+                    }
+                    g.fill(tmp);
+                    p.dirty |= g.is_ramping();
+                    for ((y, x), g) in dv.iter_mut().zip(bo).zip(tmp.iter()) {
+                        *y += x * g;
+                    }
                 }
             }
         }
 
+        // Delay first, so output level, mute and polarity act immediately for the operator.
         let Some(mb) = scratch.master.get_mut(..len) else {
             return;
         };
@@ -832,7 +1006,7 @@ impl Mixer {
         {
             g.fill(tmp);
             for ((y, gg), m) in dv.iter_mut().zip(tmp.iter()).zip(mb.iter()) {
-                *y = dl.tick(*y * gg, dezip) * m;
+                *y = dl.tick(*y) * gg * m;
             }
         }
 
@@ -853,8 +1027,14 @@ fn render_voice(
     s: &mut Scratch,
     outbox: &mut Outbox,
 ) {
+    // Nothing after a stop fade ends is read, played or counted as underrun.
+    let live = v.stop_end.map_or(len, |e| {
+        usize::try_from(e.saturating_sub(t0))
+            .unwrap_or(len)
+            .min(len)
+    });
     let pos0 = v.pos;
-    let (got, outcome) = v.read(len, block);
+    let (got, outcome) = v.read(live, len, block);
     let (Some(vg), Some(og), Some(tmp)) = (
         s.vgain.get_mut(..len),
         s.og.get_mut(..len),
@@ -920,7 +1100,7 @@ fn render_voice(
             outbox
                 .shared
                 .underrun_frames
-                .fetch_add((len - got) as u64, Ordering::Relaxed);
+                .fetch_add((live - got) as u64, Ordering::Relaxed);
             if !v.underrunning {
                 v.underrunning = true;
                 outbox.emit(Event::Underrun {
@@ -946,11 +1126,6 @@ fn render_voice(
     }
 }
 
-/// Non-finite gains would poison the whole output; treat them as silence.
-fn sanitize(g: f32) -> f32 {
-    if g.is_finite() { g } else { 0.0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,6 +1140,10 @@ mod tests {
         };
         assert_eq!(bad(|c| c.sample_rate = 0), Some(ConfigError::SampleRate));
         assert_eq!(
+            bad(|c| c.sample_rate = 384_001),
+            Some(ConfigError::SampleRate)
+        );
+        assert_eq!(
             bad(|c| c.output_channels = 0),
             Some(ConfigError::OutputChannels)
         );
@@ -976,11 +1155,19 @@ mod tests {
             bad(|c| c.max_block_frames = 0),
             Some(ConfigError::BlockFrames)
         );
+        assert_eq!(
+            bad(|c| c.max_block_frames = usize::MAX),
+            Some(ConfigError::BlockFrames)
+        );
         assert_eq!(bad(|c| c.max_voices = 0), Some(ConfigError::Voices));
+        assert_eq!(bad(|c| c.max_voices = 4097), Some(ConfigError::Voices));
         assert_eq!(
             bad(|c| c.max_voice_channels = 65),
             Some(ConfigError::VoiceChannels)
         );
+        assert_eq!(bad(|c| c.patches = 0), Some(ConfigError::Patches));
+        assert_eq!(bad(|c| c.patches = 65), Some(ConfigError::Patches));
+        assert_eq!(bad(|c| c.lookahead_ms = 9), Some(ConfigError::Lookahead));
         assert!(
             Mixer::new(MixerConfig {
                 output_channels: 64,
@@ -995,11 +1182,10 @@ mod tests {
         let (mut ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
         let (mut tx, rx) = RingBuffer::new(4096);
         tx.push_entire_slice(&[0.5; 4096]).unwrap();
-        ctl.send(
-            0,
-            CommandKind::StartVoice(VoiceStart::new(VoiceId(1), rx, 2)),
-        )
-        .unwrap();
+        let mut v = VoiceStart::new(VoiceId(1), rx, 2, 2);
+        v.set_crosspoint(0, 0, 1.0);
+        v.set_crosspoint(1, 1, 1.0);
+        ctl.send(0, CommandKind::StartVoice(Box::new(v)));
         let mut r = OfflineRenderer::new(mixer);
         let before = r.render(64, &[64]);
         assert!(before.iter().all(|s| *s == 0.5));
@@ -1015,5 +1201,47 @@ mod tests {
         assert!(r.mixer_mut().process_guarded(&mut buf, 64));
         assert!(buf.iter().all(|s| *s == 0.5));
         assert_eq!(ctl.faults(), 1);
+    }
+
+    #[test]
+    fn full_return_queue_leaks_instead_of_freeing_on_the_audio_thread() {
+        let (tx, mut rx) = RingBuffer::new(1);
+        let (ev_tx, _ev_rx) = RingBuffer::new(1);
+        let shared = Arc::new(Shared::default());
+        let mut outbox = Outbox {
+            events: ev_tx,
+            returns: tx,
+            shared: Arc::clone(&shared),
+        };
+        let start = || {
+            let (_p, c) = RingBuffer::new(4);
+            Box::new(VoiceStart::new(VoiceId(1), c, 1, 2))
+        };
+        let (a, b) = (start(), start());
+        crate::no_alloc_for_tests(|| {
+            outbox.give_back(a);
+            outbox.give_back(b);
+            outbox.emit(Event::PendingFull { at: 0 });
+            outbox.emit(Event::PendingFull { at: 1 });
+        });
+        assert_eq!(shared.leaked_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.dropped_events.load(Ordering::Relaxed), 1);
+        assert!(rx.pop().is_ok());
+    }
+
+    #[test]
+    fn delay_retarget_mid_crossfade_waits_for_the_running_one() {
+        let mut d = DelayLine::new(100, 10);
+        d.set_delay(20);
+        for _ in 0..3 {
+            d.tick(1.0);
+        }
+        d.set_delay(40);
+        assert_eq!((d.delay, d.next), (20, Some(40)));
+        for _ in 0..7 {
+            d.tick(1.0);
+        }
+        d.tick(1.0);
+        assert_eq!((d.old_delay, d.delay, d.next), (20, 40, None));
     }
 }

@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Real-time safety (NFR-02): no allocation in `process` on any path, and faults (underrun, pool
-//! exhaustion, bad commands) degrade to silence plus an event, never a panic.
+//! exhaustion, full queues, bad commands) degrade to silence plus an event, never a panic.
 
 mod common;
+
+use std::time::{Duration, Instant};
 
 use common::*;
 use openlab_audio::{
     CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MixerConfig, OutputSettings,
-    RejectReason, VoiceId, VoiceStart,
+    PENDING_CAPACITY, RejectReason, VoiceId,
 };
 
 #[test]
@@ -39,27 +41,28 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
         Curve::Exponential,
     ];
     for id in 0..64u64 {
-        let mut v = VoiceStart::new(VoiceId(id), source(&stereo), 2);
+        let mut v = voice(&ctl, id, source(&stereo), 2);
+        v.patch = (id % 3) as u16;
         v.fade_in = Fade::new(200, curves[id as usize % 5]);
         if id % 3 == 0 {
             v.play_frames = Some(2000);
             v.fade_out = Fade::new(300, curves[(id as usize + 2) % 5]);
         }
-        ctl.send(id * 7, CommandKind::StartVoice(v)).unwrap();
+        send_start(&mut ctl, id * 7, v);
         let target = GainTarget::Crosspoint {
             input: 1,
             output: (id % 8) as u16,
         };
+        let fade = Fade::new(400, curves[id as usize % 5]);
         ctl.send(
             500 + id,
             CommandKind::Ramp {
                 voice: VoiceId(id),
                 target,
                 gain: 0.5,
-                fade: Fade::new(400, curves[id as usize % 5]),
+                fade,
             },
-        )
-        .unwrap();
+        );
         ctl.send(
             600 + id,
             CommandKind::Ramp {
@@ -68,8 +71,7 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
                 gain: 0.7,
                 fade: Fade::NONE,
             },
-        )
-        .unwrap();
+        );
         let fade = if id % 2 == 0 {
             Fade::new(250, Curve::SCurve)
         } else {
@@ -82,36 +84,34 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
                     voice: VoiceId(id),
                     fade,
                 },
-            )
-            .unwrap();
+            );
         }
     }
-    // An underrunning voice, and one more than the remaining pool can take after the burst.
     let (_keep_open, starving) = open_source(1000, &[0.1; 200]);
     start(&mut ctl, 0, 100, starving, 1);
+    let settings = OutputSettings {
+        level: 0.5,
+        mute: false,
+        invert: true,
+        delay_frames: 333,
+    };
     ctl.send(
         800,
         CommandKind::SetOutput {
             output: 3,
-            settings: OutputSettings {
-                level: 0.5,
-                mute: false,
-                invert: true,
-                delay_frames: 333,
-            },
+            settings,
         },
-    )
-    .unwrap();
+    );
     ctl.send(
         900,
         CommandKind::SetPatchRouting {
+            patch: 1,
             cue_output: 1,
             device_output: 4,
             gain: 0.5,
         },
-    )
-    .unwrap();
-    ctl.send(950, CommandKind::SetMaster { gain: 0.8 }).unwrap();
+    );
+    ctl.send(950, CommandKind::SetMaster { gain: 0.8 });
 
     let mut out = vec![0.0; 8 * 4000];
     no_alloc(|| r.render_into(&mut out, &[1, 64, 333, 7, 1024, 128]));
@@ -133,7 +133,8 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
     }));
     assert_eq!(ctl.collect_returns(), 64);
     assert_eq!(ctl.faults(), 0);
-    assert_eq!(ctl.leaked_sources(), 0);
+    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.dropped_events(), 0);
 }
 
 #[test]
@@ -167,7 +168,7 @@ fn underrun_outputs_silence_reports_and_recovers() {
         }]
     );
 
-    // End of stream: the voice finishes cleanly and its source comes back.
+    // End of stream: the voice finishes cleanly and its start comes back.
     drop(tx);
     no_alloc(|| r.render_into(&mut out, &[64]));
     assert_eq!(
@@ -195,6 +196,9 @@ fn rejected_starts_report_and_return_their_source() {
     start(&mut ctl, 0, 3, source(&[1.0; 2000]), 1);
     start(&mut ctl, 10, 4, source(&[1.0; 2000]), 0);
     start(&mut ctl, 10, 5, source(&[1.0; 2000]), 3);
+    let mut short = voice(&ctl, 6, source(&[1.0; 2000]), 1);
+    short.crosspoints.pop();
+    send_start(&mut ctl, 10, short);
     let mut out = vec![0.0; 2 * 100];
     no_alloc(|| r.render_into(&mut out, &[32]));
     let rejected = |voice, at, reason| Event::VoiceRejected {
@@ -209,9 +213,10 @@ fn rejected_starts_report_and_return_their_source() {
             rejected(3, 0, RejectReason::PoolFull),
             rejected(4, 10, RejectReason::BadChannelCount),
             rejected(5, 10, RejectReason::BadChannelCount),
+            rejected(6, 10, RejectReason::BadRouting),
         ]
     );
-    assert_eq!(ctl.collect_returns(), 4);
+    assert_eq!(ctl.collect_returns(), 5);
     // The two accepted voices play.
     assert_eq!(out[50 * 2], 2.0);
 }
@@ -224,32 +229,30 @@ fn commands_for_unknown_voices_or_indices_are_ignored() {
         input: 5,
         output: 0,
     };
+    let ramp = |voice, target| CommandKind::Ramp {
+        voice: VoiceId(voice),
+        target,
+        gain: 1.0,
+        fade: Fade::NONE,
+    };
     let cmds = [
         CommandKind::StopVoice {
             voice: VoiceId(9),
             fade: Fade::NONE,
         },
-        CommandKind::Ramp {
-            voice: VoiceId(9),
-            target: GainTarget::Master,
-            gain: 0.0,
-            fade: Fade::NONE,
-        },
-        CommandKind::Ramp {
-            voice: VoiceId(1),
-            target: bad_xp,
-            gain: 1.0,
-            fade: Fade::NONE,
-        },
-        CommandKind::Ramp {
-            voice: VoiceId(1),
-            target: GainTarget::CueOutput(99),
-            gain: 0.0,
-            fade: Fade::NONE,
-        },
+        ramp(9, GainTarget::Master),
+        ramp(1, bad_xp),
+        ramp(1, GainTarget::CueOutput(99)),
         CommandKind::SetPatchRouting {
+            patch: 0,
             cue_output: 99,
             device_output: 0,
+            gain: 1.0,
+        },
+        CommandKind::SetPatchRouting {
+            patch: 99,
+            cue_output: 0,
+            device_output: 1,
             gain: 1.0,
         },
         CommandKind::SetOutput {
@@ -258,11 +261,106 @@ fn commands_for_unknown_voices_or_indices_are_ignored() {
         },
     ];
     for c in cmds {
-        ctl.send(0, c).unwrap();
+        ctl.send(0, c);
     }
     let mut out = vec![0.0; 2 * 100];
     no_alloc(|| r.render_into(&mut out, &[16]));
     assert!(channel(&out, 2, 0).iter().all(|s| *s == 1.0));
     assert!(channel(&out, 2, 1).iter().all(|s| *s == 0.0));
     assert!(events(&mut ctl).is_empty());
+}
+
+#[test]
+fn full_event_queue_drops_and_counts_without_allocating() {
+    let cfg = MixerConfig {
+        max_voices: 1,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    start(&mut ctl, 0, 0, source(&[1.0; 4000]), 1);
+    let mut out = vec![0.0; 64];
+    for round in 0..2 {
+        for i in 0..1000 {
+            start(&mut ctl, 0, 1 + round * 1000 + i, source(&[1.0; 4]), 1);
+        }
+        no_alloc(|| r.render_into(&mut out, &[64]));
+        assert!(
+            out.iter().all(|s| *s == 1.0),
+            "the playing voice is unaffected"
+        );
+    }
+    // 2000 rejections, 1024 fit in the event queue.
+    assert_eq!(ctl.dropped_events(), 2000 - 1024);
+    assert_eq!(events(&mut ctl).len(), 1024);
+    assert_eq!(ctl.leaked_starts(), 0);
+}
+
+#[test]
+fn full_pending_set_is_reported_and_nothing_is_lost() {
+    let cfg = MixerConfig {
+        lookahead_ms: 60_000,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    start(&mut ctl, 0, 1, source(&vec![1.0; 40_000]), 1);
+    let n = PENDING_CAPACITY + 1500;
+    for i in 0..n as u64 {
+        // Gains climb to 0.5 at the last one, so the output shows every command arrived in order.
+        let gain = if i + 1 == n as u64 { 0.5 } else { 0.9 };
+        ctl.send(5000 + i, CommandKind::SetMaster { gain });
+    }
+    let mut out = vec![0.0; 256];
+    let mut seen_full = false;
+    for _ in 0..80 {
+        ctl.pump();
+        no_alloc(|| r.render_into(&mut out, &[256]));
+        seen_full |= events(&mut ctl)
+            .iter()
+            .any(|e| matches!(e, Event::PendingFull { .. }));
+    }
+    assert!(seen_full);
+    assert!(ctl.pending_full_blocks() > 0);
+    assert_eq!(ctl.held(), 0);
+    assert!(
+        (out[255] - 0.5).abs() < 1e-6,
+        "the last command was applied"
+    );
+}
+
+/// Review M1: a 1024-command burst costs about as much as a normal block, not O(n²).
+#[test]
+fn a_command_burst_processes_within_a_few_normal_blocks() {
+    let cfg = MixerConfig {
+        output_channels: 8,
+        max_block_frames: 256,
+        max_voices: 16,
+        ..MixerConfig::default()
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    for id in 0..8 {
+        start(&mut ctl, 0, id, source(&vec![0.1; 2 * 48_000]), 2);
+    }
+    let mut out = vec![0.0; 8 * 256];
+    let time = |r: &mut openlab_audio::OfflineRenderer, out: &mut [f32]| {
+        let t = Instant::now();
+        no_alloc(|| r.render_into(out, &[256]));
+        t.elapsed()
+    };
+    let baseline = (0..20)
+        .map(|_| time(&mut r, &mut out))
+        .min()
+        .unwrap_or(Duration::ZERO);
+    let mut burst = Duration::MAX;
+    for round in 0..5u64 {
+        let at = ctl.samples_rendered() + 10_000 + round;
+        for _ in 0..openlab_audio::COMMAND_CAPACITY {
+            ctl.send(at, CommandKind::SetMaster { gain: 1.0 });
+        }
+        burst = burst.min(time(&mut r, &mut out));
+    }
+    // Pulling 1024 commands is ~10k heap comparisons; the old O(n²) insert was ~70× a block.
+    assert!(
+        burst < baseline * 8 + Duration::from_millis(1),
+        "burst {burst:?} vs block {baseline:?}"
+    );
 }

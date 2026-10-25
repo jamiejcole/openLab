@@ -50,12 +50,23 @@ pub fn open_source(capacity: usize, data: &[f32]) -> (Producer<f32>, Consumer<f3
     (tx, rx)
 }
 
+/// A voice start with identity routing (input n → cue output n, unity).
+pub fn voice(ctl: &MixerController, id: u64, rx: Consumer<f32>, channels: u16) -> VoiceStart {
+    let mut v = VoiceStart::new(VoiceId(id), rx, channels, ctl.cue_outputs());
+    for i in 0..usize::from(channels) {
+        v.set_crosspoint(i, i, 1.0);
+    }
+    v
+}
+
+pub fn send_start(ctl: &mut MixerController, at: u64, v: VoiceStart) {
+    ctl.send(at, CommandKind::StartVoice(Box::new(v)));
+}
+
+/// Starts a voice with identity routing.
 pub fn start(ctl: &mut MixerController, at: u64, id: u64, rx: Consumer<f32>, channels: u16) {
-    ctl.send(
-        at,
-        CommandKind::StartVoice(VoiceStart::new(VoiceId(id), rx, channels)),
-    )
-    .unwrap();
+    let v = voice(ctl, id, rx, channels);
+    send_start(ctl, at, v);
 }
 
 /// Channel `ch` of interleaved `buf`.
