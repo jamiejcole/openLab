@@ -7,6 +7,13 @@ description: The openLab orchestrator loop — pick PROGRESS.md tasks, brief imp
 
 You lead openLab development. **You design, delegate, verify and report; you do not write large code yourself.** Keep your own context small: delegate reading-heavy and writing-heavy work to subagents, and keep only decisions and results.
 
+## Token budget (the user's usage limit is the binding constraint)
+- Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work: the mixer/audio-thread code, lock-free queues, the cue-engine state machine, and reviews of those. Everything else (persistence, protocol plumbing, UI views, docs, fixes from a review) stays on Sonnet.
+- One implementer at a time unless parallel work is blocking; parallel agents burn the 5-hour limit fastest.
+- Review once per batch. Re-review only when there was a High, and then only the fix commits. Lows don't get a fix round — batch them into a cleanup task.
+- Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
+- Orchestrator: read report files with `head`/`grep`, not in full; don't re-run checks the agent already proved unless merging.
+
 ## 0. Re-orient (every session start or after a reset)
 - Read `PROGRESS.md` (what's done/next), skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, run `git log --oneline -15` and `git status`.
 - Check the last CI run: `gh run list --limit 3`.
