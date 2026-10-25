@@ -2,9 +2,10 @@
 
 //! Crash-safe file replacement (NFR-04).
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::PersistError;
 
@@ -18,7 +19,7 @@ pub enum Stage {
 }
 
 /// Replaces `path` with `bytes` so that a crash or error at any point leaves either the old
-/// file or the new one, never a mixture: write `<name>.tmp` beside it, fsync, rename over the
+/// file or the new one, never a mixture: write `<name>.<pid>-<n>.tmp` beside it, fsync, rename over the
 /// original, fsync the folder (where the platform allows).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), PersistError> {
     write_atomic_with(path, bytes, |_| Ok(()))
@@ -37,12 +38,19 @@ pub fn write_atomic_with(
             "path has no file name",
         )));
     };
+    // Unique per write and created with `create_new`: a second process saving the same show,
+    // a user's own `.tmp` file or a planted symlink can never be written through or clobbered.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut tmp_name = name.to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = path.with_file_name(tmp_name);
 
     let staged = (|| {
-        let mut file = File::create(&tmp)?;
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
         checkpoint(Stage::TmpWritten)?;
         file.sync_all()?;

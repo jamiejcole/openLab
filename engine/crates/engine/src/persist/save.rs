@@ -70,7 +70,7 @@ pub fn save_workspace_with(
     }
 
     let rotated = if keep > 0 {
-        rotate(dirs, workspace.id, keep)
+        rotate(dirs, workspace.id, path, keep)
     } else {
         Rotation::default()
     };
@@ -81,11 +81,15 @@ pub fn save_workspace_with(
             .into_iter()
             .map(|f| format!("could not remove old backup {f}")),
     );
-    // The saved file now holds everything the recovery file did.
-    if let Err(e) = clear_recovery(dirs, workspace.id) {
-        report
-            .warnings
-            .push(format!("could not remove recovery file: {e}"));
+    // The saved file now holds everything the recovery files did (the one for this show path,
+    // and the one from before the workspace had a path). Only now, after the rename and folder
+    // sync, is it safe to drop them.
+    for show in [Some(path), None] {
+        if let Err(e) = clear_recovery(dirs, workspace.id, show) {
+            report
+                .warnings
+                .push(format!("could not remove recovery file: {e}"));
+        }
     }
     Ok(report)
 }
