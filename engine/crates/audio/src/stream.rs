@@ -18,12 +18,18 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::decode::{Media, MediaError, MediaInfo, MediaWarning, contain, open_source};
 use crate::mixer::{VoiceId, VoiceStart};
-use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
+use crate::plan::{Exit, MAX_SLICES, Plays, Slice, StreamLink};
 use crate::resample::Pipeline;
 
 pub const DEFAULT_WORKERS: usize = 2;
 pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
+/// Loop exit buffer length. After a devamp leaves a loop the worker must, within this time:
+/// notice the freed ring (its poll, 5 ms), seek (a fresh demuxer plus pre-roll: up to about
+/// 10 ms on long compressed files, see docs/audio.md) and decode its first chunk (4096 frames),
+/// while the device still has to be fed a block ahead (up to 8192 frames = 170 ms at 48 kHz).
+/// 250 ms covers that with margin.
+pub const DEFAULT_EXIT_MS: u32 = 250;
 /// Frames decoded per step; workers visit their streams round-robin, one chunk each.
 const CHUNK_FRAMES: usize = 4096;
 /// Most warnings kept per stream.
@@ -40,6 +46,9 @@ pub struct StreamerConfig {
     pub buffer_ms: u32,
     /// Streams open at once (each holds a decoder and a ring).
     pub max_streams: usize,
+    /// Length of each loop exit's buffer (see [`StreamLink`]): how long the worker has, after a
+    /// devamp leaves a loop, to refill the ring with the continuation.
+    pub exit_ms: u32,
 }
 
 impl StreamerConfig {
@@ -49,6 +58,7 @@ impl StreamerConfig {
             workers: DEFAULT_WORKERS,
             buffer_ms: DEFAULT_BUFFER_MS,
             max_streams: DEFAULT_MAX_STREAMS,
+            exit_ms: DEFAULT_EXIT_MS,
         }
     }
 }
@@ -94,6 +104,8 @@ struct Status {
     cuts: u64,
     /// Damage met while streaming, each once (see `StreamHandle::warnings`).
     warnings: Vec<MediaWarning>,
+    /// Ring position where the latest devamp's continuation starts.
+    resume: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -153,6 +165,12 @@ impl StreamHandle {
     /// Devamp cuts made so far (see [`StreamLink`]).
     pub fn cuts(&self) -> u64 {
         self.shared.lock().cuts
+    }
+
+    /// Ring position (frames written before it) where the latest devamp's continuation starts,
+    /// after the frames the voice plays from the loop exit's buffer. For diagnostics and tests.
+    pub fn last_resume(&self) -> Option<u64> {
+        self.shared.lock().resume
     }
 
     // The `wait_*` helpers block (with a timeout): for I/O helper threads and tests, never the
@@ -312,6 +330,11 @@ impl DiskStreamer {
             off: 0,
             written: 0,
             origin: (0, 0),
+            exit_frames: usize::try_from(
+                u64::from(self.config.device_rate) * u64::from(self.config.exit_ms) / 1000,
+            )
+            .unwrap_or(0),
+            exits_built: false,
             handled_cut: None,
             cut: None,
             scratch: vec![0.0; CHUNK_FRAMES * ch],
@@ -352,7 +375,6 @@ impl Drop for DiskStreamer {
 
 fn run_worker(rx: Receiver<Msg>) {
     let mut tasks: Vec<Box<Task>> = Vec::new();
-    let mut failed: Vec<(Arc<Shared>, MediaError)> = Vec::new();
     loop {
         loop {
             match rx.try_recv() {
@@ -363,22 +385,24 @@ fn run_worker(rx: Receiver<Msg>) {
             }
         }
         let mut worked = false;
-        tasks.retain_mut(|t| match t.step() {
-            Progress::Worked => {
-                worked = true;
-                true
+        let mut i = 0;
+        while let Some(t) = tasks.get_mut(i) {
+            match t.step() {
+                Progress::Worked => {
+                    worked = true;
+                    i += 1;
+                }
+                Progress::Idle => i += 1,
+                Progress::Done => drop(tasks.swap_remove(i)),
+                Progress::Failed(e) => {
+                    let shared = Arc::clone(&t.shared);
+                    drop(tasks.swap_remove(i));
+                    // Published right after the task (and its ring producer) is dropped, before
+                    // any other stream's step can block: once a caller sees the error, the voice
+                    // is certain to end after the frames already written.
+                    shared.update(|s| s.error = Some(e));
+                }
             }
-            Progress::Idle => true,
-            Progress::Done => false,
-            Progress::Failed(e) => {
-                failed.push((Arc::clone(&t.shared), e));
-                false
-            }
-        });
-        // Published only now that the failed tasks (and their ring producers) are dropped: once
-        // a caller sees the error, the voice is certain to end after the frames already written.
-        for (shared, e) in failed.drain(..) {
-            shared.update(|s| s.error = Some(e));
         }
         if worked {
             continue;
@@ -423,8 +447,13 @@ struct Task {
     /// Ring frames written so far.
     written: u64,
     /// Entry and ring position the cursor last started from without a gap (start or a cut);
-    /// ring positions of later loop points follow from the table.
-    origin: (usize, u64),
+    /// ring positions of later loop points follow from the table. After a cut the entry's start
+    /// is a virtual ring position (the exit buffer's frames come before it, not in the ring), so
+    /// it can be negative.
+    origin: (usize, i64),
+    /// Frames per loop exit buffer, at the device rate.
+    exit_frames: usize,
+    exits_built: bool,
     handled_cut: Option<u64>,
     /// A cut not reached yet: at ring position, jump to entry.
     cut: Option<(u64, usize)>,
@@ -450,6 +479,10 @@ impl Task {
                 return Err(MediaError::Changed);
             }
             self.pipe = Some(Pipeline::new(src, self.info.frames, self.device_rate)?);
+        }
+        if !self.exits_built {
+            self.build_exits()?;
+            self.exits_built = true;
         }
         self.check_cut()?;
         let Some(s) = self.slices.get(self.entry).copied() else {
@@ -541,13 +574,16 @@ impl Task {
         }
         self.handled_cut = Some(d);
         let (mut k, mut pos) = self.origin;
+        let d = i64::try_from(d).unwrap_or(i64::MAX);
         let found = loop {
             let Some(s) = self.slices.get(k) else {
                 break None;
             };
             match s.plays {
                 Plays::Times(n) => {
-                    let end = pos.saturating_add(s.frames.saturating_mul(u64::from(n)));
+                    let len =
+                        i64::try_from(s.frames.saturating_mul(u64::from(n))).unwrap_or(i64::MAX);
+                    let end = pos.saturating_add(len);
                     if d <= end {
                         break Some(k);
                     }
@@ -564,26 +600,126 @@ impl Task {
         let target = (k + 1..self.slices.len())
             .find(|&i| self.slices.get(i).map(|s| s.index) != index)
             .unwrap_or(self.slices.len());
-        if self.written < d {
-            self.cut = Some((d, target));
-        } else {
-            self.jump(target);
+        match u64::try_from(d) {
+            Ok(d) if self.written < d => self.cut = Some((d, target)),
+            _ => self.jump(target),
         }
         Ok(())
     }
 
-    /// Continues with entry `target` from the current ring position and tells the voice where.
+    /// Continues with entry `target` from the current ring position, after the frames the
+    /// voice plays from that exit's buffer, and tells the voice where.
     fn jump(&mut self, target: usize) {
+        let e = self.link.exit(target).map_or(0, |e| e.frames);
+        let (entry, play, off) = self.advance(target, e as u64);
         self.cut = None;
-        self.entry = target;
-        self.play = 0;
-        self.off = 0;
-        self.origin = (target, self.written);
+        self.entry = entry;
+        self.play = play;
+        self.off = off;
+        let written = i64::try_from(self.written).unwrap_or(i64::MAX);
+        self.origin = (target, written.saturating_sub(e as i64));
         self.link.resume(self.written);
+        let written = self.written;
         self.shared.update(|s| {
+            s.resume = Some(written);
             s.cuts += 1;
             s.finished = false;
         });
+    }
+}
+
+impl Task {
+    /// Cursor position `frames` into the table unrolled from entry `from`.
+    fn advance(&self, from: usize, mut frames: u64) -> (usize, u32, u64) {
+        let mut k = from;
+        while let Some(s) = self.slices.get(k) {
+            let per = s.frames.max(1);
+            match s.plays {
+                Plays::Infinite => {
+                    return (
+                        k,
+                        u32::try_from(frames / per).unwrap_or(u32::MAX),
+                        frames % per,
+                    );
+                }
+                Plays::Times(n) => {
+                    let all = per.saturating_mul(u64::from(n));
+                    if frames < all {
+                        return (
+                            k,
+                            u32::try_from(frames / per).unwrap_or(u32::MAX),
+                            frames % per,
+                        );
+                    }
+                    frames -= all;
+                    k += 1;
+                }
+            }
+        }
+        (k, 0, 0)
+    }
+
+    /// Decodes each loop exit's buffer (the first `exit_frames` after leaving the loop) and
+    /// publishes them on the link. Runs before the first ring write, so a voice can never reach
+    /// a loop boundary before its exit is ready.
+    fn build_exits(&mut self) -> Result<(), MediaError> {
+        let mut targets: Vec<usize> = Vec::new();
+        for (k, s) in self.slices.iter().enumerate() {
+            let next_same = self.slices.get(k + 1).is_some_and(|n| n.index == s.index);
+            let loops = !matches!(s.plays, Plays::Times(1)) || next_same;
+            if !loops {
+                continue;
+            }
+            let target = (k + 1..self.slices.len())
+                .find(|&i| self.slices.get(i).map(|x| x.index) != Some(s.index))
+                .unwrap_or(self.slices.len());
+            if target < self.slices.len() && !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        let Some(pipe) = self.pipe.as_mut() else {
+            return Err(MediaError::Worker);
+        };
+        let ch = pipe.channels();
+        let mut exits = Vec::with_capacity(targets.len());
+        for target in targets {
+            let mut samples: Vec<f32> = Vec::with_capacity(self.exit_frames * ch);
+            let (mut k, mut play) = (target, 0u32);
+            while samples.len() < self.exit_frames * ch {
+                let Some(s) = self.slices.get(k).copied() else {
+                    break;
+                };
+                let need = (self.exit_frames - samples.len() / ch)
+                    .min(usize::try_from(s.frames).unwrap_or(usize::MAX));
+                if pipe.position() != s.start {
+                    pipe.seek(s.start)?;
+                }
+                let mut left = need;
+                while left > 0 {
+                    let n = left.min(CHUNK_FRAMES);
+                    let buf = self.scratch.get_mut(..n * ch).ok_or(MediaError::Worker)?;
+                    if pipe.read(buf)? < n {
+                        return Err(MediaError::Changed);
+                    }
+                    samples.extend_from_slice(buf);
+                    left -= n;
+                }
+                play = play.saturating_add(1);
+                if let Plays::Times(n) = s.plays
+                    && play >= n
+                {
+                    k += 1;
+                    play = 0;
+                }
+            }
+            exits.push(Exit {
+                target,
+                frames: samples.len() / ch,
+                samples: samples.into_boxed_slice(),
+            });
+        }
+        self.link.set_exits(exits);
+        Ok(())
     }
 }
 

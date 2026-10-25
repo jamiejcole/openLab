@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Longest slice table a voice accepts. Bounds the per-boundary work on the audio thread.
@@ -146,13 +147,26 @@ const NONE: u64 = u64::MAX;
 /// Shared by a mixer voice and the disk stream that feeds it, for devamp (CT-16). Positions are
 /// ring frame indices: frames written to (or consumed from) the voice's ring since it started.
 ///
-/// The voice publishes the boundary where it will leave the loop (`request_cut`). The disk stream
-/// stops unrolling there, writes the continuation, and publishes where in the ring the
-/// continuation starts (`resume`). The voice skips the stale loop frames in between.
+/// The voice publishes the boundary where it will leave the loop (`request_cut`). At the
+/// boundary it plays the start of the continuation from that loop exit's buffer (`exit`), which
+/// the disk stream decoded before it first wrote to the ring, so nothing has to arrive in time.
+/// Meanwhile the disk stream stops unrolling the loop, writes the continuation from where the
+/// exit buffer ends, and publishes where in the ring that starts (`resume`); the voice skips
+/// the stale loop frames in between, which frees the ring for it.
 #[derive(Debug)]
 pub struct StreamLink {
     cut_at: AtomicU64,
     resume_at: AtomicU64,
+    exits: OnceLock<Box<[Exit]>>,
+}
+
+/// The first frames played after leaving a loop into slice-table entry `target`: the table
+/// unrolled from there, interleaved.
+#[derive(Debug)]
+pub(crate) struct Exit {
+    pub(crate) target: usize,
+    pub(crate) frames: usize,
+    pub(crate) samples: Box<[f32]>,
 }
 
 impl Default for StreamLink {
@@ -160,6 +174,7 @@ impl Default for StreamLink {
         StreamLink {
             cut_at: AtomicU64::new(NONE),
             resume_at: AtomicU64::new(NONE),
+            exits: OnceLock::new(),
         }
     }
 }
@@ -180,6 +195,17 @@ impl StreamLink {
 
     pub(crate) fn resumed_at(&self) -> Option<u64> {
         Some(self.resume_at.load(Ordering::Acquire)).filter(|&v| v != NONE)
+    }
+
+    /// Published once by the disk stream, before its first ring write.
+    pub(crate) fn set_exits(&self, exits: Vec<Exit>) {
+        let _ = self.exits.set(exits.into_boxed_slice());
+    }
+
+    /// The exit buffer for leaving into entry `target`. Lock- and allocation-free (an acquire
+    /// load and a scan of at most `MAX_SLICES` entries): safe on the audio thread.
+    pub(crate) fn exit(&self, target: usize) -> Option<&Exit> {
+        self.exits.get()?.iter().find(|e| e.target == target)
     }
 }
 

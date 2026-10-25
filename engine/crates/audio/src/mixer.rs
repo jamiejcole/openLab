@@ -459,6 +459,9 @@ struct Voice {
     awaiting: Option<u64>,
     /// Set when a devamp left less audio than the fade-out's length.
     refade: Option<Refade>,
+    /// Playing the start of a loop exit's continuation from its exit buffer (see
+    /// [`StreamLink`]): entry it was made for, and frames of it played.
+    exit: Option<(usize, usize)>,
     fade_in: Fade,
     fade_out: Fade,
     master: Param,
@@ -492,6 +495,7 @@ impl Voice {
             devamp: None,
             awaiting: None,
             refade: None,
+            exit: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
             master: Param::new(1.0),
@@ -582,6 +586,7 @@ impl Voice {
         self.devamp = None;
         self.awaiting = None;
         self.refade = None;
+        self.exit = None;
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
         self.master.set(sanitize_gain(s.gain));
@@ -626,7 +631,13 @@ impl Voice {
             voice: self.id,
             at: t,
         };
-        if !self.has_slices() || self.devamp.is_some() || self.awaiting.is_some() {
+        // While the last devamp's exit is under way the voice's ring position is not yet the
+        // continuation's, so a new cut point could not be computed.
+        if !self.has_slices()
+            || self.devamp.is_some()
+            || self.awaiting.is_some()
+            || self.exit.is_some()
+        {
             outbox.emit(ignored);
             return;
         }
@@ -691,6 +702,15 @@ impl Voice {
                 };
                 if cut {
                     self.awaiting = Some(self.ring_pos);
+                    // Play the continuation's start from its exit buffer while the stale
+                    // frames are skipped and the stream refills the ring behind them.
+                    let ready = self
+                        .link()
+                        .and_then(|l| l.exit(target))
+                        .is_some_and(|e| e.frames > 0);
+                    if ready {
+                        self.exit = Some((target, 0));
+                    }
                 }
                 self.count = 0;
                 self.enter(target);
@@ -753,6 +773,8 @@ impl Voice {
                         self.skip = self.skip.saturating_add(r - b);
                         self.awaiting = None;
                     }
+                    // The exit buffer covers the wait.
+                    _ if self.exit.is_some() => {}
                     _ => {
                         // Without its producer the continuation will never come.
                         let abandoned = self.start.as_ref().is_none_or(|s| s.source.is_abandoned());
@@ -779,6 +801,24 @@ impl Voice {
             }
             if got == live {
                 break ReadOutcome::Full;
+            }
+            if let Some((target, done)) = self.exit {
+                let n = self.read_exit(target, done, got, live, block);
+                got += n;
+                self.pos += n as u64;
+                self.left -= n as u64;
+                match self.exit.as_mut() {
+                    Some(e) if n > 0 => e.1 += n,
+                    // Exhausted (or missing): the ring has the rest.
+                    _ => self.exit = None,
+                }
+                if self.left == 0 {
+                    match self.boundary(t0 + got as u64, outbox) {
+                        Step::Next | Step::Jumped => {}
+                        Step::End => break ReadOutcome::Ended(FinishReason::OutPoint),
+                    }
+                }
+                continue;
             }
             let want = (live - got)
                 .min(avail)
@@ -849,6 +889,41 @@ impl Voice {
             }
         }
         (got, outcome, rem)
+    }
+
+    /// Copies up to `live - got` frames (and at most the current play's `left`) of the exit
+    /// buffer for entry `target`, from its frame `done`, into `input` at frame `got`. Returns the
+    /// frames copied; 0 when the buffer is exhausted.
+    fn read_exit(
+        &mut self,
+        target: usize,
+        done: usize,
+        got: usize,
+        live: usize,
+        block: usize,
+    ) -> usize {
+        let ch = self.channels;
+        let left = usize::try_from(self.left).unwrap_or(usize::MAX);
+        let Voice { start, input, .. } = self;
+        let Some(exit) = start
+            .as_ref()
+            .and_then(|s| s.link.as_deref())
+            .and_then(|l| l.exit(target))
+        else {
+            return 0;
+        };
+        let n = exit.frames.saturating_sub(done).min(live - got).min(left);
+        let Some(src) = exit.samples.get(done * ch..(done + n) * ch) else {
+            return 0;
+        };
+        for (f, frame) in src.chunks_exact(ch).enumerate() {
+            for (c, &x) in frame.iter().enumerate() {
+                if let Some(s) = input.get_mut(c * block + got + f) {
+                    *s = x;
+                }
+            }
+        }
+        n
     }
 
     /// Multiplies the integrated fade envelope into `gain` for the `got` frames read from `pos0`.
