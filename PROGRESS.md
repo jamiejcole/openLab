@@ -48,7 +48,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 - [ ] M3.8 Device layer (cpal): device list, sample rate / buffer size, up to 64 outputs, hot-unplug/replug recovery [AUD-01, AUD-03, AUD-21, NFR-08]
 - [ ] M3.9 Waveform overview data (peaks at multiple zoom levels, computed off the audio thread) [AUD-14]
 - [ ] M3.10 CPU budget test: 64 stereo voices with fades ≥ 10× real time on the Intel CI runner [NFR-23, QA-06]
-- [ ] M3.11 Per-voice output patch selection: the mixer has one global cue-output → device-output matrix; cues using different patches need a patch index on `StartVoice` [AUD-07] — from M3.4
+- [x] M3.11 Per-voice output patch selection: `VoiceStart.patch` picks one of `MixerConfig.patches` cue-output → device-output matrices [AUD-07] — from M3.4, done in the M3-A review fixes
 - [ ] M3.12 Wrap the device callback in `assert_no_alloc` in debug builds (today a dev-dependency used by the offline-render tests) [NFR-02] — from M3.1, do with M3.8
 
 ## M4 — Engine service (`openlab-engine`)
