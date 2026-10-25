@@ -1487,3 +1487,141 @@ fn shuffled_loop_never_repeats_a_child_across_a_pass_boundary() {
         );
     }
 }
+
+// ----- fix round 2 (M2-B re-review) -----
+
+/// Group 1 [10, 11] auto-follows into memo 2; 10 has ended, 11 plays. Group 1 is paused at 2000
+/// while 11's end (or failure) report is in flight; returns the actions of the resume at 3000.
+fn last_child_report_in_flight(mode: GroupMode, fail: bool) -> (Rig, Vec<Action>) {
+    let g = timed(grp(1, mode, vec![sound(10), sound(11)]), 0.0, 0.0, AF);
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.go(0);
+    if rig.state(10) == CueState::Running {
+        rig.ended(1000, 10, 1000);
+    }
+    if rig.state(11) != CueState::Running {
+        rig.start(1000, 11);
+    }
+    assert_eq!(rig.state(11), CueState::Running);
+    rig.at(2000, Input::Pause { cue: id(1) });
+    let run = rig.engine.run_of(id(11)).unwrap();
+    let report = if fail {
+        Input::ActionFailed {
+            cue: id(11),
+            run,
+            reason: BrokenReason::StreamFailed,
+        }
+    } else {
+        Input::ActionEnded {
+            cue: id(11),
+            run,
+            at: 1990,
+        }
+    };
+    rig.at(2010, report);
+    let resume = rig.at(3000, Input::Resume { cue: id(1) });
+    (rig, resume)
+}
+
+#[test]
+fn paused_playlist_whose_last_child_ended_completes_and_auto_follows_on_resume() {
+    // Re-review M1: the group was stopped instead, and cue 2 never fired.
+    let (rig, resume) = last_child_report_in_flight(playlist(false, false), false);
+    assert_eq!(changes(&resume, 1).last(), Some(&(CueState::Idle, 3000)));
+    assert_eq!(running_at(&resume, 2), Some(3000));
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn unpaused_playlist_whose_last_child_ended_auto_follows() {
+    // Control for the case above.
+    let g = timed(
+        grp(1, playlist(false, false), vec![sound(10), sound(11)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.go(0);
+    rig.ended(1000, 10, 1000);
+    let end = rig.ended(2010, 11, 1990);
+    assert_eq!(running_at(&end, 2), Some(1990));
+}
+
+#[test]
+fn paused_playlist_whose_last_child_failed_completes_without_auto_follow() {
+    let (rig, resume) = last_child_report_in_flight(playlist(false, false), true);
+    assert_eq!(changes(&resume, 1).last(), Some(&(CueState::Idle, 3000)));
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(11), CueState::Broken);
+}
+
+#[test]
+fn paused_group_whose_last_child_failed_keeps_its_auto_continue() {
+    let g = timed(
+        grp(1, playlist(false, false), vec![sound(10)]),
+        0.0,
+        5.0,
+        AC,
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.go(0);
+    rig.at(1000, Input::Pause { cue: id(1) });
+    rig.failed(1010, 10);
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    // Action over at the resume; the post-wait (frozen 1000..2000) still fires at 6000.
+    assert_eq!(
+        changes(&resume, 1),
+        vec![(CueState::Running, 2000), (CueState::PostWaiting, 2000)]
+    );
+    assert_eq!(running_at(&rig.tick(6000), 2), Some(6000));
+}
+
+#[test]
+fn paused_random_group_whose_child_ended_completes_on_resume() {
+    let r = timed(grp(1, RANDOM, vec![sound(10)]), 0.0, 0.0, AF);
+    let mut rig = Rig::new(vec![r, memo(2)]);
+    rig.go(0);
+    rig.at(1000, Input::Pause { cue: id(1) });
+    let run = rig.engine.run_of(id(10)).unwrap();
+    rig.at(
+        1010,
+        Input::ActionEnded {
+            cue: id(10),
+            run,
+            at: 990,
+        },
+    );
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    assert_eq!(running_at(&resume, 2), Some(2000));
+}
+
+#[test]
+fn paused_nested_playlist_completing_on_resume_moves_the_outer_one_on() {
+    let inner = grp(5, playlist(false, false), vec![sound(10)]);
+    let outer = timed(
+        grp(1, playlist(false, false), vec![inner, sound(20)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![outer, memo(2)]);
+    rig.go(0);
+    assert_eq!(rig.state(10), CueState::Running);
+    rig.at(1000, Input::Pause { cue: id(1) });
+    let run = rig.engine.run_of(id(10)).unwrap();
+    rig.at(
+        1010,
+        Input::ActionEnded {
+            cue: id(10),
+            run,
+            at: 990,
+        },
+    );
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    assert_eq!(changes(&resume, 5).last(), Some(&(CueState::Idle, 2000)));
+    assert_eq!(starts(&resume), vec![(id(20), 2000)]);
+    assert_eq!(rig.state(1), CueState::Running);
+    let end = rig.ended(3000, 20, 3000);
+    assert_eq!(running_at(&end, 2), Some(3000));
+}
