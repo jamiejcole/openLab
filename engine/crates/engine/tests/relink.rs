@@ -5,7 +5,6 @@
 
 mod common;
 
-use std::fs;
 use std::path::Path;
 
 use common::*;
@@ -160,8 +159,8 @@ fn non_utf8_names_are_skipped_not_fatal() {
     let mut ws = example();
     set_media(&mut ws, &["old/unique.wav"]);
     let lib = env.root.path().join("lib");
-    fs::create_dir_all(&lib).unwrap();
-    if let Err(e) = fs::write(lib.join(OsStr::from_bytes(b"bad\xff\xfe.wav")), b"x") {
+    std::fs::create_dir_all(&lib).unwrap();
+    if let Err(e) = std::fs::write(lib.join(OsStr::from_bytes(b"bad\xff\xfe.wav")), b"x") {
         // APFS (macOS) only holds valid UTF-8 names and refuses the rest with EILSEQ. Any other
         // failure is a real error, so the test cannot pass for the wrong reason.
         assert!(
