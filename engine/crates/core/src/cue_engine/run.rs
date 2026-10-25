@@ -110,6 +110,9 @@ pub(super) struct GroupRun {
     pub failed: bool,
     /// How the last busy child left while the group was paused; the group ends on resume.
     pub pending: Option<Exit>,
+    /// A playlist's current child completed or broke while the group was paused (its report
+    /// was in flight): the playlist moves on when the group resumes.
+    pub advance: bool,
     pub playlist: Option<PlaylistRun>,
 }
 

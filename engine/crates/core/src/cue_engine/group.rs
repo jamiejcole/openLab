@@ -106,6 +106,11 @@ impl CueEngine {
         let Some(CueKind::Group { mode, children }) = ws.find_cue(group).map(|g| &g.kind) else {
             return;
         };
+        // A stopping group never starts children (a stop before the action ends the run at
+        // once; this only guards that rule).
+        if matches!(self.slots.get(&group), Some(Slot::Active(run)) if run.is_group_stopping()) {
+            return;
+        }
         match mode {
             GroupMode::Timeline => {
                 for child in children {
@@ -221,6 +226,12 @@ impl CueEngine {
                     if *shuffle {
                         order = ids.clone();
                         self.rng.shuffle(&mut order);
+                        // A new pass never opens with the child that closed the last one.
+                        let last = state.as_ref().and_then(|p| p.current).map(|(c, _)| c);
+                        if order.len() > 1 && order.first().copied() == last {
+                            let j = self.rng.below(order.len() - 1).saturating_add(1);
+                            order.swap(0, j);
+                        }
                     }
                     state = Some(PlaylistRun {
                         current: None,
@@ -265,18 +276,28 @@ impl CueEngine {
         let Some(&parent) = ancestors(cx.ws, cue).first() else {
             return;
         };
-        let current = match self.slots.get(&parent) {
-            Some(Slot::Active(Run {
-                group: Some(GroupRun {
-                    playlist: Some(p), ..
-                }),
-                ..
-            })) => p.current,
-            _ => None,
+        let Some(Slot::Active(Run {
+            group:
+                Some(
+                    g @ GroupRun {
+                        playlist: Some(_), ..
+                    },
+                ),
+            paused_at,
+            ..
+        })) = self.slots.get_mut(&parent)
+        else {
+            return;
         };
-        if current == Some((cue, seq)) {
-            self.playlist_next(parent, at, cx);
+        if g.playlist.as_ref().and_then(|p| p.current) != Some((cue, seq)) {
+            return;
         }
+        if paused_at.is_some() {
+            // The end report was in flight when the playlist was paused: move on at resume.
+            g.advance = true;
+            return;
+        }
+        self.playlist_next(parent, at, cx);
     }
 
     /// Carries out what groups must do now that some of their children's runtimes have ended.
@@ -466,6 +487,23 @@ impl CueEngine {
             self.resume_one(*id, at, cx);
         }
         for id in inside.iter().rev().chain(std::iter::once(&cue)) {
+            // A playlist owed a move-on while paused: its next child starts at the resume
+            // sample (as if the playlist had moved on just as it was paused).
+            let advance = match self.slots.get_mut(id) {
+                Some(Slot::Active(Run {
+                    group: Some(g),
+                    paused_at: None,
+                    ..
+                })) if g.advance => {
+                    g.advance = false;
+                    g.pending = None;
+                    true
+                }
+                _ => false,
+            };
+            if advance {
+                self.playlist_next(*id, at, cx);
+            }
             let pending = match self.slots.get(id) {
                 Some(Slot::Active(Run {
                     group: Some(g),

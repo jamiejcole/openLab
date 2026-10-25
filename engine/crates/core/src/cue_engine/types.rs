@@ -130,13 +130,12 @@ pub enum Input {
     PlayheadPrevious {
         list: CueListId,
     },
-    /// Put the playhead on a cue of the list it can stand on (a top-level cue, or a cue inside
-    /// "start first and enter" groups); `None` moves it past the end.
+    /// Put the playhead on a cue of the list (at any depth); `None` moves it past the end.
     SetPlayhead {
         list: CueListId,
         cue: Option<CueId>,
     },
-    /// Put the playhead on the cue of the list with this number (where it can stand on it).
+    /// Put the playhead on the cue of the list with this number (at any depth).
     SetPlayheadByNumber {
         list: CueListId,
         number: String,
@@ -280,8 +279,7 @@ pub enum EngineWarning {
     UnknownCue {
         cue: CueId,
     },
-    /// The playhead can only stand on a cue of its own list that is top-level or inside "start
-    /// first and enter" groups only.
+    /// The playhead can only stand on a cue of its own list.
     NotInList {
         list: CueListId,
         cue: CueId,

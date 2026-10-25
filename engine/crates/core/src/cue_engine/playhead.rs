@@ -2,9 +2,8 @@
 
 //! A cue list's playhead (PB-05, CL-06): the cue standing by, or `None` past the end.
 //!
-//! The playhead stands on a top-level cue or on a cue inside "start first and enter" groups (every
-//! group around it in that mode): the cues a GO can reach. Its positions, in list order, are the
-//! cues depth-first, entering only those groups.
+//! As in QLab 5 the playhead can stand on any cue of its list, at any depth. Its positions, in
+//! list order, are the cues depth-first (a group, then its children).
 
 use std::collections::HashSet;
 
@@ -28,9 +27,8 @@ impl Playhead {
         }
     }
 
-    /// Follows edits to the list. A playhead cue that can no longer be stood on (deleted, or
-    /// moved into a group of another mode) gives way to the first position that came after it
-    /// and still exists (none: past the end); a list that was empty and gains cues stands on its
+    /// Follows edits to the list. A deleted playhead cue gives way to the first position that
+    /// came after it and still exists (none: past the end); a list that was empty and gains cues stands on its
     /// first cue. Returns whether the playhead moved.
     pub fn sync(&mut self, cues: &[Cue]) -> bool {
         let order = positions(cues);
@@ -88,8 +86,8 @@ impl Playhead {
     }
 }
 
-/// The cues the playhead can stand on, in list order: depth-first, entering only "start first
-/// and enter" groups. Iterative, so nesting depth cannot overflow the stack.
+/// The cues the playhead can stand on, in list order: every cue, depth-first. Iterative, so
+/// nesting depth cannot overflow the stack.
 pub(super) fn position_cues(cues: &[Cue]) -> Vec<&Cue> {
     let mut out = Vec::new();
     let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
@@ -99,13 +97,7 @@ pub(super) fn position_cues(cues: &[Cue]) -> Vec<&Cue> {
             continue;
         };
         out.push(cue);
-        if let CueKind::Group {
-            mode: GroupMode::StartFirstAndEnter,
-            children,
-        } = &cue.kind
-        {
-            stack.push(children.iter());
-        }
+        stack.push(cue.children().iter());
     }
     out
 }
@@ -114,9 +106,9 @@ pub(super) fn positions(cues: &[Cue]) -> Vec<CueId> {
     position_cues(cues).into_iter().map(|c| c.id).collect()
 }
 
-/// Where a playhead position is in a list: each level's cues and its index there, from the top
-/// level down to the cue's own container. Searches positions only (it enters only "start first
-/// and enter" groups), depth-first and iteratively; the first match wins.
+/// Where a cue is in a list: each level's cues and its index there, from the top level down to
+/// the cue's own container. Depth-first and iterative; the first match wins (the same occurrence
+/// as in the positions).
 pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
     let mut path: Vec<(&[Cue], usize)> = vec![(cues, 0)];
     loop {
@@ -130,13 +122,7 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
             }
             Some(cue) if cue.id == id => return Some(path),
             Some(cue) => {
-                let children = match &cue.kind {
-                    CueKind::Group {
-                        mode: GroupMode::StartFirstAndEnter,
-                        children,
-                    } => children.as_slice(),
-                    _ => &[],
-                };
+                let children = cue.children();
                 if children.is_empty() {
                     if let Some(last) = path.last_mut() {
                         last.1 = last.1.saturating_add(1);
@@ -151,14 +137,17 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 
 /// Where the playhead goes after a GO on the cue at `path` (its continue chain, as the model
 /// stands, is skipped):
-/// - a "start first and enter" group with children: into the group, to the cue after its first
-///   child's continue chain;
-/// - otherwise the cue after the cue's continue chain in its container; past the end of a group,
-///   out of it, to the cue after the group's own continue chain (and so on up); past the end of
-///   the list, `None`.
+/// - an armed "start first and enter" group with children: into the group, to the cue after its
+///   first child's continue chain;
+/// - otherwise the cue after the cue's continue chain among its siblings (inside timeline,
+///   playlist and random groups the children's continue modes are ignored, so the next
+///   sibling); past the last sibling, out of the group, to the cue after the group's own
+///   continue chain (and so on up); past the end of the list, `None`. A disarmed group is skipped
+///   as a unit like any disarmed cue.
 pub(super) fn after_go(path: &[(&[Cue], usize)]) -> Option<CueId> {
     let &(level, index) = path.last()?;
     if let Some(Cue {
+        armed: true,
         kind:
             CueKind::Group {
                 mode: GroupMode::StartFirstAndEnter,
@@ -166,20 +155,35 @@ pub(super) fn after_go(path: &[(&[Cue], usize)]) -> Option<CueId> {
             },
         ..
     }) = level.get(index)
-        && let Some(c) = children.get(chain_end(children, 0).saturating_add(1))
+        && let Some(c) = children.get(chain_end(children, 0, true).saturating_add(1))
     {
         return Some(c.id);
     }
-    path.iter()
-        .rev()
-        .find_map(|&(level, index)| level.get(chain_end(level, index).saturating_add(1)))
-        .map(|c| c.id)
+    (0..path.len()).rev().find_map(|depth| {
+        let &(level, index) = path.get(depth)?;
+        // The group holding this level decides whether its children chain.
+        let chains = match depth.checked_sub(1).and_then(|d| path.get(d)) {
+            None => true,
+            Some(&(outer, i)) => matches!(
+                outer.get(i).map(|g| &g.kind),
+                Some(CueKind::Group {
+                    mode: GroupMode::StartFirstAndEnter | GroupMode::StartFirstAndGoToNext,
+                    ..
+                })
+            ),
+        };
+        level
+            .get(chain_end(level, index, chains).saturating_add(1))
+            .map(|c| c.id)
+    })
 }
 
-/// Index of the last cue of the continue chain that starts at `index`.
-fn chain_end(level: &[Cue], index: usize) -> usize {
+/// Index of the last cue of the continue chain that starts at `index` (just `index` when the
+/// level's continue modes do not chain).
+fn chain_end(level: &[Cue], index: usize, chains: bool) -> usize {
     let mut last = index;
-    while let Some(c) = level.get(last)
+    while chains
+        && let Some(c) = level.get(last)
         && c.continue_mode != ContinueMode::DoNotContinue
         && last.saturating_add(1) < level.len()
     {

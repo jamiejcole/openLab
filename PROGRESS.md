@@ -61,15 +61,17 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M2.8 Broken-cue detection (missing media, missing device, invalid target) [CUE-06, NFR-07]
 - [ ] M2.9 Property tests over random workspaces + input sequences [QA-01, QA-02] — a small engine proptest exists (`tests/cue_engine_prop.rs`): extend it, don't duplicate it
 - [ ] M2.10 Preview/audition operation on a cue (CUE-05 remainder; PB-09): plays to an audition output without triggering continues — found missing in M2.1
-- [x] M2.11 Playhead inside groups and jump-by-number to grouped cues (with M2.4): positions are top-level cues and cues inside "start first and enter" groups
+- [x] M2.11 Playhead inside groups and jump-by-number to grouped cues (with M2.4): as in QLab 5 the playhead can stand on any cue at any depth; GO on a child starts it alone (its group runs adopted)
 - [ ] M2.12 Cue engine cleanups from the M2-A review (Lows):
   - L3: if a trigger cycle in the call's first deadline pass used up the chain budget, a GO's start is dropped with only a `ChainLimit` warning while `last_go` and the playhead still advance. Check the budget before committing the GO, or report `GoIgnored`.
   - L4: `LoadVoice.offset` uses the pre-wait at load time, `StartVoice.offset` the pre-wait at start; editing the pre-wait of a cue loaded to a time makes the primed stream disagree with the start offset. Freeze the pre-wait/action split at load (keep `action_offset` in `Loaded`).
   - L5: every call with an active cue builds a set of all cue ids and recounts the tree for `chain_limit`; fine at expected sizes, skip when the workspace revision is unchanged once revisions exist (M4).
+  - M2-B L1: a looping playlist of zero-length children uses up the call's whole chain budget, so the group's own continue (the cue after the group) is then dropped with `ChainLimit`. Degenerate content; keep a small reserve for the group's own continue, or document it.
+  - M2-B L6: `Playhead::sync` now builds the full position list (whole tree) on every `handle` call, Tick included; skip it with the revision check above.
 - [x] M2.13 Decided (user): a second trigger on an active cue is ignored (`TriggerIgnored`; paused cues resume); a cue that breaks keeps its auto-continue on schedule and never auto-follows — rules in docs/cue-engine.md
 - [ ] M2.14 Per-cue second-trigger options (e.g. restart, stop, pause/resume; QLab 5 has such a setting) — default today: ignored (M2.13)
 - [ ] M2.15 Control cues on groups (with M2.5): Devamp on a looping playlist group (finish the current child, then complete instead of wrapping); Start/Stop/Pause/Load/Reset targeting a group must go through the group-aware operations (`stop_tree` etc. in `cue_engine/group.rs`) — from M2-B
-- [ ] M2.16 Confirm group details against QLab 5 (M2-B open questions): random-mode repeat rule (no immediate repeat implemented; QLab may avoid repeats until all children played), child continue modes in random groups (ignored), group auto-follow after a child broke (no follow), playlist skipping a broken child, GO on an idle entered group's child (group runs "adopted", no continue) — from M2-B
+- [ ] M2.16 Confirm group details against QLab 5 (M2-B open questions): random-mode repeat rule (no immediate repeat implemented; QLab may avoid repeats until all children played), child continue modes in random groups (ignored), group auto-follow after a child broke (no follow), playlist skipping a broken child, GO on a child of an idle group (group runs "adopted", no continue); GO from a child of a timeline/playlist/random group moves to the next sibling — from M2-B
 
 ## M3 — Audio engine (`openlab-audio`)
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]

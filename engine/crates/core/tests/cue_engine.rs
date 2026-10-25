@@ -671,9 +671,12 @@ fn next_and_previous_move_without_firing() {
 
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(2))));
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(3))));
+    // Into the group's children (docs/cue-engine.md, Playhead).
+    assert_eq!(moved(&next(&mut rig)), Some(Some(id(30))));
     assert_eq!(moved(&next(&mut rig)), Some(None));
     assert!(next(&mut rig).is_empty());
-    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(3))));
+    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(30))));
+    previous(&mut rig);
     previous(&mut rig);
     previous(&mut rig);
     assert_eq!(rig.playhead(), Some(id(1)));
@@ -713,31 +716,18 @@ fn jump_by_id_and_number() {
 #[test]
 fn bad_jumps_warn_and_leave_the_playhead() {
     let mut rig = numbered_rig();
-    // A cue inside a timeline group is not a playhead position.
+    // A cue that is not in the list.
     assert_eq!(
         rig.at(
             0,
             Input::SetPlayhead {
                 list: list(),
-                cue: Some(id(30))
+                cue: Some(id(999))
             }
         ),
         vec![Action::Warning(EngineWarning::NotInList {
             list: list(),
-            cue: id(30)
-        })]
-    );
-    assert_eq!(
-        rig.at(
-            0,
-            Input::SetPlayheadByNumber {
-                list: list(),
-                number: "3.1".into()
-            }
-        ),
-        vec![Action::Warning(EngineWarning::NotInList {
-            list: list(),
-            cue: id(30)
+            cue: id(999)
         })]
     );
     assert_eq!(
