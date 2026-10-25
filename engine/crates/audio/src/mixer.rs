@@ -15,6 +15,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::controller::MixerController;
 use crate::gain::{Curve, Fade, Param, ramp_value, sanitize_gain};
+use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 
 /// Absolute time in frames at the device rate since the mixer started (ARCHITECTURE §3.2).
 pub type SampleTime = u64;
@@ -125,8 +126,13 @@ pub struct VoiceStart {
     /// Frames played after the skip (out point); `None` plays to end of stream.
     pub play_frames: Option<u64>,
     pub fade_in: Fade,
-    /// Integrated fade-out ending on the last played frame. Requires `play_frames`.
+    /// Integrated fade-out ending on the last played frame. Requires `play_frames` or `slices`.
     pub fade_out: Fade,
+    /// Slice table (AUD-12) for the frames after the skip; replaces `play_frames`, which must
+    /// then be `None`. Empty = play `play_frames` once.
+    pub slices: Vec<Slice>,
+    /// Devamp link to the disk stream filling `source`; needed to devamp out of a loop and continue.
+    pub link: Option<Arc<StreamLink>>,
 }
 
 impl VoiceStart {
@@ -145,6 +151,8 @@ impl VoiceStart {
             play_frames: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
+            slices: Vec::new(),
+            link: None,
         }
     }
 
@@ -212,6 +220,13 @@ pub enum CommandKind {
     SetMaster {
         gain: f32,
     },
+    /// Leave the current loop at the end of the current play (CT-16): `stop` ends the voice
+    /// there, otherwise playback continues with the next slice. Only for voices with a slice
+    /// table; continuing out of a loop also needs the voice's `link`.
+    Devamp {
+        voice: VoiceId,
+        stop: bool,
+    },
 }
 
 /// A command on its way to the mixer: applied at sample `at` (or at the start of the next block
@@ -239,6 +254,9 @@ pub enum RejectReason {
     BadRouting,
     /// A fade-out without `play_frames` has nothing to end on.
     BadFade,
+    /// A slice table with an empty slice, `Times(0)`, more than `MAX_SLICES` entries, or
+    /// combined with `play_frames`.
+    BadSlices,
 }
 
 /// Small `Copy` notifications from the audio thread. `at` is the sample time it happened.
@@ -261,6 +279,23 @@ pub enum Event {
     /// The pending set is full, so commands are waiting in the queue and may apply late.
     /// One event per episode.
     PendingFull { at: SampleTime },
+    /// A play of a slice ended and the slice plays again from `at`. `count` is the number of
+    /// plays of that slice completed so far.
+    LoopReached {
+        voice: VoiceId,
+        at: SampleTime,
+        slice: u32,
+        count: u64,
+    },
+    /// The slice's last play ended at `at` (the next slice, if any, starts on `at`).
+    SliceEnded {
+        voice: VoiceId,
+        at: SampleTime,
+        slice: u32,
+    },
+    /// A devamp was accepted. `at` is where the voice leaves the loop if no underrun intervenes;
+    /// the matching `SliceEnded` carries the actual sample.
+    DevampScheduled { voice: VoiceId, at: SampleTime },
 }
 
 #[derive(Debug, Default)]
@@ -330,6 +365,43 @@ enum ReadOutcome {
     Ended(FinishReason),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Devamp {
+    Stop,
+    /// `cut`: the disk stream was asked to stop unrolling the loop, so stale frames must be
+    /// skipped once it says where the continuation starts.
+    Continue { cut: bool },
+}
+
+/// What happened at the end of a play.
+enum Step {
+    /// Next play or slice; the frames-remaining count keeps decreasing by one per frame.
+    Next,
+    /// Devamped into a later slice: the frames-remaining count jumps.
+    Jumped,
+    End,
+}
+
+/// Frames left after each played frame of one read, for the integrated fade-out: `first` for the
+/// first frame, decreasing by one per frame, until frame `split`, which has `after`. `None` = no
+/// known end (an infinite loop ahead).
+struct Remaining {
+    first: Option<u64>,
+    split: usize,
+    after: Option<u64>,
+}
+
+impl Remaining {
+    fn at(&self, j: usize) -> Option<u64> {
+        if j < self.split {
+            self.first.and_then(|r| r.checked_sub(j as u64))
+        } else {
+            self.after
+                .and_then(|r| r.checked_sub((j - self.split) as u64))
+        }
+    }
+}
+
 struct Voice {
     id: VoiceId,
     /// `Some` while the voice is active; holds the source and goes back whole when it ends.
@@ -337,10 +409,23 @@ struct Voice {
     channels: usize,
     patch: usize,
     skip: u64,
-    remaining: Option<u64>,
-    play_frames: Option<u64>,
     /// Frames consumed after the skip.
     pos: u64,
+    /// Frames taken from the ring so far, skips included (the devamp link's position unit).
+    ring_pos: u64,
+    /// Current slice-table entry, frames left in its current play, and plays after this one
+    /// (`None` = infinite).
+    entry: usize,
+    left: u64,
+    plays_left: Option<u64>,
+    /// Plays of the current user slice completed so far.
+    count: u64,
+    /// Frames after the current play until the end; `None` = unbounded.
+    tail: Option<u64>,
+    devamp: Option<Devamp>,
+    /// Devamped at this ring position; waiting for the disk stream to say where the
+    /// continuation starts.
+    awaiting: Option<u64>,
     fade_in: Fade,
     fade_out: Fade,
     master: Param,
@@ -364,9 +449,15 @@ impl Voice {
             channels: 0,
             patch: 0,
             skip: 0,
-            remaining: None,
-            play_frames: None,
             pos: 0,
+            ring_pos: 0,
+            entry: 0,
+            left: 0,
+            plays_left: None,
+            count: 0,
+            tail: None,
+            devamp: None,
+            awaiting: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
             master: Param::new(1.0),
@@ -384,15 +475,80 @@ impl Voice {
         self.start.is_some()
     }
 
+    fn has_slices(&self) -> bool {
+        self.start.as_ref().is_some_and(|s| !s.slices.is_empty())
+    }
+
+    /// Slice-table entry `k`; a voice without a table is one entry of `play_frames` (unbounded
+    /// when `None`).
+    fn slice(&self, k: usize) -> Option<Slice> {
+        let s = self.start.as_ref()?;
+        if s.slices.is_empty() {
+            (k == 0).then_some(Slice {
+                index: 0,
+                start: 0,
+                frames: s.play_frames.unwrap_or(u64::MAX),
+                plays: Plays::Times(1),
+            })
+        } else {
+            s.slices.get(k).copied()
+        }
+    }
+
+    /// The first entry after `k` that belongs to a different user slice.
+    fn next_slice_after(&self, k: usize) -> Option<usize> {
+        let index = self.slice(k)?.index;
+        let mut i = k + 1;
+        while let Some(s) = self.slice(i) {
+            if s.index != index {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Starts entry `k`. Sums the later entries for the fade-out tail: O(`MAX_SLICES`) once per
+    /// entry, never per loop.
+    fn enter(&mut self, k: usize) {
+        let Some(s) = self.slice(k) else { return };
+        self.entry = k;
+        self.left = s.frames;
+        self.plays_left = match s.plays {
+            Plays::Times(n) => Some(u64::from(n.saturating_sub(1))),
+            Plays::Infinite => None,
+        };
+        let mut tail = self.plays_left.map(|n| n.saturating_mul(s.frames));
+        let mut i = k + 1;
+        while let (Some(t), Some(next)) = (tail, self.slice(i)) {
+            tail = match next.plays {
+                Plays::Times(n) => {
+                    Some(t.saturating_add(next.frames.saturating_mul(u64::from(n))))
+                }
+                Plays::Infinite => None,
+            };
+            i += 1;
+        }
+        self.tail = tail;
+    }
+
+    /// Frames left after the next frame to be played.
+    fn remaining(&self) -> Option<u64> {
+        self.tail
+            .map(|t| t.saturating_add(self.left.saturating_sub(1)))
+    }
+
     /// Takes over a validated start, copying its routing into the voice's gains.
     fn begin(&mut self, s: Box<VoiceStart>) {
         self.id = s.voice;
         self.channels = usize::from(s.channels);
         self.patch = usize::from(s.patch);
         self.skip = s.skip_frames;
-        self.remaining = s.play_frames;
-        self.play_frames = s.play_frames;
         self.pos = 0;
+        self.ring_pos = 0;
+        self.count = 0;
+        self.devamp = None;
+        self.awaiting = None;
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
         self.master.set(sanitize_gain(s.gain));
@@ -407,6 +563,7 @@ impl Voice {
         self.fresh = true;
         self.underrunning = false;
         self.start = Some(s);
+        self.enter(0);
     }
 
     fn param_mut(&mut self, target: GainTarget) -> Option<&mut Param> {
@@ -425,89 +582,241 @@ impl Voice {
         }
     }
 
-    /// Reads up to `live` frames into `input` and zero-fills it up to `len`.
-    fn read(&mut self, live: usize, len: usize, block: usize) -> (usize, ReadOutcome) {
-        let ch = self.channels;
-        let Some(src) = self.start.as_mut().map(|s| &mut s.source) else {
-            return (0, ReadOutcome::Ended(FinishReason::Stopped));
+    fn link(&self) -> Option<&StreamLink> {
+        self.start.as_ref().and_then(|s| s.link.as_deref())
+    }
+
+    /// Arms a devamp at the end of the current play (CT-16). Ignored without a slice table,
+    /// while a devamp is already under way, or when continuing out of a loop has no link.
+    fn request_devamp(&mut self, stop: bool, t: SampleTime, outbox: &mut Outbox) {
+        if !self.has_slices() || self.devamp.is_some() || self.awaiting.is_some() {
+            return;
+        }
+        let more_plays = self.plays_left != Some(0)
+            || self
+                .slice(self.entry + 1)
+                .zip(self.slice(self.entry))
+                .is_some_and(|(n, c)| n.index == c.index);
+        let mode = if stop {
+            Devamp::Stop
+        } else if more_plays {
+            // The ring already holds more plays of this loop; the disk stream must cut them.
+            let at = self
+                .ring_pos
+                .saturating_add(self.skip)
+                .saturating_add(self.left);
+            match self.link() {
+                Some(link) => link.request_cut(at),
+                None => return,
+            }
+            Devamp::Continue { cut: true }
+        } else {
+            Devamp::Continue { cut: false }
         };
-        let mut avail = src.slots() / ch;
-        if self.skip > 0 {
-            let s = avail.min(usize::try_from(self.skip).unwrap_or(usize::MAX));
-            if let Ok(chunk) = src.read_chunk(s * ch) {
-                chunk.commit_all();
-                self.skip -= s as u64;
-                avail -= s;
+        self.devamp = Some(mode);
+        outbox.emit(Event::DevampScheduled {
+            voice: self.id,
+            at: t.saturating_add(self.left),
+        });
+    }
+
+    /// The current play ended just before sample `at`.
+    fn boundary(&mut self, at: SampleTime, outbox: &mut Outbox) -> Step {
+        let Some(cur) = self.slice(self.entry) else {
+            return Step::End;
+        };
+        let voice = self.id;
+        // Voices without a slice table report only VoiceFinished.
+        let events = self.has_slices();
+        let mut emit = |e: Event| {
+            if events {
+                outbox.emit(e);
             }
+        };
+        let slice_ended = Event::SliceEnded {
+            voice,
+            at,
+            slice: cur.index,
+        };
+        match self.devamp.take() {
+            Some(Devamp::Stop) => {
+                emit(slice_ended);
+                return Step::End;
+            }
+            Some(Devamp::Continue { cut }) => {
+                emit(slice_ended);
+                let Some(target) = self.next_slice_after(self.entry) else {
+                    return Step::End;
+                };
+                if cut {
+                    self.awaiting = Some(self.ring_pos);
+                }
+                self.count = 0;
+                self.enter(target);
+                return Step::Jumped;
+            }
+            None => {}
         }
-        let mut want = live.min(avail);
-        if let Some(r) = self.remaining {
-            want = want.min(usize::try_from(r).unwrap_or(usize::MAX));
+        let looped = Event::LoopReached {
+            voice,
+            at,
+            slice: cur.index,
+            count: self.count + 1,
+        };
+        if self.plays_left != Some(0) {
+            self.plays_left = self.plays_left.map(|n| n - 1);
+            self.left = cur.frames;
+            self.tail = self.tail.map(|t| t.saturating_sub(cur.frames));
+            self.count += 1;
+            emit(looped);
+            return Step::Next;
         }
+        let Some(next) = self.slice(self.entry + 1) else {
+            emit(slice_ended);
+            return Step::End;
+        };
+        if next.index == cur.index {
+            self.count += 1;
+            emit(looped);
+        } else {
+            self.count = 0;
+            emit(slice_ended);
+        }
+        self.enter(self.entry + 1);
+        Step::Next
+    }
+
+    /// Reads up to `live` frames into `input`, crossing loop and slice boundaries (their events
+    /// at `t0` + offset), and zero-fills it up to `len`.
+    fn read(
+        &mut self,
+        live: usize,
+        len: usize,
+        block: usize,
+        t0: SampleTime,
+        outbox: &mut Outbox,
+    ) -> (usize, ReadOutcome, Remaining) {
+        let ch = self.channels;
         let mut got = 0;
-        if want > 0
-            && let Ok(chunk) = src.read_chunk(want * ch)
-        {
-            let (a, b) = chunk.as_slices();
-            let (mut f, mut c) = (0, 0);
-            for &x in a.iter().chain(b) {
-                if let Some(s) = self.input.get_mut(c * block + f) {
-                    *s = x;
-                }
-                c += 1;
-                if c == ch {
-                    c = 0;
-                    f += 1;
+        let mut rem = Remaining {
+            first: self.remaining(),
+            split: usize::MAX,
+            after: None,
+        };
+        let outcome = loop {
+            if let Some(b) = self.awaiting {
+                match self.link().and_then(StreamLink::resumed_at) {
+                    Some(r) if r >= b => {
+                        self.skip = self.skip.saturating_add(r - b);
+                        self.awaiting = None;
+                    }
+                    _ => {
+                        // Without its producer the continuation will never come.
+                        let abandoned = self
+                            .start
+                            .as_ref()
+                            .is_none_or(|s| s.source.is_abandoned());
+                        break if abandoned {
+                            ReadOutcome::Ended(FinishReason::EndOfStream)
+                        } else {
+                            ReadOutcome::Underrun
+                        };
+                    }
                 }
             }
-            chunk.commit_all();
-            got = want;
-        }
+            let Some(src) = self.start.as_mut().map(|s| &mut s.source) else {
+                break ReadOutcome::Ended(FinishReason::Stopped);
+            };
+            let mut avail = src.slots() / ch;
+            if self.skip > 0 {
+                let s = avail.min(usize::try_from(self.skip).unwrap_or(usize::MAX));
+                if let Ok(chunk) = src.read_chunk(s * ch) {
+                    chunk.commit_all();
+                    self.skip -= s as u64;
+                    self.ring_pos += s as u64;
+                    avail -= s;
+                }
+            }
+            if got == live {
+                break ReadOutcome::Full;
+            }
+            let want = (live - got)
+                .min(avail)
+                .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+            if want > 0
+                && let Ok(chunk) = src.read_chunk(want * ch)
+            {
+                let (a, b) = chunk.as_slices();
+                let (mut f, mut c) = (got, 0);
+                for &x in a.iter().chain(b) {
+                    if let Some(s) = self.input.get_mut(c * block + f) {
+                        *s = x;
+                    }
+                    c += 1;
+                    if c == ch {
+                        c = 0;
+                        f += 1;
+                    }
+                }
+                chunk.commit_all();
+                got += want;
+                self.pos += want as u64;
+                self.ring_pos += want as u64;
+                self.left -= want as u64;
+            }
+            if self.left == 0 {
+                match self.boundary(t0 + got as u64, outbox) {
+                    Step::Next => {}
+                    Step::Jumped => {
+                        rem.split = got;
+                        rem.after = self.remaining();
+                    }
+                    Step::End => break ReadOutcome::Ended(FinishReason::OutPoint),
+                }
+                continue;
+            }
+            if got == live {
+                break ReadOutcome::Full;
+            }
+            // Check abandonment before re-reading slots, so frames pushed just before the
+            // producer was dropped are never mistaken for end of stream.
+            let Some(src) = self.start.as_ref().map(|s| &s.source) else {
+                break ReadOutcome::Ended(FinishReason::Stopped);
+            };
+            break if src.is_abandoned() && src.slots() / ch == 0 {
+                ReadOutcome::Ended(FinishReason::EndOfStream)
+            } else {
+                ReadOutcome::Underrun
+            };
+        };
         for c in 0..ch {
             if let Some(rest) = self.input.get_mut(c * block + got..c * block + len) {
                 rest.fill(0.0);
             }
         }
-        self.pos += got as u64;
-        if let Some(r) = &mut self.remaining {
-            *r -= got as u64;
-            if *r == 0 {
-                return (got, ReadOutcome::Ended(FinishReason::OutPoint));
-            }
-        }
-        if got == live {
-            return (got, ReadOutcome::Full);
-        }
-        // Check abandonment before re-reading slots, so frames pushed just before the producer
-        // was dropped are never mistaken for end of stream.
-        if src.is_abandoned() && src.slots() / ch == 0 {
-            (got, ReadOutcome::Ended(FinishReason::EndOfStream))
-        } else {
-            (got, ReadOutcome::Underrun)
-        }
+        (got, outcome, rem)
     }
 
     /// Multiplies the integrated fade envelope into `gain` for the `got` frames read from `pos0`.
-    fn apply_envelope(&self, gain: &mut [f32], pos0: u64, got: usize) {
+    fn apply_envelope(&self, gain: &mut [f32], pos0: u64, got: usize, rem: &Remaining) {
         let (fin, fout) = (self.fade_in, self.fade_out);
-        let end = pos0 + got as u64;
         let in_active = fin.frames > 0 && pos0 < fin.frames;
-        // Fade-out step k for frame p is p + frames + 1 − L, so frame L − 1 lands on k = frames.
-        let out_len = self
-            .play_frames
-            .filter(|&l| fout.frames > 0 && end.saturating_add(fout.frames) >= l);
-        if !in_active && out_len.is_none() {
+        // The fade-out covers a frame with at most `fout.frames` frames after it.
+        let out_active = fout.frames > 0
+            && [rem.first, rem.after]
+                .iter()
+                .flatten()
+                .any(|&r| r <= fout.frames.saturating_add(got as u64));
+        if !in_active && !out_active {
             return;
         }
-        for (p, g) in (pos0..end).zip(gain.iter_mut()) {
+        for (j, g) in gain.iter_mut().take(got).enumerate() {
+            let p = pos0 + j as u64;
             if in_active && p < fin.frames {
                 *g *= ramp_value(0.0, 1.0, p, fin.frames, fin.curve);
             }
-            if let Some(l) = out_len {
-                let q = p.saturating_add(fout.frames).saturating_add(1);
-                if q >= l {
-                    *g *= ramp_value(1.0, 0.0, q - l, fout.frames, fout.curve);
-                }
+            if out_active && let Some(r) = rem.at(j).filter(|&r| r <= fout.frames) {
+                *g *= ramp_value(1.0, 0.0, fout.frames - r, fout.frames, fout.curve);
             }
         }
     }
@@ -893,6 +1202,12 @@ impl Mixer {
                 self.master
                     .ramp_to(sanitize_gain(gain), dezip, Curve::Linear)
             }
+            CommandKind::Devamp { voice, stop } => {
+                let Mixer { voices, outbox, .. } = self;
+                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
+                    v.request_devamp(stop, t, outbox);
+                }
+            }
         }
     }
 
@@ -909,7 +1224,16 @@ impl Mixer {
             || s.crosspoints.len() != ch * self.outputs
         {
             Some(RejectReason::BadRouting)
-        } else if s.fade_out.frames > 0 && s.play_frames.is_none() {
+        } else if !s.slices.is_empty()
+            && (s.play_frames.is_some()
+                || s.slices.len() > MAX_SLICES
+                || s
+                    .slices
+                    .iter()
+                    .any(|x| x.frames == 0 || x.plays == Plays::Times(0)))
+        {
+            Some(RejectReason::BadSlices)
+        } else if s.fade_out.frames > 0 && s.play_frames.is_none() && s.slices.is_empty() {
             Some(RejectReason::BadFade)
         } else if self.voice_mut(s.voice).is_some() {
             Some(RejectReason::DuplicateId)
@@ -1037,7 +1361,7 @@ fn render_voice(
             .min(len)
     });
     let pos0 = v.pos;
-    let (got, outcome) = v.read(live, len, block);
+    let (got, outcome, rem) = v.read(live, len, block, t0, outbox);
     let (Some(vg), Some(og), Some(tmp)) = (
         s.vgain.get_mut(..len),
         s.og.get_mut(..len),
@@ -1053,7 +1377,7 @@ fn render_voice(
         v.stop.fill(tmp);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
     }
-    v.apply_envelope(vg, pos0, got);
+    v.apply_envelope(vg, pos0, got, &rem);
 
     let Voice {
         cue_out,
