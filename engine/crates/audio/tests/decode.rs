@@ -12,7 +12,9 @@ use std::path::Path;
 
 use common::media::*;
 use common::*;
-use openlab_audio::{Media, MediaError, preload, probe, probe_media};
+use openlab_audio::{
+    Media, MediaError, MediaWarning, Probed, WarningKind, preload, probe, probe_media,
+};
 
 const RATE: u32 = 44_100;
 /// Length of the committed fixtures (0.5 s).
@@ -24,7 +26,7 @@ fn wav_formats_decode_to_the_known_signal() {
     for fmt in [Pcm::I16, Pcm::I24, Pcm::I32, Pcm::F32] {
         let bytes = wav(&reference, 2, RATE, fmt);
         let path = temp_file(&format!("tone-{fmt:?}.wav"), &bytes);
-        let info = probe(&path).unwrap();
+        let info = probe(&path).unwrap().info;
         assert_eq!(
             (info.channels, info.sample_rate, info.frames),
             (2, RATE, 11_025)
@@ -41,7 +43,9 @@ fn aiff_decodes_to_the_known_signal() {
     let reference = tone(11_025, RATE);
     for fmt in [Pcm::I16, Pcm::I24] {
         let bytes = aiff(&reference, 2, RATE, fmt);
-        let info = probe_media(Media::Reader(Box::new(Cursor::new(bytes.clone())), None)).unwrap();
+        let info = probe_media(Media::Reader(Box::new(Cursor::new(bytes.clone())), None))
+            .unwrap()
+            .info;
         assert_eq!(
             (info.channels, info.sample_rate, info.frames),
             (2, RATE, 11_025)
@@ -58,7 +62,7 @@ fn aiff_decodes_to_the_known_signal() {
 fn lossless_fixtures_decode_exactly() {
     let reference = tone(FIXTURE_FRAMES as usize, RATE);
     for name in ["tone.flac", "tone-alac.m4a"] {
-        let info = probe(&fixture(name)).unwrap();
+        let info = probe(&fixture(name)).unwrap().info;
         assert_eq!(
             (info.channels, info.sample_rate, info.frames),
             (2, RATE, FIXTURE_FRAMES),
@@ -75,7 +79,7 @@ fn lossless_fixtures_decode_exactly() {
 #[test]
 fn lossy_fixtures_have_exact_counted_length_and_the_right_content() {
     for name in ["tone.mp3", "tone.m4a", "tone.ogg"] {
-        let info = probe(&fixture(name)).unwrap();
+        let info = probe(&fixture(name)).unwrap().info;
         assert_eq!((info.channels, info.sample_rate), (2, RATE), "{name}");
         let got = decode_all(Media::Path(fixture(name)));
         // The probed length is exactly what decoding yields, so fades and slices land right.
@@ -93,7 +97,10 @@ fn lossy_fixtures_have_exact_counted_length_and_the_right_content() {
 #[test]
 fn mp3_gapless_trim_gives_the_original_length() {
     // LAME writes encoder delay and padding; the decoder trims them.
-    assert_eq!(probe(&fixture("tone.mp3")).unwrap().frames, FIXTURE_FRAMES);
+    assert_eq!(
+        probe(&fixture("tone.mp3")).unwrap().info.frames,
+        FIXTURE_FRAMES
+    );
 }
 
 #[test]
@@ -119,99 +126,182 @@ fn garbage_is_a_typed_error() {
     assert!(probe_media(Media::Reader(Box::new(Cursor::new(Vec::new())), None)).is_err());
 }
 
-#[test]
-fn truncated_wav_is_a_typed_error() {
-    let bytes = wav(&tone(10_000, RATE), 2, RATE, Pcm::I16);
-    let cut = &bytes[..bytes.len() - 8_000];
-    let path = temp_file("truncated.wav", cut);
-    assert!(
-        matches!(
-            probe(&path),
-            Err(MediaError::Truncated {
-                expected: 10_000,
-                ..
-            })
-        ),
-        "{:?}",
-        probe(&path)
-    );
-    assert!(matches!(
-        preload(Media::Path(path)),
-        Err(MediaError::Truncated { .. })
-    ));
+fn warning(kind: WarningKind, at: u64, frames: u64) -> MediaWarning {
+    MediaWarning { kind, at, frames }
+}
+
+/// Damage plays as described by its warning: the probe, preload and playback agree on one
+/// timeline. Checks the preload against the probe and returns it.
+fn load_damaged(bytes: Vec<u8>, ext: &str, want: &[MediaWarning]) -> (Probed, Vec<f32>) {
+    let media = || Media::Reader(Box::new(Cursor::new(bytes.clone())), Some(ext.into()));
+    let probed = probe_media(media()).unwrap();
+    assert_eq!(probed.warnings, want, "{ext}");
+    let pre = preload(media()).unwrap();
+    assert_eq!((pre.info(), pre.warnings()), (probed.info, want), "{ext}");
+    // Whatever probes streams and seeks too.
+    openlab_audio::fuzz_decode(&bytes).unwrap();
+    (probed, pre.samples().to_vec())
+}
+
+fn frames(x: &[f32], ch: usize, r: std::ops::Range<usize>) -> &[f32] {
+    &x[r.start * ch..r.end * ch]
+}
+
+/// Equal sample for sample; on failure names the first differing interleaved sample.
+fn assert_same(got: &[f32], want: &[f32], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    if let Some(i) = got.iter().zip(want).position(|(a, b)| a != b) {
+        panic!("{what}: sample {i} is {} not {}", got[i], want[i]);
+    }
 }
 
 #[test]
-fn truncated_flac_is_a_typed_error() {
+fn truncated_wav_plays_to_its_real_end_with_a_warning() {
+    let reference = tone(10_000, RATE);
+    let bytes = wav(&reference, 2, RATE, Pcm::I16);
+    // 8000 bytes = 2000 stereo 16-bit frames cut off the end; the header still says 10000.
+    let cut = bytes[..bytes.len() - 8_000].to_vec();
+    let (p, got) = load_damaged(cut, "wav", &[warning(WarningKind::Truncated, 8_000, 2_000)]);
+    assert_eq!(p.info.frames, 8_000);
+    assert!(max_diff(&got, &reference[..16_000]) <= Pcm::I16.lsb() * 1.01);
+}
+
+#[test]
+fn truncated_flac_plays_to_its_real_end_with_a_warning() {
     let bytes = std::fs::read(fixture("tone.flac")).unwrap();
-    let path = temp_file("truncated.flac", &bytes[..bytes.len() / 2]);
-    let r = probe(&path);
-    assert!(
-        matches!(
-            r,
-            Err(MediaError::Truncated {
-                expected: FIXTURE_FRAMES,
-                ..
-            })
-        ),
-        "{r:?}"
+    let clean = decode_all(Media::Path(fixture("tone.flac")));
+    // Cut inside the fourth frame: three whole frames are left.
+    let half = bytes[..bytes.len() * 3 / 4].to_vec();
+    let probed = probe_media(Media::Reader(Box::new(Cursor::new(half.clone())), None)).unwrap();
+    let end = probed.info.frames;
+    assert!(end > 0 && end < FIXTURE_FRAMES);
+    let (_, got) = load_damaged(
+        half,
+        "flac",
+        &[warning(WarningKind::Truncated, end, FIXTURE_FRAMES - end)],
     );
+    assert_same(&got, frames(&clean, 2, 0..end as usize), "truncated flac");
 }
 
+/// Damage in the first frame: the frames before the first decodable one are silence, so
+/// everything after keeps its position.
 #[test]
-fn corrupt_flac_is_a_typed_error() {
+fn damaged_first_frame_plays_as_silence_at_the_start() {
+    let clean = decode_all(Media::Path(fixture("tone.flac")));
     let mut bytes = std::fs::read(fixture("tone.flac")).unwrap();
     let mid = bytes.len() / 2;
-    for b in &mut bytes[mid..mid + 2000] {
+    for b in &mut bytes[mid..mid + 16] {
         *b ^= 0x5a;
     }
-    let path = temp_file("corrupt.flac", &bytes);
-    // symphonia's FLAC reader stops at the damaged frame; probe decodes compressed files fully,
-    // so the damage is found when the cue loads, not during the show.
-    let r = probe(&path);
-    assert!(
-        matches!(
-            r,
-            Err(MediaError::Corrupt(_) | MediaError::Truncated { .. })
-        ),
-        "{r:?}"
-    );
-    let r = preload(Media::Path(path));
-    assert!(
-        matches!(
-            r,
-            Err(MediaError::Corrupt(_) | MediaError::Truncated { .. })
-        ),
-        "{r:?}"
+    let (p, got) = load_damaged(bytes, "flac", &[warning(WarningKind::Missing, 0, 4_096)]);
+    assert_eq!(p.info.frames, FIXTURE_FRAMES);
+    assert!(frames(&got, 2, 0..4_096).iter().all(|&s| s == 0.0));
+    let end = FIXTURE_FRAMES as usize;
+    assert_same(
+        frames(&got, 2, 4_096..end),
+        frames(&clean, 2, 4_096..end),
+        "after the damage",
     );
 }
 
+/// Damage the container skips (a FLAC frame that fails its CRC, a frame spliced out, an Ogg
+/// page dropped, an AAC packet that does not decode) plays as silence of its length, so every
+/// later frame keeps its position.
 #[test]
-fn missing_frames_are_a_typed_error() {
-    // Splice one whole FLAC frame out: every remaining frame is valid, but the next frame header
-    // carries a later sample number. Decoding on would shift everything after it.
-    let bytes = std::fs::read(fixture("tone.flac")).unwrap();
-    let syncs: Vec<usize> = bytes
+fn damaged_media_plays_with_silence_where_frames_are_missing() {
+    let damage = |name: &str, at: usize, len: usize| {
+        let mut b = std::fs::read(fixture(name)).unwrap();
+        for x in &mut b[at..at + len] {
+            *x ^= 0x5a;
+        }
+        b
+    };
+    let flac = std::fs::read(fixture("tone.flac")).unwrap();
+    let syncs: Vec<usize> = flac
         .windows(2)
         .enumerate()
         .filter(|(_, w)| w == &[0xFF, 0xF8])
         .map(|(i, _)| i)
         .collect();
-    let spliced: Vec<u8> = bytes[..syncs[2]]
+    let spliced: Vec<u8> = flac[..syncs[2]]
         .iter()
-        .chain(&bytes[syncs[3]..])
+        .chain(&flac[syncs[3]..])
         .copied()
         .collect();
-    let path = temp_file("spliced.flac", &spliced);
-    let r = probe(&path);
-    assert!(
-        matches!(r, Err(MediaError::Corrupt(ref m)) if m.contains("discontinuity")),
-        "{r:?}"
-    );
-    assert!(matches!(
-        preload(Media::Path(path)),
-        Err(MediaError::Corrupt(_))
-    ));
+    let cases = [
+        (
+            "tone.flac",
+            "flac",
+            damage("tone.flac", 13_832, 16),
+            8_192,
+            4_096,
+        ),
+        ("tone.flac", "flac", spliced, 8_192, 4_096),
+        (
+            "tone-4s.ogg",
+            "ogg",
+            damage("tone-4s.ogg", 10_888, 16),
+            89_088,
+            45_056,
+        ),
+        (
+            "tone.m4a",
+            "m4a",
+            damage("tone.m4a", 5_964, 16),
+            17_408,
+            1_024,
+        ),
+    ];
+    for (name, ext, bytes, at, len) in cases {
+        let clean = decode_all(Media::Path(fixture(name)));
+        let (p, got) = load_damaged(bytes, ext, &[warning(WarningKind::Missing, at, len)]);
+        let total = clean.len() / 2;
+        assert_eq!(p.info.frames as usize, total, "{name}: length unchanged");
+        let (at, end) = (at as usize, (at + len) as usize);
+        assert!(
+            frames(&got, 2, at..end).iter().all(|&s| s == 0.0),
+            "{name}: silence"
+        );
+        // Before the damage: exact. Vorbis differs earlier: symphonia's Ogg reader plays the
+        // page after a lost one in the lost page's place (here from frame 44032), and only the
+        // page after that is placed by its own timestamp, which is where the gap shows. The
+        // warning reports that gap; playback and seeks agree on it (see decode.rs tests).
+        let before = match ext {
+            "flac" => at,
+            "ogg" => 44_032,
+            _ => at - 2_048,
+        };
+        assert_same(
+            frames(&got, 2, 0..before),
+            frames(&clean, 2, 0..before),
+            &format!("{name}: before"),
+        );
+        // After the gap a lossy decoder restarts without its predecessor's state; a little
+        // later it matches the clean decode exactly (for FLAC at once).
+        let settle = if ext == "flac" { 0 } else { 4_096 };
+        let (g, c) = (
+            frames(&got, 2, end + settle..total),
+            frames(&clean, 2, end + settle..total),
+        );
+        if ext == "m4a" {
+            // AAC noise substitution draws from a sequence the failed packet put out of step.
+            assert!(max_diff(g, c) < 2.5e-3, "{name}: after");
+        } else {
+            assert_same(g, c, &format!("{name}: after"));
+        }
+    }
+}
+
+/// Lossy damage the container cannot place: the file plays shorter than its header says, and
+/// the shortfall is reported.
+#[test]
+fn lossy_frames_lost_without_a_position_are_reported() {
+    let mut b = std::fs::read(fixture("tone.mp3")).unwrap();
+    for x in &mut b[4_619..4_919] {
+        *x ^= 0x5a;
+    }
+    let (p, _) = load_damaged(b, "mp3", &[warning(WarningKind::Truncated, 21_935, 115)]);
+    assert_eq!(p.info.frames, 21_935);
 }
 
 #[test]
@@ -357,7 +447,7 @@ fn non_finite_and_absurd_float_samples_are_made_safe() {
 /// symphonia parses them (with overflow checks on, as in tests and fuzzing, it would panic).
 #[test]
 fn pcm_headers_symphonia_would_overflow_on_are_rejected_first() {
-    let header_error = |r: Result<openlab_audio::MediaInfo, MediaError>| matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header:"));
+    let header_error = |r: Result<openlab_audio::Probed, MediaError>| matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header:"));
     let finding =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/wav-channel-overflow.wav");
     assert!(header_error(probe(&finding)), "{:?}", probe(&finding));

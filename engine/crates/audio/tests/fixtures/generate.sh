@@ -17,4 +17,7 @@ ffmpeg -v error -y -i "$src" -c:a libmp3lame -b:a 128k tone.mp3
 ffmpeg -v error -y -i "$src" -c:a aac -b:a 128k tone.m4a
 ffmpeg -v error -y -i "$src" -c:a alac tone-alac.m4a
 ffmpeg -v error -y -i "$src" -c:a vorbis -strict -2 -q:a 4 tone.ogg
+# A longer Vorbis file: symphonia drops a damaged Ogg page and resynchronises only when the
+# stream has more pages than its probe scans.
+ffmpeg -v error -y -stream_loop 7 -i "$src" -c:a vorbis -strict -2 -q:a 4 tone-4s.ogg
 rm -f "$tmp" "$src"

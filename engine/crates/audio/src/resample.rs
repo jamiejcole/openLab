@@ -15,7 +15,7 @@
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
 
-use crate::decode::{FrameSource, MediaError, scale_round};
+use crate::decode::{FrameSource, MediaError, MediaWarning, scale_round};
 
 /// Target FFT input chunk; the resampler rounds it to a whole number of rate-ratio periods.
 const FFT_CHUNK: usize = 1024;
@@ -154,7 +154,8 @@ impl Pipeline {
                 }
                 Some(rs) => {
                     if rs.out_pos == rs.out_len {
-                        let read = produce(rs, &mut *self.src, &mut self.src_eof, ch)?;
+                        let limit = self.src_frames.saturating_sub(self.src_pos);
+                        let read = produce(rs, &mut *self.src, &mut self.src_eof, ch, limit)?;
                         self.src_pos += read;
                         if self.src_eof && self.src_pos < self.src_frames {
                             return Err(self.truncated());
@@ -176,6 +177,11 @@ impl Pipeline {
         Ok(got)
     }
 
+    /// Damage the source met since the last call.
+    pub(crate) fn take_warnings(&mut self) -> Vec<MediaWarning> {
+        self.src.take_warnings()
+    }
+
     fn truncated(&self) -> MediaError {
         MediaError::Truncated {
             expected: self.src_frames,
@@ -184,17 +190,26 @@ impl Pipeline {
     }
 }
 
-/// Resamples one input chunk into `rs.outbuf`, dropping frames still owed to `discard`. Returns
-/// the source frames read.
+/// Resamples one input chunk into `rs.outbuf`, dropping frames still owed to `discard`. Reads
+/// at most `limit` source frames (the rest of the probed length: nothing past it is decoded, so
+/// damage beyond the playable end is never reached); silence fills the chunk after that.
+/// Returns the source frames read.
 fn produce(
     rs: &mut Rs,
     src: &mut dyn FrameSource,
     src_eof: &mut bool,
     ch: usize,
+    limit: u64,
 ) -> Result<u64, MediaError> {
     let mut filled = 0;
-    while filled < rs.chunk_in && !*src_eof {
-        let Some(dst) = rs.inbuf.get_mut(filled * ch..) else {
+    let want = rs
+        .chunk_in
+        .min(usize::try_from(limit).unwrap_or(usize::MAX));
+    if want == 0 {
+        *src_eof = true;
+    }
+    while filled < want && !*src_eof {
+        let Some(dst) = rs.inbuf.get_mut(filled * ch..want * ch) else {
             break;
         };
         let n = src.read(dst)?;
@@ -202,6 +217,9 @@ fn produce(
             *src_eof = true;
         }
         filled += n;
+        if filled == want && want < rs.chunk_in {
+            *src_eof = true;
+        }
     }
     if let Some(rest) = rs.inbuf.get_mut(filled * ch..) {
         rest.fill(0.0);

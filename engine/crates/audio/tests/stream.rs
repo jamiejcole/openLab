@@ -14,9 +14,9 @@ use std::time::Duration;
 use common::media::*;
 use common::*;
 use openlab_audio::{
-    CommandKind, DiskStreamer, Event, FinishReason, Media, MediaError, MediaInfo, MixerController,
-    OfflineRenderer, Plays, Slice, StreamHandle, StreamRequest, StreamerConfig, VoiceId, plan,
-    preload, probe,
+    CommandKind, DiskStreamer, Event, FinishReason, Media, MediaError, MediaInfo, MediaWarning,
+    MixerController, OfflineRenderer, Plays, Slice, StreamHandle, StreamRequest, StreamerConfig,
+    VoiceId, WarningKind, plan, preload, probe, probe_media,
 };
 
 const SR: u32 = 48_000;
@@ -42,7 +42,7 @@ fn streamer(buffer_ms: u32) -> DiskStreamer {
 /// A mono 48 kHz float WAV whose frame `i` holds `marker(i)`.
 fn marker_file(name: &str, frames: u64) -> (Media, MediaInfo) {
     let path = temp_file(name, &wav(&markers(frames), 1, SR, Pcm::F32));
-    let info = probe(&path).unwrap();
+    let info = probe(&path).unwrap().info;
     assert_eq!(info.frames, frames);
     (Media::Path(path), info)
 }
@@ -475,7 +475,7 @@ fn preload_plays_the_same_as_streaming() {
         "preload.wav",
         &wav(&tone(44_100, 44_100), 2, 44_100, Pcm::I16),
     );
-    let info = probe(&path).unwrap();
+    let info = probe(&path).unwrap().info;
     assert_eq!(info.frames_at(SR), 48_000);
     let plays = [Plays::Times(1), Plays::Times(3), Plays::Times(1)];
     let slices = plan(4_000..40_000, &[10_000, 20_000], &plays, 4_000).unwrap();
@@ -502,7 +502,7 @@ fn resampled_stream_has_exact_length_and_frequency() {
         "resample.wav",
         &wav(&sine(44_100, 44_100, 1000.0, 0.5), 1, 44_100, Pcm::F32),
     );
-    let info = probe(&path).unwrap();
+    let info = probe(&path).unwrap().info;
     let total = info.frames_at(SR);
     assert_eq!(total, 48_000);
     let (mut ctl, mut r) = setup(config(1));
@@ -531,7 +531,7 @@ fn every_format_streams_from_a_seek_point_like_a_full_decode() {
         "tone.m4a",
         "tone.ogg",
     ] {
-        let info = probe(&fixture(name)).unwrap();
+        let info = probe(&fixture(name)).unwrap().info;
         let full = preload(Media::Path(fixture(name))).unwrap();
         let mut c = StreamerConfig::new(44_100);
         c.buffer_ms = 100;
@@ -654,7 +654,7 @@ fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaE
 fn read_error_mid_stream_ends_the_voice() {
     let frames = 200_000;
     let bytes = wav(&markers(frames), 1, SR, Pcm::F32);
-    let info = probe(&temp_file("read-error.wav", &bytes)).unwrap();
+    let info = probe(&temp_file("read-error.wav", &bytes)).unwrap().info;
     let at = 44 + 100_000 * 4;
     let reader = FailingReader::new(bytes, at, Failure::Error);
     let e = play_until_failure(
@@ -669,7 +669,7 @@ fn read_error_mid_stream_ends_the_voice() {
 fn decoder_panic_mid_stream_is_contained() {
     let frames = 200_000;
     let bytes = wav(&markers(frames), 1, SR, Pcm::F32);
-    let info = probe(&temp_file("panic.wav", &bytes)).unwrap();
+    let info = probe(&temp_file("panic.wav", &bytes)).unwrap().info;
     let reader = FailingReader::new(bytes, 44 + 100_000 * 4, Failure::Panic);
     let e = play_until_failure(
         Media::Reader(Box::new(reader), Some("wav".into())),
@@ -696,7 +696,7 @@ fn file_truncated_after_probe_ends_the_voice() {
         let frames = 200_000;
         let bytes = wav(&markers(frames), 1, rate, Pcm::F32);
         let path = temp_file("shrinks.wav", &bytes);
-        let info = probe(&path).unwrap();
+        let info = probe(&path).unwrap().info;
         // The header still claims every frame; the data stops half way.
         std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
         let e = play_until_failure(Media::Path(path), info, device_rate);
@@ -707,27 +707,130 @@ fn file_truncated_after_probe_ends_the_voice() {
     }
 }
 
-#[test]
-fn file_corrupted_after_probe_ends_the_voice() {
-    let path = temp_file(
-        "damaged.flac",
-        &std::fs::read(fixture("tone.flac")).unwrap(),
-    );
-    let info = probe(&path).unwrap();
-    // Splice a whole frame out (see decode.rs `missing_frames_are_a_typed_error`).
-    let bytes = std::fs::read(&path).unwrap();
+/// The FLAC fixture with one whole frame (8192..12288) spliced out.
+fn spliced_flac() -> Vec<u8> {
+    let bytes = std::fs::read(fixture("tone.flac")).unwrap();
     let syncs: Vec<usize> = bytes
         .windows(2)
         .enumerate()
         .filter(|(_, w)| w == &[0xFF, 0xF8])
         .map(|(i, _)| i)
         .collect();
-    let spliced: Vec<u8> = bytes[..syncs[2]]
+    bytes[..syncs[2]]
         .iter()
         .chain(&bytes[syncs[3]..])
         .copied()
-        .collect();
-    std::fs::write(&path, spliced).unwrap();
-    let e = play_until_failure(Media::Path(path), info, 44_100);
-    assert!(matches!(e, MediaError::Corrupt(_)), "{e:?}");
+        .collect()
+}
+
+fn missing(at: u64, frames: u64) -> MediaWarning {
+    MediaWarning {
+        kind: WarningKind::Missing,
+        at,
+        frames,
+    }
+}
+
+/// Renders `frames` at 44.1 kHz from a stream started at 0, keeping a lead on the disk.
+fn play_44k(
+    media: Media,
+    info: MediaInfo,
+    slices: Vec<Slice>,
+    frames: usize,
+) -> (Vec<f32>, Vec<Event>, StreamHandle) {
+    let mut c = StreamerConfig::new(44_100);
+    c.buffer_ms = 100;
+    let mut d = DiskStreamer::new(c).unwrap();
+    let cfg = openlab_audio::MixerConfig {
+        sample_rate: 44_100,
+        ..config(2)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
+    let out = render_synced(&mut r, &mut ctl, &h, frames, 0);
+    (out, events(&mut ctl), h)
+}
+
+/// Damage first met mid-stream (the file changed after its probe): the decoder treats it as the
+/// probe would, silence for the missing frames, and reports it on the handle. The voice plays
+/// on to its out point: never silent and unreported, never a hang.
+#[test]
+fn damage_first_found_mid_stream_plays_as_silence_and_is_reported() {
+    let path = temp_file(
+        "damaged.flac",
+        &std::fs::read(fixture("tone.flac")).unwrap(),
+    );
+    let info = probe(&path).unwrap().info;
+    std::fs::write(&path, spliced_flac()).unwrap();
+    let clean = preload(Media::Path(fixture("tone.flac"))).unwrap();
+    let slices = plan(0..info.frames, &[], &[], 0).unwrap();
+    let (out, ev, h) = play_44k(Media::Path(path), info, slices, 23_000);
+    assert_eq!(h.error(), None);
+    assert_eq!(h.warnings(), vec![missing(8_192, 4_096)]);
+    let c = clean.samples();
+    assert!(out[..8_192 * 2] == c[..8_192 * 2], "before the damage");
+    assert!(
+        out[8_192 * 2..12_288 * 2].iter().all(|&s| s == 0.0),
+        "silence"
+    );
+    assert!(
+        out[12_288 * 2..22_050 * 2] == c[12_288 * 2..],
+        "after the damage"
+    );
+    assert!(
+        ev.contains(&finished(22_050, FinishReason::OutPoint)),
+        "{ev:?}"
+    );
+}
+
+/// A file probed with damage streams on the probe's timeline, also through loops that seek
+/// into, across and out of the damaged region: sample for sample its preload.
+#[test]
+fn damaged_files_stream_and_loop_on_the_probe_timeline() {
+    let mut ogg = std::fs::read(fixture("tone-4s.ogg")).unwrap();
+    for x in &mut ogg[10_888..10_904] {
+        *x ^= 0x5a;
+    }
+    for (ext, bytes, marks) in [
+        ("flac", spliced_flac(), [6_000u64, 10_000, 14_000]),
+        ("ogg", ogg, [40_000, 100_000, 140_000]),
+    ] {
+        let media = || {
+            Media::Reader(
+                Box::new(std::io::Cursor::new(bytes.clone())),
+                Some(ext.into()),
+            )
+        };
+        let probed = probe_media(media()).unwrap();
+        assert_eq!(probed.warnings.len(), 1, "{ext}");
+        let pre = preload(media()).unwrap();
+        let total = probed.info.frames;
+        // Intro, a twice-played slice that starts before the damage and ends inside it, a
+        // twice-played slice from inside it to after it, then the rest.
+        let plays = [
+            Plays::Times(1),
+            Plays::Times(2),
+            Plays::Times(2),
+            Plays::Times(1),
+        ];
+        let slices = plan(0..total, &marks, &plays, 0).unwrap();
+        let mut want = Vec::new();
+        for s in &slices {
+            let Plays::Times(n) = s.plays else {
+                panic!("finite tables only")
+            };
+            for _ in 0..n {
+                want.extend_from_slice(
+                    &pre.samples()[s.start as usize * 2..(s.start + s.frames) as usize * 2],
+                );
+            }
+        }
+        let frames = want.len() / 2 + 1_000;
+        let (out, _, h) = play_44k(media(), probed.info, slices, frames);
+        assert_eq!(h.error(), None, "{ext}");
+        if let Some(i) = out.iter().zip(&want).position(|(a, b)| a != b) {
+            panic!("{ext}: sample {i} is {} not {}", out[i], want[i]);
+        }
+        assert!(out[want.len()..].iter().all(|&s| s == 0.0));
+    }
 }
