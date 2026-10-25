@@ -116,13 +116,204 @@ pub fn ramp_value(from: f32, to: f32, pos: u64, len: u64, curve: Curve) -> f32 {
     (a + (b - a) * s) as f32
 }
 
+/// The mixer's gain along a ramp or fade from `from` to `to` differs from [`ramp_value`] by at
+/// most this times `max(|from|, |to|)`: −120 dB, the silence floor. One `f32` step of the
+/// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13 (docs/audio.md);
+/// the first frame and the end are exact.
+pub const RAMP_TOLERANCE: f64 = 1e-6;
+
+/// Ramp positions that are multiples of this are evaluated exactly; the frames between follow
+/// a recurrence from the last one. Fixed and position-aligned, so a value depends only on the
+/// ramp and its position, never on how the timeline is cut into blocks.
+const KNOT: u64 = 64;
+
+/// `1 / (exp(k) − 1)` of the exponential curve.
+const EXP_INV: f64 = 1.0 / 999.0;
+
+/// How [`CurveRamp`] gets the curve's progress `s` from its state `(x, y)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    /// Delegates to [`ramp_value`].
+    Exact,
+    /// `(x, y) = (cos φ, sin φ)` with `φ = θ·pos`, advanced by a rotation through `θ`.
+    /// Equal-power rising: `s = sin φ`.
+    Sin,
+    /// Equal-power falling: `s = 1 − cos φ`.
+    OneMinusCos,
+    /// S-curve, either way: `s = (1 − cos φ) / 2`.
+    HalfOneMinusCos,
+    /// `y = exp(k·t)`, advanced by multiplying with `exp(k/len)`: `s = (y − 1) / (e^k − 1)`
+    /// (exponential rising, logarithmic falling).
+    ExpUp,
+    /// `y = exp(k·(1 − t))`, multiplied by `exp(−k/len)`: `s = 1 − (y − 1) / (e^k − 1)`
+    /// (exponential falling, logarithmic rising).
+    ExpDown,
+}
+
+/// The mixer's evaluator of [`ramp_value`]: one exact evaluation per [`KNOT`] frames of ramp
+/// position instead of a `sin`/`cos`/`exp` per frame. A value is a pure function of the ramp
+/// and the position, whatever order positions are asked in; consecutive positions cost a few
+/// multiplications each. Position 0 is exactly `from` and `len` (and beyond) exactly `to`; every
+/// other value is within [`RAMP_TOLERANCE`] of [`ramp_value`] (docs/audio.md).
 #[derive(Clone, Copy, Debug)]
-struct Ramp {
+pub(crate) struct CurveRamp {
     from: f32,
     to: f32,
-    pos: u64,
     len: u64,
     curve: Curve,
+    kind: Kind,
+    a: f64,
+    d: f64,
+    /// Rotation step `(cos θ, sin θ)`, or the multiplicative step in `cr`.
+    cr: f64,
+    sr: f64,
+    /// Position the state `(x, y)` belongs to; `None` until the first evaluation.
+    at: Option<u64>,
+    x: f64,
+    y: f64,
+}
+
+impl CurveRamp {
+    pub(crate) fn new(from: f32, to: f32, len: u64, curve: Curve) -> Self {
+        let rising = to >= from;
+        let kind = match (curve, rising) {
+            (Curve::Linear, _) => Kind::Exact,
+            (Curve::EqualPower, true) => Kind::Sin,
+            (Curve::EqualPower, false) => Kind::OneMinusCos,
+            (Curve::SCurve, _) => Kind::HalfOneMinusCos,
+            (Curve::Exponential, true) | (Curve::Logarithmic, false) => Kind::ExpUp,
+            (Curve::Exponential, false) | (Curve::Logarithmic, true) => Kind::ExpDown,
+        };
+        let n = len.max(1) as f64;
+        let (cr, sr) = match kind {
+            Kind::Exact => (1.0, 0.0),
+            Kind::Sin | Kind::OneMinusCos => {
+                let (s, c) = (std::f64::consts::FRAC_PI_2 / n).sin_cos();
+                (c, s)
+            }
+            Kind::HalfOneMinusCos => {
+                let (s, c) = (std::f64::consts::PI / n).sin_cos();
+                (c, s)
+            }
+            Kind::ExpUp => ((EXP_K / n).exp(), 0.0),
+            Kind::ExpDown => ((-EXP_K / n).exp(), 0.0),
+        };
+        let (a, b) = (f64::from(from), f64::from(to));
+        CurveRamp {
+            from,
+            to,
+            len,
+            curve,
+            kind,
+            a,
+            d: b - a,
+            cr,
+            sr,
+            at: None,
+            x: 0.0,
+            y: 0.0,
+        }
+    }
+
+    /// Whether this evaluates the ramp `from → to` over `len` with `curve`.
+    pub(crate) fn is(&self, from: f32, to: f32, len: u64, curve: Curve) -> bool {
+        self.from.to_bits() == from.to_bits()
+            && self.to.to_bits() == to.to_bits()
+            && self.len == len
+            && self.curve == curve
+    }
+
+    /// Value at `pos` of the ramp `from → to` over `len` with `curve`, first turning this into
+    /// that ramp's evaluator if it is another's.
+    pub(crate) fn value_of(&mut self, from: f32, to: f32, len: u64, curve: Curve, pos: u64) -> f32 {
+        if !self.is(from, to, len, curve) {
+            *self = CurveRamp::new(from, to, len, curve);
+        }
+        self.value(pos)
+    }
+
+    /// Value at `pos`; leaves the state ready for `pos + 1`.
+    pub(crate) fn value(&mut self, pos: u64) -> f32 {
+        if pos == 0 || pos >= self.len || self.kind == Kind::Exact {
+            return ramp_value(self.from, self.to, pos, self.len, self.curve);
+        }
+        if self.at != Some(pos) {
+            self.seek(pos);
+        }
+        let v = self.output();
+        let next = pos + 1;
+        if next < self.len {
+            if next.is_multiple_of(KNOT) {
+                self.anchor(next);
+            } else {
+                self.step();
+            }
+            self.at = Some(next);
+        }
+        v
+    }
+
+    /// Value at `pos` without moving the state.
+    pub(crate) fn peek(&self, pos: u64) -> f32 {
+        let mut c = *self;
+        c.value(pos)
+    }
+
+    /// The state at `pos`: exact at the knot at or before it, then stepped. [`Self::value`]
+    /// reaches every position by the same operations, so both agree to the bit.
+    fn seek(&mut self, pos: u64) {
+        let knot = pos - pos % KNOT;
+        self.anchor(knot);
+        for _ in knot..pos {
+            self.step();
+        }
+        self.at = Some(pos);
+    }
+
+    fn anchor(&mut self, pos: u64) {
+        let t = pos as f64 / self.len as f64;
+        match self.kind {
+            Kind::Exact => {}
+            Kind::Sin | Kind::OneMinusCos => {
+                (self.y, self.x) = (t * std::f64::consts::FRAC_PI_2).sin_cos();
+            }
+            Kind::HalfOneMinusCos => (self.y, self.x) = (t * std::f64::consts::PI).sin_cos(),
+            Kind::ExpUp => self.y = (EXP_K * t).exp(),
+            Kind::ExpDown => self.y = (EXP_K * (1.0 - t)).exp(),
+        }
+    }
+
+    fn step(&mut self) {
+        match self.kind {
+            Kind::Exact => {}
+            Kind::Sin | Kind::OneMinusCos | Kind::HalfOneMinusCos => {
+                let (x, y) = (self.x, self.y);
+                self.x = x * self.cr - y * self.sr;
+                self.y = y * self.cr + x * self.sr;
+            }
+            Kind::ExpUp | Kind::ExpDown => self.y *= self.cr,
+        }
+    }
+
+    fn output(&self) -> f32 {
+        let s = match self.kind {
+            Kind::Exact => 0.0,
+            Kind::Sin => self.y,
+            Kind::OneMinusCos => 1.0 - self.x,
+            Kind::HalfOneMinusCos => (1.0 - self.x) * 0.5,
+            Kind::ExpUp => (self.y - 1.0) * EXP_INV,
+            Kind::ExpDown => 1.0 - (self.y - 1.0) * EXP_INV,
+        };
+        (self.a + self.d * s.clamp(0.0, 1.0)) as f32
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Ramp {
+    pos: u64,
+    len: u64,
+    to: f32,
+    eval: CurveRamp,
 }
 
 /// A gain that can ramp, advanced one sample at a time on the audio thread.
@@ -140,7 +331,7 @@ impl Param {
     /// Value at the next sample to be rendered.
     pub(crate) fn current(&self) -> f32 {
         match &self.ramp {
-            Some(r) => ramp_value(r.from, r.to, r.pos, r.len, r.curve),
+            Some(r) => r.eval.peek(r.pos),
             None => self.value,
         }
     }
@@ -166,11 +357,10 @@ impl Param {
         } else {
             let from = self.current();
             self.ramp = Some(Ramp {
-                from,
-                to,
                 pos: 0,
                 len: frames,
-                curve,
+                to,
+                eval: CurveRamp::new(from, to, frames, curve),
             });
         }
     }
@@ -184,7 +374,7 @@ impl Param {
                 .min(rest.len());
             let (head, tail) = rest.split_at_mut(n);
             for o in head {
-                *o = ramp_value(r.from, r.to, r.pos, r.len, r.curve);
+                *o = r.eval.value(r.pos);
                 r.pos += 1;
             }
             if r.pos >= r.len {
@@ -331,5 +521,170 @@ mod tests {
         let mut buf = [0.0; 1];
         p.fill(&mut buf);
         assert_eq!(buf[0], 0.5);
+    }
+
+    /// Four hours at 192 kHz: the longest ramp the tests stand in for.
+    const HOURS: u64 = 4 * 3600 * 192_000;
+
+    fn within_bound(from: f32, to: f32, len: u64, curve: Curve, pos: u64, got: f32) -> f64 {
+        let want = ramp_value(from, to, pos, len, curve);
+        let err = (f64::from(got) - f64::from(want)).abs();
+        let scale = f64::from(from.abs().max(to.abs()));
+        assert!(
+            err <= RAMP_TOLERANCE * scale,
+            "{curve:?} {from}->{to} len {len} pos {pos}: {got} vs {want} (err {err:e})"
+        );
+        if scale > 0.0 { err / scale } else { 0.0 }
+    }
+
+    fn gain() -> impl proptest::strategy::Strategy<Value = f32> {
+        use proptest::prelude::*;
+        prop_oneof![
+            Just(0.0f32),
+            Just(1.0f32),
+            Just(MAX_GAIN),
+            -MAX_GAIN..MAX_GAIN,
+            0.0f32..1e-3,
+        ]
+    }
+
+    fn length() -> impl proptest::strategy::Strategy<Value = u64> {
+        use proptest::prelude::*;
+        prop_oneof![1u64..=200, 1u64..=100_000, 1u64..=HOURS]
+    }
+
+    proptest::proptest! {
+        /// Any position, however it is reached, is within the bound; the ends are exact.
+        #[test]
+        fn curve_ramp_is_within_bound_of_ramp_value(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in length(),
+            frac in 0.0f64..=1.0,
+        ) {
+            let curve = ALL[c];
+            let r = CurveRamp::new(from, to, len, curve);
+            let pos = ((len as f64 * frac) as u64).min(len);
+            within_bound(from, to, len, curve, pos, r.peek(pos));
+            // The worst drift is on the last frame before a knot.
+            let late = (pos - pos % KNOT + KNOT - 1).min(len);
+            within_bound(from, to, len, curve, late, r.peek(late));
+            proptest::prop_assert_eq!(r.peek(0).to_bits(), from.to_bits());
+            proptest::prop_assert_eq!(r.peek(len).to_bits(), to.to_bits());
+            proptest::prop_assert_eq!(r.peek(len + 1).to_bits(), to.to_bits());
+        }
+
+        /// Values are a pure function of the position: rendering in any blocks, with skips,
+        /// gives the bits a fresh evaluator gives for that position.
+        #[test]
+        fn curve_ramp_does_not_depend_on_how_positions_are_reached(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in length(),
+            frac in 0.0f64..1.0,
+            cuts in proptest::collection::vec((1u64..300, 0u64..200), 1..12),
+        ) {
+            let curve = ALL[c];
+            let mut r = CurveRamp::new(from, to, len, curve);
+            let mut pos = (len as f64 * frac) as u64;
+            for (run, skip) in cuts {
+                for p in pos..pos + run {
+                    let fresh = CurveRamp::new(from, to, len, curve).peek(p);
+                    proptest::prop_assert_eq!(r.value(p).to_bits(), fresh.to_bits(), "pos {}", p);
+                }
+                pos += run + skip;
+            }
+        }
+
+        /// `Param` cut into any blocks, with skipped stretches, follows the same values.
+        #[test]
+        fn param_fill_is_block_split_independent(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in 1u64..5000,
+            cuts in proptest::collection::vec((0usize..700, proptest::bool::ANY), 1..20),
+        ) {
+            let curve = ALL[c];
+            let eval = CurveRamp::new(from, to, len, curve);
+            let mut p = Param::new(from);
+            p.ramp_to(to, len, curve);
+            let mut pos = 0u64;
+            let mut buf = [0.0f32; 700];
+            for (n, skip) in cuts {
+                if skip {
+                    p.advance(n);
+                } else {
+                    let out = &mut buf[..n];
+                    p.fill(out);
+                    for (k, v) in out.iter().enumerate() {
+                        let want = eval.peek(pos + k as u64);
+                        proptest::prop_assert_eq!(v.to_bits(), want.to_bits());
+                    }
+                }
+                pos += n as u64;
+                proptest::prop_assert_eq!(p.current().to_bits(), eval.peek(pos).to_bits());
+            }
+        }
+    }
+
+    /// Every frame of long ramps, rendered in sequence: the drift never builds up past a knot.
+    #[test]
+    fn curve_ramp_streamed_over_a_long_ramp_stays_within_bound() {
+        let len = 1 << 20;
+        for c in ALL {
+            for (from, to) in [(0.0, 1.0), (1.0, 0.0), (MAX_GAIN, 0.001), (0.25, 4.0)] {
+                let mut r = CurveRamp::new(from, to, len, c);
+                let mut worst: f64 = 0.0;
+                for pos in 0..=len {
+                    worst = worst.max(within_bound(from, to, len, c, pos, r.value(pos)));
+                }
+                assert!(worst <= 2.5e-7, "{c:?} {from}->{to}: worst {worst:e}");
+                assert_eq!(r.value(len), to);
+            }
+        }
+    }
+
+    /// The last frame before every knot of a four-hour ramp, where the recurrence has run
+    /// longest, and the frames around the ends.
+    #[test]
+    fn curve_ramp_worst_case_drift_over_hours() {
+        for c in ALL {
+            for (from, to) in [(0.0, 1.0), (1.0, 0.0), (MAX_GAIN, 0.0)] {
+                let r = CurveRamp::new(from, to, HOURS, c);
+                let mut worst: f64 = 0.0;
+                let knots = HOURS / KNOT;
+                for i in (0..knots).step_by((knots / 4000) as usize) {
+                    let pos = i * KNOT + KNOT - 1;
+                    worst = worst.max(within_bound(from, to, HOURS, c, pos, r.peek(pos)));
+                }
+                for pos in (1..200).chain(HOURS - 200..=HOURS) {
+                    worst = worst.max(within_bound(from, to, HOURS, c, pos, r.peek(pos)));
+                }
+                assert!(worst <= 2.5e-7, "{c:?} {from}->{to}: worst {worst:e}");
+                assert_eq!(r.peek(HOURS), to);
+            }
+        }
+    }
+
+    #[test]
+    fn curve_ramp_of_a_new_ramp_restarts() {
+        let mut r = CurveRamp::new(1.0, 0.0, 1000, Curve::SCurve);
+        r.value(10);
+        let v = r.value_of(0.5, 0.0, 300, Curve::EqualPower, 10);
+        assert_eq!(
+            v.to_bits(),
+            CurveRamp::new(0.5, 0.0, 300, Curve::EqualPower)
+                .peek(10)
+                .to_bits()
+        );
+        assert!(r.is(0.5, 0.0, 300, Curve::EqualPower));
+        // Linear is evaluated exactly.
+        let mut l = CurveRamp::new(0.3, 0.9, 777, Curve::Linear);
+        for pos in 0..=777 {
+            assert_eq!(l.value(pos), ramp_value(0.3, 0.9, pos, 777, Curve::Linear));
+        }
     }
 }
