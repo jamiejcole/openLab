@@ -39,8 +39,8 @@ impl EngineConfig {
     /// `now .. now + lookahead` (end excluded; lookahead 0 = only `now` and earlier). So their
     /// commands carry their exact sample even though the control loop wakes with jitter. The
     /// control loop sets it to one block (the mixer must never hold voice starts beyond the next
-    /// block) and calls [`Input::Tick`] once `now + lookahead > next_deadline()`. At most one
-    /// second of samples.
+    /// block) and calls [`Input::Tick`] when [`CueEngine::is_due`](super::CueEngine::is_due). At
+    /// most one second of samples.
     pub fn new(sample_rate: u32, lookahead: SampleTime) -> Result<Self, EngineConfigError> {
         let rate = NonZeroU32::new(sample_rate)
             .filter(|r| r.get() <= MAX_SAMPLE_RATE)
