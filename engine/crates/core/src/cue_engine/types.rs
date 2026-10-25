@@ -18,6 +18,7 @@ pub const MAX_SAMPLE_RATE: u32 = 384_000;
 pub struct EngineConfig {
     sample_rate: NonZeroU32,
     lookahead: SampleTime,
+    seed: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -41,7 +42,15 @@ impl EngineConfig {
     /// control loop sets it to one block (the mixer must never hold voice starts beyond the next
     /// block) and calls [`Input::Tick`] when [`CueEngine::is_due`](super::CueEngine::is_due). At
     /// most one second of samples.
-    pub fn new(sample_rate: u32, lookahead: SampleTime) -> Result<Self, EngineConfigError> {
+    ///
+    /// `seed` seeds the engine's random choices (random groups, shuffled playlists), so the same
+    /// seed and inputs always give the same show. Tests pass a fixed seed; the engine binary
+    /// passes fresh entropy each run.
+    pub fn new(
+        sample_rate: u32,
+        lookahead: SampleTime,
+        seed: u64,
+    ) -> Result<Self, EngineConfigError> {
         let rate = NonZeroU32::new(sample_rate)
             .filter(|r| r.get() <= MAX_SAMPLE_RATE)
             .ok_or(EngineConfigError::SampleRate(sample_rate))?;
@@ -52,6 +61,7 @@ impl EngineConfig {
         Ok(Self {
             sample_rate: rate,
             lookahead,
+            seed,
         })
     }
 
@@ -61,6 +71,10 @@ impl EngineConfig {
 
     pub fn lookahead(&self) -> SampleTime {
         self.lookahead
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// The last sample a call at `now` commits deadlines on.
@@ -116,12 +130,13 @@ pub enum Input {
     PlayheadPrevious {
         list: CueListId,
     },
-    /// Put the playhead on a top-level cue of the list; `None` moves it past the end.
+    /// Put the playhead on a cue of the list it can stand on (a top-level cue, or a cue inside
+    /// "start first and enter" groups); `None` moves it past the end.
     SetPlayhead {
         list: CueListId,
         cue: Option<CueId>,
     },
-    /// Put the playhead on the top-level cue of the list with this number.
+    /// Put the playhead on the cue of the list with this number (where it can stand on it).
     SetPlayheadByNumber {
         list: CueListId,
         number: String,
@@ -265,7 +280,8 @@ pub enum EngineWarning {
     UnknownCue {
         cue: CueId,
     },
-    /// The playhead can only stand on a top-level cue of its own list.
+    /// The playhead can only stand on a cue of its own list that is top-level or inside "start
+    /// first and enter" groups only.
     NotInList {
         list: CueListId,
         cue: CueId,
