@@ -139,8 +139,8 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - Media paths: relative (forward slashes) when under the show file's folder, absolute otherwise. Portable across macOS/Windows (NFR-32).
 - **Load**: parse → migrate (`vN → vN+1` chain, each step a pure function with fixture tests) → validate (unique ids, valid targets, sane ranges). Invalid content produces load warnings or a clean refusal with a reason — never a panic. Fuzzed (QA-04).
 - **Save** is atomic: write `name.openlab.tmp` in the same directory, `fsync`, rename over the original.
-- **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>.openlab`. On launch, a recovery file newer than the show file triggers a restore prompt.
-- **Backups**: on each manual save, the previous version is kept in `<app-support>/openLab/Backups/<workspace-id>/` (rolling, default 20).
+- **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>-<path-hash>.openlab` (bound to the show file's path, so a duplicated show is never offered the original's work; `<workspace-id>.openlab` before the first save). On launch, a recovery file newer than the show file triggers a restore prompt. A recovery file is never deleted on a timestamp comparison: older ones are moved aside and deleted only after a successful save.
+- **Backups**: on each manual save, the previous version is kept in `<app-support>/openLab/Backups/<workspace-id>-<path-hash>/` (rolling, default 20; per show path so duplicates do not rotate each other out).
 - Details of the I/O (file names, rotation, recovery decision, settings schema, relink flow): `docs/persistence.md`. Pure logic is in `openlab-core`; file work is in `crates/engine/src/persist/`. Saves clone the workspace and run on a writer thread, never the control thread.
 - **Per-machine settings** (device mapping for each workspace's patches, preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
 

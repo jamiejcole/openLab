@@ -45,6 +45,8 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M1.14 Per-machine settings: the UI-owned parts (window layout, recent files) are not in `MachineSettings`; decide where they live (UI defaults vs. `settings.json`) when M5 needs them. [WS-06] — from M1-C
 - [ ] M1.15 Windows: `write_atomic` relies on `rename` replacing an open/locked destination (antivirus or indexer holding the file can make it fail transiently); add a short bounded retry once Windows CI runs the persistence tests. [NFR-04, NFR-31] — from M1-C
 
+- [ ] M1.16 M1-C review Lows left open: (L3) atomic replace swaps the inode, so mode/ownership/xattrs/Finder tags are lost and a symlinked or read-only show file is replaced on Unix — preserve metadata or document; (L4) a backup `.tmp` left by a crash is never rotated and a backwards clock step can make the newest backup rotate out first; (L6) `///x` on Posix parses as a `//` share root and drive-relative `C:foo` is a plain relative name; (L7) `scan_folder` is bounded by depth/count but not time or directory count — run it off the control thread and consider a deadline; crash-leftover `*.tmp` files beside a show are never cleaned — from M1-C review
+
 ## M2 — Cue engine (pure logic, virtual clock)
 - [ ] M2.1 Cue lifecycle state machine with all states and transitions [CUE-04, CUE-05]
 - [ ] M2.2 Pre-wait / action / post-wait timing and continue modes (do-not-continue, auto-continue, auto-follow) [CUE-02, CUE-03]
