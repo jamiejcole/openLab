@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Property tests for the cue engine: random lists with nested groups of every mode (including
-//! duplicate ids, which make trigger cycles) and random input sequences, with edits (deletes,
-//! moves out of groups, reorders, mode changes) and stale feedback mixed in. `handle` never
+//! Property tests for the cue engine: random lists with nested groups of every mode, control and
+//! Fade cues with random targets (so Start/GoTo cycles, self-targets and missing targets), and
+//! duplicate ids (more trigger cycles), and random input sequences, with edits (deletes, moves
+//! out of groups, reorders, mode changes), Arm/Disarm changes applied to the model as the binary
+//! does, and stale feedback (including devamp answers) mixed in. `handle` never
 //! panics, every cue has exactly the state last reported for it, playheads stay valid, a running
 //! group always has a child that is not idle, the chain bound holds and every due deadline is
 //! carried out. The full suite is M2.9.
@@ -29,6 +31,9 @@ struct Spec {
     level: u8,
     /// Group mode, for groups.
     group_mode: u8,
+    /// Control and Fade cues: which cue they target (by position; past the end = missing).
+    target: u8,
+    flag: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -41,17 +46,17 @@ struct Step {
 
 fn spec() -> impl Strategy<Value = Spec> {
     (
-        0u8..4,
-        0u8..3,
-        0u8..3,
-        0u8..3,
-        any::<bool>(),
-        prop::bool::weighted(0.1),
-        0u8..4,
-        0u8..7,
+        (0u8..15, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
+        (
+            prop::bool::weighted(0.1),
+            0u8..4,
+            0u8..7,
+            any::<u8>(),
+            any::<bool>(),
+        ),
     )
         .prop_map(
-            |(kind, pre, post, mode, armed, dup, level, group_mode)| Spec {
+            |((kind, pre, post, mode, armed), (dup, level, group_mode, target, flag))| Spec {
                 kind,
                 pre,
                 post,
@@ -60,12 +65,14 @@ fn spec() -> impl Strategy<Value = Spec> {
                 dup,
                 level,
                 group_mode,
+                target,
+                flag,
             },
         )
 }
 
 fn step() -> impl Strategy<Value = Step> {
-    (0u64..1500, 0u8..18, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
+    (0u64..1500, 0u8..20, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
 }
 
 fn mode(n: u8) -> ContinueMode {
@@ -115,12 +122,59 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             _ => i as u128 + 1,
         };
         last_id = Some(n);
+        // Targets name cues by position, so cycles and self-targets come up; past the end is a
+        // missing target.
+        let target = Some(cue_id(u128::from(s.target) % (specs.len() as u128 + 2) + 1));
         let kind = match s.kind {
             0 => CueKind::Memo,
             1 => CueKind::Wait {
                 duration: f64::from(s.post) * 0.7,
             },
-            2 => audio(),
+            2 | 3 => audio(),
+            4 => CueKind::Group {
+                mode: group_mode(s.group_mode),
+                children: vec![],
+            },
+            5 => CueKind::Start { target },
+            6 => CueKind::Stop {
+                target,
+                fade_out: FadeSpec {
+                    duration: f64::from(s.pre) * 0.3,
+                    curve: FadeCurve::Linear,
+                },
+            },
+            7 => CueKind::Pause { target },
+            8 => CueKind::Load {
+                target,
+                load_to_time: f64::from(s.post) * 0.4,
+            },
+            9 => CueKind::Reset { target },
+            10 => CueKind::Devamp {
+                target,
+                start_next_cue: s.flag,
+                stop_target_when_slice_ends: s.armed,
+            },
+            11 => CueKind::GoTo {
+                target,
+                then_go: s.flag,
+            },
+            12 if s.flag => CueKind::Arm { target },
+            12 => CueKind::Disarm { target },
+            13 => CueKind::Fade {
+                target,
+                duration: f64::from(s.post) * 0.6,
+                curve: FadeCurve::SCurve,
+                levels: FadeLevels {
+                    master_db: Some(f64::from(s.group_mode) * -10.0),
+                    output_db: vec![Some(-3.0), None, Some(-6.0)],
+                    crosspoints: vec![FadeCrosspoint {
+                        input: u32::from(s.level),
+                        output: u32::from(s.pre),
+                        db: -12.0,
+                    }],
+                },
+                stop_target_when_done: s.flag,
+            },
             _ => CueKind::Group {
                 mode: group_mode(s.group_mode),
                 children: vec![],
@@ -215,6 +269,8 @@ proptest! {
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
         let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
+        // The latest sample a command was sent for, per voice (run id), across calls.
+        let mut last_at: BTreeMap<RunId, SampleTime> = BTreeMap::new();
 
         for s in &steps {
             now += s.dt;
@@ -283,6 +339,16 @@ proptest! {
                     run: engine.run_of(target).unwrap_or(RunId(0)),
                     reason: BrokenReason::StreamFailed,
                 },
+                18 => Input::DevampScheduled {
+                    cue: target,
+                    run: engine.run_of(target).unwrap_or(RunId(0)),
+                    // Sometimes in the past (a late answer), sometimes ahead.
+                    at: (now + u64::from(s.b) * 4).saturating_sub(300),
+                },
+                19 => Input::DevampIgnored {
+                    cue: target,
+                    run: engine.run_of(target).unwrap_or(RunId(0)),
+                },
                 _ => {
                     // Model edit: change a cue's timing and continue mode.
                     if let Some(c) = find_mut(&mut ws.cue_lists[0].cues, target) {
@@ -297,6 +363,7 @@ proptest! {
             let horizon = now + lookahead.saturating_sub(1);
 
             let mut starts = 0usize;
+            let mut arm = Vec::new();
             for action in &actions {
                 match action {
                     Action::StateChanged { cue, state, at } => {
@@ -312,13 +379,48 @@ proptest! {
                     Action::StartVoice { at, .. }
                     | Action::StopVoice { at, .. }
                     | Action::PauseVoice { at, .. }
-                    | Action::ResumeVoice { at, .. } => {
+                    | Action::ResumeVoice { at, .. }
+                    | Action::Ramp { at, .. }
+                    | Action::DevampVoice { at, .. } => {
                         prop_assert!(*at >= now && *at <= horizon, "voice action at {at}");
                     }
+                    Action::SetArmed { cue, armed } => arm.push((*cue, *armed)),
                     _ => {}
+                }
+                // Commands for one voice never go backwards in time (committed ones cannot be
+                // withdrawn or overtaken); a resume continues the paused voice's sequence.
+                let timed = match action {
+                    Action::StartVoice { run, at, .. }
+                    | Action::StopVoice { run, at, .. }
+                    | Action::PauseVoice { run, at, .. }
+                    | Action::Ramp { run, at, .. }
+                    | Action::DevampVoice { run, at, .. } => Some((*run, *run, *at)),
+                    Action::ResumeVoice { run, paused, at, .. } => Some((*paused, *run, *at)),
+                    _ => None,
+                };
+                if let Some((before, after, at)) = timed {
+                    let previous = last_at.get(&before).copied().unwrap_or(0);
+                    prop_assert!(at >= previous, "voice {:?} went back from {} to {}", before, previous, at);
+                    last_at.insert(after, at);
                 }
             }
             prop_assert!(starts <= CueEngine::chain_limit(&ws));
+            // Only audio cues have levels to fade.
+            for (id, state) in engine.cue_states() {
+                if state == CueState::Fading {
+                    let audio = matches!(
+                        ws.find_cue(id).map(|c| &c.kind),
+                        Some(CueKind::Audio { .. })
+                    );
+                    prop_assert!(audio, "cue {} fading", id);
+                }
+            }
+            // The binary applies Arm/Disarm changes to the model before the next call (M4.2).
+            for (cue, armed) in arm {
+                if let Some(c) = find_mut(&mut ws.cue_lists[0].cues, cue) {
+                    c.armed = armed;
+                }
+            }
 
             // Exactly one state per cue, and it is the one last reported.
             for id in &seen {
