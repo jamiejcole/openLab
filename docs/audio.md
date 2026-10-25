@@ -97,7 +97,7 @@ A start is **rejected** with `Event::VoiceRejected`, and the box is returned, fo
 - `BadChannelCount`: `channels` is 0 or above `max_voice_channels`.
 - `BadRouting`: the patch index is out of range, or a routing vector has the wrong length.
 - `BadFade`: a fade-out without `play_frames` or `slices`.
-- `BadSlices`: a slice table combined with `play_frames`, with an empty slice or `Times(0)`, or with more than `MAX_SLICES` (256) entries.
+- `BadSlices`: a slice table combined with `play_frames` or `skip_frames` (the table carries its own start), with an empty slice or `Times(0)`, or with more than `MAX_SLICES` (256) entries.
 
 Nothing panics.
 
@@ -162,7 +162,7 @@ The same table drives the disk stream (which unrolls it into the ring) and the v
 | `LoopReached { slice, count, at }` | a play of `slice` ended and it plays again from `at`; `count` plays done so far |
 | `SliceEnded { slice, at }` | the slice's last play ended; the next slice, if any, starts on `at` |
 | `DevampScheduled { at }` | a devamp was accepted; `at` is where the voice leaves the loop unless an underrun intervenes |
-| `DevampIgnored { at }` | a devamp the voice cannot carry out (no slice table, a devamp already under way, or no `link` when one is needed); playback is unchanged |
+| `DevampIgnored { at }` | a devamp that cannot be carried out (no such voice playing, no slice table, a devamp already under way, or no `link` when one is needed); playback is unchanged |
 
 Voices without a slice table report only `VoiceFinished`.
 
@@ -173,7 +173,7 @@ Voices without a slice table report only `VoiceFinished`.
 - To start the next cue when the loop ends, the engine uses `DevampScheduled.at` (schedule the start in the block containing it) or reacts to `SliceEnded`.
 - If the disk worker cannot place the boundary in the table, the stream fails (`BadSlices`) and the voice ends, rather than waiting forever.
 
-**Integrated fade-out with slices** follows the planned end: it ends on the last frame of the table's last play. A voice heading into an infinite loop has no known end, so no fade-out applies until a devamp continues it into a finite part. A devamp stop ends at the loop boundary without the fade-out.
+**Integrated fade-out with slices** follows the planned end: it ends on the last frame of the table's last play. A voice heading into an infinite loop has no known end, so no fade-out applies until a devamp continues it into a finite part. If a devamp leaves fewer frames than the fade-out's length, the fade restarts from the gain the last frame before the jump had and reaches exactly 0.0 on the new last frame, with the same curve: the gain never jumps. A devamp stop ends at the loop boundary without the fade-out.
 
 ## Signal path (ARCHITECTURE §3.5)
 

@@ -265,6 +265,23 @@ fn devamps_the_voice_cannot_carry_out_are_reported_and_change_nothing() {
         at: 10
     }));
     assert!(ev.contains(&finished(600)));
+    // A voice that is not playing (never started, or already ended at 600).
+    let devamp = |voice| CommandKind::Devamp { voice, stop: true };
+    ctl.send(705, devamp(VoiceId(9)));
+    ctl.send(710, devamp(ID));
+    render(&mut r, 64);
+    let ev = events(&mut ctl);
+    assert!(
+        ev.contains(&Event::DevampIgnored {
+            voice: VoiceId(9),
+            at: 705
+        }),
+        "{ev:?}"
+    );
+    assert!(
+        ev.contains(&Event::DevampIgnored { voice: ID, at: 710 }),
+        "{ev:?}"
+    );
 }
 
 #[test]
@@ -311,6 +328,8 @@ fn bad_slice_tables_are_rejected() {
     };
     let cases: Vec<(Vec<Slice>, Option<u64>)> = vec![
         (vec![one(10, Plays::Times(1))], Some(10)),
+        // Given a skip below: the table carries its own start.
+        (vec![one(10, Plays::Times(1))], None),
         (vec![one(0, Plays::Times(1))], None),
         (vec![one(10, Plays::Times(0))], None),
         (vec![one(10, Plays::Times(1)); MAX_SLICES + 1], None),
@@ -320,6 +339,9 @@ fn bad_slice_tables_are_rejected() {
         let mut v = voice(&ctl, i as u64 + 1, source(&[0.5; 10]), 1);
         v.slices = slices;
         v.play_frames = play_frames;
+        if i == 1 {
+            v.skip_frames = 3;
+        }
         send_start(&mut ctl, 0, v);
     }
     let out = render(&mut r, 64);

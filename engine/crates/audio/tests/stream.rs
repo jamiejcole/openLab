@@ -834,3 +834,68 @@ fn damaged_files_stream_and_loop_on_the_probe_timeline() {
         assert!(out[want.len()..].iter().all(|&s| s == 0.0));
     }
 }
+
+/// Review M1: a devamp that leaves less audio than the integrated fade-out restarts the fade
+/// from the gain the voice had, so the gain never jumps, and it still ends exactly at silence on
+/// the last frame.
+#[test]
+fn fade_out_stays_continuous_when_a_devamp_shortens_the_end() {
+    // Constant 0.5: the output is the envelope. Intro 0..1000, loop 1000..2000, outro 2000..4000.
+    let path = temp_file("level.wav", &wav(&[0.5; 4_000], 1, SR, Pcm::F32));
+    let info = probe(&path).unwrap().info;
+    for (plays, devamp_at, fade) in [
+        // Out of an infinite loop (no fade before) into a 2000-frame outro, fade 4000.
+        (Plays::Infinite, 1_250, 4_000),
+        // Out of the 2nd of 5 plays while the fade-out (6000) is already running.
+        (Plays::Times(5), 1_250, 6_000),
+    ] {
+        let (mut ctl, mut r) = setup(config(1));
+        let mut d = streamer(2_000);
+        let slices = plan(
+            0..4_000,
+            &[1_000, 2_000],
+            &[Plays::Times(1), plays, Plays::Times(1)],
+            0,
+        )
+        .unwrap();
+        let p = d
+            .prepare(StreamRequest {
+                media: Media::Path(path.clone()),
+                info,
+                slices,
+            })
+            .unwrap();
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+        let (mut v, h) = p.into_voice(VoiceId(1), ctl.cue_outputs());
+        v.set_crosspoint(0, 0, 1.0);
+        v.fade_out = openlab_audio::Fade::new(fade, openlab_audio::Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        assert!(h.wait_written(20_000, FAILSAFE).unwrap());
+        let mut out = render(&mut r, devamp_at as usize);
+        ctl.send(
+            devamp_at,
+            CommandKind::Devamp {
+                voice: VoiceId(1),
+                stop: false,
+            },
+        );
+        out.extend(render(&mut r, BLOCK));
+        assert!(h.wait_cuts(1, FAILSAFE).unwrap());
+        assert!(h.wait_written(u64::MAX, FAILSAFE).unwrap());
+        out.extend(render(&mut r, 5_000 - out.len()));
+        // The outro is the last 2000 frames played: 2000..4000. Its last frame is exactly 0.
+        assert_eq!(out[3_999], 0.0, "{plays:?}: last frame");
+        assert!(out[4_000..].iter().all(|&s| s == 0.0));
+        // Never a step bigger than a linear fade from 0.5 over the 2000 frames left could take.
+        let max_step = 0.5 / 2_000.0 * 1.01;
+        for i in 0..3_999 {
+            let step = (out[i + 1] - out[i]).abs();
+            assert!(
+                step <= max_step,
+                "{plays:?}: step {step} at frame {i} ({} -> {})",
+                out[i],
+                out[i + 1]
+            );
+        }
+    }
+}

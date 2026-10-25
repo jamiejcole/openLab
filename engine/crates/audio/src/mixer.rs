@@ -257,7 +257,7 @@ pub enum RejectReason {
     /// A fade-out without `play_frames` has nothing to end on.
     BadFade,
     /// A slice table with an empty slice, `Times(0)`, more than `MAX_SLICES` entries, or
-    /// combined with `play_frames`.
+    /// combined with `play_frames` or `skip_frames` (the table carries its own start).
     BadSlices,
 }
 
@@ -298,8 +298,9 @@ pub enum Event {
     /// A devamp was accepted. `at` is where the voice leaves the loop if no underrun intervenes;
     /// the matching `SliceEnded` carries the actual sample.
     DevampScheduled { voice: VoiceId, at: SampleTime },
-    /// A devamp the voice cannot carry out: it has no slice table, a devamp is already under
-    /// way, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged.
+    /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
+    /// devamp is already under way, or leaving a loop needs a disk-stream `link` it does not
+    /// have. Playback is unchanged.
     DevampIgnored { voice: VoiceId, at: SampleTime },
 }
 
@@ -396,6 +397,29 @@ struct Remaining {
     first: Option<u64>,
     split: usize,
     after: Option<u64>,
+    /// The voice's re-started fade-out (see `Voice::refade`) before and after the split.
+    refade_first: Option<Refade>,
+    refade_after: Option<Refade>,
+}
+
+/// A fade-out restarted by a devamp that left less audio than the fade's length: from gain
+/// `from` (what the last frame before the jump had) to silence on the last frame, over `len`
+/// frames, so the gain never jumps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Refade {
+    from: f32,
+    len: u64,
+}
+
+/// Integrated fade-out gain for a frame with `r` frames after it.
+fn fade_out_gain(fout: Fade, r: Option<u64>, refade: Option<Refade>) -> f32 {
+    match (r, refade) {
+        (Some(r), Some(f)) => ramp_value(f.from, 0.0, f.len.saturating_sub(r), f.len, fout.curve),
+        (Some(r), None) if fout.frames > 0 && r <= fout.frames => {
+            ramp_value(1.0, 0.0, fout.frames - r, fout.frames, fout.curve)
+        }
+        _ => 1.0,
+    }
 }
 
 impl Remaining {
@@ -433,6 +457,8 @@ struct Voice {
     /// Devamped at this ring position; waiting for the disk stream to say where the
     /// continuation starts.
     awaiting: Option<u64>,
+    /// Set when a devamp left less audio than the fade-out's length.
+    refade: Option<Refade>,
     fade_in: Fade,
     fade_out: Fade,
     master: Param,
@@ -465,6 +491,7 @@ impl Voice {
             tail: None,
             devamp: None,
             awaiting: None,
+            refade: None,
             fade_in: Fade::NONE,
             fade_out: Fade::NONE,
             master: Param::new(1.0),
@@ -554,6 +581,7 @@ impl Voice {
         self.count = 0;
         self.devamp = None;
         self.awaiting = None;
+        self.refade = None;
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
         self.master.set(sanitize_gain(s.gain));
@@ -715,6 +743,8 @@ impl Voice {
             first: self.remaining(),
             split: usize::MAX,
             after: None,
+            refade_first: self.refade,
+            refade_after: None,
         };
         let outcome = loop {
             if let Some(b) = self.awaiting {
@@ -778,8 +808,22 @@ impl Voice {
                 match self.boundary(t0 + got as u64, outbox) {
                     Step::Next => {}
                     Step::Jumped => {
+                        // The gain the last frame before the jump had (the frame before this
+                        // read's first, if the jump comes first).
+                        let last = match got.checked_sub(1) {
+                            Some(j) => rem.at(j),
+                            None => rem.first.map(|r| r.saturating_add(1)),
+                        };
+                        let from = fade_out_gain(self.fade_out, last, self.refade);
                         rem.split = got;
                         rem.after = self.remaining();
+                        self.refade = match rem.after {
+                            Some(r) if self.fade_out.frames > 0 && r < self.fade_out.frames => {
+                                Some(Refade { from, len: r + 1 })
+                            }
+                            _ => None,
+                        };
+                        rem.refade_after = self.refade;
                     }
                     Step::End => break ReadOutcome::Ended(FinishReason::OutPoint),
                 }
@@ -813,10 +857,12 @@ impl Voice {
         let in_active = fin.frames > 0 && pos0 < fin.frames;
         // The fade-out covers a frame with at most `fout.frames` frames after it.
         let out_active = fout.frames > 0
-            && [rem.first, rem.after]
-                .iter()
-                .flatten()
-                .any(|&r| r <= fout.frames.saturating_add(got as u64));
+            && (rem.refade_first.is_some()
+                || rem.refade_after.is_some()
+                || [rem.first, rem.after]
+                    .iter()
+                    .flatten()
+                    .any(|&r| r <= fout.frames.saturating_add(got as u64)));
         if !in_active && !out_active {
             return;
         }
@@ -825,8 +871,13 @@ impl Voice {
             if in_active && p < fin.frames {
                 *g *= ramp_value(0.0, 1.0, p, fin.frames, fin.curve);
             }
-            if out_active && let Some(r) = rem.at(j).filter(|&r| r <= fout.frames) {
-                *g *= ramp_value(1.0, 0.0, fout.frames - r, fout.frames, fout.curve);
+            if out_active {
+                let refade = if j < rem.split {
+                    rem.refade_first
+                } else {
+                    rem.refade_after
+                };
+                *g *= fade_out_gain(fout, rem.at(j), refade);
             }
         }
     }
@@ -1214,8 +1265,10 @@ impl Mixer {
             }
             CommandKind::Devamp { voice, stop } => {
                 let Mixer { voices, outbox, .. } = self;
-                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
-                    v.request_devamp(stop, t, outbox);
+                match voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
+                    Some(v) => v.request_devamp(stop, t, outbox),
+                    // Not started yet or already ended: the engine must not think it worked.
+                    None => outbox.emit(Event::DevampIgnored { voice, at: t }),
                 }
             }
         }
@@ -1236,6 +1289,8 @@ impl Mixer {
             Some(RejectReason::BadRouting)
         } else if !s.slices.is_empty()
             && (s.play_frames.is_some()
+                // The devamp cut position is in ring frames from the start of the table.
+                || s.skip_frames != 0
                 || s.slices.len() > MAX_SLICES
                 || s.slices
                     .iter()
