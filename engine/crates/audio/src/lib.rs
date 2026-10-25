@@ -19,8 +19,8 @@ mod stream;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{
-    DEFAULT_PRELOAD_BUDGET, Media, MediaError, MediaInfo, MediaRead, Preloaded, preload,
-    preload_within, probe, probe_media,
+    DEFAULT_PRELOAD_BUDGET, Media, MediaError, MediaInfo, MediaRead, MediaWarning, Preloaded,
+    Probed, WarningKind, preload, preload_within, probe, probe_media,
 };
 #[doc(hidden)]
 pub use fuzzing::fuzz_decode;

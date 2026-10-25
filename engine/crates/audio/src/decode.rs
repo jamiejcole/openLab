@@ -88,6 +88,41 @@ pub(crate) fn scale_round(x: u64, num: u32, den: u32) -> u64 {
     u64::try_from(v).unwrap_or(u64::MAX)
 }
 
+/// Most warnings kept per file; damage beyond that still plays as silence.
+const MAX_WARNINGS: usize = 256;
+/// Consecutive container errors after which the rest of a file counts as unreadable.
+const MAX_READER_ERRORS: u32 = 16;
+
+/// What is wrong with a playable file. Positions are frames on the playback timeline (the file's
+/// own rate), the same timeline seeks, loops and slices use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WarningKind {
+    /// `frames` frames from `at` are missing or undecodable (damage the container skipped, or a
+    /// packet that failed to decode): they play as silence, so later positions do not move.
+    Missing,
+    /// `frames` frames at `at` repeat positions already played: they are dropped.
+    Repeated,
+    /// The file ends at `at`, `frames` frames before its header says: it plays to its real end.
+    Truncated,
+    /// Nothing can be read past `at` (the container keeps failing, or its timestamps jump by
+    /// more than a minute): the file plays to there.
+    Unreadable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaWarning {
+    pub kind: WarningKind,
+    pub at: u64,
+    pub frames: u64,
+}
+
+/// A playable file's probe: its format and exact length, and any damage found on the way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probed {
+    pub info: MediaInfo,
+    pub warnings: Vec<MediaWarning>,
+}
+
 /// Why a file cannot be played. Shown to the operator as a broken cue; never a panic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MediaError {
@@ -190,6 +225,7 @@ pub struct Preloaded {
     info: MediaInfo,
     /// Interleaved, `info.frames × info.channels`. Kept as the decode buffer (no final copy).
     samples: Vec<f32>,
+    warnings: Vec<MediaWarning>,
 }
 
 impl Preloaded {
@@ -199,11 +235,17 @@ impl Preloaded {
         Arc::new(Preloaded {
             info: MediaInfo::new(channels, rate, frames),
             samples,
+            warnings: Vec::new(),
         })
     }
 
     pub fn info(&self) -> MediaInfo {
         self.info
+    }
+
+    /// Damage found while decoding (the same as [`probe`] reports).
+    pub fn warnings(&self) -> &[MediaWarning] {
+        &self.warnings
     }
 
     /// Interleaved samples at the file's own rate.
@@ -225,15 +267,27 @@ pub(crate) fn contain<T>(f: impl FnOnce() -> Result<T, MediaError>) -> Result<T,
 }
 
 /// Probes `path` and returns its exact format and length. Blocking: call from an I/O thread.
-pub fn probe(path: &Path) -> Result<MediaInfo, MediaError> {
+/// Damage does not fail the probe: it is listed in [`Probed::warnings`] and plays as described
+/// there. Only a file with nothing playable is an error.
+pub fn probe(path: &Path) -> Result<Probed, MediaError> {
     probe_media(Media::Path(path.to_path_buf()))
 }
 
 /// As [`probe`], for any [`Media`].
-pub fn probe_media(media: Media) -> Result<MediaInfo, MediaError> {
+pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
     match media {
-        Media::Preloaded(p) => Ok(p.info),
-        other => contain(|| Decoder::open(other)?.exact_info()),
+        Media::Preloaded(p) => Ok(Probed {
+            info: p.info,
+            warnings: p.warnings.clone(),
+        }),
+        other => contain(|| {
+            let mut d = Decoder::open(other)?;
+            let info = d.exact_info()?;
+            Ok(Probed {
+                info,
+                warnings: std::mem::take(&mut d.warnings),
+            })
+        }),
     }
 }
 
@@ -304,16 +358,21 @@ fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError
     }
     samples.shrink_to_fit();
     let frames = (samples.len() / ch) as u64;
-    if let Some(expected) = d.declared.filter(|&e| e > frames && !d.lossy) {
-        return Err(MediaError::Truncated {
-            expected,
-            actual: frames,
+    if let Some(expected) = d.declared.filter(|&e| e > frames) {
+        d.warn(MediaWarning {
+            kind: WarningKind::Truncated,
+            at: frames,
+            frames: expected - frames,
         });
+    }
+    if frames == 0 {
+        return Err(MediaError::Corrupt("no audio frames".into()));
     }
     let channels = u16::try_from(ch).unwrap_or(0);
     Ok(Arc::new(Preloaded {
         info: MediaInfo::new(channels, d.rate, frames),
         samples,
+        warnings: std::mem::take(&mut d.warnings),
     }))
 }
 
@@ -326,6 +385,10 @@ pub(crate) trait FrameSource: Send {
     fn seek(&mut self, frame: u64) -> Result<(), MediaError>;
     /// Reads up to `out.len() / channels` frames; `Ok(0)` is end of file.
     fn read(&mut self, out: &mut [f32]) -> Result<usize, MediaError>;
+    /// Damage met since the last call (played as silence or skipped, see [`MediaWarning`]).
+    fn take_warnings(&mut self) -> Vec<MediaWarning> {
+        Vec::new()
+    }
 }
 
 /// Opens `media` as a frame source. Blocking.
@@ -496,7 +559,9 @@ struct Decoder {
     declared: Option<u64>,
     pcm: bool,
     lossy: bool,
-    /// Playable frames of the current packet, interleaved; `buf[buf_pos..]` starts at `next`.
+    /// The current run: `silence` frames of silence (damaged or missing audio), then the
+    /// current packet's playable frames `buf[buf_pos..]`, interleaved. The run starts at `next`.
+    silence: u64,
     buf: Vec<f32>,
     buf_pos: usize,
     /// Position of the next frame `read` returns.
@@ -506,10 +571,17 @@ struct Decoder {
     /// Set by a seek until the packet holding the target frame is decoded.
     resync: Option<Resync>,
     eof: bool,
+    /// Damage found so far, in position order of discovery; `reported` of them were handed out
+    /// by `take_warnings`.
+    warnings: Vec<MediaWarning>,
+    reported: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Resync {
+    /// End position of the last packet decoded since the seek: a later packet starting after
+    /// the target with this before it means the target lies in a gap.
+    prev_end: Option<i64>,
     /// A lossy decoder's first packet after a mid-file seek lacks its predecessor's state (MDCT
     /// overlap, MP3 bit reservoir): it is dropped whole.
     discard_first: bool,
@@ -618,30 +690,56 @@ impl Decoder {
             cursor: 0,
             resync: None,
             eof: false,
+            silence: 0,
+            warnings: Vec::new(),
+            reported: 0,
         };
         d.find_origin()?;
         Ok(d)
     }
 
-    /// Decodes up to the first playable frame, which becomes position 0, and keeps its packet
-    /// buffered.
+    /// Finds position 0 and decodes up to the first playable frame, keeping its packet
+    /// buffered. Position 0 is the container's start (encoder delay excluded: playable frames
+    /// start at timestamp 0 or later), or the first decodable frame if that comes before it. If
+    /// the first packets are damaged, the frames before the first decodable one are silence.
     fn find_origin(&mut self) -> Result<(), MediaError> {
         while let Some(abs) = self.decode_packet()? {
-            let kept = self.kept();
-            if kept > 0 {
-                if self.ts_per_frame.is_some() {
-                    self.origin = abs;
-                }
-                self.cursor = kept as u64;
-                return Ok(());
+            let run = self.run_len();
+            if run == 0 {
+                continue;
             }
+            if self.ts_per_frame.is_some() {
+                let start = self.ts_to_frames(self.start_ts).max(0);
+                let origin = if abs > 0 { start.min(abs) } else { abs };
+                let lead = u64::try_from(abs - origin).unwrap_or(0);
+                // A start far after the container's: take the stream as it is.
+                let origin = if lead > self.max_gap() { abs } else { origin };
+                self.origin = origin;
+                // Anything noted before the origin was known is relative to 0.
+                let shift = u64::try_from(origin).unwrap_or(0);
+                for w in &mut self.warnings {
+                    w.at = w.at.saturating_sub(shift);
+                }
+                let lead = u64::try_from(abs - origin).unwrap_or(0);
+                if lead > 0 {
+                    self.warn(MediaWarning {
+                        kind: WarningKind::Missing,
+                        at: 0,
+                        frames: lead,
+                    });
+                    self.silence = self.silence.saturating_add(lead);
+                }
+            }
+            self.cursor = self.run_len();
+            return Ok(());
         }
         Ok(())
     }
 
-    /// Exact length: a PCM header's length is checked by decoding the tail; anything else
-    /// (compressed formats, where frames can be missing without the container noticing) is
-    /// counted by decoding the whole file, which also checks it has no gaps.
+    /// Exact length on the playback timeline: a PCM header's length is checked by decoding the
+    /// tail; anything else (compressed formats, where frames can be missing without the
+    /// container noticing) is counted by decoding the whole file, which also finds any damage.
+    /// Damage is a warning, not an error: the file is playable as long as any audio decodes.
     fn exact_info(&mut self) -> Result<MediaInfo, MediaError> {
         let channels = u16::try_from(self.channels).unwrap_or(0);
         let frames = match self.declared.filter(|_| self.pcm) {
@@ -654,26 +752,21 @@ impl Decoder {
                     // The tail is missing or unreadable: count what is really there.
                     _ => {
                         self.seek(0)?;
-                        let actual = self.count_to_end()?;
-                        if actual >= declared {
-                            return Err(MediaError::Corrupt("unreadable end of file".into()));
-                        }
-                        return Err(MediaError::Truncated {
-                            expected: declared,
-                            actual,
-                        });
+                        self.count_to_end()?.min(declared)
                     }
                 }
             }
-            None => {
-                let actual = self.count_to_end()?;
-                // A lossless container's length is exact: fewer frames means the file was cut.
-                match self.declared.filter(|&d| !self.lossy && actual < d) {
-                    Some(expected) => return Err(MediaError::Truncated { expected, actual }),
-                    None => actual,
-                }
-            }
+            None => self.count_to_end()?,
         };
+        // Fewer frames than the container declares: the file was cut short (or, for lossy
+        // formats, frames were lost where the container could not tell).
+        if let Some(d) = self.declared.filter(|&d| frames < d) {
+            self.warn(MediaWarning {
+                kind: WarningKind::Truncated,
+                at: frames,
+                frames: d - frames,
+            });
+        }
         if frames == 0 {
             return Err(MediaError::Corrupt("no audio frames".into()));
         }
@@ -683,12 +776,35 @@ impl Decoder {
     /// Decodes to the end and returns the frame position reached.
     fn count_to_end(&mut self) -> Result<u64, MediaError> {
         loop {
-            self.next += self.kept() as u64;
+            self.next += self.run_len();
+            self.silence = 0;
             self.buf_pos = self.buf.len();
             if !self.refill()? {
                 return Ok(self.next);
             }
         }
+    }
+
+    /// Records damage once (the same damage is met again on every pass and every seek).
+    fn warn(&mut self, w: MediaWarning) {
+        if self.warnings.len() < MAX_WARNINGS && !self.warnings.contains(&w) {
+            self.warnings.push(w);
+        }
+    }
+
+    /// Frames in the current run: silence, then buffered frames.
+    fn run_len(&self) -> u64 {
+        self.silence.saturating_add(self.kept() as u64)
+    }
+
+    /// Drops `n` frames from the front of the current run.
+    fn drop_front(&mut self, n: u64) {
+        let s = n.min(self.silence);
+        self.silence -= s;
+        let rest = usize::try_from(n - s)
+            .unwrap_or(usize::MAX)
+            .min(self.kept());
+        self.buf_pos += rest * self.channels;
     }
 
     /// Frames in `buf` not yet returned.
@@ -715,12 +831,14 @@ impl Decoder {
         i64::try_from(v).unwrap_or(i64::MAX)
     }
 
-    /// Decodes the next packet of our track into `buf`, with the packet's encoder delay and
-    /// padding trimmed. Returns the position of its first playable frame (`buf[buf_pos]`), or
-    /// `None` at the end of the stream.
+    /// Decodes the next packet of our track into the current run, with the packet's encoder
+    /// delay and padding trimmed; a packet that fails to decode becomes silence of its length
+    /// (and a warning). Returns the run's position, or `None` at the end of the stream.
     fn decode_packet(&mut self) -> Result<Option<i64>, MediaError> {
         self.buf.clear();
         self.buf_pos = 0;
+        self.silence = 0;
+        let mut reader_errors = 0;
         while !self.eof {
             let format = self.format.as_mut().ok_or(MediaError::Changed)?;
             let packet = match format.next_packet() {
@@ -734,22 +852,75 @@ impl Decoder {
                     self.eof = true;
                     break;
                 }
-                Err(e) => return Err(e.into()),
+                // A real read error is not damage in the file: the caller fails.
+                Err(SymError::IoError(e)) => return Err(MediaError::Io(e.to_string())),
+                // Damaged container data: the reader resynchronises on the next call. One that
+                // keeps failing ends the playable audio here.
+                Err(_) => {
+                    reader_errors += 1;
+                    if reader_errors >= MAX_READER_ERRORS {
+                        self.unreadable();
+                        break;
+                    }
+                    continue;
+                }
             };
+            reader_errors = 0;
             if packet.track_id != self.track {
                 continue;
             }
+            let trim = |d: u64| -> usize {
+                let f = self.ts_to_frames(i64::try_from(d).unwrap_or(i64::MAX));
+                usize::try_from(f).unwrap_or(0)
+            };
+            let (trim_start, trim_end, dur) = (
+                trim(packet.trim_start.get()),
+                trim(packet.trim_end.get()),
+                trim(packet.dur.get()),
+            );
+            // Position of the packet's frame `front`.
+            let base = match self.ts_per_frame {
+                Some(_) => self
+                    .ts_to_frames(packet.pts.get())
+                    .saturating_sub(self.origin),
+                None => i64::try_from(self.cursor).unwrap_or(i64::MAX),
+            };
+            let pos_of = |front: usize| match self.ts_per_frame {
+                Some(_) => base.saturating_add(front as i64),
+                None => base,
+            };
             let decoded = match self.decoder.decode(&packet) {
                 Ok(d) => d,
-                // The packet a lossy seek drops anyway may not decode without its predecessor.
-                Err(SymError::DecodeError(m)) => match &mut self.resync {
-                    Some(r) if r.discard_first => {
+                Err(SymError::ResetRequired) => {
+                    return Err(MediaError::Unsupported(
+                        "stream parameters change mid-file".into(),
+                    ));
+                }
+                // The decoder does no I/O: any other failure (including its bit reader running
+                // off the end of a damaged packet) is damage in this packet.
+                Err(_) => {
+                    // The packet a lossy seek drops anyway may not decode without its predecessor.
+                    if let Some(r) = self.resync.as_mut().filter(|r| r.discard_first) {
                         r.discard_first = false;
                         continue;
                     }
-                    _ => return Err(MediaError::Corrupt(m.to_string())),
-                },
-                Err(e) => return Err(e.into()),
+                    // Damaged audio data: silence of the packet's length keeps the timeline.
+                    let pos = pos_of(trim_start);
+                    let frames = dur as u64;
+                    if frames > self.max_gap() {
+                        self.unreadable();
+                        break;
+                    }
+                    if frames > 0 && self.resync.is_none() {
+                        self.warn(MediaWarning {
+                            kind: WarningKind::Missing,
+                            at: u64::try_from(pos).unwrap_or(0),
+                            frames,
+                        });
+                    }
+                    self.silence = frames;
+                    return Ok(Some(pos));
+                }
             };
             if decoded.spec().channels().count() != self.channels {
                 return Err(MediaError::Unsupported(
@@ -761,71 +932,116 @@ impl Decoder {
             for x in &mut self.buf {
                 *x = sanitize_sample(*x);
             }
-            let trim = |d: u64| -> usize {
-                let f = self.ts_to_frames(i64::try_from(d).unwrap_or(i64::MAX));
-                usize::try_from(f).unwrap_or(0)
-            };
-            let front = trim(packet.trim_start.get()).min(n);
-            let back = trim(packet.trim_end.get()).min(n - front);
+            let front = trim_start.min(n);
+            let back = trim_end.min(n - front);
             self.buf.truncate((n - back) * self.channels);
             self.buf_pos = front * self.channels;
-            let pos = match self.ts_per_frame {
-                Some(_) => self
-                    .ts_to_frames(packet.pts.get())
-                    .saturating_add(front as i64)
-                    .saturating_sub(self.origin),
-                None => i64::try_from(self.cursor).unwrap_or(i64::MAX),
-            };
-            return Ok(Some(pos));
+            return Ok(Some(pos_of(front)));
         }
         Ok(None)
     }
 
-    /// Decodes the next packet that holds frame `next`, aligned so `buf[buf_pos]` is that
-    /// frame. Returns false at the end of the stream.
+    /// Longest gap filled with silence (60 s at the file's rate); a longer jump in the
+    /// timestamps is not missing audio but a broken container.
+    fn max_gap(&self) -> u64 {
+        u64::from(self.rate) * 60
+    }
+
+    /// The rest of the file cannot be read: the playable audio ends at the cursor.
+    fn unreadable(&mut self) {
+        self.eof = true;
+        self.warn(MediaWarning {
+            kind: WarningKind::Unreadable,
+            at: self.cursor,
+            frames: 0,
+        });
+    }
+
+    /// Decodes the next run that holds frame `next`, aligned so the run starts at that frame.
+    /// Missing frames (a gap in the positions) become silence and a warning; repeated ones are
+    /// dropped. Returns false at the end of the stream.
     fn refill(&mut self) -> Result<bool, MediaError> {
         loop {
-            let Some(pos) = self.decode_packet()? else {
+            let Some(mut pos) = self.decode_packet()? else {
                 return Ok(false);
             };
-            let kept = self.kept();
-            let end = pos.saturating_add(kept as i64);
+            let len = i64::try_from(self.run_len()).unwrap_or(i64::MAX);
+            let end = pos.saturating_add(len);
             if let Some(r) = self.resync {
                 // Counted positions need every packet, even the ones dropped here.
                 self.cursor = u64::try_from(end).unwrap_or(0);
                 if r.discard_first {
                     self.resync = Some(Resync {
                         discard_first: false,
+                        prev_end: Some(end),
                         ..r
                     });
                     continue;
                 }
                 let want = i64::try_from(self.next).unwrap_or(i64::MAX);
-                if kept == 0 || end <= want {
+                if len == 0 || end <= want {
+                    self.resync = Some(Resync {
+                        prev_end: Some(end),
+                        ..r
+                    });
                     continue;
                 }
                 if pos > want {
-                    // The container landed after the target: retry from further back.
-                    if r.tries + 1 >= SEEK_TRIES {
-                        return Err(MediaError::Corrupt("cannot seek to frame".into()));
+                    match r.prev_end {
+                        // The target lies in a gap the decode just stepped over.
+                        Some(prev) if prev <= want => {
+                            let gap = u64::try_from(pos - want).unwrap_or(0);
+                            self.warn(MediaWarning {
+                                kind: WarningKind::Missing,
+                                at: u64::try_from(prev).unwrap_or(0),
+                                frames: u64::try_from(pos - prev).unwrap_or(0),
+                            });
+                            self.silence = self.silence.saturating_add(gap);
+                            pos = want;
+                        }
+                        // The container landed after the target: retry from further back.
+                        _ => {
+                            if r.tries + 1 >= SEEK_TRIES {
+                                return Err(MediaError::Corrupt("cannot seek to frame".into()));
+                            }
+                            self.seek_with(self.next, r.tries + 1)?;
+                            continue;
+                        }
                     }
-                    self.seek_with(self.next, r.tries + 1)?;
-                    continue;
                 }
-                let skip = usize::try_from(want - pos).unwrap_or(usize::MAX);
-                self.buf_pos += skip * self.channels;
+                self.drop_front(u64::try_from(want - pos).unwrap_or(0));
                 self.resync = None;
                 return Ok(true);
             }
-            if kept == 0 {
+            if len == 0 {
                 continue;
             }
             let cursor = i64::try_from(self.cursor).unwrap_or(i64::MAX);
-            if pos != cursor {
-                // Frames are missing (a damaged frame the demuxer skipped) or repeated.
-                return Err(MediaError::Corrupt(format!(
-                    "discontinuity at frame {cursor} (next packet at {pos})"
-                )));
+            if pos > cursor {
+                // Frames are missing (damage the container skipped): play silence for them.
+                let gap = u64::try_from(pos - cursor).unwrap_or(0);
+                if gap > self.max_gap() {
+                    self.unreadable();
+                    return Ok(false);
+                }
+                self.warn(MediaWarning {
+                    kind: WarningKind::Missing,
+                    at: self.cursor,
+                    frames: gap,
+                });
+                self.silence = self.silence.saturating_add(gap);
+            } else if pos < cursor {
+                // Frames repeat positions already played: drop them.
+                let dup = u64::try_from(cursor - pos).unwrap_or(0);
+                self.warn(MediaWarning {
+                    kind: WarningKind::Repeated,
+                    at: u64::try_from(pos).unwrap_or(0),
+                    frames: dup.min(u64::try_from(len).unwrap_or(0)),
+                });
+                if end <= cursor {
+                    continue;
+                }
+                self.drop_front(dup);
             }
             self.cursor = u64::try_from(end).unwrap_or(0);
             return Ok(true);
@@ -837,6 +1053,7 @@ impl Decoder {
         self.buf.clear();
         self.buf_pos = 0;
         self.eof = false;
+        self.silence = 0;
         self.next = frame;
         self.cursor = 0;
         // Lossless decoders need no warm-up; any decoder gets more pre-roll on a retry.
@@ -871,6 +1088,8 @@ impl Decoder {
         };
         self.decoder = make_decoder(&self.params)?;
         self.resync = Some(Resync {
+            // Decoding from the start: anything before the first packet is a leading gap.
+            prev_end: at_start.then_some(0),
             discard_first: self.lossy && !at_start,
             tries,
         });
@@ -935,8 +1154,20 @@ impl FrameSource for Decoder {
         let want = out.len() / ch;
         let mut got = 0;
         while got < want {
-            if self.kept() == 0 && !self.refill()? {
+            if self.run_len() == 0 && !self.refill()? {
                 break;
+            }
+            if self.silence > 0 {
+                let n = usize::try_from(self.silence)
+                    .unwrap_or(usize::MAX)
+                    .min(want - got);
+                if let Some(dst) = out.get_mut(got * ch..(got + n) * ch) {
+                    dst.fill(0.0);
+                }
+                self.silence -= n as u64;
+                self.next += n as u64;
+                got += n;
+                continue;
             }
             let n = self.kept().min(want - got);
             let src = self.buf.get(self.buf_pos..self.buf_pos + n * ch);
@@ -949,6 +1180,16 @@ impl FrameSource for Decoder {
             got += n;
         }
         Ok(got)
+    }
+
+    fn take_warnings(&mut self) -> Vec<MediaWarning> {
+        let new = self
+            .warnings
+            .get(self.reported..)
+            .unwrap_or_default()
+            .to_vec();
+        self.reported = self.warnings.len();
+        new
     }
 }
 
@@ -1029,6 +1270,93 @@ mod tests {
             }
             // Substituted noise is tiny; a one-frame shift of this tone would be over 0.03.
             assert!(worst < 2.5e-3, "{name}: max error {worst}");
+        }
+    }
+
+    /// A damaged file seeks onto the same timeline its probe, preload and a straight read give:
+    /// silence where frames are missing, every other frame bit-exact, around and inside the
+    /// damage.
+    #[test]
+    fn damaged_files_seek_onto_the_probe_timeline() {
+        let damage = |name: &str, at: usize, len: usize| {
+            let mut b = std::fs::read(fixture(name)).unwrap();
+            for x in b.get_mut(at..at + len).unwrap() {
+                *x ^= 0x5a;
+            }
+            b
+        };
+        let cut = |name: &str, keep: usize| {
+            let b = std::fs::read(fixture(name)).unwrap();
+            b.get(..b.len() * keep / 4).unwrap().to_vec()
+        };
+        let cases = [
+            ("flac", damage("tone.flac", 13_832, 16)),
+            ("flac", damage("tone.flac", 10_374, 16)),
+            ("flac", cut("tone.flac", 3)),
+            ("ogg", damage("tone-4s.ogg", 10_888, 16)),
+            ("m4a", damage("tone.m4a", 5_964, 16)),
+            ("mp3", damage("tone.mp3", 4_619, 300)),
+        ];
+        for (ext, bytes) in cases {
+            let media =
+                || Media::Reader(Box::new(io::Cursor::new(bytes.clone())), Some(ext.into()));
+            let probed = probe_media(media()).unwrap();
+            assert!(!probed.warnings.is_empty(), "{ext}: damage found");
+            let full = preload(media()).unwrap();
+            let all = full.samples();
+            let frames = full.info().frames;
+            let mut src = open_source(media()).unwrap();
+            let mut targets = vec![0, 1, frames / 2, frames - 1];
+            for w in &probed.warnings {
+                for t in [
+                    w.at.saturating_sub(700),
+                    w.at.saturating_sub(1),
+                    w.at,
+                    w.at + 1,
+                ] {
+                    targets.push(t);
+                }
+                let end = w.at + w.frames;
+                targets.extend([w.at + w.frames / 2, end.saturating_sub(1), end, end + 300]);
+            }
+            for at in targets.into_iter().filter(|&t| t < frames) {
+                src.seek(at).unwrap();
+                let mut buf = vec![0.0; 2 * 500];
+                let mut got = 0;
+                while got < 500 {
+                    let n = src.read(&mut buf[got * 2..]).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got += n;
+                }
+                let n = (frames - at).min(500) as usize;
+                assert_eq!(got, n, "{ext} at {at}: frames");
+                let start = at as usize * 2;
+                let want = &all[start..start + n * 2];
+                // AAC noise substitution is never bit-identical after a seek (see above).
+                let tol = if ext == "m4a" { 2.5e-3 } else { 0.0 };
+                if let Some(i) = buf[..n * 2]
+                    .iter()
+                    .zip(want)
+                    .position(|(a, b)| (a - b).abs() > tol)
+                {
+                    panic!("{ext} at {at}: sample {i} is {} not {}", buf[i], want[i]);
+                }
+                // Silence where frames are missing is exact for every codec.
+                for w in probed
+                    .warnings
+                    .iter()
+                    .filter(|w| w.kind == WarningKind::Missing)
+                {
+                    for (j, x) in buf[..n * 2].chunks(2).enumerate() {
+                        let p = at + j as u64;
+                        if (w.at..w.at + w.frames).contains(&p) {
+                            assert_eq!(x, [0.0, 0.0], "{ext}: frame {p} in the gap");
+                        }
+                    }
+                }
+            }
         }
     }
 

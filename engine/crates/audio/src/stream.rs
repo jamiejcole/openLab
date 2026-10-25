@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::decode::{Media, MediaError, MediaInfo, contain, open_source};
+use crate::decode::{Media, MediaError, MediaInfo, MediaWarning, contain, open_source};
 use crate::mixer::{VoiceId, VoiceStart};
 use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 use crate::resample::Pipeline;
@@ -26,6 +26,8 @@ pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
 /// Frames decoded per step; workers visit their streams round-robin, one chunk each.
 const CHUNK_FRAMES: usize = 4096;
+/// Most warnings kept per stream.
+const MAX_STREAM_WARNINGS: usize = 256;
 /// How often a worker with streams wakes to top up rings and look for devamp cuts.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -90,6 +92,8 @@ struct Status {
     written: u64,
     /// Devamp cuts made: the loop's stale frames are cut off and the continuation is queued.
     cuts: u64,
+    /// Damage met while streaming, each once (see `StreamHandle::warnings`).
+    warnings: Vec<MediaWarning>,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +136,13 @@ impl StreamHandle {
     /// plays what was written and then ends with `FinishReason::EndOfStream`.
     pub fn error(&self) -> Option<MediaError> {
         self.shared.lock().error.clone()
+    }
+
+    /// Damage met while streaming, each once, in the order met. It plays as the warning says
+    /// (silence for missing frames), so the timeline is unchanged. Damage the probe already
+    /// reported shows up here too; anything else is new (the file changed since its probe).
+    pub fn warnings(&self) -> Vec<MediaWarning> {
+        self.shared.lock().warnings.clone()
     }
 
     /// Frames written to the ring so far.
@@ -473,6 +484,16 @@ impl Task {
         }
         let buf = self.scratch.get_mut(..n * ch).ok_or(MediaError::Worker)?;
         let got = pipe.read(buf)?;
+        let new = pipe.take_warnings();
+        if !new.is_empty() {
+            self.shared.update(|st| {
+                for w in new {
+                    if st.warnings.len() < MAX_STREAM_WARNINGS && !st.warnings.contains(&w) {
+                        st.warnings.push(w);
+                    }
+                }
+            });
+        }
         if got < n {
             // The slice table was checked against the probed length, so the file has changed.
             return Err(MediaError::Changed);

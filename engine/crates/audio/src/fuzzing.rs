@@ -13,18 +13,20 @@ const DEVICE_RATE: u32 = 48_000;
 /// Probes, preloads and streams `data` with seeks. Bad input must give a typed [`MediaError`];
 /// a panic in a decoder is a bug the fuzzer reports (its panic hook aborts before
 /// [`contain`](crate::decode::contain) can catch it). Returns an `Err` describing a broken
-/// invariant: whatever probes must preload to the same format and length, and must stream and
-/// seek without error (a cue that loads must not fail during the show).
+/// invariant: whatever probes must preload to the same format, length and warnings, and must
+/// stream and seek without error (a cue that loads must not fail during the show), damaged or
+/// not.
 pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
     let media = || Media::Reader(Box::new(Cursor::new(data.to_vec())), None);
-    let Ok(info) = probe_media(media()) else {
+    let Ok(probed) = probe_media(media()) else {
         return Ok(());
     };
+    let info = probed.info;
     if info.channels == 0 || info.sample_rate == 0 || info.frames == 0 {
         return Err(format!("probe accepted {info:?}"));
     }
     match preload(media()) {
-        Ok(p) if p.info() == info => {}
+        Ok(p) if p.info() == info && p.warnings() == probed.warnings.as_slice() => {}
         // Over the memory budget is a legitimate outcome (the cue streams instead).
         Err(MediaError::TooLarge { .. }) => {}
         other => {
