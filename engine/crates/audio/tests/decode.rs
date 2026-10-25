@@ -409,6 +409,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `aac-damaged-tail.m4a`: damaged AAC packets decode or fail depending on decoder history, so
 /// a seek and a straight read ended at different lengths (a packet now counts its container
 /// duration either way).
+/// `mp3-frames-after-end.mp3`: damage left frames after the packets the MP3 reader trims as end
+/// padding; their timestamps were taken for missing audio, extending the timeline past the end
+/// where seeks could not follow (the stream now ends at the container's end trim).
 /// `f32-non-finite.wav`: NaN and infinite float samples made the resampler's FFT panic.
 /// `wav-channel-overflow.wav`: symphonia 0.6.1's WAV reader overflows `u16` on a huge channel
 /// count (a panic with overflow checks on, as here); contained as a typed error.

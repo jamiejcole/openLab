@@ -942,6 +942,11 @@ impl Decoder {
             }
             self.buf.truncate((n - back) * self.channels);
             self.buf_pos = front * self.channels;
+            // The container trims encoder padding only off the stream's last packet: whatever
+            // follows (data left after damage) is not part of the audio.
+            if trim_end > 0 {
+                self.eof = true;
+            }
             return Ok(Some(pos_of(front)));
         }
         Ok(None)
