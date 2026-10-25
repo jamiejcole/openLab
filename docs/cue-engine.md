@@ -116,7 +116,7 @@ Events:
 | running | action completes at `T` (feedback, or known duration) | post-waiting if a post-wait is pending, else idle; auto-follow triggers the next cue at `T` |
 | post-waiting | post-wait elapses at `T` | idle; next cue triggered at `T` |
 | stopping | fade-out ends (`stop at + fade frames`, or `ActionEnded` first) | idle |
-| loaded, any active | `ActionFailed` for the current run | broken (timers and continue cancelled) |
+| loaded, any active | `ActionFailed` for the current run | broken: the run's voice is released at once (`StopVoice`, or `UnloadVoice` if it never started), timers and continue cancelled. A broken cue owns no voice, so Stop and Reset have nothing left to silence |
 | paused | time passes | paused (nothing runs) |
 | any non-idle | cue deleted from the workspace | idle; `StopVoice`/`UnloadVoice`, `CueRemoved` warning if it was active |
 
