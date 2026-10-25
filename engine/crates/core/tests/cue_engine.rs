@@ -1672,3 +1672,38 @@ fn end_before_the_pause_still_completes_and_follows() {
     assert_eq!(changes(&ended, 1), vec![(CueState::Idle, 480)]);
     assert_eq!(running_at(&ended, 2), Some(480));
 }
+
+fn pause_offset(actions: &[Action]) -> Option<SampleTime> {
+    actions.iter().find_map(|a| match a {
+        Action::PauseVoice { offset, .. } => Some(*offset),
+        _ => None,
+    })
+}
+
+#[test]
+fn voice_position_counts_from_a_start_committed_in_the_lookahead() {
+    // Review L1: the voice starts at 100 although the pause came at 95.
+    let mut rig = Rig::with_config(vec![timed(sound(1), 0.1, 0.0, DNC)], config(10));
+    rig.start(0, 1);
+    assert_eq!(voice_starts(&rig.tick(95)), vec![(id(1), 100)]);
+    assert_eq!(
+        pause_offset(&rig.at(95, Input::Pause { cue: id(1) })),
+        Some(0)
+    );
+    rig.at(200, Input::Resume { cue: id(1) });
+    assert_eq!(
+        pause_offset(&rig.at(300, Input::Pause { cue: id(1) })),
+        Some(100)
+    );
+}
+
+#[test]
+fn voice_position_counts_from_a_late_start() {
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, DNC)]);
+    rig.start(0, 1);
+    assert_eq!(voice_starts(&rig.tick(1250)), vec![(id(1), 1250)]);
+    assert_eq!(
+        pause_offset(&rig.at(1500, Input::Pause { cue: id(1) })),
+        Some(250)
+    );
+}

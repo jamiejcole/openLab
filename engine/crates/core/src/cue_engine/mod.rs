@@ -452,7 +452,7 @@ impl CueEngine {
                     && run.paused_at.is_none()
                     && matches!(run.phase, Phase::Action { .. }) =>
             {
-                if let (Voice::Started { at: started }, Some(curve)) =
+                if let (Voice::Started { at: started, .. }, Some(curve)) =
                     (run.voice, fade_out.map(|f| f.curve))
                 {
                     let at = now.max(started);
@@ -486,7 +486,7 @@ impl CueEngine {
             return;
         }
         run.paused_at = Some(now);
-        if let (Voice::Started { at: started }, Phase::Action { .. }) = (run.voice, run.phase) {
+        if let (Voice::Started { at: started, .. }, Phase::Action { .. }) = (run.voice, run.phase) {
             cx.out.push(Action::PauseVoice {
                 cue,
                 run: run.run,
@@ -519,7 +519,10 @@ impl CueEngine {
                 at: voice_at,
                 offset,
             });
-            run.voice = Voice::Started { at: voice_at };
+            run.voice = Voice::Started {
+                at: voice_at,
+                from: offset,
+            };
         }
         self.report(cue, before, at, cx);
     }
@@ -738,7 +741,10 @@ impl CueEngine {
                     at: voice_at,
                     offset,
                 });
-                run.voice = Voice::Started { at: voice_at };
+                run.voice = Voice::Started {
+                    at: voice_at,
+                    from: offset,
+                };
             }
             Some(_) => {
                 if run.voice == Voice::Loaded {
@@ -794,7 +800,7 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
             run, voice: true, ..
         }) => cx.out.push(Action::UnloadVoice { cue, run: *run }),
         Slot::Active(run) => match run.voice {
-            Voice::Started { at } => cx.out.push(Action::StopVoice {
+            Voice::Started { at, .. } => cx.out.push(Action::StopVoice {
                 cue,
                 run: run.run,
                 at: cx.now.max(at),

@@ -52,9 +52,12 @@ pub(super) enum Voice {
     None,
     /// A `LoadVoice` was sent but no `StartVoice`.
     Loaded,
-    /// A `StartVoice` was sent for sample `at` and the voice has not ended.
+    /// The voice was (re)started on sample `at`, `from` samples into the action, and has not
+    /// ended. Its position is counted from here, not from the timeline: a start can be later
+    /// than its deadline (late tick) or after a pause that came before it (lookahead).
     Started {
         at: SampleTime,
+        from: SampleTime,
     },
 }
 
@@ -113,13 +116,12 @@ impl Run {
         self.phase == Phase::Done && self.post_wait.is_none() && self.stop_end.is_none()
     }
 
-    /// Samples into the action at sample `at`.
+    /// Samples into the action the voice has reached at sample `at` (the action offset while
+    /// no voice plays).
     pub fn position(&self, at: SampleTime) -> SampleTime {
-        match self.phase {
-            Phase::Action { start, .. } => {
-                self.action_offset.saturating_add(at.saturating_sub(start))
-            }
-            Phase::PreWait { .. } | Phase::Done => self.action_offset,
+        match self.voice {
+            Voice::Started { at: started, from } => from.saturating_add(at.saturating_sub(started)),
+            Voice::None | Voice::Loaded => self.action_offset,
         }
     }
 
