@@ -319,8 +319,9 @@ pub enum Event {
     /// the matching `SliceEnded` carries the actual sample.
     DevampScheduled { voice: VoiceId, at: SampleTime },
     /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
-    /// different devamp (other `stop`) is pending, a loop exit is still being carried out, or
-    /// leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged.
+    /// different devamp (other `stop`) is pending, a cut is needed while an earlier devamp's cut
+    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged. (A devamp while an earlier one's loop exit is
+    /// still playing is carried out.)
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
 }
@@ -401,7 +402,21 @@ enum Devamp {
     /// skipped once it says where the continuation starts.
     Continue {
         cut: bool,
+        /// The voice plays the loop exit's buffer at the boundary (it existed when the devamp
+        /// was accepted, and the disk stream was told so with the cut).
+        exit: bool,
     },
+}
+
+/// A devamp cut accepted while the voice still waited for the disk stream's answer to the
+/// previous cut: published once that answer is in (the link carries one cut at a time).
+#[derive(Clone, Copy, Debug)]
+struct Deferred {
+    /// Voice frame of the boundary.
+    at: u64,
+    exit: bool,
+    /// The voice has reached the boundary already.
+    passed: bool,
 }
 
 /// What happened at the end of a play.
@@ -563,9 +578,11 @@ struct Voice {
     /// Frames after the current play until the end; `None` = unbounded.
     tail: Option<u64>,
     devamp: Option<Devamp>,
-    /// Devamped at this ring position; waiting for the disk stream to say where the
-    /// continuation starts.
+    /// Devamped at this voice frame (`pos`); waiting for the disk stream to say where the
+    /// continuation starts in the ring.
     awaiting: Option<u64>,
+    /// See [`Deferred`].
+    deferred: Option<Deferred>,
     /// Set when a devamp left less audio than the fade-out's length.
     refade: Option<Refade>,
     /// Playing the start of a loop exit's continuation from its exit buffer (see
@@ -623,6 +640,7 @@ impl Voice {
             tail: None,
             devamp: None,
             awaiting: None,
+            deferred: None,
             refade: None,
             exit: None,
             fade_in: Fade::NONE,
@@ -730,6 +748,7 @@ impl Voice {
         self.count = 0;
         self.devamp = None;
         self.awaiting = None;
+        self.deferred = None;
         self.refade = None;
         self.exit = None;
         self.fade_in = s.fade_in;
@@ -773,17 +792,15 @@ impl Voice {
         self.start.as_ref().and_then(|s| s.link.as_deref())
     }
 
-    /// Arms a devamp at the end of the current play (CT-16). Ignored without a slice table, while
-    /// a different devamp is pending or a loop exit is under way, or when continuing out of a
-    /// loop has no link.
+    /// Arms a devamp at the end of the current play (CT-16), also while an earlier devamp's
+    /// loop exit is still playing. Ignored without a slice table, while a different devamp is
+    /// pending, or when continuing out of a loop has no link.
     fn request_devamp(&mut self, stop: bool, t: SampleTime, outbox: &mut Outbox) {
         let ignored = Event::DevampIgnored {
             voice: self.id,
             at: t,
         };
-        // While the last devamp's exit is under way the voice's ring position is not yet the
-        // continuation's, so a new cut point could not be computed.
-        if !self.has_slices() || self.awaiting.is_some() || self.exit.is_some() {
+        if !self.has_slices() {
             outbox.emit(ignored);
             return;
         }
@@ -806,20 +823,37 @@ impl Voice {
             Devamp::Stop
         } else if more_plays {
             // The ring already holds more plays of this loop; the disk stream must cut them.
-            let at = self
-                .ring_pos
-                .saturating_add(self.skip)
-                .saturating_add(self.left);
-            match self.link() {
-                Some(link) => link.request_cut(at),
-                None => {
+            let at = self.pos.saturating_add(self.left);
+            let target = self.next_slice_after(self.entry);
+            let Some(link) = self.link() else {
+                outbox.emit(ignored);
+                return;
+            };
+            let exit = target
+                .and_then(|k| link.exit(k))
+                .is_some_and(|e| e.frames > 0);
+            if self.awaiting.is_some() {
+                // The link still carries the previous cut: send this one once it is answered.
+                // Only one waits: a cut must never be dropped, or the disk stream would map
+                // the next one from the wrong place.
+                if self.deferred.is_some() {
                     outbox.emit(ignored);
                     return;
                 }
+                self.deferred = Some(Deferred {
+                    at,
+                    exit,
+                    passed: false,
+                });
+            } else {
+                link.request_cut(at, exit);
             }
-            Devamp::Continue { cut: true }
+            Devamp::Continue { cut: true, exit }
         } else {
-            Devamp::Continue { cut: false }
+            Devamp::Continue {
+                cut: false,
+                exit: false,
+            }
         };
         self.devamp = Some(mode);
         self.announce_devamp(t, outbox);
@@ -1017,22 +1051,20 @@ impl Voice {
                 emit(slice_ended);
                 return Step::End;
             }
-            Some(Devamp::Continue { cut }) => {
+            Some(Devamp::Continue { cut, exit }) => {
                 emit(slice_ended);
                 let Some(target) = self.next_slice_after(self.entry) else {
                     return Step::End;
                 };
                 if cut {
-                    self.awaiting = Some(self.ring_pos);
-                    // Play the continuation's start from its exit buffer while the stale
-                    // frames are skipped and the stream refills the ring behind them.
-                    let ready = self
-                        .link()
-                        .and_then(|l| l.exit(target))
-                        .is_some_and(|e| e.frames > 0);
-                    if ready {
-                        self.exit = Some((target, 0));
+                    match self.deferred.as_mut() {
+                        Some(d) => d.passed = true,
+                        None => self.awaiting = Some(self.pos),
                     }
+                    // Play the continuation's start from its exit buffer while the stale
+                    // frames are skipped and the stream refills the ring behind them. Without
+                    // one (not built), the ring waits for the continuation.
+                    self.exit = exit.then_some((target, 0));
                 }
                 self.count = 0;
                 self.enter(target);
@@ -1089,24 +1121,32 @@ impl Voice {
             refade_after: None,
         };
         let outcome = loop {
-            if let Some(b) = self.awaiting {
-                match self.link().and_then(StreamLink::resumed_at) {
-                    Some(r) if r >= b => {
-                        self.skip = self.skip.saturating_add(r - b);
-                        self.awaiting = None;
-                    }
-                    // The exit buffer covers the wait.
-                    _ if self.exit.is_some() => {}
-                    _ => {
-                        // Without its producer the continuation will never come.
-                        let abandoned = self.start.as_ref().is_none_or(|s| s.source.is_abandoned());
-                        break if abandoned {
-                            ReadOutcome::Ended(FinishReason::EndOfStream)
-                        } else {
-                            ReadOutcome::Underrun
-                        };
-                    }
+            if let Some(c) = self.awaiting
+                && let Some(r) = self.link().and_then(|l| l.resumed(c))
+            {
+                // Every ring frame before the continuation is stale.
+                self.skip = self.skip.max(r.saturating_sub(self.ring_pos));
+                self.awaiting = None;
+            }
+            if self.awaiting.is_none()
+                && let Some(d) = self.deferred.take()
+            {
+                if let Some(link) = self.link() {
+                    link.request_cut(d.at, d.exit);
                 }
+                if d.passed {
+                    self.awaiting = Some(d.at);
+                }
+            }
+            // The exit buffer covers the wait.
+            if self.awaiting.is_some() && self.exit.is_none() {
+                // Without its producer the continuation will never come.
+                let abandoned = self.start.as_ref().is_none_or(|s| s.source.is_abandoned());
+                break if abandoned {
+                    ReadOutcome::Ended(FinishReason::EndOfStream)
+                } else {
+                    ReadOutcome::Underrun
+                };
             }
             let Some(src) = self.start.as_mut().map(|s| &mut s.source) else {
                 break ReadOutcome::Ended(FinishReason::Stopped);
@@ -1136,7 +1176,8 @@ impl Voice {
                 }
                 if self.left == 0 {
                     match self.boundary(t0 + got as u64, outbox) {
-                        Step::Next | Step::Jumped => {}
+                        Step::Next => {}
+                        Step::Jumped => self.jumped(got, &mut rem),
                         Step::End => break ReadOutcome::Ended(FinishReason::OutPoint),
                     }
                 }
@@ -1190,25 +1231,7 @@ impl Voice {
             if self.left == 0 {
                 match self.boundary(t0 + got as u64, outbox) {
                     Step::Next => {}
-                    Step::Jumped => {
-                        // The gain the last frame before the jump had (the frame before this
-                        // read's first, if the jump comes first).
-                        let last = match got.checked_sub(1) {
-                            Some(j) => rem.at(j),
-                            None => rem.first.map(|r| r.saturating_add(1)),
-                        };
-                        let from =
-                            fade_out_gain(&mut self.env_out, self.fade_out, last, self.refade);
-                        rem.split = got;
-                        rem.after = self.remaining();
-                        self.refade = match rem.after {
-                            Some(r) if self.fade_out.frames > 0 && r < self.fade_out.frames => {
-                                Some(Refade { from, len: r + 1 })
-                            }
-                            _ => None,
-                        };
-                        rem.refade_after = self.refade;
-                    }
+                    Step::Jumped => self.jumped(got, &mut rem),
                     Step::End => break ReadOutcome::Ended(FinishReason::OutPoint),
                 }
                 continue;
@@ -1233,6 +1256,27 @@ impl Voice {
             }
         }
         (got, outcome, rem)
+    }
+
+    /// After a devamp jump at frame `got` of a read: the frames-remaining count changes there,
+    /// and a fade-out the jump shortened restarts from the gain the last frame before it had.
+    fn jumped(&mut self, got: usize, rem: &mut Remaining) {
+        // The gain the last frame before the jump had (the frame before this read's first, if
+        // the jump comes first).
+        let last = match got.checked_sub(1) {
+            Some(j) => rem.at(j),
+            None => rem.first.map(|r| r.saturating_add(1)),
+        };
+        let from = fade_out_gain(&mut self.env_out, self.fade_out, last, self.refade);
+        rem.split = got;
+        rem.after = self.remaining();
+        self.refade = match rem.after {
+            Some(r) if self.fade_out.frames > 0 && r < self.fade_out.frames => {
+                Some(Refade { from, len: r + 1 })
+            }
+            _ => None,
+        };
+        rem.refade_after = self.refade;
     }
 
     /// Copies up to `live - got` frames (and at most the current play's `left`) of the exit
