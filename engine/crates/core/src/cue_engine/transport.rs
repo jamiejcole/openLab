@@ -117,6 +117,24 @@ impl CueEngine {
         }
     }
 
+    /// One cue's own panic (its second-trigger option): the cue and everything in it as in a
+    /// Panic, ending `panic_duration` from now (0: at once). Not a workspace panic: other cues and
+    /// `panic_end` are untouched. Its cues count as fading out in a panic, so a further trigger
+    /// restarts them.
+    pub(super) fn panic_tree(&mut self, cue: CueId, cx: &mut Ctx) {
+        let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
+        if frames == 0 {
+            return self.stop_tree(cue, None, cx);
+        }
+        let end = cx.now.saturating_add(frames);
+        for id in self.inside(cue, cx).into_iter().rev() {
+            if self.slots.contains_key(&id) {
+                self.panic_one(id, end, cx);
+            }
+        }
+        self.panic_one(cue, end, cx);
+    }
+
     /// Pause All: pauses every active cue, groups before their children (as Pause does).
     pub(super) fn pause_all(&mut self, cx: &mut Ctx) {
         for cue in Self::trees(cx).into_iter().flatten() {

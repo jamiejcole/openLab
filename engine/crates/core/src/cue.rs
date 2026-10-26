@@ -31,6 +31,10 @@ pub struct Cue {
     pub post_wait: f64,
     pub continue_mode: ContinueMode,
     pub triggers: Triggers,
+    /// What a trigger does while the cue is already active (QLab 5's "second trigger").
+    pub second_trigger: SecondTrigger,
+    /// Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger.
+    pub second_trigger_on_release: bool,
     pub kind: CueKind,
 }
 
@@ -65,6 +69,54 @@ pub enum ContinueMode {
     AutoContinue,
     /// Start the next cue when this one's action completes; the post-wait is not used.
     AutoFollow,
+}
+
+/// What a trigger (GO, a Start cue, a continue, a hotkey, OSC, …) does to a cue that is already
+/// active: pre-waiting, running, post-waiting, paused, fading or stopping. Rules:
+/// `docs/cue-engine.md`, "Second trigger".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecondTrigger {
+    /// Ignored (a paused cue resumes).
+    #[default]
+    Nothing,
+    /// Fade out over the workspace's panic duration, then stop.
+    Panic,
+    Stop,
+    HardStop,
+    /// Hard stop, then start again from the top.
+    HardStopAndRestart,
+    /// Leave the loop after the current pass; nothing if the cue cannot devamp.
+    Devamp,
+    /// Playlist groups only: play the child after the one playing.
+    PlayNext,
+    /// Playlist groups only: play the child before the one playing.
+    PlayPrevious,
+}
+
+impl SecondTrigger {
+    /// Whether the option only means something on a Playlist group (elsewhere it acts as
+    /// [`SecondTrigger::Nothing`] and validation warns).
+    pub fn playlist_only(self) -> bool {
+        matches!(self, Self::PlayNext | Self::PlayPrevious)
+    }
+
+    /// The option as it applies to a cue of `kind`: a playlist-only option on any other cue is
+    /// [`SecondTrigger::Nothing`].
+    pub fn effective(self, kind: &CueKind) -> Self {
+        let playlist = matches!(
+            kind,
+            CueKind::Group {
+                mode: GroupMode::Playlist { .. },
+                ..
+            }
+        );
+        if self.playlist_only() && !playlist {
+            Self::Nothing
+        } else {
+            self
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

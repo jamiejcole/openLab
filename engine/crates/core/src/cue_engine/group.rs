@@ -317,6 +317,124 @@ impl CueEngine {
         }
     }
 
+    /// Second trigger "play next" / "play previous" (`back`) on a playlist group playing a child
+    /// (in its action, not stopping, adopted or devamped; a paused one too): the child playing
+    /// is hard-stopped and the one after (before) it starts on `at`, wrapping when the playlist
+    /// loops. Without loop, "next" after the last child completes the group (as if that child
+    /// had ended) and "previous" on the first child plays it again from the top. Shuffled, the
+    /// pass's order is followed (a new pass after its end, as usual; "previous" from its first
+    /// child wraps to its last). A paused playlist resumes on the new child. The new child's
+    /// start is charged to the chain budget like any playlist move.
+    pub(super) fn playlist_skip(&mut self, group: CueId, back: bool, at: SampleTime, cx: &mut Ctx) {
+        let state = self.state(group);
+        let ws = cx.ws;
+        let Some(CueKind::Group {
+            mode: GroupMode::Playlist { loop_, .. },
+            children,
+        }) = ws.find_cue(group).map(|g| &g.kind)
+        else {
+            return cx.warn(EngineWarning::TriggerIgnored { cue: group, state });
+        };
+        let ids: Vec<CueId> = children.iter().map(|c| c.id).collect();
+        let (current, paused) = match self.slots.get(&group) {
+            Some(Slot::Active(Run {
+                group: Some(g),
+                phase: Phase::Action { .. },
+                paused_at,
+                ..
+            })) if !g.stopping && !g.adopted && g.devamp.is_none() => match &g.playlist {
+                Some(p) => (p.current, paused_at.is_some()),
+                None => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
+            },
+            _ => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
+        };
+        // The child playing is stopped only if the next one can be started (see
+        // `PLAYLIST_RESERVE`), so a cut chain leaves the playlist as it was.
+        if !self.budget_left(cx) || cx.budget <= super::PLAYLIST_RESERVE {
+            return cx.warn(EngineWarning::ChainLimit {
+                cue: group,
+                limit: cx.limit,
+            });
+        }
+        let loop_ = *loop_;
+        self.as_of(at, cx, |e, cx| {
+            if back {
+                e.playlist_rewind(group, &ids, loop_);
+            }
+            if let Some((child, _)) = current
+                && matches!(e.slots.get(&child), Some(Slot::Active(_)))
+            {
+                e.stop_tree(child, None, cx);
+            }
+            if paused {
+                // Whatever the paused playlist owed is replaced by the move asked for here.
+                if let Some(Slot::Active(Run { group: Some(g), .. })) = e.slots.get_mut(&group) {
+                    g.advance = false;
+                }
+                e.resume_tree(group, at, cx);
+            }
+            e.playlist_next(group, at, cx);
+            if !e.any_busy_child(cx.ws, group) {
+                let now = cx.now;
+                e.resolve_group(group, Exit::Completed, now, cx);
+            }
+        });
+    }
+
+    /// Sets a playlist's position so that its next move starts the child before the current one
+    /// (see `playlist_skip`).
+    fn playlist_rewind(&mut self, group: CueId, ids: &[CueId], loop_: bool) {
+        let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group) else {
+            return;
+        };
+        let Some(p) = g.playlist.as_mut() else {
+            return;
+        };
+        if p.order.is_empty() {
+            // A current child removed from the group: `index` is where it stood.
+            let here = p
+                .current
+                .and_then(|(c, _)| ids.iter().position(|i| *i == c))
+                .unwrap_or(p.index);
+            p.index = match here.checked_sub(1) {
+                Some(before) => before,
+                None if loop_ => ids.len().saturating_sub(1),
+                None => 0,
+            };
+        } else {
+            let order = &p.order;
+            let valid = |pos: &usize| order.get(*pos).is_some_and(|id| ids.contains(id));
+            let len = order.len();
+            p.pos = (0..p.pos)
+                .rev()
+                .find(valid)
+                .or_else(|| loop_.then(|| (0..len).rev().find(valid)).flatten())
+                .or_else(|| (0..len).find(valid))
+                .unwrap_or(p.pos);
+        }
+        p.current = None;
+    }
+
+    /// A restarted cue (run `seq` before) that was its playlist's current child stays the current
+    /// child with its new run, so the playlist moves on when the new run ends.
+    pub(super) fn keep_playlist_place(&mut self, cue: CueId, seq: u64, cx: &Ctx) {
+        let Some(Slot::Active(run)) = self.slots.get(&cue) else {
+            return;
+        };
+        let fresh = run.seq;
+        if let Some(&parent) = ancestors(cx.ws, cue).first()
+            && let Some(Slot::Active(Run {
+                group: Some(GroupRun {
+                    playlist: Some(p), ..
+                }),
+                ..
+            })) = self.slots.get_mut(&parent)
+            && p.current == Some((cue, seq))
+        {
+            p.current = Some((cue, fresh));
+        }
+    }
+
     /// The action of `cue` (run `seq`) completed, or it broke, on `at`: a playlist around it
     /// moves on to its next child.
     pub(super) fn child_action_done(&mut self, cue: CueId, seq: u64, at: SampleTime, cx: &mut Ctx) {

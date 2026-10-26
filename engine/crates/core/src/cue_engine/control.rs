@@ -50,7 +50,7 @@ impl CueEngine {
                 stop_target_when_slice_ends,
                 ..
             } => self.devamp(
-                cue,
+                Some(cue),
                 target,
                 *start_next_cue,
                 *stop_target_when_slice_ends,
@@ -195,10 +195,12 @@ impl CueEngine {
     }
 
     /// Devamp: an audio target's voice leaves its loop (the audio side answers); a looping
-    /// playlist finishes its current child and then completes.
-    fn devamp(
+    /// playlist finishes its current child and then completes. `by` is the Devamp cue, or `None`
+    /// for the target's own second trigger, which warns only `DevampIgnored` when there is
+    /// nothing to devamp (QLab: it then does nothing).
+    pub(super) fn devamp(
         &mut self,
-        by: CueId,
+        by: Option<CueId>,
         target: CueId,
         start_next: bool,
         stop: bool,
@@ -208,7 +210,16 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(target) else {
             return;
         };
-        let not_running = EngineWarning::TargetNotRunning { cue: by, target };
+        let ignored = EngineWarning::DevampIgnored { cue: target };
+        let not_running = by.map_or(ignored.clone(), |cue| EngineWarning::TargetNotRunning {
+            cue,
+            target,
+        });
+        let wrong_kind = by.map_or(ignored, |cue| EngineWarning::TargetWrongKind {
+            cue,
+            target,
+        });
+        let by = by.unwrap_or(target);
         match &model.kind {
             CueKind::Audio { .. } => {
                 let now = cx.now;
@@ -269,7 +280,7 @@ impl CueEngine {
                     _ => cx.warn(not_running),
                 }
             }
-            _ => cx.warn(EngineWarning::TargetWrongKind { cue: by, target }),
+            _ => cx.warn(wrong_kind),
         }
     }
 

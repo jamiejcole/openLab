@@ -10,7 +10,7 @@ use crate::model::Workspace;
 use crate::validate::{Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -137,6 +137,7 @@ pub fn migrate(mut document: Value, from: u32) -> Result<Value, LoadError> {
     for version in from..FORMAT_VERSION {
         document = match version {
             0 => v0_to_v1(document),
+            1 => v1_to_v2(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -161,5 +162,42 @@ fn v0_to_v1(mut document: Value) -> Result<Value, String> {
         workspace.insert("cue_lists".into(), lists);
     }
     root.insert("format_version".into(), 1.into());
+    Ok(document)
+}
+
+/// v2 added each cue's `second_trigger` and `second_trigger_on_release` (M2.14). A v1 reader
+/// ignored unknown keys, so every v1 cue meant the defaults: they are written over anything a
+/// hand edit may have put there. Iterative, so deep nesting cannot overflow the stack.
+fn v1_to_v2(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    let workspace = root
+        .get_mut("workspace")
+        .and_then(Value::as_object_mut)
+        .ok_or("workspace is not an object")?;
+    let mut stack: Vec<&mut Value> = Vec::new();
+    if let Some(Value::Array(lists)) = workspace.get_mut("cue_lists") {
+        for list in lists {
+            if let Some(Value::Array(cues)) = list.get_mut("cues") {
+                stack.extend(cues.iter_mut());
+            }
+        }
+    }
+    // Anything that is not shaped like a cue is left for the model parse to refuse.
+    while let Some(cue) = stack.pop() {
+        let Some(cue) = cue.as_object_mut() else {
+            continue;
+        };
+        cue.insert("second_trigger".into(), "nothing".into());
+        cue.insert("second_trigger_on_release".into(), false.into());
+        if let Some(Value::Array(children)) = cue
+            .get_mut("kind")
+            .and_then(|kind| kind.get_mut("children"))
+        {
+            stack.extend(children.iter_mut());
+        }
+    }
+    root.insert("format_version".into(), 2.into());
     Ok(document)
 }
