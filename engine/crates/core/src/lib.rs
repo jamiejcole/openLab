@@ -13,6 +13,7 @@ mod cue_engine;
 mod history;
 mod media_path;
 mod model;
+pub mod protocol;
 mod recovery;
 mod relink;
 mod settings;

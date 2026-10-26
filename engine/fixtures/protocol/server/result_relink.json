@@ -1,0 +1,23 @@
+{
+  "type": "result",
+  "id": 45,
+  "ok": {
+    "revision": 9,
+    "data": {
+      "type": "relink",
+      "relinked": 3,
+      "ambiguous": [
+        {
+          "cue": "00000000-0000-0000-0000-00000000000a",
+          "candidates": [
+            "a/storm.wav",
+            "b/storm.wav"
+          ]
+        }
+      ],
+      "unmatched": [
+        "00000000-0000-0000-0000-00000000000b"
+      ]
+    }
+  }
+}
