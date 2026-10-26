@@ -76,7 +76,7 @@ cue, and the cue shows as broken where it cannot run.
 | Malformed JSON, wrong types, missing keys, unknown cue type | Refused (message includes line and column where possible) |
 | Two cues, cue lists, patches or network patches with the same id | Refused |
 | Cues nested more than 32 levels deep (a top-level cue is level 1) | Refused |
-| A Start, or GoTo with `then_go`, that would start itself again: through a chain of such cues of any length, or by starting a group that contains it | Warning; the cue shows as broken |
+| A Start, or GoTo with `then_go`, that would start itself again: through a chain of such cues of any length, or by starting a group that contains it | Warning; the cue still runs (a timed loop is legitimate) and the cue engine bounds such cycles at run time (docs/cue-engine.md, "Chains") |
 | Two cues with the same `number` | Warning; the later cue (list order, then depth-first through groups) loses its number |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |

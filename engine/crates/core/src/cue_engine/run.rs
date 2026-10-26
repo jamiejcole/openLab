@@ -92,6 +92,14 @@ pub(super) struct Run {
     /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
     /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
+    /// Started (or reached its action) while the cue had static problems (`CueProblem`): its
+    /// action is skipped and it never follows, as for a broken run, but its auto-continue keeps
+    /// its schedule. Once nothing is pending the slot is removed (the problems, not the run,
+    /// make it report `broken` then).
+    pub static_broken: bool,
+    /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
+    /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
+    pub panicked: bool,
     /// Set for Group cues: how the group runs its children.
     pub group: Option<GroupRun>,
     /// Audio cues: the gains Fade cues have set or are moving (the model's levels apply to the
@@ -202,6 +210,8 @@ impl Run {
             stop_end: None,
             committed: 0,
             broken: None,
+            static_broken: false,
+            panicked: false,
             group,
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),
@@ -211,7 +221,7 @@ impl Run {
     }
 
     pub fn state(&self) -> CueState {
-        if self.broken.is_some() {
+        if self.is_broken() {
             CueState::Broken
         } else if self.paused_at.is_some() {
             CueState::Paused
@@ -226,6 +236,11 @@ impl Run {
                 Phase::Done => CueState::PostWaiting,
             }
         }
+    }
+
+    /// Broken at run time or started broken: it owns no voice and never follows.
+    pub fn is_broken(&self) -> bool {
+        self.broken.is_some() || self.static_broken
     }
 
     pub fn is_group_stopping(&self) -> bool {

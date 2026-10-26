@@ -5,10 +5,12 @@
 //! Fade cues with random targets (so Start/GoTo cycles, self-targets and missing targets), and
 //! duplicate ids (more trigger cycles), and random input sequences, with edits (deletes, moves
 //! out of groups, reorders, mode changes), Arm/Disarm changes applied to the model as the binary
-//! does, and stale feedback (including devamp answers) mixed in. `handle` never
+//! does, stale feedback (including devamp answers), Panic, Pause All / Resume All and random
+//! media and device availability (static broken cues) mixed in. `handle` never
 //! panics, every cue has exactly the state last reported for it, playheads stay valid, a running
 //! group always has a child that is not idle, the chain bound holds and every due deadline is
-//! carried out. The full suite is M2.9.
+//! carried out; after a panic has ended nothing is active, loaded or pending. The full suite is
+//! M2.9.
 
 mod common;
 
@@ -72,7 +74,7 @@ fn spec() -> impl Strategy<Value = Spec> {
 }
 
 fn step() -> impl Strategy<Value = Step> {
-    (0u64..1500, 0u8..20, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
+    (0u64..1500, 0u8..25, any::<u8>(), any::<u8>()).prop_map(|(dt, op, a, b)| Step { dt, op, a, b })
 }
 
 fn mode(n: u8) -> ContinueMode {
@@ -260,12 +262,18 @@ proptest! {
         steps in prop::collection::vec(step(), 1..40),
         lookahead in 0u64..32,
         min_go in 0u8..3,
+        panic in 0u8..3,
     ) {
         let mut ws = workspace(build(&specs));
         ws.settings.min_go_interval = f64::from(min_go) * 0.3;
+        ws.settings.panic_duration = [0.0, 0.01, 0.4][usize::from(panic)];
         let mut engine = CueEngine::new(EngineConfig::new(1000, lookahead, 7).unwrap());
         let list = list_id(1);
         let mut now: SampleTime = 0;
+        // The workspace as the engine last saw it: edits are signalled (M4.2 contract).
+        let mut last: Option<Workspace> = None;
+        // A panic fade under way: its end, and whether no operator trigger came during it.
+        let mut watch: Option<(SampleTime, bool)> = None;
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
         let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
@@ -349,6 +357,26 @@ proptest! {
                     cue: target,
                     run: engine.run_of(target).unwrap_or(RunId(0)),
                 },
+                20 => Input::Panic,
+                21 => Input::PauseAll,
+                22 => Input::ResumeAll,
+                23 => Input::MediaStatus {
+                    media: MediaRef::new("media/a.wav"),
+                    status: match s.b % 4 {
+                        0 => MediaStatus::Unknown,
+                        1 => MediaStatus::Available,
+                        2 => MediaStatus::Missing,
+                        _ => MediaStatus::Unsupported { reason: "codec".into() },
+                    },
+                },
+                24 => Input::PatchStatus {
+                    patch: patch_id(1),
+                    resolution: if s.b % 2 == 0 {
+                        PatchResolution::Mapped { device: "D".into(), channels: vec![0, 1] }
+                    } else {
+                        PatchResolution::DeviceMissing { device: "D".into() }
+                    },
+                },
                 _ => {
                     // Model edit: change a cue's timing and continue mode.
                     if let Some(c) = find_mut(&mut ws.cue_lists[0].cues, target) {
@@ -358,7 +386,22 @@ proptest! {
                     Input::Tick
                 }
             };
-            let actions = engine.handle(&ws, input, now);
+            // Random steps go on during a panic fade; a step that would pass its end is preceded
+            // by a tick on the end sample, after which nothing may be left.
+            let step_now = now;
+            let mut calls: Vec<(Input, SampleTime, bool)> = Vec::new();
+            if let Some((end, _)) = watch
+                && step_now >= end
+            {
+                calls.push((Input::Tick, end, true));
+            }
+            calls.push((input, step_now, false));
+            for (input, at, end_check) in calls {
+            now = at;
+            let is_panic = input == Input::Panic;
+            // Only an operator trigger may start anything during a panic fade.
+            let trigger = matches!(input, Input::Go { .. } | Input::Start { .. });
+            let actions = handle_as_binary(&mut engine, &ws, &mut last, input, now);
             // Deadlines in `now .. now + lookahead` are committed (end excluded).
             let horizon = now + lookahead.saturating_sub(1);
 
@@ -462,6 +505,54 @@ proptest! {
             // Everything due has been done.
             prop_assert!(engine.next_deadline().is_none_or(|d| d > horizon));
             prop_assert!(!engine.is_due(now));
+            // Static problems and the broken state agree: an idle cue with problems is broken.
+            for (id, problems) in engine.broken_cues() {
+                prop_assert!(!problems.is_empty());
+                prop_assert!(ws.find_cue(id).is_some());
+                prop_assert_ne!(engine.state(id), CueState::Idle);
+            }
+            if end_check {
+                if let Some((_, true)) = watch.take() {
+                    prop_assert!(engine.next_deadline().is_none());
+                    prop_assert!(engine.panic_end().is_none());
+                    for (id, state) in engine.cue_states() {
+                        prop_assert!(!state.is_active(), "cue {} {:?} after a panic", id, state);
+                    }
+                }
+            } else if let Some((_, clean)) = watch.as_mut()
+                && !is_panic
+            {
+                if *clean && !trigger {
+                    for action in &actions {
+                        let started = matches!(
+                            action,
+                            Action::StartVoice { .. }
+                                | Action::StateChanged { state: CueState::PreWaiting, .. }
+                        );
+                        prop_assert!(!started, "{:?} during a panic fade", action);
+                    }
+                }
+                if trigger {
+                    *clean = false;
+                }
+            }
+            if is_panic {
+                match engine.panic_end() {
+                    Some(end) => {
+                        prop_assert!(end > now);
+                        watch = Some((end, true));
+                    }
+                    None => {
+                        // An immediate panic (or a second press): nothing left at once.
+                        watch = None;
+                        prop_assert!(engine.next_deadline().is_none());
+                        for (id, state) in engine.cue_states() {
+                            prop_assert_eq!(state, CueState::Broken, "cue {} after a panic", id);
+                        }
+                    }
+                }
+            }
+            }
         }
     }
 }
