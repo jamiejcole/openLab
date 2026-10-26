@@ -272,6 +272,8 @@ proptest! {
         let mut now: SampleTime = 0;
         // The workspace as the engine last saw it: edits are signalled (M4.2 contract).
         let mut last: Option<Workspace> = None;
+        // A panic fade under way: its end, and whether no operator trigger came during it.
+        let mut watch: Option<(SampleTime, bool)> = None;
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
         let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
@@ -384,12 +386,21 @@ proptest! {
                     Input::Tick
                 }
             };
-            let panicked = input == Input::Panic;
-            // A panic is followed by a tick on its end sample (if it fades), after which nothing
-            // may be left.
-            let mut calls = vec![input];
-            let mut check_quiet = false;
-            while let Some(input) = calls.pop() {
+            // Random steps go on during a panic fade; a step that would pass its end is preceded
+            // by a tick on the end sample, after which nothing may be left.
+            let step_now = now;
+            let mut calls: Vec<(Input, SampleTime, bool)> = Vec::new();
+            if let Some((end, _)) = watch
+                && step_now >= end
+            {
+                calls.push((Input::Tick, end, true));
+            }
+            calls.push((input, step_now, false));
+            for (input, at, end_check) in calls {
+            now = at;
+            let is_panic = input == Input::Panic;
+            // Only an operator trigger may start anything during a panic fade.
+            let trigger = matches!(input, Input::Go { .. } | Input::Start { .. });
             let actions = handle_as_binary(&mut engine, &ws, &mut last, input, now);
             // Deadlines in `now .. now + lookahead` are committed (end excluded).
             let horizon = now + lookahead.saturating_sub(1);
@@ -500,29 +511,46 @@ proptest! {
                 prop_assert!(ws.find_cue(id).is_some());
                 prop_assert_ne!(engine.state(id), CueState::Idle);
             }
-            if check_quiet {
-                prop_assert!(engine.next_deadline().is_none());
-                prop_assert!(engine.panic_end().is_none());
-                for (id, state) in engine.cue_states() {
-                    prop_assert_eq!(state, CueState::Broken, "cue {} after a panic", id);
+            if end_check {
+                if let Some((_, true)) = watch.take() {
+                    prop_assert!(engine.next_deadline().is_none());
+                    prop_assert!(engine.panic_end().is_none());
+                    for (id, state) in engine.cue_states() {
+                        prop_assert!(!state.is_active(), "cue {} {:?} after a panic", id, state);
+                    }
                 }
-                check_quiet = false;
-            } else if panicked {
+            } else if let Some((_, clean)) = watch.as_mut()
+                && !is_panic
+            {
+                if *clean && !trigger {
+                    for action in &actions {
+                        let started = matches!(
+                            action,
+                            Action::StartVoice { .. }
+                                | Action::StateChanged { state: CueState::PreWaiting, .. }
+                        );
+                        prop_assert!(!started, "{:?} during a panic fade", action);
+                    }
+                }
+                if trigger {
+                    *clean = false;
+                }
+            }
+            if is_panic {
                 match engine.panic_end() {
                     Some(end) => {
                         prop_assert!(end > now);
-                        now = end;
-                        calls.push(Input::Tick);
+                        watch = Some((end, true));
                     }
                     None => {
-                        // An immediate panic: nothing left at once.
+                        // An immediate panic (or a second press): nothing left at once.
+                        watch = None;
                         prop_assert!(engine.next_deadline().is_none());
                         for (id, state) in engine.cue_states() {
                             prop_assert_eq!(state, CueState::Broken, "cue {} after a panic", id);
                         }
                     }
                 }
-                check_quiet = !calls.is_empty();
             }
             }
         }
