@@ -321,6 +321,16 @@ impl Preloaded {
     }
 }
 
+/// Moves `w` back by `shift` frames (the origin moved forward). The part before the new
+/// position 0 is gone, so it no longer counts towards `frames`; false if nothing of a warning
+/// that had frames is left.
+fn shift_warning(w: &mut MediaWarning, shift: u64) -> bool {
+    let cut = shift.saturating_sub(w.at).min(w.frames);
+    w.at = w.at.saturating_sub(shift);
+    w.frames -= cut;
+    cut == 0 || w.frames > 0
+}
+
 /// Runs third-party decoding code so that a panic in it (a decoder bug hit by malformed input)
 /// is a [`MediaError::Corrupt`] for this file instead of taking the calling thread down.
 pub(crate) fn contain<T>(f: impl FnOnce() -> Result<T, MediaError>) -> Result<T, MediaError> {
@@ -886,9 +896,7 @@ impl Decoder {
         self.clamp_neg = priming > 0;
         // Anything noted before the origin was known is relative to 0.
         let shift = u64::try_from(self.origin).unwrap_or(0);
-        for w in &mut self.warnings {
-            w.at = w.at.saturating_sub(shift);
-        }
+        self.warnings.retain_mut(|w| shift_warning(w, shift));
         if lead > 0 {
             let frames = lead.saturating_sub(priming);
             if frames > 0 {
@@ -1579,6 +1587,33 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    /// M3.14 L1: the part of a damaged stretch inside the priming is not reported.
+    #[test]
+    fn origin_shift_trims_warnings_to_what_is_left() {
+        let w = |at, frames| MediaWarning {
+            kind: WarningKind::Missing,
+            at,
+            frames,
+        };
+        // Wholly inside the priming: dropped.
+        let mut a = w(0, 1000);
+        assert!(!shift_warning(&mut a, 1105));
+        // Straddling the new position 0: only the part after it remains, from 0.
+        let mut b = w(1000, 500);
+        assert!(shift_warning(&mut b, 1105));
+        assert_eq!(b, w(0, 395));
+        // After it: moved, same length. A warning without frames is never dropped.
+        let mut c = w(2000, 300);
+        assert!(shift_warning(&mut c, 1105));
+        assert_eq!(c, w(895, 300));
+        let mut d = w(0, 0);
+        assert!(shift_warning(&mut d, 1105));
+        assert_eq!(d, w(0, 0));
+        // Ending exactly at the new position 0.
+        let mut e = w(1000, 105);
+        assert!(!shift_warning(&mut e, 1105));
     }
 
     /// After any seek, every format yields exactly the frames a decode from the start has there.
