@@ -2,7 +2,7 @@
 
 How cues run: lifecycle states, timing, continue modes, groups, GO and the playhead. Architecture context: [ARCHITECTURE §3.2–3.3](ARCHITECTURE.md#32-clock-and-scheduling-nfr-202122). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: M2.1–M2.8, M2.11, M2.15 (CUE-02, CUE-03, CUE-04, CUE-05 without preview/audition, CUE-06 and NFR-07 engine side, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01..PB-05, CL-06 engine side). See [Not yet](#not-yet).
+Status: M2.1–M2.8, M2.10, M2.11, M2.15 (CUE-02, CUE-03, CUE-04, CUE-05 with preview/audition on the engine side (the separate audition output, PB-09, is later), CUE-06 and NFR-07 engine side, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01..PB-05, CL-06 engine side). See [Not yet](#not-yet).
 
 Two rules decided by the user (M2.13):
 
@@ -195,6 +195,17 @@ Events:
 - Operations on a cue id that is not in the workspace warn `UnknownCue` and do nothing.
 - On a Group, every operation also reaches its descendants; see [Operations on a group](#operations-on-a-group).
 
+## Preview (CUE-05, PB-09)
+
+`Input::Preview { cue }` plays an audio cue **to listen to it**, outside the show; `Input::StopPreview { cue }` ends it (`None`: every preview). In v0.0.1 only the operation exists engine-side: the audition output itself (PB-09, untagged) needs a setting the show file does not have yet, so until then the binary plays previews on the cue's own patch (M4.2; see PROGRESS).
+
+- **What plays**: the cue's audio from the start of its action, now (`Action::PreviewStart { cue, run, at }`, `at = now`): no pre-wait, no post-wait, no continue mode, no load-to-time. Loops and slices play as the cue says; an infinite loop plays until stopped. Disarmed cues can be previewed (arming is about the show; QLab confirmation: M2.20). Other kinds are `PreviewIgnored { reason: not_audio }` and do nothing; unknown cues warn `UnknownCue`; a cue with static problems warns `CueBroken` and plays nothing.
+- **Invisible to the show**: a preview has no `CueState` (the cue keeps whatever show state it has), moves no playhead, does not touch double-GO protection, never triggers a continue, auto-follow or "start next cue", does not make a group run adopted, uses none of the call's chain budget, and does not use the show's `RunId`s: previews are numbered from `PREVIEW_RUN_BASE` (2^63), so the show's ids are the same whether or not anything was previewed, and a preview id can still be the mixer's voice id. The same cue can play in the show and in a preview at once; each ignores the other's stop, reset and end reports (feedback is matched on cue **and** run).
+- **Reported**: `Action::PreviewChanged { cue, active, at }` on start and on every end; `is_previewing(cue)`, `previewing()`, `preview_run(cue)`.
+- **Second preview** of a cue that is being previewed: ignored (`PreviewIgnored { reason: already_previewing }`), as a second trigger is; a UI that toggles sends `StopPreview` while `is_previewing`.
+- **End**: the voice ends by itself (`ActionEnded` with the preview's `run`: `PreviewChanged { active: false }`), `StopPreview` (the preview is over as of now: `PreviewStop { cue, run, at: max(now, start), fade }` with a linear `PREVIEW_STOP_FADE_SECONDS` (50 ms) fade-out, so a stop does not click in the operator's headphones; the fade is the mixer's, the engine does not wait for it and a late end report is stale), a failure (`ActionFailed` with its `run`: `PreviewStop` hard, `PreviewChanged`, `PreviewFailed` warning; the cue is **not** broken in the show), the cue being deleted or no longer an audio cue (hard stop, at the next signalled call).
+- **Panic** stops every preview at once (hard `PreviewStop`, no fade): Panic means everything. **Pause All / Resume All** leave previews alone (a preview cannot be paused; it is not part of the show). Stop, Pause, Reset, Load and Start on the cue concern the show only.
+
 ## Control cues (CT-11..CT-19)
 
 A control cue is a cue like any other (pre-wait, post-wait, continue mode, operations, second-trigger rule). At its **action start** `A` (after its own pre-wait) it acts on its target **as if the operator had done the operation** at that moment, and its own action then completes at once (so auto-follow fires at `A`). Its own continue mode applies as for any cue. Behaviour follows QLab 5.
@@ -304,6 +315,7 @@ Besides the voice actions above:
 - `SetArmed { cue, armed }` → set the cue's `armed` in the model as a runtime change (not an undo step) **before the next `handle` call**: the engine honours it only for the rest of the call that made it. (A later save then stores it; see PROGRESS M2.17.)
 - **Model changes** (M2-D): call `engine.model_changed()` after every change to the workspace (a command, undo, redo, relink, an applied `SetArmed`, a newly opened workspace) before the next `handle` call. A change not signalled leaves the static problems, the playheads and the chain limit out of date in release builds (see [Model edits](#model-edits) for the guards); log any increase of `unsignalled_model_changes()`, it means an edit path misses the signal.
 - **Availability inputs** (M2.8): send `Input::MediaStatus { media, status }` for each media reference the workspace uses once the probe (M3, off the control thread) has an answer: on workspace open, when a cue gets a new file, on relink, and when a file disappears or comes back (file-system watching, or a failed stream); damaged-but-playable files are `available`. Send many at once as one `Input::Availability` (open, rescan, a drive unplugged). Send `Input::PatchStatus { patch, resolution }` with `resolve_patch` for each patch on open, when the device list changes (hot-plug, device loss) and when the operator edits a patch mapping (WS-07). A binary that plays an unmapped patch on a default device sends the `mapped` resolution it uses. Show `ProblemsChanged` in the list and inspector (CUE-06) and use `broken_cues()` for the pre-show check (M4.8). A device lost while voices play still reports `ActionFailed { reason: device_lost }` for those runs.
+- **Preview** (CUE-05): `Input::Preview` / `StopPreview` for the cue's preview key and protocol commands. `PreviewStart { cue, run, at }` → open the cue's stream and start a voice with id `run` at `at`, from the start of the cue's action, on the **audition output** (PB-09; until the audition patch exists, the cue's own patch), with the cue's levels as the model has them; `PreviewStop { cue, run, at, fade }` → stop that voice on `at` with the fade (the mixer's `StopVoice`); map the voice's `VoiceFinished` / failure to `Input::ActionEnded` / `ActionFailed` with `cue` and `run` as for show voices (a preview's `run` is recognised by the engine). `PreviewChanged` drives the preview button's state. Fade Ramps, Devamp and Pause do not apply to previews.
 - **Panic** (PB-03): `Input::Panic` for the Panic / Stop All transport key and protocol command; it carries out its own `StopVoice` fades (no separate mixer panic is needed). `Input::PauseAll` / `Input::ResumeAll` for the Pause All / Resume All keys.
 - A voice that the binary pauses by stopping and restarting (M3.18) must restart with the Fade levels and ramps the engine reports with `fade_ramps(cue, at)` on the resume sample: start with each `value`, then send `Ramp { gain: to, frames: end − at, curve }` for each one still moving (`end > at`; a fresh curve from there, like a resumed Fade). Fade ramps on a paused voice must apply as on a playing one.
 
@@ -329,7 +341,7 @@ The passes compare the workspace with what the engine knows:
 
 ## Warnings
 
-`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken` (a start or load of a broken cue), `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`. They are structured so the UI can localise them.
+`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken` (a start or load of a broken cue), `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`, `PreviewIgnored`, `PreviewFailed`. They are structured so the UI can localise them.
 
 ## Not yet
 
