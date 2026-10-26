@@ -82,7 +82,10 @@ impl Mp4Gapless {
         }
         match (edit, track) {
             (Edit::Single(t), Some(track)) => {
-                let (num, den) = (u128::from(t) * u128::from(rate), u128::from(track.timescale));
+                let (num, den) = (
+                    u128::from(t) * u128::from(rate),
+                    u128::from(track.timescale),
+                );
                 match u64::try_from((2 * num + den) / (2 * den)) {
                     Ok(0) => Priming::None,
                     Ok(f) => Priming::Frames(f),
@@ -137,7 +140,12 @@ fn read_at<R: Read + Seek + ?Sized>(r: &mut R, pos: u64, buf: &mut [u8]) -> bool
 
 fn be32(b: &[u8], at: usize) -> Option<u32> {
     let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([*s.first()?, *s.get(1)?, *s.get(2)?, *s.get(3)?]))
+    Some(u32::from_be_bytes([
+        *s.first()?,
+        *s.get(1)?,
+        *s.get(2)?,
+        *s.get(3)?,
+    ]))
 }
 
 fn be64(b: &[u8], at: usize) -> Option<u64> {
@@ -243,7 +251,10 @@ impl Scan {
                 let (time, rate) = if version == 1 {
                     (be64(&b, entry + 8), be32(&b, entry + 16))
                 } else {
-                    (be32(&b, entry + 4).map(|t| i64::from(t as i32) as u64), be32(&b, entry + 8))
+                    (
+                        be32(&b, entry + 4).map(|t| i64::from(t as i32) as u64),
+                        be32(&b, entry + 8),
+                    )
                 };
                 match (time, rate) {
                     (Some(t), Some(RATE_ONE)) if (t as i64) >= 0 => Edit::Single(t),
@@ -261,7 +272,8 @@ impl Scan {
         // Version and flags, then the name.
         let mut b = [0u8; 12];
         let len = end.saturating_sub(body);
-        self.name_is_smpb = len == 12 && read_at(r, body, &mut b) && b.get(4..) == Some(b"iTunSMPB".as_slice());
+        self.name_is_smpb =
+            len == 12 && read_at(r, body, &mut b) && b.get(4..) == Some(b"iTunSMPB".as_slice());
     }
 
     fn data<R: Read + Seek + ?Sized>(&mut self, r: &mut R, body: u64, end: u64) {
@@ -289,4 +301,153 @@ fn parse_smpb(text: &[u8]) -> Option<u64> {
         return None;
     }
     u64::from_str_radix(field, 16).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// A `trak` with the given id, media timescale and edit list entries (version 0).
+    fn trak(id: u32, timescale: u32, edits: &[(i32, u32)]) -> Vec<u8> {
+        let mut tkhd = vec![0u8; 12];
+        tkhd.extend(id.to_be_bytes());
+        tkhd.extend([0u8; 8]);
+        let mut mdhd = vec![0u8; 12];
+        mdhd.extend(timescale.to_be_bytes());
+        mdhd.extend([0u8; 8]);
+        let mut elst = vec![0, 0, 0, 0];
+        elst.extend((edits.len() as u32).to_be_bytes());
+        for (time, rate) in edits {
+            elst.extend(0u32.to_be_bytes());
+            elst.extend(time.to_be_bytes());
+            elst.extend(rate.to_be_bytes());
+        }
+        let mut body = boxed(b"tkhd", &tkhd);
+        body.extend(boxed(b"edts", &boxed(b"elst", &elst)));
+        body.extend(boxed(b"mdia", &boxed(b"mdhd", &mdhd)));
+        boxed(b"trak", &body)
+    }
+
+    fn file(traks: &[Vec<u8>]) -> Vec<u8> {
+        let mut f = boxed(b"ftyp", b"M4A \0\0\0\0");
+        f.extend(boxed(b"moov", &traks.concat()));
+        f
+    }
+
+    fn priming(bytes: Vec<u8>, id: u32, rate: u32) -> Priming {
+        scan_mp4_gapless(&mut Cursor::new(bytes)).priming(id, rate)
+    }
+
+    const ONE: u32 = 0x0001_0000;
+
+    #[test]
+    fn media_time_is_scaled_from_the_media_timescale_to_the_rate() {
+        let f = || file(&[trak(1, 44_100, &[(2_112, ONE)])]);
+        assert_eq!(priming(f(), 1, 44_100), Priming::Frames(2_112));
+        // A track at 48 kHz played back at 44.1 kHz would be odd, but the maths is exact.
+        assert_eq!(priming(f(), 1, 22_050), Priming::Frames(1_056));
+        let f = file(&[trak(1, 90_000, &[(4_500, ONE)])]);
+        assert_eq!(priming(f, 1, 44_100), Priming::Frames(2_205));
+    }
+
+    #[test]
+    fn the_edit_list_of_the_asked_track_is_used() {
+        let f = || {
+            file(&[
+                trak(1, 44_100, &[(1_024, ONE)]),
+                trak(2, 44_100, &[(2_112, ONE)]),
+            ])
+        };
+        assert_eq!(priming(f(), 2, 44_100), Priming::Frames(2_112));
+        assert_eq!(priming(f(), 1, 44_100), Priming::Frames(1_024));
+        // A track the file does not describe has no priming.
+        assert_eq!(priming(f(), 9, 44_100), Priming::None);
+    }
+
+    #[test]
+    fn unusable_edit_lists_are_ignored() {
+        for edits in [
+            vec![(-1, ONE)],
+            vec![(1_024, 2 * ONE)],
+            vec![(1_024, ONE), (0, ONE)],
+        ] {
+            let f = file(&[trak(1, 44_100, &edits)]);
+            assert_eq!(priming(f, 1, 44_100), Priming::Ignored, "{edits:?}");
+        }
+        // No timescale to place the media time in.
+        let f = file(&[trak(1, 0, &[(1_024, ONE)])]);
+        assert_eq!(priming(f, 1, 44_100), Priming::Ignored);
+        // Nothing, or an empty list, says nothing.
+        assert_eq!(
+            priming(file(&[trak(1, 44_100, &[])]), 1, 44_100),
+            Priming::None
+        );
+        assert_eq!(priming(file(&[]), 1, 44_100), Priming::None);
+        assert_eq!(priming(Vec::new(), 1, 44_100), Priming::None);
+        assert_eq!(priming(b"RIFF....WAVE".to_vec(), 1, 44_100), Priming::None);
+    }
+
+    #[test]
+    fn version_1_boxes_are_read() {
+        let mut tkhd = vec![1, 0, 0, 0];
+        tkhd.extend([0u8; 16]);
+        tkhd.extend(7u32.to_be_bytes());
+        let mut mdhd = vec![1, 0, 0, 0];
+        mdhd.extend([0u8; 16]);
+        mdhd.extend(44_100u32.to_be_bytes());
+        let mut elst = vec![1, 0, 0, 0, 0, 0, 0, 1];
+        elst.extend(0u64.to_be_bytes());
+        elst.extend(1_105u64.to_be_bytes());
+        elst.extend(ONE.to_be_bytes());
+        let mut body = boxed(b"tkhd", &tkhd);
+        body.extend(boxed(b"edts", &boxed(b"elst", &elst)));
+        body.extend(boxed(b"mdia", &boxed(b"mdhd", &mdhd)));
+        let f = file(&[boxed(b"trak", &body)]);
+        assert_eq!(priming(f, 7, 44_100), Priming::Frames(1_105));
+    }
+
+    #[test]
+    fn smpb_text_is_parsed_strictly() {
+        assert_eq!(parse_smpb(b" 00000000 00000840 000001CA 0000"), Some(0x840));
+        assert_eq!(parse_smpb(b"00000000 0 1"), Some(0));
+        for bad in [
+            &b""[..],
+            b" 00000000",
+            b" 0 xyz",
+            b" 0 123456789",
+            b" 0 -1",
+            &[0xff, 0xfe],
+        ] {
+            assert_eq!(parse_smpb(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_scan_is_bounded_by_boxes_and_depth() {
+        // More boxes than the limit: returns, having read at most MAX_BOXES of them.
+        let mut f = boxed(b"ftyp", b"M4A \0\0\0\0");
+        let mut moov = Vec::new();
+        for _ in 0..(MAX_BOXES * 2) {
+            moov.extend(boxed(b"free", &[]));
+        }
+        moov.extend(trak(1, 44_100, &[(1_024, ONE)]));
+        f.extend(boxed(b"moov", &moov));
+        assert_eq!(priming(f, 1, 44_100), Priming::None);
+        // Deeper than the limit: not followed.
+        let mut deep = trak(1, 44_100, &[(1_024, ONE)]);
+        for _ in 0..(MAX_DEPTH + 2) {
+            deep = boxed(b"moov", &deep);
+        }
+        let mut f = boxed(b"ftyp", b"M4A \0\0\0\0");
+        f.extend(deep);
+        assert_eq!(priming(f, 1, 44_100), Priming::None);
+    }
 }

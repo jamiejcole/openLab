@@ -1589,13 +1589,14 @@ mod tests {
             "tone-alac.m4a",
             "tone.mp3",
             "tone.m4a",
+            "tone-onset.m4a",
             "tone.ogg",
         ] {
             let full = preload(Media::Path(fixture(name))).unwrap();
             let frames = full.info().frames;
             let all = full.samples();
             let mut src = open_source(Media::Path(fixture(name)), Seeking::Direct).unwrap();
-            let aac = name == "tone.m4a";
+            let aac = name.ends_with(".m4a") && name != "tone-alac.m4a";
             let mut worst = 0.0f32;
             // Start, inside the pre-roll, packet edges (1024 AAC/Vorbis, 1152 MP3, 4096 FLAC),
             // backwards, near and at the end.
@@ -1648,6 +1649,46 @@ mod tests {
             }
             // Substituted noise is tiny; a one-frame shift of this tone would be over 0.03.
             assert!(worst < 2.5e-3, "{name}: max error {worst}");
+        }
+    }
+
+    /// M3.14: with the encoder's priming trimmed, a seek to frame F lands on real frame F (the
+    /// signal's frame F), not F plus the priming, and a straight read yields the same frames.
+    #[test]
+    fn aac_seeks_and_streams_land_on_real_frames() {
+        // tone-onset.m4a: silence for 1000 frames, then 440 Hz at 0.5 (left), phase 0 at 1000.
+        let left = |f: u64| {
+            let t = f.saturating_sub(1000) as f32;
+            if f < 1000 {
+                0.0
+            } else {
+                0.5 * (std::f32::consts::TAU * 440.0 * t / 44_100.0).sin()
+            }
+        };
+        let name = "tone-onset.m4a";
+        let full = preload(Media::Path(fixture(name))).unwrap();
+        assert_eq!(full.info().frames, 22_050);
+        let mut src = open_source(Media::Path(fixture(name)), Seeking::Direct).unwrap();
+        // Streamed from the start in odd-sized reads: the very frames the preload holds.
+        let mut got = Vec::new();
+        let mut buf = vec![0.0; 2 * 777];
+        loop {
+            let n = src.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n * 2]);
+        }
+        assert_eq!(got, full.samples());
+        // At 0, at the onset, inside the pre-roll and past it (a mid-file seek).
+        for at in [0u64, 999, 1_000, 1_024, 2_000, 5_000, 9_000, 15_000, 21_000] {
+            src.seek(at).unwrap();
+            let mut buf = vec![0.0; 2 * 200];
+            assert_eq!(src.read(&mut buf).unwrap(), 200, "at {at}");
+            let err = (0..200)
+                .map(|i| (buf[i * 2] - left(at + i as u64)).abs())
+                .fold(0.0, f32::max);
+            assert!(err < 0.06, "at {at}: max error {err}");
         }
     }
 

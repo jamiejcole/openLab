@@ -383,6 +383,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
         "tone-alac.m4a",
         "tone.mp3",
         "tone.m4a",
+        "tone-onset.m4a",
+        "tone-onset-noedit.m4a",
         "tone.ogg",
     ]
     .iter()
