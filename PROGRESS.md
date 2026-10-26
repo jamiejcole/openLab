@@ -68,7 +68,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M2.9 Property tests over random workspaces + input sequences [QA-01, QA-02] — a small engine proptest exists (`tests/cue_engine_prop.rs`): extend it, don't duplicate it
 - [ ] M2.10 Preview/audition operation on a cue (CUE-05 remainder; PB-09): plays to an audition output without triggering continues — found missing in M2.1
 - [x] M2.11 Playhead inside groups and jump-by-number to grouped cues (with M2.4): as in QLab 5 the playhead can stand on any cue at any depth; GO on a child starts it alone (its group runs adopted)
-- [ ] M2.12 Cue engine cleanups from the M2-A review (Lows):
+- [x] M2.12 Cue engine cleanups from the M2-A review (Lows) — done in M2-E, regression tests in `tests/cue_engine_cleanups.rs` (+ `cue_engine_groups.rs`, `cue_engine_fade.rs`, `cue_engine/tests.rs`); M2-C L5 fixed by modelling the de-zipper rather than documenting it, the M2-A re-review Lows L7/L8/L9 fixed too:
   - L3: if a trigger cycle in the call's first deadline pass used up the chain budget, a GO's start is dropped with only a `ChainLimit` warning while `last_go` and the playhead still advance. Check the budget before committing the GO, or report `GoIgnored`.
   - L4: `LoadVoice.offset` uses the pre-wait at load time, `StartVoice.offset` the pre-wait at start; editing the pre-wait of a cue loaded to a time makes the primed stream disagree with the start offset. Freeze the pre-wait/action split at load (keep `action_offset` in `Loaded`).
   - L5: every call with an active cue builds a set of all cue ids and recounts the tree for `chain_limit`; fine at expected sizes, skip when the workspace revision is unchanged once revisions exist (M4).

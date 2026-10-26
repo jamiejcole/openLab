@@ -35,8 +35,12 @@ impl Slot {
 #[derive(Clone, Debug)]
 pub(super) struct Loaded {
     pub run: RunId,
-    /// Samples into the cue's timeline (pre-wait, then action) it will start from.
-    pub offset: SampleTime,
+    /// Pre-wait left when it starts and the samples into the action it starts from: the split
+    /// of the load-to-time offset into pre-wait and action, frozen at load so the stream primed
+    /// by `LoadVoice` is the one `StartVoice` asks for even if the cue's pre-wait is edited
+    /// meanwhile.
+    pub pre_wait_left: SampleTime,
+    pub action_offset: SampleTime,
     /// A `LoadVoice` was sent for this run.
     pub voice: bool,
 }

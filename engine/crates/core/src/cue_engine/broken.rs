@@ -88,14 +88,6 @@ impl Default for Problems {
 }
 
 impl CueEngine {
-    /// Tells the engine the model changed in a way that can change cues' problems (any edit,
-    /// undo or redo, relink, a newly opened workspace). The next `handle` call rebuilds the
-    /// model's part of the problems, once (M4.2 contract). Calling it when nothing changed only
-    /// costs that rebuild.
-    pub fn model_changed(&mut self) {
-        self.problems.dirty = true;
-    }
-
     /// How many times a cue's problems have been computed since the engine was made. A status
     /// input costs one per cue on that media file or patch; a call with nothing new costs none.
     pub fn problem_checks(&self) -> u64 {
@@ -108,6 +100,16 @@ impl CueEngine {
     /// call. The binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
+    }
+
+    /// The model's part of the problems is out of date: rebuild it on the next call.
+    pub(super) fn mark_problems_dirty(&mut self) {
+        self.problems.dirty = true;
+    }
+
+    /// Counts a model change that was not signalled (see `unsignalled_model_changes`).
+    pub(super) fn note_unsignalled(&mut self) {
+        self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
     }
 
     /// The cue's static problems (CUE-06); empty when it has none.
