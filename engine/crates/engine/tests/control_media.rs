@@ -189,3 +189,110 @@ fn a_start_held_by_its_probe_plays_once_the_probe_answers() {
     )));
     run_until_idle(&mut s, id(1), 2000);
 }
+
+#[test]
+fn files_near_the_playhead_are_probed_first() {
+    let paths: Vec<_> = (0..6).map(|_| wav(&dc(200, 0.5))).collect();
+    for p in &paths {
+        gate(p);
+    }
+    let cues = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| audio(i as u128 + 1, p, 0))
+        .collect();
+    let ws = workspace(cues);
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.prime_cues = 1;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    // Both workers are stuck on the first files of the workspace.
+    wait_probed(&paths, 2);
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(6)),
+    });
+    s.tick();
+    for p in &paths {
+        release(p);
+    }
+    s.settle_media();
+    let order = probe_order(&paths);
+    let pos = order.iter().position(|p| *p == paths[5]).unwrap();
+    // Workspace order would have probed it last (index 5).
+    assert!(pos <= 3, "{order:?}");
+    assert_eq!(s.control().probes_pending(), 0);
+}
+
+#[test]
+fn a_start_held_by_its_probe_fails_after_five_seconds() {
+    let path = wav(&dc(200, 0.5));
+    gate(&path);
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    let at = go(&mut s);
+    // Told at once that it waits.
+    assert!(warnings(&s.take_outbound()).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "probe_wait"
+    )));
+    let limit = u64::from(RATE) * 5;
+    s.run_until(at + limit - 4 * BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.run(BLOCK * 5);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let msgs = s.take_outbound();
+    assert_eq!(
+        states(&msgs, id(1)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert!(warnings(&msgs).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "probe_timeout"
+    )));
+    assert_eq!(s.control().live_voices(), 0);
+    release(&path);
+}
+
+#[test]
+fn a_stuck_probe_worker_is_replaced() {
+    let stuck: Vec<_> = (0..2).map(|_| wav(&dc(200, 0.5))).collect();
+    let fine = wav(&dc(200, 0.5));
+    for p in &stuck {
+        gate(p);
+    }
+    let ws = workspace(vec![
+        audio(1, &stuck[0], 0),
+        audio(2, &stuck[1], 0),
+        audio(3, &fine, 0),
+    ]);
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_timeout = std::time::Duration::ZERO;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(&stuck, 2);
+    // The watchdog gives up on both stuck workers; the third file is probed by a fresh one.
+    s.settle_media();
+    assert!(s.control().abandoned_probe_workers() >= 2);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
+    for n in 1..=2 {
+        assert!(matches!(
+            s.control().engine().problems(id(n)),
+            [CueProblem::MediaUnsupported { .. }]
+        ));
+    }
+    // A late answer still counts.
+    for p in &stuck {
+        release(p);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.control().engine().state(id(1)) == CueState::Broken
+        || s.control().engine().state(id(2)) == CueState::Broken
+    {
+        assert!(std::time::Instant::now() < deadline);
+        s.settle_media();
+        std::thread::yield_now();
+    }
+}

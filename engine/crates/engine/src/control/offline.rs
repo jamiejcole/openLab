@@ -53,11 +53,22 @@ impl OfflineShow {
         mixer: MixerConfig,
         config: ControlConfig,
     ) -> Result<Self, OfflineError> {
+        Self::with_outbound_capacity(ws, mixer, config, OUTBOUND_CAPACITY)
+    }
+
+    /// As [`Self::new`], with an outbound channel of `capacity` messages (tests of a client
+    /// that does not keep up).
+    pub fn with_outbound_capacity(
+        ws: Workspace,
+        mixer: MixerConfig,
+        config: ControlConfig,
+        capacity: usize,
+    ) -> Result<Self, OfflineError> {
         let (ctl, mixer_rt) = Mixer::new(mixer).map_err(OfflineError::Mixer)?;
         let channels = mixer_rt.output_channels();
         let block = usize::try_from(config.block_frames.max(1)).unwrap_or(1);
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-        let (out_tx, outbound) = crossbeam_channel::bounded(OUTBOUND_CAPACITY);
+        let (out_tx, outbound) = crossbeam_channel::bounded(capacity.max(1));
         let control = Control::new(ws, ctl, Backend::Offline, config, inbox_tx.clone(), out_tx)?;
         Ok(Self {
             control,
@@ -116,17 +127,20 @@ impl OfflineShow {
         }
     }
 
-    /// Waits until every probe has answered and the answers are in, then ticks.
+    /// Waits until every probe has answered (or was given up on by the watchdog) and the
+    /// answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
     pub fn settle_media(&mut self) {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
         while self.control.probes_pending() > 0 {
-            match self.inbox.recv_timeout(SETTLE_TIMEOUT) {
+            if std::time::Instant::now() >= deadline {
+                self.stalls += 1;
+                break;
+            }
+            match self.inbox.recv_timeout(Duration::from_millis(20)) {
                 Ok(msg) => {
                     let _ = self.control.handle(msg);
                 }
-                Err(_) => {
-                    self.stalls += 1;
-                    break;
-                }
+                Err(_) => self.control.tick(),
             }
         }
         self.pump_inbox();

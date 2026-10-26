@@ -15,7 +15,7 @@ The engine's control thread (ARCHITECTURE §3.1, §3.2): it owns the workspace, 
 | Thread | Owns | Talks via |
 |---|---|---|
 | control (`openlab-control`) | `Control` | crossbeam-channel inbox in; bounded outbound channel (`OUTBOUND_CAPACITY` 4096) out; `MixerController` (SPSC) to the audio thread |
-| probe workers (`openlab-probe-N`, `PROBE_WORKERS` = 2) | `probe`, `preload_within` | job channel from control; answers through the control inbox (`Inbox::Probe`) |
+| probe workers (`openlab-probe-N`, `PROBE_WORKERS` = 2) | `probe`, `preload_within` | two job channels from control (high priority first); answers through the control inbox (`Inbox::Probe`) |
 | disk workers (`DiskStreamer`, 2) | decoders, resamplers, rings | `prepare` from control (no I/O); `StreamHandle` atomics back |
 | audio (device) / caller (offline) | `Mixer` | SPSC queues, atomics |
 
@@ -50,7 +50,7 @@ Each run segment gets its own mixer `VoiceId`, allocated by the loop and **never
 |---|---|
 | `LoadVoice { run, offset }` | slice table, `prepare` (or wait for the probe); kept as the run's stream |
 | `UnloadVoice` | the stream is dropped (cancelled) |
-| `StartVoice { run, at, offset }` | the loaded stream, else the cue's primed one (offset 0), else a fresh `prepare`; `VoiceStart` with the model's levels; `StartVoice` at `at` |
+| `StartVoice { run, at, offset }` | the loaded stream, else the cue's primed one (offset 0), else a fresh `prepare`; `VoiceStart` with the model's levels; `StartVoice` at `at`; for a finite table, `Input::ActionLength { frames: offset + table frames (+ delay if held) }` back to the engine, which then owns the end as a deadline (auto-follow and playlist moves on the exact end sample; docs/cue-engine.md) |
 | `StopVoice { at, fade }` | mixer `StopVoice` (fade with the curve); the record goes with the `VoiceFinished` |
 | `PauseVoice { at }` | mixer `PauseVoice` (native pause, M3.18: position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer `ResumeVoice { voice: old, new_id }` re-keys the voice to a fresh id for the fresh run |
@@ -61,14 +61,15 @@ Each run segment gets its own mixer `VoiceId`, allocated by the loop and **never
 
 - **Routing** (`VoiceStart`): master `master_db`; cue output `o` at its level (muted or beyond the patch's outputs: silent); listed crosspoints (muted: silent); the patch's mixer matrix; the integrated fade-in (none when starting part way in) and fade-out. dB → gain with core's `db_to_gain` (the mixer's conversion).
 - **Slice table**: `plan::cue_slices` turns trims, markers and play counts into `plan_at_rate`'s table (markers outside the trims are dropped; the slice the out point falls in plays as the marker that ends it says), then skips `offset` frames of the action with loops unrolled. An offset at or past a finite action's end plays nothing: the action ends on its start sample. A table that cannot be built (`LoopTooShort`, M3.17, or bad markers) fails the run (`ActionFailed { stream_failed }`, a `bad_plan` notice) and is listed in the workspace warnings as soon as the file is probed (the pre-show view; a `CueProblem` for it would need core and protocol changes — open question in PROGRESS).
-- **Waiting for a probe**: a start (or load) whose file has not been probed yet waits; commands for it (ramps, devamps) are queued and replayed after the start, a pause holds it, a stop drops it. When the probe answers it starts at `max(start, now)` from its head with a `cold_start` notice; a failed probe fails the run.
+- **Waiting for a probe**: a start (or load) whose file has not been probed yet waits; commands for it (ramps, devamps) are queued and replayed after the start, a pause holds it, a stop drops it. A held start sends a `probe_wait` notice at once. When the probe answers it starts at `max(start, now)` from its head with a `cold_start` notice (and its delay counted into its `ActionLength`); a failed probe fails the run. A start still held after `PROBE_HOLD_LIMIT` (5 s of sample time) fails (`ActionFailed { stream_failed }`, a `probe_timeout` notice): the cue goes broken instead of showing as running with no sound.
+- **Probe order and stuck workers**: probes go out in workspace order on a low-priority queue; every priming pass (playhead move, edit, probe answer) puts the files of the cues it wants primed on the high-priority queue, which the workers always empty first, so after a restart mid-show the cue at the playhead is not behind a hundred others. A worker busy on one file longer than `probe_timeout` (`PROBE_TIMEOUT`, 30 s, wall clock: the only wall-clock rule in the loop) is abandoned and replaced, at most `MAX_ABANDONED_WORKERS` (16) times; its file is reported `unsupported` ("could not be read in time") meanwhile, and a late answer still counts. The abandoned thread is leaked, not joined: it ends when its read returns, if it ever does. A re-probe (after a stream failure) keeps the last answer, and so the cues' primes, until the new answer comes.
 - **Patches** (`Patches`): workspace patch `i` uses mixer matrix `i` (more patches than matrices: `unmapped`). Each patch is resolved with `resolve_patch` against the machine settings and the device list and sent to the engine (`Availability` on open, `PatchStatus`-equivalent `Availability` on every change). A mapped patch's matrix routes cue output `o` to its device channel at patch master × output level (muted: 0; polarity: negative gain); everything else 0. Only changed matrix entries are sent. The workspace master goes to `SetMaster`.
 
 ## Priming (ARCHITECTURE §3.5)
 
 After every playhead change, model change and probe answer the loop keeps primed (a stream prepared and filling, ready to start): from each list's playhead the next `prime_cues` (16) cues, the targets of those cues (a group target primes its audio cues), and every cue with a hotkey or OSC trigger — armed audio cues with media and no run, at most `max_primes` (64). A prime is used by a start from the top of that cue if the cue's file, probe and trims/slices still match; otherwise it is released. A start without one is cold: it is heard once its ring fills, with a `cold_start` notice, never a failure.
 
-**Preload** (AUD-05): a file whose cue asks for it, or whose probe advises it (`preload_advised`: damaged files that seek slowly), is decoded into memory on a probe worker within the workspace-wide `preload_budget` (default 512 MiB); a file that does not fit streams and is listed as `preload_over_budget`. Memory goes back when no cue uses the file.
+**Preload** (AUD-05): a file whose cue asks for it, or whose probe advises it (`preload_advised`: damaged files that seek slowly), is decoded into memory on a probe worker within the workspace-wide `preload_budget` (default 512 MiB); a file that does not fit streams and is listed as `preload_over_budget`, one whose preload fails (a decode error, memory) streams and is listed as `preload_failed`. Memory goes back when no cue uses the file.
 
 ## Feedback
 
@@ -81,24 +82,26 @@ Mixer events, stream state and probe answers become cue-engine inputs:
 | `VoiceFinished` under an old id after a resume was sent | the voice ended before the resume applied: `ActionEnded` with the fresh run, dated no earlier than the resume |
 | `VoiceRejected` | `ActionFailed { voice_rejected }`; a refused resume also stops the voice still paused under its old id |
 | `StreamHandle::error` (polled every tick) | `ActionFailed { stream_failed }` once per run, and the file is probed again (it may have gone or changed) |
-| `DevampScheduled` / `DevampIgnored` | `Input::DevampScheduled { at }` / `DevampIgnored` for the run the id stands for (an old id's run is stale and ignored by the engine) |
+| `DevampScheduled` / `DevampIgnored` | `Input::DevampScheduled { at }` / `DevampIgnored` for the run the id stands for (an old id's run is stale and ignored by the engine); after `DevampScheduled` for the current id, the action's new `ActionLength` (position on `at` plus the table after the loop; `at` alone for a devamp stop; none while the rest loops for ever) |
+| `Underrun` | an `underrun` notice for the cue. A starved voice does not skip what it missed (docs/audio.md, Voices), so it ends later than its planned end; the engine keeps the planned end (the next cue starts on time, the late tail overlaps it) |
 | probe answer | `MediaStatus` in one `Availability` per tick: `available` (damaged-but-playable included; its damage is listed in the warnings), `missing` (`NotFound`), else `unsupported { reason }` |
 
 - **No feedback before its sample**: a report dated `at` (a re-reported end on a resume sample, the end of an empty action) is held until `now > at` (answers PROGRESS M2-E (c) for this binary: a voice event is never handed over at a `now` at or before the sample it reports; mixer events always report rendered samples, so they qualify at once).
-- An old id stays an **alias** of the voice until the voice is gone, so meter entries under it (one more after a re-key, docs/audio.md) and late events still name the cue.
+- The id a voice had before its latest resume stays an **alias** until the voice is gone (an end before the resume applied comes under it); older ids are named for one more meter read only (one more entry after a re-key, docs/audio.md), so a cue paused and resumed many times keeps one alias.
+- The resume of a voice that had ended (re-reported with the fresh run) is now only reachable for an action whose length the engine was not told (a loop): with a known length the engine completes the action on its end sample before a pause dated there.
 
 ## Reconciliation of lost events
 
-The mixer drops events when its queue (1024) is full and counts them (`dropped_events`). A lost `VoiceFinished` would leave a cue running for ever. The voice-meter read (every meters period, ~30 Hz) lists every voice the mixer holds, paused ones included. A started voice whose start sample was rendered before the previous read and that is missing from **two reads in a row**, while `dropped_events > 0`, is taken as ended: `ActionEnded` on the read's sample (or `ActionFailed { stream_failed }` if its stream failed). A lost `VoiceRejected` is therefore reported as an end. The first loss is logged (`warn`). Tested by overflowing the queue with loop events while the control thread is held off (`control_feedback.rs`).
+The mixer drops events when its queue (1024) is full and counts them (`dropped_events`). A lost `VoiceFinished` would leave a cue running for ever. The voice-meter read (every meters period, ~30 Hz) lists every voice the mixer holds, paused ones included. A started voice whose start sample was rendered before the previous read and that is missing from **two reads in a row**, while `dropped_events > 0`, is taken as ended: `ActionEnded` on the read's sample (or `ActionFailed { stream_failed }` if its stream failed). A voice that no meter read ever listed was never taken by the mixer: its lost report was a rejection, so it fails (`ActionFailed { voice_rejected }`) instead. (A rejected voice of known length whose rejection is lost completes on its planned end if that comes before the two reads.) The first loss is logged (`warn`). Tested by overflowing the queue with loop events while the control thread is held off (`control_feedback.rs`).
 
 ## Outbound
 
-- `runtime { seq, changes }`: one message per engine call with changes, from `RuntimeChange::from_action` read right after the call (a broken state carries its reason), plus binary notices as `warning { notice }`: `cold_start`, `bad_plan`, `stream_failed`.
-- `warnings`: the workspace-level list, replaced when it changes: `damaged_media`, `preload_over_budget`, `bad_plan` (per cue), `realtime_allocation`.
+- `runtime { seq, changes }`: one message per engine call with changes, from `RuntimeChange::from_action` read right after the call (a broken state carries its reason), plus binary notices as `warning { notice }`: `probe_wait`, `probe_timeout`, `cold_start`, `underrun`, `bad_plan`, `stream_failed`.
+- `warnings`: the workspace-level list, replaced when it changes, rebuilt at most once per tick: `damaged_media`, `preload_over_budget`, `preload_failed`, `bad_plan` (per cue), `realtime_allocation`. The `bad_plan` check keeps each cue's result and rebuilds a cue's plan only when its trims/markers or its file's probe change (`plan_builds()`: an edit of one cue in a 2,000-cue show builds at most one plan; tested).
 - `progress`: show cues with a playing voice (elapsed and remaining in the action, remaining `null` while it loops for ever), at most 30 Hz of sample time, only while one plays.
 - `meters`: per mapped patch the device outputs it is routed to, per cue its voices' peaks per cue output (`read_output_meters_into` / `read_voice_meters_into` into preallocated buffers), at most 30 Hz, while audio plays plus one message after.
 - `log`: engine faults (`error`), audio-thread allocations (`error`, M3.21), lost mixer events (`warn`), unsignalled model changes (`error`).
-- The outbound channel is bounded: a full channel drops the message (counted); clients recover from the `seq`/`revision` gap with a snapshot.
+- The outbound channel is bounded (`OUTBOUND_CAPACITY`). Meters and progress are dropped first, as soon as it is half full (the next ones replace them). A sequenced message (`runtime`, `model_changed`) or log that does not fit is dropped; clients recover from the `seq`/`revision` gap with a snapshot. A `document` or `warnings` message that does not fit is sent again, newest, once there is room. Drops are logged (`warn`) once there is room.
 
 ## Debug allocation guard (M3.21)
 

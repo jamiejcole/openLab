@@ -13,8 +13,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::{
-    CommandKind, Curve, DiskStreamer, Event, Fade, FinishReason, GainTarget, PreparedStream,
-    StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
+    CommandKind, Curve, DiskStreamer, Event, Fade, FinishReason, GainTarget, Plays, PreparedStream,
+    Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
     Action, BrokenReason, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam, RunId,
@@ -101,9 +101,21 @@ pub struct VoiceRec {
     /// The sample of the latest resume (a re-key).
     resumed_at: Option<SampleTime>,
     stream_failed: bool,
-    old_ids: Vec<VoiceId>,
+    /// The id it had before its latest resume: the only old id the mixer can still report an
+    /// event under (an end before that resume applied). Older ones go with the next meter read.
+    prev_id: Option<VoiceId>,
     /// Voice-meter reads in a row that did not list this started voice (reconciliation).
     pub absent: u8,
+    /// A meter read has listed it: the mixer took the start.
+    listed: bool,
+    /// The slice table it plays (from its start offset), for its length after a devamp.
+    table: Vec<Slice>,
+    /// The `stop` of the latest devamp sent for it.
+    devamp_stop: bool,
+    /// Its start waited for the file's probe, since this sample (`now`).
+    held: Option<SampleTime>,
+    /// How much later than the engine dated it the voice started (held by its probe).
+    delay: u64,
 }
 
 impl VoiceRec {
@@ -242,6 +254,9 @@ impl Voices {
                 self.command(run, at, cmd, fx);
             }
             Action::DevampVoice { run, at, stop, .. } => {
+                if let Some(r) = self.by_run.get(&run).and_then(|id| self.recs.get_mut(id)) {
+                    r.devamp_stop = stop;
+                }
                 self.command(run, at, Queued::Devamp { stop }, fx);
             }
             _ => {}
@@ -359,7 +374,20 @@ impl Voices {
                         *prepared = Some(p);
                     }
                 }
-                Err(PrepError::Pending) => return,
+                Err(PrepError::Pending) => {
+                    if let Some(r) = self.recs.get_mut(&id)
+                        && r.held.is_none()
+                    {
+                        r.held = Some(env.now);
+                        fx.notices.push((
+                            "probe_wait",
+                            "a cue waits for its audio file to be read; it starts once it is"
+                                .to_owned(),
+                            Some(cue),
+                        ));
+                    }
+                    return;
+                }
                 Err(PrepError::Empty) => {
                     // Nothing to play: the action ends on its start sample.
                     if let Some(r) = self.remove(id) {
@@ -399,21 +427,33 @@ impl Voices {
         };
         // A start the probe held up plays as soon as it can, from its head (a cold start).
         let at = start.max(env.now);
-        let primed = prepared.handle.is_primed();
+        let table = prepared.slices.clone();
         match voice_start(env, cue, prepared, id, offset) {
             Some((vs, handle)) => {
                 r.stream = Some(handle);
                 r.start_at = at;
                 r.total = total;
+                r.table = table;
+                r.delay = at - start;
+                let preview = r.preview;
+                let held = r.held.take().is_some();
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
                     fx.commands.push((t.max(at), queued(id, q)));
                 }
-                if at > start || !primed {
+                // The engine owns the end of a finite action (`ActionLength`): it is the
+                // action's length counted from the start the engine dated, so a start held up
+                // by its probe counts the delay in.
+                if let Some(total) = total
+                    && !preview
+                {
+                    let frames = offset.saturating_add(total).saturating_add(at - start);
+                    fx.feedback.push(Input::ActionLength { cue, run, frames });
+                }
+                if held {
                     fx.notices.push((
                         "cold_start",
-                        "a cue started before its audio was read from disk; it may start late"
-                            .to_owned(),
+                        "a cue started late: its audio file had to be read first".to_owned(),
                         Some(cue),
                     ));
                 }
@@ -484,11 +524,14 @@ impl Voices {
         self.by_run.remove(&paused);
         r.run = run;
         r.resumed_at = Some(at);
-        r.old_ids.push(old);
-        self.gone.push((old, cue));
-        for o in &r.old_ids {
-            self.aliases.insert(*o, (new, paused));
+        // Only the id just replaced can still carry an event; an older one is named for one
+        // more meter read (`gone`) and then forgotten, so a cue paused and resumed many times
+        // keeps one alias, not one per resume.
+        if let Some(older) = r.prev_id.replace(old) {
+            self.aliases.remove(&older);
         }
+        self.gone.push((old, cue));
+        self.aliases.insert(old, (new, paused));
         match &mut r.phase {
             Phase::Playing => {
                 if let Some(p) = r.paused_at.take() {
@@ -564,8 +607,8 @@ impl Voices {
     }
 
     fn drop_aliases(&mut self, r: &VoiceRec) {
-        for o in &r.old_ids {
-            self.aliases.remove(o);
+        if let Some(o) = r.prev_id {
+            self.aliases.remove(&o);
         }
     }
 
@@ -777,7 +820,7 @@ impl Voices {
                 });
                 // A refused resume leaves the voice paused under its old id: let it go.
                 if voice == id
-                    && let Some(&old) = r.old_ids.last()
+                    && let Some(old) = r.prev_id
                 {
                     fx.commands.push((
                         at,
@@ -791,6 +834,14 @@ impl Voices {
             Event::DevampScheduled { voice, at } => {
                 if let Some((cue, run)) = self.name(voice) {
                     fx.feedback.push(Input::DevampScheduled { cue, run, at });
+                    // The voice's end is known again: where it leaves the loop plus what
+                    // follows (nothing for a devamp stop).
+                    if let Some(r) = self.recs.get(&voice)
+                        && !r.preview
+                        && let Some(frames) = r.length_after_devamp(at)
+                    {
+                        fx.feedback.push(Input::ActionLength { cue, run, frames });
+                    }
                 }
             }
             Event::DevampIgnored { voice, .. } => {
@@ -798,10 +849,18 @@ impl Voices {
                     fx.feedback.push(Input::DevampIgnored { cue, run });
                 }
             }
-            Event::Underrun { .. }
-            | Event::PendingFull { .. }
-            | Event::LoopReached { .. }
-            | Event::SliceEnded { .. } => {}
+            Event::Underrun { voice, .. } => {
+                // A starved voice does not skip what it missed (docs/audio.md, Voices): it ends
+                // later than planned by the underrun, while the cue engine keeps the planned end.
+                if let Some(cue) = self.cue_of(voice) {
+                    fx.notices.push((
+                        "underrun",
+                        "the disk could not keep up with a cue; it plays late from here".to_owned(),
+                        Some(cue),
+                    ));
+                }
+            }
+            Event::PendingFull { .. } | Event::LoopReached { .. } | Event::SliceEnded { .. } => {}
         }
     }
 
@@ -888,13 +947,21 @@ impl Voices {
 
     /// A voice the mixer no longer has although no end was reported (its event was dropped):
     /// reported as ended on `at` (or failed, if its stream failed).
+    /// A voice no meter read ever listed was never taken by the mixer: its lost report was a
+    /// rejection, so it fails (`voice_rejected`) rather than ends.
     pub fn lost(&mut self, id: VoiceId, at: SampleTime, fx: &mut Effects) {
-        if self
-            .recs
-            .get(&id)
-            .is_some_and(|r| matches!(r.phase, Phase::Playing))
-        {
+        let Some(r) = self.recs.get(&id) else { return };
+        if !matches!(r.phase, Phase::Playing) {
+            return;
+        }
+        if r.listed {
             self.finished(id, at, FinishReason::EndOfStream, fx);
+        } else if let Some(r) = self.remove(id) {
+            fx.feedback.push(Input::ActionFailed {
+                cue: r.cue,
+                run: r.run,
+                reason: BrokenReason::VoiceRejected,
+            });
         }
     }
 
@@ -906,9 +973,35 @@ impl Voices {
             }
             Some(r) => {
                 r.absent = 0;
+                r.listed = true;
                 0
             }
             None => 0,
+        }
+    }
+
+    /// Fails starts that have waited for their file's probe since before `now - limit`: the
+    /// cue goes broken instead of showing as running without a sound.
+    pub fn expire_held(&mut self, now: SampleTime, limit: SampleTime, fx: &mut Effects) {
+        let expired: Vec<VoiceId> = self
+            .recs
+            .iter()
+            .filter(|(_, r)| r.held.is_some_and(|t| now >= t.saturating_add(limit)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            if let Some(r) = self.remove(id) {
+                fx.feedback.push(Input::ActionFailed {
+                    cue: r.cue,
+                    run: r.run,
+                    reason: BrokenReason::StreamFailed,
+                });
+                fx.notices.push((
+                    "probe_timeout",
+                    "a cue's audio file could not be read in time; the cue did not play".to_owned(),
+                    Some(r.cue),
+                ));
+            }
         }
     }
 
@@ -971,6 +1064,59 @@ impl Voices {
     }
 }
 
+impl VoiceRec {
+    /// The action's length once a devamp leaves the loop it plays on sample `at`: where it is
+    /// then, plus the rest of its table after that loop (nothing for a devamp stop). `None`
+    /// while that rest loops for ever.
+    fn length_after_devamp(&self, at: SampleTime) -> Option<u64> {
+        let played = at
+            .checked_sub(self.start_at)?
+            .saturating_sub(self.paused_frames);
+        let rest = if self.devamp_stop {
+            0
+        } else {
+            rest_after_loop(&self.table, played)?
+        };
+        Some(
+            self.offset
+                .saturating_add(played)
+                .saturating_add(rest)
+                .saturating_add(self.delay),
+        )
+    }
+}
+
+/// Frames the table plays after the loop entry whose play ends on frame `played` (counted from
+/// the table's start), skipping the rest of that slice (its later plays and, for a slice split
+/// by a start offset, its second entry). `None` if what follows loops for ever.
+pub fn rest_after_loop(table: &[Slice], played: u64) -> Option<u64> {
+    // The entry the last frame before the exit belongs to.
+    let last = played.checked_sub(1)?;
+    let mut pos = 0u64;
+    let mut current = None;
+    for (k, s) in table.iter().enumerate() {
+        let len = match s.plays {
+            Plays::Times(n) => s.frames.saturating_mul(u64::from(n)),
+            Plays::Infinite => u64::MAX,
+        };
+        if last < pos.saturating_add(len) {
+            current = Some(k);
+            break;
+        }
+        pos = pos.saturating_add(len);
+    }
+    let k = current?;
+    let index = table.get(k)?.index;
+    table
+        .iter()
+        .skip(k + 1)
+        .skip_while(|s| s.index == index)
+        .try_fold(0u64, |acc, s| match s.plays {
+            Plays::Times(n) => Some(acc.saturating_add(s.frames.saturating_mul(u64::from(n)))),
+            Plays::Infinite => None,
+        })
+}
+
 fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
     VoiceRec {
         cue,
@@ -985,8 +1131,13 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         paused_frames: 0,
         resumed_at: None,
         stream_failed: false,
-        old_ids: Vec::new(),
+        prev_id: None,
         absent: 0,
+        listed: false,
+        table: Vec::new(),
+        devamp_stop: false,
+        held: None,
+        delay: 0,
     }
 }
 
@@ -1133,4 +1284,50 @@ fn voice_start(
     };
     vs.fade_out = frames(fade_out, env.rate);
     Some((Box::new(vs), handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {
+        Slice {
+            index,
+            start,
+            frames,
+            plays,
+        }
+    }
+
+    #[test]
+    fn rest_after_a_loop_is_what_follows_it() {
+        // Intro 100, loop 200 for ever, outro 50.
+        let t = [
+            s(0, 0, 100, Plays::Times(1)),
+            s(1, 100, 200, Plays::Infinite),
+            s(2, 300, 50, Plays::Times(1)),
+        ];
+        // Leaving the loop at the end of its third play.
+        assert_eq!(rest_after_loop(&t, 100 + 3 * 200), Some(50));
+        // A finite loop's later plays are skipped too.
+        let t = [
+            s(0, 0, 100, Plays::Times(4)),
+            s(1, 100, 30, Plays::Times(2)),
+        ];
+        assert_eq!(rest_after_loop(&t, 200), Some(60));
+        // A start offset split the loop into a one-play entry and the rest: both are left.
+        let t = [
+            s(0, 40, 60, Plays::Times(1)),
+            s(0, 0, 100, Plays::Infinite),
+            s(1, 100, 10, Plays::Times(1)),
+        ];
+        assert_eq!(rest_after_loop(&t, 60), Some(10));
+        // What follows loops for ever: no length.
+        let t = [
+            s(0, 0, 100, Plays::Infinite),
+            s(1, 100, 10, Plays::Infinite),
+        ];
+        assert_eq!(rest_after_loop(&t, 100), None);
+        assert_eq!(rest_after_loop(&t, 0), None);
+    }
 }

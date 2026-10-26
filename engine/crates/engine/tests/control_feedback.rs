@@ -11,20 +11,21 @@ use openlab_core::{ContinueMode, CueKind, CueState, GroupMode};
 use show::*;
 
 #[test]
-fn a_resume_of_a_voice_that_ended_at_its_pause_completes_the_cue() {
-    // 768 frames = 12 blocks: the pause is dated on the voice's end sample, so the voice ends as
-    // the pause applies and the mixer reports the end on the pause sample (ignored by the
-    // engine while paused); the mixer then ignores the resume of a voice it no longer has.
+fn a_pause_on_the_end_sample_comes_after_the_known_end() {
+    // 768 frames = 12 blocks: the pause is dated on the voice's end sample. The engine knows the
+    // action's length (`ActionLength`), so the cue completes on that sample before the pause;
+    // the resume then has nothing to do.
     let path = wav(&dc(768, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
     let t0 = go(&mut s);
     s.run(768);
     assert_eq!(s.now(), t0 + 768);
     s.transport(TransportAction::Pause { cue: id(1) });
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     s.run(BLOCK * 6);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     s.transport(TransportAction::Resume { cue: id(1) });
-    run_until_idle(&mut s, id(1), BLOCK * 8);
+    s.run(BLOCK * 4);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(t0 as usize + 767));
     assert!(s.control().is_idle());
     assert_eq!(s.control().live_voices(), 0);
 }
@@ -83,13 +84,16 @@ fn devamp_leaves_the_loop_and_the_cue_ends() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     let td = go(&mut s) as usize;
     let end = run_until_idle(&mut s, id(1), 4000) as usize;
+    s.run(BLOCK * 4);
     let ch0 = s.channel(0);
     let last = last_nonzero(&ch0).unwrap();
     // It left the loop at the end of the play under way, then played the 400-frame outro.
     let pass = (td - t0 - 400) / 800;
     let loop_end = t0 + 400 + (pass + 1) * 800;
     assert_eq!(last, loop_end + 400 - 1);
-    assert!(end > last);
+    // The engine knew the end from the devamp answer: it completed the cue on it (ahead of the
+    // render), not when the mixer's report came.
+    assert!(end <= last + 1);
     assert_eq!(s.stalls(), 0);
     assert_eq!(s.control().live_voices(), 0);
 }
@@ -111,6 +115,7 @@ fn devamp_with_stop_ends_at_the_loop_boundary() {
     s.run(2000);
     let td = go(&mut s) as usize;
     run_until_idle(&mut s, id(1), 4000);
+    s.run(BLOCK * 4);
     let pass = (td - t0 - 400) / 800;
     let loop_end = t0 + 400 + (pass + 1) * 800;
     assert_eq!(last_nonzero(&s.channel(0)), Some(loop_end - 1));
@@ -132,6 +137,7 @@ fn pause_all_and_resume_all() {
     s.transport(TransportAction::ResumeAll);
     run_until_idle(&mut s, id(1), 8000);
     run_until_idle(&mut s, id(2), 8000);
+    s.run(BLOCK * 4);
     for ch in 0..2 {
         let x = s.channel(ch);
         assert!(x[p + 40..r].iter().all(|&v| v == 0.0));
@@ -144,20 +150,34 @@ fn pause_all_and_resume_all() {
 #[test]
 fn a_lost_voice_end_is_reconciled() {
     // Cue 1 loops a 10 ms (80 frame) slice for ever: one loop event per 80 frames. With the
-    // control thread held off, 1100 of them overflow the mixer's event queue (1024), so cue 2's
-    // end report, which comes after, is lost.
+    // control thread held off, 1100 of them overflow the mixer's event queue (1024). Cue 2 loops
+    // too, so the engine cannot know its end; a Devamp cue (stop) ends it while the queue is
+    // full, so both its devamp answer and its end report are lost.
     let looping = wav(&dc(800, 0.25));
-    let short = wav(&dc(300, 0.5));
+    let other = wav(&dc(600, 0.5));
     let c1 = with_slices(audio(1, &looping, 0), &[(secs(80), 0)], 1);
-    let mut s = show(workspace(vec![c1, audio(2, &short, 1)]));
+    let c2 = with_slices(audio(2, &other, 1), &[(secs(300), 0)], 1);
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(2)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+        },
+    );
+    let mut s = show(workspace(vec![c1, c2, devamp]));
     start(&mut s, 1);
-    s.run(BLOCK);
-    s.render_only(80 * 1100);
     start(&mut s, 2);
+    // Long enough for meter reads to see both voices.
+    s.run(BLOCK * 12);
+    s.render_only(80 * 1100);
+    start(&mut s, 3);
     s.render_only(1000);
     assert!(s.control().mixer().dropped_events() > 0);
-    // Cue 2 has ended in the mixer, but its report is gone.
+    // Cue 2 has ended in the mixer, but its reports are gone.
     assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    let from = s.rendered() as usize;
+    assert!(s.channel(1)[from - 200..].iter().all(|&v| v == 0.0));
     run_until_idle(&mut s, id(2), 4000);
     // Cue 1 still runs, its voice untouched.
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
@@ -166,6 +186,12 @@ fn a_lost_voice_end_is_reconciled() {
         m,
         openlab_core::protocol::ServerMessage::Log { message, .. } if message.contains("lost")
     )));
+    // It was listed by a meter read before, so it ended (not a rejected start).
+    assert!(
+        states(&msgs, id(2))
+            .iter()
+            .all(|(st, _)| *st != WireCueState::Broken)
+    );
     s.transport(TransportAction::HardStop { cue: id(1) });
     s.run(BLOCK * 4);
     assert_eq!(s.control().live_voices(), 0);
@@ -252,4 +278,36 @@ fn state_changes_are_reported_in_order() {
     assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
     let st: Vec<WireCueState> = states(&msgs, id(1)).into_iter().map(|s| s.0).collect();
     assert_eq!(st.last(), Some(&WireCueState::Idle));
+}
+
+#[test]
+fn a_lost_rejection_breaks_the_cue() {
+    // One voice in the pool: cue 2's start is refused (`PoolFull`) while the event queue is full,
+    // so the refusal is lost. A voice no meter read ever listed was never taken: the cue breaks
+    // (`voice_rejected`) instead of completing and firing its continue.
+    let looping = wav(&dc(800, 0.25));
+    let long = wav(&dc(8000, 0.5));
+    let c1 = with_slices(audio(1, &looping, 0), &[(secs(80), 0)], 1);
+    let ws = workspace(vec![c1, audio(2, &long, 1)]);
+    let mut mixer = mixer_config();
+    mixer.max_voices = 1;
+    let config = config(&ws);
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer, config).unwrap();
+    s.settle_media();
+    start(&mut s, 1);
+    s.run(BLOCK * 12);
+    s.render_only(80 * 1100);
+    start(&mut s, 2);
+    s.render_only(BLOCK * 4);
+    assert!(s.control().mixer().dropped_events() > 0);
+    s.run(BLOCK * 30);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    let st = states(&s.take_outbound(), id(2));
+    assert_eq!(
+        st.last(),
+        Some(&(
+            WireCueState::Broken,
+            Some(openlab_core::protocol::WireBrokenReason::VoiceRejected)
+        ))
+    );
 }
