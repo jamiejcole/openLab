@@ -139,6 +139,19 @@ pub enum Seeking {
 pub struct SeekIndex {
     /// Checkpoint `j` (from 1) is at frame `j * INDEX_SPACING`.
     hashes: Vec<u64>,
+    /// Per checkpoint: its window is (near) constant, e.g. digital silence, so it verifies at
+    /// any alignment and says nothing about where a seek landed.
+    flat: Vec<bool>,
+}
+
+impl SeekIndex {
+    fn is_flat(&self, j: u64) -> bool {
+        usize::try_from(j - 1)
+            .ok()
+            .and_then(|i| self.flat.get(i))
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +181,9 @@ impl Probed {
 pub const INDEX_SPACING: u64 = 8192;
 /// Frames hashed at each checkpoint.
 const CHECK_LEN: u64 = 256;
+/// A checkpoint window whose samples differ by less than this (about -80 dBFS peak to peak)
+/// cannot tell one alignment from another.
+const FLAT_RANGE: f32 = 1e-4;
 /// Decoding a seek to a checkpoint may take before the checkpoint counts as unusable.
 const VERIFY_BUDGET: u64 = 8 * INDEX_SPACING;
 /// Checkpoints tried before a seek falls back to decoding from the start.
@@ -686,7 +702,20 @@ struct Decoder {
 #[derive(Debug, Default)]
 struct IndexBuilder {
     hashes: Vec<u64>,
+    /// Parallel to `hashes`: see [`SeekIndex::is_flat`].
+    flat: Vec<bool>,
     open: Option<u64>,
+    /// Lowest and highest sample of the window in progress.
+    range: Option<(f32, f32)>,
+}
+
+impl IndexBuilder {
+    fn note(&mut self, xs: &[f32]) {
+        for &x in xs {
+            // NaN never widens the range (and a non-finite sample makes the window not flat).
+            self.range = Some(self.range.map_or((x, x), |(lo, hi)| (lo.min(x), hi.max(x))));
+        }
+    }
 }
 
 /// What a bounded refill achieved.
@@ -1348,6 +1377,9 @@ impl Decoder {
                 for _ in 0..zeros * ch as u64 {
                     h = fnv(h, &[0.0]);
                 }
+                if zeros > 0 {
+                    ib.note(&[0.0]);
+                }
                 let b0 = (from + zeros).saturating_sub(start + silence);
                 let b1 = to.saturating_sub(start + silence);
                 let at = |f: u64| self.buf_pos + usize::try_from(f).unwrap_or(0) * ch;
@@ -1355,10 +1387,14 @@ impl Decoder {
                     && let Some(x) = self.buf.get(at(b0)..at(b1))
                 {
                     h = fnv(h, x);
+                    ib.note(x);
                 }
             }
             if w_end <= start + len {
                 ib.hashes.push(h);
+                ib.flat
+                    .push(ib.range.is_some_and(|(lo, hi)| hi - lo < FLAT_RANGE));
+                ib.range = None;
                 ib.open = None;
             } else {
                 ib.open = Some(h);
@@ -1371,17 +1407,24 @@ impl Decoder {
     /// file's checkpoints after each piece of damage, and its last, must decode after a seek as
     /// the probe decoded them; otherwise seeks decode from the start.
     fn choose_seeking(&mut self, frames: u64) -> Result<Seeking, MediaError> {
-        let hashes = self.index.take().map(|b| b.hashes).unwrap_or_default();
+        let (hashes, flat) = self
+            .index
+            .take()
+            .map(|b| (b.hashes, b.flat))
+            .unwrap_or_default();
         if self.warnings.is_empty() || self.pcm {
             return Ok(Seeking::Direct);
         }
-        let index = Arc::new(SeekIndex { hashes });
+        let index = Arc::new(SeekIndex { hashes, flat });
         let n = index.hashes.len() as u64;
         let mut picks: Vec<u64> = self
             .warnings
             .iter()
             .map(|w| (w.at + w.frames).div_ceil(INDEX_SPACING).max(1))
             .chain(std::iter::once(n))
+            // A flat window proves nothing: verify the next one that does (none: the damage
+            // is followed by nothing but silence, where a misplaced seek cannot be heard).
+            .filter_map(|j| (j..=n).find(|&j| !index.is_flat(j)))
             .filter(|&j| j >= 1 && j <= n && j * INDEX_SPACING + CHECK_LEN <= frames)
             .collect();
         picks.sort_unstable();
@@ -1441,7 +1484,11 @@ impl Decoder {
     /// decodes as probed, decode forward; if none of the nearest few does, from the start.
     fn seek_indexed(&mut self, index: &SeekIndex, frame: u64) -> Result<(), MediaError> {
         let top = (frame.saturating_sub(CHECK_LEN) / INDEX_SPACING).min(index.hashes.len() as u64);
-        for j in (1..=top).rev().take(CHECKPOINT_TRIES) {
+        for j in (1..=top)
+            .rev()
+            .filter(|&j| !index.is_flat(j))
+            .take(CHECKPOINT_TRIES)
+        {
             let seen = self.warnings.len();
             if self.verify_checkpoint(index, j)? {
                 return self.forward_to(frame);
@@ -1815,6 +1862,41 @@ mod tests {
                     panic!("{ext} at {at}: sample {i} is {} not {}", buf[i], want[i]);
                 }
             }
+        }
+    }
+
+    /// L-R7: checkpoints whose window is digital silence verify at any alignment, so they are
+    /// marked flat and neither the probe nor a seek relies on them.
+    #[test]
+    fn silent_checkpoints_are_flat_and_seeks_in_such_a_file_stay_exact() {
+        let mut b = std::fs::read(fixture("silence-lead.flac")).unwrap();
+        // A frame inside the silence (frames are 16 bytes there, from byte 8288).
+        for x in b.get_mut(8_452..8_460).unwrap() {
+            *x ^= 0x5a;
+        }
+        let media = || Media::Reader(Box::new(io::Cursor::new(b.clone())), Some("flac".into()));
+        let probed = probe_media(media()).unwrap();
+        assert!(!probed.warnings.is_empty(), "damage was met");
+        let Seeking::Indexed(index) = &probed.seeking else {
+            panic!("{:?}", probed.seeking);
+        };
+        // 3 s of silence: checkpoints at 8192 · 1..=16 lie inside it, the rest hold the tone.
+        for j in 1..=16 {
+            assert!(index.is_flat(j), "checkpoint {j}");
+        }
+        for j in 17..=index.hashes.len() as u64 {
+            assert!(!index.is_flat(j), "checkpoint {j}");
+        }
+        let full = preload(media()).unwrap();
+        let all = full.samples();
+        let mut d = Decoder::open(media()).unwrap();
+        d.seeking = probed.seeking.clone();
+        for at in [150_000u64, 100_000, 135_000, 20_000, 170_000] {
+            d.seek(at).unwrap();
+            let mut buf = vec![0.0; 2 * 300];
+            assert_eq!(d.read(&mut buf).unwrap(), 300, "at {at}");
+            let start = at as usize * 2;
+            assert_eq!(&buf[..], &all[start..start + 600], "at {at}");
         }
     }
 
