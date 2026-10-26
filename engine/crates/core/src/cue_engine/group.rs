@@ -342,10 +342,12 @@ impl CueEngine {
                 phase: Phase::Action { .. },
                 paused_at,
                 ..
-            })) if !g.stopping && !g.adopted && g.devamp.is_none() => match &g.playlist {
-                Some(p) => (p.current, paused_at.is_some()),
-                None => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
-            },
+            })) if !g.stopping && !g.adopted && g.devamp.is_none() && g.skipped != Some(at) => {
+                match &g.playlist {
+                    Some(p) => (p.current, paused_at.is_some()),
+                    None => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
+                }
+            }
             _ => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
         };
         // The child playing is stopped only if the next one can be started (see
@@ -357,9 +359,23 @@ impl CueEngine {
             });
         }
         let loop_ = *loop_;
+        // Children a start would refuse at once (static problems, disarmed, broken): going back
+        // passes over them, as going forward does.
+        let playable: Vec<CueId> = children
+            .iter()
+            .filter(|c| {
+                self.is_armed(c)
+                    && !self.has_problems(c.id)
+                    && !matches!(self.slots.get(&c.id), Some(Slot::Broken(_)))
+            })
+            .map(|c| c.id)
+            .collect();
+        if let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group) {
+            g.skipped = Some(at);
+        }
         self.as_of(at, cx, |e, cx| {
             if back {
-                e.playlist_rewind(group, &ids, loop_);
+                e.playlist_rewind(group, &ids, &playable, loop_);
             }
             if let Some((child, _)) = current
                 && matches!(e.slots.get(&child), Some(Slot::Active(_)))
@@ -383,7 +399,7 @@ impl CueEngine {
 
     /// Sets a playlist's position so that its next move starts the child before the current one
     /// (see `playlist_skip`).
-    fn playlist_rewind(&mut self, group: CueId, ids: &[CueId], loop_: bool) {
+    fn playlist_rewind(&mut self, group: CueId, ids: &[CueId], playable: &[CueId], loop_: bool) {
         let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group) else {
             return;
         };
@@ -396,14 +412,19 @@ impl CueEngine {
                 .current
                 .and_then(|(c, _)| ids.iter().position(|i| *i == c))
                 .unwrap_or(p.index);
-            p.index = match here.checked_sub(1) {
-                Some(before) => before,
-                None if loop_ => ids.len().saturating_sub(1),
-                None => 0,
-            };
+            let valid = |i: &usize| ids.get(*i).is_some_and(|id| playable.contains(id));
+            let len = ids.len();
+            // The playable child before; with loop, wrapping to the last; else the first
+            // playable one (so the first child plays again); none playable: where it was.
+            p.index = (0..here)
+                .rev()
+                .find(valid)
+                .or_else(|| loop_.then(|| (0..len).rev().find(valid)).flatten())
+                .or_else(|| (0..len).find(valid))
+                .unwrap_or(here.min(len.saturating_sub(1)));
         } else {
             let order = &p.order;
-            let valid = |pos: &usize| order.get(*pos).is_some_and(|id| ids.contains(id));
+            let valid = |pos: &usize| order.get(*pos).is_some_and(|id| playable.contains(id));
             let len = order.len();
             p.pos = (0..p.pos)
                 .rev()
@@ -609,10 +630,9 @@ impl CueEngine {
                         start: at,
                         end: None,
                     };
-                    self.slots.insert(
-                        group,
-                        Slot::Active(Run::new(run, seq, phase, Some(adopted))),
-                    );
+                    let mut new = Run::new(run, seq, phase, Some(adopted));
+                    new.started = at;
+                    self.slots.insert(group, Slot::Active(new));
                     self.report(group, before, at, cx);
                 }
             }

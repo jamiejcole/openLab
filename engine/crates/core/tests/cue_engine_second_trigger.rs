@@ -1063,11 +1063,12 @@ fn release_of_an_unknown_cue_warns() {
 
 // ----- cycles stay within the chain budget -----
 
-/// A sound that auto-continues into a Start cue targeting it: with "hard stop and restart", each
-/// lap restarts the sound, which starts the Start cue again. Every restart is charged, so the
-/// lap ends at the chain limit within the call, and nothing of it is left pending.
+/// A sound that auto-continues into a Start cue targeting it (review M3): with "hard stop and
+/// restart", the Start cue's trigger reaches the sound on the sample the sound was triggered
+/// on, so it is ignored. A restart happens at most once per sample, so a GO plays the sound
+/// once instead of restarting it until the chain limit.
 #[test]
-fn a_restart_cycle_through_a_start_cue_ends_at_the_chain_limit() {
+fn a_restart_reached_again_on_the_same_sample_is_ignored() {
     let mut rig = Rig::new(vec![
         continuing(
             with(sound(1), ST::HardStopAndRestart),
@@ -1076,51 +1077,72 @@ fn a_restart_cycle_through_a_start_cue_ends_at_the_chain_limit() {
         ),
         start_cue(2, 1),
     ]);
-    let limit = CueEngine::chain_limit(&rig.ws);
-    let out = rig.start(0, 1);
-    assert!(
-        starts(&out).len() <= limit,
-        "{} > {limit}",
-        starts(&out).len()
-    );
-    assert!(starts(&out).len() > limit / 2);
-    assert!(has_chain_limit(&out));
-    // No voice leaks: each voice but the last was stopped.
-    assert_eq!(voice_starts(&out).len(), voice_stops(&out).len() + 1);
-    assert_eq!(rig.state(1), CueState::Running);
-    // The budget is per sample: another trigger at the same sample is cut at once and leaves
-    // the cue as it was.
+    let out = rig.go(0);
+    assert_eq!(starts(&out), vec![id(1), id(2)]);
+    assert_eq!(voice_starts(&out).len(), 1);
+    assert!(voice_stops(&out).is_empty());
+    assert!(!has_chain_limit(&out));
+    assert!(warnings(&out).contains(&EngineWarning::TriggerIgnored {
+        cue: id(1),
+        state: CueState::Running
+    }));
+    // A trigger on a later sample restarts it, once: the Start cue it continues into again
+    // reaches the new run on its own sample.
     let run = rig.run(1);
-    let again = rig.start(0, 1);
-    assert!(has_chain_limit(&again));
-    assert!(voice_stops(&again).is_empty());
+    let out = rig.start(1000, 1);
+    assert_eq!(voice_stops(&out), vec![(id(1), run, 1000, None)]);
+    assert_eq!(voice_starts(&out).len(), 1);
+    assert_eq!(starts(&out), vec![id(1), id(2)]);
+    assert!(!has_chain_limit(&out));
+    // So does a second call on the same sample.
+    let run = rig.run(1);
+    assert!(voice_stops(&rig.start(1000, 1)).is_empty());
     assert_eq!(rig.run(1), run);
-    // Nothing of the cycle comes back later.
     assert_eq!(rig.engine.next_deadline(), None);
-    assert!(starts(&rig.tick(1)).is_empty());
 }
 
-/// A group that restarts on a second trigger, holding a Start cue that targets it.
+/// A group that restarts on a second trigger, holding a Start cue that targets it: the Start
+/// cue reaches the group on the sample it was triggered on, so it is not restarted again.
 #[test]
-fn a_group_restart_cycle_ends_at_the_chain_limit() {
+fn a_group_restart_cycle_restarts_at_most_once_per_sample() {
     let mut rig = Rig::new(vec![with(
         grp(1, GroupMode::Timeline, vec![start_cue(2, 1), sound(3)]),
         ST::HardStopAndRestart,
     )]);
-    let limit = CueEngine::chain_limit(&rig.ws);
     let out = rig.start(0, 1);
-    assert!(starts(&out).len() <= limit);
-    assert!(has_chain_limit(&out));
-    // No voice leaks (the cut may come before the sound's own start).
-    let playing = usize::from(rig.engine.run_of(id(3)).is_some());
-    assert_eq!(voice_starts(&out).len(), voice_stops(&out).len() + playing);
-    assert!(starts(&rig.tick(0)).is_empty());
-    assert!(starts(&rig.tick(1)).is_empty());
+    assert_eq!(starts(&out), vec![id(1), id(2), id(3)]);
+    assert!(!has_chain_limit(&out));
+    let out = rig.start(500, 1);
+    assert_eq!(starts(&out), vec![id(1), id(2), id(3)]);
+    assert_eq!(voice_starts(&out).len(), voice_stops(&out).len());
+    assert!(starts(&rig.tick(500)).is_empty());
+    assert!(starts(&rig.tick(501)).is_empty());
 }
 
-/// A looping playlist whose children are Start cues targeting it with "play next": each child
-/// moves the playlist on to the next, until the chain budget's reserve; the playlist then
-/// completes.
+/// A restart cycle that takes time (a pre-wait) is a timed loop: one restart per lap.
+#[test]
+fn a_timed_restart_cycle_restarts_once_per_lap() {
+    let mut rig = Rig::new(vec![
+        continuing(
+            with(sound(1), ST::HardStopAndRestart),
+            ContinueMode::AutoContinue,
+            0.0,
+        ),
+        pre(start_cue(2, 1), 0.1),
+    ]);
+    rig.start(0, 1);
+    for lap in 1..=3u64 {
+        let out = rig.tick(lap * 100);
+        assert_eq!(voice_starts(&out).len(), 1, "lap {lap}");
+        assert_eq!(voice_stops(&out).len(), 1, "lap {lap}");
+        assert!(!has_chain_limit(&out));
+    }
+}
+
+/// A looping playlist whose children are Start cues targeting it with "play next": the playlist
+/// moves on once per sample (the next child's trigger on the same sample is ignored); its
+/// zero-length children then loop until the chain budget's reserve, as in any such playlist, and
+/// the playlist completes.
 #[test]
 fn a_play_next_cycle_ends_at_the_chain_limit() {
     let mut rig = Rig::new(vec![
@@ -1237,4 +1259,117 @@ fn a_group_mode_change_keeps_a_playlist_option_and_undo_restores_both() {
     );
     ws.apply(inverse).unwrap();
     assert_eq!(ws, original);
+}
+
+// ----- fix round 1 (review M1–M3) -----
+
+/// Review M1: a paused cue whose option has nothing to act on (a playlist paused in its
+/// pre-wait, a sound paused in its pre-wait with "devamp") resumes, as with `nothing`.
+#[test]
+fn a_paused_cue_whose_option_cannot_act_resumes() {
+    let group = pre(
+        with(grp(1, playlist(false), vec![sound(11)]), ST::PlayNext),
+        5.0,
+    );
+    let mut rig = Rig::new(vec![group, pre(with(sound(2), ST::Devamp), 5.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    rig.at(100, Input::PauseAll);
+    for n in [1, 2] {
+        assert_eq!(rig.state(n), CueState::Paused);
+        let out = rig.start(200, n);
+        assert!(warnings(&out).is_empty(), "{out:?}");
+        assert_eq!(rig.state(n), CueState::PreWaiting, "cue {n}");
+    }
+    // The pre-waits kept the time they had left: both actions start at 5100.
+    let out = rig.tick(5100);
+    let mut started: Vec<CueId> = voice_starts(&out).iter().map(|s| s.0).collect();
+    started.sort();
+    assert_eq!(started, vec![id(2), id(11)]);
+}
+
+/// Review M1: a paused playlist that can move on still does (the option acts).
+#[test]
+fn a_paused_cue_whose_option_can_act_gets_it() {
+    let mut rig = Rig::new(vec![with(sound(1), ST::Devamp)]);
+    rig.start(0, 1);
+    rig.pause(50, 1);
+    assert!(rig.start(100, 1).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+    // A second devamp has nothing to act on (one is pending): the cue resumes.
+    let out = rig.start(200, 1);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert!(
+        out.iter()
+            .any(|a| matches!(a, Action::DevampVoice { at: 200, .. }))
+    );
+}
+
+/// Review M2: "play previous" passes over children that would refuse to start, as moving on
+/// does, instead of coming back round to the child playing.
+#[test]
+fn play_previous_passes_over_broken_and_disarmed_children() {
+    let mut broken = sound(12);
+    if let CueKind::Audio { media, .. } = &mut broken.kind {
+        *media = None;
+    }
+    let mut disarmed = sound(13);
+    disarmed.armed = false;
+    let group = with(
+        grp(
+            1,
+            playlist(false),
+            vec![sound(11), broken, disarmed, sound(14)],
+        ),
+        ST::PlayPrevious,
+    );
+    let mut rig = Rig::new(vec![group]);
+    rig.start(0, 1);
+    // Get 14 playing: 11 ends, 12 and 13 are passed at once.
+    let run = rig.run(11);
+    let out = rig.at(
+        100,
+        Input::ActionEnded {
+            cue: id(11),
+            run,
+            at: 100,
+        },
+    );
+    assert_eq!(playing(&out), vec![id(14)]);
+    let out = rig.start(200, 1);
+    assert_eq!(playing(&out), vec![id(11)]);
+    assert_eq!(rig.state(14), CueState::Idle);
+    // Looping: from the first child back to the last playable one.
+    let group = with(
+        grp(
+            1,
+            playlist(true),
+            vec![sound(11), sound(12), {
+                let mut c = sound(13);
+                c.armed = false;
+                c
+            }],
+        ),
+        ST::PlayPrevious,
+    );
+    let mut rig = Rig::new(vec![group]);
+    rig.start(0, 1);
+    assert_eq!(playing(&rig.start(100, 1)), vec![id(12)]);
+}
+
+/// Review M3: a playlist moves on at most once per sample.
+#[test]
+fn play_next_moves_a_playlist_on_at_most_once_per_sample() {
+    let mut rig = playlist_rig(false, ST::PlayNext);
+    assert_eq!(playing(&rig.start(100, 1)), vec![id(12)]);
+    let out = rig.start(100, 1);
+    assert!(playing(&out).is_empty());
+    assert_eq!(
+        warnings(&out),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(1),
+            state: CueState::Running
+        }]
+    );
+    assert_eq!(playing(&rig.start(101, 1)), vec![id(13)]);
 }

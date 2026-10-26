@@ -1948,10 +1948,15 @@ impl Run {
                 }
                 SecondTrigger::HardStopAndRestart => {
                     // Cut at the chain limit, or it has static problems now (its new run keeps
-                    // the timing without starting, Broken cues).
-                    let cut_or_broken = actions.iter().any(|a| {
-                        matches!(a, Action::Warning(EngineWarning::ChainLimit { .. }))
-                            || *a == Action::Warning(EngineWarning::CueBroken { cue })
+                    // the timing without starting, Broken cues), or its run was triggered on
+                    // this very sample (at most one restart per sample).
+                    let cut_or_broken = actions.iter().any(|a| match a {
+                        Action::Warning(EngineWarning::ChainLimit { .. }) => true,
+                        Action::Warning(
+                            EngineWarning::CueBroken { cue: c }
+                            | EngineWarning::TriggerIgnored { cue: c, .. },
+                        ) => *c == cue,
+                        _ => false,
                     });
                     prop_assert!(restarted || cut_or_broken, "{} was not restarted", cue);
                 }

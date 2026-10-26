@@ -617,8 +617,14 @@ impl CueEngine {
                     }
                 }
                 Some(Slot::Active(run)) => {
-                    let option = model.second_trigger.effective(&model.kind);
-                    if !(option == SecondTrigger::Nothing && run.paused_at.is_some()) {
+                    let paused = run.paused_at.is_some();
+                    let mut option = model.second_trigger.effective(&model.kind);
+                    // An option with nothing to act on leaves a paused cue to the `nothing`
+                    // rule: it resumes.
+                    if paused && !self.acts_on_paused(cue, option, at, cx) {
+                        option = SecondTrigger::Nothing;
+                    }
+                    if !(option == SecondTrigger::Nothing && paused) {
                         return self.second_trigger(cue, option, at, cx);
                     }
                 }
@@ -674,6 +680,7 @@ impl CueEngine {
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
         new.voice = voice;
+        new.started = at;
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
         // so its auto-continue fires on schedule (user decision, M2.13).
         if self.refuses(cue, cx) {

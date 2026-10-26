@@ -108,6 +108,10 @@ pub(super) struct Run {
     /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
     /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
     pub panicked: bool,
+    /// The sample the run was triggered on. A second trigger that would restart it on that same
+    /// sample is ignored, so a trigger chain back to a restarting cue cannot restart it again and
+    /// again within one sample.
+    pub started: SampleTime,
     /// Set for Group cues: how the group runs its children.
     pub group: Option<GroupRun>,
     /// Audio cues: the gains Fade cues have set or are moving (the model's levels apply to the
@@ -185,6 +189,8 @@ pub(super) struct GroupRun {
     /// was in flight): the playlist moves on when the group resumes.
     pub advance: bool,
     pub playlist: Option<PlaylistRun>,
+    /// The sample of the last "play next/previous" second trigger: at most one per sample.
+    pub skipped: Option<SampleTime>,
 }
 
 /// Where a playlist group is in its pass.
@@ -220,6 +226,7 @@ impl Run {
             broken: None,
             static_broken: false,
             panicked: false,
+            started: 0,
             group,
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),
