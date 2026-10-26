@@ -588,6 +588,32 @@ impl CueEngine {
     /// Starts `cue` at sample `at`. A paused cue resumes; an already active one ignores the
     /// trigger (second-trigger rule, docs/cue-engine.md).
     fn start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+        let Some(model) = cx.ws.find_cue(cue) else {
+            return cx.warn(EngineWarning::UnknownCue { cue });
+        };
+        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
+        // ends that fade at once and starts the cue afresh.
+        let panicked = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked);
+        // Triggers that start nothing cost no budget: the budget is shared by every call at one
+        // `now`, so ignored triggers (a stuck controller key) must not use it up for a GO. A
+        // cycle still ends, since each of its laps creates or resumes a runtime, which is charged
+        // below, and a trigger back to an active cue is ignored.
+        if !panicked {
+            match self.slots.get(&cue) {
+                Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+                Some(Slot::Active(run)) if run.paused_at.is_some() => {}
+                Some(Slot::Active(run)) if run.is_broken() => {
+                    return cx.warn(EngineWarning::CueBroken { cue });
+                }
+                Some(Slot::Active(run)) => {
+                    return cx.warn(EngineWarning::TriggerIgnored {
+                        cue,
+                        state: run.state(),
+                    });
+                }
+                Some(Slot::Loaded(_)) | None => {}
+            }
+        }
         if !self.budget_left(cx) {
             return cx.warn(EngineWarning::ChainLimit {
                 cue,
@@ -595,12 +621,7 @@ impl CueEngine {
             });
         }
         cx.budget -= 1;
-        let Some(model) = cx.ws.find_cue(cue) else {
-            return cx.warn(EngineWarning::UnknownCue { cue });
-        };
-        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
-        // ends that fade at once and starts the cue afresh.
-        if matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked) {
+        if panicked {
             self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
         }
         let before = self.state(cue);
