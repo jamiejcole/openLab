@@ -215,14 +215,14 @@ impl CueEngine {
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);
                 };
-                let playing = run.broken.is_none()
-                    && run.paused_at.is_none()
+                // Paused in its action counts: the devamp is kept for the resume (below).
+                let in_action = run.broken.is_none()
                     && run.stop_end.is_none()
                     && matches!(run.phase, Phase::Action { .. });
                 let Voice::Started { at: started, .. } = run.voice else {
                     return cx.warn(not_running);
                 };
-                if !playing {
+                if !in_action {
                     return cx.warn(not_running);
                 }
                 // One devamp at a time: the audio side would ignore a second, and its answer
@@ -230,13 +230,20 @@ impl CueEngine {
                 if run.devamp.is_some() {
                     return cx.warn(EngineWarning::DevampIgnored { cue: target });
                 }
-                let at = run.commit(at.max(now).max(started), cx.horizon);
-                cx.out.push(Action::DevampVoice {
-                    cue: target,
-                    run: run.run,
-                    at,
-                    stop,
-                });
+                // A paused target keeps the devamp and leaves its loop after the resume (user
+                // decision 2026-10-25): it is pending like one that was sent before the pause,
+                // so the resume sends it for the resumed segment, dated on the resume (see
+                // `resume_one`). Holding it rather than sending it to the paused segment as well
+                // gives the mixer one devamp, after the resume, instead of two.
+                if run.paused_at.is_none() {
+                    let at = run.commit(at.max(now).max(started), cx.horizon);
+                    cx.out.push(Action::DevampVoice {
+                        cue: target,
+                        run: run.run,
+                        at,
+                        stop,
+                    });
+                }
                 run.devamp = Some(DevampWait {
                     by,
                     start_next,
