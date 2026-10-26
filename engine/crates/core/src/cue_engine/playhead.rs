@@ -54,9 +54,11 @@ impl Playhead {
         (true, before != self.cue)
     }
 
-    /// One position down; from the last to past the end, where it stays.
+    /// One position down; from the last to past the end, where it stays. Only "start first and
+    /// enter" groups are stepped into (QLab 5): any other group is passed over as a unit, unless
+    /// the playhead already stands inside it (see [`stepping_order`]).
     pub fn next(&mut self, cues: &[Cue]) -> bool {
-        let order = positions(cues);
+        let order = stepping_order(cues, self.cue);
         let next = self
             .index(&order)
             .and_then(|i| order.get(i.saturating_add(1)))
@@ -64,9 +66,10 @@ impl Playhead {
         self.set(next)
     }
 
-    /// One position up; from past the end to the last; the first stays.
+    /// One position up; from past the end to the last; the first stays. Groups as for `next`, so
+    /// stepping back onto a group that is not entered stands on the group itself.
     pub fn previous(&mut self, cues: &[Cue]) -> bool {
-        let order = positions(cues);
+        let order = stepping_order(cues, self.cue);
         let previous = match self.index(&order) {
             Some(i) => order.get(i.saturating_sub(1)),
             None => order.last(),
@@ -98,6 +101,43 @@ pub(super) fn position_cues(cues: &[Cue]) -> Vec<&Cue> {
         };
         out.push(cue);
         stack.push(cue.children().iter());
+    }
+    out
+}
+
+/// The positions `PlayheadNext`/`PlayheadPrevious` step through from `from`: depth-first, but
+/// a group's children are included only for a "start first and enter" group (QLab 5 enters only
+/// those) or a group around `from` (the playhead was put inside it explicitly, so stepping goes on
+/// among its siblings and then leaves the group, as GO from a child does). Iterative.
+fn stepping_order(cues: &[Cue], from: Option<CueId>) -> Vec<CueId> {
+    let around: HashSet<CueId> = from
+        .and_then(|id| locate(cues, id))
+        .map(|path| {
+            let outer = path.len().saturating_sub(1);
+            path.iter()
+                .take(outer)
+                .filter_map(|&(level, i)| level.get(i).map(|g| g.id))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
+    while let Some(level) = stack.last_mut() {
+        let Some(cue) = level.next() else {
+            stack.pop();
+            continue;
+        };
+        out.push(cue.id);
+        let entered = matches!(
+            cue.kind,
+            CueKind::Group {
+                mode: GroupMode::StartFirstAndEnter,
+                ..
+            }
+        ) || around.contains(&cue.id);
+        if entered {
+            stack.push(cue.children().iter());
+        }
     }
     out
 }
