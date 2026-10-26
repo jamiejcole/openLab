@@ -4,7 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ProtocolError, RequestId, decode, encode, encode_pretty, non_negative};
+use super::{
+    MAX_CLIENT_FRAME_BYTES, MAX_HELLO_FRAME_BYTES, ProtocolError, RequestId, decode, encode,
+    encode_pretty, non_negative,
+};
 use crate::command::Command;
 use crate::cue::FadeSpec;
 use crate::model::{CueId, CueListId};
@@ -68,9 +71,6 @@ pub enum TransportAction {
     Go {
         list: CueListId,
     },
-    /// The Stop All key. The engine runs it as Panic today (the hotkey is "Stop All / Panic",
-    /// ARCHITECTURE section 4); a separate variant keeps the two nameable apart.
-    StopAll,
     Panic,
     PauseAll,
     ResumeAll,
@@ -109,7 +109,7 @@ pub enum TransportAction {
     Resume {
         cue: CueId,
     },
-    /// Loads the cue so it starts `at` non_negative into its timeline (0: a plain load).
+    /// Loads the cue so it starts `at` seconds into its timeline (0: a plain load).
     Load {
         cue: CueId,
         at: f64,
@@ -196,15 +196,26 @@ impl ClientMessage {
 /// Reads one text frame from a client. Total: any input gives a message or an error, never a
 /// panic. Unknown fields are ignored; an unknown `type` is [`ProtocolError::UnknownType`].
 pub fn decode_client(text: &str) -> Result<ClientMessage, ProtocolError> {
-    let message: ClientMessage = decode(text, CLIENT_TYPES)?;
+    let message: ClientMessage = decode(text, CLIENT_TYPES, MAX_CLIENT_FRAME_BYTES)?;
     message.validate()?;
     Ok(message)
+}
+
+/// Reads the first frame of a connection, before the token has been checked: at most
+/// [`MAX_HELLO_FRAME_BYTES`], and it must be a `hello`. Anything else is refused as a bad token
+/// by the server (the error here says why).
+pub fn decode_hello(text: &str) -> Result<ClientMessage, ProtocolError> {
+    let message: ClientMessage = decode(text, CLIENT_TYPES, MAX_HELLO_FRAME_BYTES)?;
+    match message {
+        ClientMessage::Hello { .. } => Ok(message),
+        other => Err(ProtocolError::UnknownType(other.type_name().to_owned())),
+    }
 }
 
 /// Compact JSON for the wire (what the client sends).
 pub fn encode_client(message: &ClientMessage) -> Result<String, ProtocolError> {
     message.validate()?;
-    encode(message)
+    encode(message, MAX_CLIENT_FRAME_BYTES)
 }
 
 /// The golden-fixture form: pretty, with a trailing newline.

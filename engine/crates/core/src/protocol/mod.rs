@@ -8,7 +8,7 @@
 //! Compatibility rules (see the spec): unknown **fields** are ignored, so a newer peer may add
 //! optional fields without a version bump; unknown message **types** are an error
 //! ([`ProtocolError::UnknownType`]); removing or re-typing a field, or changing what one means,
-//! bumps [`PROTOCOL_VERSION`]. Times are non_negative (f64), never samples.
+//! bumps [`PROTOCOL_VERSION`]. Times are seconds (f64), never samples.
 
 mod client;
 mod server;
@@ -24,9 +24,17 @@ use serde::{Deserialize, Serialize};
 /// client only on an equal version.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Longest frame either side decodes or encodes. A frame this long is a bug or an attack, not a
-/// show (a 10 000-cue snapshot is a few MiB).
-pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+/// Longest frame the engine reads from a client. Commands and requests are small; a big paste is
+/// well under this. Decoding buffers a frame several times over, so the limit bounds the memory
+/// a local process can make the engine use.
+pub const MAX_CLIENT_FRAME_BYTES: usize = 1024 * 1024;
+
+/// Longest first frame (`hello`), checked before the token is. The server applies it to the first
+/// frame of a connection with [`decode_hello`].
+pub const MAX_HELLO_FRAME_BYTES: usize = 4096;
+
+/// Longest frame a client reads from the engine (a snapshot of a big show is a few MiB).
+pub const MAX_SERVER_FRAME_BYTES: usize = 32 * 1024 * 1024;
 
 /// Client-chosen id that ties a `result` to the message that asked. Unique per connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -35,12 +43,16 @@ pub struct RequestId(pub u64);
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
-    #[error("frame of {len} bytes is over the {MAX_FRAME_BYTES}-byte limit")]
-    TooLarge { len: usize },
+    #[error("frame of {len} bytes is over the {limit}-byte limit")]
+    TooLarge { len: usize, limit: usize },
+    /// Not JSON, wrong field types, missing fields, or an unknown variant *inside* a known
+    /// message (a transport action or request kind the receiver does not know).
     #[error("not valid protocol JSON: {0}")]
     Malformed(String),
+    /// Also returned for a `type` that is not a string.
     #[error("message has no \"type\" string")]
     MissingType,
+    /// The envelope's `type` is not a message type of this direction.
     #[error("unknown message type \"{0}\"")]
     UnknownType(String),
     #[error("{field} must be a finite number")]
@@ -62,30 +74,43 @@ pub(crate) fn non_negative(field: &'static str, value: f64) -> Result<(), Protoc
     }
 }
 
-/// Parses a frame, checks its envelope, then reads it as `T`. Never panics: JSON deeper than
-/// serde_json's recursion limit is an error too.
+/// Reads a frame as `T`. The size limit is checked first, on the bytes, so an oversized frame
+/// costs nothing. Never panics: JSON deeper than serde_json's recursion limit is an error too.
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(
     text: &str,
     known: &[&str],
+    limit: usize,
 ) -> Result<T, ProtocolError> {
-    if text.len() > MAX_FRAME_BYTES {
-        return Err(ProtocolError::TooLarge { len: text.len() });
+    if text.len() > limit {
+        return Err(ProtocolError::TooLarge {
+            len: text.len(),
+            limit,
+        });
     }
-    let value: serde_json::Value =
+    // Peek at the envelope without building a tree: other fields are skipped, not stored.
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "type")]
+        kind: Option<serde_json::Value>,
+    }
+    let envelope: Envelope =
         serde_json::from_str(text).map_err(|e| ProtocolError::Malformed(e.to_string()))?;
-    match value.get("type").and_then(serde_json::Value::as_str) {
+    match envelope.kind.as_ref().and_then(serde_json::Value::as_str) {
         None => return Err(ProtocolError::MissingType),
         Some(t) if !known.contains(&t) => return Err(ProtocolError::UnknownType(t.to_owned())),
         Some(_) => {}
     }
-    serde_json::from_value(value).map_err(|e| ProtocolError::Malformed(e.to_string()))
+    serde_json::from_str(text).map_err(|e| ProtocolError::Malformed(e.to_string()))
 }
 
 /// Compact JSON for the wire.
-pub(crate) fn encode<T: Serialize>(message: &T) -> Result<String, ProtocolError> {
+pub(crate) fn encode<T: Serialize>(message: &T, limit: usize) -> Result<String, ProtocolError> {
     let text = serde_json::to_string(message).map_err(|e| ProtocolError::Encode(e.to_string()))?;
-    if text.len() > MAX_FRAME_BYTES {
-        return Err(ProtocolError::TooLarge { len: text.len() });
+    if text.len() > limit {
+        return Err(ProtocolError::TooLarge {
+            len: text.len(),
+            limit,
+        });
     }
     Ok(text)
 }

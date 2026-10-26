@@ -1,0 +1,10 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "chain_limit",
+      "cue": "00000000-0000-0000-0000-000000000001",
+      "limit": 64
+    }
+  ]
+}

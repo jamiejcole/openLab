@@ -1,0 +1,10 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "go_ignored",
+      "list": "00000000-0000-0000-0000-000000000003",
+      "reason": "no_cue"
+    }
+  ]
+}

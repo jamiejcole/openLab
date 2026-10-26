@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cue::MediaRef;
 use crate::cue_engine::{
-    Action, BrokenReason, CueProblem, CueState, EngineWarning, GoIgnoredReason,
+    Action, BrokenReason, CueEngine, CueProblem, CueState, EngineWarning, GoIgnoredReason,
     PreviewIgnoredReason, SampleTime,
 };
 use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
@@ -399,14 +399,20 @@ pub enum RuntimeChange {
 
 impl RuntimeChange {
     /// The change an engine action stands for, or `None` for actions that are for the mixer
-    /// (voices, ramps) or the model (`SetArmed`). For a `StateChanged` to `Broken` the caller
-    /// fills in `reason` from `CueEngine::broken_reason`.
-    pub fn from_action(action: &Action, rate: NonZeroU32) -> Option<Self> {
+    /// (voices, ramps) or the model (`SetArmed`). Call it after `handle` with the engine that
+    /// returned the actions: a `StateChanged` to `Broken` takes its `reason` from
+    /// `CueEngine::broken_reason`, which is `None` for a cue broken by static problems (those
+    /// come as `problems`) and for a cue that has been reset since.
+    pub fn from_action(action: &Action, engine: &CueEngine) -> Option<Self> {
+        let rate = engine.config().sample_rate();
         Some(match action {
             Action::StateChanged { cue, state, .. } => Self::CueState {
                 cue: *cue,
                 state: (*state).into(),
-                reason: None,
+                reason: match state {
+                    CueState::Broken => engine.broken_reason(*cue).map(Into::into),
+                    _ => None,
+                },
             },
             Action::PlayheadChanged { list, cue } => Self::Playhead {
                 list: *list,

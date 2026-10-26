@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "bad_show_file",
+  "message": "message",
+  "protocol_version": 1
+}

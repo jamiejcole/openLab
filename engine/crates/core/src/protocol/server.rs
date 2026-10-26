@@ -5,7 +5,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::wire::{RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireWarning};
-use super::{PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode, encode_pretty};
+use super::{
+    MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode,
+    encode_pretty,
+};
 use crate::command::CommandError;
 use crate::cue::Cue;
 use crate::model::{
@@ -319,32 +322,28 @@ impl ServerMessage {
         }
     }
 
-    /// Checks what serde cannot: levels and times must be finite (serde_json would write a NaN
-    /// as `null`, which a client would misread).
-    pub fn validate(&self) -> Result<(), ProtocolError> {
+    /// Makes a progress or meters message encodable: a time or peak that is negative, NaN or
+    /// infinite becomes 0 (serde_json would write a non-finite number as `null`). A loop that
+    /// overruns its end by a hair must not cost the UI a whole tick of progress.
+    pub fn sanitise(&mut self) {
+        let clean = |v: f64| if v.is_finite() && v > 0.0 { v } else { 0.0 };
         match self {
             Self::Progress { items } => {
                 for item in items {
-                    for (field, v) in [("progress.elapsed", item.elapsed)]
-                        .into_iter()
-                        .chain(item.remaining.map(|r| ("progress.remaining", r)))
-                    {
-                        super::non_negative(field, v)?;
-                    }
+                    item.elapsed = clean(item.elapsed);
+                    item.remaining = item.remaining.map(clean);
                 }
-                Ok(())
             }
             Self::Meters { outputs, cues } => {
                 let peaks = outputs
-                    .iter()
-                    .flat_map(|m| &m.peaks)
-                    .chain(cues.iter().flat_map(|m| &m.peaks));
+                    .iter_mut()
+                    .flat_map(|m| m.peaks.iter_mut())
+                    .chain(cues.iter_mut().flat_map(|m| m.peaks.iter_mut()));
                 for peak in peaks {
-                    super::non_negative("meters.peaks", f64::from(*peak))?;
+                    *peak = clean(f64::from(*peak)) as f32;
                 }
-                Ok(())
             }
-            _ => Ok(()),
+            _ => {}
         }
     }
 
@@ -369,19 +368,25 @@ impl ServerMessage {
 /// Reads one text frame from the engine (the Rust client in tests, the fixtures). Total, like
 /// [`decode_client`](super::decode_client).
 pub fn decode_server(text: &str) -> Result<ServerMessage, ProtocolError> {
-    let message: ServerMessage = decode(text, SERVER_TYPES)?;
-    message.validate()?;
-    Ok(message)
+    decode(text, SERVER_TYPES, MAX_SERVER_FRAME_BYTES)
 }
 
-/// Compact JSON for the wire.
+/// Compact JSON for the wire. Progress and meters are sanitised first
+/// ([`ServerMessage::sanitise`]), so they never fail on a stray value.
 pub fn encode_server(message: &ServerMessage) -> Result<String, ProtocolError> {
-    message.validate()?;
-    encode(message)
+    match message {
+        ServerMessage::Progress { .. } | ServerMessage::Meters { .. } => {
+            let mut clean = message.clone();
+            clean.sanitise();
+            encode(&clean, MAX_SERVER_FRAME_BYTES)
+        }
+        _ => encode(message, MAX_SERVER_FRAME_BYTES),
+    }
 }
 
-/// The golden-fixture form: pretty, with a trailing newline.
+/// The golden-fixture form: pretty, with a trailing newline. Sanitised like the wire form.
 pub fn encode_server_pretty(message: &ServerMessage) -> Result<String, ProtocolError> {
-    message.validate()?;
-    encode_pretty(message)
+    let mut clean = message.clone();
+    clean.sanitise();
+    encode_pretty(&clean)
 }

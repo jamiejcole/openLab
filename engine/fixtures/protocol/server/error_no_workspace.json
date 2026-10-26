@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "no_workspace",
+  "message": "message",
+  "protocol_version": 1
+}

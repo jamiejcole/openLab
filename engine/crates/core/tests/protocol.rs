@@ -105,7 +105,6 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
     let c = cue_id(10);
     vec![
         ("go", TransportAction::Go { list: list() }),
-        ("stop_all", TransportAction::StopAll),
         ("panic", TransportAction::Panic),
         ("pause_all", TransportAction::PauseAll),
         ("resume_all", TransportAction::ResumeAll),
@@ -493,10 +492,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             "this engine speaks protocol 1; the client sent 2",
         )),
     );
-    add(
-        "error_bad_token",
-        server(ServerMessage::refusal(ErrorCode::BadToken, "wrong token")),
-    );
+    extra_fixtures(&mut add);
     out
 }
 
@@ -653,7 +649,6 @@ fn every_message_type_and_variant_has_a_fixture() {
     for (_, action) in all_actions() {
         match action {
             TransportAction::Go { .. }
-            | TransportAction::StopAll
             | TransportAction::Panic
             | TransportAction::PauseAll
             | TransportAction::ResumeAll
@@ -673,7 +668,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::StopPreview { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 19);
+    assert_eq!(all_actions().len(), 18);
     assert_eq!(all_requests().len(), 8);
 }
 
@@ -834,22 +829,64 @@ fn malformed_input_is_an_error_never_a_panic() {
 }
 
 #[test]
-fn an_oversized_frame_is_refused_before_parsing() {
-    let big = " ".repeat(MAX_FRAME_BYTES + 1);
+fn oversized_frames_are_refused_before_parsing() {
+    // Just over each limit: refused on length alone (the content is not even valid JSON).
+    let over = |limit: usize| "x".repeat(limit + 1);
     assert_eq!(
-        decode_client(&big),
+        decode_client(&over(MAX_CLIENT_FRAME_BYTES)),
         Err(ProtocolError::TooLarge {
-            len: MAX_FRAME_BYTES + 1
+            len: MAX_CLIENT_FRAME_BYTES + 1,
+            limit: MAX_CLIENT_FRAME_BYTES
+        })
+    );
+    assert_eq!(
+        decode_hello(&over(MAX_HELLO_FRAME_BYTES)),
+        Err(ProtocolError::TooLarge {
+            len: MAX_HELLO_FRAME_BYTES + 1,
+            limit: MAX_HELLO_FRAME_BYTES
         })
     );
     assert!(matches!(
-        decode_server(&big),
+        decode_server(&over(MAX_SERVER_FRAME_BYTES)),
+        Err(ProtocolError::TooLarge { .. })
+    ));
+    // At the limit, a frame is read (and found to be garbage, not too large).
+    assert!(matches!(
+        decode_client(&"x".repeat(MAX_CLIENT_FRAME_BYTES)),
+        Err(ProtocolError::Malformed(_))
+    ));
+    const {
+        assert!(MAX_HELLO_FRAME_BYTES < MAX_CLIENT_FRAME_BYTES);
+        assert!(MAX_CLIENT_FRAME_BYTES < MAX_SERVER_FRAME_BYTES);
+    }
+    // A valid hello with a long client name is fine until the hello limit.
+    let hello = |name: &str| {
+        format!(r#"{{"type":"hello","protocol_version":1,"token":"t","client_name":"{name}"}}"#)
+    };
+    assert!(decode_hello(&hello(&"n".repeat(1000))).is_ok());
+    assert!(matches!(
+        decode_hello(&hello(&"n".repeat(MAX_HELLO_FRAME_BYTES))),
+        Err(ProtocolError::TooLarge { .. })
+    ));
+    // The first frame must be a hello; a valid command is not.
+    assert_eq!(
+        decode_hello(r#"{"type":"undo","id":1}"#),
+        Err(ProtocolError::UnknownType("undo".into()))
+    );
+    // The encoder keeps the same limits.
+    let big = ClientMessage::Hello {
+        protocol_version: 1,
+        token: "t".into(),
+        client_name: "n".repeat(MAX_CLIENT_FRAME_BYTES),
+    };
+    assert!(matches!(
+        encode_client(&big),
         Err(ProtocolError::TooLarge { .. })
     ));
 }
 
 #[test]
-fn non_finite_numbers_are_not_encoded() {
+fn progress_and_meters_are_sanitised_not_refused() {
     let progress = |elapsed: f64, remaining: Option<f64>| ServerMessage::Progress {
         items: vec![ProgressItem {
             cue: cue_id(1),
@@ -857,32 +894,53 @@ fn non_finite_numbers_are_not_encoded() {
             remaining,
         }],
     };
-    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert!(matches!(
-            encode_server(&progress(bad, None)),
-            Err(ProtocolError::NonFinite { .. })
-        ));
-        assert!(matches!(
-            encode_server(&progress(0.0, Some(bad))),
-            Err(ProtocolError::NonFinite { .. })
-        ));
+    let reread = |m: &ServerMessage| decode_server(&encode_server(m).unwrap()).unwrap();
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.001] {
+        assert_eq!(reread(&progress(bad, None)), progress(0.0, None), "{bad}");
+        assert_eq!(
+            reread(&progress(2.0, Some(bad))),
+            progress(2.0, Some(0.0)),
+            "{bad}"
+        );
     }
-    assert!(encode_server(&progress(1.0, Some(2.0))).is_ok());
+    assert_eq!(reread(&progress(1.0, Some(2.0))), progress(1.0, Some(2.0)));
     let meters = |peak: f32| ServerMessage::Meters {
-        outputs: vec![],
+        outputs: vec![OutputMeter {
+            patch: patch_id(1),
+            peaks: vec![peak, 0.5],
+        }],
         cues: vec![CueMeter {
             cue: cue_id(1),
             peaks: vec![peak],
         }],
     };
-    assert!(encode_server(&meters(f32::NAN)).is_err());
-    assert!(encode_server(&meters(f32::INFINITY)).is_err());
-    assert!(encode_server(&meters(-0.5)).is_err());
-    assert!(
-        encode_server(&meters(1.5)).is_ok(),
-        "above full scale is a clip, not an error"
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.5] {
+        assert_eq!(
+            reread(&meters(bad)),
+            ServerMessage::Meters {
+                outputs: vec![OutputMeter {
+                    patch: patch_id(1),
+                    peaks: vec![0.0, 0.5]
+                }],
+                cues: vec![CueMeter {
+                    cue: cue_id(1),
+                    peaks: vec![0.0]
+                }],
+            }
+        );
+    }
+    assert_eq!(
+        reread(&meters(1.5)),
+        meters(1.5),
+        "above full scale is a clip"
     );
-    // The client side too.
+    // The pretty (fixture) form sanitises too.
+    assert!(
+        !encode_server_pretty(&meters(f32::NAN))
+            .unwrap()
+            .contains("null")
+    );
+    // Client input stays strict.
     assert!(
         encode_client(&transport(
             1,
@@ -924,9 +982,9 @@ fn command_errors_map_to_a_refusal_code() {
 
 #[test]
 fn engine_actions_map_to_runtime_changes() {
-    let rate = NonZeroU32::new(48_000).unwrap();
+    let engine = CueEngine::new(EngineConfig::new(48_000, 0, 1).unwrap());
     let c = cue_id(10);
-    let map = |a: Action| RuntimeChange::from_action(&a, rate);
+    let map = |a: Action| RuntimeChange::from_action(&a, &engine);
     assert_eq!(
         map(Action::StateChanged {
             cue: c,
@@ -1056,6 +1114,810 @@ fn engine_actions_map_to_runtime_changes() {
     );
 }
 
+// ---- Nested enums: fixtures, coverage and engine mappings ----
+
+/// The `type` tag of a tagged enum value, or the string of a unit enum value.
+fn tag<T: serde::Serialize>(value: &T) -> String {
+    let json = serde_json::to_value(value).unwrap();
+    json.get("type")
+        .unwrap_or(&json)
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Every index in `0..count` is in `seen`.
+fn assert_covered(what: &str, seen: impl Iterator<Item = usize>, count: usize) {
+    let seen: BTreeSet<usize> = seen.collect();
+    let want: BTreeSet<usize> = (0..count).collect();
+    assert_eq!(seen, want, "{what}: a variant has no sample");
+}
+
+// Each `*_idx` is an exhaustive match: a new variant stops compiling here until it is given
+// the next index and bumped in its `*_COUNT`, and the coverage tests then want a sample for it.
+
+const ENGINE_WARNING_COUNT: usize = 18;
+fn engine_warning_idx(w: &EngineWarning) -> usize {
+    match w {
+        EngineWarning::UnknownList { .. } => 0,
+        EngineWarning::UnknownCue { .. } => 1,
+        EngineWarning::NotInList { .. } => 2,
+        EngineWarning::NumberNotFound { .. } => 3,
+        EngineWarning::CueBroken { .. } => 4,
+        EngineWarning::TriggerIgnored { .. } => 5,
+        EngineWarning::LoadIgnored { .. } => 6,
+        EngineWarning::Unsupported { .. } => 7,
+        EngineWarning::LateStart { .. } => 8,
+        EngineWarning::ChainLimit { .. } => 9,
+        EngineWarning::CueRemoved { .. } => 10,
+        EngineWarning::NoTarget { .. } => 11,
+        EngineWarning::TargetMissing { .. } => 12,
+        EngineWarning::TargetWrongKind { .. } => 13,
+        EngineWarning::TargetNotRunning { .. } => 14,
+        EngineWarning::PreviewIgnored { .. } => 15,
+        EngineWarning::PreviewFailed { .. } => 16,
+        EngineWarning::DevampIgnored { .. } => 17,
+    }
+}
+
+const WIRE_WARNING_COUNT: usize = 20;
+fn wire_warning_idx(w: &WireWarning) -> usize {
+    match w {
+        WireWarning::UnknownList { .. } => 0,
+        WireWarning::UnknownCue { .. } => 1,
+        WireWarning::NotInList { .. } => 2,
+        WireWarning::NumberNotFound { .. } => 3,
+        WireWarning::CueBroken { .. } => 4,
+        WireWarning::TriggerIgnored { .. } => 5,
+        WireWarning::LoadIgnored { .. } => 6,
+        WireWarning::Unsupported { .. } => 7,
+        WireWarning::LateStart { .. } => 8,
+        WireWarning::ChainLimit { .. } => 9,
+        WireWarning::CueRemoved { .. } => 10,
+        WireWarning::NoTarget { .. } => 11,
+        WireWarning::TargetMissing { .. } => 12,
+        WireWarning::TargetWrongKind { .. } => 13,
+        WireWarning::TargetNotRunning { .. } => 14,
+        WireWarning::PreviewIgnored { .. } => 15,
+        WireWarning::PreviewFailed { .. } => 16,
+        WireWarning::DevampIgnored { .. } => 17,
+        WireWarning::GoIgnored { .. } => 18,
+        WireWarning::Notice { .. } => 19,
+    }
+}
+
+const ENGINE_PROBLEM_COUNT: usize = 11;
+fn engine_problem_idx(p: &CueProblem) -> usize {
+    match p {
+        CueProblem::NoTarget => 0,
+        CueProblem::TargetMissing { .. } => 1,
+        CueProblem::TargetSelf => 2,
+        CueProblem::TargetWrongKind { .. } => 3,
+        CueProblem::NoMedia => 4,
+        CueProblem::MediaMissing { .. } => 5,
+        CueProblem::MediaUnsupported { .. } => 6,
+        CueProblem::PatchMissing { .. } => 7,
+        CueProblem::DeviceUnavailable { .. } => 8,
+        CueProblem::NetworkPatchMissing { .. } => 9,
+        CueProblem::StartedBroken => 10,
+    }
+}
+
+fn wire_problem_idx(p: &WireProblem) -> usize {
+    match p {
+        WireProblem::NoTarget => 0,
+        WireProblem::TargetMissing { .. } => 1,
+        WireProblem::TargetSelf => 2,
+        WireProblem::TargetWrongKind { .. } => 3,
+        WireProblem::NoMedia => 4,
+        WireProblem::MediaMissing { .. } => 5,
+        WireProblem::MediaUnsupported { .. } => 6,
+        WireProblem::PatchMissing { .. } => 7,
+        WireProblem::DeviceUnavailable { .. } => 8,
+        WireProblem::NetworkPatchMissing { .. } => 9,
+        WireProblem::StartedBroken => 10,
+    }
+}
+
+const RESOLUTION_COUNT: usize = 5;
+fn engine_resolution_idx(r: &PatchResolution) -> usize {
+    match r {
+        PatchResolution::Mapped { .. } => 0,
+        PatchResolution::Unmapped => 1,
+        PatchResolution::DeviceMissing { .. } => 2,
+        PatchResolution::ChannelsMissing { .. } => 3,
+        PatchResolution::OutputCountMismatch { .. } => 4,
+    }
+}
+
+fn wire_resolution_idx(r: &WireResolution) -> usize {
+    match r {
+        WireResolution::Mapped { .. } => 0,
+        WireResolution::Unmapped => 1,
+        WireResolution::DeviceMissing { .. } => 2,
+        WireResolution::ChannelsMissing { .. } => 3,
+        WireResolution::OutputCountMismatch { .. } => 4,
+    }
+}
+
+const STATE_COUNT: usize = 9;
+fn engine_state_idx(s: CueState) -> usize {
+    match s {
+        CueState::Idle => 0,
+        CueState::Loaded => 1,
+        CueState::PreWaiting => 2,
+        CueState::Running => 3,
+        CueState::Paused => 4,
+        CueState::PostWaiting => 5,
+        CueState::Fading => 6,
+        CueState::Stopping => 7,
+        CueState::Broken => 8,
+    }
+}
+
+const REASON_COUNT: usize = 3;
+fn engine_reason_idx(r: BrokenReason) -> usize {
+    match r {
+        BrokenReason::VoiceRejected => 0,
+        BrokenReason::StreamFailed => 1,
+        BrokenReason::DeviceLost => 2,
+    }
+}
+
+const GO_IGNORED_COUNT: usize = 4;
+fn engine_go_idx(r: GoIgnoredReason) -> usize {
+    match r {
+        GoIgnoredReason::DoubleGo => 0,
+        GoIgnoredReason::NoCue => 1,
+        GoIgnoredReason::UnknownList => 2,
+        GoIgnoredReason::ChainLimit => 3,
+    }
+}
+
+const PREVIEW_IGNORED_COUNT: usize = 2;
+fn engine_preview_idx(r: PreviewIgnoredReason) -> usize {
+    match r {
+        PreviewIgnoredReason::NotAudio => 0,
+        PreviewIgnoredReason::AlreadyPreviewing => 1,
+    }
+}
+
+const ERROR_CODE_COUNT: usize = 11;
+fn error_code_idx(c: ErrorCode) -> usize {
+    match c {
+        ErrorCode::ProtocolVersionMismatch => 0,
+        ErrorCode::BadToken => 1,
+        ErrorCode::BadRequest => 2,
+        ErrorCode::UnknownMessage => 3,
+        ErrorCode::CommandRefused => 4,
+        ErrorCode::NotFound => 5,
+        ErrorCode::NoWorkspace => 6,
+        ErrorCode::Io => 7,
+        ErrorCode::BadShowFile => 8,
+        ErrorCode::Unsupported => 9,
+        ErrorCode::Internal => 10,
+    }
+}
+
+const LOG_LEVEL_COUNT: usize = 4;
+fn log_level_idx(l: LogLevel) -> usize {
+    match l {
+        LogLevel::Error => 0,
+        LogLevel::Warn => 1,
+        LogLevel::Info => 2,
+        LogLevel::Debug => 3,
+    }
+}
+
+fn ids() -> (CueId, CueId, CueListId) {
+    (cue_id(1), cue_id(2), list_id(3))
+}
+
+fn warning_table() -> Vec<(EngineWarning, WireWarning)> {
+    let (c, t, l) = ids();
+    vec![
+        (
+            EngineWarning::UnknownList { list: l },
+            WireWarning::UnknownList { list: l },
+        ),
+        (
+            EngineWarning::UnknownCue { cue: c },
+            WireWarning::UnknownCue { cue: c },
+        ),
+        (
+            EngineWarning::NotInList { list: l, cue: c },
+            WireWarning::NotInList { list: l, cue: c },
+        ),
+        (
+            EngineWarning::NumberNotFound {
+                list: l,
+                number: "7".into(),
+            },
+            WireWarning::NumberNotFound {
+                list: l,
+                number: "7".into(),
+            },
+        ),
+        (
+            EngineWarning::CueBroken { cue: c },
+            WireWarning::CueBroken { cue: c },
+        ),
+        (
+            EngineWarning::TriggerIgnored {
+                cue: c,
+                state: CueState::Paused,
+            },
+            WireWarning::TriggerIgnored {
+                cue: c,
+                state: WireCueState::Paused,
+            },
+        ),
+        (
+            EngineWarning::LoadIgnored { cue: c },
+            WireWarning::LoadIgnored { cue: c },
+        ),
+        (
+            EngineWarning::Unsupported { cue: c },
+            WireWarning::Unsupported { cue: c },
+        ),
+        // 4800 samples at 48 kHz.
+        (
+            EngineWarning::LateStart {
+                cue: c,
+                late_by: 4800,
+            },
+            WireWarning::LateStart {
+                cue: c,
+                late_ms: 100,
+            },
+        ),
+        (
+            EngineWarning::ChainLimit { cue: c, limit: 64 },
+            WireWarning::ChainLimit { cue: c, limit: 64 },
+        ),
+        (
+            EngineWarning::CueRemoved { cue: c },
+            WireWarning::CueRemoved { cue: c },
+        ),
+        (
+            EngineWarning::NoTarget { cue: c },
+            WireWarning::NoTarget { cue: c },
+        ),
+        (
+            EngineWarning::TargetMissing { cue: c, target: t },
+            WireWarning::TargetMissing { cue: c, target: t },
+        ),
+        (
+            EngineWarning::TargetWrongKind { cue: c, target: t },
+            WireWarning::TargetWrongKind { cue: c, target: t },
+        ),
+        (
+            EngineWarning::TargetNotRunning { cue: c, target: t },
+            WireWarning::TargetNotRunning { cue: c, target: t },
+        ),
+        (
+            EngineWarning::PreviewIgnored {
+                cue: c,
+                reason: PreviewIgnoredReason::AlreadyPreviewing,
+            },
+            WireWarning::PreviewIgnored {
+                cue: c,
+                reason: WirePreviewIgnored::AlreadyPreviewing,
+            },
+        ),
+        (
+            EngineWarning::PreviewFailed {
+                cue: c,
+                reason: BrokenReason::StreamFailed,
+            },
+            WireWarning::PreviewFailed {
+                cue: c,
+                reason: WireBrokenReason::StreamFailed,
+            },
+        ),
+        (
+            EngineWarning::DevampIgnored { cue: c },
+            WireWarning::DevampIgnored { cue: c },
+        ),
+    ]
+}
+
+/// One of every wire warning (reasons vary in the dedicated fixtures).
+fn all_warnings() -> Vec<WireWarning> {
+    let (c, _, l) = ids();
+    let mut all: Vec<WireWarning> = warning_table().into_iter().map(|(_, w)| w).collect();
+    all.push(WireWarning::GoIgnored {
+        list: l,
+        reason: WireGoIgnored::DoubleGo,
+    });
+    all.push(WireWarning::Notice {
+        code: "media_damaged".into(),
+        message: "intro.wav has a damaged tail".into(),
+        cue: Some(c),
+    });
+    all
+}
+
+fn resolution_table() -> Vec<(PatchResolution, WireResolution)> {
+    vec![
+        (
+            PatchResolution::Mapped {
+                device: "Scarlett 2i2".into(),
+                channels: vec![0, 1],
+            },
+            WireResolution::Mapped {
+                device: "Scarlett 2i2".into(),
+                channels: vec![0, 1],
+            },
+        ),
+        (PatchResolution::Unmapped, WireResolution::Unmapped),
+        (
+            PatchResolution::DeviceMissing {
+                device: "Scarlett 2i2".into(),
+            },
+            WireResolution::DeviceMissing {
+                device: "Scarlett 2i2".into(),
+            },
+        ),
+        (
+            PatchResolution::ChannelsMissing {
+                device: "Scarlett 2i2".into(),
+                needed: 4,
+                available: 2,
+            },
+            WireResolution::ChannelsMissing {
+                device: "Scarlett 2i2".into(),
+                needed: 4,
+                available: 2,
+            },
+        ),
+        (
+            PatchResolution::OutputCountMismatch {
+                mapped: 2,
+                outputs: 4,
+            },
+            WireResolution::OutputCountMismatch {
+                mapped: 2,
+                outputs: 4,
+            },
+        ),
+    ]
+}
+
+fn problem_table() -> Vec<(CueProblem, WireProblem)> {
+    let (_, t, _) = ids();
+    let media = || MediaRef::new("audio/storm.wav");
+    let resolution = PatchResolution::OutputCountMismatch {
+        mapped: 2,
+        outputs: 4,
+    };
+    vec![
+        (CueProblem::NoTarget, WireProblem::NoTarget),
+        (
+            CueProblem::TargetMissing { target: t },
+            WireProblem::TargetMissing { target: t },
+        ),
+        (CueProblem::TargetSelf, WireProblem::TargetSelf),
+        (
+            CueProblem::TargetWrongKind { target: t },
+            WireProblem::TargetWrongKind { target: t },
+        ),
+        (CueProblem::NoMedia, WireProblem::NoMedia),
+        (
+            CueProblem::MediaMissing { media: media() },
+            WireProblem::MediaMissing { media: media() },
+        ),
+        (
+            CueProblem::MediaUnsupported {
+                media: media(),
+                reason: "no decoder".into(),
+            },
+            WireProblem::MediaUnsupported {
+                media: media(),
+                reason: "no decoder".into(),
+            },
+        ),
+        (
+            CueProblem::PatchMissing { patch: patch_id(5) },
+            WireProblem::PatchMissing { patch: patch_id(5) },
+        ),
+        (
+            CueProblem::DeviceUnavailable {
+                patch: patch_id(5),
+                resolution,
+            },
+            WireProblem::DeviceUnavailable {
+                patch: patch_id(5),
+                resolution: WireResolution::OutputCountMismatch {
+                    mapped: 2,
+                    outputs: 4,
+                },
+            },
+        ),
+        (
+            CueProblem::NetworkPatchMissing { patch: net_id(6) },
+            WireProblem::NetworkPatchMissing { patch: net_id(6) },
+        ),
+        (CueProblem::StartedBroken, WireProblem::StartedBroken),
+    ]
+}
+
+fn state_table() -> Vec<(CueState, WireCueState)> {
+    vec![
+        (CueState::Idle, WireCueState::Idle),
+        (CueState::Loaded, WireCueState::Loaded),
+        (CueState::PreWaiting, WireCueState::PreWaiting),
+        (CueState::Running, WireCueState::Running),
+        (CueState::Paused, WireCueState::Paused),
+        (CueState::PostWaiting, WireCueState::PostWaiting),
+        (CueState::Fading, WireCueState::Fading),
+        (CueState::Stopping, WireCueState::Stopping),
+        (CueState::Broken, WireCueState::Broken),
+    ]
+}
+
+fn reason_table() -> Vec<(BrokenReason, WireBrokenReason)> {
+    vec![
+        (BrokenReason::VoiceRejected, WireBrokenReason::VoiceRejected),
+        (BrokenReason::StreamFailed, WireBrokenReason::StreamFailed),
+        (BrokenReason::DeviceLost, WireBrokenReason::DeviceLost),
+    ]
+}
+
+fn go_table() -> Vec<(GoIgnoredReason, WireGoIgnored)> {
+    vec![
+        (GoIgnoredReason::DoubleGo, WireGoIgnored::DoubleGo),
+        (GoIgnoredReason::NoCue, WireGoIgnored::NoCue),
+        (GoIgnoredReason::UnknownList, WireGoIgnored::UnknownList),
+        (GoIgnoredReason::ChainLimit, WireGoIgnored::ChainLimit),
+    ]
+}
+
+fn preview_table() -> Vec<(PreviewIgnoredReason, WirePreviewIgnored)> {
+    vec![
+        (PreviewIgnoredReason::NotAudio, WirePreviewIgnored::NotAudio),
+        (
+            PreviewIgnoredReason::AlreadyPreviewing,
+            WirePreviewIgnored::AlreadyPreviewing,
+        ),
+    ]
+}
+
+fn all_error_codes() -> Vec<ErrorCode> {
+    vec![
+        ErrorCode::ProtocolVersionMismatch,
+        ErrorCode::BadToken,
+        ErrorCode::BadRequest,
+        ErrorCode::UnknownMessage,
+        ErrorCode::CommandRefused,
+        ErrorCode::NotFound,
+        ErrorCode::NoWorkspace,
+        ErrorCode::Io,
+        ErrorCode::BadShowFile,
+        ErrorCode::Unsupported,
+        ErrorCode::Internal,
+    ]
+}
+
+fn all_log_levels() -> [LogLevel; 4] {
+    [
+        LogLevel::Error,
+        LogLevel::Warn,
+        LogLevel::Info,
+        LogLevel::Debug,
+    ]
+}
+
+fn runtime(changes: Vec<RuntimeChange>) -> Sample {
+    server(ServerMessage::Runtime { seq: 1, changes })
+}
+
+/// One fixture per variant (and per reason) of the nested enums Swift must decode.
+fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
+    let (c, _, l) = ids();
+    let warnings = |w: WireWarning| server(ServerMessage::Warnings { warnings: vec![w] });
+    for w in all_warnings() {
+        if !matches!(
+            w,
+            WireWarning::GoIgnored { .. }
+                | WireWarning::PreviewIgnored { .. }
+                | WireWarning::PreviewFailed { .. }
+        ) {
+            add(&format!("warnings_{}", tag(&w)), warnings(w));
+        }
+    }
+    for (_, r) in go_table() {
+        let name = format!("warnings_go_ignored_{}", tag(&r));
+        add(
+            &name,
+            warnings(WireWarning::GoIgnored { list: l, reason: r }),
+        );
+    }
+    for (_, r) in preview_table() {
+        let name = format!("warnings_preview_ignored_{}", tag(&r));
+        add(
+            &name,
+            warnings(WireWarning::PreviewIgnored { cue: c, reason: r }),
+        );
+    }
+    for (_, r) in reason_table() {
+        let name = format!("warnings_preview_failed_{}", tag(&r));
+        add(
+            &name,
+            warnings(WireWarning::PreviewFailed { cue: c, reason: r }),
+        );
+    }
+    for (_, p) in problem_table() {
+        if !matches!(p, WireProblem::DeviceUnavailable { .. }) {
+            let name = format!("runtime_problem_{}", tag(&p));
+            add(
+                &name,
+                runtime(vec![RuntimeChange::Problems {
+                    cue: c,
+                    problems: vec![p],
+                }]),
+            );
+        }
+    }
+    for (_, resolution) in resolution_table() {
+        let name = format!("runtime_problem_device_unavailable_{}", tag(&resolution));
+        let problem = WireProblem::DeviceUnavailable {
+            patch: patch_id(5),
+            resolution,
+        };
+        add(
+            &name,
+            runtime(vec![RuntimeChange::Problems {
+                cue: c,
+                problems: vec![problem],
+            }]),
+        );
+    }
+    for (_, state) in state_table() {
+        let name = format!("runtime_state_{}", tag(&state));
+        add(
+            &name,
+            runtime(vec![RuntimeChange::CueState {
+                cue: c,
+                state,
+                reason: None,
+            }]),
+        );
+    }
+    for (_, reason) in reason_table() {
+        let name = format!("runtime_state_broken_{}", tag(&reason));
+        let change = RuntimeChange::CueState {
+            cue: c,
+            state: WireCueState::Broken,
+            reason: Some(reason),
+        };
+        add(&name, runtime(vec![change]));
+    }
+    for code in all_error_codes() {
+        add(
+            &format!("error_{}", tag(&code)),
+            server(ServerMessage::refusal(code, "message")),
+        );
+    }
+    for level in all_log_levels() {
+        add(
+            &format!("log_{}", tag(&level)),
+            server(ServerMessage::Log {
+                level,
+                message: "message".into(),
+            }),
+        );
+    }
+}
+
+#[test]
+fn every_nested_enum_variant_has_a_fixture_sample() {
+    assert_covered(
+        "WireWarning",
+        all_warnings().iter().map(wire_warning_idx),
+        WIRE_WARNING_COUNT,
+    );
+    assert_covered(
+        "WireProblem",
+        problem_table().iter().map(|(_, w)| wire_problem_idx(w)),
+        ENGINE_PROBLEM_COUNT,
+    );
+    assert_covered(
+        "WireResolution",
+        resolution_table()
+            .iter()
+            .map(|(_, w)| wire_resolution_idx(w)),
+        RESOLUTION_COUNT,
+    );
+    assert_covered(
+        "ErrorCode",
+        all_error_codes().into_iter().map(error_code_idx),
+        ERROR_CODE_COUNT,
+    );
+    assert_covered(
+        "LogLevel",
+        all_log_levels().into_iter().map(log_level_idx),
+        LOG_LEVEL_COUNT,
+    );
+    // And each sample is in the committed fixture set.
+    let names: BTreeSet<String> = fixtures().into_iter().map(|(n, _)| n).collect();
+    for w in all_warnings() {
+        let t = tag(&w);
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with(&format!("server/warnings_{t}"))),
+            "{t}"
+        );
+    }
+    for (_, p) in problem_table() {
+        let t = tag(&p);
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with(&format!("server/runtime_problem_{t}"))),
+            "{t}"
+        );
+    }
+    for (_, r) in resolution_table() {
+        assert!(names.contains(&format!(
+            "server/runtime_problem_device_unavailable_{}",
+            tag(&r)
+        )));
+    }
+    // 9 states + 3 broken reasons, 11 error codes, 4 log levels.
+    for (_, s) in state_table() {
+        assert!(names.contains(&format!("server/runtime_state_{}", tag(&s))));
+    }
+    for code in all_error_codes() {
+        assert!(names.contains(&format!("server/error_{}", tag(&code))));
+    }
+}
+
+#[test]
+fn every_engine_warning_maps_to_its_wire_form() {
+    let rate = NonZeroU32::new(48_000).unwrap();
+    let table = warning_table();
+    assert_covered(
+        "EngineWarning",
+        table.iter().map(|(e, _)| engine_warning_idx(e)),
+        ENGINE_WARNING_COUNT,
+    );
+    for (engine, wire) in &table {
+        assert_eq!(&WireWarning::from_engine(engine, rate), wire, "{engine:?}");
+        // The wire form keeps the engine's variant name as its tag (snake case).
+        assert_eq!(wire_warning_idx(wire), engine_warning_idx(engine));
+    }
+}
+
+#[test]
+fn every_problem_resolution_state_and_reason_maps_to_its_wire_form() {
+    let problems = problem_table();
+    assert_covered(
+        "CueProblem",
+        problems.iter().map(|(e, _)| engine_problem_idx(e)),
+        ENGINE_PROBLEM_COUNT,
+    );
+    for (engine, wire) in &problems {
+        assert_eq!(&WireProblem::from(engine), wire, "{engine:?}");
+        assert_eq!(wire_problem_idx(wire), engine_problem_idx(engine));
+    }
+    let resolutions = resolution_table();
+    assert_covered(
+        "PatchResolution",
+        resolutions.iter().map(|(e, _)| engine_resolution_idx(e)),
+        RESOLUTION_COUNT,
+    );
+    for (engine, wire) in &resolutions {
+        assert_eq!(&WireResolution::from(engine), wire, "{engine:?}");
+    }
+    assert_covered(
+        "CueState",
+        state_table().iter().map(|(e, _)| engine_state_idx(*e)),
+        STATE_COUNT,
+    );
+    for (engine, wire) in state_table() {
+        assert_eq!(WireCueState::from(engine), wire);
+    }
+    assert_covered(
+        "BrokenReason",
+        reason_table().iter().map(|(e, _)| engine_reason_idx(*e)),
+        REASON_COUNT,
+    );
+    for (engine, wire) in reason_table() {
+        assert_eq!(WireBrokenReason::from(engine), wire);
+    }
+    assert_covered(
+        "GoIgnoredReason",
+        go_table().iter().map(|(e, _)| engine_go_idx(*e)),
+        GO_IGNORED_COUNT,
+    );
+    for (engine, wire) in go_table() {
+        assert_eq!(WireGoIgnored::from(engine), wire);
+    }
+    assert_covered(
+        "PreviewIgnoredReason",
+        preview_table().iter().map(|(e, _)| engine_preview_idx(*e)),
+        PREVIEW_IGNORED_COUNT,
+    );
+    for (engine, wire) in preview_table() {
+        assert_eq!(WirePreviewIgnored::from(engine), wire);
+    }
+}
+
+#[test]
+fn a_broken_state_change_carries_the_engines_reason() {
+    let c = cue_id(1);
+    let ws = workspace(vec![cue(1, audio())]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    let mut last = None;
+    handle_as_binary(&mut engine, &ws, &mut last, Input::Start { cue: c }, 0);
+    let run = engine.run_of(c).unwrap();
+    let actions = handle_as_binary(
+        &mut engine,
+        &ws,
+        &mut last,
+        Input::ActionFailed {
+            cue: c,
+            run,
+            reason: BrokenReason::DeviceLost,
+        },
+        10,
+    );
+    let changes: Vec<_> = actions
+        .iter()
+        .filter_map(|a| RuntimeChange::from_action(a, &engine))
+        .collect();
+    assert!(
+        changes.contains(&RuntimeChange::CueState {
+            cue: c,
+            state: WireCueState::Broken,
+            reason: Some(WireBrokenReason::DeviceLost),
+        }),
+        "{changes:?}"
+    );
+    // A cue broken only by static problems has no run-time reason.
+    let ws = workspace(vec![cue(1, fade(99))]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    let mut last = None;
+    let actions = handle_as_binary(&mut engine, &ws, &mut last, Input::Tick, 0);
+    let broken: Vec<_> = actions
+        .iter()
+        .filter_map(|a| RuntimeChange::from_action(a, &engine))
+        .filter(|c| {
+            matches!(
+                c,
+                RuntimeChange::CueState {
+                    state: WireCueState::Broken,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        broken,
+        vec![RuntimeChange::CueState {
+            cue: c,
+            state: WireCueState::Broken,
+            reason: None
+        }]
+    );
+    // A reason is only ever attached to a broken state.
+    let running = Action::StateChanged {
+        cue: c,
+        state: CueState::Running,
+        at: 0,
+    };
+    assert_eq!(
+        RuntimeChange::from_action(&running, &engine),
+        Some(RuntimeChange::CueState {
+            cue: c,
+            state: WireCueState::Running,
+            reason: None
+        })
+    );
+}
+
 // ---- Property: decode(encode(x)) == x for generated client messages ----
 
 fn arb_cue() -> impl Strategy<Value = CueId> {
@@ -1087,7 +1949,6 @@ fn arb_path() -> impl Strategy<Value = String> {
 fn arb_action() -> impl Strategy<Value = TransportAction> {
     prop_oneof![
         arb_list().prop_map(|list| TransportAction::Go { list }),
-        Just(TransportAction::StopAll),
         Just(TransportAction::Panic),
         Just(TransportAction::PauseAll),
         Just(TransportAction::ResumeAll),

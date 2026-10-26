@@ -1,6 +1,6 @@
 {
   "type": "transport",
-  "id": 28,
+  "id": 27,
   "action": {
     "type": "stop_preview",
     "cue": "00000000-0000-0000-0000-00000000000a"
