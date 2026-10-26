@@ -2474,7 +2474,7 @@ mod tests {
     fn delay_process_matches_tick_sample_for_sample() {
         let (mut a, mut b) = (DelayLine::new(50, 10), DelayLine::new(50, 10));
         let mut x = 0.0f32;
-        let steps: [(Option<usize>, usize); 12] = [
+        let steps: [(Option<usize>, usize); 17] = [
             (None, 7),
             (None, 120),
             (Some(5), 3),
@@ -2486,6 +2486,13 @@ mod tests {
             (Some(12), 5),
             (None, 200),
             (Some(0), 51),
+            // A same-value change left queued when the crossfade ends: the fast path must
+            // drop it like `tick` does.
+            (Some(5), 30),
+            (Some(0), 3),
+            (Some(3), 0),
+            (Some(0), 7),
+            (None, 20),
             (None, 77),
         ];
         let mut buf = [0.0f32; 200];
