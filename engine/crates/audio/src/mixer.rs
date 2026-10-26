@@ -320,8 +320,9 @@ pub enum Event {
     DevampScheduled { voice: VoiceId, at: SampleTime },
     /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
     /// different devamp (other `stop`) is pending, a cut is needed while an earlier devamp's cut
-    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged. (A devamp while an earlier one's loop exit is
-    /// still playing is carried out.)
+    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have.
+    /// Playback is unchanged. (A devamp while an earlier one's loop exit is still playing is
+    /// carried out.)
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
 }
