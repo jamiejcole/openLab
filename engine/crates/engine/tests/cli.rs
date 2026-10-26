@@ -27,3 +27,18 @@ fn version_into_closed_pipe_does_not_panic() {
     // 101 is Rust's panic exit code.
     assert_ne!(status.code(), Some(101), "engine panicked: {status}");
 }
+
+#[test]
+fn a_show_that_cannot_be_read_fails_cleanly() {
+    let out = Command::new(ENGINE)
+        .arg("/nonexistent/openlab/show.openlab")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_ne!(out.status.code(), Some(101), "engine panicked");
+    assert!(
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .starts_with("openlab-engine: ")
+    );
+}
