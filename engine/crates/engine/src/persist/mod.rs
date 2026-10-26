@@ -11,6 +11,7 @@ mod atomic;
 mod backup;
 mod files;
 mod recovery;
+mod recovery_scan;
 mod relink;
 mod save;
 mod settings;
@@ -26,6 +27,9 @@ pub use backup::backup_existing;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub use recovery::{
     RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, write_recovery,
+};
+pub use recovery_scan::{
+    MAX_NAME_READ_BYTES, MAX_RECOVERY_ENTRIES, RecoveryEntry, RecoveryScan, scan_recovery,
 };
 pub use relink::{
     FolderScan, FoundRelinks, ScanLimits, find_in_folder, media_path, missing_media, scan_folder,
