@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 42,
+  "request": {
+    "type": "save"
+  }
+}

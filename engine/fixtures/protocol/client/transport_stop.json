@@ -1,0 +1,12 @@
+{
+  "type": "transport",
+  "id": 19,
+  "action": {
+    "type": "stop",
+    "cue": "00000000-0000-0000-0000-00000000000a",
+    "fade_out": {
+      "duration": 2.5,
+      "curve": "linear"
+    }
+  }
+}

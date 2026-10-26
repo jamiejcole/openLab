@@ -1,0 +1,10 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "late_start",
+      "cue": "00000000-0000-0000-0000-000000000001",
+      "late_ms": 100
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "type": "result",
+  "id": 2,
+  "error": {
+    "code": "command_refused",
+    "message": "cue 00000000-0000-0000-0000-000000000063 does not exist"
+  }
+}

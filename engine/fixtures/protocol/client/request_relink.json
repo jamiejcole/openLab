@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 45,
+  "request": {
+    "type": "relink",
+    "folder": "/Volumes/Audio/Hamlet"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 47,
+  "request": {
+    "type": "snapshot"
+  }
+}

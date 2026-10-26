@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "command_refused",
+  "message": "message",
+  "protocol_version": 1
+}

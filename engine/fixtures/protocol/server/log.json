@@ -1,0 +1,5 @@
+{
+  "type": "log",
+  "level": "warn",
+  "message": "audio device \"Scarlett 2i2\" was unplugged"
+}
