@@ -319,8 +319,8 @@ pub enum Event {
     /// the matching `SliceEnded` carries the actual sample.
     DevampScheduled { voice: VoiceId, at: SampleTime },
     /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
-    /// different devamp (other `stop`) is pending, or leaving a loop needs a disk-stream `link`
-    /// it does not have. Playback is unchanged. (A devamp while an earlier one's loop exit is
+    /// different devamp (other `stop`) is pending, a cut is needed while an earlier devamp's cut
+    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged. (A devamp while an earlier one's loop exit is
     /// still playing is carried out.)
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
@@ -834,6 +834,12 @@ impl Voice {
                 .is_some_and(|e| e.frames > 0);
             if self.awaiting.is_some() {
                 // The link still carries the previous cut: send this one once it is answered.
+                // Only one waits: a cut must never be dropped, or the disk stream would map
+                // the next one from the wrong place.
+                if self.deferred.is_some() {
+                    outbox.emit(ignored);
+                    return;
+                }
                 self.deferred = Some(Deferred {
                     at,
                     exit,

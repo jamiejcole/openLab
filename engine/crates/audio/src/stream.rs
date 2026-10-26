@@ -913,21 +913,30 @@ impl Task {
             let Some(s) = self.slices.get(k) else {
                 break None;
             };
-            match s.plays {
-                Plays::Times(n) => {
-                    let len =
-                        i64::try_from(s.frames.saturating_mul(u64::from(n))).unwrap_or(i64::MAX);
-                    let end = pos.saturating_add(len);
-                    if dv <= end {
-                        break Some(k);
-                    }
-                    pos = end;
-                    k += 1;
-                }
-                Plays::Infinite => break Some(k),
+            let end = match s.plays {
+                Plays::Times(n) => pos.saturating_add(
+                    i64::try_from(s.frames.saturating_mul(u64::from(n))).unwrap_or(i64::MAX),
+                ),
+                Plays::Infinite => i64::MAX,
+            };
+            if dv <= end {
+                break Some((k, pos));
             }
+            pos = end;
+            k += 1;
         };
-        let Some(k) = found else {
+        // The voice only cuts at the end of a play of a loop. Anything else means the voice and
+        // the stream disagree about where it is: fail loudly rather than cut somewhere else.
+        let per = |k: usize| self.slices.get(k).map_or(0, |s| s.frames);
+        let on_play_end = |(k, pos): (usize, i64)| {
+            let per = i64::try_from(per(k)).unwrap_or(i64::MAX).max(1);
+            let loops = self.slices.get(k).is_some_and(|s| {
+                s.plays != Plays::Times(1)
+                    || self.slices.get(k + 1).is_some_and(|n| n.index == s.index)
+            });
+            dv > pos && (dv - pos) % per == 0 && loops
+        };
+        let Some((k, _)) = found.filter(|&f| on_play_end(f)) else {
             return Err(MediaError::BadSlices);
         };
         let index = self.slices.get(k).map(|s| s.index);
@@ -1478,6 +1487,34 @@ mod tests {
         );
     }
 
+    /// Review H1: a cut that is not on the end of a play of a loop (the voice and the stream
+    /// would disagree about where it is) fails the stream instead of cutting elsewhere.
+    #[test]
+    fn a_cut_off_a_loop_boundary_fails_the_stream() {
+        let pre = crate::decode::Preloaded::from_samples(1, 48_000, (0..3_000).map(mark).collect());
+        let slices = || {
+            crate::plan(
+                0..3_000,
+                &[1_000, 2_000],
+                &[Plays::Times(1), Plays::Infinite, Plays::Times(1)],
+                0,
+            )
+            .unwrap()
+        };
+        // Mid-play of the infinite loop; the end of the intro (not a loop); a play end: fine.
+        for (cut, ok) in [(2_500, false), (1_000, false), (4_000, true)] {
+            let (_d, mut t, p) = hand_task(StreamerConfig::new(48_000), pre.clone(), slices());
+            settle(&mut t);
+            p.link.request_cut(cut, false);
+            let r = t.step();
+            assert_eq!(
+                matches!(r, Progress::Failed(MediaError::BadSlices)),
+                !ok,
+                "cut {cut}"
+            );
+        }
+    }
+
     /// L-R2: the first ring write comes before any exit is built, so a cue that starts in a loop
     /// with many exits primes in one step. Exits stay within the per-stream cap (64 channels:
     /// 3 MB each, 10 of the 40 fit in 32 MiB); the rest are refused, and no frame of a loop is
@@ -1677,6 +1714,214 @@ mod tests {
                 at: 6_000,
                 reason: crate::FinishReason::OutPoint
             }));
+        }
+    }
+
+    /// Reference model: the frames a voice plays for `slices` (frame `i` of the source holds
+    /// `mark(i)`), leaving the loop under way at the end of the play that ends on each voice
+    /// frame in `leaves` (`true`: ending there), `n` frames, silence after the end. Panics if a
+    /// leave is not on the end of a loop's play.
+    fn model(slices: &[Slice], leaves: &[(u64, bool)], n: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        let (mut entry, mut play, mut off, mut t) = (0usize, 0u32, 0u64, 0u64);
+        let mut used = 0;
+        'play: while out.len() < n {
+            let Some(s) = slices.get(entry) else { break };
+            out.push(mark(s.start + off));
+            off += 1;
+            t += 1;
+            if off < s.frames {
+                continue;
+            }
+            off = 0;
+            if let Some(&(_, stop)) = leaves.iter().find(|(at, _)| *at == t) {
+                used += 1;
+                if stop {
+                    break 'play;
+                }
+                let index = s.index;
+                entry = (entry + 1..slices.len())
+                    .find(|&i| slices[i].index != index)
+                    .unwrap_or(slices.len());
+                play = 0;
+                continue;
+            }
+            play += 1;
+            if let Plays::Times(k) = s.plays
+                && play >= k
+            {
+                entry += 1;
+                play = 0;
+            }
+        }
+        let due = leaves.iter().filter(|(at, _)| *at <= t).count();
+        assert_eq!(used, due, "a devamp boundary is not a play end: {leaves:?}");
+        out.resize(n, 0.0);
+        out
+    }
+
+    /// Equal, or the first frame that differs.
+    fn same(out: &[f32], want: &[f32]) -> Result<(), String> {
+        match out.iter().zip(want).position(|(a, b)| a != b) {
+            None if out.len() == want.len() => Ok(()),
+            None => Err(format!("lengths {} {}", out.len(), want.len())),
+            Some(i) => Err(format!(
+                "frame {i}: {} (source {}) want {}",
+                out[i],
+                out[i] * 65_536.0 - 1.0,
+                want[i] * 65_536.0 - 1.0
+            )),
+        }
+    }
+
+    /// Plays `slices` from a hand-stepped worker, sending a devamp (stop?) at the start of the
+    /// blocks in `devamps` and holding the worker for the blocks in `held` (64-frame block
+    /// indices); otherwise the worker settles before each block. Returns the output and the
+    /// leaves the mixer announced, for `model`.
+    fn drive(
+        slices: &[Slice],
+        exit_ms: u32,
+        devamps: &[(usize, bool)],
+        held: &dyn Fn(usize) -> bool,
+        n: usize,
+    ) -> (Vec<f32>, Vec<(u64, bool)>, crate::MixerController) {
+        let frames = slices.iter().map(|s| s.start + s.frames).max().unwrap();
+        let pre =
+            crate::decode::Preloaded::from_samples(1, 48_000, (0..frames).map(mark).collect());
+        let mut cfg = StreamerConfig::new(48_000);
+        cfg.exit_ms = exit_ms;
+        cfg.buffer_ms = 200;
+        let (_d, mut t, p) = hand_task(cfg, pre, slices.to_vec());
+        settle(&mut t);
+        let (mut ctl, mut r) = mixer();
+        let _h = play(&mut ctl, p);
+        let mut out = Vec::new();
+        let mut leaves: Vec<(u64, bool)> = Vec::new();
+        let mut block = 0;
+        let mut ended = false;
+        while out.len() < n {
+            // Steps until idle; a stream whose voice has let go of the ring is done.
+            for _ in 0..10_000 {
+                if ended || held(block) {
+                    break;
+                }
+                match t.step() {
+                    Progress::Worked => {}
+                    Progress::Idle => break,
+                    Progress::Done => ended = true,
+                    Progress::Failed(e) => panic!(
+                        "stream failed: {e:?} cut {:?} origin {:?} {slices:?}",
+                        t.link.cut_requested(),
+                        t.origin
+                    ),
+                }
+            }
+            let stop = devamps.iter().find(|(b, _)| *b == block).map(|(_, s)| *s);
+            if let Some(stop) = stop {
+                ctl.send(
+                    out.len() as u64,
+                    crate::CommandKind::Devamp {
+                        voice: VoiceId(1),
+                        stop,
+                    },
+                );
+            }
+            let mut buf = vec![0.0; 64];
+            crate::no_alloc_for_tests(|| r.render_into(&mut buf, &[64]));
+            out.extend(buf);
+            ctl.pump();
+            while let Some(e) = ctl.poll_event() {
+                if let crate::Event::DevampScheduled { at, .. } = e
+                    && !leaves.iter().any(|(l, _)| *l == at)
+                {
+                    leaves.push((at, stop.unwrap_or(false)));
+                }
+            }
+            block += 1;
+        }
+        (out, leaves, ctl)
+    }
+
+    /// Review H1: a third devamp while the second one's cut still waits to be sent (the worker
+    /// has not answered the first) must not replace it: it is ignored, and the voice plays
+    /// exactly what it announced. Intro | A inf | bridge | C inf | bridge | E inf | F.
+    #[test]
+    fn a_devamp_while_a_deferred_cut_waits_is_ignored_not_lost() {
+        let (once, inf) = (Plays::Times(1), Plays::Infinite);
+        let slices = crate::plan(
+            0..30_000,
+            &[1_000, 2_000, 2_100, 3_100, 3_200, 4_200],
+            &[once, inf, once, inf, once, inf, once],
+            0,
+        )
+        .unwrap();
+        // Devamps in blocks starting 1920 (A), 2304 (C, inside B's exit), 3264 (E, after C's
+        // boundary); the worker is held from the first devamp until block 60 (3840).
+        let devamps = [(30, false), (36, false), (51, false)];
+        let held = |b: usize| (30..60).contains(&b);
+        let (out, leaves, ctl) = drive(&slices, 250, &devamps, &held, 20_000);
+        assert_eq!(leaves, vec![(2_000, false), (3_100, false)]);
+        same(&out, &model(&slices, &leaves, out.len())).unwrap();
+        assert_eq!(ctl.underrun_frames(), 0);
+    }
+
+    /// Random tables and devamp sequences against the reference model, with the worker held
+    /// for stretches shorter than an exit buffer after some devamps.
+    #[test]
+    fn random_devamp_sequences_play_as_the_model() {
+        let mut x = 0x9e37_79b9_u32;
+        let mut rnd = move |n: u32| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x % n
+        };
+        for case in 0..500 {
+            let count = 2 + rnd(8) as usize;
+            let mut marks = Vec::new();
+            let mut at = 0u64;
+            for _ in 0..count {
+                let span = if rnd(2) == 0 { 400 } else { 1_400 };
+                at += 100 + u64::from(rnd(span));
+                marks.push(at);
+            }
+            // A long last slice, so that the ring (not only an exit buffer) plays it.
+            let end = marks.pop().unwrap() + 30_000;
+            let plays: Vec<Plays> = (0..count)
+                .map(|_| match rnd(5) {
+                    0 | 1 => Plays::Infinite,
+                    2 => Plays::Times(2 + rnd(3)),
+                    _ => Plays::Times(1),
+                })
+                .collect();
+            let start = if rnd(3) == 0 { u64::from(rnd(100)) } else { 0 };
+            let slices = crate::plan(0..end, &marks, &plays, start).unwrap();
+            let exit_ms = if rnd(3) == 0 { 20 } else { 250 };
+            // Hold at most half an exit buffer (in 64-frame blocks) after a devamp.
+            let max_hold = (48 * exit_ms as usize / 64 / 2).max(1);
+            let mut devamps = Vec::new();
+            let mut b = 0;
+            while b < 600 {
+                b += 1 + rnd(12) as usize;
+                devamps.push((b, rnd(30) == 0));
+            }
+            // Holds start anywhere (devamps fall inside them) and are at least a block apart.
+            let mut holds = Vec::new();
+            let mut b = 0;
+            while b < 600 {
+                b += 1 + rnd(30) as usize;
+                let h = 1 + rnd(max_hold as u32) as usize;
+                holds.push(b..b + h);
+                b += h;
+            }
+            let held = |blk: usize| holds.iter().any(|h| h.contains(&blk));
+            let (out, leaves, ctl) = drive(&slices, exit_ms, &devamps, &held, 600 * 64);
+            assert_eq!(ctl.underrun_frames(), 0, "case {case}: {slices:?}");
+            let want = std::panic::catch_unwind(|| model(&slices, &leaves, out.len()))
+                .unwrap_or_else(|_| panic!("case {case}: {slices:?} exit {exit_ms} {devamps:?}"));
+            if let Err(e) = same(&out, &want) {
+                panic!("case {case}: {e}: {slices:?} exit {exit_ms} leaves {leaves:?}");
+            }
         }
     }
 }
