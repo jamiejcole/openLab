@@ -59,8 +59,8 @@ pub struct CueEngine {
     armed: BTreeMap<CueId, bool>,
     /// Static problems (CUE-06) and what they are computed from.
     problems: broken::Problems,
-    /// The sample the panic fade under way ends on.
-    panic_end: Option<SampleTime>,
+    /// The panic fade under way: the sample it came on and the one it ends on.
+    panic: Option<(SampleTime, SampleTime)>,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -101,7 +101,7 @@ impl CueEngine {
             last_random: BTreeMap::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
-            panic_end: None,
+            panic: None,
         }
     }
 
@@ -123,8 +123,13 @@ impl CueEngine {
             vacated: Vec::new(),
         };
         self.sync_armed();
-        if self.panic_end.is_some_and(|end| now >= end) {
-            self.panic_end = None;
+        // Over, or the clock went back (a device restart): a panic fade on the old clock is not
+        // under way on the new one.
+        if self
+            .panic
+            .is_some_and(|(start, end)| now >= end || now < start)
+        {
+            self.panic = None;
         }
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after

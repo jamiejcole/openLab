@@ -44,10 +44,10 @@ impl CueEngine {
     /// (as in Stop), so a group sees which of its children are still fading out.
     pub(super) fn panic(&mut self, cx: &mut Ctx) {
         let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
-        let second = self.panic_end.is_some_and(|end| cx.now < end);
+        let second = self.panic.is_some_and(|(_, end)| cx.now < end);
         let hard = frames == 0 || second;
         let end = cx.now.saturating_add(frames);
-        self.panic_end = (!hard).then_some(end);
+        self.panic = (!hard).then_some((cx.now, end));
         for tree in Self::trees(cx) {
             for cue in tree.into_iter().rev() {
                 if !self.slots.contains_key(&cue) {
@@ -140,6 +140,6 @@ impl CueEngine {
 
     /// The sample the panic fade under way ends on: a Panic before it stops everything at once.
     pub fn panic_end(&self) -> Option<SampleTime> {
-        self.panic_end
+        self.panic.map(|(_, end)| end)
     }
 }
