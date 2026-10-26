@@ -223,7 +223,15 @@ impl CueEngine {
                 .unwrap_or_default();
             let started_broken = new.is_empty()
                 && matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.static_broken);
-            let shown_before = self.problems(cue).to_vec();
+            let shown_now: &[CueProblem] = match () {
+                _ if !new.is_empty() => &new,
+                _ if started_broken => STARTED_BROKEN,
+                _ => &[],
+            };
+            // What is shown follows from the stored problems, so nothing else changes either.
+            if self.problems(cue) == shown_now {
+                continue;
+            }
             let before = self.state(cue);
             let p = &mut self.problems;
             if new.is_empty() {
@@ -237,7 +245,7 @@ impl CueEngine {
                 p.started_broken.remove(&cue);
             }
             let shown = self.problems(cue).to_vec();
-            if shown != shown_before && self.problems.model.rank.contains_key(&cue) {
+            if self.problems.model.rank.contains_key(&cue) {
                 cx.out.push(Action::ProblemsChanged {
                     cue,
                     problems: shown.clone(),
