@@ -1,0 +1,267 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Control loop on the offline render driver: sample-exact starts, continues, fades, stops
+//! (NFR-20, NFR-21, NFR-22; ARCHITECTURE §3.2).
+
+mod show;
+
+use openlab_audio::RAMP_TOLERANCE;
+use openlab_core::protocol::WireWarning;
+use openlab_core::protocol::{TransportAction, WireCueState};
+use openlab_core::{ContinueMode, CueKind, FadeCurve, FadeLevels, FadeSpec, GroupMode};
+use show::*;
+
+#[test]
+fn go_starts_audio_exactly_one_block_after_now() {
+    let path = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    // Primed while standing by (ARCHITECTURE §3.5).
+    assert_eq!(s.control().primed(), vec![id(1)]);
+    s.run(BLOCK * 3);
+    let at = go(&mut s);
+    assert_eq!(at, s.rendered() + BLOCK);
+    s.run(2000);
+    let ch0 = s.channel(0);
+    assert_eq!(first_nonzero(&ch0), Some(at as usize));
+    assert_eq!(last_nonzero(&ch0), Some(at as usize + 799));
+    assert!(
+        ch0[at as usize..at as usize + 800]
+            .iter()
+            .all(|&v| v == 0.5)
+    );
+    assert!(s.channel(1).iter().all(|&v| v == 0.0));
+    let msgs = s.take_outbound();
+    let st = states(&msgs, id(1));
+    assert_eq!(
+        st.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![
+            WireCueState::PreWaiting,
+            WireCueState::Running,
+            WireCueState::Idle
+        ]
+    );
+    assert_eq!(s.stalls(), 0);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_group_starts_its_children_on_the_same_sample() {
+    let a = wav(&dc(400, 0.25));
+    let b = wav(&dc(400, 0.75));
+    let group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &a, 0), audio(2, &b, 1)],
+        },
+    );
+    let mut s = show(workspace(vec![group]));
+    s.run(BLOCK);
+    let at = go(&mut s) as usize;
+    s.run(1000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert_eq!(last_nonzero(&s.channel(0)), last_nonzero(&s.channel(1)));
+    assert_eq!(s.stalls(), 0);
+}
+
+#[test]
+fn a_pre_wait_lands_on_its_exact_sample() {
+    let path = wav(&dc(200, 0.5));
+    let mut c = audio(1, &path, 0);
+    // 0.3105 s = 2484 frames: not a multiple of the block.
+    c.pre_wait = secs(2484);
+    let mut s = show(workspace(vec![c]));
+    let at = go(&mut s) as usize;
+    s.run(4000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at + 2484));
+    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 2484 + 199));
+}
+
+#[test]
+fn auto_continue_fires_on_its_exact_sample() {
+    let a = wav(&dc(2000, 0.25));
+    let b = wav(&dc(200, 0.5));
+    let mut c1 = audio(1, &a, 0);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    c1.post_wait = secs(777);
+    let mut s = show(workspace(vec![c1, audio(2, &b, 1)]));
+    let at = go(&mut s) as usize;
+    s.run(3000);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at + 777));
+}
+
+#[test]
+fn auto_follow_chains_from_the_voice_end_report() {
+    let a = wav(&dc(500, 0.25));
+    let b = wav(&dc(500, 0.5));
+    let c = wav(&dc(500, 0.75));
+    let mut c1 = audio(1, &a, 0);
+    c1.continue_mode = ContinueMode::AutoFollow;
+    let mut c2 = audio(2, &b, 1);
+    c2.continue_mode = ContinueMode::AutoFollow;
+    let mut s = show(workspace(vec![c1, c2, audio(3, &c, 0)]));
+    let at = go(&mut s) as usize;
+    s.run(4000);
+    let ch0 = s.channel(0);
+    let ch1 = s.channel(1);
+    // The end is known only from the mixer's report, which comes after the block it happened
+    // in, so the next cue starts within two blocks of it (late rule: from its head, a
+    // `late_start` warning, later timing counted from the end).
+    let end1 = at + 500;
+    let start2 = first_nonzero(&ch1).unwrap();
+    assert!(
+        (end1..=end1 + 2 * BLOCK as usize).contains(&start2),
+        "{start2}"
+    );
+    assert_eq!(last_nonzero(&ch1), Some(start2 + 499));
+    let start3 = ch0.iter().skip(end1).position(|&v| v == 0.75).unwrap() + end1;
+    assert!(start3 >= start2 + 500 && start3 <= start2 + 500 + 2 * BLOCK as usize);
+    for n in 1..=3 {
+        assert_eq!(
+            s.control().engine().state(id(n)),
+            openlab_core::CueState::Idle
+        );
+    }
+    let msgs = s.take_outbound();
+    assert!(
+        warnings(&msgs)
+            .iter()
+            .any(|w| matches!(w, WireWarning::LateStart { .. }))
+    );
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_fade_cue_ramps_a_running_voice() {
+    let a = wav(&dc(8000, 1.0));
+    let fade = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs(800),
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: Some(20.0 * 0.5f64.log10()),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+        },
+    );
+    let mut s = show(workspace(vec![audio(1, &a, 0), fade]));
+    go(&mut s);
+    s.run(1000);
+    let tf = go(&mut s) as usize;
+    s.run(2000);
+    let ch0 = s.channel(0);
+    assert_eq!(ch0[tf - 1], 1.0);
+    let half = 0.5f64.powf(1.0);
+    let target = openlab_core::db_to_gain(20.0 * half.log10());
+    let mid = ch0[tf + 400];
+    assert!((mid - (1.0 + target) / 2.0).abs() < 1e-4, "{mid}");
+    for &v in &ch0[tf + 800..tf + 1500] {
+        assert!(
+            f64::from((v - target).abs()) <= f64::from(target) * RAMP_TOLERANCE * 4.0,
+            "{v}"
+        );
+    }
+}
+
+#[test]
+fn stop_with_fade_fades_out_and_ends_on_time() {
+    let a = wav(&dc(8000, 1.0));
+    let mut s = show(workspace(vec![audio(1, &a, 0)]));
+    go(&mut s);
+    s.run(1000);
+    s.take_outbound();
+    let ts = s.now() as usize;
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(FadeSpec {
+            duration: secs(800),
+            curve: FadeCurve::Linear,
+        }),
+    });
+    s.run(1200);
+    let ch0 = s.channel(0);
+    assert_eq!(ch0[ts - 1], 1.0);
+    assert!((ch0[ts + 400] - 0.5).abs() < 1e-3);
+    assert!(ch0[ts + 800..].iter().all(|&v| v == 0.0));
+    let st: Vec<_> = states(&s.take_outbound(), id(1))
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(st, vec![WireCueState::Stopping, WireCueState::Idle]);
+    run_until_idle(&mut s, id(1), 1000);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn panic_fades_everything_out_together() {
+    let a = wav(&dc(16000, 1.0));
+    let b = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(1000);
+    let tp = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    // panic_duration 0.1 s = 800 frames.
+    s.run(1500);
+    for ch in 0..2 {
+        let x = s.channel(ch);
+        assert!(x[tp - 1] > 0.0);
+        assert!(x[tp + 400] > 0.0 && x[tp + 400] < x[tp - 1]);
+        assert!(x[tp + 800..].iter().all(|&v| v == 0.0), "channel {ch}");
+    }
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn pause_and_resume_keep_the_position() {
+    let path = wav(&ramp(6000));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    let t0 = go(&mut s) as usize;
+    s.run(1000);
+    let p = s.now() as usize;
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(1500);
+    let r = s.now() as usize;
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let end = run_until_idle(&mut s, id(1), 10_000) as usize;
+    let ch0 = s.channel(0);
+    let ramp = ramp(6000);
+    // Before the pause: the file from its first frame.
+    assert_eq!(ch0[t0..p], ramp[..p - t0]);
+    // Paused (after the 5 ms = 40 frame declick): silence.
+    assert!(ch0[p + 40..r].iter().all(|&v| v == 0.0));
+    // After the resume's declick: exactly where it paused.
+    let k = p - t0;
+    assert_eq!(ch0[r + 40..r + 1000], ramp[k + 40..k + 1000]);
+    // It ends 6000 frames of play after its start, the pause added.
+    assert_eq!(last_nonzero(&ch0), Some(t0 + 6000 + (r - p) - 1));
+    assert!(end >= t0 + 6000 + (r - p));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn load_to_time_starts_part_way_in() {
+    let path = wav(&ramp(4000));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: secs(1000),
+    });
+    s.run(BLOCK * 2);
+    let at = start(&mut s, 1) as usize;
+    s.run(4000);
+    let ch0 = s.channel(0);
+    let ramp = ramp(4000);
+    assert_eq!(first_nonzero(&ch0), Some(at));
+    assert_eq!(ch0[at..at + 3000], ramp[1000..]);
+    assert_eq!(last_nonzero(&ch0), Some(at + 2999));
+}
