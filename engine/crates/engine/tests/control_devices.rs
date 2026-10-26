@@ -17,8 +17,10 @@ use openlab_core::protocol::{
 };
 use openlab_core::{ContinueMode, CueState, MachineSettings, PatchMapping, Workspace};
 use openlab_engine::control::ControlConfig;
-use openlab_engine::control::devices::DEVICE_LOSS_GRACE;
-use show::device::{DeviceShow, listed};
+use std::sync::Arc;
+
+use openlab_engine::control::devices::{self, DEVICE_JOB_TIMEOUT, DEVICE_LOSS_GRACE, STABLE_UP};
+use show::device::{DeviceShow, Fake, FakeLayer, listed};
 use show::*;
 
 const DEV: &str = "fake:1";
@@ -220,6 +222,11 @@ fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
 /// Two auto-following cues on a ramp (every sample distinct), rendered on the device: with
 /// `outage`, the device is lost mid-way through cue 1 for 5 s and comes back.
 fn play_through(outage: bool) -> (DeviceShow, u64) {
+    play_through_with(outage, None)
+}
+
+/// [`play_through`]; with `reopen_block` the device comes back with another buffer size.
+fn play_through_with(outage: bool, reopen_block: Option<u32>) -> (DeviceShow, u64) {
     let a = wav(&ramp(1500));
     let b = wav(&ramp(700));
     let mut c1 = audio(1, &a, 0);
@@ -234,6 +241,9 @@ fn play_through(outage: bool) -> (DeviceShow, u64) {
         s.wait_wall(Duration::from_secs(5), 10);
         assert!(s.fake.opens() > 1);
         assert!(s.control().device_down());
+        if let Some(b) = reopen_block {
+            s.fake.set_block(b);
+        }
         replug(&mut s);
     }
     s.run(3000);
@@ -367,13 +377,11 @@ fn a_slow_device_open_does_not_hold_up_the_inbox() {
     s.fake.plug(listed(DEV, DEV_NAME, 2));
     s.advance(Duration::from_secs(1));
     s.tick();
-    // The reopen is due (the backoff has passed); the device thread is stuck in it, and the
-    // list read waits behind it.
-    assert!(
-        s.control().device_jobs_pending() >= 1,
-        "an open is under way"
-    );
-    let pending = s.control().device_jobs_pending();
+    // The reopen is due (the backoff has passed); the device thread is stuck in it. The list
+    // read is on its own thread and answers.
+    s.wait_list();
+    assert_eq!(s.control().device_jobs_pending(), 1, "an open is under way");
+    let pending = 1;
     // Replies and GO meanwhile.
     let rid = s.request_id();
     let replies = s.send(ClientMessage::Request {
@@ -612,4 +620,277 @@ fn reopen_attempts_back_off_while_the_device_stays_away() {
     assert!(seen[3].1.contains("attempt 4"), "{}", seen[3].1);
     assert!(seen[3].1.contains("next in 4.00 s"), "{}", seen[3].1);
     assert_eq!(s.fake.opens(), 5);
+}
+
+/// Runs whole blocks until `at` has been rendered.
+fn run_to(s: &mut DeviceShow, at: u64) {
+    let left = at.saturating_sub(s.rendered());
+    s.run(left);
+    assert_eq!(s.rendered(), at);
+}
+
+fn running_cue_show() -> DeviceShow {
+    let long = wav(&dc(200_000, 0.25));
+    let mut s = device_show(workspace(vec![audio(1, &long, 0), audio(2, &long, 1)]));
+    start(&mut s, 1);
+    s.run(BLOCK * 2);
+    s
+}
+
+#[test]
+fn a_device_that_keeps_dropping_out_fails_the_cues_after_ten_seconds_down_in_all() {
+    let mut s = running_cue_show();
+    let mut failed_in = None;
+    for outage in 1..=6 {
+        s.take_outbound();
+        lose(&mut s);
+        let opens = s.fake.opens();
+        // Each outage is short (3 s and the replug), far below the grace period.
+        s.wait_wall(Duration::from_secs(3), 6);
+        if outage > 1 {
+            // The backoff kept growing: the stream never stayed up, so the next attempt
+            // after this loss is 4 s away, not 250 ms.
+            assert_eq!(
+                s.fake.opens(),
+                opens,
+                "outage {outage}: an early reopen attempt"
+            );
+        }
+        if broken_device_lost(&s.take_outbound(), 1) {
+            failed_in = Some(outage);
+            break;
+        }
+        replug(&mut s);
+        s.run(BLOCK * 2);
+    }
+    // 10 s of downtime build up in the third outage (about 3.5 s each).
+    assert_eq!(failed_in, Some(3));
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn the_reopen_backoff_starts_again_once_the_stream_has_stayed_up() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.wait_wall(Duration::from_secs(2), 4);
+    replug(&mut s);
+    s.run(BLOCK);
+    s.wait_wall(STABLE_UP + Duration::from_secs(1), 2);
+    let opens = s.fake.opens();
+    lose(&mut s);
+    s.wait_wall(Duration::from_millis(300), 3);
+    assert_eq!(
+        s.fake.opens(),
+        opens + 1,
+        "the first attempt comes after 250 ms again"
+    );
+}
+
+#[test]
+fn a_device_thread_stuck_in_an_open_makes_the_device_unrecoverable_but_not_the_list() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.close_gate();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    s.tick();
+    s.take_outbound();
+    for _ in 0..12 {
+        s.advance(Duration::from_secs(1));
+        s.tick();
+        s.wait_list();
+    }
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("open") && m.contains("restart openLab")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    let codes = workspace_warnings(&msgs).unwrap();
+    assert!(
+        codes.contains(&"device_unrecoverable".to_owned()),
+        "{codes:?}"
+    );
+    assert!(
+        !codes.contains(&"device_lost".to_owned()),
+        "no more 'reconnecting'"
+    );
+    // The cues failed at the grace deadline all the same.
+    assert!(broken_device_lost(&msgs, 1));
+    // The list is still read.
+    s.fake.plug(listed("fake:2", "Fake 2", 8));
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    assert_eq!(
+        list_devices(&mut s),
+        vec![entry(DEV_NAME, 2), entry("Fake 2", 8)]
+    );
+    // A late answer still counts.
+    s.fake.open_gate();
+    s.settle_devices();
+    assert!(!s.control().device_down());
+    let msgs = s.take_outbound();
+    assert_eq!(workspace_warnings(&msgs), Some(vec![]));
+}
+
+#[test]
+fn a_mixer_the_host_never_hands_back_makes_the_device_unrecoverable() {
+    let mut s = running_cue_show();
+    s.fake.hold_on_close(true);
+    lose(&mut s);
+    s.take_outbound();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(DEVICE_JOB_TIMEOUT + Duration::from_secs(1), 12);
+    let msgs = s.take_outbound();
+    let codes = workspace_warnings(&msgs).unwrap();
+    assert!(
+        codes.contains(&"device_unrecoverable".to_owned()),
+        "{codes:?}"
+    );
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("handed the audio engine back"))
+    );
+    assert_eq!(s.fake.opens(), 1);
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn a_panic_in_the_device_layer_during_an_open_is_caught() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.panic_on_open();
+    s.take_outbound();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(2), 4);
+    let msgs = s.take_outbound();
+    assert!(s.control().device_down());
+    assert_eq!(
+        s.control().device_jobs_pending(),
+        0,
+        "the open was answered"
+    );
+    let codes = workspace_warnings(&msgs).unwrap();
+    assert!(
+        codes.contains(&"device_unrecoverable".to_owned()),
+        "{codes:?}"
+    );
+    // The show still answers.
+    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+}
+
+#[test]
+fn a_device_missing_from_one_list_read_while_it_plays_is_not_lost() {
+    let mut s = running_cue_show();
+    s.fake.hide_once(DEV);
+    s.run(BLOCK * 4);
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    s.tick();
+    assert!(
+        !s.control().device_down(),
+        "one read missed it while it played"
+    );
+    s.run(BLOCK * 4);
+    // Listed again: the count starts over.
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    s.run(BLOCK * 4);
+    // Missing from two reads in a row: lost, though it still calls back.
+    s.fake.hide_once(DEV);
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    s.tick();
+    assert!(!s.control().device_down());
+    s.run(BLOCK * 2);
+    s.fake.hide_once(DEV);
+    s.advance(Duration::from_secs(1));
+    s.tick();
+    s.wait_list();
+    s.tick();
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn pause_all_during_an_outage_holds_the_voices_on_the_sample_they_were_cut() {
+    let a = wav(&ramp(3000));
+    let b = wav(&ramp(500));
+    let build = || {
+        let mut c1 = audio(1, &a, 0);
+        c1.continue_mode = ContinueMode::AutoFollow;
+        let mut s = device_show(workspace(vec![c1, audio(2, &b, 1)]));
+        s.run(BLOCK * 2);
+        let at = go(&mut s);
+        (s, at)
+    };
+    // Reference: no outage, Pause All dated on the sample the outage will cut.
+    let (mut reference, at) = build();
+    run_to(&mut reference, at + 640 - BLOCK);
+    let cut = reference.now();
+    reference.transport(TransportAction::PauseAll);
+    run_to(&mut reference, cut + 1280);
+    reference.transport(TransportAction::ResumeAll);
+    run_to(&mut reference, cut + 6400);
+
+    let (mut s, at2) = build();
+    assert_eq!(at2, at);
+    run_to(&mut s, cut);
+    lose(&mut s);
+    s.transport(TransportAction::PauseAll);
+    s.wait_wall(Duration::from_secs(2), 4);
+    replug(&mut s);
+    run_to(&mut s, cut + 1280);
+    s.transport(TransportAction::ResumeAll);
+    run_to(&mut s, cut + 6400);
+    // Not one sample after the cut until the resume, the same continuation, and cue 2 on the
+    // same sample.
+    for ch in 0..2 {
+        assert_eq!(s.channel(ch), reference.channel(ch), "channel {ch}");
+    }
+    let ch1 = s.channel(1);
+    assert!(first_nonzero(&ch1).is_some());
+    assert!(!any_broken(&s.take_outbound()));
+}
+
+#[test]
+fn a_device_back_with_bigger_buffers_keeps_events_on_their_samples() {
+    let (reference, _) = play_through(false);
+    let (s, _) = play_through_with(true, Some(4 * BLOCK as u32));
+    assert_eq!(s.control().block_frames(), 4 * BLOCK);
+    for ch in 0..2 {
+        let (a, b) = (s.channel(ch), reference.channel(ch));
+        let n = a.len().min(b.len());
+        assert!(n > 2500);
+        assert_eq!(a[..n], b[..n], "channel {ch}");
+    }
+}
+
+#[test]
+fn a_first_open_that_never_answers_fails_the_start_with_a_clear_error() {
+    let fake = Fake::new(vec![listed(DEV, DEV_NAME, 2)]);
+    fake.close_gate();
+    let (_ctl, mixer) = openlab_audio::Mixer::new(mixer_config()).unwrap();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let result = devices::start_with_timeout(
+        Box::new(FakeLayer(Arc::clone(&fake))),
+        mixer,
+        openlab_audio::OpenRequest::default(),
+        vec![],
+        inbox,
+        devices::system_clock(),
+        Duration::from_millis(20),
+    );
+    let Err(e) = result else { panic!("started") };
+    assert!(matches!(e, devices::StartError::Timeout(_)));
+    assert!(e.to_string().contains("no answer"), "{e}");
+    fake.open_gate();
 }
