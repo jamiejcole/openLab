@@ -102,16 +102,12 @@ fn odd_names_and_non_files_are_skipped_with_a_reason() {
     // A folder with a valid name, and the files this module moves aside itself.
     fs::create_dir(dir.join(format!("{}.openlab", uuid_for(1).hyphenated()))).unwrap();
     fs::write(dir.join(format!("{}.openlab.corrupt", ws.id)), "x").unwrap();
-    fs::write(
-        dir.join(format!("{}.000000000000123.stale.openlab", ws.id)),
-        "x",
-    )
-    .unwrap();
+    fs::write(dir.join(format!("{}.openlab.corrupt.2", ws.id)), "x").unwrap();
 
     let scan = scan_recovery(&env.dirs, 100);
     assert_eq!(scan.entries.len(), 1);
     assert_eq!(scan.entries[0].workspace_id, ws.id);
-    // The five junk names and the folder; the moved-aside files are silent.
+    // The five junk names and the folder; the `.corrupt` files are silent.
     assert_eq!(scan.warnings.len(), 6, "{:?}", scan.warnings);
 }
 
@@ -151,7 +147,7 @@ fn many_entries_are_bounded() {
     let scan = scan_recovery(&env.dirs, 10);
     assert_eq!(scan.entries.len(), 10);
     assert!(scan.truncated);
-    // Cut off in name order, so the same files are returned every time.
+    // The same files are returned every time.
     let again = scan_recovery(&env.dirs, 10);
     let ids = |s: &openlab_engine::persist::RecoveryScan| {
         let mut v: Vec<_> = s.entries.iter().map(|e| e.workspace_id).collect();
@@ -162,4 +158,90 @@ fn many_entries_are_bounded() {
     let all = scan_recovery(&env.dirs, 40);
     assert_eq!(all.entries.len(), 40);
     assert!(!all.truncated);
+}
+
+#[test]
+fn stale_files_are_listed_flagged_with_the_time_in_their_name() {
+    let env = env();
+    let mut ws = example();
+    ws.name = "Older".into();
+    let dir = env.dirs.recovery_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let stale = dir.join(format!("{}.000000000000123.stale.openlab", ws.id));
+    fs::write(&stale, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let odd_time = dir.join(format!("{}.notanumber.stale.openlab", ws.id));
+    fs::write(&odd_time, "x").unwrap();
+    // Not a stale file of any workspace.
+    fs::write(dir.join("x.stale.openlab"), "x").unwrap();
+    let scan = scan_recovery(&env.dirs, 100);
+    assert_eq!(scan.entries.len(), 2);
+    let named = scan.entries.iter().find(|e| e.path == stale).unwrap();
+    assert!(named.stale);
+    assert_eq!(named.modified_ms, Some(123));
+    assert_eq!(named.show_name.as_deref(), Some("Older"));
+    // An unparseable time falls back to the file's own.
+    let odd = scan.entries.iter().find(|e| e.path == odd_time).unwrap();
+    assert!(odd.stale && odd.modified_ms.is_some_and(|t| t > 123));
+    // The unreadable one is listed without a name; the bad name is skipped.
+    assert_eq!(scan.warnings.len(), 2, "{:?}", scan.warnings);
+}
+
+#[test]
+fn oversize_file_is_listed_without_a_name() {
+    let env = env();
+    let ws = example();
+    fs::create_dir_all(env.dirs.recovery_dir()).unwrap();
+    let mut text = openlab_core::save_show(&ws).unwrap().into_bytes();
+    text.resize(openlab_engine::persist::MAX_NAME_READ_BYTES + 1, b' ');
+    fs::write(env.dirs.recovery_path(ws.id, None), text).unwrap();
+    let scan = scan_recovery(&env.dirs, 100);
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(scan.entries[0].show_name, None);
+    assert_eq!(scan.warnings.len(), 1);
+}
+
+#[test]
+fn the_newest_files_survive_the_bound() {
+    let env = env();
+    let dir = env.dirs.recovery_dir();
+    fs::create_dir_all(&dir).unwrap();
+    // Ids ascend while times descend, so name order is the opposite of newest first.
+    for n in 1..=6u128 {
+        let p = dir.join(format!("{}.openlab", uuid_for(n).hyphenated()));
+        fs::write(&p, "x").unwrap();
+        set_mtime(&p, 10_000_000 - n as u64 * 1000);
+    }
+    let scan = scan_recovery(&env.dirs, 3);
+    assert!(scan.truncated);
+    let times: Vec<_> = scan.entries.iter().map(|e| e.modified_ms).collect();
+    assert_eq!(times, [Some(9_999_000), Some(9_998_000), Some(9_997_000)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_are_not_followed() {
+    let env = env();
+    let dir = env.dirs.recovery_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let real = dir.join("elsewhere.txt");
+    fs::write(&real, "x").unwrap();
+    let link = |n: u128| dir.join(format!("{}.openlab", uuid_for(n).hyphenated()));
+    std::os::unix::fs::symlink(&real, link(1)).unwrap();
+    // A link back to the folder itself.
+    std::os::unix::fs::symlink(&dir, link(2)).unwrap();
+    let scan = scan_recovery(&env.dirs, 100);
+    assert!(scan.entries.is_empty());
+    // Two links, and the unrelated text file.
+    assert_eq!(scan.warnings.len(), 3, "{:?}", scan.warnings);
+}
+
+#[test]
+fn backup_folder_names_give_the_workspace_id() {
+    let env = env();
+    let ws = example();
+    let folder = env.dirs.backups_dir(ws.id, &env.show_path());
+    let name = folder.file_name().unwrap().to_str().unwrap();
+    let parsed = openlab_core::parse_store_name(name).unwrap();
+    assert_eq!(parsed.workspace_id, ws.id);
+    assert_eq!(parsed.path_hash.as_ref().map(String::len), Some(16));
 }
