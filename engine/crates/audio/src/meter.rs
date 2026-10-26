@@ -35,6 +35,24 @@ pub(crate) fn track(m: &mut f32, x: f32) {
     }
 }
 
+/// [`track`] of every sample of `xs`. The peak of a set does not depend on the order it is
+/// taken in, so eight independent lanes (which the compiler can vectorise) give the same result.
+#[inline]
+pub(crate) fn track_all(m: &mut f32, xs: &[f32]) {
+    const LANES: usize = 8;
+    let mut lanes = [0.0f32; LANES];
+    let (chunks, rest) = xs.as_chunks::<LANES>();
+    for c in chunks {
+        for (l, x) in lanes.iter_mut().zip(c) {
+            let a = x.abs();
+            *l = if a > *l { a } else { *l };
+        }
+    }
+    for l in lanes.iter().chain(rest) {
+        track(m, *l);
+    }
+}
+
 /// A tracked peak as published: ±∞ becomes `f32::MAX`, so the meter is always finite.
 #[inline]
 fn finite(m: f32) -> f32 {
@@ -355,6 +373,32 @@ mod tests {
         assert_eq!(m, 0.5);
         track(&mut m, f32::NEG_INFINITY);
         assert_eq!(finite(m), f32::MAX);
+    }
+
+    #[test]
+    fn track_all_is_track_of_each_sample() {
+        let xs: Vec<f32> = (0..203)
+            .map(|i| match i % 7 {
+                0 => f32::NAN,
+                1 => -(i as f32) * 0.01,
+                2 => f32::NEG_INFINITY,
+                _ => (i as f32 * 0.37).sin(),
+            })
+            .collect();
+        for len in [0, 1, 7, 8, 9, 64, 150, 203] {
+            for start in [0.0, 0.3, 5.0] {
+                for skip_inf in [false, true] {
+                    let xs: Vec<f32> = xs[..len]
+                        .iter()
+                        .map(|x| if skip_inf && x.is_infinite() { 0.1 } else { *x })
+                        .collect();
+                    let (mut a, mut b) = (start, start);
+                    xs.iter().for_each(|x| track(&mut a, *x));
+                    track_all(&mut b, &xs);
+                    assert_eq!(a.to_bits(), b.to_bits(), "len {len} start {start}");
+                }
+            }
+        }
     }
 
     #[test]

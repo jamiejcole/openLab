@@ -15,7 +15,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::controller::MixerController;
 use crate::gain::{Curve, CurveRamp, Fade, Param, ramp_value, sanitize_gain};
-use crate::meter::{Meters, XrunNotifier, next_epoch, track};
+use crate::meter::{Meters, XrunNotifier, next_epoch, track_all};
 use crate::plan::{MAX_SLICES, Plays, Slice, StreamLink};
 
 /// Absolute time in frames at the device rate since the mixer started (ARCHITECTURE §3.2).
@@ -486,6 +486,48 @@ fn fade_out_gain(ramp: &mut CurveRamp, fout: Fade, r: Option<u64>, refade: Optio
             ramp.value_of(1.0, 0.0, fout.frames, fout.curve, fout.frames - r)
         }
         _ => 1.0,
+    }
+}
+
+/// Multiplies [`fade_out_gain`] into `gain`, whose frame `j` has `r0 − j` frames after it
+/// (`None`: no known end, gain 1).
+fn apply_fade_out(
+    ramp: &mut CurveRamp,
+    fout: Fade,
+    gain: &mut [f32],
+    r0: Option<u64>,
+    refade: Option<Refade>,
+) {
+    let Some(r0) = r0 else { return };
+    // Frames past the end have no `r` and gain 1.
+    let n = usize::try_from(r0.saturating_add(1))
+        .unwrap_or(usize::MAX)
+        .min(gain.len());
+    let Some(gain) = gain.get_mut(..n) else {
+        return;
+    };
+    // The ramp's length; frames with more than that after them sit before its position 0.
+    let len = match refade {
+        Some(f) => f.len,
+        None => fout.frames,
+    };
+    let lead = usize::try_from(r0.saturating_sub(len))
+        .unwrap_or(usize::MAX)
+        .min(n);
+    let (early, ramped) = gain.split_at_mut(lead);
+    let pos = len.saturating_sub(r0 - lead as u64);
+    match refade {
+        // `f.len − r` saturates to position 0, exactly `f.from`.
+        Some(f) => {
+            early.iter_mut().for_each(|g| *g *= f.from);
+            ramp.apply_of((f.from, 0.0, f.len, fout.curve), pos, ramped, |g, v| {
+                *g *= v
+            });
+        }
+        // Not yet in the fade-out: gain 1.
+        None => ramp.apply_of((1.0, 0.0, fout.frames, fout.curve), pos, ramped, |g, v| {
+            *g *= v
+        }),
     }
 }
 
@@ -1107,15 +1149,36 @@ impl Voice {
                 && let Ok(chunk) = src.read_chunk(want * ch)
             {
                 let (a, b) = chunk.as_slices();
-                let (mut f, mut c) = (got, 0);
-                for &x in a.iter().chain(b) {
-                    if let Some(s) = self.input.get_mut(c * block + f) {
-                        *s = x;
+                if a.len().is_multiple_of(ch) {
+                    // Whole frames on both sides of the wrap: one channel at a time.
+                    let fa = a.len() / ch;
+                    for c in 0..ch {
+                        let Some(dst) = self.input.get_mut(c * block + got..c * block + got + want)
+                        else {
+                            continue;
+                        };
+                        let (da, db) = dst.split_at_mut(fa.min(dst.len()));
+                        for (d, fr) in da
+                            .iter_mut()
+                            .zip(a.chunks_exact(ch))
+                            .chain(db.iter_mut().zip(b.chunks_exact(ch)))
+                        {
+                            if let Some(x) = fr.get(c) {
+                                *d = *x;
+                            }
+                        }
                     }
-                    c += 1;
-                    if c == ch {
-                        c = 0;
-                        f += 1;
+                } else {
+                    let (mut f, mut c) = (got, 0);
+                    for &x in a.iter().chain(b) {
+                        if let Some(s) = self.input.get_mut(c * block + f) {
+                            *s = x;
+                        }
+                        c += 1;
+                        if c == ch {
+                            c = 0;
+                            f += 1;
+                        }
                     }
                 }
                 chunk.commit_all();
@@ -1222,19 +1285,25 @@ impl Voice {
         if !in_active && !out_active {
             return;
         }
-        for (j, g) in gain.iter_mut().take(got).enumerate() {
-            let p = pos0 + j as u64;
-            if in_active && p < fin.frames {
-                *g *= self.env_in.value_of(0.0, 1.0, fin.frames, fin.curve, p);
+        let n = got.min(gain.len());
+        let Some(gain) = gain.get_mut(..n) else {
+            return;
+        };
+        // Frame by frame this is `g *= env_in(p)`, then `g *= fade_out_gain(…)`; each envelope
+        // is applied over the stretch it covers, in that order, so the bits are the same.
+        if in_active {
+            let k = usize::try_from(fin.frames - pos0)
+                .unwrap_or(usize::MAX)
+                .min(n);
+            if let Some(head) = gain.get_mut(..k) {
+                let ramp = (0.0, 1.0, fin.frames, fin.curve);
+                self.env_in.apply_of(ramp, pos0, head, |g, v| *g *= v);
             }
-            if out_active {
-                let refade = if j < rem.split {
-                    rem.refade_first
-                } else {
-                    rem.refade_after
-                };
-                *g *= fade_out_gain(&mut self.env_out, fout, rem.at(j), refade);
-            }
+        }
+        if out_active {
+            let (before, after) = gain.split_at_mut(rem.split.min(n));
+            apply_fade_out(&mut self.env_out, fout, before, rem.first, rem.refade_first);
+            apply_fade_out(&mut self.env_out, fout, after, rem.after, rem.refade_after);
         }
     }
 
@@ -1301,6 +1370,34 @@ impl DelayLine {
             self.write + self.buf.len() - d
         };
         self.buf.get(i).copied().unwrap_or(0.0)
+    }
+
+    /// [`Self::tick`] of every sample of `xs`, in place. Without a delay or a crossfade, each
+    /// sample is stored and comes straight back out, so only the store is done (a copy).
+    fn process(&mut self, xs: &mut [f32]) {
+        let idle = self.xfade >= self.xfade_len && self.next.is_none_or(|d| d == self.delay);
+        if !idle || self.delay != 0 {
+            xs.iter_mut().for_each(|x| *x = self.tick(*x));
+            return;
+        }
+        self.next = None;
+        let mut src: &[f32] = xs;
+        while !src.is_empty() {
+            let room = self.buf.len().saturating_sub(self.write);
+            let k = room.min(src.len());
+            let (head, rest) = src.split_at(k);
+            if let Some(dst) = self.buf.get_mut(self.write..self.write + k) {
+                dst.copy_from_slice(head);
+            }
+            self.write += k;
+            if self.write >= self.buf.len() {
+                self.write = 0;
+            }
+            src = rest;
+            if k == 0 {
+                break;
+            }
+        }
     }
 
     fn tick(&mut self, x: f32) -> f32 {
@@ -1822,6 +1919,13 @@ impl Mixer {
                     if g.is_silent() {
                         continue;
                     }
+                    if let Some(g) = g.steady() {
+                        dv.iter_mut()
+                            .zip(bo)
+                            .take(len)
+                            .for_each(|(y, x)| *y += x * g);
+                        continue;
+                    }
                     g.fill(tmp);
                     p.dirty |= g.is_ramping();
                     for ((y, x), g) in dv.iter_mut().zip(bo).zip(tmp.iter()) {
@@ -1842,11 +1946,23 @@ impl Mixer {
             .zip(delays.iter_mut())
             .zip(out_peak.iter_mut())
         {
-            g.fill(tmp);
-            for ((y, gg), m) in dv.iter_mut().zip(tmp.iter()).zip(mb.iter()) {
-                *y = dl.tick(*y) * gg * m;
-                track(pk, *y);
+            let Some(dv) = dv.get_mut(..len) else {
+                continue;
+            };
+            dl.process(dv);
+            match g.steady() {
+                Some(gg) => dv
+                    .iter_mut()
+                    .zip(mb.iter())
+                    .for_each(|(y, m)| *y = *y * gg * m),
+                None => {
+                    g.fill(tmp);
+                    for ((y, gg), m) in dv.iter_mut().zip(tmp.iter()).zip(mb.iter()) {
+                        *y = *y * gg * m;
+                    }
+                }
             }
+            track_all(pk, dv);
         }
 
         for (f, frame) in out.chunks_exact_mut(outs).skip(a).take(len).enumerate() {
@@ -1948,8 +2064,14 @@ fn render_voice(
                 .for_each(|p| p.advance(len));
             continue;
         }
-        co.fill(og);
-        og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g *= v);
+        // A steady gain is the value `fill` would write to every frame: the same products.
+        match co.steady() {
+            Some(c) => og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g = c * v),
+            None => {
+                co.fill(og);
+                og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g *= v);
+            }
+        }
         let Some(bo) = bus.get_mut(o * block..o * block + len) else {
             continue;
         };
@@ -1961,10 +2083,21 @@ fn render_voice(
             if p.is_silent() {
                 continue;
             }
-            p.fill(tmp);
+            let steady = p.steady();
+            if steady.is_none() {
+                p.fill(tmp);
+            }
             let Some(inp) = input.get(i * block..i * block + len) else {
                 continue;
             };
+            if let Some(g) = steady {
+                for (((b, a), x), h) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(og.iter()) {
+                    let y = x * g * h;
+                    *b += y;
+                    *a += y;
+                }
+                continue;
+            }
             for ((((b, a), x), g), h) in bo
                 .iter_mut()
                 .zip(acc.iter_mut())
@@ -1978,7 +2111,7 @@ fn render_voice(
             }
         }
         if let Some(m) = meter.get_mut(o) {
-            acc.iter().for_each(|y| track(m, *y));
+            track_all(m, acc);
         }
         #[cfg(test)]
         {
@@ -2079,7 +2212,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
             }
         }
         if let Some(m) = meter.get_mut(o) {
-            acc.iter().for_each(|y| track(m, *y));
+            track_all(m, acc);
         }
         #[cfg(test)]
         {
@@ -2289,5 +2422,133 @@ mod tests {
             d.tick(1.0);
         }
         assert_eq!((d.delay, d.next), (60, None));
+    }
+
+    /// `DelayLine::process` on a block gives the bits of `tick` on each sample, through delay
+    /// changes, crossfades, queued changes and blocks longer than the line.
+    #[test]
+    fn delay_process_matches_tick_sample_for_sample() {
+        let (mut a, mut b) = (DelayLine::new(50, 10), DelayLine::new(50, 10));
+        let mut x = 0.0f32;
+        let steps: [(Option<usize>, usize); 12] = [
+            (None, 7),
+            (None, 120),
+            (Some(5), 3),
+            (Some(0), 4),
+            (None, 30),
+            (Some(0), 9),
+            (Some(30), 64),
+            (Some(0), 2),
+            (Some(12), 5),
+            (None, 200),
+            (Some(0), 51),
+            (None, 77),
+        ];
+        let mut buf = [0.0f32; 200];
+        for (delay, n) in steps {
+            if let Some(d) = delay {
+                a.set_delay(d);
+                b.set_delay(d);
+            }
+            let xs = &mut buf[..n];
+            for s in xs.iter_mut() {
+                x += 0.37;
+                *s = x.sin();
+            }
+            let want: Vec<f32> = xs.iter().map(|s| b.tick(*s)).collect();
+            a.process(xs);
+            assert_eq!(
+                xs.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                (a.write, a.delay, a.old_delay, a.xfade, a.next),
+                (b.write, b.delay, b.old_delay, b.xfade, b.next)
+            );
+        }
+    }
+
+    /// The per-frame envelope as it was before it was applied by stretches (M3.19): the
+    /// reference the mixer's must match bit for bit.
+    fn envelope_per_frame(v: &mut Voice, gain: &mut [f32], pos0: u64, got: usize, rem: &Remaining) {
+        let (fin, fout) = (v.fade_in, v.fade_out);
+        let in_active = fin.frames > 0 && pos0 < fin.frames;
+        let out_active = fout.frames > 0
+            && (rem.refade_first.is_some()
+                || rem.refade_after.is_some()
+                || [rem.first, rem.after]
+                    .iter()
+                    .flatten()
+                    .any(|&r| r <= fout.frames.saturating_add(got as u64)));
+        if !in_active && !out_active {
+            return;
+        }
+        for (j, g) in gain.iter_mut().take(got).enumerate() {
+            let p = pos0 + j as u64;
+            if in_active && p < fin.frames {
+                *g *= v.env_in.value_of(0.0, 1.0, fin.frames, fin.curve, p);
+            }
+            if out_active {
+                let refade = if j < rem.split {
+                    rem.refade_first
+                } else {
+                    rem.refade_after
+                };
+                *g *= fade_out_gain(&mut v.env_out, fout, rem.at(j), refade);
+            }
+        }
+    }
+
+    const CURVES: [Curve; 5] = [
+        Curve::Linear,
+        Curve::EqualPower,
+        Curve::SCurve,
+        Curve::Logarithmic,
+        Curve::Exponential,
+    ];
+
+    proptest::proptest! {
+        /// Fade-in, fade-out and refades (either side of a devamp jump), from any position:
+        /// the stretch-wise envelope gives the per-frame one's bits.
+        #[test]
+        fn envelope_by_stretches_matches_the_per_frame_reference(
+            fin in 0u64..300,
+            fout in 0u64..300,
+            curves in (0usize..5, 0usize..5),
+            pos0 in 0u64..400,
+            got in 0usize..=256,
+            first in proptest::option::of(0u64..700),
+            split in proptest::option::of(0usize..300),
+            after in proptest::option::of(0u64..700),
+            refades in (
+                proptest::option::of((0.0f32..2.0, 1u64..300)),
+                proptest::option::of((0.0f32..2.0, 1u64..300)),
+            ),
+            reps in 1usize..4,
+        ) {
+            let refade = |r: Option<(f32, u64)>| r.map(|(from, len)| Refade { from, len });
+            let rem = Remaining {
+                first,
+                split: split.unwrap_or(usize::MAX),
+                after,
+                refade_first: refade(refades.0),
+                refade_after: refade(refades.1),
+            };
+            let (mut a, mut b) = (Voice::new(0, 2, 2, 256, 16), Voice::new(0, 2, 2, 256, 16));
+            for v in [&mut a, &mut b] {
+                v.fade_in = Fade::new(fin, CURVES[curves.0]);
+                v.fade_out = Fade::new(fout, CURVES[curves.1]);
+            }
+            // Repeated calls reuse (or replace) the evaluators' state.
+            for k in 0..reps {
+                let mut ga: Vec<f32> = (0..256).map(|j| 0.5 + j as f32 * 1e-3).collect();
+                let mut gb = ga.clone();
+                let p = pos0 + (k * got) as u64;
+                a.apply_envelope(&mut ga, p, got, &rem);
+                envelope_per_frame(&mut b, &mut gb, p, got, &rem);
+                let bits = |g: &[f32]| g.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                proptest::prop_assert_eq!(bits(&ga), bits(&gb));
+            }
+        }
     }
 }
