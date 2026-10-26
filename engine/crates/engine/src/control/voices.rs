@@ -232,7 +232,7 @@ impl Voices {
             Action::StopVoice { run, at, fade, .. } | Action::PreviewStop { run, at, fade, .. } => {
                 self.stop(run, at, fade, env.floor, fx);
             }
-            Action::PauseVoice { run, at, .. } => self.pause(run, at, fx),
+            Action::PauseVoice { run, at, .. } => self.pause(run, at, env.floor, fx),
             Action::ResumeVoice {
                 cue,
                 run,
@@ -498,18 +498,37 @@ impl Voices {
         }
     }
 
-    fn pause(&mut self, run: RunId, at: SampleTime, fx: &mut Effects) {
+    /// A pause during an outage (`floor`) is dated, like a stop, on the first sample the mixer
+    /// renders when the device is back, so no voice plays one more block. The mixer then holds
+    /// the voice `at − date` frames earlier than the engine thinks: that is counted into the
+    /// action's length (`delay`) and sent again, so the engine's end stays the voice's.
+    fn pause(&mut self, run: RunId, at: SampleTime, floor: Option<SampleTime>, fx: &mut Effects) {
         let Some(&id) = self.by_run.get(&run) else {
             return;
         };
+        let date = self.stop_date(id, at, floor);
         let Some(r) = self.recs.get_mut(&id) else {
             return;
         };
         match &mut r.phase {
             Phase::Playing => {
-                r.paused_at = Some(at);
+                r.paused_at = Some(date);
                 fx.commands
-                    .push((at, CommandKind::PauseVoice { voice: id }));
+                    .push((date, CommandKind::PauseVoice { voice: id }));
+                let early = at.saturating_sub(date);
+                if early > 0 {
+                    r.delay = r.delay.saturating_add(early);
+                    if let Some(total) = r.total
+                        && !r.preview
+                    {
+                        let frames = r.offset.saturating_add(total).saturating_add(r.delay);
+                        fx.feedback.push(Input::ActionLength {
+                            cue: r.cue,
+                            run,
+                            frames,
+                        });
+                    }
+                }
             }
             Phase::Waiting { paused, .. } => *paused = true,
             Phase::Ended => {}

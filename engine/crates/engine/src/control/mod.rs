@@ -189,6 +189,12 @@ pub struct Control {
     backend: Backend,
     config: ControlConfig,
     rate: NonZeroU32,
+    /// Frames per device block: the lookahead and the `now` offset. It follows the open
+    /// stream (a reopen may bring another buffer size).
+    block: u64,
+    /// `now` never goes back: after a reopen with a smaller block it stays at least where it
+    /// was.
+    now_floor: SampleTime,
     cue_outputs: usize,
     revision: u64,
     saved_revision: u64,
@@ -276,6 +282,8 @@ impl Control {
             backend,
             config,
             rate,
+            block,
+            now_floor: 0,
             cue_outputs,
             revision: 0,
             saved_revision: 0,
@@ -316,7 +324,8 @@ impl Control {
     fn now(&self) -> SampleTime {
         self.mixer
             .samples_rendered()
-            .saturating_add(self.config.block_frames.max(1))
+            .saturating_add(self.block)
+            .max(self.now_floor)
     }
 
     /// Handles one inbox message.
@@ -394,7 +403,7 @@ impl Control {
             self.engine.next_deadline(),
             self.deferred.iter().map(|(at, _)| *at),
             self.mixer.samples_rendered(),
-            self.config.block_frames.max(1),
+            self.block,
         );
         let secs = frames as f64 / f64::from(self.rate.get());
         Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
@@ -663,11 +672,25 @@ impl Control {
                     ),
                 ),
                 DeviceEvent::Warn(message) => self.log(LogLevel::Warn, message),
-                DeviceEvent::MixerGone => {
+                DeviceEvent::Unrecoverable { why } => {
                     self.log(
                         LogLevel::Error,
-                        "the audio engine could not be recovered from the lost device: \
-                         restart openLab to play sound again"
+                        format!("audio device \"{name}\": {why}: restart openLab to play sound"),
+                    );
+                    self.warnings_dirty = true;
+                }
+                DeviceEvent::Unstuck => {
+                    self.log(
+                        LogLevel::Info,
+                        format!("audio device \"{name}\": the device thread answers again"),
+                    );
+                    self.warnings_dirty = true;
+                }
+                DeviceEvent::ListStuck => {
+                    self.log(
+                        LogLevel::Error,
+                        "reading the output device list does not finish: hot-plug is not \
+                         followed until it does"
                             .to_owned(),
                     );
                     self.warnings_dirty = true;
@@ -725,28 +748,38 @@ impl Control {
     /// The stream was reopened: patches resolve against the device again (cues that failed
     /// with `device_lost` become playable), voices held through the outage play on.
     fn device_restored(&mut self, name: &str) {
-        let now = self.now();
         let Some(device) = self.backend.device() else {
             return;
         };
         let block = device.info().block_frames;
         self.playable = vec![playable_device(device)];
+        // Another buffer size: the lookahead and `now` follow it, so every deadline is still
+        // committed before the callback that renders it (commands already sent keep their
+        // samples).
+        if let Some(b) = block.map(u64::from).filter(|&b| b > 0 && b != self.block) {
+            match self.engine.set_lookahead(b) {
+                Ok(()) => {
+                    self.now_floor = self.now();
+                    self.log(
+                        LogLevel::Info,
+                        format!(
+                            "audio device \"{name}\" reopened with {b}-frame buffers (was {})",
+                            self.block
+                        ),
+                    );
+                    self.block = b;
+                }
+                Err(e) => self.log(
+                    LogLevel::Warn,
+                    format!("audio device \"{name}\": {e}; commands may land late"),
+                ),
+            }
+        }
+        let now = self.now();
         for input in self.sync_patches(false) {
             self.feed(input, now);
         }
         self.log(LogLevel::Info, format!("audio device \"{name}\" is back"));
-        if let Some(b) = block
-            && u64::from(b) != self.config.block_frames
-        {
-            self.log(
-                LogLevel::Warn,
-                format!(
-                    "audio device \"{name}\" reopened with {b}-frame buffers instead of {}: \
-                     commands may land up to a block late",
-                    self.config.block_frames
-                ),
-            );
-        }
         self.warnings_dirty = true;
     }
 
@@ -1247,12 +1280,13 @@ impl Control {
     fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         if let Some(d) = self.backend.device() {
             let name = &d.info().name;
-            if d.is_gone() {
+            if let Some(why) = d.unrecoverable() {
                 list.push(notice(
                     "device_unrecoverable",
-                    "the audio engine could not be recovered from the lost device: restart \
-                     openLab to play sound again"
-                        .to_owned(),
+                    format!(
+                        "audio device \"{name}\": {why}; sound cannot come back: restart \
+                         openLab"
+                    ),
                     None,
                 ));
             } else if d.grace_expired() {
@@ -1272,6 +1306,15 @@ impl Control {
                          is back within {} s; reconnecting",
                         DEVICE_LOSS_GRACE.as_secs()
                     ),
+                    None,
+                ));
+            }
+            if d.list_stuck() {
+                list.push(notice(
+                    "device_list_stuck",
+                    "reading the output device list does not finish: devices plugged in or out \
+                     are not seen"
+                        .to_owned(),
                     None,
                 ));
             }
@@ -1449,6 +1492,16 @@ impl Control {
     /// The device is down: an outage, sample time standing still.
     pub fn device_down(&self) -> bool {
         self.backend.is_down()
+    }
+
+    /// A device list read is under way (a test driver waits for it).
+    pub fn device_listing(&self) -> bool {
+        self.backend.device().is_some_and(Device::is_listing)
+    }
+
+    /// Frames per block the loop schedules with (follows the open stream).
+    pub fn block_frames(&self) -> u64 {
+        self.block
     }
 
     /// Feedback waiting for its sample.

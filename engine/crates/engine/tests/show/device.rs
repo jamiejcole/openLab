@@ -17,7 +17,7 @@ use openlab_audio::{
 use openlab_core::Workspace;
 use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportAction};
 use openlab_engine::control::devices::{
-    self, DeviceLayer, ListedDevice, MixerBack, OpenFailure, OpenStream, StreamInfo,
+    self, DeviceLayer, DeviceLister, ListedDevice, MixerBack, OpenFailure, OpenStream, StreamInfo,
 };
 use openlab_engine::control::{Backend, Control, ControlConfig, Flow, Inbox};
 
@@ -56,6 +56,12 @@ struct State {
     opens: u32,
     /// The device the stream is open on.
     open_id: Option<String>,
+    /// Frames per callback of the streams opened from now on.
+    block: u32,
+    /// The next open panics inside the layer.
+    panic_on_open: bool,
+    /// The next list read leaves this device out (a host busy reconfiguring it).
+    hide_once: Option<String>,
 }
 
 /// The stand-in host audio system, shared by the layer (device thread) and the test.
@@ -67,10 +73,11 @@ pub struct Fake {
 }
 
 impl Fake {
-    fn new(devices: Vec<ListedDevice>) -> Arc<Self> {
+    pub fn new(devices: Vec<ListedDevice>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
                 devices,
+                block: u32::try_from(BLOCK).unwrap(),
                 ..State::default()
             }),
             gate: Mutex::new(true),
@@ -117,6 +124,24 @@ impl Fake {
         drop(held);
     }
 
+    /// Streams opened from now on call back with `frames` frames.
+    pub fn set_block(&self, frames: u32) {
+        self.state.lock().unwrap().block = frames;
+    }
+
+    /// Frames per callback of the open stream.
+    pub fn block(&self) -> u32 {
+        self.state.lock().unwrap().block
+    }
+
+    pub fn panic_on_open(&self) {
+        self.state.lock().unwrap().panic_on_open = true;
+    }
+
+    pub fn hide_once(&self, id: &str) {
+        self.state.lock().unwrap().hide_once = Some(id.to_owned());
+    }
+
     pub fn opens(&self) -> u32 {
         self.state.lock().unwrap().opens
     }
@@ -140,11 +165,23 @@ impl Fake {
     }
 }
 
-struct FakeLayer(Arc<Fake>);
+pub struct FakeLayer(pub Arc<Fake>);
+
+impl DeviceLister for FakeLayer {
+    fn list(&mut self) -> Result<Vec<ListedDevice>, DeviceError> {
+        let mut s = self.0.state.lock().unwrap();
+        let hidden = s.hide_once.take();
+        Ok(s.devices
+            .iter()
+            .filter(|d| Some(&d.id) != hidden.as_ref())
+            .cloned()
+            .collect())
+    }
+}
 
 impl DeviceLayer for FakeLayer {
-    fn list(&mut self) -> Result<Vec<ListedDevice>, DeviceError> {
-        Ok(self.0.state.lock().unwrap().devices.clone())
+    fn lister(&self) -> Box<dyn DeviceLister> {
+        Box::new(FakeLayer(Arc::clone(&self.0)))
     }
 
     fn open(
@@ -160,6 +197,10 @@ impl DeviceLayer for FakeLayer {
         }
         let mut s = self.0.state.lock().unwrap();
         s.opens += 1;
+        if s.panic_on_open {
+            drop(s);
+            panic!("the stand-in layer panics during open");
+        }
         let found = s
             .devices
             .iter()
@@ -186,7 +227,7 @@ impl DeviceLayer for FakeLayer {
             name: device.name.clone(),
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
-            block_frames: Some(u32::try_from(BLOCK).unwrap()),
+            block_frames: Some(s.block),
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -304,7 +345,7 @@ impl DeviceShow {
     }
 
     pub fn now(&self) -> u64 {
-        self.rendered() + BLOCK
+        self.rendered() + self.control.block_frames()
     }
 
     /// Moves the wall clock on (the device policy's only clock).
@@ -357,6 +398,18 @@ impl DeviceShow {
         }
     }
 
+    /// Waits for a list read under way (only: an open or close may be stuck).
+    pub fn wait_list(&mut self) {
+        while self.control.device_listing() {
+            match self.inbox.recv_timeout(WAIT) {
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) => panic!("the list thread did not answer"),
+            }
+        }
+    }
+
     /// Moves the wall clock by `d` in `steps` steps, settling the device after each.
     pub fn wait_wall(&mut self, d: Duration, steps: u32) {
         for _ in 0..steps {
@@ -377,7 +430,7 @@ impl DeviceShow {
         if self.fake.is_rendering() {
             self.settle_streams();
         }
-        if let Some((ch, buf)) = self.fake.render(BLOCK as usize) {
+        if let Some((ch, buf)) = self.fake.render(self.fake.block() as usize) {
             if self.capture.len() < ch {
                 self.capture.resize(ch, Vec::new());
             }
@@ -398,7 +451,7 @@ impl DeviceShow {
     }
 
     fn settle_streams(&mut self) {
-        let end = self.rendered() + BLOCK;
+        let end = self.rendered() + u64::from(self.fake.block());
         for (handle, needed) in self.control.stream_needs(end) {
             assert!(
                 matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),

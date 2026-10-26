@@ -70,7 +70,7 @@ Keep the crate count at three. Add a module before adding a crate.
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
 
-Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Listing, opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream and answers through the control inbox as well. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
 
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
