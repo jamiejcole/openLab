@@ -83,6 +83,20 @@ never touched; M4.4 can show them as "recovery from another copy".
 
 The restore prompt itself is the UI's (M4.4).
 
+### When the show file cannot be loaded
+
+`check_recovery` needs the workspace id, which comes from the show file. When that file is corrupt or
+gone, `scan_recovery(dirs, max_entries)` lists `Recovery/` instead: one `RecoveryEntry` per autosave
+(`workspace_id` and `path_hash` from the file name, `show_name` read from the file when it parses and holds
+that workspace, `modified_ms`, `path`), newest first. It is read-only. A damaged file is still listed, with
+the id from its name and no show name. Names are parsed by core's `parse_recovery_file_name` /
+`parse_store_name` (strict: lower-case hyphenated UUID, optional `-` and 16 lower-case hex digits; the
+same parser reads the workspace id of a `Backups/<id>-<hash>` folder name). Anything else is skipped with a
+warning in `RecoveryScan::warnings`; `.stale.openlab` and `.corrupt` files this module made are skipped
+silently. Bounds: at most `max_entries` files returned (`MAX_RECOVERY_ENTRIES` is a default), 5000
+directory entries looked at, no recursion (`Recovery/` is flat); `truncated` says a bound was hit. Names
+are read by parsing each file, so call it off the control thread. The prompt and protocol wiring is M4.4.
+
 ## Per-machine settings (WS-06, WS-07)
 
 `settings.json` is never part of a show file:
