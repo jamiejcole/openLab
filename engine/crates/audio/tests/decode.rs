@@ -260,7 +260,7 @@ fn damaged_media_plays_with_silence_where_frames_are_missing() {
             "tone.m4a",
             "m4a",
             damage("tone.m4a", 5_964, 16),
-            17_408,
+            16_384,
             1_024,
         ),
     ];
@@ -383,6 +383,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
         "tone-alac.m4a",
         "tone.mp3",
         "tone.m4a",
+        "tone-onset.m4a",
+        "tone-onset-noedit.m4a",
         "tone.ogg",
     ]
     .iter()
