@@ -476,6 +476,11 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
+        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
+        // ends that fade at once and starts the cue afresh.
+        if matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked) {
+            self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
+        }
         let before = self.state(cue);
         let (run, offset, voice) = match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),

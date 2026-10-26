@@ -81,9 +81,12 @@ impl CueEngine {
                 g.devamp = None;
                 run.post_wait = None;
                 run.follow = false;
+                run.panicked = true;
                 self.report(cue, before, now, cx);
             }
             (true, Voice::Started { at: started, .. }, None) => {
+                // Part of the panic either way (see `Run::panicked`).
+                run.panicked = true;
                 if run.stop_end.is_some_and(|e| e <= end) {
                     return;
                 }

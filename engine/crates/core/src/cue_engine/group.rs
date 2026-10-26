@@ -405,6 +405,20 @@ impl CueEngine {
                     let post_waiting = run.phase == Phase::Done
                         && run.paused_at.is_none()
                         && run.group.as_ref().is_some_and(|g| !g.stopping);
+                    // A group stopping in a panic runs on, adopted, with the new child: it no
+                    // longer waits to stop, and ends when its last child does. So do the groups
+                    // around it.
+                    if run.panicked
+                        && let Some(g) = run.group.as_mut()
+                    {
+                        run.panicked = false;
+                        g.stopping = false;
+                        g.adopted = true;
+                        run.follow = false;
+                        run.post_wait = None;
+                        self.report(group, before, at, cx);
+                        continue;
+                    }
                     if post_waiting {
                         run.phase = Phase::Action {
                             start: at,

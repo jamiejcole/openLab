@@ -97,6 +97,9 @@ pub(super) struct Run {
     /// its schedule. Once nothing is pending the slot is removed (the problems, not the run,
     /// make it report `broken` then).
     pub static_broken: bool,
+    /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
+    /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
+    pub panicked: bool,
     /// Set for Group cues: how the group runs its children.
     pub group: Option<GroupRun>,
     /// Audio cues: the gains Fade cues have set or are moving (the model's levels apply to the
@@ -208,6 +211,7 @@ impl Run {
             committed: 0,
             broken: None,
             static_broken: false,
+            panicked: false,
             group,
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),

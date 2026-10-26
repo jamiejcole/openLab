@@ -771,3 +771,177 @@ fn panic_and_pause_all_reach_the_children_of_a_group_with_a_duplicated_id() {
     rig.tick(1100);
     rig.assert_quiet();
 }
+
+// ----- triggers during a panic fade (review M1) -----
+
+#[test]
+fn go_on_a_cue_fading_out_in_a_panic_starts_it_afresh() {
+    // Regression (review M1): the operator panicked by mistake, set the playhead back and
+    // pressed GO. The cue was `stopping`, so the GO was ignored and the playhead moved on.
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    rig.ws.settings.panic_duration = 2.0;
+    rig.go(0);
+    let old = rig.run(1);
+    rig.panic(100);
+    rig.at(
+        1500,
+        Input::SetPlayhead {
+            list: list_id(1),
+            cue: Some(id(1)),
+        },
+    );
+    let go = rig.go(1600);
+    assert!(warnings(&go).is_empty());
+    assert_eq!(voice_stops(&go), vec![(id(1), 1600, None)]);
+    assert_eq!(voice_starts(&go), vec![(id(1), 1600)]);
+    let fresh = rig.run(1);
+    assert_ne!(fresh, old);
+    assert_eq!(
+        changes(&go, 1),
+        vec![
+            (CueState::Idle, 1600),
+            (CueState::PreWaiting, 1600),
+            (CueState::Running, 1600)
+        ]
+    );
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(2)));
+    // The panic's end does not touch the new run.
+    assert!(changes(&rig.tick(2100), 1).is_empty());
+    assert_eq!(rig.state(1), CueState::Running);
+    // An ordinary stop with fade keeps the second-trigger rule.
+    rig.at(
+        3000,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 1.0,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    assert_eq!(
+        warnings(&rig.start(3100, 1)),
+        vec![EngineWarning::TriggerIgnored {
+            cue: id(1),
+            state: CueState::Stopping
+        }]
+    );
+}
+
+fn feedback(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    let run = rig.run(n);
+    rig.at(
+        now,
+        Input::ActionEnded {
+            cue: id(n),
+            run,
+            at: now,
+        },
+    )
+}
+
+#[test]
+fn a_group_in_a_panic_restarts_on_start_and_a_child_started_on_its_own_runs_it_on() {
+    let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.panic(100);
+    assert_eq!(rig.state(1), CueState::Stopping);
+    // GO on a child during the panic: it starts afresh, and its group runs on (adopted)
+    // instead of staying `stopping` until that child ends.
+    let start = rig.start(200, 3);
+    assert_eq!(voice_starts(&start), vec![(id(3), 200)]);
+    assert_eq!(changes(&start, 1), vec![(CueState::Running, 200)]);
+    let end = rig.tick(1100);
+    assert_eq!(changes(&end, 2), vec![(CueState::Idle, 1100)]);
+    assert_eq!(rig.state(1), CueState::Running);
+    let done = feedback(&mut rig, 5000, 3);
+    assert_eq!(changes(&done, 1), vec![(CueState::Idle, 5000)]);
+
+    // Start on the group during its panic: everything in it stops at once and it starts again.
+    let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.panic(100);
+    let restart = rig.start(300, 1);
+    assert!(warnings(&restart).is_empty());
+    assert_eq!(
+        voice_stops(&restart),
+        vec![(id(3), 300, None), (id(2), 300, None)]
+    );
+    assert_eq!(voice_starts(&restart), vec![(id(2), 300), (id(3), 300)]);
+    assert_eq!(rig.state(1), CueState::Running);
+    rig.tick(1100);
+    assert_eq!(rig.state(2), CueState::Running);
+}
+
+// ----- feedback during the panic fade (review M3) -----
+
+#[test]
+fn feedback_during_the_panic_fade_starts_nothing() {
+    let mut rig = Rig::new(vec![
+        timed(sound(1), 0.0, 0.0, ContinueMode::AutoFollow),
+        memo(2),
+        grp(
+            3,
+            GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            vec![sound(4), sound(5)],
+        ),
+        sound(6),
+        sound(7),
+        devamp_cue(8, 7),
+        memo(9),
+    ]);
+    for n in [1, 3, 6, 7] {
+        rig.start(0, n);
+    }
+    rig.start(10, 8);
+    let (run6, run7) = (rig.run(6), rig.run(7));
+    rig.panic(100);
+    let mut during = Vec::new();
+    // The auto-follow cue's voice ends during the fade (its fade-out stop finished early).
+    during.extend(feedback(&mut rig, 300, 1));
+    // The playlist's current child ends.
+    during.extend(feedback(&mut rig, 400, 4));
+    // A voice fails.
+    during.extend(rig.at(
+        500,
+        Input::ActionFailed {
+            cue: id(6),
+            run: run6,
+            reason: BrokenReason::StreamFailed,
+        },
+    ));
+    // The devamp answer arrives, leaving the loop inside the fade.
+    during.extend(rig.at(
+        600,
+        Input::DevampScheduled {
+            cue: id(7),
+            run: run7,
+            at: 700,
+        },
+    ));
+    during.extend(rig.tick(700));
+    assert!(starts(&during).is_empty(), "{during:?}");
+    assert!(voice_starts(&during).is_empty());
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(5), CueState::Idle);
+    assert_eq!(rig.state(6), CueState::Broken);
+    rig.tick(1100);
+    assert_eq!(
+        rig.engine.cue_states().collect::<Vec<_>>(),
+        vec![(id(6), CueState::Broken)]
+    );
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Warning(w) => Some(w.clone()),
+            _ => None,
+        })
+        .collect()
+}
