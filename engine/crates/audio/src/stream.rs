@@ -459,6 +459,7 @@ impl DiskStreamer {
             exit_state: vec![ExitState::Unknown; entries],
             closure_ready: vec![false; entries],
             closure_from: 0,
+            direct_from: 0,
             exit_cap: self.config.exit_bytes,
             exit_used: 0,
             exit_wip: None,
@@ -630,6 +631,8 @@ struct Task {
     closure_ready: Vec<bool>,
     /// Entries before this one have their exits decided or can no longer be devamped.
     closure_from: usize,
+    /// The same for each entry's own exit only.
+    direct_from: usize,
     exit_cap: usize,
     exit_used: usize,
     exit_wip: Option<ExitWip>,
@@ -672,14 +675,26 @@ impl Task {
             return self.build_exit_step();
         }
         // The first chunk goes into the ring before any exit is built, so a cue primes as fast
-        // as one without loops. From then on no frame of a loop is written before every exit a
-        // devamp of it can need is decided, so the voice finds them ready (loops within the
-        // first chunk are caught up on first).
-        if (self.written >= CHUNK_FRAMES as u64 || self.entry >= self.slices.len())
-            && let Some(target) = self.next_exit()
-        {
-            self.start_exit(target)?;
-            return Ok(Progress::Worked);
+        // as one without loops. From then on no frame of a loop is written before its own exit
+        // is decided (loops within the first chunk are caught up on first), so a devamp of it
+        // finds the exit ready. The exits of loops that an exit buffer reaches are built
+        // whenever the ring is at least two chunks ahead of the voice, so building them can
+        // never starve the ring.
+        let at_end = self.entry >= self.slices.len();
+        if self.written >= CHUNK_FRAMES as u64 || at_end {
+            if let Some(target) = self.direct_exit() {
+                self.start_exit(target)?;
+                return Ok(Progress::Worked);
+            }
+            let ch = usize::from(self.info.channels).max(1);
+            let cap = self.producer.buffer().capacity() / ch;
+            let lead = cap.saturating_sub(self.producer.slots() / ch);
+            if (at_end || lead >= (2 * CHUNK_FRAMES).min(cap / 2))
+                && let Some(target) = self.next_exit()
+            {
+                self.start_exit(target)?;
+                return Ok(Progress::Worked);
+            }
         }
         let Some(s) = self.slices.get(self.entry).copied() else {
             // Stay until the voice lets go of the ring: a devamp may still need a cut.
@@ -978,6 +993,7 @@ impl Task {
         self.offset = written.saturating_sub(start);
         self.drop_cache();
         self.closure_from = self.closure_from.max(target);
+        self.direct_from = self.direct_from.max(target);
         self.link.resume(vpos, self.written);
         let written = self.written;
         self.shared.update(|s| {
@@ -1028,6 +1044,21 @@ impl Task {
             return None;
         }
         (k + 1..self.slices.len()).find(|&i| self.slices.get(i).map(|x| x.index) != Some(s.index))
+    }
+
+    /// The undecided exit of the nearest loop from the latest cut's target up to the write
+    /// cursor: the voice can reach that loop through the ring.
+    fn direct_exit(&mut self) -> Option<usize> {
+        let upto = self.entry.min(self.slices.len().saturating_sub(1));
+        while self.direct_from <= upto {
+            if let Some(t) = self.loop_target(self.direct_from)
+                && self.exit_state.get(t) == Some(&ExitState::Unknown)
+            {
+                return Some(t);
+            }
+            self.direct_from += 1;
+        }
+        None
     }
 
     /// The next exit to build for the entries the voice can be in (from the latest cut's target
@@ -1923,5 +1954,48 @@ mod tests {
                 panic!("case {case}: {e}: {slices:?} exit {exit_ms} leaves {leaves:?}");
             }
         }
+    }
+
+    /// Review M2: a cue started as soon as it is primed, on a dense table (60 slices of 100 ms,
+    /// every other one looping, so every exit buffer reaches further loops), with one worker
+    /// step per 64-frame block: exit building never lets the ring run dry.
+    #[test]
+    fn a_cue_started_at_priming_on_a_dense_table_never_underruns() {
+        const LEN: u64 = 4_800;
+        let frames = 60 * LEN;
+        let pre =
+            crate::decode::Preloaded::from_samples(1, 48_000, (0..frames).map(mark).collect());
+        let marks: Vec<u64> = (1..60).map(|k| k * LEN).collect();
+        let plays: Vec<Plays> = (0..60)
+            .map(|k| {
+                if k % 2 == 0 {
+                    Plays::Times(2)
+                } else {
+                    Plays::Times(1)
+                }
+            })
+            .collect();
+        let slices = crate::plan(0..frames, &marks, &plays, 0).unwrap();
+        let (_d, mut t, p) = hand_task(StreamerConfig::new(48_000), pre, slices.clone());
+        while !p.handle.is_primed() {
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        let (mut ctl, mut r) = mixer();
+        let _h = play(&mut ctl, p);
+        let mut out = Vec::new();
+        while out.len() < 200_000 {
+            assert!(matches!(t.step(), Progress::Worked | Progress::Idle));
+            let mut buf = vec![0.0; 64];
+            crate::no_alloc_for_tests(|| r.render_into(&mut buf, &[64]));
+            out.extend(buf);
+            assert_eq!(ctl.underrun_frames(), 0, "underrun by frame {}", out.len());
+        }
+        same(&out, &model(&slices, &[], out.len())).unwrap();
+        // Every exit was still built along the way.
+        assert!(
+            (1..59)
+                .step_by(2)
+                .all(|k| t.exit_state[k] == ExitState::Ready)
+        );
     }
 }
