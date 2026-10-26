@@ -156,7 +156,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M5.17 Reopen main window after close (Dock click / Window menu) [NFR-01 operator safety] — from M0 review (L6)
 
 ## M6 — Release v0.0.1
-- [ ] M6.1 Universal `.app` with embedded engine, ad-hoc signed, `.dmg` script, version stamping [DST-01, DST-03, NFR-30]
+- [ ] M6.1 Universal `.app` with embedded engine, ad-hoc signed, `.dmg` script, version stamping [DST-01, DST-03, NFR-30] — app icon: build the `AppIcon` asset catalog from `mac/Branding/openlab-logo-1024.png` (logo supplied by the user, 2026-10-26)
 - [ ] M6.2 Docs: getting started, contributor guide; verify file-format/protocol/OSC docs complete [DOC-01..DOC-04]
 - [ ] M6.3 Release checklist run: full test suite, soak, perf budgets, manual smoke test of a sample show
 - [ ] M6.4 Tick all v0.0.1 requirements in `REQUIREMENTS.md`; tag `v0.0.1`
