@@ -20,7 +20,7 @@ use openlab_core::protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -362,6 +362,7 @@ struct Conn {
     hub_id: u64,
     bcast: mpsc::Receiver<Broadcast>,
     lagged: Arc<AtomicBool>,
+    wake: Arc<Notify>,
     reply_tx: Sender<ServerMessage>,
     reply_rx: mpsc::UnboundedReceiver<ServerMessage>,
     /// Last `model_changed` revision / `runtime` seq this client has been sent or was told by a
@@ -392,6 +393,7 @@ async fn run(shared: Arc<Shared>, ws: Ws) {
         hub_id: registration.id,
         bcast: registration.rx,
         lagged: registration.lagged,
+        wake: registration.wake,
         reply_tx,
         reply_rx,
         last_rev: 0,
@@ -482,6 +484,7 @@ impl Conn {
         .await?;
 
         let mut shutdown = self.shared.shutdown.clone();
+        let wake = self.wake.clone();
         let config = self.shared.config.clone();
         let mut ticker = interval_at(Instant::now() + config.ping_interval, config.ping_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -493,6 +496,8 @@ impl Conn {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => return Ok(()),
+                // Only wakes the loop; `resync` runs at the top of the next turn.
+                () = wake.notified() => {}
                 // Broadcasts before replies: the `model_changed` of a command is queued here
                 // before its `result` is ready (ordering also enforced in `reply`).
                 item = self.bcast.recv(), if self.internal_pending == 0 => match item {
