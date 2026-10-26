@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 247267df4f399b04e2c5442c0a31f9c6df172b33e91191f7943f72fe22da5452 # shrinks to sequence = [Pick { op: 0, a: 1943252662, b: 0, c: 1099327988, d: 394724675 }, Pick { op: 10, a: 1709372172, b: 579467345, c: 4157761893, d: 2999300827 }, Pick { op: 2, a: 0, b: 0, c: 0, d: 21599700 }, Pick { op: 0, a: 0, b: 0, c: 0, d: 1639867860 }, Pick { op: 4, a: 0, b: 0, c: 0, d: 3752021 }, Pick { op: 10, a: 498538303, b: 100690344, c: 4201846530, d: 829888387 }]
