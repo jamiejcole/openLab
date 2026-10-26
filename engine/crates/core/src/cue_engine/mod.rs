@@ -1271,6 +1271,8 @@ impl CueEngine {
                 Exit::Completed
             };
             match run.broken {
+                // Its device is back already: nothing keeps it from playing.
+                Some(BrokenReason::DeviceLost) if self.device_back(cue) => self.slots.remove(&cue),
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };
