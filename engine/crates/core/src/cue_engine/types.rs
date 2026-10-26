@@ -162,6 +162,19 @@ pub enum Input {
         run: RunId,
         reason: BrokenReason,
     },
+    /// From the binary, when it starts (or devamps) a voice whose end it knows in advance: the
+    /// run's action is `frames` samples long, counted from the action's start (a load-to-time
+    /// offset included), so it ends when the voice's position reaches `frames`. The engine
+    /// then owns the end as a deadline on that exact sample (shifted by pause/resume, gone with
+    /// a stop or a failure), so a continue or playlist move comes on the end sample itself, not
+    /// when the mixer's report arrives. The voice's `ActionEnded` still counts if it comes
+    /// first (an earlier end); after the deadline it is stale. A later `ActionLength` (after a
+    /// devamp) replaces the earlier one. See `docs/cue-engine.md`, "Feedback".
+    ActionLength {
+        cue: CueId,
+        run: RunId,
+        frames: SampleTime,
+    },
     /// Feedback (`DevampScheduled`): the devamp sent for this run's voice was accepted; the voice
     /// leaves its loop on sample `at`.
     DevampScheduled {
