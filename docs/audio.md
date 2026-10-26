@@ -2,7 +2,7 @@
 
 How the real-time mixer works and the exact semantics its tests pin down. Architecture context: [ARCHITECTURE §3](ARCHITECTURE.md#3-engine-internals). Requirement IDs refer to [`REQUIREMENTS.md`](../REQUIREMENTS.md).
 
-Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7); waveform overview data (M3.9). The device layer (M3.8) is not built yet.
+Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1, M3.2, M3.4, M3.5, M3.11); decoding, resampling, disk streaming and preload (M3.3); slices, loops and devamp (M3.6); voice pause and resume (M3.18); meters and the xrun counter (M3.7); waveform overview data (M3.9); the device layer with `assert_no_alloc` around its callback (M3.8, M3.12). The engine's use of it (reopen policy, settings, warnings) is M4.
 
 ## Threads and queues
 
@@ -60,7 +60,7 @@ Everything `process` can reach is allocation-free, lock-free, and makes no sysca
 - `pump` drains the return queue first, which keeps it within its capacity.
 - If it were ever full anyway, the mixer leaks the box rather than freeing it on the audio thread, and counts the leak (`leaked_starts`, expected to stay 0).
 
-**Tests** run `process` under `assert_no_alloc` (a dev-dependency set to count violations), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), pause and resume (`no_allocation_across_pause_and_resume`, `tests/pause.rs`), meters on 64 voices with their reads (`no_allocation_with_meters_active_on_64_voices`), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
+**Tests** run `process` under `assert_no_alloc` (set to count violations in tests), so any allocation on these paths fails the test. Paths covered: voice start/stop, ramps, underrun, voice end, rejection, 64 simultaneous voices, full event queue, full return queue, full pending set, slice tables, loops, devamp (stop, continue, cut and resume), pause and resume (`no_allocation_across_pause_and_resume`, `tests/pause.rs`), meters on 64 voices with their reads (`no_allocation_with_meters_active_on_64_voices`), and every disk-streaming test (`tests/stream.rs`, `tests/slices.rs`).
 
 ## Timing (NFR-21, NFR-22)
 
@@ -321,7 +321,86 @@ If `process` panics (a fault, ARCHITECTURE §3.4), the peaks it still held local
 
 Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per slot, about 40 bytes (identity and the reader's copy). Default config (128 voices × 2 outputs): about 10 KB. The maximum (4096 voices × 64 outputs): about 5.4 MB, small next to those voices' input buffers.
 
-**Xruns.** `xruns()` is a monotonic count of xruns reported by the device layer. The device callback calls `Mixer::note_xruns(count)` when the host reports one (or the device layer sees a gap in the callback timestamps; detecting it is M3.8's job); `Mixer::xrun_notifier()` returns an `XrunNotifier` (clone, `Send + Sync`) for the host's error callback on another thread. Both are one atomic add, so real-time safe. Voice underruns are not xruns; they are counted in `underrun_frames`. The offline driver injects xruns with `OfflineRenderer::inject_xruns(count)`. Logging the count and showing it to the operator are M4.7/M5 work.
+**Xruns.** `xruns()` is a monotonic count of xruns reported by the device layer. The device layer reports host xruns and timestamp gaps through it (see Device layer); `Mixer::xrun_notifier()` returns an `XrunNotifier` (clone, `Send + Sync`) for the host's error callback on another thread. Both are one atomic add, so real-time safe. Voice underruns are not xruns; they are counted in `underrun_frames`. The offline driver injects xruns with `OfflineRenderer::inject_xruns(count)`. Logging the count and showing it to the operator are M4.7/M5 work.
+
+## Device layer (AUD-01, AUD-03, AUD-21, NFR-08, ARCHITECTURE §3.1, §3.4, §3.5)
+
+Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `device` cargo feature, on by default. The fuzz crate builds `openlab-audio` with `default-features = false`, so it needs no ALSA headers. The other two are pure and always built.
+
+| Module | Does | Feature |
+|---|---|---|
+| `negotiate.rs` | `negotiate(&[ConfigRange], Request) -> Negotiated`, `Latency`, `reopen_delay_ms` | none |
+| `output.rs` | `OutputHost` (the callback adapter), `HostLink`, `DeviceMonitor`, `ErrorReporter` | none |
+| `device.rs` | `output_devices()`, `default_output_device_id()`, `open_output(mixer, &OpenRequest)`, `OutputStream` | `device` |
+
+**Listing.** `output_devices()` lists the default host's output devices (CoreAudio on macOS, WASAPI on Windows, ALSA on Linux; ASIO later, REQUIREMENTS §21). Each `DeviceInfo` has a stable `id` (cpal's `DeviceId`, `"host:id"`, to store in settings), a `name`, `is_default` and its `configs`. Zero devices is a valid answer.
+
+**Negotiation** (pure). The request is the mixer's rate and output count plus an optional buffer size.
+
+- **Rate.** It must be supported exactly: the mixer's rate is fixed when it is built. Otherwise the result is `NegotiateError::SampleRate`, and the engine decides whether to rebuild the mixer at a rate the device runs at.
+- **Channels.** The exact count if the device offers it; else the smallest larger count, with the extra device channels silent; else the largest smaller count. With fewer channels, mixer outputs `0..mapped` reach the device and the rest are not heard: `Negotiated::outputs_dropped` / `OutputStream::outputs_dropped`, for the engine to warn about. At most 64 mixer outputs are ever used. A device with more than 64 channels opens at its own count, and the channels above 64 stay silent.
+- **Format** at that channel count: f32, then f64, i32, i16, u16. Other formats (i24, u8, DSD) are skipped. A device that offers none of these gives `NoConfigs`.
+- **Buffer.** The requested size if the range includes it, else the nearest end of the range. If the host cannot report its range, the requested size is tried, and if the host refuses it, `open_output` falls back to the host default. With no request, the host default is used.
+
+**Opening.** `open_output(mixer, &OpenRequest { device_id, buffer_frames })` negotiates, builds a cpal stream for the chosen format, and starts it. Any failure returns an `OpenError` with a `DeviceError { kind, message }`, where `kind` is one of NotFound, Unavailable, Busy, PermissionDenied, UnsupportedConfig, `Negotiate(..)` or Backend. **The mixer is never lost**: `OpenError::take_mixer()` hands it back. When the host cannot report the default device's id, the open fails with Backend instead of storing an empty id.
+
+**The stream never follows the system default.** `device_id: None` means the device that is the default when `open_output` runs. It is resolved to that device's concrete id and opened by id (CoreAudio: an AUHAL unit with disconnect reporting, not the default-output unit), and `OutputStream::device_id()` reports the resolved id. cpal's default-device stream would follow the system default: CoreAudio reroutes it in place, and WASAPI invalidates it. Then a show could move to headphones that connect mid-show while `negotiated()` and `outputs_dropped()` still describe the old device. A reroute that a host reports anyway is `Rerouted`, which sets `needs_reopen()`.
+
+**The callback.** The cpal data callback calls `OutputHost::render(buf, Some(CallbackTime))` for the buffer's format. Tests and any other driver call the same function with their own buffers.
+
+- f32 buffers whose channel count equals the mixer's outputs are rendered in place.
+- Every other buffer goes through a preallocated scratch buffer of `SCRATCH_FRAMES` (1024) frames × mixer outputs. A larger callback is rendered in pieces, so it never allocates. Conversion clamps to ±1 and NaN becomes 0: i16/u16 use ×32768 rounded and saturated, i32 uses ×2³¹.
+- A buffer that is not whole frames gets its tail silenced and is counted as `bad_buffer`. So is a buffer in a format the stream was not opened with.
+- The whole body runs inside `catch_unwind` on top of the mixer's own guard. A panic outside the mixer leaves the buffer silent and is counted in `callback_faults`.
+
+**Debug allocation guard (M3.12, NFR-02).** In debug builds the callback body runs inside `assert_no_alloc::assert_no_alloc`. `assert_no_alloc` is a normal dependency with `warn_debug`: a violation is counted rather than aborting, so a debug build survives a mixer panic, whose unwinding allocates. That fault path is already loud, and it includes the M3-A L3 case where a `Box<VoiceStart>` is freed during unwinding. The callback adds the thread-local violation count to `DeviceMonitor::alloc_violations()`. On a violation the crate writes one line to stderr, on the audio thread, and only in a build that is already faulty. **Detection needs the binary to install `assert_no_alloc::AllocDisabler` as its global allocator in debug builds**; the engine binary does this in M4.2. Release builds skip the wrapper entirely.
+
+**Errors and loss (NFR-08).** cpal's error callback, which runs on a host thread and sometimes on the audio thread, maps each error kind to a `HostError` and calls `ErrorReporter::report`. That is one or two atomic writes and never allocates; cpal's own error value may free its message string when it is dropped.
+
+| cpal kind | `HostError` | Effect |
+|---|---|---|
+| DeviceNotAvailable | `Lost` | counted; sets the sticky `needs_reopen()` |
+| StreamInvalidated | `Invalidated` | counted; sets `needs_reopen()` |
+| DeviceChanged | `Rerouted` | counted; sets `needs_reopen()` (the output moved, so the negotiated configuration is stale) |
+| RealtimeDenied | `RealtimeDenied` | counted |
+| Xrun | `Xrun` | the mixer's `xruns` and `host_xruns()`, not an error count |
+| anything else | `Other` | counted |
+
+`DeviceMonitor::take_errors()` reads and resets the counts, so the control thread sees each report exactly once. **Single consumer:** every clone shares the counts, so one owner (the engine's control loop) takes them and passes them on; a second poller would steal reports. `needs_reopen()` and the other getters do not reset anything and may be read from anywhere. `HostError::needs_reopen()` is the rule (Lost, Invalidated, Rerouted). Some hosts just stop calling back on unplug. `callbacks()`, and `samples_rendered` standing still, show that, and the engine's watchdog decides what it means.
+
+**Mixer handoff.**
+
+- The cpal closure owns the `OutputHost`, which owns the mixer and the scratch buffer.
+- Dropping the host, wherever cpal drops the closure, pushes both into a one-slot `rtrb` queue. That is usually the thread that drops the stream on CoreAudio (but see `MixerPending` below), and the joined audio thread on WASAPI and ALSA. That push does not allocate, free or block (tested under `assert_no_alloc`).
+- `OutputStream::close()` drops the cpal stream and then takes the mixer from the slot, with its voices, queues, clock and counters intact. The engine can reopen the same device or another one with it.
+- If cpal still holds the callback, `close` returns `MixerPending`. **This is expected on macOS device loss, not an error.** cpal's CoreAudio disconnect/monitor thread holds the stream briefly while it delivers `DeviceNotAvailable`, so the AudioUnit, and with it the handoff, is dropped on that cpal thread a moment later. The engine polls `MixerPending::try_take` (e.g. each control tick) until the mixer arrives. The handoff is safe on any thread.
+- `OutputStream` drops its stream before the slot, so dropping it without `close` frees the mixer on the dropping thread, never on the audio thread.
+- The push cannot fail (one host per slot). If it ever did, the mixer would be leaked, not freed, and counted in `leaked_mixers`.
+
+**Outage semantics (mechanism only).** While no stream runs, nothing calls the mixer, so `samples_rendered`, the master clock, is frozen, and every sample-time deadline waits with it. After a reopen, voices continue from the frame where they were cut off, and commands dated during the outage apply in the first block. Whether that is what the show should do is the engine's policy (M4; ARCHITECTURE §3.5: affected cues are marked broken). The controller can stop voices before reopening if the policy wants silence.
+
+**Reopen backoff.** `reopen_delay_ms(attempt)` gives 250, 500, 1000, 2000 and then 4000 ms for every later attempt. The engine owns the clock, the attempts and the user warning (M4).
+
+**Latency (AUD-21).** `OutputStream::latency()` returns a `Latency`:
+
+- `buffer_frames`: the host's current buffer size, else the last callback's size, else the fixed size requested. `buffer_seconds()` converts it at the stream rate.
+- `device_seconds`: playback minus callback time from the last callback's timestamps, when the host gives usable ones. CoreAudio's figure includes the device latency and the safety offset. Other hosts differ.
+
+**Xruns from timestamps (NFR-27).** A callback that starts more than 1.5 × the previous buffer's duration after the previous callback counts one xrun, both in the mixer's `xruns` and in `gap_xruns()`.
+
+- If the host reported an xrun since the previous callback, that gap is not counted again. A host report that arrives only after the next callback can still count twice.
+- A clock that steps back re-baselines without counting. Callbacks without timestamps are not checked.
+- The 1.5× margin absorbs scheduling jitter. A missed buffer always exceeds it.
+
+**Tests** (`tests/device.rs`, unit tests in the three modules) use no hardware:
+
+- **Negotiation:** exact match, nearest buffer size, unknown range, unsupported rate, more and fewer channels, 64 and 128 channels, an empty list, format order. Also cpal-to-own config and error mapping, and the backoff schedule.
+- **Rendering:** the host-driven output equals the offline driver's sample for sample in every format, with channel mapping and with chunked callbacks.
+- **Handoff and loss:** a voice mid-fade continues sample-exactly after close and "reopen" with another buffer size, and after a reported loss with a reopen on a 4-channel device. Errors are counted exactly once.
+- **Xruns:** gaps count and host reports are not counted twice.
+- **No allocation** on every callback path and on the handoff drop.
+
+A real unplug cannot be automated here; it is checked by hand. The `#[ignore]`d `hardware_smoke_default_output` test plays 0.5 s of silence on the default device and closes it: `cargo test -p openlab-audio --test device -- --ignored`. On a Linux VM with no sound card, setting `ALSA_CONFIG_PATH` to a file containing `pcm.!default { type null }` runs it against ALSA's null device.
 
 ## Waveform overview (AUD-14)
 
@@ -353,4 +432,3 @@ Memory: per slot and cue output, two `AtomicU64` plus an `f32` (20 bytes); per s
 
 - Short loops seek once per play (see the costs above). A loop cache (keep a short loop's frames after its first play) would remove those seeks and make looped AAC plays bit-identical (M3.13).
 - AAC priming frames are not trimmed (symphonia does not read MP4 edit lists) (M3.14).
-- `assert_no_alloc` around the device callback in debug builds is wired with the device layer (M3.12, with M3.8). It is a dev-dependency today.

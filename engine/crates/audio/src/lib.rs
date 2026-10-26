@@ -9,12 +9,16 @@
 
 mod controller;
 mod decode;
+#[cfg(feature = "device")]
+mod device;
 mod fuzzing;
 mod gain;
 mod meter;
 mod mixer;
 mod mp4_check;
+mod negotiate;
 mod offline;
+mod output;
 mod plan;
 mod resample;
 mod stream;
@@ -25,6 +29,11 @@ pub use decode::{
     DEFAULT_PRELOAD_BUDGET, INDEX_SPACING, Media, MediaError, MediaInfo, MediaRead, MediaWarning,
     Preloaded, Probed, SeekIndex, Seeking, WarningKind, preload, preload_within, probe,
     probe_media,
+};
+#[cfg(feature = "device")]
+pub use device::{
+    DeviceError, DeviceInfo, MixerPending, OpenError, OpenErrorKind, OpenRequest, OutputStream,
+    default_output_device_id, open_output, output_devices,
 };
 #[doc(hidden)]
 pub use fuzzing::fuzz_decode;
@@ -38,7 +47,15 @@ pub use mixer::{
     MAX_OUTPUT_CHANNELS, MAX_PATCHES, MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer, MixerConfig,
     OutputSettings, PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
 };
+pub use negotiate::{
+    BufferChoice, BufferRange, ConfigRange, Latency, NegotiateError, Negotiated, Request,
+    SampleFormat, negotiate, reopen_delay_ms,
+};
 pub use offline::OfflineRenderer;
+pub use output::{
+    CallbackTime, DeviceMonitor, ErrorReporter, HostError, HostLink, OutputHost, OutputSample,
+    SCRATCH_FRAMES, StreamErrors,
+};
 pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
 pub use stream::{
     DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,

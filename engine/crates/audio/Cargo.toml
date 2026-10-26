@@ -9,7 +9,17 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["device"]
+# Real audio devices through cpal (CoreAudio, WASAPI; ALSA on Linux needs libasound2-dev). Off for
+# the fuzz crate, which needs no device. Everything else builds and is tested without it.
+device = ["dep:cpal"]
+
 [dependencies]
+# The device callback runs under it in debug builds (M3.12). warn_debug counts violations (the
+# callback publishes the count) instead of aborting, so a debug build survives a mixer panic.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
+cpal = { version = "0.18.2", optional = true }
 rtrb = "0.4.0"
 rubato = "5.0.1"
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "aiff", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
