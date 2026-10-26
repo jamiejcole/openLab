@@ -1,6 +1,6 @@
 # openLab show file format
 
-Status: format version **1** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
+Status: format version **2** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
 
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the
@@ -44,7 +44,7 @@ The top level of every file is:
 
 ```json
 {
-  "format_version": 1,
+  "format_version": 2,
   "workspace": { … }
 }
 ```
@@ -63,7 +63,8 @@ The top level of every file is:
 | Version | openLab | Notes |
 |---|---|---|
 | 0 | pre-release | Development format. Identical to v1 except the workspace's cue lists were stored under `"lists"`. Exists so the migration chain is exercised from day one. |
-| 1 | v0.0.1 | Current. |
+| 1 | v0.0.1 (development) | Identical to v2 except that cues had no `second_trigger` and `second_trigger_on_release`. Upgrading gives every cue, at every depth, `"nothing"` and `false` (a v1 reader ignored those keys, so a hand-added value is replaced by the default). |
+| 2 | v0.0.1 | Current. Adds the per-cue second-trigger settings (§5.1). |
 
 ## 3. Loading, validation and refusal
 
@@ -78,6 +79,7 @@ cue, and the cue shows as broken where it cannot run.
 | Cues nested more than 32 levels deep (a top-level cue is level 1) | Refused |
 | A Start, or GoTo with `then_go`, that would start itself again: through a chain of such cues of any length, or by starting a group that contains it | Warning; the cue still runs (a timed loop is legitimate) and the cue engine bounds such cycles at run time (docs/cue-engine.md, "Chains") |
 | Two cues with the same `number` | Warning; the later cue (list order, then depth-first through groups) loses its number |
+| `second_trigger` is `"play_next"` or `"play_previous"` on a cue that is not a Playlist group | Warning; kept, but a second trigger does nothing until the cue is a Playlist group |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
@@ -193,6 +195,8 @@ A destination for Network cues.
 | `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise. |
 | `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. See [cue-engine.md](cue-engine.md). |
 | `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `osc`: `null` or an OSC address that starts the cue. |
+| `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger (GO, a Start cue, a continue, a hotkey, OSC, …) does while the cue is already active. `nothing`: ignored (a paused cue resumes). `panic`: fade out over `settings.panic_duration`, then stop. `stop`, `hard_stop`: stop at once. `hard_stop_and_restart`: stop at once and start again from the top. `devamp`: leave the loop after the current pass. `play_next`, `play_previous`: Playlist groups only, play the child after or before the one playing. See [cue-engine.md](cue-engine.md#second-trigger-m214). Since version 2. |
+| `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. Since version 2. |
 | `kind` | object | What the cue does: `{"type": …, …}`, §5.3. |
 
 `triggers.hotkey.key` is a lower-case key name (`"a"`, `"space"`, `"f5"`).
@@ -273,12 +277,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v1-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v2-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 1,                                   // (1)
+  "format_version": 2,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",
@@ -332,6 +336,8 @@ mode. The notes after the listing refer to the numbered lines.
               },
               "osc": "/preshow"
             },
+            "second_trigger": "panic",                   // (3a)
+            "second_trigger_on_release": false,
             "kind": {
               "type": "audio",                           // (4)
               "media": "media/preshow.wav",              // (5)
@@ -392,6 +398,7 @@ line here for space; openLab writes one field per line.)
 2. Times are seconds: GOs less than half a second apart are ignored.
    (2a) No key is assigned to Pause All in this show.
 3. When this cue starts, the next cue starts too (after this cue's post-wait of 0 s).
+   (3a) Triggering the music again while it plays fades it out over the panic duration (3 s).
 4. The `type` key selects the cue kind; the other keys in `kind` belong to that kind.
 5. Relative to the show file's folder, forward slashes on every platform.
 6. The slice from 30 s to 60 s loops until a Devamp cue releases it; then the rest of the file

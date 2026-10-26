@@ -27,7 +27,7 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 | `RemoveCue { id }` | Removes the subtree. Its inverse re-adds it at the same place. |
 | `MoveCue { id, index }` | Reorder among current siblings. |
 | `ReparentCue { id, to }` | Into another group or cue list, children with it. Not into itself or its descendants. |
-| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, target, group mode, or the whole kind (never to or from Group). |
+| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group). |
 | `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. |
 | `SetCueNumbers { numbers }` | Set, clear or swap numbers; uniqueness is judged on the result. |
 | `Renumber { ids, start, increment }` | Numbers `ids` in cue-list order (a group before its children), whatever order `ids` is in. |

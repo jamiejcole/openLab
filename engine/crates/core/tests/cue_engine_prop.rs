@@ -39,8 +39,11 @@
 //! - Commands for one voice never go backwards in time, and none is dated outside the call's
 //!   window `now ..= now + lookahead - 1` (Deadlines, lookahead and late ticks).
 //! - Everything due has been done after each call (`is_due`).
-//! - A second trigger on an active cue never restarts it (rule 1 / GO and double-GO), except a
-//!   cue fading out in a panic.
+//! - A second trigger on an active cue does what its option says (Second trigger): `nothing`
+//!   never restarts it (rule 1 / GO and double-GO), stop leaves it inactive, panic fades it out,
+//!   restart starts it again (or is cut at the chain limit), devamp and play next/previous do
+//!   not restart it; a release that is not a second trigger does nothing at all. A cue fading
+//!   out in a panic is not active for the rule.
 //! - After a panic has ended, nothing is active, loaded or pending, and no voice is left in the
 //!   mixer (Panic, "After it").
 //! - No voice leaks: every voice the mixer holds belongs to the run the engine reports, and
@@ -99,6 +102,9 @@ struct Spec {
     /// Control and Fade cues: which cue they target (by position; past the end = missing).
     target: u8,
     flag: bool,
+    /// Its second-trigger option (see `second_trigger`) and "on release".
+    second: u8,
+    release: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -128,9 +134,14 @@ fn spec() -> impl Strategy<Value = Spec> {
             any::<u8>(),
             any::<bool>(),
         ),
+        (0u8..16, prop::bool::weighted(0.3)),
     )
         .prop_map(
-            |((kind, pre, post, mode, armed), (dup, level, group_mode, target, flag))| Spec {
+            |(
+                (kind, pre, post, mode, armed),
+                (dup, level, group_mode, target, flag),
+                (second, release),
+            )| Spec {
                 kind,
                 pre,
                 post,
@@ -141,15 +152,17 @@ fn spec() -> impl Strategy<Value = Spec> {
                 group_mode,
                 target,
                 flag,
+                second,
+                release,
             },
         )
 }
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 52] = [
+const OPS: [u8; 54] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
-    13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -187,6 +200,21 @@ fn mode(n: u8) -> ContinueMode {
         0 => ContinueMode::DoNotContinue,
         1 => ContinueMode::AutoContinue,
         _ => ContinueMode::AutoFollow,
+    }
+}
+
+/// Half the cues keep the default; the rest get every option (restart twice as often: it is the
+/// one that starts cues).
+fn second_trigger(n: u8) -> SecondTrigger {
+    match n % 16 {
+        0..=7 => SecondTrigger::Nothing,
+        8 => SecondTrigger::Panic,
+        9 => SecondTrigger::Stop,
+        10 => SecondTrigger::HardStop,
+        11 | 12 => SecondTrigger::HardStopAndRestart,
+        13 => SecondTrigger::Devamp,
+        14 => SecondTrigger::PlayNext,
+        _ => SecondTrigger::PlayPrevious,
     }
 }
 
@@ -359,6 +387,8 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         c.post_wait = f64::from(s.post) * 0.5;
         c.continue_mode = mode(s.mode);
         c.armed = s.armed;
+        c.second_trigger = second_trigger(s.second);
+        c.second_trigger_on_release = s.release;
         if pair.is_some() {
             c.post_wait = 0.1 + f64::from(s.post) * 0.1;
             c.continue_mode = ContinueMode::AutoContinue;
@@ -382,6 +412,13 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         attach(&mut open, &mut top, g);
     }
     top
+}
+
+fn each(cues: &[Cue], f: &mut impl FnMut(&Cue)) {
+    for c in cues {
+        f(c);
+        each(c.children(), f);
+    }
 }
 
 /// Every cue, depth-first.
@@ -1081,6 +1118,15 @@ impl Run {
         self.now + self.lookahead.saturating_sub(1)
     }
 
+    /// Whether some cue has this second-trigger option.
+    fn any_option(&self, option: SecondTrigger) -> bool {
+        let mut found = false;
+        for list in &self.ws.cue_lists {
+            each(&list.cues, &mut |c| found |= c.second_trigger == option);
+        }
+        found
+    }
+
     /// Whether every id has named one cue all along. A duplicate id shares one runtime between
     /// cues (of kinds that can differ, once the first of them is deleted), so the rules about
     /// what a cue's runtime holds do not apply to such a workspace; duplicates are there to make
@@ -1770,6 +1816,11 @@ impl Run {
                     }
                 }
             }
+            29 => {
+                // The key that triggers it is released (second trigger on release).
+                kind = Kind::Operator { trigger: true };
+                Input::TriggerReleased { cue: target }
+            }
             _ => {
                 // Model edit: change a cue's timing and continue mode.
                 if let Some(c) = find_mut(&mut self.ws.cue_lists[0].cues, target) {
@@ -1779,14 +1830,18 @@ impl Run {
                 Input::Tick
             }
         };
-        // A second trigger on an active cue never restarts it (rule 1; GO). Checked when
-        // nothing else can touch the cue in the call: no deadline falls in the window, and a
-        // cue fading out in a panic is not active for the rule.
-        let trigger_on = match &input {
-            Input::Start { cue } => Some(*cue),
-            Input::Go { .. } => self.engine.playhead(list),
-            _ => None,
+        // A second trigger on an active cue does what its option says (Second trigger): with
+        // `nothing` it never restarts it (rule 1; GO). Checked when nothing else can touch the
+        // cue in the call: no deadline falls in the window, and a cue fading out in a panic is
+        // not active for the rule (a workspace panic, or a per-cue one: a Panic option on the
+        // cue or a group around it).
+        let (trigger_on, release) = match &input {
+            Input::Start { cue } => (Some(*cue), false),
+            Input::Go { .. } => (self.engine.playhead(list), false),
+            Input::TriggerReleased { cue } => (Some(*cue), true),
+            _ => (None, false),
         };
+        let any_panic_option = self.any_option(SecondTrigger::Panic);
         let guard = trigger_on.filter(|cue| {
             let state = self.engine.state(*cue);
             let active = matches!(
@@ -1798,6 +1853,7 @@ impl Run {
                     | CueState::Stopping
             );
             active
+                && !(state == CueState::Stopping && any_panic_option)
                 && self.unique_ids()
                 && self.engine.panic_end().is_none()
                 && self
@@ -1805,7 +1861,13 @@ impl Run {
                     .next_deadline()
                     .is_none_or(|d| d > self.horizon())
         });
-        let before = guard.map(|cue| (cue, self.engine.run_of(cue)));
+        let before = guard.and_then(|cue| {
+            let model = self.ws.find_cue(cue)?;
+            let option = model.second_trigger.effective(&model.kind);
+            let applies =
+                !release || (model.second_trigger_on_release && option != SecondTrigger::Nothing);
+            Some((cue, self.engine.run_of(cue), option, applies))
+        });
         let stepping = matches!(
             input,
             Input::PlayheadNext { .. } | Input::PlayheadPrevious { .. }
@@ -1837,24 +1899,70 @@ impl Run {
                 );
             }
         }
-        if let Some((cue, run)) = before {
-            prop_assert_eq!(
-                self.engine.run_of(cue),
-                run,
-                "a second trigger restarted {}",
-                cue
-            );
-            for a in &self.raw[start..] {
-                let restarted = match a {
-                    Action::StartVoice { cue: c, .. } => *c == cue,
-                    Action::StateChanged {
-                        cue: c,
-                        state: CueState::PreWaiting,
-                        ..
-                    } => *c == cue,
-                    _ => false,
-                };
-                prop_assert!(!restarted, "a second trigger restarted {}: {:?}", cue, a);
+        if let Some((cue, run, option, applies)) = before {
+            let actions = &self.raw[start..];
+            let restarted = actions.iter().any(|a| match a {
+                Action::StartVoice { cue: c, .. }
+                | Action::StateChanged {
+                    cue: c,
+                    state: CueState::PreWaiting,
+                    ..
+                } => *c == cue,
+                _ => false,
+            });
+            let state = self.engine.state(cue);
+            // A GO that double-GO protection (or the chain limit) ignored never reached the cue.
+            let go_ignored = actions
+                .iter()
+                .any(|a| matches!(a, Action::GoIgnored { .. }));
+            let option = if go_ignored {
+                SecondTrigger::Nothing
+            } else {
+                option
+            };
+            match option {
+                // A release that is not a second trigger is ignored without a word.
+                _ if !applies => {
+                    prop_assert!(actions.is_empty(), "release of {} did {:?}", cue, actions);
+                }
+                SecondTrigger::Nothing => {
+                    prop_assert_eq!(
+                        self.engine.run_of(cue),
+                        run,
+                        "a second trigger restarted {}",
+                        cue
+                    );
+                    prop_assert!(!restarted, "a second trigger restarted {}", cue);
+                }
+                SecondTrigger::Stop | SecondTrigger::HardStop => {
+                    prop_assert!(!state.is_active(), "{} still {:?} after a stop", cue, state);
+                }
+                SecondTrigger::Panic => {
+                    prop_assert!(
+                        state == CueState::Stopping || !state.is_active(),
+                        "{} {:?} after its panic",
+                        cue,
+                        state
+                    );
+                    prop_assert!(!restarted, "a panic restarted {}", cue);
+                }
+                SecondTrigger::HardStopAndRestart => {
+                    // Cut at the chain limit, or it has static problems now (its new run keeps
+                    // the timing without starting, Broken cues), or its run was triggered on
+                    // this very sample (at most one restart per sample).
+                    let cut_or_broken = actions.iter().any(|a| match a {
+                        Action::Warning(EngineWarning::ChainLimit { .. }) => true,
+                        Action::Warning(
+                            EngineWarning::CueBroken { cue: c }
+                            | EngineWarning::TriggerIgnored { cue: c, .. },
+                        ) => *c == cue,
+                        _ => false,
+                    });
+                    prop_assert!(restarted || cut_or_broken, "{} was not restarted", cue);
+                }
+                SecondTrigger::Devamp | SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => {
+                    prop_assert!(!restarted, "{:?} restarted {}", option, cue);
+                }
             }
         }
         self.deliver()?;
@@ -2038,6 +2146,8 @@ fn follow_case() -> impl Strategy<Value = Case> {
         group_mode: 0,
         target: 0,
         flag: false,
+        second: 0,
+        release: false,
     });
     let ops = [1u8, 1, 1, 1, 0, 0, 13, 12];
     let step = (
