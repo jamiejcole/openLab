@@ -4,13 +4,16 @@
 //! resolution against the devices present (sent to the cue engine as `PatchStatus`), and the
 //! matrix gains (patch master × output level, mute, polarity) on the mapped device outputs.
 //!
-//! Device lists, hot-plug and the mixer reopen are M4.2b: today the device list is fixed when
-//! the control loop starts. Per-output alignment delay is a device-output setting in the mixer
-//! (`SetOutput`), not a matrix gain; applying a patch's delays there is also M4.2b.
+//! Patches resolve against the device the mixer plays on (the control loop's `playable` list:
+//! empty once a device outage has outlasted its grace period; docs/control.md "Devices"). Per
+//! output alignment delay is a device-output setting in the mixer (`SetOutput`), not a matrix
+//! gain: each device output gets the delay of the patch outputs mapped to it (the longest, if
+//! patches disagree, listed as a conflict).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroU32;
 
-use openlab_audio::{CommandKind, MAX_PATCHES};
+use openlab_audio::{CommandKind, MAX_PATCHES, OutputSettings};
 use openlab_core::{
     DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchResolution, Workspace, db_to_gain,
     resolve_patch,
@@ -26,11 +29,16 @@ pub struct Patches {
     sent: Vec<Vec<f32>>,
     device_outputs: usize,
     master: Option<f32>,
+    rate: NonZeroU32,
+    /// Delay sent for each device output (frames; the mixer starts at 0).
+    delays: Vec<u32>,
+    /// Device outputs that patches give different delays.
+    conflicts: BTreeSet<u16>,
 }
 
 impl Patches {
     /// `mixer_patches` matrices of `device_outputs` square, identity as the mixer starts them.
-    pub fn new(mixer_patches: usize, device_outputs: usize) -> Self {
+    pub fn new(mixer_patches: usize, device_outputs: usize, rate: NonZeroU32) -> Self {
         let identity: Vec<f32> = (0..device_outputs * device_outputs)
             .map(|i| {
                 if i / device_outputs == i % device_outputs {
@@ -47,6 +55,9 @@ impl Patches {
             sent: vec![identity; mixer_patches.min(MAX_PATCHES)],
             device_outputs,
             master: None,
+            rate,
+            delays: vec![0; device_outputs],
+            conflicts: BTreeSet::new(),
         }
     }
 
@@ -98,7 +109,65 @@ impl Patches {
             }
         }
         self.resolutions = seen;
+        self.sync_delays(ws, &mut commands);
         (commands, changed)
+    }
+
+    /// Each device output's delay: that of the mapped patch outputs routed to it.
+    fn sync_delays(&mut self, ws: &Workspace, commands: &mut Vec<CommandKind>) {
+        let n = self.device_outputs;
+        let mut want: Vec<Option<u32>> = vec![None; n];
+        self.conflicts.clear();
+        for patch in &ws.patches {
+            if !self.index.contains_key(&patch.id) {
+                continue;
+            }
+            let Some(PatchResolution::Mapped { channels, .. }) = self.resolutions.get(&patch.id)
+            else {
+                continue;
+            };
+            for (out, &ch) in patch.outputs.iter().zip(channels) {
+                let Some(slot) = usize::try_from(ch).ok().and_then(|d| want.get_mut(d)) else {
+                    continue;
+                };
+                let frames = delay_frames(out.delay_ms, self.rate);
+                if let Some(old) = *slot
+                    && old != frames
+                    && let Ok(d) = u16::try_from(ch)
+                {
+                    self.conflicts.insert(d);
+                }
+                *slot = Some(slot.map_or(frames, |old| old.max(frames)));
+            }
+        }
+        for (d, (sent, want)) in self.delays.iter_mut().zip(want).enumerate() {
+            let want = want.unwrap_or(0);
+            if *sent == want {
+                continue;
+            }
+            let Ok(output) = u16::try_from(d) else {
+                continue;
+            };
+            *sent = want;
+            // Level, mute and polarity are in the matrix; the output itself only delays.
+            commands.push(CommandKind::SetOutput {
+                output,
+                settings: OutputSettings {
+                    delay_frames: want,
+                    ..OutputSettings::default()
+                },
+            });
+        }
+    }
+
+    /// Device outputs that patches give different delays (the longest is used).
+    pub fn delay_conflicts(&self) -> impl Iterator<Item = u16> + '_ {
+        self.conflicts.iter().copied()
+    }
+
+    /// A workspace patch's current resolution.
+    pub fn resolution(&self, patch: PatchId) -> Option<&PatchResolution> {
+        self.resolutions.get(&patch)
     }
 
     fn resolve(
@@ -203,6 +272,16 @@ impl Patches {
     }
 }
 
+/// A delay in ms (the show file allows 0–1000) in frames, rounded; the mixer caps it at 1 s.
+fn delay_frames(ms: f64, rate: NonZeroU32) -> u32 {
+    if !ms.is_finite() || ms <= 0.0 {
+        return 0;
+    }
+    let frames = (ms.min(1000.0) * f64::from(rate.get()) / 1000.0).round();
+    // At most `rate` (1 s), so it fits.
+    frames as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +290,10 @@ mod tests {
         WorkspaceSettings,
     };
     use uuid::Uuid;
+
+    fn rate() -> NonZeroU32 {
+        NonZeroU32::new(8000).unwrap()
+    }
 
     fn pid() -> PatchId {
         PatchId(Uuid::from_u128(7))
@@ -296,7 +379,7 @@ mod tests {
             out(-6.0, false, true),
             out(0.0, true, false),
         ]);
-        let mut p = Patches::new(2, 4);
+        let mut p = Patches::new(2, 4, rate());
         let (cmds, changed) = p.sync(&ws, &settings(&ws, vec![3, 0, 1]), &device(4));
         assert_eq!(changed.len(), 1);
         assert!(matches!(changed[0].1, PatchResolution::Mapped { .. }));
@@ -323,7 +406,7 @@ mod tests {
     #[test]
     fn unmapped_and_short_devices_are_reported_and_silent() {
         let ws = ws_with(vec![out(0.0, false, false); 2]);
-        let mut p = Patches::new(1, 2);
+        let mut p = Patches::new(1, 2, rate());
         let (cmds, changed) = p.sync(&ws, &MachineSettings::default(), &device(2));
         assert_eq!(changed, vec![(pid(), PatchResolution::Unmapped)]);
         assert!(routes(&cmds).iter().all(|r| r.3 == 0.0));
@@ -345,9 +428,72 @@ mod tests {
         let mut second = ws.patches[0].clone();
         second.id = PatchId(Uuid::from_u128(8));
         ws.patches.push(second);
-        let mut p = Patches::new(1, 1);
+        let mut p = Patches::new(1, 1, rate());
         let (_, changed) = p.sync(&ws, &settings(&ws, vec![0]), &device(1));
         assert_eq!(p.mixer_patch(PatchId(Uuid::from_u128(8))), None);
         assert!(changed.contains(&(PatchId(Uuid::from_u128(8)), PatchResolution::Unmapped)));
+    }
+
+    fn delays(cmds: &[CommandKind]) -> Vec<(u16, u32)> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                CommandKind::SetOutput { output, settings } => {
+                    assert_eq!(settings.level, 1.0);
+                    assert!(!settings.mute && !settings.invert);
+                    Some((*output, settings.delay_frames))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn output_delays_go_to_the_mapped_device_outputs() {
+        let mut ws = ws_with(vec![out(0.0, false, false); 2]);
+        ws.patches[0].outputs[0].delay_ms = 2.5;
+        ws.patches[0].outputs[1].delay_ms = 1000.0;
+        let mut p = Patches::new(2, 4, rate());
+        let (cmds, _) = p.sync(&ws, &settings(&ws, vec![3, 1]), &device(4));
+        // 2.5 ms at 8 kHz = 20 frames; 1 s = 8000 frames. Outputs left at 0 are not sent.
+        assert_eq!(delays(&cmds), vec![(1, 8000), (3, 20)]);
+        assert_eq!(p.delay_conflicts().count(), 0);
+        // Unchanged: nothing sent. The device gone: the delays go back to 0.
+        let (again, _) = p.sync(&ws, &settings(&ws, vec![3, 1]), &device(4));
+        assert!(delays(&again).is_empty());
+        let (gone, _) = p.sync(&ws, &settings(&ws, vec![3, 1]), &[]);
+        assert_eq!(delays(&gone), vec![(1, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn patches_that_disagree_on_an_output_delay_use_the_longest_and_say_so() {
+        let mut ws = ws_with(vec![out(0.0, false, false)]);
+        ws.patches[0].outputs[0].delay_ms = 1.0;
+        let mut second = ws.patches[0].clone();
+        second.id = PatchId(Uuid::from_u128(8));
+        second.outputs[0].delay_ms = 3.0;
+        ws.patches.push(second);
+        let mut s = settings(&ws, vec![0]);
+        s.set_patch_mapping(
+            ws.id,
+            PatchId(Uuid::from_u128(8)),
+            PatchMapping {
+                device: "Dev".into(),
+                channels: vec![0],
+            },
+        )
+        .unwrap();
+        let mut p = Patches::new(2, 2, rate());
+        let (cmds, _) = p.sync(&ws, &s, &device(2));
+        assert_eq!(delays(&cmds), vec![(0, 24)]);
+        assert_eq!(p.delay_conflicts().collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn delay_frames_round_and_reject_bad_values() {
+        assert_eq!(delay_frames(0.0, rate()), 0);
+        assert_eq!(delay_frames(-1.0, rate()), 0);
+        assert_eq!(delay_frames(f64::NAN, rate()), 0);
+        assert_eq!(delay_frames(0.0626, rate()), 1);
+        assert_eq!(delay_frames(5000.0, rate()), 8000);
     }
 }
