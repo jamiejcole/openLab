@@ -169,6 +169,15 @@ pub enum Input {
         cue: CueId,
         run: RunId,
     },
+    /// Preview (audition) an audio cue from its start, outside the show (CUE-05): no pre-wait,
+    /// continue, playhead or show state is involved. See `docs/cue-engine.md`, "Preview".
+    Preview {
+        cue: CueId,
+    },
+    /// End the cue's preview (`None`: every preview).
+    StopPreview {
+        cue: Option<CueId>,
+    },
     /// Panic (PB-03): every cue fades out over the workspace's `panic_duration` and stops; a
     /// second Panic during that fade stops everything at once.
     Panic,
@@ -442,6 +451,29 @@ pub enum Action {
         cue: CueId,
         armed: bool,
     },
+    /// Start the preview voice of `cue` on sample `at`, from the start of the cue's action. The
+    /// binary plays it on the audition output (PB-09; until there is one, on the cue's own
+    /// patch) and tags feedback with `run`: `Input::ActionEnded` / `ActionFailed` for it end the
+    /// preview. A preview's `run` never equals a show run's.
+    PreviewStart {
+        cue: CueId,
+        run: RunId,
+        at: SampleTime,
+    },
+    /// Stop the preview voice on sample `at` (never before its start), fading out if `fade`.
+    PreviewStop {
+        cue: CueId,
+        run: RunId,
+        at: SampleTime,
+        fade: Option<StopFade>,
+    },
+    /// The cue started or stopped being previewed (a preview is not a cue state: the cue's own
+    /// state is untouched). Also sent when the preview ends by itself or fails.
+    PreviewChanged {
+        cue: CueId,
+        active: bool,
+        at: SampleTime,
+    },
     /// The cue's static problems changed (CUE-06): `problems` is the full new list, empty when
     /// it is no longer broken. A cue that has problems and no runtime reports `broken`.
     ProblemsChanged {
@@ -462,6 +494,15 @@ pub enum GoIgnoredReason {
     /// cue could not be started: nothing happened (no start, no playhead move, no double-GO
     /// interval) and the operator can press GO again.
     ChainLimit,
+}
+
+/// Why a preview did not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewIgnoredReason {
+    /// Only audio cues can be previewed.
+    NotAudio,
+    /// The cue is being previewed already.
+    AlreadyPreviewing,
 }
 
 /// Things the operator or the log should hear about. Nothing here stops the show.
@@ -537,6 +578,16 @@ pub enum EngineWarning {
     TargetNotRunning {
         cue: CueId,
         target: CueId,
+    },
+    /// A preview was asked for and not started.
+    PreviewIgnored {
+        cue: CueId,
+        reason: PreviewIgnoredReason,
+    },
+    /// A preview's voice or stream failed; the preview is over.
+    PreviewFailed {
+        cue: CueId,
+        reason: BrokenReason,
     },
     /// A devamp of `cue` could not be carried out: the audio side ignored it (no loop to leave),
     /// a devamp of it is already under way, or it is a playlist group that does not loop.

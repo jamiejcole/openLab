@@ -13,6 +13,7 @@ mod fade;
 mod group;
 mod level;
 mod playhead;
+mod preview;
 mod rng;
 mod run;
 mod time;
@@ -25,6 +26,7 @@ mod tests;
 use std::collections::{BTreeMap, HashSet};
 
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
+pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
 pub use transport::PANIC_CURVE;
 pub use types::*;
@@ -34,6 +36,7 @@ use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
 use playhead::Playhead;
+use preview::Preview;
 use rng::SplitMix64;
 use run::{DevampWait, Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 
@@ -70,6 +73,9 @@ pub struct CueEngine {
     /// follows the edits (stops deleted cues, moves playheads) and recounts the chain limit.
     /// Without it those passes are skipped (release builds): see `model_changed`.
     model_dirty: bool,
+    /// Cues being previewed (see `preview.rs`); apart from the show's runs.
+    previews: BTreeMap<CueId, Preview>,
+    next_preview: u64,
     /// `chain_limit` of the workspace as of the last such pass.
     limit: usize,
     /// How many such passes have run (a cost measure, see `model_syncs`).
@@ -118,6 +124,8 @@ impl CueEngine {
             problems: broken::Problems::default(),
             panic: None,
             model_dirty: true,
+            previews: BTreeMap::new(),
+            next_preview: 0,
             limit: 0,
             model_syncs: 0,
         }
@@ -349,6 +357,8 @@ impl CueEngine {
             Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
+            Input::Preview { cue } => self.preview(cue, cx),
+            Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
@@ -375,8 +385,9 @@ impl CueEngine {
     /// Stops and forgets cues that are no longer in the workspace, then lets their groups react
     /// (and ends groups an edit left with no busy child).
     fn sync_model(&mut self, cx: &mut Ctx) -> bool {
+        let previews_ended = self.sync_previews(cx);
         if self.slots.is_empty() {
-            return false;
+            return previews_ended;
         }
         let mut present = HashSet::new();
         for list in &cx.ws.cue_lists {
@@ -396,7 +407,7 @@ impl CueEngine {
             })
             .map(|(id, _)| *id)
             .collect();
-        let changed = !gone.is_empty();
+        let changed = !gone.is_empty() || previews_ended;
         for cue in gone {
             let before = self.state(cue);
             if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
@@ -843,6 +854,9 @@ impl CueEngine {
     // ----- feedback -----
 
     fn action_ended(&mut self, cue: CueId, run_id: RunId, at: SampleTime, cx: &mut Ctx) {
+        if self.preview_ended(cue, run_id, at, cx) {
+            return;
+        }
         let before = self.state(cue);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
@@ -889,6 +903,9 @@ impl CueEngine {
     }
 
     fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
+        if self.preview_failed(cue, run_id, reason, cx) {
+            return;
+        }
         let before = self.state(cue);
         // A group owns no voice, so no feedback can concern it.
         let group = cx
