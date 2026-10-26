@@ -951,12 +951,17 @@ fn devamp_from_a_full_ring_never_starves_at_the_exit() {
                 stop: false,
             },
         );
-        // Through the boundary and nearly all of the exit buffer, with no help from the disk.
-        let free_run = (END + exit - devamp_at) as usize / BLOCK * BLOCK;
-        out.extend(render(&mut r, free_run));
-        // From here the ring has to supply the continuation: wait only for what each block needs.
+        // Through the boundary and a block into the exit buffer, with no help from the disk.
+        out.extend(render(&mut r, (END - devamp_at) as usize + BLOCK));
+        // The ring is full of stale plays and the voice drops them only while rendering, so the
+        // worker can write nothing until the voice has rendered after the cut is published.
+        // Waiting for continuation frames right now would deadlock whenever the worker is slower
+        // than the render (it was, under load): wait only for the cut, which the exit buffer
+        // covers however long the worker takes.
         assert!(h.wait_cuts(1, FAILSAFE).unwrap());
         let resume = h.last_resume().unwrap();
+        // From here the ring has to supply the continuation: wait only for what each block
+        // needs. The first renders drop the stale plays; the exit buffer plays meanwhile.
         while out.len() < 60_000 + 2 * BLOCK {
             let t = out.len() as u64 + BLOCK as u64;
             let need = resume + t.saturating_sub(END + exit);
