@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use openlab_core::protocol::{MAX_SERVER_FRAME_BYTES, ServerMessage, encode_server};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 /// Broadcasts that can wait in one client's queue. Meters and progress are dropped for the
 /// client once it is half full.
@@ -45,6 +45,15 @@ struct Slot {
     /// then throws its queue away and sends a fresh `snapshot` (it clears the flag before
     /// asking, so nothing is lost in between).
     lagged: Arc<AtomicBool>,
+    /// Wakes the connection when it lags (it may be idle in `select!`).
+    wake: Arc<Notify>,
+}
+
+impl Slot {
+    fn mark_lagged(&self) {
+        self.lagged.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
 }
 
 #[derive(Default)]
@@ -57,19 +66,27 @@ pub struct Registration {
     pub id: u64,
     pub rx: mpsc::Receiver<Broadcast>,
     pub lagged: Arc<AtomicBool>,
+    pub wake: Arc<Notify>,
 }
 
 impl Hub {
     pub fn register(&self) -> Registration {
         let (tx, rx) = mpsc::channel(CLIENT_QUEUE);
         let lagged = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(Notify::new());
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.lock().push(Slot {
             id,
             tx,
             lagged: lagged.clone(),
+            wake: wake.clone(),
         });
-        Registration { id, rx, lagged }
+        Registration {
+            id,
+            rx,
+            lagged,
+            wake,
+        }
     }
 
     pub fn unregister(&self, id: u64) {
@@ -95,7 +112,7 @@ impl Hub {
             // is just skipped.
             if kind != Kind::Lossy {
                 for s in slots.iter() {
-                    s.lagged.store(true, Ordering::Release);
+                    s.mark_lagged();
                 }
             }
             return;
@@ -110,7 +127,7 @@ impl Hub {
                     let _ = s.tx.try_send(item.clone());
                 }
             } else if let Err(mpsc::error::TrySendError::Full(_)) = s.tx.try_send(item.clone()) {
-                s.lagged.store(true, Ordering::Release);
+                s.mark_lagged();
             }
         }
     }
