@@ -900,3 +900,35 @@ fn the_pre_show_list_is_in_workspace_order() {
         .collect();
     assert_eq!(listed, vec![id(9), id(7), id(3), id(2)]);
 }
+
+#[test]
+fn go_on_a_broken_auto_follow_cue_leaves_the_playhead_on_the_cue_it_would_follow_into() {
+    // Regression (review M2): the playhead skipped cue 2, which the broken cue's auto-follow
+    // can never start, so cue 2 was lost for the show.
+    let mut rig = Rig::new(vec![
+        timed(sound(1), 0.0, 0.0, AF),
+        sound_of(2, "media/b.wav", 1),
+        memo(3),
+    ]);
+    rig.media(0, "media/a.wav", MediaStatus::Missing);
+    let go = rig.go(10);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(2)));
+    assert_eq!(voice_starts(&rig.go(20)), vec![(id(2), 20)]);
+    // Inside a chain: an auto-continue into the broken auto-follow cue stops there too.
+    let mut rig = Rig::new(vec![
+        timed(memo(1), 0.0, 0.0, AC),
+        timed(sound(2), 0.0, 0.0, AF),
+        memo(3),
+        memo(4),
+    ]);
+    rig.media(0, "media/a.wav", MediaStatus::Missing);
+    rig.go(10);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    // A broken auto-continue cue's continue fires, so it is still skipped over.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AC), memo(2), memo(3)]);
+    rig.media(0, "media/a.wav", MediaStatus::Missing);
+    let go = rig.go(10);
+    assert_eq!(starts(&go), vec![(id(2), 10)]);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+}
