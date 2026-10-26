@@ -603,6 +603,8 @@ fn a_group_with_a_broken_child_is_not_broken_but_does_not_follow() {
     ]);
     assert!(rig.problems(1).is_empty());
     assert_eq!(rig.state(1), CueState::Idle);
+    // Not broken, but it shows a warning (QLab 5).
+    assert!(rig.engine.has_broken_descendant(id(1)));
     let go = rig.go(0);
     assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(3) }]);
     assert_eq!(voice_starts(&go), vec![(id(2), 0)]);
@@ -619,6 +621,127 @@ fn a_group_with_a_broken_child_is_not_broken_but_does_not_follow() {
     // that broke while it ran).
     assert_eq!(changes(&end, 1), vec![(CueState::Idle, 1000)]);
     assert!(starts(&end).is_empty());
+}
+
+fn group_warnings(actions: &[Action]) -> Vec<(CueId, bool)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::GroupWarningChanged { group, warning } => Some((*group, *warning)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_group_shows_a_warning_while_a_descendant_is_broken() {
+    // 1 { 2 { 3 (audio a.wav), 4 (audio b.wav) }, 5 }, 6 { 7 }
+    let inner = cue(2, group(vec![sound(3), sound_of(4, "media/b.wav", 1)]));
+    let mut rig = Rig::new(vec![
+        cue(1, group(vec![inner, memo(5)])),
+        cue(6, group(vec![memo(7)])),
+    ]);
+    let warned = |rig: &Rig| [1, 2, 6].map(|g| rig.engine.has_broken_descendant(id(g)));
+    assert_eq!(warned(&rig), [false; 3]);
+    // The first broken descendant puts a warning on every group around it, each reported once.
+    let missing = rig.media(10, "media/a.wav", MediaStatus::Missing);
+    assert_eq!(group_warnings(&missing), vec![(id(2), true), (id(1), true)]);
+    assert_eq!(warned(&rig), [true, true, false]);
+    // The groups are not broken.
+    assert!(rig.problems(1).is_empty() && rig.problems(2).is_empty());
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(
+        rig.engine.broken_cues(),
+        vec![(id(3), &[CueProblem::MediaMissing { media: media() }][..])]
+    );
+    // A second one changes nothing shown; fixing one of two leaves the warning.
+    let second = rig.media(20, "media/b.wav", MediaStatus::Missing);
+    assert!(group_warnings(&second).is_empty());
+    let one_fixed = rig.media(30, "media/a.wav", MediaStatus::Available);
+    assert!(group_warnings(&one_fixed).is_empty());
+    assert_eq!(warned(&rig), [true, true, false]);
+    let all_fixed = rig.media(40, "media/b.wav", MediaStatus::Available);
+    assert_eq!(
+        group_warnings(&all_fixed),
+        vec![(id(2), false), (id(1), false)]
+    );
+    assert_eq!(warned(&rig), [false; 3]);
+    // Not a group, or not a cue: no warning.
+    assert!(!rig.engine.has_broken_descendant(id(3)));
+    assert!(!rig.engine.has_broken_descendant(id(99)));
+}
+
+#[test]
+fn a_group_warning_follows_model_edits() {
+    let mut rig = Rig::new(vec![
+        cue(1, group(vec![start_cue(2, None), memo(3)])),
+        cue(4, group(vec![memo(5)])),
+    ]);
+    assert!(rig.engine.has_broken_descendant(id(1)));
+    // The broken cue moves to the other group.
+    let moved = {
+        let CueKind::Group { children, .. } = &mut rig.find_mut(1).kind else {
+            panic!("not a group")
+        };
+        children.remove(0)
+    };
+    let CueKind::Group { children, .. } = &mut rig.find_mut(4).kind else {
+        panic!("not a group")
+    };
+    children.push(moved);
+    let edit = rig.tick(10);
+    assert_eq!(group_warnings(&edit), vec![(id(1), false), (id(4), true)]);
+    // Fixed by an edit (a target set).
+    if let CueKind::Start { target } = &mut rig.find_mut(2).kind {
+        *target = Some(id(3));
+    }
+    let fixed = rig.tick(20);
+    assert_eq!(group_warnings(&fixed), vec![(id(4), false)]);
+    // Broken again, then its group deleted: the warning is reported gone once.
+    if let CueKind::Start { target } = &mut rig.find_mut(2).kind {
+        *target = None;
+    }
+    assert_eq!(group_warnings(&rig.tick(30)), vec![(id(4), true)]);
+    rig.ws.cue_lists[0].cues.retain(|c| c.id != id(4));
+    assert_eq!(group_warnings(&rig.tick(40)), vec![(id(4), false)]);
+    assert!(!rig.engine.has_broken_descendant(id(4)));
+    assert!(group_warnings(&rig.tick(50)).is_empty());
+}
+
+#[test]
+fn a_group_warning_lasts_while_a_child_shows_started_broken() {
+    let mut rig = Rig::new(vec![cue(
+        1,
+        group(vec![timed(sound(2), 1.0, 0.5, AC), memo(3)]),
+    )]);
+    rig.media(0, "media/a.wav", MediaStatus::Missing);
+    rig.start(10, 2);
+    // Fixed while its skipped run is pending: it still shows started_broken, so the warning stays.
+    let fixed = rig.media(100, "media/a.wav", MediaStatus::Available);
+    assert!(group_warnings(&fixed).is_empty());
+    assert!(rig.engine.has_broken_descendant(id(1)));
+    // The run ends (pre-wait 1 s, post-wait 0.5 s): nothing left to show.
+    let end = rig.tick(1510);
+    assert_eq!(problem_reports(&end), vec![(id(2), vec![])]);
+    assert_eq!(group_warnings(&end), vec![(id(1), false)]);
+    assert!(!rig.engine.has_broken_descendant(id(1)));
+}
+
+#[test]
+fn a_status_input_updates_group_warnings_without_a_rebuild() {
+    // A deep tree: a status input still costs only the cues on that file.
+    let mut nested = sound(1000);
+    for g in (1..=50).rev() {
+        nested = cue(g, group(vec![nested, memo(500 + g)]));
+    }
+    let mut rig = Rig::new(vec![nested]);
+    let before = rig.engine.problem_checks();
+    let missing = rig.media(10, "media/a.wav", MediaStatus::Missing);
+    assert_eq!(rig.engine.problem_checks(), before + 1);
+    assert_eq!(group_warnings(&missing).len(), 50);
+    assert!((1..=50).all(|g| rig.engine.has_broken_descendant(id(g))));
+    rig.media(20, "media/a.wav", MediaStatus::Available);
+    assert!((1..=50).all(|g| !rig.engine.has_broken_descendant(id(g))));
 }
 
 #[test]

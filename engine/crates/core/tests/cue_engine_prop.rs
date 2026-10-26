@@ -29,6 +29,10 @@
 //!   reported state and the other way round (States; `cue_states`); run ids are unique, and a
 //!   deadline always belongs to a visible cue.
 //! - The playhead is past the end or on a position of its list (Playhead).
+//! - Stepping (`PlayheadNext`/`PlayheadPrevious`) enters only "start first and enter" groups and
+//!   groups the playhead was already inside (Playhead, "Stepping").
+//! - A group shows a warning exactly while a descendant is shown with problems, and its
+//!   `GroupWarningChanged` reports agree, never repeating a value (Broken cues).
 //! - A running group has a busy child (Groups, "Its action").
 //! - Chain bound: the calls at one `now` start at most `chain_limit` cues between them (Chains
 //!   and the chain bound).
@@ -50,6 +54,8 @@
 //!   (Preview), and a preview and its mixer voice exist together.
 //! - Determinism: the same case twice gives identical actions (Shape).
 //!
+//! `random_groups_play_round_robin` checks random groups against a reference round-robin (Groups,
+//! "Random"): within a cycle no child repeats, and a cycle never opens with the last pick.
 //! `broken_cues_never_auto_follow` covers the auto-follow rule (rule 2) on lists where every
 //! start but the first can only come from a continue. Undo and redo of commands are
 //! property-tested in `commands_prop.rs`.
@@ -383,6 +389,37 @@ fn flatten(cues: &[Cue], out: &mut Vec<CueId>) {
     for c in cues {
         out.push(c.id);
         flatten(c.children(), out);
+    }
+}
+
+/// The ids of the groups around `id` (outermost first); empty if it is not in `cues`.
+fn groups_around(cues: &[Cue], id: CueId) -> Vec<CueId> {
+    for c in cues {
+        if c.id == id {
+            return Vec::new();
+        }
+        let inner = groups_around(c.children(), id);
+        if !inner.is_empty() || c.children().iter().any(|k| k.id == id) {
+            return std::iter::once(c.id).chain(inner).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Adds to `out` every group (on `path`, or below) with a descendant in `broken`.
+fn groups_above(
+    cues: &[Cue],
+    broken: &BTreeSet<CueId>,
+    path: &mut Vec<CueId>,
+    out: &mut BTreeSet<CueId>,
+) {
+    for c in cues {
+        if broken.contains(&c.id) {
+            out.extend(path.iter().copied());
+        }
+        path.push(c.id);
+        groups_above(c.children(), broken, path, out);
+        path.pop();
     }
 }
 
@@ -995,6 +1032,8 @@ struct Run {
     held: Vec<Input>,
     raw: Vec<Action>,
     shown: Vec<Action>,
+    /// The last `GroupWarningChanged` of each group (absent: none reported, so no warning).
+    group_warnings: BTreeMap<CueId, bool>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1034,6 +1073,7 @@ impl Run {
             held: Vec::new(),
             raw: Vec::new(),
             shown: Vec::new(),
+            group_warnings: BTreeMap::new(),
         }
     }
 
@@ -1080,6 +1120,15 @@ impl Run {
         let mut arm = Vec::new();
         for action in &actions {
             match action {
+                Action::GroupWarningChanged { group, warning } => {
+                    let previous = self.group_warnings.insert(*group, *warning);
+                    prop_assert_ne!(
+                        previous.unwrap_or(false),
+                        *warning,
+                        "repeated warning report of {}",
+                        group
+                    );
+                }
                 Action::StateChanged { cue, state, at } => {
                     let previous = self.reported.get(cue).copied().unwrap_or(CueState::Idle);
                     prop_assert_ne!(
@@ -1389,6 +1438,35 @@ impl Run {
             prop_assert!(!problems.is_empty());
             prop_assert!(self.ws.find_cue(id).is_some());
             prop_assert_ne!(self.engine.state(id), CueState::Idle);
+        }
+        // A group shows a warning exactly while a descendant is shown with problems, and the
+        // reports say so (Broken cues: the group is not broken).
+        if self.unique_ids() {
+            let broken: BTreeSet<CueId> = self
+                .engine
+                .broken_cues()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            let mut warned = BTreeSet::new();
+            for list in &self.ws.cue_lists {
+                groups_above(&list.cues, &broken, &mut Vec::new(), &mut warned);
+            }
+            for id in all_ids(&self.ws) {
+                prop_assert_eq!(
+                    self.engine.has_broken_descendant(id),
+                    warned.contains(&id),
+                    "warning of {} ({:?})",
+                    id,
+                    self.input
+                );
+            }
+            for (group, warning) in &self.group_warnings {
+                prop_assert_eq!(*warning, self.engine.has_broken_descendant(*group));
+            }
+            for group in &warned {
+                prop_assert_eq!(self.group_warnings.get(group), Some(&true));
+            }
         }
         // A pending deadline belongs to a cue that reports it (not idle, loaded or paused).
         if self.engine.next_deadline().is_some() {
@@ -1728,8 +1806,37 @@ impl Run {
                     .is_none_or(|d| d > self.horizon())
         });
         let before = guard.map(|cue| (cue, self.engine.run_of(cue)));
+        let stepping = matches!(
+            input,
+            Input::PlayheadNext { .. } | Input::PlayheadPrevious { .. }
+        ) && self.unique_ids()
+            // A deadline in the window (a GoTo cue) could move the playhead first.
+            && self
+                .engine
+                .next_deadline()
+                .is_none_or(|d| d > self.horizon());
+        let from = self.engine.playhead(list);
         let start = self.raw.len();
         self.call(input, kind)?;
+        // Stepping enters only "start first and enter" groups, or a group the playhead was
+        // already inside (Playhead).
+        if stepping && let Some(to) = self.engine.playhead(list) {
+            let cues = &self.ws.cue_lists[0].cues;
+            let around_from = from.map(|f| groups_around(cues, f)).unwrap_or_default();
+            for g in groups_around(cues, to) {
+                let mode = self.ws.find_cue(g).and_then(|c| match c.kind {
+                    CueKind::Group { mode, .. } => Some(mode),
+                    _ => None,
+                });
+                prop_assert!(
+                    mode == Some(GroupMode::StartFirstAndEnter) || around_from.contains(&g),
+                    "stepped from {:?} into {} ({:?})",
+                    from,
+                    to,
+                    mode
+                );
+            }
+        }
         if let Some((cue, run)) = before {
             prop_assert_eq!(
                 self.engine.run_of(cue),
@@ -1969,6 +2076,11 @@ proptest! {
     }
 
     #[test]
+    fn random_groups_play_round_robin((armed, steps, seed) in random_group_case()) {
+        random_group_round_robin(&armed, &steps, seed)?;
+    }
+
+    #[test]
     fn engine_invariants(case in case()) {
         let without = run(&case, false)?;
         let with = run(&case, true)?;
@@ -1991,6 +2103,120 @@ proptest! {
         );
         prop_assert!(without.raw.iter().all(|a| !preview_action(a)));
     }
+}
+
+/// One random group of memos and what happens to it: `(op, a)` steps where op 0..=5 starts the
+/// group, 6 toggles child `a`'s armed flag, 7 removes child `a`, 8 adds a child.
+fn random_group_case() -> impl Strategy<Value = (Vec<bool>, Vec<(u8, u8)>, u64)> {
+    (
+        prop::collection::vec(any::<bool>(), 1..7),
+        prop::collection::vec((0u8..9, any::<u8>()), 1..60),
+        any::<u64>(),
+    )
+}
+
+/// Random groups (Groups, "Random"; QLab 5 round-robin) against a reference: each pick is a
+/// playable child not yet picked this cycle; a new cycle starts only when none is left and does
+/// not open with the last pick. Within a cycle no child repeats.
+fn random_group_round_robin(armed: &[bool], steps: &[(u8, u8)], seed: u64) -> Check {
+    let memo = |n: u128, armed: bool| {
+        let mut c = cue(n, CueKind::Memo);
+        c.armed = armed;
+        c
+    };
+    let children: Vec<Cue> = armed
+        .iter()
+        .enumerate()
+        .map(|(i, a)| memo(100 + i as u128, *a))
+        .collect();
+    let group = cue(
+        1,
+        CueKind::Group {
+            mode: GroupMode::StartRandom,
+            children,
+        },
+    );
+    let mut ws = workspace(vec![group]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, seed).unwrap());
+    let mut last_ws = None;
+    let mut next_id = 100 + armed.len() as u128;
+    let mut played: BTreeSet<CueId> = BTreeSet::new();
+    let mut last: Option<CueId> = None;
+    for (t, (op, a)) in steps.iter().enumerate() {
+        let now = t as u64 * 1000;
+        let kids = match &mut ws.cue_lists[0].cues[0].kind {
+            CueKind::Group { children, .. } => children,
+            _ => panic!("not a group"),
+        };
+        match op {
+            6 if !kids.is_empty() => {
+                let i = usize::from(*a) % kids.len();
+                kids[i].armed = !kids[i].armed;
+            }
+            7 if !kids.is_empty() => {
+                kids.remove(usize::from(*a) % kids.len());
+            }
+            8 => {
+                kids.push(memo(next_id, *a % 2 == 0));
+                next_id += 1;
+            }
+            _ => {}
+        }
+        let ids: Vec<CueId> = kids.iter().map(|c| c.id).collect();
+        let playable: Vec<CueId> = kids.iter().filter(|c| c.armed).map(|c| c.id).collect();
+        if *op > 5 {
+            handle_as_binary(&mut engine, &ws, &mut last_ws, Input::Tick, now);
+            continue;
+        }
+        let out = handle_as_binary(
+            &mut engine,
+            &ws,
+            &mut last_ws,
+            Input::Start { cue: cue_id(1) },
+            now,
+        );
+        let picks: Vec<CueId> = out
+            .iter()
+            .filter_map(|a| match a {
+                Action::StateChanged { cue, .. } if ids.contains(cue) => Some(*cue),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if ids.is_empty() {
+            prop_assert!(picks.is_empty());
+            continue;
+        }
+        prop_assert_eq!(picks.len(), 1, "{:?}", out);
+        let pick = picks[0];
+        let pool = if playable.is_empty() { &ids } else { &playable };
+        played.retain(|p| ids.contains(p));
+        let open: Vec<CueId> = pool
+            .iter()
+            .copied()
+            .filter(|p| !played.contains(p))
+            .collect();
+        if open.is_empty() {
+            prop_assert!(pool.contains(&pick), "{} not in {:?}", pick, pool);
+            prop_assert!(
+                pool.len() < 2 || Some(pick) != last,
+                "new cycle opened with {}",
+                pick
+            );
+            played.clear();
+        } else {
+            prop_assert!(
+                open.contains(&pick),
+                "{} repeated in its cycle; open {:?}",
+                pick,
+                open
+            );
+        }
+        played.insert(pick);
+        last = Some(pick);
+    }
+    Ok(())
 }
 
 /// The generator must keep reaching what the rules are about: a property test that never gets
@@ -2040,6 +2266,7 @@ fn the_generator_reaches_what_the_rules_are_about() {
         "PreviewStart",
         "PreviewStop",
         "ProblemsChanged",
+        "GroupWarningChanged",
         "state Loaded",
         "state PreWaiting",
         "state Running",

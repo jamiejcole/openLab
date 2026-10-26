@@ -676,12 +676,11 @@ fn next_and_previous_move_without_firing() {
 
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(2))));
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(3))));
-    // Into the group's children (docs/cue-engine.md, Playhead).
-    assert_eq!(moved(&next(&mut rig)), Some(Some(id(30))));
+    // Over the timeline group as a unit (QLab 5 enters only "start first and enter" groups;
+    // docs/cue-engine.md, Playhead).
     assert_eq!(moved(&next(&mut rig)), Some(None));
     assert!(next(&mut rig).is_empty());
-    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(30))));
-    previous(&mut rig);
+    assert_eq!(moved(&previous(&mut rig)), Some(Some(id(3))));
     previous(&mut rig);
     previous(&mut rig);
     assert_eq!(rig.playhead(), Some(id(1)));

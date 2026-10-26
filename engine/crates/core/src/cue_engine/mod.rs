@@ -61,8 +61,8 @@ pub struct CueEngine {
     next_seq: u64,
     /// Random groups and shuffled playlists draw from this, seeded from the config.
     rng: SplitMix64,
-    /// The child each random group picked last, so it is not picked twice in a row.
-    last_random: BTreeMap<CueId, CueId>,
+    /// Each random group's round-robin cycle (QLab 5: memory lasts while the engine does).
+    random_cycles: BTreeMap<CueId, group::RandomCycle>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
     /// Static problems (CUE-06) and what they are computed from.
@@ -125,7 +125,7 @@ impl CueEngine {
             next_run: 1,
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
-            last_random: BTreeMap::new(),
+            random_cycles: BTreeMap::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
             panic: None,
@@ -407,7 +407,8 @@ impl CueEngine {
         for list in &cx.ws.cue_lists {
             collect_ids(&list.cues, &mut present);
         }
-        self.last_random.retain(|group, _| present.contains(group));
+        self.random_cycles
+            .retain(|group, _| present.contains(group));
         // Gone, or now a cue of the other sort (group or not) than the one running: a runtime
         // only fits the kind it was started as.
         let ws = cx.ws;
