@@ -129,7 +129,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 ## 4. Model and commands
 
 - **Workspace** → `cue_lists: Vec<CueList>`, `patches: Vec<OutputPatch>`, `settings`. **CueList** → ordered top-level cues; **Group** cues contain child cues (tree).
-- **Cue**: `id: Uuid` (stable, internal), `number: Option<String>` (free text, unique when set), `name`, `notes`, `color`, `flagged`, `armed`, `pre_wait`, `post_wait`, `continue_mode`, `triggers`, and `kind: CueKind` (enum: Audio, Fade, Group, Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo, Network, …). Targets reference cue `id`, never number.
+- **Cue**: `id: Uuid` (stable, internal), `number: Option<String>` (free text, unique when set), `name`, `notes`, `color`, `flagged`, `armed`, `pre_wait`, `post_wait`, `continue_mode`, `triggers`, `second_trigger` (what a trigger does while the cue is active), `second_trigger_on_release`, and `kind: CueKind` (enum: Audio, Fade, Group, Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo, Network, …). Targets reference cue `id`, never number.
 - **Levels** are dB (f64). Values ≤ −120 dB mean silence (−∞); the file writes −120 for silence.
 - **Every mutation is a `Command`** (serialisable). Applying a command returns its inverse. Undo/redo stacks live in the engine (ED-07). Multi-step edits (batch edit, paste, renumber) are grouped into one transaction = one undo step.
 - The same command stream is what the UI sends, what OSC edits produce, and later what primary/backup mirroring (RED-01) replays.
