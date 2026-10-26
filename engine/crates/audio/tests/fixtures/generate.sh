@@ -27,4 +27,8 @@ ffmpeg -v error -y -stream_loop 7 -i "$src" -c:a vorbis -strict -2 -q:a 4 tone-4
 onset="aevalsrc='if(lt(n,1000),0,0.5*sin(2*PI*440*(n-1000)/44100))|if(lt(n,1000),0,0.25*sin(2*PI*1000*(n-1000)/44100))':s=44100:d=0.5"
 ffmpeg -v error -y -f lavfi -i "$onset" -c:a aac -b:a 128k tone-onset.m4a
 ffmpeg -v error -y -f lavfi -i "$onset" -c:a aac -b:a 128k -use_editlist 0 tone-onset-noedit.m4a
+# Digital silence for 3 s, then 1 s of tone, as FLAC (lossless, so the silence is exact zeros):
+# the seek index's checkpoints in the silence verify at any alignment (L-R7).
+silence="aevalsrc='if(lt(n,132300),0,0.5*sin(2*PI*440*(n-132300)/44100))|if(lt(n,132300),0,0.25*sin(2*PI*1000*(n-132300)/44100))':s=44100:d=4"
+ffmpeg -v error -y -f lavfi -i "$silence" -c:a flac silence-lead.flac
 rm -f "$tmp" "$src"

@@ -438,12 +438,57 @@ fn damaged_media_gives_a_waveform_and_warnings() {
     for b in &mut flac[mid..mid + 16] {
         *b ^= 0x5a;
     }
+    // The damaged range comes from the decoder's own warning, not the fixture's frame layout.
     let media = || Media::Reader(Box::new(Cursor::new(flac.clone())), Some("flac".into()));
     let probed = probe_media(media()).unwrap();
     let r = build_waveform(media(), &probed.info, &AtomicBool::new(false)).unwrap();
     assert_eq!(r.waveform.frames, probed.info.frames);
-    assert!(r.warnings.iter().any(|w| w.kind == WarningKind::Missing));
-    assert_eq!(r.waveform.range(0, 0, 4_096, 1)[0], Peak::default());
+    let missing = r
+        .warnings
+        .iter()
+        .find(|w| w.kind == WarningKind::Missing)
+        .expect("a Missing warning");
+    // Whole source buckets inside the missing range are silent (edge buckets may hold audio).
+    let from = missing.at.div_ceil(BASE_FRAMES) * BASE_FRAMES;
+    let to = (missing.at + missing.frames) / BASE_FRAMES * BASE_FRAMES;
+    assert!(to > from, "missing range {missing:?} holds a whole bucket");
+    assert_eq!(r.waveform.range(0, from, to, 1)[0], Peak::default());
+}
+
+#[test]
+fn a_decoder_panic_is_a_corrupt_file_not_a_dead_worker() {
+    // A reader that panics once the header has been read stands in for a decoder panic.
+    struct Boom(Cursor<Vec<u8>>);
+    impl std::io::Read for Boom {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.position() >= 1_000 {
+                panic!("decoder bug");
+            }
+            self.0.read(b)
+        }
+    }
+    impl std::io::Seek for Boom {
+        fn seek(&mut self, p: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(p)
+        }
+    }
+    let bytes = wav(&tone(200_000, RATE), 2, RATE, Pcm::I16);
+    let info = probe_media(reader(&bytes)).unwrap().info;
+    let media = Media::Reader(Box::new(Boom(Cursor::new(bytes))), Some("wav".into()));
+    assert!(matches!(
+        build_waveform(media, &info, &AtomicBool::new(false)),
+        Err(WaveformError::Media(MediaError::Corrupt(_)))
+    ));
+}
+
+#[test]
+fn cancel_is_checked_before_opening() {
+    let info = probe(&fixture("tone.flac")).unwrap().info;
+    let junk = Media::Reader(Box::new(Cursor::new(vec![7u8; 5_000])), None);
+    assert_eq!(
+        build_waveform(junk, &info, &AtomicBool::new(true)),
+        Err(WaveformError::Cancelled)
+    );
 }
 
 #[test]

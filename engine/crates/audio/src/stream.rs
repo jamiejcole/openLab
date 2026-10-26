@@ -1069,6 +1069,24 @@ impl Task {
         (k + 1..self.slices.len()).find(|&i| self.slices.get(i).map(|x| x.index) != Some(s.index))
     }
 
+    /// The entry the voice is playing, at the latest: from the ring frames it has taken so far
+    /// (it takes none while it plays an exit buffer, so this lags rather than leads). Exits of
+    /// loops before it can no longer be devamped.
+    fn voice_entry(&self) -> usize {
+        let ch = usize::from(self.info.channels).max(1);
+        let cap = self.producer.buffer().capacity() / ch;
+        let lead = cap.saturating_sub(self.producer.slots() / ch);
+        let consumed = self.written.saturating_sub(lead as u64);
+        let vframe = i64::try_from(consumed)
+            .unwrap_or(i64::MAX)
+            .saturating_sub(self.offset);
+        let rel = vframe.saturating_sub(i64::try_from(self.origin.1).unwrap_or(i64::MAX));
+        match u64::try_from(rel) {
+            Ok(rel) => self.advance(self.origin.0, rel).0,
+            Err(_) => self.origin.0,
+        }
+    }
+
     /// With nothing else to do: starts an exit put off for the global budget, if the budget now
     /// has room, nearest first among the loops the voice can still reach.
     fn idle(&mut self) -> Result<Progress, MediaError> {
@@ -1078,7 +1096,7 @@ impl Task {
             .saturating_mul(ch)
             .saturating_mul(SAMPLE_BYTES);
         if self.exit_budget.room() >= bytes {
-            let from = self.origin.0;
+            let from = self.voice_entry();
             let starved = (from..self.exit_state.len())
                 .find(|&t| self.exit_state.get(t) == Some(&ExitState::Starved));
             if let Some(t) = starved {
@@ -2048,6 +2066,46 @@ mod tests {
                 .step_by(2)
                 .all(|k| t.exit_state[k] == ExitState::Ready)
         );
+    }
+
+    /// Loops re-review L1: the retry of an exit put off for the budget skips the loops the voice
+    /// has played past (their exits can no longer be needed).
+    #[test]
+    fn the_exit_retry_skips_loops_behind_the_voice() {
+        let mut cfg = StreamerConfig::new(48_000);
+        cfg.exit_ms = 20; // 960 frames
+        let exit = 960 * SAMPLE_BYTES;
+        cfg.exit_budget_bytes = exit; // one mono exit
+        let pre = crate::decode::Preloaded::from_samples(1, 48_000, vec![0.25; 12_000]);
+        // Entries: A, B (loop), C, D (loop), E; the exits of C and E are the loops' targets.
+        let slices = crate::plan(
+            0..12_000,
+            &[1_000, 3_000, 4_000, 6_000],
+            &[
+                Plays::Times(1),
+                Plays::Times(2),
+                Plays::Times(1),
+                Plays::Times(2),
+                Plays::Times(1),
+            ],
+            0,
+        )
+        .unwrap();
+        let (d, mut t, mut p) = hand_task(cfg, pre, slices);
+        // Another stream holds the exit budget, so both exits are put off.
+        let hold = Reservation::take(&d.exit_budget, exit).unwrap();
+        settle(&mut t);
+        assert_eq!(t.exit_state[2], ExitState::Starved);
+        assert_eq!(t.exit_state[4], ExitState::Starved);
+        // The voice plays into the second loop (entry 3 starts at voice frame 6000).
+        for _ in 0..7_000 {
+            p.source.pop().unwrap();
+        }
+        assert_eq!(t.voice_entry(), 3);
+        drop(hold);
+        settle(&mut t);
+        assert_eq!(t.exit_state[4], ExitState::Ready, "the loop ahead");
+        assert_eq!(t.exit_state[2], ExitState::Starved, "the loop behind");
     }
 
     /// Review M1: loop caches cannot crowd out exit buffers (separate budgets), and an exit
