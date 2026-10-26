@@ -144,7 +144,15 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 ///   sibling); past the last sibling, out of the group, to the cue after the group's own
 ///   continue chain (and so on up); past the end of the list, `None`. A disarmed group is skipped
 ///   as a unit like any disarmed cue.
-pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -> Option<CueId> {
+///
+/// `broken` says which cues have static problems: their action is skipped, so their auto-follow
+/// never fires and does not continue the chain (their auto-continue does), and a broken Devamp
+/// cue starts no next cue.
+pub(super) fn after_go(
+    path: &[(&[Cue], usize)],
+    armed: impl Fn(&Cue) -> bool,
+    broken: impl Fn(&Cue) -> bool,
+) -> Option<CueId> {
     let &(level, index) = path.last()?;
     if let Some(
         group @ Cue {
@@ -157,7 +165,8 @@ pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -
         },
     ) = level.get(index)
         && armed(group)
-        && let Some(c) = children.get(chain_end(children, 0, true, &armed).saturating_add(1))
+        && let Some(c) =
+            children.get(chain_end(children, 0, true, &armed, &broken).saturating_add(1))
     {
         return Some(c.id);
     }
@@ -175,7 +184,7 @@ pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -
             ),
         };
         level
-            .get(chain_end(level, index, chains, &armed).saturating_add(1))
+            .get(chain_end(level, index, chains, &armed, &broken).saturating_add(1))
             .map(|c| c.id)
     })
 }
@@ -183,12 +192,19 @@ pub(super) fn after_go(path: &[(&[Cue], usize)], armed: impl Fn(&Cue) -> bool) -
 /// Index of the last cue of the continue chain that starts at `index` (just `index` when the
 /// level's continue modes do not chain). An armed Devamp cue with "start next cue" continues
 /// into its next cue (it starts it when the loop is left).
-fn chain_end(level: &[Cue], index: usize, chains: bool, armed: &impl Fn(&Cue) -> bool) -> usize {
+fn chain_end(
+    level: &[Cue],
+    index: usize,
+    chains: bool,
+    armed: &impl Fn(&Cue) -> bool,
+    broken: &impl Fn(&Cue) -> bool,
+) -> usize {
     let mut last = index;
     while chains
         && let Some(c) = level.get(last)
-        && (c.continue_mode != ContinueMode::DoNotContinue
-            || super::starts_next_on_devamp(c, armed(c)))
+        && (c.continue_mode == ContinueMode::AutoContinue
+            || (c.continue_mode == ContinueMode::AutoFollow && !broken(c))
+            || super::starts_next_on_devamp(c, armed(c) && !broken(c)))
         && last.saturating_add(1) < level.len()
     {
         last += 1;
