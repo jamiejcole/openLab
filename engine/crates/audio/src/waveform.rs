@@ -263,7 +263,13 @@ impl WaveformBuilder {
 
     /// Closes the last partial bucket and derives the coarser levels. The waveform covers the
     /// frames actually received.
-    pub fn finish(mut self) -> Result<Waveform, WaveformError> {
+    pub fn finish(self) -> Result<Waveform, WaveformError> {
+        self.finish_cancellable(&AtomicBool::new(false))
+    }
+
+    /// [`finish`](Self::finish), checking `cancel` before each coarser level (a long file has
+    /// ~20 of them).
+    fn finish_cancellable(mut self, cancel: &AtomicBool) -> Result<Waveform, WaveformError> {
         if self.filled > 0 {
             self.close_bucket();
         }
@@ -275,6 +281,9 @@ impl WaveformBuilder {
             };
             loop {
                 let done = cur.buckets() <= 1;
+                if !done && cancel.load(Ordering::Relaxed) {
+                    return Err(WaveformError::Cancelled);
+                }
                 let next = if done { None } else { Some(halve(&cur)?) };
                 levels.push(cur);
                 match next {
@@ -324,7 +333,8 @@ pub struct WaveformResult {
 
 /// Decodes `media` once with the regular decoder and builds its waveform. `info` is the file's
 /// probe ([`crate::Probed::info`]); it sizes the allocation. Blocking: call from a worker
-/// thread. `cancel` is checked before every ~4096-frame read; setting it gives
+/// thread. `cancel` is checked before opening, before every ~4096-frame read and before each
+/// pyramid level is derived; setting it gives
 /// [`WaveformError::Cancelled`].
 ///
 /// A file longer than probed is read only up to `info.frames` (as a stream does). A shorter one
@@ -345,6 +355,9 @@ fn build(
     info: &MediaInfo,
     cancel: &AtomicBool,
 ) -> Result<WaveformResult, WaveformError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(WaveformError::Cancelled);
+    }
     let mut src = open_source(media, Seeking::Direct)?;
     if src.channels() != usize::from(info.channels) || src.sample_rate() != info.sample_rate {
         return Err(MediaError::Changed.into());
@@ -378,7 +391,7 @@ fn build(
         });
     }
     Ok(WaveformResult {
-        waveform: builder.finish()?,
+        waveform: builder.finish_cancellable(cancel)?,
         warnings,
     })
 }

@@ -3,11 +3,13 @@
 //! Entry point for the decode fuzz target (`engine/fuzz/fuzz_targets/decode.rs`). Not API.
 
 use std::io::Cursor;
+use std::sync::atomic::AtomicBool;
 
 use crate::decode::{
     Media, MediaError, MediaWarning, Seeking, WarningKind, open_source, preload, probe_media,
 };
 use crate::resample::Pipeline;
+use crate::waveform::build_waveform;
 
 /// Device rate the pipeline resamples to: most inputs then go through the resampler.
 const DEVICE_RATE: u32 = 48_000;
@@ -38,6 +40,15 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
                 other.map(|p| p.info())
             ));
         }
+    }
+    // The overview decodes the same file once more; it may fail but never lie about the length.
+    if let Ok(r) = build_waveform(media(), &info, &AtomicBool::new(false))
+        && r.waveform.frames > info.frames
+    {
+        return Err(format!(
+            "waveform of {} frames for a probe of {info:?}",
+            r.waveform.frames
+        ));
     }
     stream(media(), info.frames, probed.seeking.clone())
         .map_err(|e| format!("probe {info:?} but streaming: {e}"))
