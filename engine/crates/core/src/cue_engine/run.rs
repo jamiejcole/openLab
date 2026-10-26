@@ -35,8 +35,12 @@ impl Slot {
 #[derive(Clone, Debug)]
 pub(super) struct Loaded {
     pub run: RunId,
-    /// Samples into the cue's timeline (pre-wait, then action) it will start from.
-    pub offset: SampleTime,
+    /// Pre-wait left when it starts and the samples into the action it starts from: the split
+    /// of the load-to-time offset into pre-wait and action, frozen at load so the stream primed
+    /// by `LoadVoice` is the one `StartVoice` asks for even if the cue's pre-wait is edited
+    /// meanwhile.
+    pub pre_wait_left: SampleTime,
+    pub action_offset: SampleTime,
     /// A `LoadVoice` was sent for this run.
     pub voice: bool,
 }
@@ -67,6 +71,10 @@ pub(super) enum Voice {
     Started {
         at: SampleTime,
         from: SampleTime,
+        /// The sample the mixer voice first started on. A resume re-keys the same voice, so
+        /// this stays put while `at` becomes the resume sample: only a ramp on this sample is
+        /// immediate, any later 0-frame ramp is de-zippered (docs/audio.md, De-zipper).
+        first: SampleTime,
     },
 }
 
@@ -274,7 +282,9 @@ impl Run {
     /// no voice plays).
     pub fn position(&self, at: SampleTime) -> SampleTime {
         match self.voice {
-            Voice::Started { at: started, from } => from.saturating_add(at.saturating_sub(started)),
+            Voice::Started {
+                at: started, from, ..
+            } => from.saturating_add(at.saturating_sub(started)),
             Voice::None | Voice::Loaded => self.action_offset,
         }
     }

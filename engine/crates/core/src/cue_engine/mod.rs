@@ -13,6 +13,7 @@ mod fade;
 mod group;
 mod level;
 mod playhead;
+mod preview;
 mod rng;
 mod run;
 mod time;
@@ -25,6 +26,7 @@ mod tests;
 use std::collections::{BTreeMap, HashSet};
 
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
+pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
 pub use transport::PANIC_CURVE;
 pub use types::*;
@@ -34,12 +36,18 @@ use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
 use playhead::Playhead;
+use preview::Preview;
 use rng::SplitMix64;
 use run::{DevampWait, Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 
 /// Cue starts allowed per call on top of the workspace's cue count. Without trigger cycles a call
 /// starts each cue at most once, so only a cycle reaches the limit.
 pub const CHAIN_MARGIN: usize = 64;
+
+/// Cue starts of a call that a playlist leaves alone for what follows it: its own children stop
+/// starting when this few are left, so a looping playlist of zero-length children (a cycle that
+/// would otherwise spend the whole call) still lets the cue after the group start.
+pub(super) const PLAYLIST_RESERVE: usize = 8;
 
 /// Runtime state of every cue and playhead of one workspace.
 #[derive(Clone, Debug)]
@@ -61,6 +69,23 @@ pub struct CueEngine {
     problems: broken::Problems,
     /// The panic fade under way: the sample it came on and the one it ends on.
     panic: Option<(SampleTime, SampleTime)>,
+    /// `model_changed` was called (or the engine is new) since the last call: the next call
+    /// follows the edits (stops deleted cues, moves playheads) and recounts the chain limit.
+    /// Without it those passes are skipped (release builds): see `model_changed`.
+    model_dirty: bool,
+    /// Cues being previewed (see `preview.rs`); apart from the show's runs.
+    previews: BTreeMap<CueId, Preview>,
+    next_preview: u64,
+    /// `chain_limit` of the workspace as of the last such pass.
+    limit: usize,
+    /// How many such passes have run (a cost measure, see `model_syncs`).
+    model_syncs: u64,
+    /// The `now` of the last call and the cue starts made by the calls at that `now` so far.
+    /// The chain budget is per sample, not per call: mixer feedback dated on the sample it is
+    /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
+    /// into call after call at one `now`, each with a fresh budget (see "Chains and the chain
+    /// bound").
+    spent: (SampleTime, usize),
 }
 
 /// One `handle` call's inputs and outputs.
@@ -69,9 +94,11 @@ struct Ctx<'w> {
     now: SampleTime,
     /// Deadlines up to here are carried out in this call.
     horizon: SampleTime,
-    /// Cue starts left in this call.
+    /// Cue starts left at this `now` (what earlier calls at the same `now` left).
     budget: usize,
     limit: usize,
+    /// The limit was recounted this call (see `CueEngine::budget_left`).
+    limit_verified: bool,
     out: Vec<Action>,
     /// Runtimes that ended since groups last looked: `(cue, at, how)`.
     vacated: Vec<(CueId, SampleTime, Exit)>,
@@ -102,6 +129,12 @@ impl CueEngine {
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
             panic: None,
+            model_dirty: true,
+            previews: BTreeMap::new(),
+            next_preview: 0,
+            limit: 0,
+            model_syncs: 0,
+            spent: (0, 0),
         }
     }
 
@@ -109,16 +142,51 @@ impl CueEngine {
         &self.config
     }
 
+    /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
+    /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
+    /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
+    /// M4.2 contract. Release builds skip those whole-workspace passes on every other call, so a
+    /// missed signal leaves them out of date; what could then refuse or drop a cue is guarded
+    /// where it happens (a cue about to be refused for its problems is rechecked, a spent chain
+    /// budget is recounted, a GO whose playhead cue is gone resyncs that list) and counted in
+    /// [`Self::unsignalled_model_changes`]. Debug builds run the passes on every call and count.
+    pub fn model_changed(&mut self) {
+        self.model_dirty = true;
+        self.mark_problems_dirty();
+    }
+
+    /// How many times the whole-workspace passes triggered by [`Self::model_changed`] have run
+    /// (a cost measure: a call with nothing signalled adds none).
+    pub fn model_syncs(&self) -> u64 {
+        self.model_syncs
+    }
+
     /// Applies one input at scheduling time `now` (the earliest sample a command can still hit).
     /// `ws` is the current workspace; edits since the last call are taken into account first.
     pub fn handle(&mut self, ws: &Workspace, input: Input, now: SampleTime) -> Vec<Action> {
-        let limit = Self::chain_limit(ws);
+        // Whole-tree passes (the chain limit, following edits) only after `model_changed`, so a
+        // Tick on a big show costs nothing extra. Debug builds run them every call and count a
+        // change nobody signalled, as for the static problems.
+        let signalled = std::mem::take(&mut self.model_dirty);
+        let follow_edits = signalled || cfg!(debug_assertions);
+        if follow_edits {
+            self.limit = Self::chain_limit(ws);
+        }
+        if signalled {
+            self.model_syncs = self.model_syncs.saturating_add(1);
+        }
+        let limit = self.limit;
+        let spent = match self.spent {
+            (at, starts) if at == now => starts,
+            _ => 0,
+        };
         let mut cx = Ctx {
             ws,
             now,
             horizon: self.config.horizon(now),
-            budget: limit,
+            budget: limit.saturating_sub(spent),
             limit,
+            limit_verified: follow_edits,
             out: Vec::new(),
             vacated: Vec::new(),
         };
@@ -134,14 +202,23 @@ impl CueEngine {
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after
         // `model_changed`.
+        let counted = self.unsignalled_model_changes();
         self.sync_problems(&mut cx);
-        self.sync_model(&mut cx);
-        self.sync_playheads(&mut cx);
+        if follow_edits {
+            let changed = self.sync_model(&mut cx) | self.sync_playheads(&mut cx);
+            // Once per call: the problems may have noticed the same edit.
+            if changed && !signalled && self.unsignalled_model_changes() == counted {
+                self.note_unsignalled();
+            }
+        }
         self.advance(&mut cx);
         self.apply(input, &mut cx);
         self.drain(&mut cx);
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
+        // `limit - budget` is what this call and the earlier ones at `now` started (a raised
+        // limit raises the budget by as much, see `budget_left`).
+        self.spent = (now, cx.limit.saturating_sub(cx.budget));
         cx.out
     }
 
@@ -208,12 +285,13 @@ impl CueEngine {
         }
     }
 
-    /// The run of a cue that is loaded or running.
+    /// The run of a cue that is loaded or running. A broken cue (at run time, or started broken)
+    /// owns no voice and so has none.
     pub fn run_of(&self, cue: CueId) -> Option<RunId> {
         match self.slots.get(&cue)? {
             Slot::Loaded(loaded) => Some(loaded.run),
-            Slot::Active(run) => Some(run.run),
-            Slot::Broken(_) => None,
+            Slot::Active(run) if !run.is_broken() => Some(run.run),
+            Slot::Active(_) | Slot::Broken(_) => None,
         }
     }
 
@@ -293,6 +371,8 @@ impl CueEngine {
             Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
+            Input::Preview { cue } => self.preview(cue, cx),
+            Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
@@ -318,9 +398,10 @@ impl CueEngine {
 
     /// Stops and forgets cues that are no longer in the workspace, then lets their groups react
     /// (and ends groups an edit left with no busy child).
-    fn sync_model(&mut self, cx: &mut Ctx) {
+    fn sync_model(&mut self, cx: &mut Ctx) -> bool {
+        let previews_ended = self.sync_previews(cx);
         if self.slots.is_empty() {
-            return;
+            return previews_ended;
         }
         let mut present = HashSet::new();
         for list in &cx.ws.cue_lists {
@@ -340,6 +421,7 @@ impl CueEngine {
             })
             .map(|(id, _)| *id)
             .collect();
+        let changed = !gone.is_empty() || previews_ended;
         for cue in gone {
             let before = self.state(cue);
             if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
@@ -358,15 +440,22 @@ impl CueEngine {
             guard -= 1;
             self.drain(cx);
         }
+        changed
     }
 
-    fn sync_playheads(&mut self, cx: &mut Ctx) {
+    /// Follows edits to the cue lists. Returns whether any list's cues (or the set of lists)
+    /// differ from the last pass.
+    fn sync_playheads(&mut self, cx: &mut Ctx) -> bool {
+        let before = self.playheads.len();
         self.playheads
             .retain(|id, _| cx.ws.cue_lists.iter().any(|l| l.id == *id));
+        let mut changed = self.playheads.len() != before;
         for list in &cx.ws.cue_lists {
             match self.playheads.get_mut(&list.id) {
                 Some(playhead) => {
-                    if playhead.sync(&list.cues) {
+                    let (edited, moved) = playhead.sync(&list.cues);
+                    changed |= edited;
+                    if moved {
                         cx.out.push(Action::PlayheadChanged {
                             list: list.id,
                             cue: playhead.cue,
@@ -374,6 +463,7 @@ impl CueEngine {
                     }
                 }
                 None => {
+                    changed = true;
                     let playhead = Playhead::new(&list.cues);
                     cx.out.push(Action::PlayheadChanged {
                         list: list.id,
@@ -383,6 +473,7 @@ impl CueEngine {
                 }
             }
         }
+        changed
     }
 
     // ----- GO and playheads -----
@@ -400,8 +491,8 @@ impl CueEngine {
         {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
-        if !self.go_on(list, cx.now, cx) {
-            return ignored(GoIgnoredReason::NoCue, cx);
+        if let Err(reason) = self.go_on(list, cx.now, cx) {
+            return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
     }
@@ -471,32 +562,77 @@ impl CueEngine {
 
     // ----- operations (CUE-05) -----
 
+    /// Whether the call may start another cue. When the budget is spent, the limit is recounted
+    /// once per call (calls skip the count when nothing was signalled, see `model_changed`): if
+    /// cues were added without the signal the limit was too low, and the budget is raised to the
+    /// real one instead of dropping a legitimate start. A genuine cycle (the recount agrees) costs
+    /// one recount per call.
+    fn budget_left(&mut self, cx: &mut Ctx) -> bool {
+        if cx.budget > 0 {
+            return true;
+        }
+        if !cx.limit_verified {
+            cx.limit_verified = true;
+            let fresh = Self::chain_limit(cx.ws);
+            if fresh > cx.limit {
+                cx.budget = fresh - cx.limit;
+                cx.limit = fresh;
+                self.limit = fresh;
+                self.note_unsignalled();
+                return true;
+            }
+        }
+        false
+    }
+
     /// Starts `cue` at sample `at`. A paused cue resumes; an already active one ignores the
     /// trigger (second-trigger rule, docs/cue-engine.md).
     fn start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
-        if cx.budget == 0 {
+        let Some(model) = cx.ws.find_cue(cue) else {
+            return cx.warn(EngineWarning::UnknownCue { cue });
+        };
+        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
+        // ends that fade at once and starts the cue afresh.
+        let panicked = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked);
+        // Triggers that start nothing cost no budget: the budget is shared by every call at one
+        // `now`, so ignored triggers (a stuck controller key) must not use it up for a GO. A
+        // cycle still ends, since each of its laps creates or resumes a runtime, which is charged
+        // below, and a trigger back to an active cue is ignored.
+        if !panicked {
+            match self.slots.get(&cue) {
+                Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+                Some(Slot::Active(run)) if run.paused_at.is_some() => {}
+                Some(Slot::Active(run)) if run.is_broken() => {
+                    return cx.warn(EngineWarning::CueBroken { cue });
+                }
+                Some(Slot::Active(run)) => {
+                    return cx.warn(EngineWarning::TriggerIgnored {
+                        cue,
+                        state: run.state(),
+                    });
+                }
+                Some(Slot::Loaded(_)) | None => {}
+            }
+        }
+        if !self.budget_left(cx) {
             return cx.warn(EngineWarning::ChainLimit {
                 cue,
                 limit: cx.limit,
             });
         }
         cx.budget -= 1;
-        let Some(model) = cx.ws.find_cue(cue) else {
-            return cx.warn(EngineWarning::UnknownCue { cue });
-        };
-        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
-        // ends that fade at once and starts the cue afresh.
-        if matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked) {
+        if panicked {
             self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
         }
         let before = self.state(cue);
-        let (run, offset, voice) = match self.slots.get(&cue) {
+        let (run, split, voice) = match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
-            Some(Slot::Active(run)) if run.is_broken() => {
-                return cx.warn(EngineWarning::CueBroken { cue });
-            }
+            // Also a broken one: its frozen timers (a pending auto-continue) run again.
             Some(Slot::Active(run)) if run.paused_at.is_some() => {
                 return self.resume_tree(cue, at, cx);
+            }
+            Some(Slot::Active(run)) if run.is_broken() => {
+                return cx.warn(EngineWarning::CueBroken { cue });
             }
             Some(Slot::Active(run)) => {
                 return cx.warn(EngineWarning::TriggerIgnored {
@@ -506,21 +642,21 @@ impl CueEngine {
             }
             Some(Slot::Loaded(loaded)) => (
                 loaded.run,
-                loaded.offset,
+                (loaded.pre_wait_left, loaded.action_offset),
                 if loaded.voice {
                     Voice::Loaded
                 } else {
                     Voice::None
                 },
             ),
-            None => (self.new_run(), 0, Voice::None),
+            None => (
+                self.new_run(),
+                (cx.secs(model.pre_wait, &self.config), 0),
+                Voice::None,
+            ),
         };
-        let pre_wait = cx.secs(model.pre_wait, &self.config);
-        let (until, action_offset) = if offset < pre_wait {
-            (at.saturating_add(pre_wait - offset), 0)
-        } else {
-            (at, offset - pre_wait)
-        };
+        let (pre_wait_left, action_offset) = split;
+        let until = at.saturating_add(pre_wait_left);
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let group = matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default);
@@ -640,6 +776,10 @@ impl CueEngine {
     fn resume_one(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
+        // Only a paused cue takes a fresh id (a resume of anything else changes nothing).
+        if !matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some()) {
+            return;
+        }
         let fresh = self.new_run();
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
@@ -667,9 +807,14 @@ impl CueEngine {
                 offset,
             });
             run.run = fresh;
+            let first = match run.voice {
+                Voice::Started { first, .. } => first,
+                Voice::None | Voice::Loaded => voice_at,
+            };
             run.voice = Voice::Started {
                 at: voice_at,
                 from: offset,
+                first,
             };
             // A devamp still pending is sent again for the resumed segment (QLab keeps it
             // through a pause); answers for the paused segment's id are stale.
@@ -712,16 +857,29 @@ impl CueEngine {
         let run = self.new_run();
         let offset = cx.secs(time, &self.config);
         let voice = self.is_armed(model) && matches!(model.kind, CueKind::Audio { .. });
+        // The split between pre-wait and action is fixed here, for the stream and the start.
+        let pre_wait = cx.secs(model.pre_wait, &self.config);
+        let (pre_wait_left, action_offset) = if offset < pre_wait {
+            (pre_wait - offset, 0)
+        } else {
+            (0, offset - pre_wait)
+        };
         if voice {
-            let pre_wait = cx.secs(model.pre_wait, &self.config);
             cx.out.push(Action::LoadVoice {
                 cue,
                 run,
-                offset: offset.saturating_sub(pre_wait),
+                offset: action_offset,
             });
         }
-        self.slots
-            .insert(cue, Slot::Loaded(Loaded { run, offset, voice }));
+        self.slots.insert(
+            cue,
+            Slot::Loaded(Loaded {
+                run,
+                pre_wait_left,
+                action_offset,
+                voice,
+            }),
+        );
         self.report(cue, before, cx.now, cx);
     }
 
@@ -736,6 +894,9 @@ impl CueEngine {
     // ----- feedback -----
 
     fn action_ended(&mut self, cue: CueId, run_id: RunId, at: SampleTime, cx: &mut Ctx) {
+        if self.preview_ended(cue, run_id, at, cx) {
+            return;
+        }
         let before = self.state(cue);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
@@ -782,6 +943,9 @@ impl CueEngine {
     }
 
     fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
+        if self.preview_failed(cue, run_id, reason, cx) {
+            return;
+        }
         let before = self.state(cue);
         // A group owns no voice, so no feedback can concern it.
         let group = cx
@@ -839,20 +1003,22 @@ impl CueEngine {
         // budget), a run's own progress (pre-wait, action end, post-wait) and devamp answers (at
         // most one per run), so this ends; the guard is a second line of defence against a bug
         // turning into a hung show.
-        let mut guard = self
-            .slots
-            .len()
-            .saturating_add(cx.budget)
-            .saturating_add(1)
-            .saturating_mul(4);
+        let mut steps = 0usize;
         while let Some((cue, at)) = self.earliest_due(cx.horizon) {
-            if guard == 0 {
+            // Read each round: a stale limit can be raised while this runs (`budget_left`).
+            let guard = self
+                .slots
+                .len()
+                .saturating_add(cx.limit)
+                .saturating_add(1)
+                .saturating_mul(4);
+            if steps >= guard {
                 return cx.warn(EngineWarning::ChainLimit {
                     cue,
                     limit: cx.limit,
                 });
             }
-            guard -= 1;
+            steps += 1;
             self.step(cue, at, cx);
             self.drain(cx);
         }
@@ -998,6 +1164,7 @@ impl CueEngine {
                 run.voice = Voice::Started {
                     at: voice_at,
                     from: offset,
+                    first: voice_at,
                 };
             }
             Act::Silent(_) | Act::Group | Act::Fade(_) | Act::Control => {

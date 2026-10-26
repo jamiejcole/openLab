@@ -786,3 +786,74 @@ fn in_progress_ramps_can_be_read_back_for_a_restart() {
     );
     assert!(rig.engine.fade_ramps(id(2), 2000).is_empty());
 }
+
+#[test]
+fn a_zero_length_fade_is_tracked_as_the_mixer_de_zippers_it() {
+    // Regression (M2-C L5): a 0-frame Ramp was tracked as an instant change while the mixer
+    // moves such a gain linearly over 5 ms (5 samples at 1 kHz), so the tracked level ran ahead
+    // of the sound; a voice restarted from `fade_ramps` would then start with the wrong value.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        fade_to(2, 1, 0.0, FadeCurve::SCurve, master(-6.0), false),
+    ]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    let target = db_to_gain(-6.0);
+    assert_eq!(rig.level(1, M, 100), Some(1.0), "starts from the old level");
+    let mid = rig.level(1, M, 102).unwrap();
+    assert!(mid < 1.0 && mid > target, "{mid} is still on its way");
+    assert_eq!(mid, ramp_gain(1.0, target, 2, 5, FadeCurve::Linear));
+    assert_eq!(rig.level(1, M, 105), Some(target));
+    let moving = rig.engine.fade_ramps(id(1), 102);
+    assert_eq!(moving.len(), 1);
+    assert_eq!((moving[0].end, moving[0].to), (105, target));
+    assert_eq!(moving[0].curve, FadeCurve::Linear);
+    assert!(rig.engine.fade_ramps(id(1), 105)[0].end <= 105);
+}
+
+#[test]
+fn a_zero_length_fade_on_a_resume_sample_is_de_zippered() {
+    // Review L3: a resume re-keys the same mixer voice, so only its original start sample sets
+    // a gain at once. A 0-frame Fade dated on the resume sample was tracked as immediate while
+    // the mixer moves it over 5 ms.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        fade_to(2, 1, 0.0, FadeCurve::SCurve, master(-6.0), false),
+    ]);
+    rig.start(0, 1);
+    rig.pause(50, 1);
+    rig.resume(100, 1);
+    let go = rig.start(100, 2);
+    let sent = ramps(&go);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].at, sent[0].frames), (100, 0));
+    assert_eq!(rig.level(1, M, 100), Some(1.0), "starts from the old level");
+    assert_eq!(rig.level(1, M, 105), Some(db_to_gain(-6.0)));
+    let moving = rig.engine.fade_ramps(id(1), 102);
+    assert_eq!(moving.len(), 1);
+    assert_eq!((moving[0].end, moving[0].curve), (105, FadeCurve::Linear));
+}
+
+#[test]
+fn a_zero_length_fade_on_the_voices_start_sample_is_immediate() {
+    // The mixer sets a gain at once when the ramp lands on the voice's own start sample, because
+    // nothing has been heard yet.
+    // A Fade triggered with the voice's start still ahead is dated on that start.
+    let mut rig = Rig::with_lookahead(
+        vec![
+            timed(sound(1), 1.0, 0.0, ContinueMode::DoNotContinue),
+            timed(
+                fade_to(2, 1, 0.0, FadeCurve::Linear, master(-6.0), false),
+                1.0,
+                0.0,
+                ContinueMode::DoNotContinue,
+            ),
+        ],
+        16,
+    );
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let tick = rig.tick(990);
+    assert_eq!(ramps(&tick), vec![ramp(1, 1000, M, db_to_gain(-6.0), 0)]);
+    assert_eq!(rig.level(1, M, 1000), Some(db_to_gain(-6.0)));
+}
