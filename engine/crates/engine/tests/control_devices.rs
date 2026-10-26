@@ -589,3 +589,27 @@ fn panic_during_an_outage_while_a_panic_fades_also_stops_everything() {
     assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
     assert_eq!(s.control().live_voices(), 0);
 }
+
+#[test]
+fn reopen_attempts_back_off_while_the_device_stays_away() {
+    let path = wav(&dc(100, 0.5));
+    let mut s = device_show(workspace(vec![audio(1, &path, 0)]));
+    lose(&mut s);
+    s.take_outbound();
+    // 250 ms, then 500, 1000, 2000 ms between attempts: at 0.25, 0.75, 1.75 and 3.75 s.
+    let mut seen = Vec::new();
+    for step in 1..=50u32 {
+        s.advance(Duration::from_millis(100));
+        s.settle_devices();
+        for m in logs(&s.take_outbound(), LogLevel::Warn) {
+            if m.contains("reopen attempt") {
+                seen.push((step * 100, m));
+            }
+        }
+    }
+    let at: Vec<u32> = seen.iter().map(|(t, _)| *t).collect();
+    assert_eq!(at, vec![300, 800, 1800, 3800], "{seen:?}");
+    assert!(seen[3].1.contains("attempt 4"), "{}", seen[3].1);
+    assert!(seen[3].1.contains("next in 4.00 s"), "{}", seen[3].1);
+    assert_eq!(s.fake.opens(), 5);
+}
