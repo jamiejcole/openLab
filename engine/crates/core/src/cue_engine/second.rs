@@ -4,10 +4,10 @@
 //! cue's `second_trigger` option, and the "second trigger on release" input. Rules:
 //! `docs/cue-engine.md`, "Second trigger".
 
-use crate::cue::SecondTrigger;
+use crate::cue::{CueKind, GroupMode, SecondTrigger};
 use crate::model::CueId;
 
-use super::run::Slot;
+use super::run::{Phase, Slot, Voice};
 use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
@@ -40,19 +40,66 @@ impl CueEngine {
         }
     }
 
+    /// Whether `option` has something to act on in the paused `cue` (at `at`). If not, the
+    /// trigger follows the `nothing` rule and resumes it, as it would any paused cue.
+    pub(super) fn acts_on_paused(
+        &self,
+        cue: CueId,
+        option: SecondTrigger,
+        at: SampleTime,
+        cx: &Ctx,
+    ) -> bool {
+        let Some(Slot::Active(run)) = self.slots.get(&cue) else {
+            return false;
+        };
+        let in_action = matches!(run.phase, Phase::Action { .. }) && run.stop_end.is_none();
+        let kind = cx.ws.find_cue(cue).map(|c| &c.kind);
+        let playing_playlist = run.group.as_ref().is_some_and(|g| {
+            !g.stopping
+                && !g.adopted
+                && g.devamp.is_none()
+                && g.playlist.is_some()
+                && g.skipped != Some(at)
+        });
+        match option {
+            SecondTrigger::Nothing => false,
+            SecondTrigger::Devamp => {
+                in_action
+                    && match kind {
+                        Some(CueKind::Audio { .. }) => {
+                            matches!(run.voice, Voice::Started { .. }) && run.devamp.is_none()
+                        }
+                        Some(CueKind::Group {
+                            mode: GroupMode::Playlist { loop_: true, .. },
+                            ..
+                        }) => playing_playlist,
+                        _ => false,
+                    }
+            }
+            SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => in_action && playing_playlist,
+            SecondTrigger::HardStopAndRestart => run.started != at,
+            SecondTrigger::Panic | SecondTrigger::Stop | SecondTrigger::HardStop => true,
+        }
+    }
+
     /// Hard-stops the cue (and everything in it) and starts it afresh on `at`: a new run, from
-    /// the top of its pre-wait. Charged as a start, so a cycle of restarts ends at the chain limit.
+    /// the top of its pre-wait. Charged as a start. At most once per sample: a run triggered on
+    /// `at` (also one this restart made) ignores it, so a trigger chain from the cue back to
+    /// itself restarts it once, not until the chain limit.
     fn restart(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+        let (seq, started, state) = match self.slots.get(&cue) {
+            Some(Slot::Active(run)) => (run.seq, run.started, run.state()),
+            _ => return,
+        };
+        if started == at {
+            return cx.warn(EngineWarning::TriggerIgnored { cue, state });
+        }
         if !self.budget_left(cx) {
             return cx.warn(EngineWarning::ChainLimit {
                 cue,
                 limit: cx.limit,
             });
         }
-        let seq = match self.slots.get(&cue) {
-            Some(Slot::Active(run)) => run.seq,
-            _ => return,
-        };
         self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
         // The stop left the cue idle, so the start below is a fresh one and cannot come back
         // here. Should it not have (it cannot), nothing more is done rather than loop.
