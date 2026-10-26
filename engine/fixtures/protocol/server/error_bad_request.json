@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "bad_request",
+  "message": "message",
+  "protocol_version": 1
+}

@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "protocol_version_mismatch",
+  "message": "message",
+  "protocol_version": 1
+}

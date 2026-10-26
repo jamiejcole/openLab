@@ -1,6 +1,6 @@
 {
   "type": "error",
   "code": "bad_token",
-  "message": "wrong token",
+  "message": "message",
   "protocol_version": 1
 }

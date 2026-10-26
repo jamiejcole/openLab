@@ -1,0 +1,11 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "notice",
+      "code": "media_damaged",
+      "message": "intro.wav has a damaged tail",
+      "cue": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}
