@@ -95,7 +95,7 @@ Paths are never empty (`bad_request` on decode).
 
 ### Model changes
 
-`model_changed.revision` rises by exactly 1 per message, starting from `snapshot.revision`; any other step is a gap. Apply `deletes` first, then `upserts` in order.
+`model_changed.revision` rises by exactly 1 per message, starting from `snapshot.revision`; any other step is a gap. Apply `deletes` first, then `upserts` in order. A `delete` of an id the client does not hold is ignored; an `upsert` of a cue the client already holds replaces it wherever it is.
 
 | Upsert `type` | Fields | Meaning |
 |---|---|---|
@@ -105,6 +105,8 @@ Paths are never empty (`bad_request` on decode).
 | `settings` | `name`, `settings` | the workspace name and settings |
 
 Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`.
+
+What the engine sends for a cue edit: a `delete` for each cue removed or moved, then an `upsert` for each cue added, moved or changed (its final place; in tree order, parents first, ascending index within a parent), so a move is a delete and an upsert in the same message and several moves in one undo step cannot collide. A cue inside a group that is also upserted is not sent separately. Only the cues the edit names are sent (an undo or redo names what the step changed), and exactly one `model_changed` goes out per edit, undo, redo or runtime model change (`SetArmed`); a client that sees a revision gap requests `snapshot`. Edits to a group itself send its whole subtree. See [control.md](control.md) "Model changes".
 
 The `model_changed` for revision N is always sent before the `result` that reports `ok.revision = N`, so a client that has seen the result has the change.
 

@@ -549,6 +549,46 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// A client that starts from the workspace and applies each edit's `model_changed` ends
+    /// every step with exactly the engine's workspace: commands (groups moved and deleted with
+    /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01).
+    #[test]
+    fn model_changes_keep_a_mirror_identical(sequence in picks(80)) {
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let mut mirror = ws.clone();
+        let mut history = History::new();
+        for p in &sequence {
+            let footprint = match p.d % 9 {
+                0 => history.peek_undo().map(Command::footprint),
+                1 => history.peek_redo().map(Command::footprint),
+                _ => None,
+            };
+            let changed = match (p.d % 9, footprint) {
+                (0, Some(fp)) => history.undo(&mut ws).unwrap().then_some(fp),
+                (1, Some(fp)) => history.redo(&mut ws).unwrap().then_some(fp),
+                (0 | 1, None) => None,
+                _ => {
+                    let Some(command) = build(&ws, &mut g, p.op, p) else { continue };
+                    let fp = command.footprint();
+                    history.execute(&mut ws, command).is_ok().then_some(fp)
+                }
+            };
+            let Some(fp) = changed else { continue };
+            let (upserts, deletes) = model_changes(&ws, &fp);
+            // O(changed): never more than a delete and an upsert per named cue, plus the
+            // subtrees of groups that were named.
+            let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
+            prop_assert!(upserts.len() <= named);
+            prop_assert!(deletes.len() <= named);
+            mirror.apply_changes(&upserts, &deletes).unwrap();
+            prop_assert_eq!(&mirror, &ws);
+        }
+    }
+}
+
 /// The property tests above mean nothing if nearly every random command is refused: check that
 /// each command succeeds often enough on the same generator.
 #[test]
