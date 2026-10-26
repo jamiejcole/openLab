@@ -1,3 +1,5 @@
+<p align="center"><img src="mac/Branding/openlab-logo.png" alt="openLab logo" width="160"></p>
+
 # openLab
 
 openLab is an open-source show-playback system for theatre, in the spirit of QLab 5. A headless Rust engine owns the
