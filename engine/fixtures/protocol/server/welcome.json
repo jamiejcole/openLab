@@ -1,0 +1,239 @@
+{
+  "type": "welcome",
+  "protocol_version": 1,
+  "snapshot": {
+    "revision": 7,
+    "runtime_seq": 42,
+    "document": {
+      "path": "/Users/sam/Shows/Hamlet.openlab",
+      "dirty": true,
+      "can_undo": true,
+      "can_redo": false
+    },
+    "workspace": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Test",
+      "settings": {
+        "min_go_interval": 0.0,
+        "panic_duration": 5.0,
+        "autosave_interval": 30.0,
+        "osc_passcode": null,
+        "master_db": 0.0,
+        "hotkeys": {
+          "go": {
+            "key": "space",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "stop_all": {
+            "key": "escape",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "pause_all": {
+            "key": "[",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "resume_all": {
+            "key": "]",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "playhead_next": {
+            "key": "down",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "playhead_previous": {
+            "key": "up",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          }
+        },
+        "auto_number_start": 1.0,
+        "auto_number_increment": 1.0
+      },
+      "patches": [
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "name": "Main",
+          "master_db": 0.0,
+          "outputs": [
+            {
+              "level_db": 0.0,
+              "mute": false,
+              "delay_ms": 0.0,
+              "polarity_inverted": false
+            },
+            {
+              "level_db": 0.0,
+              "mute": false,
+              "delay_ms": 0.0,
+              "polarity_inverted": false
+            }
+          ]
+        }
+      ],
+      "network_patches": [
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "name": "Desk",
+          "host": "127.0.0.1",
+          "port": 53000,
+          "protocol": "udp"
+        }
+      ],
+      "cue_lists": [
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "name": "Main",
+          "cues": [
+            {
+              "id": "00000000-0000-0000-0000-00000000000a",
+              "number": "1",
+              "name": "Intro",
+              "notes": "",
+              "color": "none",
+              "flagged": false,
+              "armed": true,
+              "pre_wait": 0.0,
+              "post_wait": 0.0,
+              "continue_mode": "do_not_continue",
+              "triggers": {
+                "hotkey": null,
+                "osc": null
+              },
+              "second_trigger": "nothing",
+              "second_trigger_on_release": false,
+              "kind": {
+                "type": "audio",
+                "media": "media/a.wav",
+                "patch": "00000000-0000-0000-0000-000000000001",
+                "start_time": 0.0,
+                "end_time": null,
+                "fade_in": {
+                  "duration": 0.0,
+                  "curve": "linear"
+                },
+                "fade_out": {
+                  "duration": 0.0,
+                  "curve": "linear"
+                },
+                "slices": [],
+                "last_slice_play_count": 1,
+                "levels": {
+                  "master_db": 0.0,
+                  "outputs": [
+                    {
+                      "db": 0.0,
+                      "mute": false
+                    },
+                    {
+                      "db": 0.0,
+                      "mute": false
+                    }
+                  ],
+                  "crosspoints": [],
+                  "gangs": []
+                },
+                "preload": false
+              }
+            },
+            {
+              "id": "00000000-0000-0000-0000-00000000000b",
+              "number": null,
+              "name": "",
+              "notes": "",
+              "color": "none",
+              "flagged": false,
+              "armed": true,
+              "pre_wait": 0.0,
+              "post_wait": 0.0,
+              "continue_mode": "do_not_continue",
+              "triggers": {
+                "hotkey": null,
+                "osc": null
+              },
+              "second_trigger": "nothing",
+              "second_trigger_on_release": false,
+              "kind": {
+                "type": "fade",
+                "target": "00000000-0000-0000-0000-00000000000a",
+                "duration": 5.0,
+                "curve": "equal_power",
+                "levels": {
+                  "master_db": -120.0,
+                  "output_db": [],
+                  "crosspoints": []
+                },
+                "stop_target_when_done": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "cue_states": [
+      {
+        "cue": "00000000-0000-0000-0000-00000000000a",
+        "state": "running"
+      }
+    ],
+    "problems": [
+      {
+        "cue": "00000000-0000-0000-0000-00000000000b",
+        "problems": [
+          {
+            "type": "target_missing",
+            "target": "00000000-0000-0000-0000-000000000063"
+          }
+        ]
+      }
+    ],
+    "group_warnings": [
+      "00000000-0000-0000-0000-00000000000c"
+    ],
+    "playheads": [
+      {
+        "list": "00000000-0000-0000-0000-000000000001",
+        "cue": "00000000-0000-0000-0000-00000000000b"
+      }
+    ],
+    "previewing": [
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "warnings": [
+      {
+        "type": "notice",
+        "code": "media_damaged",
+        "message": "intro.wav has a damaged tail",
+        "cue": "00000000-0000-0000-0000-00000000000a"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "type": "transport",
+  "id": 11,
+  "action": {
+    "type": "panic"
+  }
+}

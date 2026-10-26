@@ -1,0 +1,63 @@
+{
+  "type": "runtime",
+  "seq": 43,
+  "changes": [
+    {
+      "type": "cue_state",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "state": "broken",
+      "reason": "device_lost"
+    },
+    {
+      "type": "cue_state",
+      "cue": "00000000-0000-0000-0000-00000000000b",
+      "state": "pre_waiting"
+    },
+    {
+      "type": "problems",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "problems": [
+        {
+          "type": "no_target"
+        },
+        {
+          "type": "media_missing",
+          "media": "audio/storm.wav"
+        },
+        {
+          "type": "device_unavailable",
+          "patch": "00000000-0000-0000-0000-000000000001",
+          "resolution": {
+            "type": "channels_missing",
+            "device": "Scarlett 2i2",
+            "needed": 4,
+            "available": 2
+          }
+        }
+      ]
+    },
+    {
+      "type": "group_warning",
+      "group": "00000000-0000-0000-0000-00000000000c",
+      "warning": true
+    },
+    {
+      "type": "playhead",
+      "list": "00000000-0000-0000-0000-000000000001",
+      "cue": null
+    },
+    {
+      "type": "preview",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "active": true
+    },
+    {
+      "type": "warning",
+      "warning": {
+        "type": "trigger_ignored",
+        "cue": "00000000-0000-0000-0000-00000000000a",
+        "state": "running"
+      }
+    }
+  ]
+}

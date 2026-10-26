@@ -1,0 +1,17 @@
+{
+  "type": "runtime",
+  "seq": 1,
+  "changes": [
+    {
+      "type": "problems",
+      "cue": "00000000-0000-0000-0000-000000000001",
+      "problems": [
+        {
+          "type": "media_unsupported",
+          "media": "audio/storm.wav",
+          "reason": "no decoder"
+        }
+      ]
+    }
+  ]
+}
