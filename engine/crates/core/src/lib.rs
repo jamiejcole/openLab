@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod backup;
+mod changes;
 mod command;
 mod cue;
 mod cue_engine;
@@ -22,6 +23,7 @@ mod tree;
 mod validate;
 
 pub use backup::*;
+pub use changes::*;
 pub use command::*;
 pub use cue::*;
 pub use cue_engine::*;

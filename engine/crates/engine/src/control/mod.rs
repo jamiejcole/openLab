@@ -35,9 +35,9 @@ use openlab_core::protocol::{
     ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem, WireWarning,
 };
 use openlab_core::{
-    Action, BrokenReason, CommandError, Cue, CueEngine, CueId, CueKind, CueState, DeviceInfo,
-    EngineConfig, EngineConfigError, History, Input, MachineSettings, MediaStatus, PatchResolution,
-    SampleTime, Workspace, seconds_to_samples,
+    Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
+    DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
+    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
 };
 
 pub use inbox::{Inbox, OUTBOUND_CAPACITY, ProbeAnswer};
@@ -428,9 +428,10 @@ impl Control {
                 reply(to, ok(id, None));
             }
             ClientMessage::Command { id, command } => {
+                let footprint = command.footprint();
                 match self.history.execute(&mut self.ws, *command) {
                     Ok(()) => {
-                        self.edited(now);
+                        self.edited(now, &footprint);
                         reply(to, ok(id, Some(self.revision)));
                     }
                     Err(e) => reply(to, refused(id, &e)),
@@ -438,6 +439,14 @@ impl Control {
             }
             ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
                 let undo = matches!(message, ClientMessage::Undo { .. });
+                // The step about to be applied says what it changes.
+                let footprint = if undo {
+                    self.history.peek_undo()
+                } else {
+                    self.history.peek_redo()
+                }
+                .map(Command::footprint)
+                .unwrap_or_default();
                 let result = if undo {
                     self.history.undo(&mut self.ws)
                 } else {
@@ -445,7 +454,7 @@ impl Control {
                 };
                 match result {
                     Ok(true) => {
-                        self.edited(now);
+                        self.edited(now, &footprint);
                         reply(to, ok(id, Some(self.revision)));
                     }
                     Ok(false) => reply(to, ok(id, None)),
@@ -542,8 +551,8 @@ impl Control {
     }
 
     /// A command, undo or redo changed the workspace.
-    fn edited(&mut self, now: SampleTime) {
-        let inputs = self.model_changed();
+    fn edited(&mut self, now: SampleTime, footprint: &Footprint) {
+        let inputs = self.model_changed(footprint);
         self.document();
         for input in inputs {
             self.feed(input, now);
@@ -553,17 +562,18 @@ impl Control {
     }
 
     /// Signals a workspace change to the engine (before its next `handle`, M4.2 contract) and
-    /// the clients (a revision bump: the upserts are M4.1a), and follows it on the audio side.
-    /// Returns the inputs that must follow (patch resolutions).
+    /// the clients (one `model_changed` for `footprint`'s cues, M4.1a), and follows it on the
+    /// audio side. Returns the inputs that must follow (patch resolutions).
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
-    fn model_changed(&mut self) -> Vec<Input> {
+    fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
         self.engine.model_changed();
         self.revision += 1;
+        let (upserts, deletes) = model_changes(&self.ws, footprint);
         self.out.send(ServerMessage::ModelChanged {
             revision: self.revision,
-            upserts: Vec::new(),
-            deletes: Vec::new(),
+            upserts,
+            deletes,
         });
         self.sync_workspace(false)
     }
@@ -900,7 +910,7 @@ impl Control {
     /// model, voice actions to the mixer and streams. Returns feedback to hand back at once.
     fn execute(&mut self, actions: &[Action], now: SampleTime) -> Vec<Input> {
         let mut changes = Vec::new();
-        let mut armed = false;
+        let mut armed = Vec::new();
         let mut fx = Effects::default();
         {
             let floor = self.stop_floor();
@@ -925,16 +935,18 @@ impl Control {
             }
         }
         for action in actions {
-            if let Action::SetArmed { cue, armed: value } = action {
-                armed |= set_armed(&mut self.ws, *cue, *value);
+            if let Action::SetArmed { cue, armed: value } = action
+                && set_armed(&mut self.ws, *cue, *value)
+            {
+                armed.push(*cue);
             }
         }
         if !changes.is_empty() {
             self.runtime(changes);
         }
         let mut feedback = self.after(fx);
-        if armed {
-            feedback.extend(self.model_changed());
+        if !armed.is_empty() {
+            feedback.extend(self.model_changed(&Footprint::edited(armed)));
             self.document();
         }
         feedback
