@@ -80,6 +80,12 @@ pub struct CueEngine {
     limit: usize,
     /// How many such passes have run (a cost measure, see `model_syncs`).
     model_syncs: u64,
+    /// The `now` of the last call and the cue starts made by the calls at that `now` so far.
+    /// The chain budget is per sample, not per call: mixer feedback dated on the sample it is
+    /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
+    /// into call after call at one `now`, each with a fresh budget (see "Chains and the chain
+    /// bound").
+    spent: (SampleTime, usize),
 }
 
 /// One `handle` call's inputs and outputs.
@@ -88,7 +94,7 @@ struct Ctx<'w> {
     now: SampleTime,
     /// Deadlines up to here are carried out in this call.
     horizon: SampleTime,
-    /// Cue starts left in this call.
+    /// Cue starts left at this `now` (what earlier calls at the same `now` left).
     budget: usize,
     limit: usize,
     /// The limit was recounted this call (see `CueEngine::budget_left`).
@@ -128,6 +134,7 @@ impl CueEngine {
             next_preview: 0,
             limit: 0,
             model_syncs: 0,
+            spent: (0, 0),
         }
     }
 
@@ -169,11 +176,15 @@ impl CueEngine {
             self.model_syncs = self.model_syncs.saturating_add(1);
         }
         let limit = self.limit;
+        let spent = match self.spent {
+            (at, starts) if at == now => starts,
+            _ => 0,
+        };
         let mut cx = Ctx {
             ws,
             now,
             horizon: self.config.horizon(now),
-            budget: limit,
+            budget: limit.saturating_sub(spent),
             limit,
             limit_verified: follow_edits,
             out: Vec::new(),
@@ -205,6 +216,9 @@ impl CueEngine {
         self.drain(&mut cx);
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
+        // `limit - budget` is what this call and the earlier ones at `now` started (a raised
+        // limit raises the budget by as much, see `budget_left`).
+        self.spent = (now, cx.limit.saturating_sub(cx.budget));
         cx.out
     }
 

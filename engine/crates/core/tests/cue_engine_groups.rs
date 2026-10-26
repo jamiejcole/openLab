@@ -964,6 +964,38 @@ fn looping_playlist_of_instant_children_is_cut_at_the_chain_limit() {
 }
 
 #[test]
+fn looping_playlist_of_zero_length_sounds_is_cut_across_feedback_calls_at_one_sample() {
+    // Regression (M2.9 property seed): each lap needs the mixer's end report, and a voice that
+    // ends on its start sample (loaded past its file's end) is reported on that same sample. The
+    // binary hands such reports over one call each, all at one `now`; with a fresh chain budget
+    // per call the playlist went round forever there and the control thread never got past it.
+    let p = grp(1, playlist(true, false), vec![sound(10)]);
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    let go = rig.go(0);
+    assert_eq!(voice_starts(&go).len(), 1);
+    let mut laps = 0;
+    let mut cut = false;
+    while rig.state(10) == CueState::Running {
+        laps += 1;
+        assert!(
+            laps <= limit,
+            "still looping after {laps} end reports at one sample"
+        );
+        let ended = rig.ended(0, 10, 0);
+        cut |= warnings(&ended)
+            .iter()
+            .any(|w| matches!(w, EngineWarning::ChainLimit { .. }));
+    }
+    assert!(cut, "cut with a ChainLimit warning");
+    assert_eq!(rig.state(1), CueState::Idle, "the group completed");
+    assert!(rig.engine.next_deadline().is_none());
+    // The budget is per sample: the next one has a fresh one.
+    let again = rig.start(1, 1);
+    assert_eq!(voice_starts(&again), vec![(id(10), 1, 0)]);
+}
+
+#[test]
 fn a_cut_looping_playlist_still_starts_the_cue_after_its_group() {
     // Regression (M2-B L1): the zero-length loop used up the call's whole budget, so the group's
     // own continue (the cue after the group) was dropped with ChainLimit.

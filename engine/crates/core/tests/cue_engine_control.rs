@@ -811,6 +811,31 @@ fn a_cycle_through_audio_feedback_moves_with_the_mixer_clock() {
     }
 }
 
+#[test]
+fn a_cycle_through_feedback_on_its_own_sample_is_cut() {
+    // Regression (M2.9 property seed): a zero-length voice is reported ended on its start
+    // sample, and the binary may hand that report over at the same `now`. The chain budget
+    // spans every call at one sample, so the lap cannot repeat there forever.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), start_cue(2, 1)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    rig.go(0);
+    let mut laps = 0;
+    let mut cut = false;
+    while rig.state(1) == CueState::Running {
+        laps += 1;
+        assert!(
+            laps <= limit,
+            "still looping after {laps} end reports at one sample"
+        );
+        cut |= chain_limit_hit(&rig.ended(0, 1, 0));
+    }
+    assert!(cut);
+    assert!(rig.engine.next_deadline().is_none());
+    // A later sample has a fresh budget.
+    let go = rig.start(1, 1);
+    assert_eq!(voice_starts(&go), vec![(id(1), 1)]);
+}
+
 // ----- GoTo (CT-17) -----
 
 #[test]
