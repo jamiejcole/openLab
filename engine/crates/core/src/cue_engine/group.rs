@@ -3,7 +3,7 @@
 //! Group cues (CT-22): how a group's action runs its children, when it completes, and how
 //! operations on a group reach its descendants. Rules: `docs/cue-engine.md`, "Groups".
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, GroupMode};
 use crate::model::{CueId, Workspace};
@@ -13,6 +13,15 @@ use super::run::{Exit, GroupRun, Phase, PlaylistRun, Run, Slot};
 use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
+
+/// A random group's round-robin memory (engine only: not saved, gone with the engine).
+#[derive(Clone, Debug, Default)]
+pub(super) struct RandomCycle {
+    /// Children picked in the current cycle.
+    played: BTreeSet<CueId>,
+    /// The child picked last, so a new cycle does not open with it.
+    last: Option<CueId>,
+}
 
 /// The ids of the groups around `cue`, nearest first (the first place it occurs).
 pub(super) fn ancestors(ws: &Workspace, cue: CueId) -> Vec<CueId> {
@@ -146,17 +155,45 @@ impl CueEngine {
         }
     }
 
-    /// One child, never the one picked last time when there is another (QLab does not repeat
-    /// a random child immediately).
+    /// One child, round-robin as in QLab 5: every playable child (armed, without static
+    /// problems, not already busy) plays once before any plays again. Candidates are the
+    /// playable children not yet picked in the current cycle, as the group stands now (a child
+    /// added mid-cycle joins it, a removed or disarmed one drops out); when none is left a new
+    /// cycle starts, which never opens with the child picked last when there is another. With
+    /// no playable child at all the same rule runs over every child, so one child is always
+    /// picked (its start then reports it disarmed or broken).
     fn pick_random(&mut self, group: CueId, children: &[Cue]) -> Option<CueId> {
-        let last = self.last_random.get(&group).copied();
-        let candidates: Vec<CueId> = children
+        let playable: Vec<CueId> = children
             .iter()
+            .filter(|c| self.is_armed(c) && !self.has_problems(c.id) && !self.busy(c.id))
             .map(|c| c.id)
-            .filter(|id| children.len() < 2 || Some(*id) != last)
             .collect();
+        let pool = if playable.is_empty() {
+            children.iter().map(|c| c.id).collect()
+        } else {
+            playable
+        };
+        let cycle = self.random_cycles.entry(group).or_default();
+        // Children removed since are forgotten, so the memory stays as small as the group.
+        cycle
+            .played
+            .retain(|id| children.iter().any(|c| c.id == *id));
+        let mut candidates: Vec<CueId> = pool
+            .iter()
+            .copied()
+            .filter(|id| !cycle.played.contains(id))
+            .collect();
+        if candidates.is_empty() {
+            cycle.played.clear();
+            candidates = pool
+                .iter()
+                .copied()
+                .filter(|id| pool.len() < 2 || Some(*id) != cycle.last)
+                .collect();
+        }
         let pick = *candidates.get(self.rng.below(candidates.len()))?;
-        self.last_random.insert(group, pick);
+        cycle.played.insert(pick);
+        cycle.last = Some(pick);
         Some(pick)
     }
 

@@ -458,54 +458,157 @@ fn a_child_started_while_its_group_post_waits_makes_it_run_again() {
 // ----- playhead navigation in and out of groups (PB-05, M2.11) -----
 
 fn nav_rig() -> Rig {
+    let numbered_group = |n: u128, number: &str, mode, children| {
+        let mut g = grp(n, mode, children);
+        g.number = Some(number.into());
+        g
+    };
     Rig::new(vec![
         numbered(1, "1", CueKind::Memo),
-        {
-            let mut g = grp(
-                2,
-                ENTER,
-                vec![
-                    numbered(20, "2.1", CueKind::Memo),
-                    numbered(21, "2.2", CueKind::Memo),
-                ],
-            );
-            g.number = Some("2".into());
-            g
-        },
+        numbered_group(
+            2,
+            "2",
+            ENTER,
+            vec![
+                numbered(20, "2.1", CueKind::Memo),
+                numbered(21, "2.2", CueKind::Memo),
+            ],
+        ),
         numbered(3, "3", CueKind::Memo),
-        {
-            let mut g = grp(4, TIMELINE, vec![numbered(40, "4.1", CueKind::Memo)]);
-            g.number = Some("4".into());
-            g
-        },
+        numbered_group(
+            4,
+            "4",
+            TIMELINE,
+            vec![
+                numbered(40, "4.1", CueKind::Memo),
+                numbered(41, "4.2", CueKind::Memo),
+            ],
+        ),
+        numbered_group(5, "5", GO_NEXT, vec![memo(50)]),
+        numbered_group(6, "6", playlist(true, false), vec![memo(60)]),
+        numbered_group(7, "7", RANDOM, vec![memo(70)]),
+        numbered(8, "8", CueKind::Memo),
     ])
 }
 
+fn ids(ns: &[u128]) -> Vec<Option<CueId>> {
+    ns.iter().map(|n| Some(id(*n))).collect()
+}
+
 #[test]
-fn next_and_previous_step_into_and_out_of_groups_of_every_mode() {
+fn next_and_previous_enter_only_start_first_and_enter_groups() {
+    // QLab 5: only "start first and enter" groups are stepped into; a group of any other mode
+    // is passed over as a unit, both ways.
     let mut rig = nav_rig();
     let next = Input::PlayheadNext { list: list() };
     let previous = Input::PlayheadPrevious { list: list() };
     let mut seen = vec![rig.playhead()];
-    for _ in 0..7 {
+    for _ in 0..11 {
         rig.at(0, next.clone());
         seen.push(rig.playhead());
     }
-    let ids = |ns: &[u128]| ns.iter().map(|n| Some(id(*n))).collect::<Vec<_>>();
-    let mut expected = ids(&[1, 2, 20, 21, 3, 4, 40]);
-    expected.push(None);
+    let mut expected = ids(&[1, 2, 20, 21, 3, 4, 5, 6, 7, 8]);
+    expected.extend([None, None]);
     assert_eq!(seen, expected);
 
     let mut back = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..11 {
         rig.at(0, previous.clone());
         back.push(rig.playhead());
     }
-    assert_eq!(back, ids(&[40, 4, 3, 21, 20, 2, 1, 1]));
+    assert_eq!(back, ids(&[8, 7, 6, 5, 4, 3, 21, 20, 2, 1, 1]));
+    // Every cue is still a position (explicit navigation reaches them all).
     assert_eq!(
         CueEngine::playhead_positions(&rig.ws, list()),
-        vec![id(1), id(2), id(20), id(21), id(3), id(4), id(40)]
+        [1, 2, 20, 21, 3, 4, 40, 41, 5, 50, 6, 60, 7, 70, 8]
+            .iter()
+            .map(|n| id(*n))
+            .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn stepping_from_a_child_of_a_group_not_entered_goes_on_among_its_siblings() {
+    // Put on a child explicitly, the playhead steps among the siblings and then leaves the
+    // group, as GO from that child does (docs/cue-engine.md, Playhead).
+    let mut rig = nav_rig();
+    let next = Input::PlayheadNext { list: list() };
+    let previous = Input::PlayheadPrevious { list: list() };
+    let set = |cue| Input::SetPlayhead {
+        list: list(),
+        cue: Some(id(cue)),
+    };
+    rig.at(0, set(40));
+    rig.at(0, next.clone());
+    assert_eq!(rig.playhead(), Some(id(41)));
+    rig.at(0, next.clone());
+    assert_eq!(rig.playhead(), Some(id(5)));
+    rig.at(0, set(41));
+    rig.at(0, previous.clone());
+    assert_eq!(rig.playhead(), Some(id(40)));
+    rig.at(0, previous.clone());
+    assert_eq!(rig.playhead(), Some(id(4)));
+    // Back on the group itself, it is a unit again.
+    rig.at(0, next.clone());
+    assert_eq!(rig.playhead(), Some(id(5)));
+    // The same for GO: from a child to the next sibling, past the last one out of the group.
+    rig.at(0, set(40));
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(41)));
+    rig.at(10, set(70));
+    rig.go(10);
+    assert_eq!(rig.playhead(), Some(id(8)));
+}
+
+#[test]
+fn an_enter_group_inside_a_group_not_entered_is_entered_once_the_playhead_is_inside() {
+    let inner = grp(20, ENTER, vec![memo(200), memo(201)]);
+    let mut rig = Rig::new(vec![grp(2, TIMELINE, vec![inner, memo(21)]), memo(3)]);
+    let next = Input::PlayheadNext { list: list() };
+    let previous = Input::PlayheadPrevious { list: list() };
+    rig.at(0, next.clone());
+    assert_eq!(rig.playhead(), Some(id(3)));
+    rig.at(0, previous.clone());
+    assert_eq!(rig.playhead(), Some(id(2)));
+    rig.at(
+        0,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(20)),
+        },
+    );
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        rig.at(0, next.clone());
+        seen.push(rig.playhead());
+    }
+    assert_eq!(seen, ids(&[200, 201, 21, 3]));
+}
+
+#[test]
+fn go_and_next_both_pass_over_groups_not_entered() {
+    for mode in [TIMELINE, GO_NEXT, playlist(false, false), RANDOM] {
+        let make = || Rig::new(vec![memo(1), grp(2, mode, vec![memo(20)]), memo(3)]);
+        let mut by_go = make();
+        by_go.go(0);
+        assert_eq!(by_go.playhead(), Some(id(2)), "{mode:?}");
+        by_go.go(10);
+        assert_eq!(by_go.playhead(), Some(id(3)), "{mode:?}");
+        let mut by_next = make();
+        by_next.at(0, Input::PlayheadNext { list: list() });
+        by_next.at(0, Input::PlayheadNext { list: list() });
+        assert_eq!(by_next.playhead(), Some(id(3)), "{mode:?}");
+    }
+    // An enter group is entered by both.
+    let make = || Rig::new(vec![memo(1), grp(2, ENTER, vec![memo(20), memo(21)])]);
+    let mut by_go = make();
+    by_go.go(0);
+    by_go.go(10);
+    assert_eq!(by_go.playhead(), Some(id(21)));
+    let mut by_next = make();
+    by_next.at(0, Input::PlayheadNext { list: list() });
+    by_next.at(0, Input::PlayheadNext { list: list() });
+    assert_eq!(by_next.playhead(), Some(id(20)));
 }
 
 #[test]
@@ -841,32 +944,138 @@ fn reordering_a_playlist_while_it_plays_applies_to_the_next_child() {
 
 // ----- random -----
 
+/// The child a random group started in `actions` (the group itself excluded).
+fn picked(actions: &[Action], group: u128) -> Vec<CueId> {
+    starts(actions)
+        .into_iter()
+        .map(|(c, _)| c)
+        .filter(|c| *c != id(group))
+        .collect()
+}
+
+/// `count` starts of random group 1 (instant children), one second apart.
+fn pick_run(rig: &mut Rig, count: u64) -> Vec<CueId> {
+    (0..count)
+        .map(|i| {
+            let start = rig.start(i * 1000, 1);
+            let children = picked(&start, 1);
+            assert_eq!(children.len(), 1, "{start:?}");
+            assert_eq!(rig.state(1), CueState::Idle);
+            children[0]
+        })
+        .collect()
+}
+
 #[test]
-fn random_group_starts_one_child_and_never_repeats_immediately() {
+fn random_group_plays_every_child_once_before_any_repeats() {
+    // QLab 5: round-robin, each child once per cycle; no immediate repeat across cycles.
     let pick_sequence = |seed: u64| {
         let r = grp(1, RANDOM, vec![memo(10), memo(11), memo(12)]);
         let mut rig = Rig::seeded(vec![r], seed);
-        let mut picks = Vec::new();
-        for i in 0..40 {
-            let start = rig.start(i * 10, 1);
-            let children: Vec<_> = starts(&start)
-                .into_iter()
-                .map(|(c, _)| c)
-                .filter(|c| *c != id(1))
-                .collect();
-            assert_eq!(children.len(), 1);
-            picks.push(children[0]);
-            assert_eq!(rig.state(1), CueState::Idle);
-        }
-        picks
+        pick_run(&mut rig, 42)
     };
     let picks = pick_sequence(5);
-    assert!(picks.windows(2).all(|w| w[0] != w[1]), "{picks:?}");
-    for n in 10..13 {
-        assert!(picks.contains(&id(n)));
+    for cycle in picks.chunks(3) {
+        let mut sorted = cycle.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, vec![id(10), id(11), id(12)], "{picks:?}");
     }
+    assert!(picks.windows(2).all(|w| w[0] != w[1]), "{picks:?}");
     assert_eq!(pick_sequence(5), picks);
     assert_ne!(pick_sequence(6), picks);
+}
+
+#[test]
+fn random_group_memory_lasts_as_long_as_the_engine() {
+    // Not saved: a new engine (a workspace opened again) starts a fresh cycle, and the same
+    // seed gives the same picks.
+    let ws = vec![grp(1, RANDOM, vec![memo(10), memo(11), memo(12), memo(13)])];
+    let mut first = Rig::seeded(ws.clone(), 9);
+    let opening = pick_run(&mut first, 2);
+    let mut again = Rig::seeded(ws, 9);
+    assert_eq!(pick_run(&mut again, 2), opening);
+    // Reset does not clear the cycle either: the next two finish it.
+    first.at(5000, Input::Reset { cue: id(1) });
+    let rest: Vec<CueId> = (0..2)
+        .map(|i| picked(&first.start(6000 + i * 1000, 1), 1)[0])
+        .collect();
+    let mut cycle: Vec<CueId> = opening.iter().chain(&rest).copied().collect();
+    cycle.sort();
+    assert_eq!(cycle, vec![id(10), id(11), id(12), id(13)]);
+}
+
+#[test]
+fn random_group_picks_only_armed_children_without_problems() {
+    let mut disarmed = memo(11);
+    disarmed.armed = false;
+    let broken = cue(12, CueKind::Start { target: None });
+    let r = grp(1, RANDOM, vec![memo(10), disarmed, broken, memo(13)]);
+    for seed in 0..20 {
+        let mut rig = Rig::seeded(vec![r.clone()], seed);
+        let picks = pick_run(&mut rig, 8);
+        assert!(
+            picks.iter().all(|p| *p == id(10) || *p == id(13)),
+            "{picks:?}"
+        );
+        assert!(picks.windows(2).all(|w| w[0] != w[1]), "{picks:?}");
+    }
+}
+
+#[test]
+fn random_group_with_no_playable_child_still_picks_one() {
+    let mut a = memo(10);
+    a.armed = false;
+    let mut b = memo(11);
+    b.armed = false;
+    let mut rig = Rig::new(vec![grp(1, RANDOM, vec![a, b])]);
+    let picks = pick_run(&mut rig, 4);
+    assert!(picks.windows(2).all(|w| w[0] != w[1]), "{picks:?}");
+}
+
+#[test]
+fn random_group_skips_a_child_that_is_already_playing() {
+    // QLab 5 picks a child that is not already playing.
+    let r = timed(
+        grp(1, RANDOM, vec![wait(10, 10.0), memo(11), memo(12)]),
+        1.0,
+        0.0,
+        DNC,
+    );
+    for seed in 0..20 {
+        let mut rig = Rig::seeded(vec![r.clone()], seed);
+        rig.start(0, 1);
+        rig.start(0, 10);
+        let pick = picked(&rig.tick(1000), 1);
+        assert_eq!(pick.len(), 1);
+        assert_ne!(pick[0], id(10), "seed {seed}");
+    }
+}
+
+#[test]
+fn random_group_cycle_follows_children_added_and_removed_mid_cycle() {
+    // Candidates are the children as the group stands, not yet picked this cycle: an added
+    // child joins the current cycle, a removed one drops out of it.
+    for seed in 0..20 {
+        let mut rig = Rig::seeded(
+            vec![grp(1, RANDOM, vec![memo(10), memo(11), memo(12)])],
+            seed,
+        );
+        let first = pick_run(&mut rig, 1)[0];
+        children_mut(&mut rig.cues_mut()[0]).retain(|c| c.id != first);
+        children_mut(&mut rig.cues_mut()[0]).push(memo(13));
+        let rest: Vec<CueId> = (1..4)
+            .map(|i| picked(&rig.start(i * 1000, 1), 1)[0])
+            .collect();
+        let mut cycle = rest.clone();
+        cycle.sort();
+        let mut want: Vec<CueId> = [10, 11, 12, 13]
+            .iter()
+            .map(|n| id(*n))
+            .filter(|c| *c != first)
+            .collect();
+        want.sort();
+        assert_eq!(cycle, want, "seed {seed}: {first:?} then {rest:?}");
+    }
 }
 
 #[test]
