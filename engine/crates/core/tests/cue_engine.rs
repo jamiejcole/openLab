@@ -192,6 +192,22 @@ fn lookahead_commits_a_deadline_inside_the_window_on_its_own_sample() {
 }
 
 #[test]
+fn a_changed_lookahead_applies_from_the_next_call() {
+    let mut rig = Rig::with_config(vec![timed(sound(1), 1.5, 0.0, DNC)], config(16));
+    rig.go(100);
+    // The window grows to 64: a tick at 1540 now commits the start on its sample.
+    rig.engine.set_lookahead(64).unwrap();
+    assert_eq!(rig.engine.config().lookahead(), 64);
+    assert!(rig.engine.is_due(1540));
+    let tick = rig.tick(1540);
+    assert_eq!(voice_starts(&tick), vec![(id(1), 1600)]);
+    assert!(warnings(&tick).is_empty());
+    // Over one second: refused, nothing changes.
+    assert!(rig.engine.set_lookahead(RATE as u64 + 1).is_err());
+    assert_eq!(rig.engine.config().lookahead(), 64);
+}
+
+#[test]
 fn late_tick_starts_the_voice_now_and_reports_how_late() {
     let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, DNC)]);
     rig.go(0);
