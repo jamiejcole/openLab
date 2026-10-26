@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use openlab_core::{MAX_SHOW_FILE_BYTES, WorkspaceId, load_show, parse_recovery_file_name};
+use openlab_core::{WorkspaceId, load_show, parse_recovery_file_name, parse_store_name};
 
 use super::{AppDirs, modified_ms, read_text};
 
@@ -16,6 +16,11 @@ pub const MAX_RECOVERY_ENTRIES: usize = 500;
 /// Directory entries looked at before the scan gives up, so a folder full of junk cannot hang
 /// it.
 const MAX_VISITED: usize = 5_000;
+/// Files larger than this are listed without a name instead of being parsed, so a scan of many
+/// big autosaves stays quick. (Real shows are far smaller; the limit for loading is larger.)
+pub const MAX_NAME_READ_BYTES: usize = 4 * 1024 * 1024;
+
+const STALE_SUFFIX: &str = ".stale.openlab";
 
 /// A recovery file found by [`scan_recovery`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,14 +31,18 @@ pub struct RecoveryEntry {
     pub path_hash: Option<String>,
     /// The workspace's name, if the file could be read and holds this workspace.
     pub show_name: Option<String>,
-    /// Modification time, milliseconds since the Unix epoch, if the platform says.
+    /// Modification time, milliseconds since the Unix epoch, if known. For a stale file this
+    /// is the time in its name (the autosave's own modification time), else the file's.
     pub modified_ms: Option<i64>,
+    /// A file moved aside as not newer than the show file when it was opened. It may still be
+    /// the only copy of newer work (file times are unreliable), so it is listed.
+    pub stale: bool,
     pub path: PathBuf,
 }
 
 #[derive(Debug, Default)]
 pub struct RecoveryScan {
-    /// Newest first (unknown times last), then by file name.
+    /// Newest first (unknown times last).
     pub entries: Vec<RecoveryEntry>,
     /// Entries that were skipped or only partly read, and why.
     pub warnings: Vec<String>,
@@ -42,10 +51,16 @@ pub struct RecoveryScan {
 }
 
 /// Lists the autosave files in `Recovery/`. `Recovery/` has no subfolders, so only the folder
-/// itself is read; at most `max_entries` files are returned, and a file that cannot be read is
-/// still listed, without a name. Reading names parses each file, so call this off the control
-/// thread.
+/// itself is read. At most `max_entries` files are returned, chosen newest first among the
+/// first 5000 directory entries (a folder with more is `truncated` and which of the excess are
+/// seen depends on the file system). A file that cannot be read, or is over
+/// [`MAX_NAME_READ_BYTES`], is still listed, without a name. Reading names parses files, so
+/// call this off the control thread.
 pub fn scan_recovery(dirs: &AppDirs, max_entries: usize) -> RecoveryScan {
+    scan_with(dirs, max_entries, MAX_VISITED)
+}
+
+fn scan_with(dirs: &AppDirs, max_entries: usize, max_visited: usize) -> RecoveryScan {
     let dir = dirs.recovery_dir();
     let mut scan = RecoveryScan::default();
     let read = match fs::read_dir(&dir) {
@@ -59,18 +74,21 @@ pub fn scan_recovery(dirs: &AppDirs, max_entries: usize) -> RecoveryScan {
     };
     let mut found = Vec::new();
     for item in read {
-        if found.len() >= MAX_VISITED {
+        if found.len() >= max_visited {
             scan.truncated = true;
             break;
         }
         match item {
-            Ok(entry) => found.push(entry),
+            Ok(entry) => {
+                let mtime = modified_ms(&entry.path());
+                found.push((mtime, entry));
+            }
             Err(e) => scan.warnings.push(format!("unreadable entry: {e}")),
         }
     }
-    // A stable order, so which files a bound cuts off does not depend on the file system.
-    found.sort_by_key(|e| e.file_name());
-    for entry in found {
+    // Newest first, so a bound cuts off the oldest; names break ties deterministically.
+    found.sort_by_key(|(mtime, e)| (std::cmp::Reverse(*mtime), e.file_name()));
+    for (mtime, entry) in found {
         if scan.entries.len() >= max_entries {
             scan.truncated = true;
             break;
@@ -81,11 +99,11 @@ pub fn scan_recovery(dirs: &AppDirs, max_entries: usize) -> RecoveryScan {
                 .push(format!("skipped {}: name is not UTF-8", path.display()));
             continue;
         };
-        // Files this module moved aside itself are expected, not worth a warning.
-        if name.ends_with(".stale.openlab") || name.contains(".corrupt") || name.ends_with(".tmp") {
+        // Files this module set aside as unusable, and write_atomic's leftovers, are expected.
+        if is_corrupt_name(&name) || name.ends_with(".tmp") {
             continue;
         }
-        let parsed = match parse_recovery_file_name(&name) {
+        let (parsed, stale_ms) = match parse_name(&name) {
             Ok(parsed) => parsed,
             Err(e) => {
                 scan.warnings.push(format!("skipped {name}: {e}"));
@@ -109,22 +127,71 @@ pub fn scan_recovery(dirs: &AppDirs, max_entries: usize) -> RecoveryScan {
             workspace_id: parsed.workspace_id,
             path_hash: parsed.path_hash,
             show_name,
-            modified_ms: modified_ms(&path),
+            modified_ms: stale_ms.or(mtime),
+            stale: name.ends_with(STALE_SUFFIX),
             path,
         });
     }
-    // Stable sort: ties keep the name order from above.
     scan.entries
         .sort_by_key(|e| std::cmp::Reverse(e.modified_ms));
     scan
 }
 
+/// `.corrupt` or `.corrupt.<n>` (see `unique_sibling`), not any name that merely contains it.
+fn is_corrupt_name(name: &str) -> bool {
+    let base = match name.rsplit_once('.') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
+    base.ends_with(".corrupt")
+}
+
+/// Plain `<stem>.openlab`, or `<stem>.<ms>.stale.openlab` (the time is returned when it parses).
+fn parse_name(
+    name: &str,
+) -> Result<(openlab_core::StoreName, Option<i64>), openlab_core::StoreNameError> {
+    let Some(rest) = name.strip_suffix(STALE_SUFFIX) else {
+        return parse_recovery_file_name(name).map(|p| (p, None));
+    };
+    let (stem, ms) = rest
+        .rsplit_once('.')
+        .ok_or(openlab_core::StoreNameError::NotRecoveryFile)?;
+    Ok((parse_store_name(stem)?, ms.parse().ok()))
+}
+
 fn read_name(path: &Path, expected: WorkspaceId) -> Result<String, String> {
-    let text = read_text(path, MAX_SHOW_FILE_BYTES).map_err(|e| e.to_string())?;
+    let text = read_text(path, MAX_NAME_READ_BYTES).map_err(|e| e.to_string())?;
     let loaded = load_show(&text).map_err(|e| e.to_string())?;
     if loaded.workspace.id == expected {
         Ok(loaded.workspace.name)
     } else {
         Err("it holds a different workspace".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_names_are_matched_exactly() {
+        assert!(is_corrupt_name("a.openlab.corrupt"));
+        assert!(is_corrupt_name("a.openlab.corrupt.3"));
+        assert!(!is_corrupt_name("my.corrupt.notes.openlab"));
+        assert!(!is_corrupt_name("a.openlab"));
+        assert!(!is_corrupt_name("a.corruptx"));
+    }
+
+    #[test]
+    fn visited_bound_stops_the_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        std::fs::create_dir_all(dirs.recovery_dir()).unwrap();
+        for n in 0..20 {
+            std::fs::write(dirs.recovery_dir().join(format!("junk{n}.txt")), "x").unwrap();
+        }
+        let scan = scan_with(&dirs, 100, 7);
+        assert!(scan.truncated);
+        assert_eq!(scan.warnings.len(), 7);
     }
 }
