@@ -951,7 +951,8 @@ fn looping_playlist_of_instant_children_is_cut_at_the_chain_limit() {
     let mut rig = Rig::new(vec![p, memo(2)]);
     let limit = CueEngine::chain_limit(&rig.ws);
     let go = rig.go(0);
-    assert_eq!(starts(&go).len(), limit);
+    // The playlist leaves a reserve of starts for what follows the group.
+    assert_eq!(starts(&go).len(), limit - 8);
     assert!(
         warnings(&go)
             .iter()
@@ -960,6 +961,29 @@ fn looping_playlist_of_instant_children_is_cut_at_the_chain_limit() {
     assert_eq!(rig.state(1), CueState::Idle);
     assert!(!rig.engine.is_due(0));
     assert!(starts(&rig.tick(1)).is_empty());
+}
+
+#[test]
+fn a_cut_looping_playlist_still_starts_the_cue_after_its_group() {
+    // Regression (M2-B L1): the zero-length loop used up the call's whole budget, so the group's
+    // own continue (the cue after the group) was dropped with ChainLimit.
+    let mut p = grp(1, playlist(true, false), vec![memo(10), memo(11)]);
+    p.continue_mode = AF;
+    let sound_after = memo(2);
+    let mut rig = Rig::new(vec![p, sound_after]);
+    let go = rig.go(0);
+    assert_eq!(
+        running_at(&go, 2),
+        Some(0),
+        "the cue after the group started"
+    );
+    assert_eq!(
+        warnings(&go)
+            .iter()
+            .filter(|w| matches!(w, EngineWarning::ChainLimit { cue, .. } if *cue == id(2)))
+            .count(),
+        0
+    );
 }
 
 #[test]

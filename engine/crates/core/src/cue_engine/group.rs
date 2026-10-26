@@ -11,6 +11,7 @@ use crate::tree;
 
 use super::run::{Exit, GroupRun, Phase, PlaylistRun, Run, Slot};
 use super::time::SampleTime;
+use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
 
 /// The ids of the groups around `cue`, nearest first (the first place it occurs).
@@ -189,6 +190,14 @@ impl CueEngine {
         let mut playing = None;
         while attempts > 0 {
             attempts -= 1;
+            // Leave a few starts for the group's own continue (see `PLAYLIST_RESERVE`).
+            if cx.budget <= super::PLAYLIST_RESERVE {
+                cx.warn(EngineWarning::ChainLimit {
+                    cue: group,
+                    limit: cx.limit,
+                });
+                break;
+            }
             let next = match state.as_mut() {
                 None => None,
                 Some(p) if p.order.is_empty() => {

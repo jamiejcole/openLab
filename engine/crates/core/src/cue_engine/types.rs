@@ -458,6 +458,10 @@ pub enum GoIgnoredReason {
     /// The playhead is past the end of the list, or the list is empty.
     NoCue,
     UnknownList,
+    /// The call's chain budget was already spent (a trigger cycle earlier in the call), so the
+    /// cue could not be started: nothing happened (no start, no playhead move, no double-GO
+    /// interval) and the operator can press GO again.
+    ChainLimit,
 }
 
 /// Things the operator or the log should hear about. Nothing here stops the show.

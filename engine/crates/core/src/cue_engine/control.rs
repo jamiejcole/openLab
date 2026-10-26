@@ -122,36 +122,76 @@ impl CueEngine {
             return;
         };
         self.move_playhead(list, Some(target), cx);
-        if then_go && !self.go_on(list, at, cx) {
-            cx.out.push(Action::GoIgnored {
-                list,
-                reason: GoIgnoredReason::NoCue,
-            });
+        if then_go && let Err(reason) = self.go_on(list, at, cx) {
+            // A cycle of GoTo cues is cut here, as a cycle of Start cues is.
+            if reason == GoIgnoredReason::ChainLimit {
+                cx.warn(EngineWarning::ChainLimit {
+                    cue: target,
+                    limit: cx.limit,
+                });
+            }
+            cx.out.push(Action::GoIgnored { list, reason });
         }
     }
 
     /// Starts the list's playhead cue on `at` and moves the playhead past its continue chain.
-    /// Returns `false` (doing nothing) if the playhead stands on no cue.
-    pub(super) fn go_on(&mut self, list: CueListId, at: SampleTime, cx: &mut Ctx) -> bool {
+    /// Does nothing and says why if the playhead stands on no cue, or if the call's chain budget
+    /// is spent (a trigger cycle earlier in the call): the start would be dropped, and the
+    /// playhead must not move past a cue that never started.
+    pub(super) fn go_on(
+        &mut self,
+        list: CueListId,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) -> Result<(), GoIgnoredReason> {
         let ws = cx.ws;
         let Some(cues) = ws.cue_lists.iter().find(|l| l.id == list).map(|l| &l.cues) else {
-            return false;
+            return Err(GoIgnoredReason::UnknownList);
         };
-        let Some(path) = self
+        let mut path = self
             .playhead(list)
-            .and_then(|id| playhead::locate(cues, id))
-        else {
-            return false;
+            .and_then(|id| playhead::locate(cues, id));
+        // A playhead cue that is not in the list was deleted by an edit nobody signalled
+        // (release builds skip following edits on unsignalled calls): follow the edit now
+        // rather than ignore the GO.
+        if path.is_none() && self.playhead(list).is_some() && self.resync_playhead(list, cues, cx) {
+            path = self
+                .playhead(list)
+                .and_then(|id| playhead::locate(cues, id));
+        }
+        let Some(path) = path else {
+            return Err(GoIgnoredReason::NoCue);
         };
         let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
-            return false;
+            return Err(GoIgnoredReason::NoCue);
         };
+        if !self.budget_left(cx) {
+            return Err(GoIgnoredReason::ChainLimit);
+        }
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
         let next = playhead::after_go(&path, |c| self.is_armed(c), |c| self.has_problems(c.id));
         self.move_playhead(list, next, cx);
-        true
+        Ok(())
+    }
+
+    /// Brings the list's playhead up to date with `cues`; returns whether it moved.
+    fn resync_playhead(&mut self, list: CueListId, cues: &[Cue], cx: &mut Ctx) -> bool {
+        let Some(playhead) = self.playheads.get_mut(&list) else {
+            return false;
+        };
+        let (edited, moved) = playhead.sync(cues);
+        if moved {
+            cx.out.push(Action::PlayheadChanged {
+                list,
+                cue: playhead.cue,
+            });
+        }
+        if edited {
+            self.note_unsignalled();
+        }
+        moved
     }
 
     /// Devamp: an audio target's voice leaves its loop (the audio side answers); a looping

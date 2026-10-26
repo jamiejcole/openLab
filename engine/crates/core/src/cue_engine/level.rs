@@ -20,6 +20,35 @@ pub enum LevelParam {
     Crosspoint { input: u32, output: u32 },
 }
 
+/// How long the mixer takes over a gain change that has no fade of its own (5 ms, at least one
+/// frame): `Ramp` with 0 frames moves linearly over this many samples, except on the voice's own
+/// start sample, where nothing has been heard yet (docs/audio.md, De-zipper).
+pub(super) fn dezip_frames(sample_rate: u32) -> SampleTime {
+    let frames = (f64::from(sample_rate) * 0.005).round();
+    if frames.is_nan() || frames < 1.0 {
+        1
+    } else {
+        frames as SampleTime
+    }
+}
+
+/// The ramp a gain change is heard as: what the mixer makes of `Ramp { at, frames, curve }` on a
+/// voice that started on `voice_start`. A change with a fade of its own is that fade; one with
+/// none is the de-zipper (or immediate, on the voice's start sample).
+pub(super) fn heard(
+    at: SampleTime,
+    frames: SampleTime,
+    curve: FadeCurve,
+    voice_start: SampleTime,
+    sample_rate: u32,
+) -> (SampleTime, FadeCurve) {
+    if frames == 0 && at > voice_start {
+        (dezip_frames(sample_rate), FadeCurve::Linear)
+    } else {
+        (frames, curve)
+    }
+}
+
 /// dB to linear amplitude, exactly as the mixer converts it: at or below [`SILENCE_DB`] (and
 /// NaN) is exactly 0.0.
 pub fn db_to_gain(db: f64) -> f32 {
@@ -110,6 +139,11 @@ impl Level {
 
     /// The gain on sample `at` (the start value for a sample before the ramp starts).
     pub fn value(&self, at: SampleTime) -> f32 {
+        // A change with no ramp (on the voice's start sample, or a hold) is in force from its
+        // own sample, where a ramp would still be on its start value.
+        if self.frames == 0 && at >= self.start {
+            return self.to;
+        }
         ramp_gain(
             self.from,
             self.to,
