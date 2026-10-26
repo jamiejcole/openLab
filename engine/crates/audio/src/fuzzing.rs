@@ -50,7 +50,14 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
             r.waveform.frames
         ));
     }
-    stream(media(), info.frames, probed.seeking.clone())
+    // Seeks in a damaged file verify checkpoints or decode from the start, and mutated inputs
+    // are mostly damaged: one seek keeps the target's throughput up.
+    let seeks = if damage(&probed.warnings).is_empty() {
+        SEEK_POINTS.len()
+    } else {
+        1
+    };
+    stream(media(), info.frames, probed.seeking.clone(), seeks)
         .map_err(|e| format!("probe {info:?} but streaming: {e}"))
 }
 
@@ -62,13 +69,22 @@ fn damage(warnings: &[MediaWarning]) -> Vec<MediaWarning> {
         .collect()
 }
 
-fn stream(media: Media, frames: u64, seeking: Seeking) -> Result<(), MediaError> {
+/// Seek targets as fractions of the length (numerator, denominator): the middle first, so a
+/// capped run still seeks somewhere.
+const SEEK_POINTS: [(u64, u64); 4] = [(1, 2), (0, 1), (1, 1), (1, 3)];
+
+fn stream(media: Media, frames: u64, seeking: Seeking, seeks: usize) -> Result<(), MediaError> {
     let mut pipe = Pipeline::new(open_source(media, seeking)?, frames, DEVICE_RATE)?;
     let ch = pipe.channels();
     let mut buf = vec![0.0; 1024 * ch];
     while pipe.read(&mut buf)? > 0 {}
     let total = pipe.position();
-    for at in [total / 2, 0, total.saturating_sub(1), total / 3] {
+    for &(num, den) in SEEK_POINTS.iter().take(seeks.max(1)) {
+        let at = if num == den {
+            total.saturating_sub(1)
+        } else {
+            total / den * num
+        };
         pipe.seek(at)?;
         pipe.read(&mut buf)?;
     }
