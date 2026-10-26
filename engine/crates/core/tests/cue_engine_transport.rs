@@ -945,3 +945,17 @@ fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
         })
         .collect()
 }
+
+#[test]
+fn a_clock_restart_ends_the_panic_window() {
+    // Regression (review L2): after a device restart the old panic's end stayed, so the next
+    // Panic was a hard stop and `panic_end()` was stale.
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.panic(5000);
+    assert_eq!(rig.engine.panic_end(), Some(6000));
+    rig.start(50, 1);
+    assert_eq!(rig.engine.panic_end(), None);
+    let panic = rig.panic(60);
+    assert_eq!(voice_stops(&panic), vec![(id(1), 60, panic_fade(1000))]);
+    assert_eq!(rig.engine.panic_end(), Some(1060));
+}
