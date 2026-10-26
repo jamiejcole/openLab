@@ -159,3 +159,21 @@ pub fn show_text(workspace: &Workspace) -> String {
         serde_json::to_string(workspace).unwrap()
     )
 }
+
+/// Calls `handle` as the binary must (M4.2 contract): `model_changed` before the first call
+/// after any change to the workspace. Checks that the engine never caught an unsignalled change.
+pub fn handle_as_binary(
+    engine: &mut CueEngine,
+    ws: &Workspace,
+    last: &mut Option<Workspace>,
+    input: Input,
+    now: SampleTime,
+) -> Vec<Action> {
+    if last.as_ref() != Some(ws) {
+        engine.model_changed();
+        *last = Some(ws.clone());
+    }
+    let out = engine.handle(ws, input, now);
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+    out
+}

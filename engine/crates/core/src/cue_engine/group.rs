@@ -405,6 +405,20 @@ impl CueEngine {
                     let post_waiting = run.phase == Phase::Done
                         && run.paused_at.is_none()
                         && run.group.as_ref().is_some_and(|g| !g.stopping);
+                    // A group stopping in a panic runs on, adopted, with the new child: it no
+                    // longer waits to stop, and ends when its last child does. So do the groups
+                    // around it.
+                    if run.panicked
+                        && let Some(g) = run.group.as_mut()
+                    {
+                        run.panicked = false;
+                        g.stopping = false;
+                        g.adopted = true;
+                        run.follow = false;
+                        run.post_wait = None;
+                        self.report(group, before, at, cx);
+                        continue;
+                    }
                     if post_waiting {
                         run.phase = Phase::Action {
                             start: at,
@@ -444,7 +458,7 @@ impl CueEngine {
     // ----- operations on a cue and everything inside it (CUE-05) -----
 
     /// The cue's descendants, if it is a group in the workspace.
-    fn inside(&self, cue: CueId, cx: &Ctx) -> Vec<CueId> {
+    pub(super) fn inside(&self, cue: CueId, cx: &Ctx) -> Vec<CueId> {
         cx.ws.find_cue(cue).map(descendants).unwrap_or_default()
     }
 

@@ -794,7 +794,7 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
 
 /// Fades act on audio levels (a Group fades its children); Devamp needs slices or a playlist
 /// (which it lets finish its current child). Other control cues accept any target.
-fn can_target(source: &CueKind, target: &CueKind) -> bool {
+pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
         CueKind::Fade { .. } => matches!(target, CueKind::Audio { .. } | CueKind::Group { .. }),
         CueKind::Devamp { .. } => matches!(

@@ -22,6 +22,10 @@ impl CueEngine {
         let Some(model) = ws.find_cue(cue) else {
             return;
         };
+        // A cue with target problems never reaches its action (see `broken.rs`), so these only
+        // act when the static problems are out of date: a model change the binary did not
+        // signal (`model_changed`), in a release build. They are also how the types say "no
+        // target". Tested in `tests.rs`.
         let Some(target) = model.kind.target() else {
             return cx.warn(EngineWarning::NoTarget { cue });
         };
@@ -145,7 +149,7 @@ impl CueEngine {
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
-        let next = playhead::after_go(&path, |c| self.is_armed(c));
+        let next = playhead::after_go(&path, |c| self.is_armed(c), |c| self.has_problems(c.id));
         self.move_playhead(list, next, cx);
         true
     }
