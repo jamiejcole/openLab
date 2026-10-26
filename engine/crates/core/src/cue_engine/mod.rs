@@ -807,9 +807,14 @@ impl CueEngine {
                 offset,
             });
             run.run = fresh;
+            let first = match run.voice {
+                Voice::Started { first, .. } => first,
+                Voice::None | Voice::Loaded => voice_at,
+            };
             run.voice = Voice::Started {
                 at: voice_at,
                 from: offset,
+                first,
             };
             // A devamp still pending is sent again for the resumed segment (QLab keeps it
             // through a pause); answers for the paused segment's id are stale.
@@ -1159,6 +1164,7 @@ impl CueEngine {
                 run.voice = Voice::Started {
                     at: voice_at,
                     from: offset,
+                    first: voice_at,
                 };
             }
             Act::Silent(_) | Act::Group | Act::Fade(_) | Act::Control => {
