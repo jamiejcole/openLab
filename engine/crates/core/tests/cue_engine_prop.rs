@@ -565,6 +565,8 @@ struct Voice {
     stop_end: Option<SampleTime>,
     cmds: Vec<(SampleTime, u64, Cmd)>,
     dead: bool,
+    /// The engine was told the action's length (`ActionLength`).
+    told: bool,
 }
 
 impl Voice {
@@ -584,7 +586,14 @@ impl Voice {
             stop_end: None,
             cmds: Vec::new(),
             dead: false,
+            told: false,
         }
+    }
+
+    /// Whether this voice tells the engine its length: decided by its first id, so a resume
+    /// (a fresh id) does not change it.
+    fn announces(&self) -> bool {
+        self.told || (!self.preview && self.run.0.is_multiple_of(2))
     }
 
     fn has_pending_stop(&self) -> bool {
@@ -725,6 +734,21 @@ impl Voice {
                         self.fail_pos = Some(after);
                     }
                 }
+                // Half the voices tell the engine their length ahead (`ActionLength`, as the
+                // binary does for a finite table), half leave the end to the voice's report.
+                if let Some(frames) = self.end_pos
+                    && self.announces()
+                {
+                    self.told = true;
+                    events.push((
+                        at,
+                        Input::ActionLength {
+                            cue: self.cue,
+                            run: self.run,
+                            frames,
+                        },
+                    ));
+                }
             }
             Cmd::Pause { offset } => {
                 if self.started && self.playing {
@@ -792,6 +816,20 @@ impl Voice {
                         },
                     },
                 ));
+                if answer.is_some()
+                    && let Some(frames) = self.end_pos
+                    && self.announces()
+                {
+                    self.told = true;
+                    events.push((
+                        at,
+                        Input::ActionLength {
+                            cue: self.cue,
+                            run: self.run,
+                            frames,
+                        },
+                    ));
+                }
             }
             // A paused voice cannot end by itself.
             Cmd::ForceEnd if !self.playing => {}
@@ -1338,7 +1376,12 @@ impl Run {
                     prop_assert!(
                         v.preview
                             || v.has_pending_stop()
-                            || v.stop_end.is_some_and(|e| e <= self.panic_horizon),
+                            || v.stop_end.is_some_and(|e| e <= self.panic_horizon)
+                            // (Nor one whose known length ends inside it: the engine carried
+                            // that end out ahead, so there was nothing left to stop.)
+                            || (v.told
+                                && matches!(v.natural(), Some((n, Nat::End))
+                                    if n <= self.panic_horizon)),
                         "voice {:?} of {} survived a panic",
                         v.run,
                         v.cue
@@ -1625,7 +1668,12 @@ impl Run {
         // No voice leaks: every voice the mixer holds is the run the engine reports (unless a
         // stop for it is still ahead, or a fade-out ends inside the window).
         for (key, v) in self.sim.voices.iter().filter(|(_, v)| !v.preview) {
-            let excused = v.has_pending_stop() || v.stop_end.is_some_and(|e| e <= horizon);
+            // (An action whose length the engine was told ends on its deadline, which the
+            // engine may have carried out ahead, inside the window, while the voice still plays
+            // to that sample.)
+            let planned_end = v.told && matches!(v.natural(), Some((n, Nat::End)) if n <= horizon);
+            let excused =
+                v.has_pending_stop() || v.stop_end.is_some_and(|e| e <= horizon) || planned_end;
             if !excused {
                 // (The key is the id the engine addresses; a resume re-keys the voice at once.)
                 prop_assert_eq!(
