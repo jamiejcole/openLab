@@ -1,0 +1,191 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Media through the control loop: probes on workers feed the cue engine's availability inputs
+//! (broken cues before they are triggered, NFR-07), a failing stream breaks its cue with a
+//! reason, damaged media plays with a notice, previews play on the cue's patch, and the control
+//! loop never waits for the disk.
+
+mod show;
+
+use openlab_core::protocol::{
+    RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
+    WireWarning,
+};
+use openlab_core::{ContinueMode, CueProblem, CueState};
+use show::*;
+
+#[test]
+fn a_missing_file_breaks_its_cue_before_it_is_triggered() {
+    let gone = fresh_path("wav");
+    let ok = wav(&dc(400, 0.5));
+    let mut c1 = audio(1, &gone, 0);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    c1.post_wait = secs(300);
+    let mut s = show(workspace(vec![c1, audio(2, &ok, 1)]));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    let msgs = s.take_outbound();
+    assert!(changes(&msgs).iter().any(|c| matches!(
+        c,
+        RuntimeChange::Problems { cue, problems }
+            if *cue == id(1) && matches!(problems[..], [WireProblem::MediaMissing { .. }])
+    )));
+    // GO: the broken cue plays nothing but keeps its timing, so its auto-continue fires.
+    let at = go(&mut s) as usize;
+    s.run(1200);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at + 300));
+    assert!(
+        warnings(&s.take_outbound())
+            .iter()
+            .any(|w| matches!(w, WireWarning::CueBroken { cue } if *cue == id(1)))
+    );
+}
+
+#[test]
+fn an_unplayable_file_breaks_its_cue_with_the_reason() {
+    let junk = file("wav", b"RIFF\x10\0\0\0WAVEjunkjunkjunk");
+    let s = show(workspace(vec![audio(1, &junk, 0)]));
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaUnsupported { .. }]
+    ));
+}
+
+#[test]
+fn damaged_media_plays_and_is_listed_as_a_warning() {
+    // A WAV whose header promises 2000 frames but holds 1000: it plays to its real end.
+    let full = std::fs::read(wav(&dc(2000, 0.5))).unwrap();
+    let cut = file("wav", &full[..44 + 1000 * 4]);
+    let mut s = show(workspace(vec![audio(1, &cut, 0)]));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let msgs = s.take_outbound();
+    let listed = msgs.iter().any(|m| {
+        matches!(m, ServerMessage::Warnings { warnings } if warnings.iter().any(|w| matches!(
+            w, WireWarning::Notice { code, .. } if code == "damaged_media")))
+    });
+    assert!(listed, "{msgs:?}");
+    let at = go(&mut s) as usize;
+    s.run(3000);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 999));
+}
+
+#[test]
+fn a_stream_that_fails_breaks_its_cue_with_stream_failed() {
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut config = config(&ws);
+    // No prime, so the stream is opened at the GO, after the file changed.
+    config.prime_cues = 0;
+    let mut s = show_with(ws, config);
+    // The file changes after its probe: the disk worker refuses it (`Changed`).
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    go(&mut s);
+    s.run(1500);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let st = states(&s.take_outbound(), id(1));
+    assert_eq!(
+        st.last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    // The failed stream made the loop probe the file again: it plays as it is now.
+    s.settle_media();
+    s.transport(TransportAction::Reset { cue: id(1) });
+    s.run(BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+}
+
+#[test]
+fn a_preview_plays_on_the_cue_patch_outside_the_show() {
+    let path = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.take_outbound();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(400);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    // Not a show state: the cue stays idle and the playhead stays.
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(1)));
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(1000);
+    let previews: Vec<bool> = changes(&s.take_outbound())
+        .into_iter()
+        .filter_map(|c| match c {
+            RuntimeChange::Preview { cue, active } if cue == id(1) => Some(active),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(previews, vec![true, false]);
+    assert!(last_nonzero(&s.channel(0)).unwrap() < at + 800);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// The probe of a named pipe blocks until a writer opens it: the control loop must keep running
+/// (the probe is on a worker) and a GO in the meantime must not block either.
+#[cfg(unix)]
+#[test]
+fn the_control_loop_never_waits_for_the_disk() {
+    let fifo = fresh_path("wav");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let ws = workspace(vec![audio(1, &fifo, 0)]);
+    let config = config(&ws);
+    let mut s =
+        openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), config).unwrap();
+    s.run(BLOCK * 10);
+    assert_eq!(s.control().probes_pending(), 1);
+    // Not known to be missing yet: no problem.
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    go(&mut s);
+    s.run(BLOCK * 10);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    // A writer releases the probe with something unplayable: the waiting start fails.
+    std::fs::write(&fifo, b"not audio").unwrap();
+    s.settle_media();
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaUnsupported { .. }]
+    ));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// A start the probe held up plays as soon as the probe answers, from its head.
+#[test]
+fn a_start_held_by_its_probe_plays_once_the_probe_answers() {
+    let path = wav(&dc(400, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let config = config(&ws);
+    let mut s =
+        openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), config).unwrap();
+    // The probe's answer waits in the inbox: the GO comes first.
+    let (reply, _) = crossbeam_channel::unbounded();
+    let message = openlab_core::protocol::ClientMessage::Transport {
+        id: openlab_core::protocol::RequestId(1),
+        action: TransportAction::Go { list: list_id() },
+    };
+    let at = s.now() as usize;
+    s.deliver(openlab_engine::control::Inbox::Client { message, reply });
+    assert_eq!(s.control().probes_pending(), 1);
+    s.settle_media();
+    s.run(2000);
+    let first = first_nonzero(&s.channel(0)).unwrap();
+    assert!(first >= at);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(first + 399));
+    assert!(warnings(&s.take_outbound()).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "cold_start"
+    )));
+    run_until_idle(&mut s, id(1), 2000);
+}

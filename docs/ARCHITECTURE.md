@@ -70,6 +70,8 @@ Keep the crate count at three. Add a module before adding a crate.
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
 
+Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
 - The **audio device's sample counter is the master clock**. The audio thread publishes `samples_rendered` (AtomicU64) after each callback.
@@ -222,7 +224,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | rubato | resampling | MIT |
 | rtrb | lock-free SPSC queues | MIT/Apache-2.0 |
 | crossbeam-channel | control-thread inbox | MIT/Apache-2.0 |
-| assert_no_alloc | RT allocation guard (debug/test; a normal dependency of openlab-audio for the debug device-callback guard) | BSD-1-Clause |
+| assert_no_alloc | RT allocation guard (debug/test; a normal dependency of openlab-audio for the debug device-callback guard, and of openlab-engine for the debug global allocator, M3.21) | BSD-1-Clause |
 | rosc | OSC encode/decode | MIT/Apache-2.0 |
 | tokio, tokio-tungstenite | async networking, WebSocket | MIT |
 | serde, serde_json | serialisation | MIT/Apache-2.0 |
