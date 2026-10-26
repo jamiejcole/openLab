@@ -153,6 +153,38 @@ fn a_length_sent_while_paused_counts_from_the_resume() {
     assert_eq!(r.engine.next_deadline(), Some(1000));
 }
 
+/// M2.23: a resume committed with the planned end inside the lookahead window completes the run
+/// in that same call; the voice still plays to that sample, and its own reports for the fresh id
+/// come after the run is over and are stale.
+#[test]
+fn a_resume_whose_known_end_is_in_the_window_completes_the_run_ahead() {
+    let mut r = Rig::new(vec![sound(1, DNC)], 300);
+    r.at(0, Input::Go { list: list_id(1) });
+    r.at(0, Input::Pause { cue: cue_id(1) });
+    r.length(10, 1, 100);
+    let a = r.at(500, Input::Resume { cue: cue_id(1) });
+    let fresh = a.iter().find_map(|x| match x {
+        Action::ResumeVoice { run, at: 500, .. } => Some(*run),
+        _ => None,
+    });
+    let fresh = fresh.expect("resumed on its sample");
+    assert!(a.contains(&Action::StateChanged {
+        cue: cue_id(1),
+        state: CueState::Idle,
+        at: 600,
+    }));
+    assert_eq!(r.engine.run_of(cue_id(1)), None);
+    let late = r.at(
+        610,
+        Input::ActionEnded {
+            cue: cue_id(1),
+            run: fresh,
+            at: 600,
+        },
+    );
+    assert!(late.is_empty(), "{late:?}");
+}
+
 #[test]
 fn a_stop_cancels_the_planned_end() {
     let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
