@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Golden protocol fixtures are compared byte for byte; keep LF on every platform (Windows CI checks out with autocrlf).
+engine/fixtures/protocol/** text eol=lf
