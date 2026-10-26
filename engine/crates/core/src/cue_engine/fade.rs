@@ -77,7 +77,10 @@ impl CueEngine {
             let Some(Slot::Active(run)) = self.slots.get_mut(&c.id) else {
                 continue;
             };
-            let Voice::Started { at: started, .. } = run.voice else {
+            let Voice::Started {
+                at: started, first, ..
+            } = run.voice
+            else {
                 continue;
             };
             if run.broken.is_some() || run.group.is_some() {
@@ -94,7 +97,7 @@ impl CueEngine {
                 start,
                 frames,
                 *curve,
-                started,
+                first,
                 self.config.sample_rate().get(),
             );
             for &(param, gain) in &wanted {
@@ -254,7 +257,7 @@ impl CueEngine {
             target.committed = start;
             let frames = end.saturating_sub(start);
             let voice_start = match target.voice {
-                Voice::Started { at, .. } => at,
+                Voice::Started { first, .. } => first,
                 Voice::None | Voice::Loaded => 0,
             };
             let (heard_frames, heard_curve) =

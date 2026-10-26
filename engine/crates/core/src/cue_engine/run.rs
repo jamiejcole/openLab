@@ -71,6 +71,10 @@ pub(super) enum Voice {
     Started {
         at: SampleTime,
         from: SampleTime,
+        /// The sample the mixer voice first started on. A resume re-keys the same voice, so
+        /// this stays put while `at` becomes the resume sample: only a ramp on this sample is
+        /// immediate, any later 0-frame ramp is de-zippered (docs/audio.md, De-zipper).
+        first: SampleTime,
     },
 }
 
@@ -278,7 +282,9 @@ impl Run {
     /// no voice plays).
     pub fn position(&self, at: SampleTime) -> SampleTime {
         match self.voice {
-            Voice::Started { at: started, from } => from.saturating_add(at.saturating_sub(started)),
+            Voice::Started {
+                at: started, from, ..
+            } => from.saturating_add(at.saturating_sub(started)),
             Voice::None | Voice::Loaded => self.action_offset,
         }
     }
