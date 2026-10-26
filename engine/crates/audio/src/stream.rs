@@ -41,8 +41,12 @@ pub const DEFAULT_EXIT_BYTES: usize = 32 << 20;
 /// 1.3 s of 64 channels at 48 kHz. Longer loops seek once per play, which costs little next to
 /// their length.
 pub const DEFAULT_LOOP_CACHE_BYTES: usize = 16 << 20;
-/// Memory all streams' loop caches and exit buffers may hold together.
+/// Memory all streams' loop caches may hold together.
 pub const DEFAULT_CACHE_BUDGET_BYTES: usize = 256 << 20;
+/// Memory all streams' loop exit buffers may hold together: 2730 stereo exits or 85 of 64
+/// channels. Separate from the loop caches', so optional cache memory never crowds out the
+/// exits that make a devamp gapless.
+pub const DEFAULT_EXIT_BUDGET_BYTES: usize = 256 << 20;
 /// Per-step seek decoding: 65536 frames (1.4 s at 48 kHz) take a few ms to decode, so the
 /// worker gets back to its other streams long before their rings (2 s) run low.
 pub const DEFAULT_STEP_FRAMES: u64 = 1 << 16;
@@ -75,8 +79,10 @@ pub struct StreamerConfig {
     /// Longest loop (in bytes of device-rate frames) a stream plays from its loop cache instead
     /// of seeking back for every play; 0 turns the cache off.
     pub loop_cache_bytes: usize,
-    /// Most bytes all streams' loop caches and exit buffers hold together.
+    /// Most bytes all streams' loop caches hold together.
     pub cache_budget_bytes: usize,
+    /// Most bytes all streams' loop exit buffers hold together.
+    pub exit_budget_bytes: usize,
 }
 
 impl StreamerConfig {
@@ -91,6 +97,7 @@ impl StreamerConfig {
             exit_bytes: DEFAULT_EXIT_BYTES,
             loop_cache_bytes: DEFAULT_LOOP_CACHE_BYTES,
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
+            exit_budget_bytes: DEFAULT_EXIT_BUDGET_BYTES,
         }
     }
 }
@@ -303,6 +310,7 @@ pub struct DiskStreamer {
     next: usize,
     open: Arc<AtomicUsize>,
     budget: Arc<Budget>,
+    exit_budget: Arc<Budget>,
 }
 
 /// The memory all streams' loop caches and exit buffers may hold together.
@@ -318,6 +326,19 @@ pub(crate) struct Budget {
 pub(crate) struct Reservation {
     budget: Arc<Budget>,
     bytes: usize,
+}
+
+impl Budget {
+    fn new(limit: usize) -> Self {
+        Budget {
+            used: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn room(&self) -> usize {
+        self.limit.saturating_sub(self.used.load(Ordering::Acquire))
+    }
 }
 
 impl Reservation {
@@ -361,10 +382,8 @@ impl DiskStreamer {
             workers,
             next: 0,
             open: Arc::new(AtomicUsize::new(0)),
-            budget: Arc::new(Budget {
-                used: AtomicUsize::new(0),
-                limit: config.cache_budget_bytes,
-            }),
+            budget: Arc::new(Budget::new(config.cache_budget_bytes)),
+            exit_budget: Arc::new(Budget::new(config.exit_budget_bytes)),
         })
     }
 
@@ -378,9 +397,9 @@ impl DiskStreamer {
     }
 
     /// Bytes all streams hold in loop caches and exit buffers (at most
-    /// [`StreamerConfig::cache_budget_bytes`]).
+    /// [`StreamerConfig::cache_budget_bytes`] plus [`StreamerConfig::exit_budget_bytes`]).
     pub fn cache_bytes(&self) -> usize {
-        self.budget.used.load(Ordering::Acquire)
+        self.budget.used.load(Ordering::Acquire) + self.exit_budget.used.load(Ordering::Acquire)
     }
 
     /// Creates the stream's ring and hands the stream to a worker. Does no I/O here; checks the
@@ -468,6 +487,7 @@ impl DiskStreamer {
             cache: None,
             cache_cap: self.config.loop_cache_bytes,
             budget: Arc::clone(&self.budget),
+            exit_budget: Arc::clone(&self.exit_budget),
             cached_frames: 0,
             step_frames: self.config.step_frames.max(1),
             handled_cut: None,
@@ -568,9 +588,11 @@ struct ExitWip {
 enum ExitState {
     Unknown,
     Ready,
-    /// Not built: over the per-stream or global cap, or the memory was not available. A devamp
-    /// into it waits for the disk (see docs/audio.md, Loop exits).
+    /// Not built: over the per-stream cap, or the memory was not available. A devamp into it
+    /// waits for the disk (see docs/audio.md, Loop exits).
     Refused,
+    /// Not built yet: the global exit budget was full. Retried while the stream is idle.
+    Starved,
 }
 
 /// The device-rate frames of one play of a loop entry, recorded as they were first written to
@@ -642,6 +664,7 @@ struct Task {
     cache: Option<LoopCache>,
     cache_cap: usize,
     budget: Arc<Budget>,
+    exit_budget: Arc<Budget>,
     cached_frames: u64,
     step_frames: u64,
     handled_cut: Option<u64>,
@@ -704,7 +727,7 @@ impl Task {
                     st.primed = true;
                 });
             }
-            return Ok(Progress::Idle);
+            return self.idle();
         };
         if self.cache.as_ref().is_some_and(|c| c.entry != self.entry) {
             self.drop_cache();
@@ -726,7 +749,7 @@ impl Task {
         // Wait for a worthwhile gap unless a short tail or a cut point limits the write.
         let worthwhile = CHUNK_FRAMES.min(self.producer.buffer().capacity() / ch / 4);
         if n == 0 || (free < worthwhile && n == free) {
-            return Ok(Progress::Idle);
+            return self.idle();
         }
         let at = s.start + self.off;
         if pipe.position() != at {
@@ -856,7 +879,7 @@ impl Task {
         }
         let worthwhile = CHUNK_FRAMES.min(self.producer.buffer().capacity() / ch / 4);
         if n == 0 || (free < worthwhile && n == free) {
-            return Ok(Progress::Idle);
+            return self.idle();
         }
         let first = usize::try_from(self.off)
             .unwrap_or(usize::MAX)
@@ -1046,6 +1069,28 @@ impl Task {
         (k + 1..self.slices.len()).find(|&i| self.slices.get(i).map(|x| x.index) != Some(s.index))
     }
 
+    /// With nothing else to do: starts an exit put off for the global budget, if the budget now
+    /// has room, nearest first among the loops the voice can still reach.
+    fn idle(&mut self) -> Result<Progress, MediaError> {
+        let ch = usize::from(self.info.channels).max(1);
+        let bytes = self
+            .exit_frames
+            .saturating_mul(ch)
+            .saturating_mul(SAMPLE_BYTES);
+        if self.exit_budget.room() >= bytes {
+            let from = self.origin.0;
+            let starved = (from..self.exit_state.len())
+                .find(|&t| self.exit_state.get(t) == Some(&ExitState::Starved));
+            if let Some(t) = starved {
+                self.start_exit(t)?;
+                if self.exit_wip.is_some() {
+                    return Ok(Progress::Worked);
+                }
+            }
+        }
+        Ok(Progress::Idle)
+    }
+
     /// The undecided exit of the nearest loop from the latest cut's target up to the write
     /// cursor: the voice can reach that loop through the ring.
     fn direct_exit(&mut self) -> Option<usize> {
@@ -1120,25 +1165,31 @@ impl Task {
     }
 
     /// Starts the exit buffer for entry `target`, or refuses it when it would pass the
-    /// per-stream cap or the global budget, or the memory cannot be had.
+    /// per-stream cap or the memory cannot be had, or puts it off while the global exit budget
+    /// is full.
     fn start_exit(&mut self, target: usize) -> Result<(), MediaError> {
         let ch = self.pipe.as_ref().ok_or(MediaError::Worker)?.channels();
         let want = self.exit_frames.saturating_mul(ch);
         let bytes = want.saturating_mul(SAMPLE_BYTES);
         let fits = want > 0 && self.exit_used.saturating_add(bytes) <= self.exit_cap;
-        let reserved = fits
-            .then(|| Reservation::take(&self.budget, bytes))
-            .flatten()
-            .and_then(|r| {
-                let mut samples = Vec::new();
-                samples.try_reserve_exact(want).ok().map(|()| (r, samples))
-            });
-        let Some((budget, samples)) = reserved else {
-            if let Some(st) = self.exit_state.get_mut(target) {
-                *st = ExitState::Refused;
+        let refuse = |task: &mut Self, state| {
+            if let Some(st) = task.exit_state.get_mut(target) {
+                *st = state;
             }
+        };
+        if !fits {
+            refuse(self, ExitState::Refused);
+            return Ok(());
+        }
+        let Some(budget) = Reservation::take(&self.exit_budget, bytes) else {
+            refuse(self, ExitState::Starved);
             return Ok(());
         };
+        let mut samples = Vec::new();
+        if samples.try_reserve_exact(want).is_err() {
+            refuse(self, ExitState::Refused);
+            return Ok(());
+        }
         self.exit_used += bytes;
         self.exit_wip = Some(ExitWip {
             target,
@@ -1997,5 +2048,52 @@ mod tests {
                 .step_by(2)
                 .all(|k| t.exit_state[k] == ExitState::Ready)
         );
+    }
+
+    /// Review M1: loop caches cannot crowd out exit buffers (separate budgets), and an exit
+    /// refused because other streams held the exit budget is built once they let it go.
+    #[test]
+    fn exits_get_their_own_budget_and_are_retried_when_it_frees() {
+        let exit = 12_000 * 2 * SAMPLE_BYTES;
+        let mut cfg = StreamerConfig::new(48_000);
+        cfg.exit_budget_bytes = exit; // one stereo exit
+        cfg.cache_budget_bytes = 4_800 * 2 * SAMPLE_BYTES; // one 4800-frame loop
+        let d = DiskStreamer::new(cfg).unwrap();
+        let pre = crate::decode::Preloaded::from_samples(2, 48_000, vec![0.25; 2 * 20_000]);
+        let slices = crate::plan(
+            0..20_000,
+            &[1_000, 5_800],
+            &[Plays::Times(1), Plays::Infinite, Plays::Times(1)],
+            0,
+        )
+        .unwrap();
+        let task = || {
+            let (tx, _rx) = mpsc::channel();
+            d.task(
+                StreamRequest {
+                    media: Media::Preloaded(pre.clone()),
+                    info: pre.info(),
+                    seeking: Seeking::Direct,
+                    slices: slices.clone(),
+                },
+                tx,
+            )
+            .unwrap()
+        };
+        // A takes the whole cache budget and the exit budget.
+        let (mut a, pa) = task();
+        settle(&mut a);
+        assert!(pa.link.exit(2).is_some());
+        assert!(pa.handle.cached_frames() > 0);
+        // B: its exit does not fit now; its ring is filled all the same.
+        let (mut b, pb) = task();
+        settle(&mut b);
+        assert!(pb.link.exit(2).is_none());
+        assert!(pb.handle.frames_written() > 90_000);
+        // A ends: B builds its exit while idle.
+        drop((a, pa));
+        settle(&mut b);
+        assert!(pb.link.exit(2).is_some(), "exit not retried");
+        assert_eq!(d.cache_bytes(), exit);
     }
 }

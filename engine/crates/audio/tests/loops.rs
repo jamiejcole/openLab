@@ -114,8 +114,9 @@ fn noise(samples: usize) -> Vec<f32> {
         .collect()
 }
 
-/// M3.13: for lossless sources at the device rate, later plays from the loop cache are the very
-/// frames a seek back would decode, so the output is bit-identical to the uncached path. Covers
+/// M3.13: for lossless sources, later plays from the loop cache are the very frames a seek back
+/// would decode, so the output is bit-identical to the uncached path, also resampled (FLAC
+/// 44.1 kHz on a 48 kHz device). Covers
 /// a loop split by a start offset (its first cached play comes after a seek), a short loop
 /// (many plays per worker step) and one longer than a decode chunk (recorded over several
 /// steps).
@@ -137,6 +138,14 @@ fn loop_cache_output_equals_the_uncached_path_bit_for_bit() {
     .unwrap();
     let flac = fixture("tone.flac");
     let flac_info = probe(&flac).unwrap().info;
+    // The same file resampled to 48 kHz on the disk worker.
+    let resampled = plan(
+        0..flac_info.frames_at(SR),
+        &[2_000, 3_000],
+        &[Plays::Times(1), Plays::Times(40), Plays::Times(1)],
+        0,
+    )
+    .unwrap();
     let flac_slices = plan(
         0..flac_info.frames,
         &[2_000, 3_000],
@@ -147,7 +156,8 @@ fn loop_cache_output_equals_the_uncached_path_bit_for_bit() {
     for (path, info, slices, rate, cached) in [
         // 28 plays of the 1000-frame loop after its recorded one, and the second 5000-frame play.
         (wav_path, wav_info, wav_slices, SR, 28_000 + 5_000),
-        (flac, flac_info, flac_slices, 44_100, 39_000),
+        (flac.clone(), flac_info, flac_slices, 44_100, 39_000),
+        (flac, flac_info, resampled, SR, 39_000),
     ] {
         let media = || Media::Path(path.clone());
         let (with, n) = play_finite(media(), info, slices.clone(), rate, |_| {});
