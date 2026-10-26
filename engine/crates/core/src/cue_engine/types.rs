@@ -490,9 +490,9 @@ pub enum GoIgnoredReason {
     /// The playhead is past the end of the list, or the list is empty.
     NoCue,
     UnknownList,
-    /// The call's chain budget was already spent (a trigger cycle earlier in the call), so the
-    /// cue could not be started: nothing happened (no start, no playhead move, no double-GO
-    /// interval) and the operator can press GO again.
+    /// The sample's chain budget was already spent (a trigger cycle earlier in the call, or in
+    /// an earlier call at the same `now`), so the cue could not be started: nothing happened (no
+    /// start, no playhead move, no double-GO interval) and the operator can press GO again.
     ChainLimit,
 }
 
@@ -550,7 +550,7 @@ pub enum EngineWarning {
         cue: CueId,
         late_by: SampleTime,
     },
-    /// More than `limit` cue starts in one call (a trigger cycle): this start was dropped.
+    /// More than `limit` cue starts at one `now` (a trigger cycle): this start was dropped.
     ChainLimit {
         cue: CueId,
         limit: usize,
