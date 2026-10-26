@@ -438,6 +438,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// count (a panic with overflow checks on, as here); contained as a typed error.
 /// `mp4-stts-overflow.m4a`: symphonia 0.6.1's `stts` reader sums sample counts in `u32`; the table
 /// is rejected before symphonia parses it (see `pre_checked_mp4_stts_finding_is_rejected`).
+/// `flac-damaged-no-checkpoints.flac`: damage in a file too short for a seek checkpoint asked
+/// for checkpoint 0 and underflowed (only with `cfg(fuzzing)`, where symphonia skips FLAC CRCs).
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
