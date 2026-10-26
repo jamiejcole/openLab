@@ -625,6 +625,16 @@ impl Voice {
         best
     }
 
+    /// Whether the voice is over by sample `t` with what is already on its way carried out: a
+    /// resume committed in the window plays a paused voice on to its end, which the engine
+    /// planned from the resume when it knew the length (Feedback, known lengths: a length sent
+    /// while paused counts from the resume).
+    fn over_by(&self, t: SampleTime) -> bool {
+        let mut ahead = self.clone();
+        ahead.advance(t, &mut Vec::new(), &mut Vec::new());
+        ahead.dead
+    }
+
     fn next_time(&self) -> Option<SampleTime> {
         if self.dead {
             return None;
@@ -1670,8 +1680,8 @@ impl Run {
         for (key, v) in self.sim.voices.iter().filter(|(_, v)| !v.preview) {
             // (An action whose length the engine was told ends on its deadline, which the
             // engine may have carried out ahead, inside the window, while the voice still plays
-            // to that sample.)
-            let planned_end = v.told && matches!(v.natural(), Some((n, Nat::End)) if n <= horizon);
+            // to that sample, or is still paused with its resume committed in the window.)
+            let planned_end = v.told && v.over_by(horizon);
             let excused =
                 v.has_pending_stop() || v.stop_end.is_some_and(|e| e <= horizon) || planned_end;
             if !excused {
@@ -2241,26 +2251,90 @@ proptest! {
 
     #[test]
     fn engine_invariants(case in case()) {
-        let without = run(&case, false)?;
-        let with = run(&case, true)?;
-        let again = run(&case, true)?;
-        // Determinism (Shape): the same workspace, inputs, times and seed give the same actions.
-        prop_assert!(with.raw == again.raw, "two runs of the same case differ");
-        // Previews are invisible to the show (Preview).
-        let diff = with
-            .shown
-            .iter()
-            .zip(&without.shown)
-            .position(|(a, b)| a != b)
-            .or_else(|| (with.shown.len() != without.shown.len()).then_some(with.shown.len().min(without.shown.len())));
-        prop_assert!(
-            diff.is_none(),
-            "previews changed what the show does at action {:?}: with {:?} without {:?}",
-            diff,
-            diff.and_then(|i| with.shown.get(i)),
-            diff.and_then(|i| without.shown.get(i))
-        );
-        prop_assert!(without.raw.iter().all(|a| !preview_action(a)));
+        invariants(&case)?;
+    }
+}
+
+/// The `engine_invariants` property for one case.
+fn invariants(case: &Case) -> Check {
+    let without = run(case, false)?;
+    let with = run(case, true)?;
+    let again = run(case, true)?;
+    // Determinism (Shape): the same workspace, inputs, times and seed give the same actions.
+    prop_assert!(with.raw == again.raw, "two runs of the same case differ");
+    // Previews are invisible to the show (Preview).
+    let diff = with
+        .shown
+        .iter()
+        .zip(&without.shown)
+        .position(|(a, b)| a != b)
+        .or_else(|| {
+            (with.shown.len() != without.shown.len())
+                .then_some(with.shown.len().min(without.shown.len()))
+        });
+    prop_assert!(
+        diff.is_none(),
+        "previews changed what the show does at action {:?}: with {:?} without {:?}",
+        diff,
+        diff.and_then(|i| with.shown.get(i)),
+        diff.and_then(|i| without.shown.get(i))
+    );
+    prop_assert!(without.raw.iter().all(|a| !preview_action(a)));
+    Ok(())
+}
+
+/// M2.23 (a 300k-case sweep): the loop of a [sound, Devamp with stop] pair is started late,
+/// devamped and paused at its first sample by Pause All, and learns its length while paused; a
+/// GO's auto-continue resumes it in the lookahead window with that end inside the window, so the
+/// engine completes the run ahead while the mixer still holds the paused voice with the resume
+/// on its way. Not a leak: the voice plays to exactly that end (Feedback, known lengths).
+#[test]
+fn a_resumed_voice_whose_known_end_is_in_the_window_is_not_a_leak() {
+    let spec = |kind: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: false,
+        dup: false,
+        level: 0,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let step = |dt: u64, op: u8, a: u8| Step { dt, op, a, b: 0 };
+    let case = Case {
+        specs: vec![
+            Spec {
+                pre: 1,
+                post: 2,
+                mode: 1,
+                ..spec(4)
+            },
+            spec(0),
+            Spec {
+                pre: 1,
+                post: 1,
+                armed: true,
+                ..spec(27)
+            },
+        ],
+        steps: vec![
+            step(0, 11, 122),
+            step(0, 2, 156),
+            step(1412, 12, 0),
+            step(788, 21, 0),
+            step(0, 1, 0),
+            step(1350, 1, 0),
+        ],
+        lookahead: 251,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
     }
 }
 
