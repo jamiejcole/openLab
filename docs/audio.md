@@ -342,7 +342,9 @@ Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `
 - **Format** at that channel count: f32, then f64, i32, i16, u16. Other formats (i24, u8, DSD) are skipped. A device that offers none of these gives `NoConfigs`.
 - **Buffer.** The requested size if the range includes it, else the nearest end of the range. If the host cannot report its range, the requested size is tried, and if the host refuses it, `open_output` falls back to the host default. With no request, the host default is used.
 
-**Opening.** `open_output(mixer, &OpenRequest { device_id, buffer_frames })` negotiates, builds a cpal stream for the chosen format, and starts it. Any failure returns an `OpenError` with a `DeviceError { kind, message }`, where `kind` is one of NotFound, Unavailable, Busy, PermissionDenied, UnsupportedConfig, `Negotiate(..)` or Backend. **The mixer is never lost**: `OpenError::take_mixer()` hands it back.
+**Opening.** `open_output(mixer, &OpenRequest { device_id, buffer_frames })` negotiates, builds a cpal stream for the chosen format, and starts it. Any failure returns an `OpenError` with a `DeviceError { kind, message }`, where `kind` is one of NotFound, Unavailable, Busy, PermissionDenied, UnsupportedConfig, `Negotiate(..)` or Backend. **The mixer is never lost**: `OpenError::take_mixer()` hands it back. When the host cannot report the default device's id, the open fails with Backend instead of storing an empty id.
+
+**The stream never follows the system default.** `device_id: None` means the device that is the default when `open_output` runs. It is resolved to that device's concrete id and opened by id (CoreAudio: an AUHAL unit with disconnect reporting, not the default-output unit), and `OutputStream::device_id()` reports the resolved id. cpal's default-device stream would follow the system default: CoreAudio reroutes it in place, and WASAPI invalidates it. Then a show could move to headphones that connect mid-show while `negotiated()` and `outputs_dropped()` still describe the old device. A reroute that a host reports anyway is `Rerouted`, which sets `needs_reopen()`.
 
 **The callback.** The cpal data callback calls `OutputHost::render(buf, Some(CallbackTime))` for the buffer's format. Tests and any other driver call the same function with their own buffers.
 
@@ -359,21 +361,23 @@ Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `
 |---|---|---|
 | DeviceNotAvailable | `Lost` | counted; sets the sticky `needs_reopen()` |
 | StreamInvalidated | `Invalidated` | counted; sets `needs_reopen()` |
-| DeviceChanged | `Rerouted` | counted (the host moved the stream itself) |
+| DeviceChanged | `Rerouted` | counted; sets `needs_reopen()` (the output moved, so the negotiated configuration is stale) |
 | RealtimeDenied | `RealtimeDenied` | counted |
 | Xrun | `Xrun` | the mixer's `xruns` and `host_xruns()`, not an error count |
 | anything else | `Other` | counted |
 
-`DeviceMonitor::take_errors()` reads and resets the counts, so the control thread sees each report exactly once. Some hosts just stop calling back on unplug. `callbacks()`, and `samples_rendered` standing still, show that, and the engine's watchdog decides what it means.
+`DeviceMonitor::take_errors()` reads and resets the counts, so the control thread sees each report exactly once. **Single consumer:** every clone shares the counts, so one owner (the engine's control loop) takes them and passes them on; a second poller would steal reports. `needs_reopen()` and the other getters do not reset anything and may be read from anywhere. `HostError::needs_reopen()` is the rule (Lost, Invalidated, Rerouted). Some hosts just stop calling back on unplug. `callbacks()`, and `samples_rendered` standing still, show that, and the engine's watchdog decides what it means.
 
 **Mixer handoff.**
 
 - The cpal closure owns the `OutputHost`, which owns the mixer and the scratch buffer.
-- Dropping the host, wherever cpal drops the closure (the control thread on CoreAudio, the joined audio thread on WASAPI and ALSA), pushes both into a one-slot `rtrb` queue. That push does not allocate, free or block (tested under `assert_no_alloc`).
-- `OutputStream::close()` drops the cpal stream and then takes the mixer from the slot, with its voices, queues, clock and counters intact. The engine reopens the same device or another one with it, and the clock continues where it stopped.
-- If cpal still held the callback, `close` returns `MixerPending` to poll with `try_take`.
+- Dropping the host, wherever cpal drops the closure, pushes both into a one-slot `rtrb` queue. That is usually the thread that drops the stream on CoreAudio (but see `MixerPending` below), and the joined audio thread on WASAPI and ALSA. That push does not allocate, free or block (tested under `assert_no_alloc`).
+- `OutputStream::close()` drops the cpal stream and then takes the mixer from the slot, with its voices, queues, clock and counters intact. The engine can reopen the same device or another one with it.
+- If cpal still holds the callback, `close` returns `MixerPending`. **This is expected on macOS device loss, not an error.** cpal's CoreAudio disconnect/monitor thread holds the stream briefly while it delivers `DeviceNotAvailable`, so the AudioUnit, and with it the handoff, is dropped on that cpal thread a moment later. The engine polls `MixerPending::try_take` (e.g. each control tick) until the mixer arrives. The handoff is safe on any thread.
 - `OutputStream` drops its stream before the slot, so dropping it without `close` frees the mixer on the dropping thread, never on the audio thread.
 - The push cannot fail (one host per slot). If it ever did, the mixer would be leaked, not freed, and counted in `leaked_mixers`.
+
+**Outage semantics (mechanism only).** While no stream runs, nothing calls the mixer, so `samples_rendered`, the master clock, is frozen, and every sample-time deadline waits with it. After a reopen, voices continue from the frame where they were cut off, and commands dated during the outage apply in the first block. Whether that is what the show should do is the engine's policy (M4; ARCHITECTURE §3.5: affected cues are marked broken). The controller can stop voices before reopening if the policy wants silence.
 
 **Reopen backoff.** `reopen_delay_ms(attempt)` gives 250, 500, 1000, 2000 and then 4000 ms for every later attempt. The engine owns the clock, the attempts and the user warning (M4).
 

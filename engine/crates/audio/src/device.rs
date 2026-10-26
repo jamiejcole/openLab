@@ -117,7 +117,10 @@ pub fn default_output_device_id() -> Option<String> {
 /// What to open. The rate and channel count come from the mixer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenRequest {
-    /// A [`DeviceInfo::id`]; `None` for the default output device.
+    /// A [`DeviceInfo::id`]; `None` for the device that is the system default *now*. Either way
+    /// the stream is bound to that one device: it never follows a later change of the system
+    /// default (a show must not move to headphones that just connected).
+    /// [`OutputStream::device_id`] tells which device `None` resolved to.
     pub device_id: Option<String>,
     /// Frames per callback; `None` for the host's default (AUD-21).
     pub buffer_frames: Option<u32>,
@@ -270,11 +273,16 @@ pub fn open_output(mixer: Mixer, req: &OpenRequest) -> Result<OutputStream, Open
         mixer: Returned::Mixer(Box::new(mixer)),
     };
     let host = cpal::default_host();
-    let device = match find_device(&host, req.device_id.as_deref()) {
+    // Always open by concrete id: cpal's default-device stream follows the system default
+    // (CoreAudio reroutes it in place, WASAPI invalidates it), which a show must never do.
+    let device_id = match resolve_target(req.device_id.as_deref(), || default_id(&host)) {
+        Ok(id) => id,
+        Err(e) => return Err(fail(mixer, e)),
+    };
+    let device = match find_device(&host, &device_id) {
         Ok(d) => d,
         Err(e) => return Err(fail(mixer, e)),
     };
-    let device_id = device.id().map(|i| i.to_string()).unwrap_or_default();
     let device_name = device_name(&device);
     let requested_channels = u16::try_from(mixer.output_channels()).unwrap_or(u16::MAX);
     let request = Request {
@@ -291,18 +299,13 @@ pub fn open_output(mixer: Mixer, req: &OpenRequest) -> Result<OutputStream, Open
             ));
         }
     };
-    let mut mixer = mixer;
     let mut attempt = build(&device, mixer, negotiated);
-    // An unknown buffer range made the requested size a guess; the host's default is next best.
-    if negotiated.buffer_unverified
-        && let Err(e) = &mut attempt
-        && e.error.kind == OpenErrorKind::UnsupportedConfig
+    if let Err(e) = &mut attempt
+        && let Some(retry) = fallback_after_refusal(negotiated, e.error.kind)
         && let Some(m) = e.take_mixer()
     {
-        mixer = m;
-        negotiated.buffer = BufferChoice::Default;
-        negotiated.buffer_unverified = false;
-        attempt = build(&device, mixer, negotiated);
+        negotiated = retry;
+        attempt = build(&device, m, negotiated);
     }
     let (stream, link) = attempt?;
     Ok(OutputStream {
@@ -405,15 +408,77 @@ fn open_kind(kind: cpal::ErrorKind) -> OpenErrorKind {
     }
 }
 
-fn find_device(host: &cpal::Host, id: Option<&str>) -> Result<cpal::Device, DeviceError> {
+/// The concrete device id to open: the requested one, else the current default's.
+fn resolve_target(
+    requested: Option<&str>,
+    default: impl FnOnce() -> Result<String, DeviceError>,
+) -> Result<String, DeviceError> {
+    match requested {
+        Some(id) => Ok(id.to_owned()),
+        None => default(),
+    }
+}
+
+fn default_id(host: &cpal::Host) -> Result<String, DeviceError> {
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| DeviceError::new(OpenErrorKind::NotFound, "no default output device"))?;
+    let id = device
+        .id()
+        .map_err(|e| DeviceError::from_cpal(&e))?
+        .to_string();
+    if id.is_empty() {
+        return Err(DeviceError::new(
+            OpenErrorKind::Backend,
+            "the default output device has no id",
+        ));
+    }
+    Ok(id)
+}
+
+/// After the host refused a build: the configuration to try once more, if any. Only a
+/// requested buffer size that was a guess (unknown range) is dropped for the host default.
+fn fallback_after_refusal(n: Negotiated, refused: OpenErrorKind) -> Option<Negotiated> {
+    (n.buffer_unverified && refused == OpenErrorKind::UnsupportedConfig).then_some(Negotiated {
+        buffer: BufferChoice::Default,
+        buffer_unverified: false,
+        ..n
+    })
+}
+
+/// By concrete id only, so the stream is bound to that device (CoreAudio: AUHAL with disconnect
+/// reporting, not the default-output unit that follows the system default).
+fn find_device(host: &cpal::Host, id: &str) -> Result<cpal::Device, DeviceError> {
     let not_found = || DeviceError::new(OpenErrorKind::NotFound, "no such output device");
-    let Some(id) = id else {
-        return host.default_output_device().ok_or_else(not_found);
-    };
     let parsed = cpal::DeviceId::from_str(id).map_err(|_| not_found())?;
     host.device_by_id(&parsed)
         .filter(DeviceTrait::supports_output)
+        .or_else(|| alsa_default(host, &parsed))
         .ok_or_else(not_found)
+}
+
+/// ALSA (Linux, a development platform only) may not list its `default` PCM, so `device_by_id`
+/// cannot find the id `None` resolved to; take the default device when the ids match. ALSA's
+/// default stream is an ordinary PCM, not one cpal reroutes. Other hosts never fall back.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
+fn alsa_default(host: &cpal::Host, id: &cpal::DeviceId) -> Option<cpal::Device> {
+    host.default_output_device()
+        .filter(|d| d.id().ok().as_ref() == Some(id))
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
+fn alsa_default(_host: &cpal::Host, _id: &cpal::DeviceId) -> Option<cpal::Device> {
+    None
 }
 
 fn device_name(d: &cpal::Device) -> String {
@@ -533,6 +598,70 @@ mod tests {
         if let Ok(list) = output_devices() {
             assert!(list.iter().filter(|d| d.is_default).count() <= 1);
         }
+    }
+
+    #[test]
+    fn no_device_id_resolves_to_the_current_default_s_concrete_id() {
+        let ok = |id: &str| {
+            let id = id.to_owned();
+            move || Ok(id)
+        };
+        assert_eq!(
+            resolve_target(Some("coreaudio:A"), ok("coreaudio:B")).unwrap(),
+            "coreaudio:A"
+        );
+        assert_eq!(
+            resolve_target(None, ok("coreaudio:B")).unwrap(),
+            "coreaudio:B"
+        );
+        let none = || Err(DeviceError::new(OpenErrorKind::NotFound, "none"));
+        assert_eq!(
+            resolve_target(None, none).unwrap_err().kind,
+            OpenErrorKind::NotFound
+        );
+        // The default is only asked for when no id was given.
+        let never = || -> Result<String, DeviceError> { panic!("asked for the default") };
+        assert!(resolve_target(Some("x:y"), never).is_ok());
+    }
+
+    #[test]
+    fn only_a_guessed_buffer_size_falls_back_to_the_host_default() {
+        let n = Negotiated {
+            sample_rate: 48_000,
+            device_channels: 2,
+            mapped: 2,
+            format: SampleFormat::F32,
+            buffer: BufferChoice::Fixed(512),
+            buffer_unverified: true,
+        };
+        let retry = fallback_after_refusal(n, OpenErrorKind::UnsupportedConfig).unwrap();
+        assert_eq!(retry.buffer, BufferChoice::Default);
+        assert!(!retry.buffer_unverified);
+        assert_eq!(retry.device_channels, 2);
+        assert_eq!(fallback_after_refusal(n, OpenErrorKind::Busy), None);
+        let verified = Negotiated {
+            buffer_unverified: false,
+            ..n
+        };
+        assert_eq!(
+            fallback_after_refusal(verified, OpenErrorKind::UnsupportedConfig),
+            None
+        );
+    }
+
+    #[test]
+    fn a_pending_mixer_comes_back_once_the_host_lets_go() {
+        let (_ctl, mixer) = Mixer::new(crate::MixerConfig::default()).unwrap();
+        let (host, link) = OutputHost::new(mixer, 2);
+        let mut err = OpenError {
+            error: DeviceError::new(OpenErrorKind::Backend, "test"),
+            mixer: Returned::Pending(MixerPending { link }),
+        };
+        // The host library still holds the callback.
+        assert!(err.take_mixer().is_none());
+        drop(host);
+        assert!(err.take_mixer().is_some());
+        assert!(err.take_mixer().is_none());
     }
 
     #[test]
