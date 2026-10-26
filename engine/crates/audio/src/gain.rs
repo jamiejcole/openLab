@@ -253,6 +253,122 @@ impl CurveRamp {
         v
     }
 
+    /// `f(slot, value)` for each slot of `out` and the values at positions `pos, pos + 1, …`:
+    /// bit for bit what [`Self::value`] gives at each position, by the same operations, but with
+    /// the curve's branches taken once per stretch between knots instead of once per frame.
+    /// Leaves the state ready for the position after the last.
+    #[inline]
+    pub(crate) fn apply(&mut self, pos: u64, out: &mut [f32], mut f: impl FnMut(&mut f32, f32)) {
+        if self.kind == Kind::Exact {
+            for (o, p) in out.iter_mut().zip(pos..) {
+                f(o, ramp_value(self.from, self.to, p, self.len, self.curve));
+            }
+            return;
+        }
+        let mut rest = out;
+        let mut p = pos;
+        if p == 0
+            && let Some((o, tail)) = std::mem::take(&mut rest).split_first_mut()
+        {
+            f(o, self.from);
+            rest = tail;
+            p = 1;
+        }
+        let mid = usize::try_from(self.len.saturating_sub(p))
+            .unwrap_or(usize::MAX)
+            .min(rest.len());
+        let (mut body, end) = rest.split_at_mut(mid);
+        if !body.is_empty() && self.at != Some(p) {
+            self.seek(p);
+        }
+        while !body.is_empty() {
+            let k = usize::try_from(KNOT - p % KNOT)
+                .unwrap_or(usize::MAX)
+                .min(body.len());
+            let (seg, more) = body.split_at_mut(k);
+            self.run(seg, &mut f);
+            body = more;
+            p += k as u64;
+            // As in `value`: the state moves to the next position only inside the ramp.
+            if p < self.len {
+                if p.is_multiple_of(KNOT) {
+                    self.anchor(p);
+                }
+                self.at = Some(p);
+            } else {
+                self.at = None;
+            }
+        }
+        for o in end {
+            f(o, self.to);
+        }
+    }
+
+    /// `f` of the outputs over `seg`, stepping after each; [`Self::output`] and [`Self::step`]
+    /// written out per kind so the loop has no branch on it.
+    #[inline]
+    fn run(&mut self, seg: &mut [f32], f: &mut impl FnMut(&mut f32, f32)) {
+        let (a, d) = (self.a, self.d);
+        let out = |s: f64| (a + d * s.clamp(0.0, 1.0)) as f32;
+        match self.kind {
+            Kind::Exact => {}
+            Kind::Sin => self.rotate(seg, f, |_, y| out(y)),
+            Kind::OneMinusCos => self.rotate(seg, f, |x, _| out(1.0 - x)),
+            Kind::HalfOneMinusCos => self.rotate(seg, f, |x, _| out((1.0 - x) * 0.5)),
+            Kind::ExpUp => self.scale(seg, f, |y| out((y - 1.0) * EXP_INV)),
+            Kind::ExpDown => self.scale(seg, f, |y| out(1.0 - (y - 1.0) * EXP_INV)),
+        }
+    }
+
+    #[inline]
+    fn rotate(
+        &mut self,
+        seg: &mut [f32],
+        f: &mut impl FnMut(&mut f32, f32),
+        out: impl Fn(f64, f64) -> f32,
+    ) {
+        let (cr, sr) = (self.cr, self.sr);
+        let (mut x, mut y) = (self.x, self.y);
+        for o in seg {
+            f(o, out(x, y));
+            (x, y) = (x * cr - y * sr, y * cr + x * sr);
+        }
+        (self.x, self.y) = (x, y);
+    }
+
+    #[inline]
+    fn scale(
+        &mut self,
+        seg: &mut [f32],
+        f: &mut impl FnMut(&mut f32, f32),
+        out: impl Fn(f64) -> f32,
+    ) {
+        let cr = self.cr;
+        let mut y = self.y;
+        for o in seg {
+            f(o, out(y));
+            y *= cr;
+        }
+        self.y = y;
+    }
+
+    /// [`Self::apply`] for the ramp `from → to` over `len` with `curve`, first turning this into
+    /// that ramp's evaluator if it is another's (as [`Self::value_of`]).
+    #[inline]
+    pub(crate) fn apply_of(
+        &mut self,
+        ramp: (f32, f32, u64, Curve),
+        pos: u64,
+        out: &mut [f32],
+        f: impl FnMut(&mut f32, f32),
+    ) {
+        let (from, to, len, curve) = ramp;
+        if !self.is(from, to, len, curve) {
+            *self = CurveRamp::new(from, to, len, curve);
+        }
+        self.apply(pos, out, f);
+    }
+
     /// Value at `pos` without moving the state.
     pub(crate) fn peek(&self, pos: u64) -> f32 {
         let mut c = *self;
@@ -341,6 +457,14 @@ impl Param {
         self.ramp.is_none() && self.value == 0.0
     }
 
+    /// The value while not ramping: every sample of the next block has it.
+    pub(crate) fn steady(&self) -> Option<f32> {
+        match self.ramp {
+            Some(_) => None,
+            None => Some(self.value),
+        }
+    }
+
     pub(crate) fn is_ramping(&self) -> bool {
         self.ramp.is_some()
     }
@@ -373,10 +497,8 @@ impl Param {
                 .unwrap_or(usize::MAX)
                 .min(rest.len());
             let (head, tail) = rest.split_at_mut(n);
-            for o in head {
-                *o = r.eval.value(r.pos);
-                r.pos += 1;
-            }
+            r.eval.apply(r.pos, head, |o, v| *o = v);
+            r.pos += n as u64;
             if r.pos >= r.len {
                 self.value = r.to;
                 self.ramp = None;
@@ -595,6 +717,36 @@ mod tests {
                     proptest::prop_assert_eq!(r.value(p).to_bits(), fresh.to_bits(), "pos {}", p);
                 }
                 pos += run + skip;
+            }
+        }
+
+        /// The block evaluator gives the bits `value` gives at every position, from any start,
+        /// over any span (across knots, the end and beyond), and leaves a state that agrees.
+        #[test]
+        fn curve_ramp_apply_matches_value_bit_for_bit(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in proptest::prop_oneof![1u64..=200, 1u64..=100_000],
+            frac in 0.0f64..=1.2,
+            spans in proptest::collection::vec((0usize..300, 0u64..100), 1..8),
+        ) {
+            use proptest::prelude::*;
+            let curve = ALL[c];
+            let mut r = CurveRamp::new(from, to, len, curve);
+            let mut pos = (len as f64 * frac) as u64;
+            let mut buf = [0.0f32; 300];
+            for (n, skip) in spans {
+                let out = &mut buf[..n];
+                r.apply(pos, out, |o, v| *o = v);
+                for (k, v) in out.iter().enumerate() {
+                    let want = CurveRamp::new(from, to, len, curve).peek(pos + k as u64);
+                    prop_assert_eq!(v.to_bits(), want.to_bits(), "pos {}", pos + k as u64);
+                }
+                pos += n as u64;
+                let want = CurveRamp::new(from, to, len, curve).peek(pos);
+                prop_assert_eq!(r.value(pos).to_bits(), want.to_bits());
+                pos += 1 + skip;
             }
         }
 
