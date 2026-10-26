@@ -48,6 +48,17 @@ impl History {
         step(&mut self.redo, &mut self.undo, workspace)
     }
 
+    /// The command the next [`undo`](Self::undo) applies: its [`footprint`](Command::footprint)
+    /// is what that undo changes.
+    pub fn peek_undo(&self) -> Option<&Command> {
+        self.undo.last()
+    }
+
+    /// As [`peek_undo`](Self::peek_undo), for [`redo`](Self::redo).
+    pub fn peek_redo(&self) -> Option<&Command> {
+        self.redo.last()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
