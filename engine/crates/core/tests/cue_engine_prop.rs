@@ -2069,11 +2069,12 @@ impl Run {
                     .is_some_and(|r| self.sim.voices.get(&r).is_some_and(|v| v.playing))
             }
             (CueState::Running | CueState::Stopping, CueKind::Group { children, .. }) => {
-                // (A broken child may be a paused one: Pause freezes a broken cue's timers
-                // too, and it reports `broken` all the same.)
-                children.iter().any(|k| {
-                    self.engine.state(k.id) == CueState::Broken || self.waits_for_the_operator(k.id)
-                })
+                // (A broken child waits only while paused: Pause freezes a broken cue's
+                // timers too, and it reports `broken` all the same. A settled broken child
+                // does not hold the group open.)
+                children
+                    .iter()
+                    .any(|k| self.engine.is_paused(k.id) || self.waits_for_the_operator(k.id))
             }
             _ => false,
         }
