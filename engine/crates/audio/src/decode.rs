@@ -27,6 +27,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{TimeBase, Timestamp};
 
 use crate::mixer::{MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS};
+use crate::mp4_priming::Priming;
 
 /// Frames decoded and thrown away before a seek target, so decoders with inter-frame state (MP3
 /// bit reservoir, MDCT overlap) are warm when the wanted frame comes out. Covers the packet a
@@ -90,6 +91,8 @@ pub(crate) fn scale_round(x: u64, num: u32, den: u32) -> u64 {
 
 /// Most warnings kept per file; damage beyond that still plays as silence.
 const MAX_WARNINGS: usize = 256;
+/// Longest AAC encoder delay believed, in frames (0.74 s at 44.1 kHz; real encoders use 1024-2624).
+const MAX_PRIMING: u64 = 1 << 15;
 /// Consecutive container errors after which the rest of a file counts as unreadable.
 const MAX_READER_ERRORS: u32 = 16;
 
@@ -110,6 +113,10 @@ pub enum WarningKind {
     /// Seeks in this damaged file decode forward from the start (see [`Seeking::FromStart`]):
     /// preload it if it fits, or expect slow loops and start offsets deep in the file.
     SlowSeeks,
+    /// The MP4 file carries gapless information (an edit list or an `iTunSMPB` tag) for its AAC
+    /// encoder delay that cannot be used (damaged, absurd, or not understood): the file plays
+    /// as decoded, starting with the encoder's priming frames.
+    PrimingIgnored,
 }
 
 /// How a seek reaches a frame of a file on its probe's timeline.
@@ -632,6 +639,11 @@ struct Decoder {
     start_ts: i64,
     /// Timestamp position, in frames, of the first playable frame (position 0).
     origin: i64,
+    /// AAC encoder delay from the MP4 edit list or `iTunSMPB`, in frames: already part of
+    /// `origin`, so the frames before it have negative positions and are dropped.
+    priming: u64,
+    /// Set once `origin` includes `priming`: packets drop their frames at negative positions.
+    clamp_neg: bool,
     /// Length from the container; trusted only for PCM (see `exact_info`).
     declared: Option<u64>,
     pcm: bool,
@@ -691,6 +703,7 @@ struct Resync {
 impl Decoder {
     fn open(media: Media) -> Result<Self, MediaError> {
         let mut hint = Hint::new();
+        let gapless;
         let source: Box<dyn MediaSource> = match media {
             Media::Path(path) => {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -700,6 +713,7 @@ impl Decoder {
                     Ok(mut f) => {
                         check_pcm_header(&mut f)?;
                         crate::mp4_check::check_mp4_stts(&mut f)?;
+                        gapless = crate::mp4_priming::scan_mp4_gapless(&mut f);
                         Box::new(f)
                     }
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -718,6 +732,7 @@ impl Decoder {
                     .map_err(|e| MediaError::Io(e.to_string()))?;
                 check_pcm_header(&mut inner)?;
                 crate::mp4_check::check_mp4_stts(&mut inner)?;
+                gapless = crate::mp4_priming::scan_mp4_gapless(&mut inner);
                 Box::new(ReaderSource { inner, len })
             }
             Media::Preloaded(_) => {
@@ -770,6 +785,18 @@ impl Decoder {
             }
         };
         let (track_id, start_ts, declared) = (track.id, track.start_ts.get(), track.num_frames);
+        // Only AAC has encoder delay that the container (rather than the codec) describes.
+        let mut priming_ignored = false;
+        let priming = match (params.codec == CODEC_ID_AAC && ts_per_frame.is_some())
+            .then(|| gapless.priming(track_id, rate))
+        {
+            Some(Priming::Frames(f)) if f < MAX_PRIMING && declared.is_none_or(|d| f < d) => f,
+            Some(Priming::Frames(_) | Priming::Ignored) => {
+                priming_ignored = true;
+                0
+            }
+            Some(Priming::None) | None => 0,
+        };
         let mut d = Decoder {
             format: Some(format),
             hint,
@@ -782,7 +809,10 @@ impl Decoder {
             ts_per_frame,
             start_ts,
             origin: 0,
-            declared,
+            priming,
+            clamp_neg: false,
+            // The container's length counts the priming that the timeline drops.
+            declared: declared.map(|d| d.saturating_sub(priming)),
             pcm,
             lossy,
             buf: Vec::new(),
@@ -798,6 +828,13 @@ impl Decoder {
             index: None,
             decoded: 0,
         };
+        if priming_ignored {
+            d.warn(MediaWarning {
+                kind: WarningKind::PrimingIgnored,
+                at: 0,
+                frames: 0,
+            });
+        }
         d.find_origin()?;
         Ok(d)
     }
@@ -807,37 +844,63 @@ impl Decoder {
     /// start at timestamp 0 or later), or the first decodable frame if that comes before it. If
     /// the first packets are damaged, the frames before the first decodable one are silence.
     fn find_origin(&mut self) -> Result<(), MediaError> {
+        let mut found = false;
         while let Some(abs) = self.decode_packet()? {
-            let run = self.run_len();
-            if run == 0 {
+            let mut start = 0;
+            if found {
+                // A packet after one that lay wholly in the priming: already on the timeline.
+                start = abs.max(0);
+            } else {
+                if self.run_len() == 0 {
+                    continue;
+                }
+                found = true;
+                if self.ts_per_frame.is_some() {
+                    self.set_origin(abs);
+                }
+            }
+            if self.run_len() == 0 {
                 continue;
             }
-            if self.ts_per_frame.is_some() {
-                let start = self.ts_to_frames(self.start_ts).max(0);
-                let origin = if abs > 0 { start.min(abs) } else { abs };
-                let lead = u64::try_from(abs - origin).unwrap_or(0);
-                // A start far after the container's: take the stream as it is.
-                let origin = if lead > self.max_gap() { abs } else { origin };
-                self.origin = origin;
-                // Anything noted before the origin was known is relative to 0.
-                let shift = u64::try_from(origin).unwrap_or(0);
-                for w in &mut self.warnings {
-                    w.at = w.at.saturating_sub(shift);
-                }
-                let lead = u64::try_from(abs - origin).unwrap_or(0);
-                if lead > 0 {
-                    self.warn(MediaWarning {
-                        kind: WarningKind::Missing,
-                        at: 0,
-                        frames: lead,
-                    });
-                    self.silence = self.silence.saturating_add(lead);
-                }
-            }
-            self.cursor = self.run_len();
+            self.cursor = u64::try_from(start)
+                .unwrap_or(0)
+                .saturating_add(self.run_len());
             return Ok(());
         }
         Ok(())
+    }
+
+    /// Sets position 0 from the first playable frame `abs` (timestamp frames), makes the lead
+    /// before it silence, and drops the priming from the front of the run.
+    fn set_origin(&mut self, abs: i64) {
+        let start = self.ts_to_frames(self.start_ts).max(0);
+        let origin = if abs > 0 { start.min(abs) } else { abs };
+        let lead = u64::try_from(abs - origin).unwrap_or(0);
+        // A start far after the container's: take the stream as it is.
+        let origin = if lead > self.max_gap() { abs } else { origin };
+        self.origin = origin;
+        let lead = u64::try_from(abs - origin).unwrap_or(0);
+        // The priming is part of the stream's first frames; position 0 is just after it.
+        let priming = self.priming;
+        self.origin = origin.saturating_add(i64::try_from(priming).unwrap_or(0));
+        self.clamp_neg = priming > 0;
+        // Anything noted before the origin was known is relative to 0.
+        let shift = u64::try_from(self.origin).unwrap_or(0);
+        for w in &mut self.warnings {
+            w.at = w.at.saturating_sub(shift);
+        }
+        if lead > 0 {
+            let frames = lead.saturating_sub(priming);
+            if frames > 0 {
+                self.warn(MediaWarning {
+                    kind: WarningKind::Missing,
+                    at: 0,
+                    frames,
+                });
+            }
+            self.silence = self.silence.saturating_add(lead);
+        }
+        self.drop_front(priming);
     }
 
     /// Exact length on the playback timeline: a PCM header's length is checked by decoding the
@@ -1013,11 +1076,17 @@ impl Decoder {
                         continue;
                     }
                     // Damaged audio data: silence of the packet's length keeps the timeline.
-                    let pos = pos_of(trim_start);
-                    let frames = dur as u64;
+                    let mut pos = pos_of(trim_start);
+                    let mut frames = dur as u64;
                     if frames > self.max_gap() {
                         self.unreadable();
                         break;
+                    }
+                    // Priming is not part of the timeline, damaged or not.
+                    if self.clamp_neg && pos < 0 {
+                        let cut = pos.unsigned_abs().min(frames);
+                        frames -= cut;
+                        pos = pos.saturating_add(i64::try_from(cut).unwrap_or(0));
                     }
                     if frames > 0 {
                         self.warn(MediaWarning {
@@ -1041,13 +1110,22 @@ impl Decoder {
             for x in &mut self.buf {
                 *x = sanitize_sample(*x);
             }
-            let front = trim_start.min(n);
+            let mut front = trim_start.min(n);
             let mut back = trim_end.min(n - front);
             // A packet is at most its container duration, whether or not it decodes (a failed
             // one is silence of `dur`), so the timeline never depends on decoder state. This
             // also drops an AAC stream's padding past its container length.
             if dur > 0 && n - front - back > dur {
                 back = n - front - dur;
+            }
+            // Frames before position 0 are the encoder's priming.
+            let mut front_pos = pos_of(front);
+            if self.clamp_neg && front_pos < 0 {
+                let extra = usize::try_from(front_pos.unsigned_abs())
+                    .unwrap_or(usize::MAX)
+                    .min(n - front - back);
+                front += extra;
+                front_pos = pos_of(front);
             }
             self.buf.truncate((n - back) * self.channels);
             self.buf_pos = front * self.channels;
@@ -1056,7 +1134,7 @@ impl Decoder {
             if trim_end > 0 {
                 self.eof = true;
             }
-            return Ok(Some(pos_of(front)));
+            return Ok(Some(front_pos));
         }
         Ok(None)
     }
@@ -1603,7 +1681,7 @@ mod tests {
             ("flac", cut("tone.flac", 3), "indexed"),
             ("ogg", damage("tone-4s.ogg", 10_888, 16), "indexed"),
             // AAC noise substitution never decodes identically after a seek.
-            ("m4a", damage("tone.m4a", 5_964, 16), "from start"),
+            ("m4a", damage("tone.m4a", 4_600, 16), "from start"),
             ("mp3", damage("tone.mp3", 4_619, 300), "indexed"),
             ("mp3", damage("tone.mp3", 6_158, 300), "indexed"),
             // symphonia's MP3 reader places frames after this damage differently after a seek.
@@ -1705,7 +1783,7 @@ mod tests {
             Seeking::Direct,
         )
         .unwrap();
-        src.seek(17_500).unwrap();
+        src.seek(16_500).unwrap();
         let mut buf = vec![0.0; 2 * 100];
         assert_eq!(src.read(&mut buf).unwrap(), 100);
         assert!(
@@ -1716,7 +1794,7 @@ mod tests {
         assert!(
             w.contains(&MediaWarning {
                 kind: WarningKind::Missing,
-                at: 17_408,
+                at: 16_384,
                 frames: 1_024
             }),
             "{w:?}"

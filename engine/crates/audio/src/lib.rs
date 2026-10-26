@@ -16,6 +16,7 @@ mod gain;
 mod meter;
 mod mixer;
 mod mp4_check;
+mod mp4_priming;
 mod negotiate;
 mod offline;
 mod output;

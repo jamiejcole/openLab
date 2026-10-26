@@ -260,7 +260,7 @@ fn damaged_media_plays_with_silence_where_frames_are_missing() {
             "tone.m4a",
             "m4a",
             damage("tone.m4a", 5_964, 16),
-            17_408,
+            16_384,
             1_024,
         ),
     ];
