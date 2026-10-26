@@ -332,6 +332,16 @@ impl Control {
             );
             self.pending_media.extend(stuck);
         }
+        if self.media.take_limit_reached() {
+            self.log(
+                LogLevel::Error,
+                format!(
+                    "{} probe workers were stuck and replaced; no more are replaced, so further \
+                     stuck probes wait (their starts fail after the hold limit)",
+                    media::MAX_ABANDONED_WORKERS
+                ),
+            );
+        }
         self.deliver_deferred(now);
         if self.engine.is_due(now) {
             self.feed(Input::Tick, now);
@@ -366,7 +376,11 @@ impl Control {
         let now = self.now();
         match message {
             ClientMessage::Transport { id, action } => {
+                let scope = orphan_scope(&action);
                 self.feed(transport_input(action), now);
+                if let Some(scope) = scope {
+                    self.silence_orphans(scope, now);
+                }
                 reply(to, ok(id, None));
             }
             ClientMessage::Command { id, command } => {
@@ -421,6 +435,50 @@ impl Control {
             ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
         }
         Flow::Continue
+    }
+
+    /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
+    /// longer than the action's known length, after the engine completed the action on its
+    /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
+    /// Panic, a hard stop or a reset would leave it sounding.
+    fn silence_orphans(&mut self, scope: Scope, now: SampleTime) {
+        let engine = &self.engine;
+        let owned = |cue: CueId, run: openlab_core::RunId| {
+            engine.run_of(cue) == Some(run)
+                && matches!(
+                    engine.state(cue),
+                    CueState::Running | CueState::Paused | CueState::Fading | CueState::Stopping
+                )
+        };
+        let in_scope = |cue: CueId| match scope {
+            Scope::All => true,
+            Scope::Cue(root) => {
+                root == cue
+                    || self
+                        .ws
+                        .find_cue(root)
+                        .is_some_and(|r| visit_any(r.children(), cue))
+            }
+        };
+        let orphans = self
+            .voices
+            .orphans(|cue, run| in_scope(cue) && !owned(cue, run));
+        if orphans.is_empty() {
+            return;
+        }
+        // A Panic fades them out with everything else, ending on the panic's end; otherwise
+        // (or past it) they are cut at once.
+        let fade = match (scope, self.engine.panic_end()) {
+            (Scope::All, Some(end)) if end > now => {
+                openlab_audio::Fade::new(end - now, voices::to_curve(openlab_core::PANIC_CURVE))
+            }
+            _ => openlab_audio::Fade::NONE,
+        };
+        let commands = orphans
+            .into_iter()
+            .map(|voice| (now, CommandKind::StopVoice { voice, fade }))
+            .collect();
+        self.send_commands(commands);
     }
 
     /// A command, undo or redo changed the workspace.
@@ -1184,6 +1242,31 @@ pub fn transport_input(action: TransportAction) -> Input {
     }
 }
 
+/// Which voices a transport action must silence besides what the engine stops.
+#[derive(Clone, Copy)]
+enum Scope {
+    All,
+    Cue(CueId),
+}
+
+fn orphan_scope(action: &TransportAction) -> Option<Scope> {
+    match action {
+        TransportAction::Panic => Some(Scope::All),
+        TransportAction::HardStop { cue }
+        | TransportAction::Reset { cue }
+        | TransportAction::Stop {
+            cue,
+            fade_out: None,
+        } => Some(Scope::Cue(*cue)),
+        _ => None,
+    }
+}
+
+fn visit_any(cues: &[Cue], id: CueId) -> bool {
+    cues.iter()
+        .any(|c| c.id == id || visit_any(c.children(), id))
+}
+
 /// Applies an Arm/Disarm cue's change to the model, as a runtime change (no undo step).
 fn set_armed(ws: &mut Workspace, cue: CueId, armed: bool) -> bool {
     fn find(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
@@ -1291,31 +1374,42 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> 
 mod tests {
     use super::*;
 
-    /// `wake_frames` agrees with the engine's own wake rule (`is_due`) for every rendered
-    /// position around a deadline: 0 exactly when a tick at that position is due, and otherwise
-    /// the distance to the first position where it is.
+    /// `wake_frames` agrees with the engine's own wake rule (`CueEngine::is_due`, lookahead =
+    /// block, `now = rendered + block`) for every rendered position around a deadline: 0
+    /// exactly when a tick there is due, otherwise the distance to the first position where it is.
     #[test]
     fn wake_frames_agrees_with_is_due() {
         for block in [1u64, 3, 64] {
-            let engine_due = |d: u64, rendered: u64| {
-                // EngineConfig lookahead = block; now = rendered + block.
-                d < rendered + block + block
-            };
-            for d in 0..300u64 {
+            for d in (block..300).step_by(7) {
+                let engine = engine_with_deadline(block, d);
+                let due = |rendered: u64| engine.is_due(rendered + block);
                 for rendered in 0..300u64 {
-                    let w = wake_frames(Some(d), std::iter::empty(), rendered, block);
-                    assert_eq!(
-                        w == 0,
-                        engine_due(d, rendered),
-                        "d {d} r {rendered} b {block}"
-                    );
+                    let w =
+                        wake_frames(engine.next_deadline(), std::iter::empty(), rendered, block);
+                    assert_eq!(w == 0, due(rendered), "d {d} r {rendered} b {block}");
                     if w > 0 {
-                        assert!(engine_due(d, rendered + w));
-                        assert!(!engine_due(d, rendered + w - 1));
+                        assert!(due(rendered + w));
+                        assert!(!due(rendered + w - 1));
                     }
                 }
             }
         }
+    }
+
+    /// An engine (1 kHz, lookahead `block`) whose only deadline is a Memo's pre-wait ending on
+    /// sample `d`.
+    fn engine_with_deadline(block: u64, d: u64) -> CueEngine {
+        let ws = memo_workspace(d as f64 / 1000.0);
+        let mut engine = CueEngine::new(EngineConfig::new(1000, block, 1).unwrap());
+        engine.handle(
+            &ws,
+            Input::Start {
+                cue: CueId(uuid_zero()),
+            },
+            0,
+        );
+        assert_eq!(engine.next_deadline(), Some(d));
+        engine
     }
 
     #[test]
@@ -1342,7 +1436,28 @@ mod tests {
     #[test]
     fn the_wake_rule_matches_the_engine() {
         let block = 64;
-        let ws = Workspace {
+        let ws = memo_workspace(0.5);
+        let mut engine = CueEngine::new(EngineConfig::new(1000, block, 1).unwrap());
+        engine.handle(
+            &ws,
+            Input::Start {
+                cue: CueId(uuid_zero()),
+            },
+            block,
+        );
+        let d = engine.next_deadline().unwrap();
+        for rendered in 0..d + 10 {
+            let w = wake_frames(Some(d), std::iter::empty(), rendered, block);
+            assert_eq!(
+                w == 0,
+                engine.is_due(rendered + block),
+                "rendered {rendered}"
+            );
+        }
+    }
+
+    fn memo_workspace(pre_wait: f64) -> Workspace {
+        Workspace {
             id: openlab_core::WorkspaceId(uuid_zero()),
             name: String::new(),
             settings: openlab_core::WorkspaceSettings {
@@ -1368,7 +1483,7 @@ mod tests {
                     color: openlab_core::CueColor::None,
                     flagged: false,
                     armed: true,
-                    pre_wait: 0.5,
+                    pre_wait,
                     post_wait: 0.0,
                     continue_mode: openlab_core::ContinueMode::DoNotContinue,
                     triggers: openlab_core::Triggers {
@@ -1380,23 +1495,6 @@ mod tests {
                     kind: CueKind::Memo,
                 }],
             }],
-        };
-        let mut engine = CueEngine::new(EngineConfig::new(1000, block, 1).unwrap());
-        engine.handle(
-            &ws,
-            Input::Start {
-                cue: CueId(uuid_zero()),
-            },
-            block,
-        );
-        let d = engine.next_deadline().unwrap();
-        for rendered in 0..d + 10 {
-            let w = wake_frames(Some(d), std::iter::empty(), rendered, block);
-            assert_eq!(
-                w == 0,
-                engine.is_due(rendered + block),
-                "rendered {rendered}"
-            );
         }
     }
 

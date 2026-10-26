@@ -980,6 +980,17 @@ impl Voices {
         }
     }
 
+    /// Show voices in the mixer (not stopped by a command already) for which `orphan(cue, run)`
+    /// holds.
+    pub fn orphans(&self, orphan: impl Fn(CueId, RunId) -> bool) -> Vec<VoiceId> {
+        self.recs
+            .iter()
+            .filter(|(_, r)| matches!(r.phase, Phase::Playing) && !r.preview)
+            .filter(|(_, r)| orphan(r.cue, r.run))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// Fails starts that have waited for their file's probe since before `now - limit`: the
     /// cue goes broken instead of showing as running without a sound.
     pub fn expire_held(&mut self, now: SampleTime, limit: SampleTime, fx: &mut Effects) {
