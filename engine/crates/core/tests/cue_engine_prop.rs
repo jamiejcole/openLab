@@ -30,7 +30,8 @@
 //!   deadline always belongs to a visible cue.
 //! - The playhead is past the end or on a position of its list (Playhead).
 //! - A running group has a busy child (Groups, "Its action").
-//! - Chain bound: a call starts at most `chain_limit` cues (Chains and the chain bound).
+//! - Chain bound: the calls at one `now` start at most `chain_limit` cues between them (Chains
+//!   and the chain bound).
 //! - Commands for one voice never go backwards in time, and none is dated outside the call's
 //!   window `now ..= now + lookahead - 1` (Deadlines, lookahead and late ticks).
 //! - Everything due has been done after each call (`is_due`).
@@ -987,6 +988,9 @@ struct Run {
     seen: BTreeSet<CueId>,
     /// The latest sample a command was sent for, per voice (run id), across calls.
     last_at: BTreeMap<RunId, SampleTime>,
+    /// Cue starts at one `now` so far, across calls, and the largest chain limit then:
+    /// `(now, starts, limit)`.
+    starts_at: (SampleTime, usize, usize),
     input: Input,
     held: Vec<Input>,
     raw: Vec<Action>,
@@ -1025,6 +1029,7 @@ impl Run {
             reported: BTreeMap::new(),
             seen,
             last_at: BTreeMap::new(),
+            starts_at: (0, 0, 0),
             input: Input::Tick,
             held: Vec::new(),
             raw: Vec::new(),
@@ -1139,8 +1144,21 @@ impl Run {
                 self.last_at.insert(after, at);
             }
         }
-        // Chain bound.
-        prop_assert!(starts <= CueEngine::chain_limit(&self.ws));
+        // Chain bound: across every call at one `now` (against the largest limit the workspace
+        // had at that sample, as edits between those calls can change it).
+        let limit = CueEngine::chain_limit(&self.ws);
+        if self.starts_at.0 != now {
+            self.starts_at = (now, 0, 0);
+        }
+        self.starts_at.1 += starts;
+        self.starts_at.2 = self.starts_at.2.max(limit);
+        prop_assert!(
+            self.starts_at.1 <= self.starts_at.2,
+            "{} starts at {} (limit {})",
+            self.starts_at.1,
+            now,
+            self.starts_at.2
+        );
         // Preview actions only for audio cues, with ids apart from the show's.
         for action in &actions {
             if let Action::PreviewStart { run, .. } | Action::PreviewStop { run, .. } = action {
