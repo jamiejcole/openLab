@@ -155,3 +155,112 @@ fn a_fade_cue_whose_target_changed_unsignalled_only_warns() {
         }]
     );
 }
+
+/// Carries out `input` on `ws` without the start of a call, as `handle` does after a model
+/// change the binary did not signal in a release build (debug builds would correct it at the
+/// start of `handle`).
+fn input_unsignalled(
+    engine: &mut CueEngine,
+    ws: &Workspace,
+    input: Input,
+    now: SampleTime,
+) -> Vec<Action> {
+    let limit = CueEngine::chain_limit(ws);
+    let mut cx = Ctx {
+        ws,
+        now,
+        horizon: now,
+        budget: limit,
+        limit,
+        out: Vec::new(),
+        vacated: Vec::new(),
+    };
+    engine.apply(input, &mut cx);
+    engine.drain(&mut cx);
+    engine.advance(&mut cx);
+    cx.out
+}
+
+#[test]
+fn a_cue_fixed_by_an_unsignalled_edit_is_not_refused() {
+    // Regression (re-review M1'): the binary missed `model_changed` after retargeting a broken
+    // Start cue; GO then refused it for its old problem, with nothing showing why.
+    let ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Start {
+                target: Some(id(99)),
+            },
+            0.0,
+        ),
+        cue(2, CueKind::Memo, 0.0),
+    ]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(engine.state(id(1)), CueState::Broken);
+    let mut fixed = ws.clone();
+    fixed.cue_lists[0].cues[0].kind.set_target(Some(id(2)));
+    let go = input_unsignalled(
+        &mut engine,
+        &fixed,
+        Input::Go {
+            list: CueListId(Uuid::from_u128(1)),
+        },
+        10,
+    );
+    assert!(go.contains(&Action::ProblemsChanged {
+        cue: id(1),
+        problems: vec![]
+    }));
+    assert!(
+        !go.iter()
+            .any(|a| matches!(a, Action::Warning(EngineWarning::CueBroken { .. })))
+    );
+    // It ran: its action started its target.
+    assert!(go.contains(&Action::StateChanged {
+        cue: id(2),
+        state: CueState::PreWaiting,
+        at: 10
+    }));
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+    assert!(engine.problems(id(1)).is_empty());
+}
+
+#[test]
+fn a_cue_still_broken_after_an_unsignalled_edit_is_still_refused() {
+    let ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Start {
+                target: Some(id(99)),
+            },
+            0.0,
+        ),
+        cue(2, CueKind::Memo, 0.0),
+    ]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    let mut renamed = ws.clone();
+    renamed.cue_lists[0].cues[1].name = "Renamed".into();
+    let start = input_unsignalled(&mut engine, &renamed, Input::Start { cue: id(1) }, 10);
+    assert!(start.contains(&Action::Warning(EngineWarning::CueBroken { cue: id(1) })));
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+    // Retargeted to another missing cue: still refused, with the new reason.
+    let mut other = ws.clone();
+    other.cue_lists[0].cues[0].kind.set_target(Some(id(98)));
+    let load = input_unsignalled(
+        &mut engine,
+        &other,
+        Input::Load {
+            cue: id(1),
+            time: 0.0,
+        },
+        20,
+    );
+    assert!(load.contains(&Action::Warning(EngineWarning::CueBroken { cue: id(1) })));
+    assert_eq!(
+        engine.problems(id(1)),
+        &[CueProblem::TargetMissing { target: id(98) }]
+    );
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+}

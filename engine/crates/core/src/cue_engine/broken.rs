@@ -102,9 +102,10 @@ impl CueEngine {
         self.problems.checks
     }
 
-    /// Debug builds only (always 0 otherwise): calls that found the model's problems out of date
-    /// although `model_changed` was not called, i.e. a binary (or test) that broke the contract.
-    /// They were corrected.
+    /// Times the model's problems were found out of date although `model_changed` was not
+    /// called, i.e. a binary (or test) that broke the contract; each was corrected. Release
+    /// builds check only a cue about to be refused for its problems; debug builds check every
+    /// call. The binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
     }
@@ -138,6 +139,35 @@ impl CueEngine {
     /// does not start).
     pub(super) fn has_problems(&self, cue: CueId) -> bool {
         self.problems.current.contains_key(&cue)
+    }
+
+    /// Whether `cue` is to be refused for static problems. Checks first that its cached
+    /// problems still hold for the current workspace (a cue refused because of a model change
+    /// the binary did not signal must not stay refused): if they do not, the problems are rebuilt
+    /// (counted in `unsignalled_model_changes`). Only a cue about to be refused pays for this.
+    pub(super) fn refuses(&mut self, cue: CueId, cx: &mut Ctx) -> bool {
+        if !self.has_problems(cue) {
+            return false;
+        }
+        let ws = cx.ws;
+        let fresh = ws
+            .find_cue(cue)
+            .and_then(|c| {
+                facts_of(
+                    c,
+                    |t| ws.find_cue(t).map(|t| &t.kind),
+                    |p| ws.patches.iter().any(|x| x.id == p),
+                    |n| ws.network_patches.iter().any(|x| x.id == n),
+                )
+            })
+            .map(|f| combine(&f, &self.problems.media, &self.problems.patches))
+            .unwrap_or_default();
+        if self.problems.current.get(&cue) != Some(&fresh) {
+            self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
+            self.problems.dirty = true;
+            self.sync_problems(cx);
+        }
+        self.has_problems(cue)
     }
 
     /// Start of a call: rebuild the model's part if the model changed.
@@ -332,56 +362,67 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     let network: HashSet<NetworkPatchId> = ws.network_patches.iter().map(|p| p.id).collect();
     let mut out = ModelFacts::default();
     for (i, cue) in order.iter().enumerate() {
-        let id = cue.id;
-        out.rank.insert(id, i);
-        let target = if cue.kind.has_target() {
-            match cue.kind.target() {
-                None => Some(CueProblem::NoTarget),
-                Some(target) if target == id => Some(CueProblem::TargetSelf),
-                Some(target) => match by_id.get(&target) {
-                    None => Some(CueProblem::TargetMissing { target }),
-                    Some(t) if !can_target(&cue.kind, &t.kind) => {
-                        Some(CueProblem::TargetWrongKind { target })
-                    }
-                    Some(_) => None,
-                },
+        out.rank.insert(cue.id, i);
+        if let CueKind::Audio { media, patch, .. } = &cue.kind {
+            if let Some(file) = media {
+                out.by_media
+                    .entry(file.as_str().to_owned())
+                    .or_default()
+                    .push(cue.id);
             }
-        } else {
-            None
-        };
-        let audio = match &cue.kind {
-            CueKind::Audio { media, patch, .. } => {
-                if let Some(file) = media {
-                    out.by_media
-                        .entry(file.as_str().to_owned())
-                        .or_default()
-                        .push(id);
-                }
-                out.by_patch.entry(*patch).or_default().push(id);
-                Some(AudioFacts {
-                    media: media.clone(),
-                    patch: *patch,
-                    patch_exists: patches.contains(patch),
-                })
-            }
-            _ => None,
-        };
-        let network = match &cue.kind {
-            CueKind::Network { destination, .. } if !network.contains(destination) => {
-                Some(*destination)
-            }
-            _ => None,
-        };
-        if target.is_some() || audio.is_some() || network.is_some() {
-            out.facts.insert(
-                id,
-                Facts {
-                    target,
-                    audio,
-                    network,
-                },
-            );
+            out.by_patch.entry(*patch).or_default().push(cue.id);
+        }
+        let facts = facts_of(
+            cue,
+            |t| by_id.get(&t).map(|c| &c.kind),
+            |p| patches.contains(&p),
+            |n| network.contains(&n),
+        );
+        if let Some(facts) = facts {
+            out.facts.insert(cue.id, facts);
         }
     }
     out
+}
+
+/// What the model says about `cue`, or `None` for a kind that cannot have problems. `kind_of`
+/// gives a target's kind (`None`: not in the workspace).
+fn facts_of<'w>(
+    cue: &Cue,
+    kind_of: impl Fn(CueId) -> Option<&'w CueKind>,
+    patch_exists: impl Fn(PatchId) -> bool,
+    network_exists: impl Fn(NetworkPatchId) -> bool,
+) -> Option<Facts> {
+    let target = if cue.kind.has_target() {
+        match cue.kind.target() {
+            None => Some(CueProblem::NoTarget),
+            Some(target) if target == cue.id => Some(CueProblem::TargetSelf),
+            Some(target) => match kind_of(target) {
+                None => Some(CueProblem::TargetMissing { target }),
+                Some(kind) if !can_target(&cue.kind, kind) => {
+                    Some(CueProblem::TargetWrongKind { target })
+                }
+                Some(_) => None,
+            },
+        }
+    } else {
+        None
+    };
+    let audio = match &cue.kind {
+        CueKind::Audio { media, patch, .. } => Some(AudioFacts {
+            media: media.clone(),
+            patch: *patch,
+            patch_exists: patch_exists(*patch),
+        }),
+        _ => None,
+    };
+    let network = match &cue.kind {
+        CueKind::Network { destination, .. } if !network_exists(*destination) => Some(*destination),
+        _ => None,
+    };
+    (target.is_some() || audio.is_some() || network.is_some()).then_some(Facts {
+        target,
+        audio,
+        network,
+    })
 }

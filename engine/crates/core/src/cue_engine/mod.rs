@@ -529,7 +529,7 @@ impl CueEngine {
         new.voice = voice;
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
         // so its auto-continue fires on schedule (user decision, M2.13).
-        if self.has_problems(cue) {
+        if self.refuses(cue, cx) {
             cx.warn(EngineWarning::CueBroken { cue });
             new.static_broken = true;
         }
@@ -694,15 +694,15 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
+        if matches!(self.slots.get(&cue), Some(Slot::Loaded(_)) | None) && self.refuses(cue, cx) {
+            return cx.warn(EngineWarning::CueBroken { cue });
+        }
         match self.slots.get(&cue) {
             Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
             Some(Slot::Active(run)) if run.is_broken() => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
             Some(Slot::Active(_)) => return cx.warn(EngineWarning::LoadIgnored { cue }),
-            Some(Slot::Loaded(_)) | None if self.has_problems(cue) => {
-                return cx.warn(EngineWarning::CueBroken { cue });
-            }
             Some(Slot::Loaded(_)) | None => {}
         }
         let before = self.state(cue);
@@ -940,7 +940,7 @@ impl CueEngine {
         let post_wait = cx.secs(model.post_wait, &self.config);
         // A run that broke during its pre-wait, or a cue that has static problems now, skips its
         // action but keeps its timing.
-        let problems = self.has_problems(cue);
+        let problems = self.refuses(cue, cx);
         let broken =
             problems || matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.is_broken());
         let act = match &model.kind {
