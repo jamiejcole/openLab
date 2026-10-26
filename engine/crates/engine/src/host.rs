@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Runs a show on the default output device: the mixer on the device's audio thread
-//! (`open_output`), the control loop on its own thread (ARCHITECTURE §3.1), until stdin closes.
+//! Runs a show on the default output device: the mixer on the device's audio thread, the
+//! control loop on its own thread (ARCHITECTURE §3.1), until stdin closes.
 //!
-//! The device is fixed for the run: device lists, loss and reopen are M4.2b. The cpal stream
-//! stays on the thread that opened it (it is not `Send` on every platform); the control thread
-//! gets the mixer controller and the device monitor.
+//! The stream is opened, closed and reopened on the device thread (`control::devices`), which
+//! keeps it (a cpal stream is not `Send` on every platform); the control thread gets the mixer
+//! controller and decides when (docs/control.md "Devices").
 
 use std::path::Path;
 use std::thread;
 
 use openlab_audio::{
-    DeviceError, MAX_PATCHES, Mixer, MixerConfig, OpenError, OpenRequest, default_output_device_id,
-    open_output, output_devices,
+    DeviceError, MAX_PATCHES, Mixer, MixerConfig, OpenRequest, default_output_device_id,
+    output_devices,
 };
-use openlab_core::{DeviceInfo, MAX_SHOW_FILE_BYTES, load_show};
+use openlab_core::{MAX_SHOW_FILE_BYTES, load_show};
 
+use crate::control::devices::{self, CpalDevices, StartError};
 use crate::control::{Backend, Control, ControlConfig, ControlError, Inbox, runner};
 use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
 
@@ -34,8 +35,8 @@ pub enum HostError {
     Device(#[from] DeviceError),
     #[error("no audio output device")]
     NoDevice,
-    #[error("audio device: {0}")]
-    Open(String),
+    #[error("{0}")]
+    Open(#[from] StartError),
     #[error("mixer: {0}")]
     Mixer(openlab_audio::ConfigError),
     #[error("{0}")]
@@ -77,31 +78,31 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
         device_id: Some(device.id.clone()),
         buffer_frames: Some(BUFFER_FRAMES),
     };
-    let stream = open_output(mixer, &request)
-        .map_err(|e: OpenError| HostError::Open(e.error.to_string()))?;
-    let block = stream
-        .latency()
-        .buffer_frames
+    let (inbox_tx, inbox) = crossbeam_channel::unbounded();
+    let device = devices::start(
+        Box::new(CpalDevices),
+        mixer,
+        request,
+        devices,
+        inbox_tx.clone(),
+        devices::system_clock(),
+    )?;
+    let block = device
+        .info()
+        .block_frames
         .map_or(mixer_config.max_block_frames as u64, u64::from);
     let mut config = ControlConfig::new(rate, block);
     config.show_path = Some(path.to_path_buf());
     config.mixer_patches = MAX_PATCHES;
-    config.devices = vec![DeviceInfo {
-        name: device.name.clone(),
-        output_channels: u32::try_from(outputs).unwrap_or(u32::MAX),
-    }];
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
     }
-    let (inbox_tx, inbox) = crossbeam_channel::unbounded();
     // No network layer yet (M4.3): nobody reads the broadcasts, so they are dropped.
     let (out_tx, _) = crossbeam_channel::bounded(1);
     let control = Control::new(
         ws,
         ctl,
-        Backend::Device {
-            monitor: stream.monitor(),
-        },
+        Backend::Device(Box::new(device)),
         config,
         inbox_tx.clone(),
         out_tx,
@@ -113,7 +114,8 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     // Runs until the parent closes stdin (or it is not connected).
     let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
     let _ = inbox_tx.send(Inbox::Shutdown);
+    // The control loop stops the show; dropping it ends the device thread, which drops the
+    // stream (and the mixer) there.
     let _ = worker.join();
-    let _ = stream.close();
     Ok(())
 }
