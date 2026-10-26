@@ -42,6 +42,35 @@ pub(crate) fn check_mp4_stts<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), M
     result
 }
 
+/// Reads the box header at `pos` inside a parent ending at `end`: its type, its header length
+/// and its end (cut to the parent, as a truncated file is). `None` for an unreadable or
+/// impossible header, which ends the level. Leaves `r` after the header.
+pub(crate) fn box_header<R: Read + Seek + ?Sized>(
+    r: &mut R,
+    pos: u64,
+    end: u64,
+) -> Option<([u8; 4], u64, u64)> {
+    let mut head = [0u8; 16];
+    r.seek(SeekFrom::Start(pos)).ok()?;
+    r.read_exact(&mut head[..8]).ok()?;
+    let kind = [head[4], head[5], head[6], head[7]];
+    let size32 = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+    let (header, size) = match size32 {
+        0 => (8, end.saturating_sub(pos)),
+        1 => {
+            r.read_exact(&mut head[8..16]).ok()?;
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&head[8..16]);
+            (16, u64::from_be_bytes(b))
+        }
+        n => (8, u64::from(n)),
+    };
+    if size < header {
+        return None;
+    }
+    Some((kind, header, pos.saturating_add(size).min(end)))
+}
+
 struct Walk {
     boxes: usize,
     entries: u64,
@@ -59,33 +88,13 @@ impl Walk {
         let mut pos = start;
         while pos.saturating_add(8) <= end && self.boxes < MAX_BOXES {
             self.boxes += 1;
-            let mut head = [0u8; 16];
-            if r.seek(SeekFrom::Start(pos)).is_err() || r.read_exact(&mut head[..8]).is_err() {
+            let Some((kind, header, box_end)) = box_header(r, pos, end) else {
                 return Ok(());
-            }
-            let kind = [head[4], head[5], head[6], head[7]];
+            };
             // Only MP4 files start with `ftyp`; anything else is not looked at.
             if depth == 0 && pos == 0 && &kind != b"ftyp" {
                 return Ok(());
             }
-            let size32 = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
-            let (header, size) = match size32 {
-                0 => (8, end - pos),
-                1 => {
-                    if r.read_exact(&mut head[8..16]).is_err() {
-                        return Ok(());
-                    }
-                    let mut b = [0u8; 8];
-                    b.copy_from_slice(&head[8..16]);
-                    (16, u64::from_be_bytes(b))
-                }
-                n => (8, u64::from(n)),
-            };
-            if size < header {
-                return Ok(());
-            }
-            // A box running past its parent is cut short, as a truncated file is.
-            let box_end = pos.saturating_add(size).min(end);
             let body = pos + header;
             if &kind == b"stts" {
                 self.stts(r, body, box_end)?;
