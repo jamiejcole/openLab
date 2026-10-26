@@ -27,8 +27,7 @@ pub use transport::PANIC_CURVE;
 pub use types::*;
 
 use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec};
-use crate::model::{CueId, CueListId, PatchId, Workspace};
-use crate::settings::PatchResolution;
+use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
 use playhead::Playhead;
@@ -55,12 +54,8 @@ pub struct CueEngine {
     last_random: BTreeMap<CueId, CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
-    /// Static problems of every cue that has any (CUE-06), recomputed each call.
-    problems: BTreeMap<CueId, Vec<CueProblem>>,
-    /// Media availability the binary reported, by media reference (`Unknown` is not kept).
-    media: BTreeMap<String, MediaStatus>,
-    /// Where each patch can play, as the binary last reported.
-    patches: BTreeMap<PatchId, PatchResolution>,
+    /// Static problems (CUE-06) and what they are computed from.
+    problems: broken::Problems,
     /// The sample the panic fade under way ends on.
     panic_end: Option<SampleTime>,
 }
@@ -102,9 +97,7 @@ impl CueEngine {
             rng: SplitMix64::new(config.seed()),
             last_random: BTreeMap::new(),
             armed: BTreeMap::new(),
-            problems: BTreeMap::new(),
-            media: BTreeMap::new(),
-            patches: BTreeMap::new(),
+            problems: broken::Problems::default(),
             panic_end: None,
         }
     }
@@ -131,7 +124,8 @@ impl CueEngine {
             self.panic_end = None;
         }
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
-        // runtime still gives its state, and reports idle once.
+        // runtime still gives its state, and reports idle once. Only does work after
+        // `model_changed`.
         self.sync_problems(&mut cx);
         self.sync_model(&mut cx);
         self.sync_playheads(&mut cx);
@@ -191,21 +185,10 @@ impl CueEngine {
             .iter()
             .map(|(id, slot)| (*id, slot.state()))
             .collect();
-        for id in self.problems.keys() {
-            all.entry(*id).or_insert(CueState::Broken);
+        for (id, _) in self.broken_cues() {
+            all.entry(id).or_insert(CueState::Broken);
         }
         all.into_iter()
-    }
-
-    /// The cue's static problems (CUE-06); empty when it has none.
-    pub fn problems(&self, cue: CueId) -> &[CueProblem] {
-        self.problems.get(&cue).map_or(&[], Vec::as_slice)
-    }
-
-    /// Every cue with static problems and its problems, in id order: what the pre-show check
-    /// lists (NFR-07). Runtime breaks are in `broken_reason`.
-    pub fn broken_cues(&self) -> impl Iterator<Item = (CueId, &[CueProblem])> + '_ {
-        self.problems.iter().map(|(id, p)| (*id, p.as_slice()))
     }
 
     /// Why a cue broke while it ran, if it did (static problems: `problems`).
@@ -305,8 +288,13 @@ impl CueEngine {
             Input::Panic => self.panic(cx),
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
-            Input::MediaStatus { media, status } => self.media_status(media.as_str(), status, cx),
-            Input::PatchStatus { patch, resolution } => self.patch_status(patch, resolution, cx),
+            Input::MediaStatus { media, status } => {
+                self.availability(vec![(media, status)], Vec::new(), cx);
+            }
+            Input::PatchStatus { patch, resolution } => {
+                self.availability(Vec::new(), vec![(patch, resolution)], cx);
+            }
+            Input::Availability { media, patches } => self.availability(media, patches, cx),
         }
     }
 
@@ -1077,10 +1065,11 @@ impl CueEngine {
         Some(slot)
     }
 
-    fn report(&self, cue: CueId, before: CueState, at: SampleTime, cx: &mut Ctx) {
+    fn report(&mut self, cue: CueId, before: CueState, at: SampleTime, cx: &mut Ctx) {
         let state = self.state(cue);
         if state != before {
             cx.out.push(Action::StateChanged { cue, state, at });
+            self.settle_problems(cue, state, cx);
         }
     }
 

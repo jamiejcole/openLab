@@ -189,6 +189,12 @@ pub enum Input {
         patch: PatchId,
         resolution: PatchResolution,
     },
+    /// Many `MediaStatus` and `PatchStatus` reports at once (workspace open, a rescan, a drive
+    /// that went away): one call, each affected cue recomputed once.
+    Availability {
+        media: Vec<(MediaRef, MediaStatus)>,
+        patches: Vec<(PatchId, PatchResolution)>,
+    },
 }
 
 /// What the binary knows about a media file.
@@ -243,6 +249,9 @@ pub enum CueProblem {
     NetworkPatchMissing {
         patch: NetworkPatchId,
     },
+    /// It was triggered while it had problems, which have been fixed since; the run it started
+    /// (its timing, without its action) has not ended yet. Gone when that run ends.
+    StartedBroken,
 }
 
 impl fmt::Display for CueProblem {
@@ -288,6 +297,10 @@ impl fmt::Display for CueProblem {
                 ),
                 PatchResolution::Mapped { .. } => write!(f, "patch {patch} is available"),
             },
+            Self::StartedBroken => write!(
+                f,
+                "was broken when it was triggered; fixed since, it runs normally next time"
+            ),
             Self::NetworkPatchMissing { patch } => {
                 write!(f, "network patch {patch} does not exist")
             }

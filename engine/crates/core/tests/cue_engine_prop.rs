@@ -270,6 +270,8 @@ proptest! {
         let mut engine = CueEngine::new(EngineConfig::new(1000, lookahead, 7).unwrap());
         let list = list_id(1);
         let mut now: SampleTime = 0;
+        // The workspace as the engine last saw it: edits are signalled (M4.2 contract).
+        let mut last: Option<Workspace> = None;
         // The state of every cue as the reported changes tell it.
         let mut reported: BTreeMap<CueId, CueState> = BTreeMap::new();
         let mut seen: BTreeSet<CueId> = all_ids(&ws).into_iter().collect();
@@ -388,7 +390,7 @@ proptest! {
             let mut calls = vec![input];
             let mut check_quiet = false;
             while let Some(input) = calls.pop() {
-            let actions = engine.handle(&ws, input, now);
+            let actions = handle_as_binary(&mut engine, &ws, &mut last, input, now);
             // Deadlines in `now .. now + lookahead` are committed (end excluded).
             let horizon = now + lookahead.saturating_sub(1);
 
