@@ -168,6 +168,18 @@ impl OfflineShow {
         }
     }
 
+    /// Renders `frames` (whole blocks, with control ticks) without waiting for the disk: a
+    /// stream that has not delivered underruns (tests of a starved voice).
+    pub fn run_unsettled(&mut self, frames: u64) {
+        let until = self.rendered() + frames;
+        while self.rendered() < until {
+            self.pump_inbox();
+            self.renderer.render_into(&mut self.buf, &[self.block]);
+            self.capture.extend_from_slice(&self.buf);
+            self.control.tick();
+        }
+    }
+
     /// Renders whole blocks until at least `frames` more have been rendered.
     pub fn run(&mut self, frames: u64) {
         let until = self.rendered() + frames;

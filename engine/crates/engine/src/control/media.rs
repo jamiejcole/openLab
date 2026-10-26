@@ -117,6 +117,9 @@ pub struct MediaCatalog {
     probe: ProbeFn,
     workers: Vec<Arc<WorkerState>>,
     abandoned: usize,
+    /// [`MAX_ABANDONED_WORKERS`] was reached (reported once).
+    limit_reported: bool,
+    limit_unread: bool,
     timeout: Duration,
     entries: HashMap<String, Entry>,
     next_ticket: u64,
@@ -145,6 +148,8 @@ impl MediaCatalog {
             probe,
             workers: Vec::new(),
             abandoned: 0,
+            limit_reported: false,
+            limit_unread: false,
             timeout,
             entries: HashMap::new(),
             next_ticket: 0,
@@ -304,6 +309,10 @@ impl MediaCatalog {
         }
         for (i, key, ticket) in stuck.into_iter().rev() {
             if self.abandoned >= MAX_ABANDONED_WORKERS {
+                if !self.limit_reported {
+                    self.limit_reported = true;
+                    self.limit_unread = true;
+                }
                 break;
             }
             let w = self.workers.remove(i);
@@ -465,6 +474,11 @@ impl MediaCatalog {
             }
             _ => None,
         })
+    }
+
+    /// True once, the first time a stuck worker could not be replaced (the limit is reached).
+    pub fn take_limit_reached(&mut self) -> bool {
+        std::mem::take(&mut self.limit_unread)
     }
 
     /// Workers replaced because they were stuck.

@@ -296,3 +296,77 @@ fn a_stuck_probe_worker_is_replaced() {
         std::thread::yield_now();
     }
 }
+
+/// A cue whose stream stalls underruns for its whole planned length, so the engine completes
+/// it on its planned end; then its audio arrives and the voice sounds on as a tail its cue no
+/// longer owns. The stall: one disk worker, held by another cue's stream opening a pipe nobody
+/// writes yet. Returns the show with the tail sounding.
+#[cfg(unix)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+fn stalled_tail() -> openlab_engine::control::offline::OfflineShow {
+    let path = wav(&dc(4000, 0.5));
+    let pipe = wav(&dc(100, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0), audio(2, &pipe, 1)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.workers = 1;
+    let mut s = show_with(ws, c);
+    std::fs::remove_file(&pipe).unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
+    start(&mut s, 2);
+    start(&mut s, 1);
+    s.run_unsettled(4000 + 1000);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    // A writer opens the pipe and closes it: the worker goes on, and cue 1's audio comes.
+    std::thread::spawn(move || drop(std::fs::OpenOptions::new().write(true).open(&pipe)))
+        .join()
+        .unwrap();
+    s.run(BLOCK * 4);
+    let from = s.channel(0).len() - BLOCK as usize;
+    assert!(s.channel(0)[from..].iter().all(|&v| v == 0.5));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    s
+}
+
+#[cfg(unix)]
+#[test]
+fn a_panic_silences_a_stalled_tail_within_its_fade() {
+    let mut s = stalled_tail();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    // panic_duration 0.1 s = 800 frames.
+    s.run(1200);
+    let ch0 = s.channel(0);
+    assert!(ch0[at..at + 400].iter().any(|&v| v > 0.0 && v < 0.5));
+    assert!(ch0[at + 800..].iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hard_stop_silences_a_stalled_tail_at_once() {
+    let mut s = stalled_tail();
+    let at = s.now() as usize;
+    s.transport(TransportAction::HardStop { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert!(s.channel(0)[at..].iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reset_silences_a_stalled_tail_at_once() {
+    let mut s = stalled_tail();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Reset { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert!(s.channel(0)[at..].iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().live_voices(), 0);
+}
