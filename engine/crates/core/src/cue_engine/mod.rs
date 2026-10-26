@@ -277,6 +277,12 @@ impl CueEngine {
         all.into_iter()
     }
 
+    /// Whether the cue is paused, including a cue that broke while paused (its state reads
+    /// `broken`, but its timers are frozen until it is resumed).
+    pub fn is_paused(&self, cue: CueId) -> bool {
+        matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some())
+    }
+
     /// Why a cue broke while it ran, if it did (static problems: `problems`).
     pub fn broken_reason(&self, cue: CueId) -> Option<BrokenReason> {
         match self.slots.get(&cue)? {
