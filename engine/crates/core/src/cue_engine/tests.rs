@@ -70,6 +70,7 @@ fn act_on_stale(ws: &Workspace, stale: &Workspace) -> Vec<EngineWarning> {
         horizon: 1000,
         budget: limit,
         limit,
+        limit_verified: true,
         out: Vec::new(),
         vacated: Vec::new(),
     };
@@ -172,6 +173,7 @@ fn input_unsignalled(
         horizon: now,
         budget: limit,
         limit,
+        limit_verified: true,
         out: Vec::new(),
         vacated: Vec::new(),
     };
@@ -262,5 +264,126 @@ fn a_cue_still_broken_after_an_unsignalled_edit_is_still_refused() {
         engine.problems(id(1)),
         &[CueProblem::TargetMissing { target: id(98) }]
     );
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+}
+
+/// A call as a release build makes it when nothing was signalled: the chain limit and the
+/// playheads are those of the last pass, not recounted.
+fn stale_cx(ws: &Workspace, now: SampleTime, limit: usize) -> Ctx<'_> {
+    Ctx {
+        ws,
+        now,
+        horizon: now,
+        budget: limit,
+        limit,
+        limit_verified: false,
+        out: Vec::new(),
+        vacated: Vec::new(),
+    }
+}
+
+#[test]
+fn a_stale_chain_limit_is_recounted_instead_of_dropping_a_start() {
+    // Release builds cache the limit between `model_changed` calls. If cues were added without
+    // the signal, a call that legitimately starts more cues than the old limit must not lose
+    // starts: the spent budget is recounted once.
+    let small = workspace(vec![cue(1, CueKind::Memo, 0.0)]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.handle(&small, Input::Tick, 0);
+    let children: Vec<Cue> = (10..210).map(|n| cue(n, CueKind::Memo, 0.0)).collect();
+    let big = workspace(vec![cue(
+        2,
+        CueKind::Group {
+            mode: crate::cue::GroupMode::Timeline,
+            children,
+        },
+        0.0,
+    )]);
+    let stale = CueEngine::chain_limit(&small);
+    assert!(CueEngine::chain_limit(&big) > stale + 100);
+    let mut cx = stale_cx(&big, 0, stale);
+    engine.apply(Input::Start { cue: id(2) }, &mut cx);
+    engine.drain(&mut cx);
+    engine.advance(&mut cx);
+    let started = cx
+        .out
+        .iter()
+        .filter(|a| {
+            matches!(
+                a,
+                Action::StateChanged {
+                    state: CueState::PreWaiting,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(started, 201, "the group and all 200 children");
+    assert!(
+        !cx.out
+            .iter()
+            .any(|a| matches!(a, Action::Warning(EngineWarning::ChainLimit { .. })))
+    );
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+}
+
+#[test]
+fn a_genuine_cycle_is_still_cut_with_a_stale_limit() {
+    let ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Start {
+                target: Some(id(2)),
+            },
+            0.0,
+        ),
+        cue(
+            2,
+            CueKind::Start {
+                target: Some(id(1)),
+            },
+            0.0,
+        ),
+    ]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    let limit = CueEngine::chain_limit(&ws);
+    let mut cx = stale_cx(&ws, 0, limit);
+    engine.apply(Input::Start { cue: id(1) }, &mut cx);
+    engine.drain(&mut cx);
+    engine.advance(&mut cx);
+    assert!(
+        cx.out
+            .iter()
+            .any(|a| matches!(a, Action::Warning(EngineWarning::ChainLimit { .. })))
+    );
+    assert_eq!(engine.unsignalled_model_changes(), 0, "the recount agreed");
+    assert!(engine.next_deadline().is_none());
+}
+
+#[test]
+fn a_go_whose_playhead_cue_was_deleted_unsignalled_follows_the_edit() {
+    // Release builds do not follow edits on a call nothing was signalled for; a GO must not be
+    // ignored because the playhead still names the deleted cue.
+    let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(engine.playhead(CueListId(Uuid::from_u128(1))), Some(id(1)));
+    let mut edited = ws.clone();
+    edited.cue_lists[0].cues.remove(0);
+    let go = input_unsignalled(
+        &mut engine,
+        &edited,
+        Input::Go {
+            list: CueListId(Uuid::from_u128(1)),
+        },
+        10,
+    );
+    assert!(go.contains(&Action::StateChanged {
+        cue: id(2),
+        state: CueState::PreWaiting,
+        at: 10
+    }));
+    assert!(!go.iter().any(|a| matches!(a, Action::GoIgnored { .. })));
     assert_eq!(engine.unsignalled_model_changes(), 1);
 }

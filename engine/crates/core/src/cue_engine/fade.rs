@@ -77,7 +77,10 @@ impl CueEngine {
             let Some(Slot::Active(run)) = self.slots.get_mut(&c.id) else {
                 continue;
             };
-            let Voice::Started { at: started, .. } = run.voice else {
+            let Voice::Started {
+                at: started, first, ..
+            } = run.voice
+            else {
                 continue;
             };
             if run.broken.is_some() || run.group.is_some() {
@@ -88,6 +91,15 @@ impl CueEngine {
             // for it (another fade's ramp in the lookahead window); the end stays on the fade's.
             let start = run.commit(at.max(now).max(started), cx.horizon);
             let frames = end.saturating_sub(start);
+            // What the mixer makes of the ramp (a 0-frame one is de-zippered), so the tracked
+            // level is the sound's.
+            let (heard_frames, heard_curve) = level::heard(
+                start,
+                frames,
+                *curve,
+                first,
+                self.config.sample_rate().get(),
+            );
             for &(param, gain) in &wanted {
                 let from = run
                     .levels
@@ -111,8 +123,8 @@ impl CueEngine {
                         from,
                         to: gain,
                         start,
-                        frames,
-                        curve: *curve,
+                        frames: heard_frames,
+                        curve: heard_curve,
                     },
                 );
                 fade.ramps.push(FadeRamp {
@@ -221,6 +233,7 @@ impl CueEngine {
             return;
         };
         let seq = run.seq;
+        let rate = self.config.sample_rate().get();
         let mut moving = BTreeSet::new();
         for r in &fade.ramps {
             let Some(Slot::Active(target)) = self.slots.get_mut(&r.cue) else {
@@ -243,13 +256,19 @@ impl CueEngine {
                 .max(committed);
             target.committed = start;
             let frames = end.saturating_sub(start);
+            let voice_start = match target.voice {
+                Voice::Started { first, .. } => first,
+                Voice::None | Voice::Loaded => 0,
+            };
+            let (heard_frames, heard_curve) =
+                level::heard(start, frames, fade.curve, voice_start, rate);
             *level = Level {
                 owner: Some((cue, seq)),
                 from: level.value(start),
                 to: r.gain,
                 start,
-                frames,
-                curve: fade.curve,
+                frames: heard_frames,
+                curve: heard_curve,
             };
             cx.out.push(Action::Ramp {
                 cue: r.cue,

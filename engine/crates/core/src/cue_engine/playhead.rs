@@ -29,11 +29,11 @@ impl Playhead {
 
     /// Follows edits to the list. A deleted playhead cue gives way to the first position that
     /// came after it and still exists (none: past the end); a list that was empty and gains cues stands on its
-    /// first cue. Returns whether the playhead moved.
-    pub fn sync(&mut self, cues: &[Cue]) -> bool {
+    /// first cue. Returns `(the list's cues changed, the playhead moved)`.
+    pub fn sync(&mut self, cues: &[Cue]) -> (bool, bool) {
         let order = positions(cues);
         if order == self.order {
-            return false;
+            return (false, false);
         }
         let before = self.cue;
         self.cue = match self.cue {
@@ -51,7 +51,7 @@ impl Playhead {
             None => None,
         };
         self.order = order;
-        before != self.cue
+        (true, before != self.cue)
     }
 
     /// One position down; from the last to past the end, where it stays.

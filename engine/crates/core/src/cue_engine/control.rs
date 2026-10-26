@@ -122,36 +122,76 @@ impl CueEngine {
             return;
         };
         self.move_playhead(list, Some(target), cx);
-        if then_go && !self.go_on(list, at, cx) {
-            cx.out.push(Action::GoIgnored {
-                list,
-                reason: GoIgnoredReason::NoCue,
-            });
+        if then_go && let Err(reason) = self.go_on(list, at, cx) {
+            // A cycle of GoTo cues is cut here, as a cycle of Start cues is.
+            if reason == GoIgnoredReason::ChainLimit {
+                cx.warn(EngineWarning::ChainLimit {
+                    cue: target,
+                    limit: cx.limit,
+                });
+            }
+            cx.out.push(Action::GoIgnored { list, reason });
         }
     }
 
     /// Starts the list's playhead cue on `at` and moves the playhead past its continue chain.
-    /// Returns `false` (doing nothing) if the playhead stands on no cue.
-    pub(super) fn go_on(&mut self, list: CueListId, at: SampleTime, cx: &mut Ctx) -> bool {
+    /// Does nothing and says why if the playhead stands on no cue, or if the call's chain budget
+    /// is spent (a trigger cycle earlier in the call): the start would be dropped, and the
+    /// playhead must not move past a cue that never started.
+    pub(super) fn go_on(
+        &mut self,
+        list: CueListId,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) -> Result<(), GoIgnoredReason> {
         let ws = cx.ws;
         let Some(cues) = ws.cue_lists.iter().find(|l| l.id == list).map(|l| &l.cues) else {
-            return false;
+            return Err(GoIgnoredReason::UnknownList);
         };
-        let Some(path) = self
+        let mut path = self
             .playhead(list)
-            .and_then(|id| playhead::locate(cues, id))
-        else {
-            return false;
+            .and_then(|id| playhead::locate(cues, id));
+        // A playhead cue that is not in the list was deleted by an edit nobody signalled
+        // (release builds skip following edits on unsignalled calls): follow the edit now
+        // rather than ignore the GO.
+        if path.is_none() && self.playhead(list).is_some() && self.resync_playhead(list, cues, cx) {
+            path = self
+                .playhead(list)
+                .and_then(|id| playhead::locate(cues, id));
+        }
+        let Some(path) = path else {
+            return Err(GoIgnoredReason::NoCue);
         };
         let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
-            return false;
+            return Err(GoIgnoredReason::NoCue);
         };
+        if !self.budget_left(cx) {
+            return Err(GoIgnoredReason::ChainLimit);
+        }
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
         let next = playhead::after_go(&path, |c| self.is_armed(c), |c| self.has_problems(c.id));
         self.move_playhead(list, next, cx);
-        true
+        Ok(())
+    }
+
+    /// Brings the list's playhead up to date with `cues`; returns whether it moved.
+    fn resync_playhead(&mut self, list: CueListId, cues: &[Cue], cx: &mut Ctx) -> bool {
+        let Some(playhead) = self.playheads.get_mut(&list) else {
+            return false;
+        };
+        let (edited, moved) = playhead.sync(cues);
+        if moved {
+            cx.out.push(Action::PlayheadChanged {
+                list,
+                cue: playhead.cue,
+            });
+        }
+        if edited {
+            self.note_unsignalled();
+        }
+        moved
     }
 
     /// Devamp: an audio target's voice leaves its loop (the audio side answers); a looping
@@ -175,14 +215,14 @@ impl CueEngine {
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);
                 };
-                let playing = run.broken.is_none()
-                    && run.paused_at.is_none()
+                // Paused in its action counts: the devamp is kept for the resume (below).
+                let in_action = run.broken.is_none()
                     && run.stop_end.is_none()
                     && matches!(run.phase, Phase::Action { .. });
                 let Voice::Started { at: started, .. } = run.voice else {
                     return cx.warn(not_running);
                 };
-                if !playing {
+                if !in_action {
                     return cx.warn(not_running);
                 }
                 // One devamp at a time: the audio side would ignore a second, and its answer
@@ -190,13 +230,20 @@ impl CueEngine {
                 if run.devamp.is_some() {
                     return cx.warn(EngineWarning::DevampIgnored { cue: target });
                 }
-                let at = run.commit(at.max(now).max(started), cx.horizon);
-                cx.out.push(Action::DevampVoice {
-                    cue: target,
-                    run: run.run,
-                    at,
-                    stop,
-                });
+                // A paused target keeps the devamp and leaves its loop after the resume (user
+                // decision 2026-10-25): it is pending like one that was sent before the pause,
+                // so the resume sends it for the resumed segment, dated on the resume (see
+                // `resume_one`). Holding it rather than sending it to the paused segment as well
+                // gives the mixer one devamp, after the resume, instead of two.
+                if run.paused_at.is_none() {
+                    let at = run.commit(at.max(now).max(started), cx.horizon);
+                    cx.out.push(Action::DevampVoice {
+                        cue: target,
+                        run: run.run,
+                        at,
+                        stop,
+                    });
+                }
                 run.devamp = Some(DevampWait {
                     by,
                     start_next,

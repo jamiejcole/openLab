@@ -43,6 +43,9 @@ impl CueEngine {
     /// or a `panic_duration` of 0, stops everything at once. Children go before their groups
     /// (as in Stop), so a group sees which of its children are still fading out.
     pub(super) fn panic(&mut self, cx: &mut Ctx) {
+        // Previews are the operator's own listening, not the show, but Panic means everything
+        // stops: they go at once.
+        self.stop_previews(None, true, cx);
         let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
         let second = self.panic.is_some_and(|(_, end)| cx.now < end);
         let hard = frames == 0 || second;

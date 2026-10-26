@@ -811,6 +811,54 @@ fn a_cycle_through_audio_feedback_moves_with_the_mixer_clock() {
     }
 }
 
+#[test]
+fn a_cycle_through_feedback_on_its_own_sample_is_cut() {
+    // Regression (M2.9 property seed): a zero-length voice is reported ended on its start
+    // sample, and the binary may hand that report over at the same `now`. The chain budget
+    // spans every call at one sample, so the lap cannot repeat there forever.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), start_cue(2, 1)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    rig.go(0);
+    let mut laps = 0;
+    let mut cut = false;
+    while rig.state(1) == CueState::Running {
+        laps += 1;
+        assert!(
+            laps <= limit,
+            "still looping after {laps} end reports at one sample"
+        );
+        cut |= chain_limit_hit(&rig.ended(0, 1, 0));
+    }
+    assert!(cut);
+    assert!(rig.engine.next_deadline().is_none());
+    // A later sample has a fresh budget.
+    let go = rig.start(1, 1);
+    assert_eq!(voice_starts(&go), vec![(id(1), 1)]);
+}
+
+#[test]
+fn ignored_triggers_do_not_use_up_the_chain_budget_of_their_sample() {
+    // Review M1: the budget is shared by every call at one `now` (one audio block), so a stuck
+    // controller key repeating Start on a playing cue must not leave the operator's GO in that
+    // block with `GoIgnored { chain_limit }`. Starts of unknown cues cost nothing either.
+    let mut rig = Rig::new(vec![sound(1), memo(2), memo(3)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    rig.start(400, 1);
+    rig.set_playhead(400, 2);
+    for _ in 0..limit + 5 {
+        let again = rig.start(500, 1);
+        assert!(matches!(
+            warnings(&again).as_slice(),
+            [EngineWarning::TriggerIgnored { .. }]
+        ));
+    }
+    for _ in 0..limit + 5 {
+        rig.at(500, Input::Start { cue: id(99) });
+    }
+    let go = rig.go(500);
+    assert_eq!(starts(&go), vec![(id(2), 500)], "{go:?}");
+}
+
 // ----- GoTo (CT-17) -----
 
 #[test]
@@ -1116,17 +1164,15 @@ fn devamp_of_a_target_that_is_not_playing_warns() {
     let go = rig.go(0);
     assert_eq!(warnings(&go), vec![not_running.clone()]);
     assert!(devamps(&go).is_empty());
-    // Paused.
-    rig.start(10, 1);
-    rig.pause(20, 1);
-    rig.set_playhead(30, 2);
-    assert_eq!(warnings(&rig.go(30)), vec![not_running.clone()]);
-    // Pre-waiting.
-    rig.stop(40, 1);
+    // Pre-waiting, and paused in its pre-wait (a paused target in its action keeps the devamp:
+    // see `a_devamp_of_a_paused_target_takes_effect_after_the_resume`).
     rig.find_mut(1).pre_wait = 1.0;
     rig.start(50, 1);
     rig.set_playhead(60, 2);
     assert_eq!(warnings(&rig.go(60)), vec![not_running.clone()]);
+    rig.pause(62, 1);
+    rig.set_playhead(64, 2);
+    assert_eq!(warnings(&rig.go(64)), vec![not_running.clone()]);
     // Broken.
     rig.stop(70, 1);
     rig.find_mut(1).pre_wait = 0.0;
@@ -1375,6 +1421,88 @@ fn a_devamp_answered_before_a_pause_is_sent_again_on_resume() {
     assert!(rig.engine.next_deadline().is_none());
     scheduled(&mut rig, 2010, fresh, 7000);
     assert_eq!(starts(&rig.tick(7000)), vec![(id(3), 7000)]);
+}
+
+#[test]
+fn a_devamp_of_a_paused_target_takes_effect_after_the_resume() {
+    // User decision 2026-10-25: a Devamp fired at a paused cue is kept, neither ignored nor a
+    // resume. Core holds it and sends it once, for the resumed segment on the resume sample, so
+    // the cue finishes the loop pass it was paused in and then leaves the loop.
+    let mut rig = devamp_rig(true, false, 0);
+    let paused = rig.pause(100, 1);
+    let old = rig.run(1);
+    assert!(devamps(&paused).is_empty());
+    let go = rig.go(200);
+    assert!(warnings(&go).is_empty(), "{:?}", warnings(&go));
+    assert!(
+        devamps(&go).is_empty(),
+        "nothing is sent to the paused segment"
+    );
+    assert_eq!(rig.state(1), CueState::Paused, "a devamp is not a resume");
+    assert!(rig.engine.next_deadline().is_none());
+    // A second Devamp while it is pending is ignored, as for a playing target.
+    rig.set_playhead(250, 2);
+    assert_eq!(
+        warnings(&rig.go(250)),
+        vec![EngineWarning::DevampIgnored { cue: id(1) }]
+    );
+    let resume = rig.at(1000, Input::Resume { cue: id(1) });
+    let fresh = rig.run(1);
+    assert_ne!(old, fresh);
+    // The resume, then the devamp for the resumed segment, both on the resume sample.
+    let voice: Vec<&Action> = resume
+        .iter()
+        .filter(|a| matches!(a, Action::ResumeVoice { .. } | Action::DevampVoice { .. }))
+        .collect();
+    assert!(
+        matches!(
+            voice.as_slice(),
+            [
+                Action::ResumeVoice { run: r, paused: p, at: 1000, .. },
+                Action::DevampVoice { run: d, at: 1000, stop: false, .. },
+            ] if *r == fresh && *p == old && *d == fresh
+        ),
+        "{voice:?}"
+    );
+    // The answer (the loop is left at the end of the current pass) starts the next cue there.
+    scheduled(&mut rig, 1010, fresh, 4000);
+    assert_eq!(starts(&rig.tick(4000)), vec![(id(3), 4000)]);
+}
+
+#[test]
+fn a_devamp_of_a_target_whose_pause_is_committed_is_never_dated_before_it() {
+    // With a lookahead the pause is committed ahead of `now`; the devamp that comes meanwhile
+    // goes out after the resume, so nothing for the voice goes back in time.
+    let mut rig = devamp_rig(false, true, 64);
+    rig.tick(1000);
+    let pause = rig.pause(1000, 1);
+    let paused_at = pause
+        .iter()
+        .find_map(|a| match a {
+            Action::PauseVoice { at, .. } => Some(*at),
+            _ => None,
+        })
+        .unwrap();
+    let go = rig.go(1010);
+    assert!(devamps(&go).is_empty());
+    let resume = rig.at(2000, Input::Resume { cue: id(1) });
+    let sent = devamps(&resume);
+    assert_eq!(sent, vec![(id(1), 2000, true)]);
+    assert!(sent[0].1 >= paused_at);
+}
+
+#[test]
+fn a_devamp_kept_for_a_paused_target_is_dropped_by_a_stop() {
+    let mut rig = devamp_rig(true, false, 0);
+    rig.pause(100, 1);
+    rig.go(200);
+    rig.stop(300, 1);
+    rig.start(400, 1);
+    // A fresh run: nothing pending from before the stop.
+    assert!(rig.engine.next_deadline().is_none());
+    let tick = rig.tick(10_000);
+    assert!(devamps(&tick).is_empty());
+    assert!(starts(&tick).is_empty());
 }
 
 #[test]
