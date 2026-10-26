@@ -374,6 +374,7 @@ impl CueEngine {
                 self.set_playhead_by_number(list, number, cx)
             }
             Input::ActionEnded { cue, run, at } => self.action_ended(cue, run, at, cx),
+            Input::ActionLength { cue, run, frames } => self.action_length(cue, run, frames),
             Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
@@ -834,6 +835,13 @@ impl CueEngine {
                 from: offset,
                 first,
             };
+            // A known end follows the voice, which resumes on its own sample.
+            if let (Some(end), Phase::Action { start, .. }) = (run.planned_end(), run.phase) {
+                run.phase = Phase::Action {
+                    start,
+                    end: Some(end),
+                };
+            }
             // A devamp still pending is sent again for the resumed segment (QLab keeps it
             // through a pause); answers for the paused segment's id are stale.
             if let Some(d) = run.devamp.as_mut() {
@@ -931,8 +939,9 @@ impl CueEngine {
             self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         }
-        let (Phase::Action { start, end: None }, Voice::Started { .. }) = (run.phase, run.voice)
-        else {
+        // An end known in advance (`ActionLength`) is a deadline; a report before it is an
+        // earlier end and still completes the action.
+        let (Phase::Action { start, .. }, Voice::Started { .. }) = (run.phase, run.voice) else {
             return;
         };
         let at = at.max(start);
@@ -958,6 +967,27 @@ impl CueEngine {
             self.continue_after(by, left.min(at), cx);
         }
         self.child_action_done(cue, seq, at, cx);
+    }
+
+    /// The binary knows how long the run's action is: its end becomes a deadline. Ignored for a
+    /// run that is not playing its voice in its action (stale, stopping, broken, paused before
+    /// its start), and for previews (their end changes nothing in the show).
+    fn action_length(&mut self, cue: CueId, run_id: RunId, frames: SampleTime) {
+        let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
+            return;
+        };
+        if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
+            return;
+        }
+        let (Phase::Action { start, .. }, Voice::Started { .. }) = (run.phase, run.voice) else {
+            return;
+        };
+        // Counted from the voice's (re)start; a resume counts it again from the resumed voice.
+        run.length = Some(frames);
+        run.phase = Phase::Action {
+            start,
+            end: run.planned_end(),
+        };
     }
 
     fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
@@ -1092,6 +1122,10 @@ impl CueEngine {
             && end <= at
         {
             run.phase = Phase::Done;
+            // An audio action ended on its known length: its voice is done with, and the
+            // mixer's report that follows is stale.
+            run.voice = Voice::None;
+            run.length = None;
             let follow = run.follow;
             let seq = run.seq;
             if run.fade.is_some() {

@@ -91,6 +91,9 @@ pub(super) struct Run {
     /// Auto-follow, as the continue mode was when the action started.
     pub follow: bool,
     pub voice: Voice,
+    /// Audio cues: the action's length in samples (from its start, offset included), when the
+    /// binary knows it (`Input::ActionLength`); the action then ends when the voice gets there.
+    pub length: Option<SampleTime>,
     pub paused_at: Option<SampleTime>,
     /// Stopping with a fade-out that ends on this sample.
     pub stop_end: Option<SampleTime>,
@@ -220,6 +223,7 @@ impl Run {
             post_wait: None,
             follow: false,
             voice: Voice::None,
+            length: None,
             paused_at: None,
             stop_end: None,
             committed: 0,
@@ -308,6 +312,16 @@ impl Run {
     pub fn commit(&mut self, at: SampleTime, horizon: SampleTime) -> SampleTime {
         self.committed = at.max(self.floor(horizon));
         self.committed
+    }
+
+    /// The sample the action ends on, from its known length and where the voice (re)started.
+    pub fn planned_end(&self) -> Option<SampleTime> {
+        let (Phase::Action { start, .. }, Voice::Started { at, from, .. }, Some(length)) =
+            (self.phase, self.voice, self.length)
+        else {
+            return None;
+        };
+        Some(at.saturating_add(length.saturating_sub(from)).max(start))
     }
 
     /// Moves every pending deadline `by` samples later (resume after a pause).
