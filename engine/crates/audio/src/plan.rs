@@ -9,6 +9,8 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::stream::Reservation;
+
 /// Longest slice table a voice accepts. Bounds the per-boundary work on the audio thread.
 pub const MAX_SLICES: usize = 256;
 
@@ -45,6 +47,9 @@ pub enum PlanError {
     Start,
     /// More than [`MAX_SLICES`] entries.
     TooManySlices,
+    /// A slice that plays more than once is shorter than [`min_loop_frames`] (M3.17; only
+    /// [`plan_at_rate`] and [`check_loop_lengths`] check this).
+    LoopTooShort { slice: u32, frames: u64, min: u64 },
 }
 
 impl fmt::Display for PlanError {
@@ -55,6 +60,7 @@ impl fmt::Display for PlanError {
             PlanError::Plays => "one play count per slice, each at least 1",
             PlanError::Start => "start offset outside the trims",
             PlanError::TooManySlices => "too many slices",
+            PlanError::LoopTooShort { .. } => "a looping slice is too short",
         })
     }
 }
@@ -134,6 +140,52 @@ pub fn plan(
     Ok(out)
 }
 
+/// Shortest slice that may play more than once, in milliseconds of device time (M3.17). Every
+/// play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few
+/// frames would flood the event queue (1024 entries) and keep the mixer at its boundaries.
+/// At 10 ms, 128 looping voices raise at most about 64 loop events per 5 ms control tick.
+pub const MIN_LOOP_MS: u32 = 10;
+
+/// [`MIN_LOOP_MS`] in device frames at `device_rate`, rounded up; at least 1.
+pub fn min_loop_frames(device_rate: u32) -> u64 {
+    (u64::from(device_rate) * u64::from(MIN_LOOP_MS))
+        .div_ceil(1000)
+        .max(1)
+}
+
+/// Checks that every entry that plays a slice again (more than one play, or the rest of a slice
+/// split by a start offset) is at least [`min_loop_frames`] long.
+pub fn check_loop_lengths(slices: &[Slice], device_rate: u32) -> Result<(), PlanError> {
+    let min = min_loop_frames(device_rate);
+    let mut prev: Option<u32> = None;
+    for s in slices {
+        let repeats = s.plays != Plays::Times(1) || prev == Some(s.index);
+        if repeats && s.frames < min {
+            return Err(PlanError::LoopTooShort {
+                slice: s.index,
+                frames: s.frames,
+                min,
+            });
+        }
+        prev = Some(s.index);
+    }
+    Ok(())
+}
+
+/// [`plan`] for a voice at `device_rate`, also refusing loops shorter than [`MIN_LOOP_MS`]
+/// ([`PlanError::LoopTooShort`]). The engine builds its tables with this.
+pub fn plan_at_rate(
+    range: Range<u64>,
+    marks: &[u64],
+    plays: &[Plays],
+    start: u64,
+    device_rate: u32,
+) -> Result<Vec<Slice>, PlanError> {
+    let slices = plan(range, marks, plays, start)?;
+    check_loop_lengths(&slices, device_rate)?;
+    Ok(slices)
+}
+
 /// Total frames a table plays; `None` if any entry loops forever.
 pub fn total_frames(slices: &[Slice]) -> Option<u64> {
     slices.iter().try_fold(0u64, |acc, s| match s.plays {
@@ -143,69 +195,96 @@ pub fn total_frames(slices: &[Slice]) -> Option<u64> {
 }
 
 const NONE: u64 = u64::MAX;
+/// Set in a published cut when the voice plays the target's exit buffer at the boundary.
+const USES_EXIT: u64 = 1 << 63;
 
-/// Shared by a mixer voice and the disk stream that feeds it, for devamp (CT-16). Positions are
-/// ring frame indices: frames written to (or consumed from) the voice's ring since it started.
+/// Shared by a mixer voice and the disk stream that feeds it, for devamp (CT-16).
 ///
-/// The voice publishes the boundary where it will leave the loop (`request_cut`). At the
-/// boundary it plays the start of the continuation from that loop exit's buffer (`exit`), which
-/// the disk stream decoded before it first wrote to the ring, so nothing has to arrive in time.
-/// Meanwhile the disk stream stops unrolling the loop, writes the continuation from where the
-/// exit buffer ends, and publishes where in the ring that starts (`resume`); the voice skips
-/// the stale loop frames in between, which frees the ring for it.
+/// Cuts are dated in voice frames: frames of the plan played since the voice started (exit
+/// buffer frames included, underruns and skipped frames not). Only the disk stream maps them to
+/// ring positions (frames written to the voice's ring), so a cut can be made while the voice is
+/// still playing an earlier loop exit's buffer.
+///
+/// The voice publishes the boundary where it will leave the loop (`request_cut`), and whether
+/// it will play that loop exit's buffer (`exit`) there. The disk stream decodes each exit buffer
+/// before it writes any of that loop to the ring (see docs/audio.md, Loop exits), so normally
+/// nothing has to arrive in time. Meanwhile the disk stream stops unrolling the loop, writes the
+/// continuation from where the exit buffer ends, and publishes where in the ring that starts
+/// (`resume`); the voice skips the stale loop frames in between, which frees the ring for it.
+/// The voice publishes a new cut only after it has read the resume for the previous one.
 #[derive(Debug)]
 pub struct StreamLink {
     cut_at: AtomicU64,
     resume_at: AtomicU64,
-    exits: OnceLock<Box<[Exit]>>,
+    /// The cut `resume_at` answers; written after it.
+    resumed_for: AtomicU64,
+    /// One slot per slice-table entry: the exit buffer for leaving a loop into that entry.
+    exits: Box<[OnceLock<Exit>]>,
 }
 
 /// The first frames played after leaving a loop into slice-table entry `target`: the table
-/// unrolled from there, interleaved.
+/// unrolled from there, interleaved. Its memory stays reserved in the streamer's cache budget
+/// until it is freed (with the link, on the control thread).
 #[derive(Debug)]
 pub(crate) struct Exit {
-    pub(crate) target: usize,
     pub(crate) frames: usize,
     pub(crate) samples: Box<[f32]>,
+    pub(crate) _budget: Reservation,
 }
 
 impl Default for StreamLink {
     fn default() -> Self {
-        StreamLink {
-            cut_at: AtomicU64::new(NONE),
-            resume_at: AtomicU64::new(NONE),
-            exits: OnceLock::new(),
-        }
+        Self::with_entries(0)
     }
 }
 
 impl StreamLink {
-    pub(crate) fn request_cut(&self, at: u64) {
-        self.cut_at.store(at, Ordering::Release);
+    /// A link with exit slots for a table of `entries` entries.
+    pub(crate) fn with_entries(entries: usize) -> Self {
+        StreamLink {
+            cut_at: AtomicU64::new(NONE),
+            resume_at: AtomicU64::new(NONE),
+            resumed_for: AtomicU64::new(NONE),
+            exits: (0..entries).map(|_| OnceLock::new()).collect(),
+        }
     }
 
-    pub(crate) fn cut_requested(&self) -> Option<u64> {
-        Some(self.cut_at.load(Ordering::Acquire)).filter(|&v| v != NONE)
+    /// Asks the disk stream to leave the loop at voice frame `at`.
+    pub(crate) fn request_cut(&self, at: u64, uses_exit: bool) {
+        let v = at.min(USES_EXIT - 2) | if uses_exit { USES_EXIT } else { 0 };
+        self.cut_at.store(v, Ordering::Release);
     }
 
-    /// Published after every stale frame before `at` is in the ring.
-    pub(crate) fn resume(&self, at: u64) {
+    /// The latest cut: voice frame, and whether the voice plays the exit buffer there.
+    pub(crate) fn cut_requested(&self) -> Option<(u64, bool)> {
+        let v = self.cut_at.load(Ordering::Acquire);
+        (v != NONE).then_some((v & !USES_EXIT, v & USES_EXIT != 0))
+    }
+
+    /// Published for the cut at voice frame `cut` after every stale frame before ring position
+    /// `at` is in the ring.
+    pub(crate) fn resume(&self, cut: u64, at: u64) {
         self.resume_at.store(at, Ordering::Release);
+        self.resumed_for.store(cut, Ordering::Release);
     }
 
-    pub(crate) fn resumed_at(&self) -> Option<u64> {
-        Some(self.resume_at.load(Ordering::Acquire)).filter(|&v| v != NONE)
+    /// Where the continuation after the cut at voice frame `cut` starts in the ring, once known.
+    pub(crate) fn resumed(&self, cut: u64) -> Option<u64> {
+        (self.resumed_for.load(Ordering::Acquire) == cut)
+            .then(|| self.resume_at.load(Ordering::Acquire))
     }
 
-    /// Published once by the disk stream, before its first ring write.
-    pub(crate) fn set_exits(&self, exits: Vec<Exit>) {
-        let _ = self.exits.set(exits.into_boxed_slice());
+    /// Publishes the exit buffer for leaving into entry `target`, once.
+    pub(crate) fn set_exit(&self, target: usize, exit: Exit) {
+        if let Some(slot) = self.exits.get(target) {
+            let _ = slot.set(exit);
+        }
     }
 
-    /// The exit buffer for leaving into entry `target`. Lock- and allocation-free (an acquire
-    /// load and a scan of at most `MAX_SLICES` entries): safe on the audio thread.
+    /// The exit buffer for leaving into entry `target`. Lock- and allocation-free (an index and
+    /// an acquire load): safe on the audio thread.
     pub(crate) fn exit(&self, target: usize) -> Option<&Exit> {
-        self.exits.get()?.iter().find(|e| e.target == target)
+        self.exits.get(target)?.get()
     }
 }
 
@@ -299,9 +378,69 @@ mod tests {
     #[test]
     fn link_starts_empty() {
         let l = StreamLink::default();
-        assert_eq!((l.cut_requested(), l.resumed_at()), (None, None));
-        l.request_cut(10);
-        l.resume(12);
-        assert_eq!((l.cut_requested(), l.resumed_at()), (Some(10), Some(12)));
+        assert_eq!((l.cut_requested(), l.resumed(10)), (None, None));
+        assert!(l.exit(0).is_none());
+        l.request_cut(10, true);
+        assert_eq!(l.cut_requested(), Some((10, true)));
+        l.request_cut(11, false);
+        assert_eq!(l.cut_requested(), Some((11, false)));
+        l.resume(11, 12);
+        assert_eq!((l.resumed(10), l.resumed(11)), (None, Some(12)));
+        // Absurd positions saturate below the flag instead of reading back as "none".
+        l.request_cut(u64::MAX, true);
+        assert_eq!(l.cut_requested(), Some((USES_EXIT - 2, true)));
+    }
+
+    #[test]
+    fn minimum_loop_length_is_enforced_exactly_at_the_edge() {
+        assert_eq!(min_loop_frames(48_000), 480);
+        assert_eq!(min_loop_frames(44_100), 441);
+        assert_eq!(min_loop_frames(22_050), 221); // 220.5 rounds up
+        assert_eq!(min_loop_frames(1), 1);
+        let plays = [Plays::Times(1), Plays::Infinite, Plays::Times(1)];
+        // Exactly the minimum loops; one frame less is refused, as a typed error.
+        assert!(plan_at_rate(0..2_000, &[100, 580], &plays, 0, 48_000).is_ok());
+        assert_eq!(
+            plan_at_rate(0..2_000, &[100, 579], &plays, 0, 48_000),
+            Err(PlanError::LoopTooShort {
+                slice: 1,
+                frames: 479,
+                min: 480
+            })
+        );
+        // Slices that play once may be as short as one frame.
+        let once = [Plays::Times(1), Plays::Times(1), Plays::Times(1)];
+        assert!(plan_at_rate(0..2_000, &[1, 2], &once, 0, 48_000).is_ok());
+        assert!(
+            plan_at_rate(
+                0..2_000,
+                &[1, 2],
+                &[Plays::Times(1), Plays::Times(2), Plays::Times(1)],
+                0,
+                48_000
+            )
+            .is_err()
+        );
+        // A start offset inside a short slice played twice: its second play is a loop.
+        let twice = [Plays::Times(2), Plays::Times(1)];
+        assert_eq!(
+            plan_at_rate(0..2_000, &[100], &twice, 50, 48_000),
+            Err(PlanError::LoopTooShort {
+                slice: 0,
+                frames: 100,
+                min: 480
+            })
+        );
+        // plan() itself is unchanged: it accepts a one-frame loop.
+        assert!(
+            plan(
+                0..10,
+                &[1, 2],
+                &[Plays::Times(1), Plays::Infinite, Plays::Times(1)],
+                0
+            )
+            .is_ok()
+        );
+        assert!(check_loop_lengths(&[], 48_000).is_ok());
     }
 }
