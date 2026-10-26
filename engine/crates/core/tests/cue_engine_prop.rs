@@ -930,10 +930,15 @@ impl Sim {
     /// When the show next hears from the mixer. Previews are not the show's: they must not
     /// move the clock, or a run with previews and one without would not share a timeline.
     fn next_event_time(&self) -> Option<SampleTime> {
+        // Reports already on their way (the end of a resumed voice that had ended) count too.
+        let late = self.late.iter().filter(
+            |(_, e)| !matches!(e, Input::ActionEnded { run, .. } if run.0 >= PREVIEW_RUN_BASE),
+        );
         self.voices
             .values()
             .filter(|v| !v.preview)
             .filter_map(Voice::next_time)
+            .chain(late.map(|(at, _)| *at))
             .min()
     }
 }
@@ -1452,15 +1457,22 @@ impl Run {
                 )
             {
                 // (A voice that has ended with a resume still on its way is reported again when
-                // the resume comes.)
+                // the resume comes. So is one that had ended before the engine, which had not
+                // heard of it yet, paused and resumed it: its end with the fresh id is on its
+                // way, dated on the resume, which can lie in the lookahead window.)
                 let voice = run.and_then(|r| {
                     self.sim
                         .voices
                         .get(&r)
                         .or_else(|| self.sim.dead.get(&r).filter(|v| !v.cmds.is_empty()))
                 });
+                let end_on_its_way = run.is_some_and(|r| {
+                    self.sim.late.iter().any(|(_, e)| {
+                        matches!(e, Input::ActionEnded { cue, run, .. } if *cue == *id && *run == r)
+                    })
+                });
                 prop_assert!(
-                    voice.is_some_and(|v| v.cue == *id && !v.preview),
+                    end_on_its_way || voice.is_some_and(|v| v.cue == *id && !v.preview),
                     "{:?} audio cue {} has no voice in the mixer ({:?})",
                     state,
                     id,
