@@ -320,8 +320,9 @@ pub enum Event {
     DevampScheduled { voice: VoiceId, at: SampleTime },
     /// A devamp the voice cannot carry out: no such voice is playing, it has no slice table, a
     /// different devamp (other `stop`) is pending, a cut is needed while an earlier devamp's cut
-    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have. Playback is unchanged. (A devamp while an earlier one's loop exit is
-    /// still playing is carried out.)
+    /// still waits to be sent, or leaving a loop needs a disk-stream `link` it does not have.
+    /// Playback is unchanged. (A devamp while an earlier one's loop exit is still playing is
+    /// carried out.)
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
 }
@@ -2474,7 +2475,7 @@ mod tests {
     fn delay_process_matches_tick_sample_for_sample() {
         let (mut a, mut b) = (DelayLine::new(50, 10), DelayLine::new(50, 10));
         let mut x = 0.0f32;
-        let steps: [(Option<usize>, usize); 12] = [
+        let steps: [(Option<usize>, usize); 17] = [
             (None, 7),
             (None, 120),
             (Some(5), 3),
@@ -2486,6 +2487,13 @@ mod tests {
             (Some(12), 5),
             (None, 200),
             (Some(0), 51),
+            // A same-value change left queued when the crossfade ends: the fast path must
+            // drop it like `tick` does.
+            (Some(5), 30),
+            (Some(0), 3),
+            (Some(3), 0),
+            (Some(0), 7),
+            (None, 20),
             (None, 77),
         ];
         let mut buf = [0.0f32; 200];
