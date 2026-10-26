@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, Triggers};
+use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
 use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, Workspace};
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
@@ -77,6 +77,14 @@ pub enum CueProperty {
     },
     Triggers {
         value: Triggers,
+    },
+    /// Any cue. `play_next`/`play_previous` act only on Playlist groups; elsewhere they are kept
+    /// but act as `nothing`, and validation warns (a group mode change can make them apply).
+    SecondTrigger {
+        value: SecondTrigger,
+    },
+    SecondTriggerOnRelease {
+        value: bool,
     },
     /// Only for kinds that have a target.
     Target {
@@ -524,6 +532,12 @@ impl CueProperty {
             Self::Triggers { .. } => Self::Triggers {
                 value: cue.triggers.clone(),
             },
+            Self::SecondTrigger { .. } => Self::SecondTrigger {
+                value: cue.second_trigger,
+            },
+            Self::SecondTriggerOnRelease { .. } => Self::SecondTriggerOnRelease {
+                value: cue.second_trigger_on_release,
+            },
             Self::Target { .. } => {
                 if !cue.kind.has_target() {
                     return None;
@@ -554,6 +568,8 @@ impl CueProperty {
             Self::PostWait { value } => cue.post_wait = *value,
             Self::ContinueMode { value } => cue.continue_mode = *value,
             Self::Triggers { value } => cue.triggers.clone_from(value),
+            Self::SecondTrigger { value } => cue.second_trigger = *value,
+            Self::SecondTriggerOnRelease { value } => cue.second_trigger_on_release = *value,
             Self::Target { value } => return cue.kind.set_target(*value),
             Self::GroupMode { value } => match &mut cue.kind {
                 CueKind::Group { mode, .. } => *mode = *value,
@@ -582,6 +598,8 @@ fn blank_cue(id: CueId) -> Cue {
             hotkey: None,
             osc: None,
         },
+        second_trigger: SecondTrigger::Nothing,
+        second_trigger_on_release: false,
         kind: CueKind::Memo,
     }
 }

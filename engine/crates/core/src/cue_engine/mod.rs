@@ -16,6 +16,7 @@ mod playhead;
 mod preview;
 mod rng;
 mod run;
+mod second;
 mod time;
 mod transport;
 mod types;
@@ -31,7 +32,7 @@ pub use time::*;
 pub use transport::PANIC_CURVE;
 pub use types::*;
 
-use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec};
+use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, SecondTrigger};
 use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
@@ -336,6 +337,11 @@ impl CueEngine {
                     self.start(cue, cx.now, cx);
                 }
             }
+            Input::TriggerReleased { cue } => {
+                if self.known(cue, cx) {
+                    self.trigger_released(cue, cx);
+                }
+            }
             Input::Stop { cue, fade_out } => {
                 if self.known(cue, cx) {
                     self.stop_tree(cue, fade_out, cx);
@@ -586,8 +592,9 @@ impl CueEngine {
         false
     }
 
-    /// Starts `cue` at sample `at`. A paused cue resumes; an already active one ignores the
-    /// trigger (second-trigger rule, docs/cue-engine.md).
+    /// Starts `cue` at sample `at`. On a cue that is already active its second-trigger option
+    /// applies (`second.rs`); with `nothing` the trigger is ignored, or a paused cue resumes
+    /// (docs/cue-engine.md, "Second trigger").
     fn start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
@@ -598,19 +605,28 @@ impl CueEngine {
         // Triggers that start nothing cost no budget: the budget is shared by every call at one
         // `now`, so ignored triggers (a stuck controller key) must not use it up for a GO. A
         // cycle still ends, since each of its laps creates or resumes a runtime, which is charged
-        // below, and a trigger back to an active cue is ignored.
+        // below (a second trigger that restarts or moves a playlist on is charged for its
+        // start), and a trigger back to an active cue starts nothing else.
         if !panicked {
             match self.slots.get(&cue) {
                 Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
-                Some(Slot::Active(run)) if run.paused_at.is_some() => {}
+                // A broken run keeps the rule as it was: a paused one resumes.
                 Some(Slot::Active(run)) if run.is_broken() => {
-                    return cx.warn(EngineWarning::CueBroken { cue });
+                    if run.paused_at.is_none() {
+                        return cx.warn(EngineWarning::CueBroken { cue });
+                    }
                 }
                 Some(Slot::Active(run)) => {
-                    return cx.warn(EngineWarning::TriggerIgnored {
-                        cue,
-                        state: run.state(),
-                    });
+                    let paused = run.paused_at.is_some();
+                    let mut option = model.second_trigger.effective(&model.kind);
+                    // An option with nothing to act on leaves a paused cue to the `nothing`
+                    // rule: it resumes.
+                    if paused && !self.acts_on_paused(cue, option, at, cx) {
+                        option = SecondTrigger::Nothing;
+                    }
+                    if !(option == SecondTrigger::Nothing && paused) {
+                        return self.second_trigger(cue, option, at, cx);
+                    }
                 }
                 Some(Slot::Loaded(_)) | None => {}
             }
@@ -664,6 +680,7 @@ impl CueEngine {
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
         new.voice = voice;
+        new.started = at;
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
         // so its auto-continue fires on schedule (user decision, M2.13).
         if self.refuses(cue, cx) {

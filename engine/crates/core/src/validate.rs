@@ -101,6 +101,9 @@ pub enum IssueKind {
     PatchChannelCount { patch: PatchId },
     /// A patch level or delay was out of range; it was clamped.
     InvalidPatchValue { patch: PatchId, field: &'static str },
+    /// `second_trigger` is `play_next` or `play_previous` on a cue that is not a Playlist group:
+    /// kept, but a second trigger does nothing (as `nothing`) until the cue is one.
+    SecondTriggerNeedsPlaylist,
 }
 
 impl fmt::Display for ValidationIssue {
@@ -159,6 +162,11 @@ impl fmt::Display for ValidationIssue {
                 f,
                 "patch {} must have 1 to {MAX_CHANNELS} outputs; corrected",
                 patch.0
+            ),
+            IssueKind::SecondTriggerNeedsPlaylist => write!(
+                f,
+                "second trigger plays the next or previous child, which only a playlist group \
+                 has; it does nothing here"
             ),
             IssueKind::InvalidPatchValue { patch, field } => {
                 write!(f, "patch {}: invalid {field}; clamped", patch.0)
@@ -650,6 +658,9 @@ impl Checker {
                         }
                         Some(_) => {}
                     }
+                }
+                if cue.second_trigger.effective(&cue.kind) != cue.second_trigger {
+                    self.warn(id, IssueKind::SecondTriggerNeedsPlaylist);
                 }
                 if let Some(target) = starts(&cue.kind)
                     && target != cue.id

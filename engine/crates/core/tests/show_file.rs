@@ -11,6 +11,8 @@ use openlab_core::*;
 use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
+/// The current format (golden: saved files must match it byte for byte).
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v2-example.openlab");
 const V1_EXAMPLE: &str = include_str!("../../../fixtures/show/v1-example.openlab");
 const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab");
 
@@ -43,7 +45,7 @@ fn walk<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
 
 #[test]
 fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
-    let loaded = load_show(V1_EXAMPLE).unwrap();
+    let loaded = load_show(EXAMPLE).unwrap();
     assert_eq!(loaded.warnings, vec![]);
     let mut kinds = std::collections::BTreeSet::new();
     let mut modes = Vec::new();
@@ -63,8 +65,8 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
 
 #[test]
 fn golden_fixture_is_in_canonical_form() {
-    let loaded = load_show(V1_EXAMPLE).unwrap();
-    assert_eq!(save_show(&loaded.workspace).unwrap(), V1_EXAMPLE);
+    let loaded = load_show(EXAMPLE).unwrap();
+    assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
 }
 
 #[test]
@@ -79,8 +81,121 @@ fn v0_fixture_migrates_to_current() {
     assert!(
         save_show(&ws)
             .unwrap()
-            .starts_with("{\n  \"format_version\": 1,")
+            .starts_with(&format!("{{\n  \"format_version\": {FORMAT_VERSION},"))
     );
+}
+
+fn cue_named<'a>(ws: &'a Workspace, name: &str) -> &'a Cue {
+    let mut found = None;
+    for list in &ws.cue_lists {
+        walk(&list.cues, &mut |cue| {
+            if cue.name == name {
+                found = Some(cue);
+            }
+        });
+    }
+    found.unwrap()
+}
+
+/// v1 had no second-trigger settings (M2.14): every cue, at every depth, gets the defaults, and
+/// apart from them the show is the current example's.
+#[test]
+fn v1_fixture_migrates_with_default_second_triggers() {
+    let loaded = load_show(V1_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    let mut ws = loaded.workspace;
+    let mut count = 0;
+    for list in &ws.cue_lists {
+        walk(&list.cues, &mut |cue| {
+            assert_eq!(cue.second_trigger, SecondTrigger::Nothing, "{}", cue.name);
+            assert!(!cue.second_trigger_on_release, "{}", cue.name);
+            count += 1;
+        });
+    }
+    assert!(count > 20);
+    // A child inside a group was reached too.
+    assert_eq!(
+        cue_named(&ws, "Thunder").second_trigger,
+        SecondTrigger::Nothing
+    );
+    // The current example differs only in the settings it sets.
+    let current = load_show(EXAMPLE).unwrap().workspace;
+    for list in &mut ws.cue_lists {
+        for cue in &mut list.cues {
+            let other = cue_named(&current, &cue.name);
+            cue.second_trigger = other.second_trigger;
+            cue.second_trigger_on_release = other.second_trigger_on_release;
+        }
+    }
+    assert_eq!(ws, current);
+}
+
+#[test]
+fn golden_fixture_covers_second_trigger_settings() {
+    let ws = load_show(EXAMPLE).unwrap().workspace;
+    assert_eq!(
+        cue_named(&ws, "Preshow music").second_trigger,
+        SecondTrigger::Panic
+    );
+    assert_eq!(
+        cue_named(&ws, "Walk-in playlist").second_trigger,
+        SecondTrigger::PlayNext
+    );
+    let bell = cue_named(&ws, "Doorbell");
+    assert_eq!(bell.second_trigger, SecondTrigger::HardStopAndRestart);
+    assert!(bell.second_trigger_on_release);
+}
+
+/// A v1 reader ignored unknown keys, so second-trigger keys a hand edit put in a v1 file meant
+/// nothing then and are replaced by the defaults; anything not shaped like a cue is left to the
+/// model parse.
+#[test]
+fn v1_migration_overrides_hand_edited_second_trigger_keys() {
+    let text = V1_EXAMPLE.replacen(
+        "\"continue_mode\": \"do_not_continue\",",
+        "\"continue_mode\": \"do_not_continue\", \"second_trigger\": \"stop\", \"second_trigger_on_release\": true,",
+        1,
+    );
+    let ws = load_show(&text).unwrap().workspace;
+    let first = &ws.cue_lists[0].cues[0];
+    assert_eq!(first.second_trigger, SecondTrigger::Nothing);
+    assert!(!first.second_trigger_on_release);
+
+    let not_a_cue = r#"{"format_version": 1, "workspace": {"cue_lists": [{"cues": [7, {"kind": {"children": [null]}}]}]}}"#;
+    assert!(matches!(load_show(not_a_cue), Err(LoadError::Model(_))));
+    let no_workspace = r#"{"format_version": 1, "workspace": 3}"#;
+    assert!(matches!(
+        load_show(no_workspace),
+        Err(LoadError::Migration { from: 1, .. })
+    ));
+}
+
+#[test]
+fn second_trigger_values_are_snake_case_and_unknown_ones_refused() {
+    for (name, value) in [
+        ("nothing", SecondTrigger::Nothing),
+        ("panic", SecondTrigger::Panic),
+        ("stop", SecondTrigger::Stop),
+        ("hard_stop", SecondTrigger::HardStop),
+        ("hard_stop_and_restart", SecondTrigger::HardStopAndRestart),
+        ("devamp", SecondTrigger::Devamp),
+        ("play_next", SecondTrigger::PlayNext),
+        ("play_previous", SecondTrigger::PlayPrevious),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            format!("\"{name}\"")
+        );
+    }
+    let text = EXAMPLE.replacen(
+        "\"second_trigger\": \"panic\"",
+        "\"second_trigger\": \"explode\"",
+        1,
+    );
+    assert!(matches!(load_show(&text), Err(LoadError::Model(_))));
+    // Missing keys are an error in the current version.
+    let text = EXAMPLE.replacen("\"second_trigger\": \"panic\",", "", 1);
+    assert!(matches!(load_show(&text), Err(LoadError::Model(_))));
 }
 
 #[test]
@@ -91,13 +206,13 @@ fn migration_step_failure_is_reported() {
 
 #[test]
 fn migrate_is_identity_from_current_version() {
-    let doc: serde_json::Value = serde_json::from_str(V1_EXAMPLE).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
     assert_eq!(migrate(doc.clone(), FORMAT_VERSION).unwrap(), doc);
 }
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = V1_EXAMPLE.replacen("\"format_version\": 1", "\"format_version\": 7", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 2", "\"format_version\": 7", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
@@ -138,7 +253,7 @@ fn missing_or_malformed_format_version_is_refused() {
 
 #[test]
 fn model_errors_name_the_problem() {
-    let text = V1_EXAMPLE.replacen("\"name\": \"Example Show\",", "", 1);
+    let text = EXAMPLE.replacen("\"name\": \"Example Show\",", "", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(err, LoadError::Model(_)));
     assert!(err.to_string().contains("missing field `name`"), "{err}");
@@ -160,13 +275,13 @@ fn garbage_is_an_error() {
     ] {
         assert!(load_show(text).is_err(), "{text:?}");
     }
-    let unknown_kind = V1_EXAMPLE.replacen("\"type\": \"memo\"", "\"type\": \"laser\"", 1);
+    let unknown_kind = EXAMPLE.replacen("\"type\": \"memo\"", "\"type\": \"laser\"", 1);
     assert!(matches!(load_show(&unknown_kind), Err(LoadError::Model(_))));
-    let overflow = V1_EXAMPLE.replacen("\"pre_wait\": 0.0", "\"pre_wait\": 1e400", 1);
+    let overflow = EXAMPLE.replacen("\"pre_wait\": 0.0", "\"pre_wait\": 1e400", 1);
     assert!(load_show(&overflow).is_err());
-    let bad_port = V1_EXAMPLE.replacen("\"port\": 53000", "\"port\": 70000", 1);
+    let bad_port = EXAMPLE.replacen("\"port\": 53000", "\"port\": 70000", 1);
     assert!(matches!(load_show(&bad_port), Err(LoadError::Model(_))));
-    let duplicate_field = V1_EXAMPLE.replacen(
+    let duplicate_field = EXAMPLE.replacen(
         "\"name\": \"Example Show\",",
         "\"name\": \"A\", \"name\": \"B\",",
         1,
@@ -177,7 +292,7 @@ fn garbage_is_an_error() {
 #[test]
 fn every_truncation_is_an_error() {
     // The full text minus its trailing newline is still complete; everything shorter is not.
-    let complete = V1_EXAMPLE.trim_end();
+    let complete = EXAMPLE.trim_end();
     for (end, _) in complete.char_indices() {
         assert!(
             load_show(&complete[..end]).is_err(),
@@ -205,7 +320,7 @@ fn deeply_nested_input_is_an_error_not_a_stack_overflow() {
 
 #[test]
 fn unknown_fields_are_ignored() {
-    let text = V1_EXAMPLE
+    let text = EXAMPLE
         .replacen("{\n", "{\n  \"future\": {\"deep\": [1, 2]},\n", 1)
         .replacen(
             "\"flagged\": true,",
@@ -213,12 +328,12 @@ fn unknown_fields_are_ignored() {
             1,
         );
     let loaded = load_show(&text).unwrap();
-    assert_eq!(loaded.workspace, load_show(V1_EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
 }
 
 #[test]
 fn windows_absolute_paths_are_normalised_on_load() {
-    let text = V1_EXAMPLE
+    let text = EXAMPLE
         .replacen("\"media/preshow.wav\"", r#""Door\\Slam.wav""#, 1)
         .replacen(
             "\"/Volumes/Show/sfx/thunder.aif\"",
@@ -247,10 +362,10 @@ fn windows_absolute_paths_are_normalised_on_load() {
 
 #[test]
 fn byte_order_mark_and_crlf_line_endings_are_accepted() {
-    let text = format!("\u{feff}{}", V1_EXAMPLE.replace('\n', "\r\n"));
+    let text = format!("\u{feff}{}", EXAMPLE.replace('\n', "\r\n"));
     assert_eq!(
         load_show(&text).unwrap().workspace,
-        load_show(V1_EXAMPLE).unwrap().workspace
+        load_show(EXAMPLE).unwrap().workspace
     );
 }
 
@@ -492,11 +607,25 @@ fn triggers() -> impl Strategy<Value = Triggers> {
 }
 
 /// A cue with id and number left for [`assign_ids`]; `number` is `Some` when it should get one.
+fn second_trigger() -> impl Strategy<Value = SecondTrigger> {
+    prop_oneof![
+        Just(SecondTrigger::Nothing),
+        Just(SecondTrigger::Panic),
+        Just(SecondTrigger::Stop),
+        Just(SecondTrigger::HardStop),
+        Just(SecondTrigger::HardStopAndRestart),
+        Just(SecondTrigger::Devamp),
+        Just(SecondTrigger::PlayNext),
+        Just(SecondTrigger::PlayPrevious),
+    ]
+}
+
 fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cue> {
     (
         (option::of(Just(String::new())), text(), text()),
         (color(), any::<bool>(), any::<bool>()),
         (time(), time(), continue_mode(), triggers()),
+        (second_trigger(), any::<bool>()),
         kind,
     )
         .prop_map(
@@ -504,6 +633,7 @@ fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cu
                 (number, name, notes),
                 (color, flagged, armed),
                 (pre_wait, post_wait, continue_mode, triggers),
+                (second_trigger, second_trigger_on_release),
                 kind,
             )| {
                 Cue {
@@ -517,6 +647,8 @@ fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cu
                     post_wait,
                     continue_mode,
                     triggers,
+                    second_trigger,
+                    second_trigger_on_release,
                     ..cue(0, kind)
                 }
             },
@@ -684,5 +816,41 @@ proptest! {
         let loaded = load_show(&text).unwrap();
         prop_assert_eq!(&loaded.workspace, &ws);
         prop_assert_eq!(save_show(&loaded.workspace).unwrap(), text);
+    }
+
+    /// Any workspace written as v1 (no second-trigger keys) loads as itself with the defaults.
+    #[test]
+    fn v1_documents_migrate_to_default_second_triggers(mut ws in any_workspace()) {
+        repair(&mut ws);
+        let mut doc: serde_json::Value = serde_json::from_str(&save_show(&ws).unwrap()).unwrap();
+        strip_second_triggers(&mut doc);
+        doc["format_version"] = 1.into();
+        let loaded = load_show(&doc.to_string()).unwrap().workspace;
+        for list in &mut ws.cue_lists {
+            reset_second_triggers(&mut list.cues);
+        }
+        prop_assert_eq!(loaded, ws);
+    }
+}
+
+fn strip_second_triggers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("second_trigger");
+            map.remove("second_trigger_on_release");
+            map.values_mut().for_each(strip_second_triggers);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_second_triggers),
+        _ => {}
+    }
+}
+
+fn reset_second_triggers(cues: &mut [Cue]) {
+    for cue in cues {
+        cue.second_trigger = SecondTrigger::Nothing;
+        cue.second_trigger_on_release = false;
+        if let CueKind::Group { children, .. } = &mut cue.kind {
+            reset_second_triggers(children);
+        }
     }
 }

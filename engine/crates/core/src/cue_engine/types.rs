@@ -107,6 +107,12 @@ pub enum Input {
     Start {
         cue: CueId,
     },
+    /// The hotkey or MIDI key that triggers `cue` was released (the binary sends it on key-up).
+    /// Acts as a second trigger if the cue has `second_trigger_on_release` set and is active;
+    /// otherwise it is ignored without a warning. See `docs/cue-engine.md`, "Second trigger".
+    TriggerReleased {
+        cue: CueId,
+    },
     /// Stop a cue. With a fade of non-zero length a playing audio cue fades out first.
     Stop {
         cue: CueId,
@@ -538,7 +544,9 @@ pub enum EngineWarning {
         cue: CueId,
     },
     /// Start/GO/continue on a cue that is already active (pre-waiting, running, post-waiting,
-    /// fading or stopping) does nothing; `state` is the state it was in.
+    /// fading or stopping) did nothing; `state` is the state it was in. Its second-trigger option
+    /// is `nothing`, or it is `play_next`/`play_previous` and the playlist was not playing a
+    /// child it could move on from (not in its action, stopping, adopted or devamped).
     TriggerIgnored {
         cue: CueId,
         state: CueState,

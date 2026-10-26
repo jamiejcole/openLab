@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use super::*;
-use crate::cue::{CueColor, FadeCurve, FadeLevels, Triggers};
+use crate::cue::{CueColor, FadeCurve, FadeLevels, SecondTrigger, Triggers};
 use crate::model::{CueList, WorkspaceId, WorkspaceSettings};
 
 fn id(n: u128) -> CueId {
@@ -30,6 +30,8 @@ fn cue(n: u128, kind: CueKind, pre_wait: f64) -> Cue {
             hotkey: None,
             osc: None,
         },
+        second_trigger: SecondTrigger::Nothing,
+        second_trigger_on_release: false,
         kind,
     }
 }
