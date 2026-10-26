@@ -1055,3 +1055,98 @@ fn go_on_a_broken_auto_follow_cue_leaves_the_playhead_on_the_cue_it_would_follow
     assert_eq!(starts(&go), vec![(id(2), 10)]);
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
 }
+
+fn mapped() -> PatchResolution {
+    PatchResolution::Mapped {
+        device: "Interface".into(),
+        channels: vec![0, 1],
+    }
+}
+
+fn lose_device(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    let run = rig.engine.run_of(id(n)).unwrap();
+    rig.at(
+        now,
+        Input::ActionFailed {
+            cue: id(n),
+            run,
+            reason: BrokenReason::DeviceLost,
+        },
+    )
+}
+
+#[test]
+fn a_device_lost_break_clears_when_its_patch_is_mapped_again() {
+    // The binary reports the device missing, then fails the runs that played on it (M4.2b).
+    let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/a.wav", 2)]);
+    rig.ws.patches.push(patch(2, 2));
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.device(0, 2, mapped());
+    rig.start(10, 1);
+    rig.start(10, 2);
+    let missing = PatchResolution::DeviceMissing {
+        device: "Interface".into(),
+    };
+    rig.device(20, 1, missing.clone());
+    let failed = lose_device(&mut rig, 20, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Broken, 20)]);
+    assert_eq!(
+        rig.engine.broken_reason(id(1)),
+        Some(BrokenReason::DeviceLost)
+    );
+    // Another reason's break on another patch is not cleared by anything but a reset.
+    let run2 = rig.engine.run_of(id(2)).unwrap();
+    rig.at(
+        20,
+        Input::ActionFailed {
+            cue: id(2),
+            run: run2,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    // Still missing: a start is refused.
+    assert_eq!(
+        warnings(&rig.start(30, 1)),
+        vec![EngineWarning::CueBroken { cue: id(1) }]
+    );
+    let back = rig.device(40, 1, mapped());
+    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 40)]);
+    assert_eq!(rig.engine.broken_reason(id(1)), None);
+    assert_eq!(voice_starts(&rig.start(50, 1)), vec![(id(1), 50)]);
+    assert!(changes(&rig.device(60, 2, mapped()), 2).is_empty());
+    assert_eq!(rig.state(2), CueState::Broken);
+}
+
+#[test]
+fn a_device_lost_run_settles_idle_if_its_device_came_back_meanwhile() {
+    // Its auto-continue was pending when it broke; the device returned before it fired.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 1.0, AC), memo(2)]);
+    rig.device(0, 1, mapped());
+    rig.go(0);
+    rig.device(
+        100,
+        1,
+        PatchResolution::DeviceMissing {
+            device: "Interface".into(),
+        },
+    );
+    lose_device(&mut rig, 100, 1);
+    assert_eq!(rig.state(1), CueState::Broken);
+    // Back before the continue: no state change yet (the run is pending).
+    assert!(changes(&rig.device(200, 1, mapped()), 1).is_empty());
+    let fired = rig.tick(1000);
+    assert_eq!(starts(&fired), vec![(id(2), 1000)]);
+    assert_eq!(changes(&fired, 1), vec![(CueState::Idle, 1000)]);
+}
+
+#[test]
+fn a_device_lost_break_without_any_patch_status_stays_until_reset() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    lose_device(&mut rig, 10, 1);
+    rig.tick(10_000);
+    assert_eq!(rig.state(1), CueState::Broken);
+    rig.at(10_010, Input::Reset { cue: id(1) });
+    assert_eq!(rig.state(1), CueState::Idle);
+}

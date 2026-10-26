@@ -143,6 +143,19 @@ impl CueEngine {
         &self.config
     }
 
+    /// Changes the lookahead between calls (the binary's device came back with another block
+    /// size). Commands already committed keep their samples (each run remembers the latest it
+    /// committed); the next call commits deadlines in `now .. now + lookahead`. At most one
+    /// second, as in [`EngineConfig::new`]; on error nothing changes.
+    pub fn set_lookahead(&mut self, lookahead: SampleTime) -> Result<(), EngineConfigError> {
+        self.config = EngineConfig::new(
+            self.config.sample_rate().get(),
+            lookahead,
+            self.config.seed(),
+        )?;
+        Ok(())
+    }
+
     /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
     /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
@@ -1277,6 +1290,8 @@ impl CueEngine {
                 Exit::Completed
             };
             match run.broken {
+                // Its device is back already: nothing keeps it from playing.
+                Some(BrokenReason::DeviceLost) if self.device_back(cue) => self.slots.remove(&cue),
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };

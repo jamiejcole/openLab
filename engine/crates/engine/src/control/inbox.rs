@@ -23,6 +23,8 @@ pub enum Inbox {
     },
     /// A probe worker's answer (internal feedback).
     Probe(ProbeAnswer),
+    /// The device thread's answer (internal feedback, docs/control.md "Devices").
+    Device(super::devices::DeviceAnswer),
     /// Stop the control loop.
     Shutdown,
 }

@@ -70,7 +70,7 @@ Keep the crate count at three. Add a module before adding a crate.
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
 
-Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
 
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
@@ -119,7 +119,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - **Fades** are per-voice gain ramps evaluated per sample on the audio thread from a curve id + start/end gain + start/end sample (no per-sample allocation, no table rebuilds). Curves: linear, equal-power, S-curve, log, exp.
 - **Loops/slices/devamp** are resolved on the audio thread from a preloaded slice table; the disk thread is told to seek ahead of loop points so the ring never starves.
 - **Meters**: per output channel peak written to atomics; the control thread samples them at ≤30 Hz for clients.
-- **Device loss** (NFR-08): cpal error callback → control thread marks the device offline, affected cues "broken", attempts reopen on a backoff; nothing panics.
+- **Device loss** (NFR-08): cpal error callback (or the device gone from the list) → control thread marks the device offline and attempts reopen on a backoff; the show is held (sample time stands still) for a grace period, after which affected cues go "broken" (`device_lost`) until the device is back; nothing panics. Policy: `docs/control.md`, Devices.
 
 ### 3.6 Offline render driver (QA-03, QA-05, NFR-23 proxy)
 

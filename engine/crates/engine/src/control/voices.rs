@@ -54,6 +54,9 @@ pub struct Env<'a> {
     pub cue_outputs: usize,
     /// The scheduling time of the call.
     pub now: SampleTime,
+    /// During a device outage: the sample the mixer renders first when it is back. Stops are
+    /// dated there (see [`Voices::stop_date`]).
+    pub floor: Option<SampleTime>,
 }
 
 /// A mixer command for a voice that is not in the mixer yet, replayed when it starts.
@@ -227,9 +230,9 @@ impl Voices {
             } => self.start(cue, run, at, offset, false, env, fx),
             Action::PreviewStart { cue, run, at } => self.start(cue, run, at, 0, true, env, fx),
             Action::StopVoice { run, at, fade, .. } | Action::PreviewStop { run, at, fade, .. } => {
-                self.stop(run, at, fade, fx);
+                self.stop(run, at, fade, env.floor, fx);
             }
-            Action::PauseVoice { run, at, .. } => self.pause(run, at, fx),
+            Action::PauseVoice { run, at, .. } => self.pause(run, at, env.floor, fx),
             Action::ResumeVoice {
                 cue,
                 run,
@@ -469,7 +472,14 @@ impl Voices {
         }
     }
 
-    fn stop(&mut self, run: RunId, at: SampleTime, fade: Option<StopFade>, fx: &mut Effects) {
+    fn stop(
+        &mut self,
+        run: RunId,
+        at: SampleTime,
+        fade: Option<StopFade>,
+        floor: Option<SampleTime>,
+        fx: &mut Effects,
+    ) {
         let Some(&id) = self.by_run.get(&run) else {
             return;
         };
@@ -478,6 +488,7 @@ impl Voices {
             .get(&id)
             .is_some_and(|r| matches!(r.phase, Phase::Playing));
         if playing {
+            let at = self.stop_date(id, at, floor);
             let fade = fade.map_or(Fade::NONE, |f| Fade::new(f.frames, to_curve(f.curve)));
             fx.commands
                 .push((at, CommandKind::StopVoice { voice: id, fade }));
@@ -487,18 +498,37 @@ impl Voices {
         }
     }
 
-    fn pause(&mut self, run: RunId, at: SampleTime, fx: &mut Effects) {
+    /// A pause during an outage (`floor`) is dated, like a stop, on the first sample the mixer
+    /// renders when the device is back, so no voice plays one more block. The mixer then holds
+    /// the voice `at − date` frames earlier than the engine thinks: that is counted into the
+    /// action's length (`delay`) and sent again, so the engine's end stays the voice's.
+    fn pause(&mut self, run: RunId, at: SampleTime, floor: Option<SampleTime>, fx: &mut Effects) {
         let Some(&id) = self.by_run.get(&run) else {
             return;
         };
+        let date = self.stop_date(id, at, floor);
         let Some(r) = self.recs.get_mut(&id) else {
             return;
         };
         match &mut r.phase {
             Phase::Playing => {
-                r.paused_at = Some(at);
+                r.paused_at = Some(date);
                 fx.commands
-                    .push((at, CommandKind::PauseVoice { voice: id }));
+                    .push((date, CommandKind::PauseVoice { voice: id }));
+                let early = at.saturating_sub(date);
+                if early > 0 {
+                    r.delay = r.delay.saturating_add(early);
+                    if let Some(total) = r.total
+                        && !r.preview
+                    {
+                        let frames = r.offset.saturating_add(total).saturating_add(r.delay);
+                        fx.feedback.push(Input::ActionLength {
+                            cue: r.cue,
+                            run,
+                            frames,
+                        });
+                    }
+                }
             }
             Phase::Waiting { paused, .. } => *paused = true,
             Phase::Ended => {}
@@ -978,6 +1008,50 @@ impl Voices {
             }
             None => 0,
         }
+    }
+
+    /// When a stop dated `at` is sent to voice `id`. While the device is down (`floor`: the
+    /// first sample the mixer renders when it is back), `now` is a block past that sample, so
+    /// a stop dated `at` would let the voice play one more block after the outage: it is dated
+    /// on the floor instead, but never before the voice's own (re)start, which may itself be
+    /// queued after the floor.
+    pub fn stop_date(&self, id: VoiceId, at: SampleTime, floor: Option<SampleTime>) -> SampleTime {
+        let Some(floor) = floor else { return at };
+        let Some(r) = self.recs.get(&id) else {
+            return at;
+        };
+        let earliest = floor.max(r.start_at).max(r.resumed_at.unwrap_or(0));
+        at.min(earliest)
+    }
+
+    /// Runs whose voice is on the device: started in the mixer, or started and waiting for
+    /// their file's probe. Loaded runs are not (a load only prepares a stream).
+    pub fn on_device(&self) -> Vec<(CueId, RunId)> {
+        let mut v: Vec<(CueId, RunId)> = self
+            .recs
+            .values()
+            .filter(|r| {
+                matches!(
+                    r.phase,
+                    Phase::Playing | Phase::Waiting { start: Some(_), .. }
+                )
+            })
+            .map(|r| (r.cue, r.run))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Every voice started in the mixer (previews included).
+    pub fn playing_ids(&self) -> Vec<VoiceId> {
+        let mut v: Vec<VoiceId> = self
+            .recs
+            .iter()
+            .filter(|(_, r)| matches!(r.phase, Phase::Playing))
+            .map(|(id, _)| *id)
+            .collect();
+        v.sort_by_key(|id| id.0);
+        v
     }
 
     /// Show voices in the mixer (not stopped by a command already) for which `orphan(cue, run)`
