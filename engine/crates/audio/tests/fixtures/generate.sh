@@ -20,4 +20,11 @@ ffmpeg -v error -y -i "$src" -c:a vorbis -strict -2 -q:a 4 tone.ogg
 # A longer Vorbis file: symphonia drops a damaged Ogg page and resynchronises only when the
 # stream has more pages than its probe scans.
 ffmpeg -v error -y -stream_loop 7 -i "$src" -c:a vorbis -strict -2 -q:a 4 tone-4s.ogg
+# AAC with a known onset, for the encoder-priming tests: silence for 1000 frames, then the tone
+# (left 440 Hz at 0.5, right 1000 Hz at 0.25, phase 0 at frame 1000), 0.5 s in all. ffmpeg's AAC
+# encoder delays by 1024 frames; the first file says so in its edit list, the second has none
+# (the tests add an iTunSMPB tag to a copy of it).
+onset="aevalsrc='if(lt(n,1000),0,0.5*sin(2*PI*440*(n-1000)/44100))|if(lt(n,1000),0,0.25*sin(2*PI*1000*(n-1000)/44100))':s=44100:d=0.5"
+ffmpeg -v error -y -f lavfi -i "$onset" -c:a aac -b:a 128k tone-onset.m4a
+ffmpeg -v error -y -f lavfi -i "$onset" -c:a aac -b:a 128k -use_editlist 0 tone-onset-noedit.m4a
 rm -f "$tmp" "$src"
