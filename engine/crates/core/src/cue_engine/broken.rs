@@ -18,7 +18,7 @@ use crate::settings::PatchResolution;
 use crate::validate::can_target;
 
 use super::run::Slot;
-use super::types::{Action, CueProblem, MediaStatus};
+use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
 use super::{Ctx, CueEngine, each_cue};
 
 /// Shown for a cue whose problems were fixed while the run it was started broken with is still
@@ -152,6 +152,24 @@ impl CueEngine {
     /// a cue that is not a group.
     pub fn has_broken_descendant(&self, cue: CueId) -> bool {
         self.problems.below.contains_key(&cue)
+    }
+
+    /// Whether the patch of an audio cue exists and was last reported `Mapped`: a `device_lost`
+    /// break clears then (docs/cue-engine.md, Broken cues). An unreported patch does not count,
+    /// so a break the binary reports without any patch status stays until a reset.
+    pub(super) fn device_back(&self, cue: CueId) -> bool {
+        let p = &self.problems;
+        p.model
+            .facts
+            .get(&cue)
+            .and_then(|f| f.audio.as_ref())
+            .is_some_and(|a| {
+                a.patch_exists
+                    && matches!(
+                        p.patches.get(&a.patch),
+                        Some(PatchResolution::Mapped { .. })
+                    )
+            })
     }
 
     /// Whether the cue has static problems now (it reports `broken` while it has no runtime, and
@@ -329,6 +347,16 @@ impl CueEngine {
     /// state is reported until it ends.
     fn refresh(&mut self, cues: BTreeSet<CueId>, cx: &mut Ctx) {
         for cue in cues {
+            // A cue broken by a lost device can play again once its patch is mapped again.
+            if matches!(
+                self.slots.get(&cue),
+                Some(Slot::Broken(BrokenReason::DeviceLost))
+            ) && self.device_back(cue)
+            {
+                let before = self.state(cue);
+                self.slots.remove(&cue);
+                self.report(cue, before, cx.now, cx);
+            }
             let p = &mut self.problems;
             p.checks = p.checks.saturating_add(1);
             let new = p
