@@ -19,11 +19,16 @@ workspace = true
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
 crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
+getrandom = "0.4"
 openlab-audio = { version = "0.0.1", path = "../audio" }
 openlab-core = { version = "0.0.1", path = "../core" }
 thiserror = "2.0.21"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake", "connect"] }
 uuid = { version = "1.29.0", default-features = false }
