@@ -197,7 +197,7 @@ fn make_cue(ws: &Workspace, g: &mut Gen, p: &Pick) -> Cue {
 }
 
 fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
-    match variant % 12 {
+    match variant % 14 {
         0 => CueProperty::Name {
             value: format!("name {}", p.b),
         },
@@ -253,6 +253,21 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
                 },
             ][p.b as usize % 3],
         },
+        12 => CueProperty::SecondTrigger {
+            value: [
+                SecondTrigger::Nothing,
+                SecondTrigger::Panic,
+                SecondTrigger::Stop,
+                SecondTrigger::HardStop,
+                SecondTrigger::HardStopAndRestart,
+                SecondTrigger::Devamp,
+                SecondTrigger::PlayNext,
+                SecondTrigger::PlayPrevious,
+            ][p.b as usize % 8],
+        },
+        13 => CueProperty::SecondTriggerOnRelease {
+            value: p.b.is_multiple_of(2),
+        },
         _ => CueProperty::Kind { value: kind(ws, p) },
     }
 }
@@ -301,13 +316,18 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
         },
         6 => Command::SetCueProperty {
             id: id?,
-            property: property(ws, (p.d % 12) as u8, p),
+            property: property(ws, (p.d % 14) as u8, p),
         },
         7 => {
             let selected = (0..1 + p.c % 3).filter_map(|n| choose(&ids, p.a.wrapping_add(n * 7)));
             Command::BatchSet {
                 ids: selected.collect(),
-                property: property(ws, (p.d % 11) as u8, p),
+                // Every variant but `Kind` (11).
+                property: property(
+                    ws,
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13][p.d as usize % 13],
+                    p,
+                ),
             }
         }
         8 => Command::SetCueNumbers {
@@ -341,7 +361,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                 .collect();
             Command::Transaction { commands }
         }
-        100..=111 => Command::SetCueProperty {
+        100..=113 => Command::SetCueProperty {
             id: id?,
             property: property(ws, op - 100, p),
         },
@@ -371,7 +391,8 @@ fn bytes(ws: &Workspace) -> String {
     serde_json::to_string(ws).unwrap()
 }
 
-/// What commands may leave behind: broken references and silent extra outputs, never a value
+/// What commands may leave behind: broken references, silent extra outputs and playlist-only
+/// second triggers on other cues, never a value
 /// problem or an error. And the show saves and loads back identical.
 fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
     for issue in validate(ws) {
@@ -382,6 +403,9 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     | IssueKind::TargetWrongKind { .. }
                     | IssueKind::TargetSelf
                     | IssueKind::UnpatchedOutputs { .. }
+                    // Kept and inert, like a wrong-kind target (a group-mode change makes it
+                    // apply again).
+                    | IssueKind::SecondTriggerNeedsPlaylist
             ) && issue.severity == Severity::Warning,
             "command introduced {issue}"
         );
@@ -460,6 +484,8 @@ round_trip_tests! {
     set_target_round_trips: 109,
     set_group_mode_round_trips: 110,
     set_kind_round_trips: 111,
+    set_second_trigger_round_trips: 112,
+    set_second_trigger_on_release_round_trips: 113,
 }
 
 proptest! {
