@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The cue engine computes where an interrupted fade stands with its own copy of the mixer's
-//! gain maths (core does not depend on the audio crate). They must agree bit for bit, or a held
-//! or resumed fade would jump.
+//! The cue engine computes where an interrupted fade stands with its own copy of the audio
+//! crate's gain maths (core does not depend on the audio crate). Core matches
+//! `openlab_audio::ramp_value` and `Curve::shape` bit for bit; the mixer's own per-sample curve
+//! evaluation is within `openlab_audio::RAMP_TOLERANCE` of `ramp_value`, so a held or resumed
+//! fade continues from core's level to within that tolerance.
 
 use openlab_core::{FadeCurve, curve_shape, db_to_gain, ramp_gain};
 use proptest::prelude::*;
