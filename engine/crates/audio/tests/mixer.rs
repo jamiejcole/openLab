@@ -956,3 +956,37 @@ proptest! {
         prop_assert!(reference == varied, "block pattern {:?} changed the output", blocks);
     }
 }
+
+/// Ring wraps that split a frame (a capacity that is not a whole number of frames) and ones that
+/// do not both deliver every channel's samples in order.
+#[test]
+fn rings_wrapping_mid_frame_deliver_every_channel_in_order() {
+    const CH: usize = 3;
+    const FRAMES: usize = 600;
+    let data: Vec<f32> = (0..FRAMES * CH)
+        .map(|i| (i / CH) as f32 * 1e-3 + (i % CH) as f32 * 0.25)
+        .collect();
+    for capacity in [7, 8, 10, 12, 31, 3000] {
+        let (mut ctl, mut r) = setup(config(CH));
+        let (mut tx, rx) = rtrb::RingBuffer::new(capacity);
+        start(&mut ctl, 0, 1, rx, CH as u16);
+        let mut fed = 0;
+        let mut out = Vec::new();
+        while out.len() < FRAMES * CH {
+            let n = tx.slots().min(data.len() - fed);
+            tx.push_entire_slice(&data[fed..fed + n]).unwrap();
+            fed += n;
+            // Fewer frames than the ring holds, so reads start at every offset in it.
+            let frames = (capacity / CH).clamp(1, 3);
+            out.extend(r.render(frames, &[frames]));
+        }
+        assert_eq!(ctl.underrun_frames(), 0, "capacity {capacity}");
+        for (i, (got, want)) in out.iter().zip(&data).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "capacity {capacity} sample {i}"
+            );
+        }
+    }
+}
