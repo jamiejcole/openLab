@@ -25,8 +25,12 @@ const PRIMING: usize = 1_024;
 const ONSET: usize = 1_000;
 
 fn read(name: &str) -> Vec<u8> {
-    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name))
-        .unwrap()
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name),
+    )
+    .unwrap()
 }
 
 fn media(bytes: &[u8]) -> Media {
@@ -60,11 +64,16 @@ fn lag(got: &[f32]) -> i32 {
             })
             .sum()
     };
-    (-1_500..=1_500).min_by(|&a, &b| err(a).total_cmp(&err(b))).unwrap()
+    (-1_500..=1_500)
+        .min_by(|&a, &b| err(a).total_cmp(&err(b)))
+        .unwrap()
 }
 
 fn max_err(got: &[f32], want: &[f32]) -> f32 {
-    got.iter().zip(want).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max)
+    got.iter()
+        .zip(want)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max)
 }
 
 fn decoded(bytes: &[u8]) -> Vec<f32> {
@@ -72,7 +81,10 @@ fn decoded(bytes: &[u8]) -> Vec<f32> {
 }
 
 fn position(bytes: &[u8], needle: &[u8]) -> usize {
-    bytes.windows(needle.len()).position(|w| w == needle).unwrap()
+    bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .unwrap()
 }
 
 /// Overwrites the `elst` entry fields: version-0 layout, `[count][duration][media_time][rate]`.
@@ -121,9 +133,20 @@ fn with_smpb(bytes: &[u8], text: &str) -> Vec<u8> {
     assert_eq!(moov + size, bytes.len(), "moov is the last box");
     let mean = boxed(b"mean", &[&[0u8; 4][..], b"com.apple.iTunes"].concat());
     let name = boxed(b"name", &[&[0u8; 4][..], b"iTunSMPB"].concat());
-    let data = boxed(b"data", &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text.as_bytes()].concat());
+    let data = boxed(
+        b"data",
+        &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text.as_bytes()].concat(),
+    );
     let item = boxed(b"----", &[mean, name, data].concat());
-    let meta = boxed(b"meta", &[&[0u8; 4][..], &boxed(b"hdlr", &[0u8; 24]), &boxed(b"ilst", &item)].concat());
+    let meta = boxed(
+        b"meta",
+        &[
+            &[0u8; 4][..],
+            &boxed(b"hdlr", &[0u8; 24]),
+            &boxed(b"ilst", &item),
+        ]
+        .concat(),
+    );
     let udta = boxed(b"udta", &meta);
     let mut out = bytes.to_vec();
     out.extend_from_slice(&udta);
@@ -149,7 +172,10 @@ fn the_fixtures_really_start_with_the_encoders_delay() {
     // Without gapless information the decode includes the priming (what symphonia gives).
     let plain = read("tone-onset-noedit.m4a");
     assert!(!ignored(&plain));
-    assert_eq!(probe_media(media(&plain)).unwrap().info.frames, FRAMES + PRIMING as u64);
+    assert_eq!(
+        probe_media(media(&plain)).unwrap().info.frames,
+        FRAMES + PRIMING as u64
+    );
     assert_eq!(lag(&decoded(&plain)), PRIMING as i32);
 }
 
@@ -196,7 +222,10 @@ fn priming_longer_than_a_packet_is_trimmed_across_packets() {
     assert_eq!(long.len() as u64, (FRAMES - 1_088) * 2);
     assert_eq!(long[..], one[1_088 * 2..]);
     assert_eq!(
-        probe_media(media(&with_smpb(&plain, &smpb(2_112)))).unwrap().info.frames,
+        probe_media(media(&with_smpb(&plain, &smpb(2_112))))
+            .unwrap()
+            .info
+            .frames,
         FRAMES - 1_088
     );
 }
@@ -220,7 +249,10 @@ fn damaged_or_absurd_edit_lists_are_ignored_with_a_warning() {
     let good = read("tone-onset.m4a");
     let cases: [(&str, Vec<u8>); 7] = [
         ("past the file", edit_list(&good, 1, 1_000_000, 0x0001_0000)),
-        ("whole file", edit_list(&good, 1, FRAMES as i32 + PRIMING as i32, 0x0001_0000)),
+        (
+            "whole file",
+            edit_list(&good, 1, FRAMES as i32 + PRIMING as i32, 0x0001_0000),
+        ),
         ("absurd", edit_list(&good, 1, 1 << 20, 0x0001_0000)),
         ("negative", edit_list(&good, 1, -1, 0x0001_0000)),
         ("min", edit_list(&good, 1, i32::MIN, 0x0001_0000)),
@@ -231,7 +263,10 @@ fn damaged_or_absurd_edit_lists_are_ignored_with_a_warning() {
         let probed = probe_media(media(&bytes)).unwrap_or_else(|e| panic!("{what}: {e}"));
         assert_eq!(probed.info.frames, FRAMES + PRIMING as u64, "{what}");
         assert!(
-            probed.warnings.iter().any(|w| w.kind == WarningKind::PrimingIgnored),
+            probed
+                .warnings
+                .iter()
+                .any(|w| w.kind == WarningKind::PrimingIgnored),
             "{what}: {:?}",
             probed.warnings
         );
@@ -269,7 +304,10 @@ fn damaged_tags_are_ignored_with_a_warning() {
         let probed = probe_media(media(&bytes)).unwrap();
         assert_eq!(probed.info.frames, FRAMES + PRIMING as u64, "{text:?}");
         assert!(
-            probed.warnings.iter().any(|w| w.kind == WarningKind::PrimingIgnored),
+            probed
+                .warnings
+                .iter()
+                .any(|w| w.kind == WarningKind::PrimingIgnored),
             "{text:?}"
         );
         assert_eq!(preload(media(&bytes)).unwrap().info(), probed.info);
@@ -306,13 +344,19 @@ fn only_aac_is_trimmed() {
 #[test]
 fn other_formats_decode_as_before() {
     for name in ["tone.flac", "tone.mp3", "tone.ogg", "tone-alac.m4a"] {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
         let probed = probe(&p).unwrap();
         assert!(probed.warnings.is_empty(), "{name}");
         if name != "tone.ogg" {
             assert_eq!(probed.info.frames, FRAMES, "{name}");
         }
-        assert_eq!(preload(Media::Path(p)).unwrap().info(), probed.info, "{name}");
+        assert_eq!(
+            preload(Media::Path(p)).unwrap().info(),
+            probed.info,
+            "{name}"
+        );
     }
 }
 
@@ -336,12 +380,44 @@ fn hostile_boxes_are_bounded() {
     huge[moov..moov + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     let mut wide = good;
     wide.truncate(moov);
-    wide.extend_from_slice(&[0, 0, 0, 1, b'm', b'o', b'o', b'v', 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    wide.extend_from_slice(&[
+        0, 0, 0, 1, b'm', b'o', b'o', b'v', 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    ]);
     for bytes in [flood, deep, huge, wide] {
         match probe_media(media(&bytes)) {
             Ok(_) | Err(MediaError::Unsupported(_) | MediaError::Corrupt(_)) => {}
             Err(e) => panic!("{e}"),
         }
         openlab_audio::fuzz_decode(&bytes).unwrap();
+    }
+}
+
+/// Bytes of the gapless boxes damaged one at a time (the edit list's entry, the timescale and
+/// track id it depends on, and an iTunSMPB text): whatever probes must preload, stream and seek
+/// as probed (the decode fuzz target's invariants), and nothing may panic or hang.
+#[test]
+fn damaging_the_gapless_boxes_never_breaks_a_file() {
+    let good = read("tone-onset.m4a");
+    let tagged = with_smpb(&read("tone-onset-noedit.m4a"), &smpb(PRIMING as u32));
+    let elst = position(&good, b"elst");
+    let mdhd = position(&good, b"mdhd");
+    let tkhd = position(&good, b"tkhd");
+    let text = position(&tagged, b"iTunSMPB") + 8 + 4 + 4 + 4 + 8;
+    let spans = [
+        (&good, elst + 4..elst + 28, 0xFF),
+        (&good, elst + 4..elst + 28, 0x00),
+        (&good, mdhd + 4..mdhd + 20, 0xFF),
+        (&good, tkhd + 4..tkhd + 20, 0xFF),
+        (&tagged, text..text + 40, b'Z'),
+        (&tagged, text..text + 40, 0xFF),
+    ];
+    for (bytes, span, fill) in spans {
+        for at in span {
+            let mut b = bytes.clone();
+            b[at] = fill;
+            if let Err(e) = openlab_audio::fuzz_decode(&b) {
+                panic!("byte {at} = {fill:#x}: {e}");
+            }
+        }
     }
 }
