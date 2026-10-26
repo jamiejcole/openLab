@@ -56,9 +56,13 @@ pub use output::{
     CallbackTime, DeviceMonitor, ErrorReporter, HostError, HostLink, OutputHost, OutputSample,
     SCRATCH_FRAMES, StreamErrors,
 };
-pub use plan::{MAX_SLICES, PlanError, Plays, Slice, StreamLink, plan, total_frames};
+pub use plan::{
+    MAX_SLICES, MIN_LOOP_MS, PlanError, Plays, Slice, StreamLink, check_loop_lengths,
+    min_loop_frames, plan, plan_at_rate, total_frames,
+};
 pub use stream::{
-    DEFAULT_BUFFER_MS, DEFAULT_EXIT_MS, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,
+    DEFAULT_BUFFER_MS, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_EXIT_BYTES, DEFAULT_EXIT_MS,
+    DEFAULT_LOOP_CACHE_BYTES, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES, DEFAULT_WORKERS,
     DiskStreamer, PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
 };
 

@@ -278,6 +278,8 @@ fn infinite_loop_without_drift(frames: usize) {
         ctl.pump();
     }
     assert_eq!(loops, (t as u64 - 200) / 100);
+    // Every play after the first came from the loop cache (M3.13), not a seek.
+    assert!(h.cached_frames() >= t as u64 - 300);
     assert_eq!(ctl.underrun_frames(), 0);
     assert_eq!(ctl.dropped_events(), 0);
     // The ring is fixed: the stream never runs further ahead than its buffer.
