@@ -60,6 +60,8 @@ fn media() -> MediaRef {
 struct Rig {
     ws: Workspace,
     engine: CueEngine,
+    /// The workspace as the engine last saw it (see `handle_as_binary`).
+    last: Option<Workspace>,
 }
 
 impl Rig {
@@ -67,13 +69,14 @@ impl Rig {
         let mut rig = Self {
             ws: workspace(cues),
             engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
+            last: None,
         };
         rig.tick(0);
         rig
     }
 
     fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        self.engine.handle(&self.ws, input, now)
+        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
     }
 
     fn tick(&mut self, now: SampleTime) -> Vec<Action> {
@@ -245,7 +248,7 @@ fn damaged_but_playable_media_is_not_broken() {
     let report = rig.media(0, "media/a.wav", MediaStatus::Available);
     assert!(report.is_empty());
     assert_eq!(rig.state(1), CueState::Idle);
-    assert_eq!(rig.engine.broken_cues().count(), 0);
+    assert_eq!(rig.engine.broken_cues().len(), 0);
 }
 
 #[test]
@@ -406,7 +409,12 @@ fn invalid_self_and_wrong_kind_targets_are_broken() {
     // A Fade of a group and a Start of a cue inside a group are fine.
     assert!(rig.problems(9).is_empty());
     assert!(rig.problems(10).is_empty());
-    let listed: Vec<CueId> = rig.engine.broken_cues().map(|(c, _)| c).collect();
+    let listed: Vec<CueId> = rig
+        .engine
+        .broken_cues()
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
     assert_eq!(listed, vec![id(2), id(3), id(4), id(5), id(6), id(11)]);
 }
 
@@ -434,7 +442,7 @@ fn model_edits_introduce_and_fix_breakage() {
     let gone = rig.tick(400);
     assert_eq!(changes(&gone, 2), vec![(CueState::Idle, 400)]);
     assert!(problem_reports(&gone).is_empty());
-    assert_eq!(rig.engine.broken_cues().count(), 0);
+    assert_eq!(rig.engine.broken_cues().len(), 0);
 }
 
 // ----- triggering a broken cue -----
@@ -555,12 +563,31 @@ fn a_cue_that_breaks_during_its_pre_wait_skips_its_action() {
     let tick = rig.tick(1000);
     assert!(voice_starts(&tick).is_empty());
     assert_eq!(changes(&tick, 1), vec![(CueState::Broken, 1000)]);
-    // Fixed before its continue: it stays a skipped run, and the continue still fires.
-    rig.media(1200, "media/a.wav", MediaStatus::Available);
+    // Fixed before its continue: it stays a skipped run, and the continue still fires. While
+    // it reports broken it has a reason to show (review L3).
+    let fixed = rig.media(1200, "media/a.wav", MediaStatus::Available);
     assert_eq!(rig.state(1), CueState::Broken);
+    assert_eq!(rig.problems(1), vec![CueProblem::StartedBroken]);
+    assert_eq!(
+        problem_reports(&fixed),
+        vec![(id(1), vec![CueProblem::StartedBroken])]
+    );
+    assert_eq!(rig.engine.broken_cues().len(), 1);
     let next = rig.tick(1500);
     assert_eq!(starts(&next), vec![(id(2), 1500)]);
     assert_eq!(changes(&next, 1), vec![(CueState::Idle, 1500)]);
+    assert_eq!(problem_reports(&next), vec![(id(1), vec![])]);
+    assert!(rig.problems(1).is_empty());
+    // Broken again while that run is pending: its real problems are shown.
+    rig.media(2000, "media/a.wav", MediaStatus::Missing);
+    rig.start(2010, 1);
+    rig.media(2100, "media/a.wav", MediaStatus::Available);
+    assert_eq!(rig.problems(1), vec![CueProblem::StartedBroken]);
+    let again = rig.media(2200, "media/a.wav", MediaStatus::Missing);
+    assert_eq!(
+        problem_reports(&again),
+        vec![(id(1), vec![CueProblem::MediaMissing { media: media() }])]
+    );
 }
 
 #[test]
@@ -627,6 +654,7 @@ fn the_pre_show_query_lists_every_broken_cue_with_its_reasons() {
     let listed: Vec<(CueId, Vec<CueProblem>)> = rig
         .engine
         .broken_cues()
+        .into_iter()
         .map(|(c, p)| (c, p.to_vec()))
         .collect();
     assert_eq!(
@@ -656,7 +684,7 @@ fn the_pre_show_query_lists_every_broken_cue_with_its_reasons() {
         rig.engine.broken_reason(id(1)),
         Some(BrokenReason::DeviceLost)
     );
-    assert_eq!(rig.engine.broken_cues().count(), 2);
+    assert_eq!(rig.engine.broken_cues().len(), 2);
 }
 
 #[test]
@@ -693,4 +721,182 @@ fn a_broken_devamp_cue_uses_its_own_continue_like_a_disarmed_one() {
     let mut rig = Rig::new(vec![devamp, memo(2), memo(3)]);
     assert!(starts(&rig.go(0)).is_empty());
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(2)));
+}
+
+// ----- cost (review H1) -----
+
+fn many(n: u128) -> Workspace {
+    workspace(
+        (0..n)
+            .map(|i| sound_of(10 + i, &format!("media/f{i}.wav"), 1))
+            .collect(),
+    )
+}
+
+#[test]
+fn problem_work_is_proportional_to_what_changed() {
+    // Regression (review H1): every call, and every status input, recomputed every cue.
+    let ws = many(2000);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 5, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(
+        engine.problem_checks(),
+        2000,
+        "the first call builds them once"
+    );
+    for t in 1..=100 {
+        engine.handle(&ws, Input::Tick, t);
+    }
+    assert_eq!(engine.problem_checks(), 2000, "idle ticks cost nothing");
+    engine.handle(
+        &ws,
+        Input::MediaStatus {
+            media: MediaRef::new("media/f7.wav"),
+            status: MediaStatus::Missing,
+        },
+        200,
+    );
+    assert_eq!(engine.problem_checks(), 2001, "one status: its cue only");
+    assert_eq!(engine.state(id(17)), CueState::Broken);
+    // A drive goes away: one batch, each cue once.
+    let gone = (0..2000)
+        .map(|i| {
+            (
+                MediaRef::new(format!("media/f{i}.wav")),
+                MediaStatus::Missing,
+            )
+        })
+        .collect();
+    let batch = engine.handle(
+        &ws,
+        Input::Availability {
+            media: gone,
+            patches: vec![],
+        },
+        300,
+    );
+    assert_eq!(engine.problem_checks(), 4000, "cue 17 was missing already");
+    assert_eq!(problem_reports(&batch).len(), 1999);
+    assert_eq!(engine.broken_cues().len(), 2000);
+    for t in 301..=400 {
+        engine.handle(&ws, Input::Tick, t);
+    }
+    assert_eq!(
+        engine.problem_checks(),
+        4000,
+        "idle ticks with every cue broken"
+    );
+    // The device of patch 1 goes away: the cues on patch 1.
+    engine.handle(
+        &ws,
+        Input::PatchStatus {
+            patch: patch_id(1),
+            resolution: PatchResolution::Unmapped,
+        },
+        500,
+    );
+    assert_eq!(engine.problem_checks(), 6000);
+    // A repeated, unchanged report costs nothing.
+    engine.handle(
+        &ws,
+        Input::PatchStatus {
+            patch: patch_id(1),
+            resolution: PatchResolution::Unmapped,
+        },
+        510,
+    );
+    assert_eq!(engine.problem_checks(), 6000);
+    // A model change: one rebuild on the next call.
+    engine.model_changed();
+    engine.handle(&ws, Input::Tick, 600);
+    engine.handle(&ws, Input::Tick, 601);
+    assert_eq!(engine.problem_checks(), 8000);
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+}
+
+#[test]
+fn a_batch_reports_media_and_patches_together() {
+    let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/b.wav", 1)]);
+    let missing = PatchResolution::DeviceMissing { device: "X".into() };
+    let batch = rig.at(
+        10,
+        Input::Availability {
+            media: vec![
+                (media(), MediaStatus::Missing),
+                (MediaRef::new("media/b.wav"), MediaStatus::Available),
+            ],
+            patches: vec![(patch_id(1), missing.clone())],
+        },
+    );
+    assert_eq!(
+        problem_reports(&batch),
+        vec![
+            (
+                id(1),
+                vec![
+                    CueProblem::MediaMissing { media: media() },
+                    CueProblem::DeviceUnavailable {
+                        patch: patch_id(1),
+                        resolution: missing.clone()
+                    }
+                ]
+            ),
+            (
+                id(2),
+                vec![CueProblem::DeviceUnavailable {
+                    patch: patch_id(1),
+                    resolution: missing
+                }]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn model_changes_count_from_the_signal() {
+    let mut ws = workspace(vec![memo(1), start_cue(2, Some(1))]);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    ws.cue_lists[0].cues.remove(0);
+    engine.model_changed();
+    let edit = engine.handle(&ws, Input::Tick, 10);
+    assert_eq!(changes(&edit, 2), vec![(CueState::Broken, 10)]);
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+}
+
+/// Debug builds catch (and correct) an edit the binary did not signal, so tests find a broken
+/// contract; release builds trust the signal.
+#[cfg(debug_assertions)]
+#[test]
+fn an_unsignalled_model_change_is_caught_in_debug_builds() {
+    let mut ws = workspace(vec![memo(1), start_cue(2, Some(1))]);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    ws.cue_lists[0].cues.remove(0);
+    let edit = engine.handle(&ws, Input::Tick, 10);
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+    assert_eq!(changes(&edit, 2), vec![(CueState::Broken, 10)]);
+}
+
+#[test]
+fn the_pre_show_list_is_in_workspace_order() {
+    // Review L4: lists in order, cues depth-first, not id order.
+    let mut rig = Rig::new(vec![
+        start_cue(9, None),
+        cue(5, group(vec![start_cue(7, None), memo(1)])),
+        start_cue(3, None),
+    ]);
+    rig.ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "Two".into(),
+        cues: vec![start_cue(2, None)],
+    });
+    rig.tick(10);
+    let listed: Vec<CueId> = rig
+        .engine
+        .broken_cues()
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    assert_eq!(listed, vec![id(9), id(7), id(3), id(2)]);
 }

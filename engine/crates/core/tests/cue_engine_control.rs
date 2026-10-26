@@ -126,6 +126,8 @@ fn arm_cue(n: u128, target: u128, arm: bool) -> Cue {
 struct Rig {
     ws: Workspace,
     engine: CueEngine,
+    /// The workspace as the engine last saw it (see `handle_as_binary`).
+    last: Option<Workspace>,
 }
 
 impl Rig {
@@ -137,13 +139,14 @@ impl Rig {
         let mut rig = Self {
             ws: workspace(cues),
             engine: CueEngine::new(EngineConfig::new(RATE, lookahead, 1).unwrap()),
+            last: None,
         };
         rig.tick(0);
         rig
     }
 
     fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        self.engine.handle(&self.ws, input, now)
+        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
     }
 
     fn tick(&mut self, now: SampleTime) -> Vec<Action> {
