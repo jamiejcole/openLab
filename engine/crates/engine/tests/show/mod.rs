@@ -329,3 +329,51 @@ pub fn run_until_idle(s: &mut OfflineShow, cue: CueId, limit: u64) -> u64 {
     }
     panic!("cue {cue} still {:?}", s.control().engine().state(cue));
 }
+
+static GATED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static PROBED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A probe that records each file it is asked for and blocks while the file is gated (a stalled
+/// volume), then probes it for real.
+pub fn gated_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+    PROBED.lock().unwrap().push(path.to_path_buf());
+    CHANGED.notify_all();
+    let mut gated = GATED.lock().unwrap();
+    while gated.iter().any(|g| g == path) {
+        gated = CHANGED.wait(gated).unwrap();
+    }
+    drop(gated);
+    openlab_audio::probe(path)
+}
+
+pub fn gate(path: &Path) {
+    GATED.lock().unwrap().push(path.to_path_buf());
+}
+
+pub fn release(path: &Path) {
+    GATED.lock().unwrap().retain(|g| g != path);
+    CHANGED.notify_all();
+}
+
+/// The order `gated_probe` was asked for these files in (repeats included).
+pub fn probe_order(paths: &[PathBuf]) -> Vec<PathBuf> {
+    PROBED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| paths.contains(p))
+        .cloned()
+        .collect()
+}
+
+/// Waits (event-driven, bounded) until `gated_probe` has been asked for `n` of these files.
+pub fn wait_probed(paths: &[PathBuf], n: usize) {
+    let mut probed = PROBED.lock().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while probed.iter().filter(|p| paths.contains(p)).count() < n {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!left.is_zero(), "probes never came");
+        probed = CHANGED.wait_timeout(probed, left).unwrap().0;
+    }
+}

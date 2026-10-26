@@ -8,7 +8,7 @@ mod show;
 use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, Request, RequestId, ServerMessage, TransportAction,
 };
-use openlab_core::{Command, CueKind, CueProperty, CueState, Position};
+use openlab_core::{Command, CueKind, CueProperty, Position};
 use openlab_engine::control::{Control, Inbox, OUTBOUND_CAPACITY, REPORT_HZ, runner};
 use show::*;
 
@@ -269,7 +269,9 @@ fn the_runner_answers_and_shuts_down() {
             reply,
         })
         .unwrap();
-    let r = replies.recv().unwrap();
+    let r = replies
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
     assert!(matches!(
         r,
         ServerMessage::Result {
@@ -284,9 +286,106 @@ fn the_runner_answers_and_shuts_down() {
         out.try_iter()
             .any(|m| matches!(m, ServerMessage::Runtime { .. }))
     );
-    assert_eq!(
-        openlab_core::CueEngine::playhead_positions(&workspace(vec![]), list_id()),
-        vec![]
+}
+
+#[test]
+fn an_edit_in_a_big_show_rebuilds_only_what_it_changed() {
+    let path = wav(&dc(300, 0.5));
+    let cues: Vec<_> = (1..=2000).map(|n| audio(n, &path, 0)).collect();
+    let mut s = show(workspace(cues));
+    s.run(BLOCK);
+    let after_open = s.control().plan_builds();
+    assert_eq!(after_open, 2000);
+    let id1 = s.request_id();
+    s.send(ClientMessage::Command {
+        id: id1,
+        command: Box::new(Command::SetCueProperty {
+            id: id(7),
+            property: CueProperty::Name {
+                value: "renamed".into(),
+            },
+        }),
+    });
+    s.run(BLOCK);
+    assert_eq!(s.control().plan_builds(), after_open);
+    // Changing one cue's trims rebuilds that cue's plan only.
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(9))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { start_time, .. } = &mut kind {
+        *start_time = 0.01;
+    }
+    let id2 = s.request_id();
+    s.send(ClientMessage::Command {
+        id: id2,
+        command: Box::new(Command::SetCueProperty {
+            id: id(9),
+            property: CueProperty::Kind { value: kind },
+        }),
+    });
+    s.run(BLOCK);
+    assert_eq!(s.control().plan_builds(), after_open + 1);
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
+}
+
+#[test]
+fn a_client_that_falls_behind_loses_meters_first_and_state_never() {
+    let path = wav(&dc(16000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let config = config(&ws);
+    let mut s = openlab_engine::control::offline::OfflineShow::with_outbound_capacity(
+        ws,
+        mixer_config(),
+        config,
+        16,
+    )
+    .unwrap();
+    s.settle_media();
+    s.take_outbound();
+    go(&mut s);
+    // Nobody reads: the channel fills with runtime messages and meters until meters stop.
+    s.run(u64::from(RATE));
+    let id1 = s.request_id();
+    s.send(ClientMessage::Command {
+        id: id1,
+        command: Box::new(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::Name {
+                value: "renamed".into(),
+            },
+        }),
+    });
+    let first = s.take_outbound();
+    let meters = first
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                ServerMessage::Meters { .. } | ServerMessage::Progress { .. }
+            )
+        })
+        .count();
+    // Meters stopped once the channel was half full.
+    assert!(meters <= 8, "{meters}");
+    s.run(BLOCK * 2);
+    let after = s.take_outbound();
+    // The document change did not fit; it comes once there is room, newest.
+    assert!(
+        !first
+            .iter()
+            .any(|m| matches!(m, ServerMessage::Document { .. }))
     );
-    let _ = CueState::Idle;
+    let doc = after.iter().find_map(|m| match m {
+        ServerMessage::Document { document } => Some(document.clone()),
+        _ => None,
+    });
+    assert!(doc.is_some_and(|d| d.dirty && d.can_undo));
+    assert!(after.iter().any(|m| matches!(
+        m,
+        ServerMessage::Log { message, .. } if message.contains("dropped")
+    )));
 }

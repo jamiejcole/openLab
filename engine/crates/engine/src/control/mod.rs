@@ -8,6 +8,7 @@
 //! the offline render driver ([`offline::OfflineShow`], tests) advances it. Both call the same
 //! [`Control::handle`] for each inbox message and [`Control::tick`] on every wake.
 
+mod checks;
 mod inbox;
 mod media;
 pub mod offline;
@@ -35,15 +36,16 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, CommandError, Cue, CueEngine, CueId, CueKind, CueState, DeviceInfo, EngineConfig,
     EngineConfigError, History, Input, MachineSettings, MediaStatus, SampleTime, Workspace,
+    seconds_to_samples,
 };
 
 pub use inbox::{Inbox, OUTBOUND_CAPACITY, ProbeAnswer};
 pub use media::PROBE_WORKERS;
 
+use checks::PlanChecks;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
 use patches::Patches;
-use plan::{PlanFailure, PlanSpec, cue_slices};
 use voices::{Effects, Env, Voices};
 
 /// The longest the loop sleeps without a reason to wake (ARCHITECTURE §3.2).
@@ -54,6 +56,11 @@ pub const REPORT_HZ: u64 = 30;
 pub const PRIME_CUES: usize = 16;
 /// Most streams kept primed at once.
 pub const MAX_PRIMES: usize = 64;
+/// A start held up by its file's probe fails after this long (sample time), so the cue goes
+/// broken instead of showing as running with no sound (docs/control.md).
+pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
+/// A probe worker stuck on one file this long is replaced.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Feedback rounds one input may cause before the loop stops following them (a safety net; the
 /// cue engine bounds its own chains).
 const FEEDBACK_LIMIT: usize = 4096;
@@ -98,6 +105,10 @@ pub struct ControlConfig {
     pub preload_budget: u64,
     pub prime_cues: usize,
     pub max_primes: usize,
+    /// How files are probed (tests inject a stand-in).
+    pub probe: media::ProbeFn,
+    /// A probe worker busy on one file longer than this is replaced (a stalled volume).
+    pub probe_timeout: Duration,
 }
 
 impl ControlConfig {
@@ -114,6 +125,8 @@ impl ControlConfig {
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,
+            probe: openlab_audio::probe,
+            probe_timeout: PROBE_TIMEOUT,
         }
     }
 }
@@ -153,6 +166,7 @@ pub struct Control {
     streamer: DiskStreamer,
     media: MediaCatalog,
     voices: Voices,
+    checks: PlanChecks,
     patches: Patches,
     out: Outbound,
     backend: Backend,
@@ -170,6 +184,10 @@ pub struct Control {
     primes_dirty: bool,
     warnings_dirty: bool,
     warnings: Vec<WireWarning>,
+    /// A `document` / `warnings` message did not fit the outbound channel: send the latest
+    /// again once there is room.
+    resend_document: bool,
+    resend_warnings: bool,
     seen: Seen,
     last_progress: Option<SampleTime>,
     last_meters: Option<SampleTime>,
@@ -213,7 +231,13 @@ impl Control {
             .as_ref()
             .and_then(|p| p.parent())
             .map(PathBuf::from);
-        let media = MediaCatalog::new(inbox, show_dir, config.preload_budget)?;
+        let media = MediaCatalog::new(
+            inbox,
+            show_dir,
+            config.preload_budget,
+            config.probe,
+            config.probe_timeout,
+        )?;
         let cue_outputs = mixer.cue_outputs();
         let patches = Patches::new(config.mixer_patches, cue_outputs);
         let mut control = Self {
@@ -224,6 +248,7 @@ impl Control {
             streamer,
             media,
             voices: Voices::new(),
+            checks: PlanChecks::default(),
             patches,
             out: Outbound::new(outbound),
             backend,
@@ -239,6 +264,8 @@ impl Control {
             primes_dirty: true,
             warnings_dirty: true,
             warnings: Vec::new(),
+            resend_document: false,
+            resend_warnings: false,
             seen: Seen::default(),
             last_progress: None,
             last_meters: None,
@@ -290,7 +317,21 @@ impl Control {
             self.voices.event(e, &mut fx);
         }
         self.voices.poll_streams(&mut fx, &self.ws);
+        let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.rate);
+        self.voices.expire_held(now, hold, &mut fx);
         self.follow(fx, now);
+        let stuck = self.media.watchdog();
+        if !stuck.is_empty() {
+            self.log(
+                LogLevel::Error,
+                format!(
+                    "{} media probe(s) stuck; workers replaced ({} so far)",
+                    stuck.len(),
+                    self.media.abandoned_workers()
+                ),
+            );
+            self.pending_media.extend(stuck);
+        }
         self.deliver_deferred(now);
         if self.engine.is_due(now) {
             self.feed(Input::Tick, now);
@@ -311,24 +352,12 @@ impl Control {
     /// How long the loop may wait for the inbox before it must tick again: until the next
     /// deadline enters the lookahead window, a deferred report becomes due, or [`MAX_WAIT`].
     pub fn wait_hint(&self) -> Duration {
-        let rendered = self.mixer.samples_rendered();
-        let block = self.config.block_frames.max(1);
-        let mut frames = u64::MAX;
-        if let Some(d) = self.engine.next_deadline() {
-            // Due once `d < rendered + 2 * block`.
-            frames = frames.min(
-                d.saturating_add(1)
-                    .saturating_sub(2 * block)
-                    .saturating_sub(rendered),
-            );
-        }
-        for (at, _) in &self.deferred {
-            frames = frames.min(
-                at.saturating_add(1)
-                    .saturating_sub(block)
-                    .saturating_sub(rendered),
-            );
-        }
+        let frames = wake_frames(
+            self.engine.next_deadline(),
+            self.deferred.iter().map(|(at, _)| *at),
+            self.mixer.samples_rendered(),
+            self.config.block_frames.max(1),
+        );
         let secs = frames as f64 / f64::from(self.rate.get());
         Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
     }
@@ -639,7 +668,7 @@ impl Control {
 
     fn document(&mut self) {
         let document = self.document_state();
-        self.out.send(ServerMessage::Document { document });
+        self.resend_document = !self.out.send_state(ServerMessage::Document { document });
     }
 
     fn document_state(&self) -> DocumentState {
@@ -662,6 +691,16 @@ impl Control {
     /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
     fn prime(&mut self, now: SampleTime) {
         let wanted = prime_set(&self.ws, &self.engine, self.config.prime_cues);
+        // Their files are probed first (H2: a restart mid-show must not leave the cue at the
+        // playhead behind a hundred others).
+        let keys: Vec<String> = wanted
+            .iter()
+            .filter_map(|c| match &self.ws.find_cue(*c)?.kind {
+                CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+                _ => None,
+            })
+            .collect();
+        self.media.prioritize(keys.iter().map(String::as_str));
         let mut env = Env {
             ws: &self.ws,
             media: &self.media,
@@ -695,7 +734,7 @@ impl Control {
                 self.last_progress = Some(rendered);
                 let mut m = ServerMessage::Progress { items };
                 m.sanitise();
-                self.out.send(m);
+                self.out.send_lossy(m);
             }
         }
         if due(self.last_meters) {
@@ -766,7 +805,7 @@ impl Control {
             self.meters_live = live;
             let mut m = ServerMessage::Meters { outputs, cues };
             m.sanitise();
-            self.out.send(m);
+            self.out.send_lossy(m);
         }
     }
 
@@ -821,9 +860,26 @@ impl Control {
             );
             self.warnings_dirty = true;
         }
-        let out = self.out.dropped();
-        if out > self.seen.outbound_dropped {
+        // State the clients missed goes again, newest, once there is room.
+        if self.resend_document && self.out.has_room() {
+            self.document();
+        }
+        if self.resend_warnings && self.out.has_room() {
+            self.resend_warnings = !self.out.send_state(ServerMessage::Warnings {
+                warnings: self.warnings.clone(),
+            });
+        }
+        let out = self.out.dropped() + self.out.lossy_dropped();
+        if out > self.seen.outbound_dropped && self.out.has_room() {
+            let (seq, lossy) = (self.out.dropped(), self.out.lossy_dropped());
             self.seen.outbound_dropped = out;
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "clients were not keeping up: {seq} message(s) and {lossy} meter/progress \
+                     update(s) dropped so far"
+                ),
+            );
         }
     }
 
@@ -849,23 +905,21 @@ impl Control {
                 None,
             ));
         }
-        for (cue, media) in openlab_core::audio_media(&self.ws) {
-            let Some((ready, _)) = self.media.media(media.as_str()) else {
-                continue;
-            };
-            let Some(c) = self.ws.find_cue(cue) else {
-                continue;
-            };
-            if let Some(spec) = spec_of(c)
-                && let Err(PlanFailure::Plan(e)) =
-                    cue_slices(&spec, &ready.probed.info, self.rate, 0)
-            {
-                list.push(notice(
-                    "bad_plan",
-                    format!("the cue's slices cannot be played: {e}"),
-                    Some(cue),
-                ));
-            }
+        let mut failed: Vec<&str> = self.media.preload_failed().collect();
+        failed.sort_unstable();
+        for path in failed {
+            list.push(notice(
+                "preload_failed",
+                format!("{path} could not be loaded into memory and is streamed"),
+                None,
+            ));
+        }
+        for (cue, e) in self.checks.check(&self.ws, &self.media, self.rate) {
+            list.push(notice(
+                "bad_plan",
+                format!("the cue's slices cannot be played: {e}"),
+                Some(cue),
+            ));
         }
         if self.seen.alloc_violations > 0 {
             list.push(notice(
@@ -879,7 +933,9 @@ impl Control {
         }
         if list != self.warnings {
             self.warnings = list.clone();
-            self.out.send(ServerMessage::Warnings { warnings: list });
+            self.resend_warnings = !self
+                .out
+                .send_state(ServerMessage::Warnings { warnings: list });
         }
     }
 
@@ -946,6 +1002,12 @@ impl Control {
         self.mixer.pump();
     }
 
+    /// Slice plans built for the `bad_plan` warnings so far (a cost measure: an edit rebuilds
+    /// only the cues it changed).
+    pub fn plan_builds(&self) -> u64 {
+        self.checks.builds()
+    }
+
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
@@ -989,6 +1051,11 @@ impl Control {
         self.media.pending()
     }
 
+    /// Probe workers replaced because they were stuck.
+    pub fn abandoned_probe_workers(&self) -> usize {
+        self.media.abandoned_workers()
+    }
+
     /// Memory taken from the preload budget.
     pub fn preload_reserved(&self) -> u64 {
         self.media.preload_reserved()
@@ -1021,6 +1088,33 @@ impl Control {
     pub fn is_idle(&self) -> bool {
         self.voices.is_idle() && self.deferred.is_empty()
     }
+}
+
+/// Frames from `rendered` until the loop must tick: when the engine's next deadline enters the
+/// lookahead window (`is_due(rendered + block)`: `deadline < rendered + 2 * block`), or a
+/// deferred report becomes deliverable (`at < rendered + block`). 0 = now.
+pub fn wake_frames(
+    deadline: Option<SampleTime>,
+    deferred: impl Iterator<Item = SampleTime>,
+    rendered: SampleTime,
+    block: SampleTime,
+) -> u64 {
+    let mut frames = u64::MAX;
+    if let Some(d) = deadline {
+        frames = frames.min(
+            d.saturating_add(1)
+                .saturating_sub(block.saturating_mul(2))
+                .saturating_sub(rendered),
+        );
+    }
+    for at in deferred {
+        frames = frames.min(
+            at.saturating_add(1)
+                .saturating_sub(block)
+                .saturating_sub(rendered),
+        );
+    }
+    frames
 }
 
 fn ok(id: openlab_core::protocol::RequestId, revision: Option<u64>) -> ServerMessage {
@@ -1124,24 +1218,6 @@ fn groups(cues: &[Cue], f: &mut impl FnMut(CueId)) {
     }
 }
 
-fn spec_of(c: &Cue) -> Option<PlanSpec<'_>> {
-    match &c.kind {
-        CueKind::Audio {
-            start_time,
-            end_time,
-            slices,
-            last_slice_play_count,
-            ..
-        } => Some(PlanSpec {
-            start_time: *start_time,
-            end_time: *end_time,
-            slices,
-            last_slice_play_count: *last_slice_play_count,
-        }),
-        _ => None,
-    }
-}
-
 fn cue_wants_preload(ws: &Workspace, key: &str) -> bool {
     let mut wants = false;
     for list in &ws.cue_lists {
@@ -1209,4 +1285,122 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> 
         });
     }
     wanted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `wake_frames` agrees with the engine's own wake rule (`is_due`) for every rendered
+    /// position around a deadline: 0 exactly when a tick at that position is due, and otherwise
+    /// the distance to the first position where it is.
+    #[test]
+    fn wake_frames_agrees_with_is_due() {
+        for block in [1u64, 3, 64] {
+            let engine_due = |d: u64, rendered: u64| {
+                // EngineConfig lookahead = block; now = rendered + block.
+                d < rendered + block + block
+            };
+            for d in 0..300u64 {
+                for rendered in 0..300u64 {
+                    let w = wake_frames(Some(d), std::iter::empty(), rendered, block);
+                    assert_eq!(
+                        w == 0,
+                        engine_due(d, rendered),
+                        "d {d} r {rendered} b {block}"
+                    );
+                    if w > 0 {
+                        assert!(engine_due(d, rendered + w));
+                        assert!(!engine_due(d, rendered + w - 1));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wake_frames_for_deferred_reports() {
+        // Deliverable once `at < now`, now = rendered + block.
+        let block = 10;
+        for at in 0..100u64 {
+            for rendered in 0..100u64 {
+                let w = wake_frames(None, std::iter::once(at), rendered, block);
+                assert_eq!(w == 0, at < rendered + block, "at {at} r {rendered}");
+                if w > 0 {
+                    assert!(at < rendered + w + block);
+                }
+            }
+        }
+        assert_eq!(wake_frames(None, std::iter::empty(), 5, 10), u64::MAX);
+        assert_eq!(
+            wake_frames(Some(u64::MAX), std::iter::empty(), 0, 10),
+            u64::MAX - 20
+        );
+    }
+
+    /// The engine's own `is_due` with lookahead = block matches the rule `wake_frames` assumes.
+    #[test]
+    fn the_wake_rule_matches_the_engine() {
+        let block = 64;
+        let ws = Workspace {
+            id: openlab_core::WorkspaceId(uuid_zero()),
+            name: String::new(),
+            settings: openlab_core::WorkspaceSettings {
+                min_go_interval: 0.0,
+                panic_duration: 1.0,
+                autosave_interval: 30.0,
+                osc_passcode: None,
+                master_db: 0.0,
+                hotkeys: openlab_core::TransportHotkeys::default(),
+                auto_number_start: 1.0,
+                auto_number_increment: 1.0,
+            },
+            patches: vec![],
+            network_patches: vec![],
+            cue_lists: vec![openlab_core::CueList {
+                id: openlab_core::CueListId(uuid_zero()),
+                name: String::new(),
+                cues: vec![Cue {
+                    id: CueId(uuid_zero()),
+                    number: None,
+                    name: String::new(),
+                    notes: String::new(),
+                    color: openlab_core::CueColor::None,
+                    flagged: false,
+                    armed: true,
+                    pre_wait: 0.5,
+                    post_wait: 0.0,
+                    continue_mode: openlab_core::ContinueMode::DoNotContinue,
+                    triggers: openlab_core::Triggers {
+                        hotkey: None,
+                        osc: None,
+                    },
+                    second_trigger: openlab_core::SecondTrigger::Nothing,
+                    second_trigger_on_release: false,
+                    kind: CueKind::Memo,
+                }],
+            }],
+        };
+        let mut engine = CueEngine::new(EngineConfig::new(1000, block, 1).unwrap());
+        engine.handle(
+            &ws,
+            Input::Start {
+                cue: CueId(uuid_zero()),
+            },
+            block,
+        );
+        let d = engine.next_deadline().unwrap();
+        for rendered in 0..d + 10 {
+            let w = wake_frames(Some(d), std::iter::empty(), rendered, block);
+            assert_eq!(
+                w == 0,
+                engine.is_due(rendered + block),
+                "rendered {rendered}"
+            );
+        }
+    }
+
+    fn uuid_zero() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0)
+    }
 }

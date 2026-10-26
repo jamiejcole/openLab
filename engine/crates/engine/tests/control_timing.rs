@@ -92,7 +92,7 @@ fn auto_continue_fires_on_its_exact_sample() {
 }
 
 #[test]
-fn auto_follow_chains_from_the_voice_end_report() {
+fn auto_follow_comes_on_the_exact_end_sample() {
     let a = wav(&dc(500, 0.25));
     let b = wav(&dc(500, 0.5));
     let c = wav(&dc(500, 0.75));
@@ -105,18 +105,16 @@ fn auto_follow_chains_from_the_voice_end_report() {
     s.run(4000);
     let ch0 = s.channel(0);
     let ch1 = s.channel(1);
-    // The end is known only from the mixer's report, which comes after the block it happened
-    // in, so the next cue starts within two blocks of it (late rule: from its head, a
-    // `late_start` warning, later timing counted from the end).
-    let end1 = at + 500;
-    let start2 = first_nonzero(&ch1).unwrap();
-    assert!(
-        (end1..=end1 + 2 * BLOCK as usize).contains(&start2),
-        "{start2}"
+    // The engine knows each action's length (`ActionLength`): the next cue starts on the end
+    // sample itself, with no gap and no overlap.
+    assert_eq!(last_nonzero(&ch0[..at + 600]), Some(at + 499));
+    assert_eq!(first_nonzero(&ch1), Some(at + 500));
+    assert_eq!(last_nonzero(&ch1), Some(at + 999));
+    assert_eq!(
+        first_nonzero(&ch0[at + 600..]).map(|i| i + at + 600),
+        Some(at + 1000)
     );
-    assert_eq!(last_nonzero(&ch1), Some(start2 + 499));
-    let start3 = ch0.iter().skip(end1).position(|&v| v == 0.75).unwrap() + end1;
-    assert!(start3 >= start2 + 500 && start3 <= start2 + 500 + 2 * BLOCK as usize);
+    assert_eq!(ch0[at + 1000], 0.75);
     for n in 1..=3 {
         assert_eq!(
             s.control().engine().state(id(n)),
@@ -125,11 +123,102 @@ fn auto_follow_chains_from_the_voice_end_report() {
     }
     let msgs = s.take_outbound();
     assert!(
-        warnings(&msgs)
+        !warnings(&msgs)
             .iter()
             .any(|w| matches!(w, WireWarning::LateStart { .. }))
     );
     assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_playlist_moves_on_on_the_exact_end_sample() {
+    let a = wav(&dc(700, 0.25));
+    let b = wav(&dc(300, 0.5));
+    let playlist = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &a, 0), audio(2, &b, 1)],
+        },
+    );
+    let mut s = show(workspace(vec![playlist]));
+    let at = go(&mut s) as usize;
+    s.run(2000);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 699));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at + 700));
+}
+
+#[test]
+fn auto_follow_after_a_pause_comes_on_the_exact_end_sample() {
+    let a = wav(&dc(2000, 0.25));
+    let b = wav(&dc(300, 0.5));
+    let mut c1 = audio(1, &a, 0);
+    c1.continue_mode = ContinueMode::AutoFollow;
+    let mut s = show(workspace(vec![c1, audio(2, &b, 1)]));
+    let at = go(&mut s) as usize;
+    s.run(700);
+    let p = s.now() as usize;
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(1111);
+    let r = s.now() as usize;
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(3000);
+    let end = at + 2000 + (r - p);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(end - 1));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(end));
+}
+
+#[test]
+fn auto_follow_after_a_devamp_comes_on_the_exact_end_sample() {
+    // Intro 400, loop 400..1200 until devamped, outro 1200..1600.
+    let a = wav(&dc(1600, 0.25));
+    let b = wav(&dc(300, 0.5));
+    let mut c1 = with_slices(audio(1, &a, 0), &[(secs(400), 1), (secs(1200), 0)], 1);
+    c1.continue_mode = ContinueMode::AutoFollow;
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+        },
+    );
+    let mut s = show(workspace(vec![c1, audio(2, &b, 1), devamp]));
+    go(&mut s);
+    s.run(3000);
+    start(&mut s, 3);
+    s.run(4000);
+    let end = last_nonzero(&s.channel(0)).unwrap() + 1;
+    assert_eq!(first_nonzero(&s.channel(1)), Some(end));
+}
+
+#[test]
+fn a_late_tick_starts_late_and_keeps_the_later_schedule() {
+    let a = wav(&dc(4000, 0.25));
+    let b = wav(&dc(300, 0.5));
+    let mut c1 = audio(1, &a, 0);
+    c1.pre_wait = secs(1000);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    c1.post_wait = secs(2000);
+    let mut s = show(workspace(vec![c1, audio(2, &b, 1)]));
+    let at = go(&mut s) as usize;
+    // The control thread is held off past the pre-wait's end.
+    s.render_only(1000 + 300);
+    s.run(BLOCK * 3);
+    let ch0 = s.channel(0);
+    let started = first_nonzero(&ch0).unwrap();
+    assert!(started > at + 1000, "{started}");
+    assert!(
+        warnings(&s.take_outbound())
+            .iter()
+            .any(|w| matches!(w, WireWarning::LateStart { .. }))
+    );
+    // The auto-continue counts from the action's deadline, not from the late start.
+    s.run(3000);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at + 1000 + 2000));
 }
 
 #[test]
@@ -233,6 +322,7 @@ fn pause_and_resume_keep_the_position() {
     let r = s.now() as usize;
     s.transport(TransportAction::Resume { cue: id(1) });
     let end = run_until_idle(&mut s, id(1), 10_000) as usize;
+    s.run(BLOCK * 4);
     let ch0 = s.channel(0);
     let ramp = ramp(6000);
     // Before the pause: the file from its first frame.
@@ -244,7 +334,8 @@ fn pause_and_resume_keep_the_position() {
     assert_eq!(ch0[r + 40..r + 1000], ramp[k + 40..k + 1000]);
     // It ends 6000 frames of play after its start, the pause added.
     assert_eq!(last_nonzero(&ch0), Some(t0 + 6000 + (r - p) - 1));
-    assert!(end >= t0 + 6000 + (r - p));
+    // The engine knew the end in advance: it completed the cue on it, ahead of the render.
+    assert!(end <= t0 + 6000 + (r - p));
     assert_eq!(s.control().live_voices(), 0);
 }
 
