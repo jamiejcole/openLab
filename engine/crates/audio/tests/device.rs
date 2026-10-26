@@ -234,12 +234,16 @@ fn host_errors_are_counted_once_per_kind() {
 }
 
 #[test]
-fn rerouting_alone_does_not_ask_for_a_reopen() {
+fn a_reroute_asks_for_a_reopen_and_a_realtime_refusal_does_not() {
+    // A show must never move devices on its own: a reroute (or a system-default change) makes
+    // the negotiated configuration stale, so the engine has to notice and reopen.
     let (_ctl, mixer) = scenario(2);
     let (_host, link) = OutputHost::new(mixer, 2);
-    link.reporter().report(HostError::Rerouted);
     link.reporter().report(HostError::RealtimeDenied);
+    link.reporter().report(HostError::Other);
     assert!(!link.monitor().needs_reopen());
+    link.reporter().report(HostError::Rerouted);
+    assert!(link.monitor().needs_reopen());
 }
 
 fn at(ms_tenths: u64) -> Option<CallbackTime> {

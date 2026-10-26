@@ -75,7 +75,8 @@ pub enum HostError {
     Lost,
     /// The stream must be rebuilt (e.g. the device's rate was changed elsewhere). Reopen.
     Invalidated,
-    /// The host moved the stream to another device on its own.
+    /// The host moved the stream to another device on its own, or the system default changed
+    /// under it. The negotiated configuration no longer describes the output: reopen.
     Rerouted,
     /// The audio thread did not get real-time priority.
     RealtimeDenied,
@@ -91,6 +92,14 @@ pub enum HostError {
 const KINDS: usize = 6;
 
 impl HostError {
+    /// The stream no longer plays on the device it was opened for: close it and reopen.
+    pub fn needs_reopen(self) -> bool {
+        matches!(
+            self,
+            HostError::Lost | HostError::Invalidated | HostError::Rerouted
+        )
+    }
+
     fn slot(self) -> Option<usize> {
         match self {
             HostError::Lost => Some(0),
@@ -158,7 +167,7 @@ impl DeviceShared {
                 if let Some(c) = self.errors.get(k) {
                     c.fetch_add(1, Ordering::Relaxed);
                 }
-                if matches!(error, HostError::Lost | HostError::Invalidated) {
+                if error.needs_reopen() {
                     self.needs_reopen.store(true, Ordering::Release);
                 }
             }
@@ -194,6 +203,8 @@ pub struct DeviceMonitor {
 
 impl DeviceMonitor {
     /// Error counts since the previous call (read-and-reset, so each report is seen once).
+    /// Single consumer: the counts are shared by all clones, so one owner (the engine's control
+    /// loop) should take them and pass them on; a second poller would steal reports.
     pub fn take_errors(&self) -> StreamErrors {
         let take = |k: usize| {
             self.shared
@@ -211,8 +222,9 @@ impl DeviceMonitor {
         }
     }
 
-    /// Sticky: the host reported [`HostError::Lost`] or [`HostError::Invalidated`]. The stream
-    /// will not recover by itself; close it and reopen.
+    /// Sticky: the host reported an error for which [`HostError::needs_reopen`] holds (lost,
+    /// invalidated, rerouted). The stream will not recover by itself; close it and reopen.
+    /// Non-destructive, so any number of clones may poll it.
     pub fn needs_reopen(&self) -> bool {
         self.shared.needs_reopen.load(Ordering::Acquire)
     }
@@ -306,7 +318,9 @@ pub struct CallbackTime {
     pub playback_ns: u64,
 }
 
-/// Counts a callback that starts more than 1.5 buffers after the previous one as an xrun.
+/// Counts a callback that starts more than 1.5 buffers after the previous one as an xrun. The
+/// buffer is the longer of the two callbacks, so a short buffer (an early WASAPI wake-up, a
+/// buffer resize) followed by a normal one is not a gap.
 #[derive(Default)]
 struct GapDetector {
     last: Option<(u64, u64)>,
@@ -316,7 +330,8 @@ impl GapDetector {
     fn observe(&mut self, now_ns: u64, frames: u64, rate: u32) -> bool {
         let gap = match self.last {
             Some((prev, prev_frames)) if now_ns > prev && prev_frames > 0 && rate > 0 => {
-                let expected = prev_frames.saturating_mul(1_000_000_000) / u64::from(rate);
+                let longest = prev_frames.max(frames);
+                let expected = longest.saturating_mul(1_000_000_000) / u64::from(rate);
                 (now_ns - prev).saturating_mul(2) > expected.saturating_mul(3)
             }
             _ => false,
@@ -535,6 +550,39 @@ mod tests {
         assert!(!g.observe(1_000_000_000, 480, 48_000)); // clock stepped back
         assert!(!g.observe(1_010_000_000, 480, 48_000));
         assert!(!g.observe(1_010_000_000, 480, 48_000)); // same instant
+    }
+
+    #[test]
+    fn a_short_callback_then_a_normal_one_is_not_a_gap() {
+        let mut g = GapDetector::default();
+        assert!(!g.observe(0, 480, 48_000));
+        // An early wake-up delivers 64 frames (1.3 ms) ...
+        assert!(!g.observe(10_000_000, 64, 48_000));
+        // ... and the next full 480-frame callback comes a normal 10 ms later.
+        assert!(!g.observe(20_000_000, 480, 48_000));
+        // A real gap after the short one is still seen.
+        assert!(!g.observe(30_000_000, 64, 48_000));
+        assert!(g.observe(60_000_000, 480, 48_000));
+    }
+
+    #[test]
+    fn errors_that_need_a_reopen() {
+        let reopen: Vec<HostError> = [
+            HostError::Lost,
+            HostError::Invalidated,
+            HostError::Rerouted,
+            HostError::RealtimeDenied,
+            HostError::Xrun,
+            HostError::BadBuffer,
+            HostError::Other,
+        ]
+        .into_iter()
+        .filter(|e| e.needs_reopen())
+        .collect();
+        assert_eq!(
+            reopen,
+            [HostError::Lost, HostError::Invalidated, HostError::Rerouted]
+        );
     }
 
     #[test]
