@@ -836,6 +836,29 @@ fn a_cycle_through_feedback_on_its_own_sample_is_cut() {
     assert_eq!(voice_starts(&go), vec![(id(1), 1)]);
 }
 
+#[test]
+fn ignored_triggers_do_not_use_up_the_chain_budget_of_their_sample() {
+    // Review M1: the budget is shared by every call at one `now` (one audio block), so a stuck
+    // controller key repeating Start on a playing cue must not leave the operator's GO in that
+    // block with `GoIgnored { chain_limit }`. Starts of unknown cues cost nothing either.
+    let mut rig = Rig::new(vec![sound(1), memo(2), memo(3)]);
+    let limit = CueEngine::chain_limit(&rig.ws);
+    rig.start(400, 1);
+    rig.set_playhead(400, 2);
+    for _ in 0..limit + 5 {
+        let again = rig.start(500, 1);
+        assert!(matches!(
+            warnings(&again).as_slice(),
+            [EngineWarning::TriggerIgnored { .. }]
+        ));
+    }
+    for _ in 0..limit + 5 {
+        rig.at(500, Input::Start { cue: id(99) });
+    }
+    let go = rig.go(500);
+    assert_eq!(starts(&go), vec![(id(2), 500)], "{go:?}");
+}
+
 // ----- GoTo (CT-17) -----
 
 #[test]
