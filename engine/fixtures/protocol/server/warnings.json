@@ -1,0 +1,15 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "notice",
+      "code": "file_repaired",
+      "message": "duplicate cue number 3 was cleared"
+    },
+    {
+      "type": "late_start",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "late_ms": 12
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 46,
+  "request": {
+    "type": "list_devices"
+  }
+}

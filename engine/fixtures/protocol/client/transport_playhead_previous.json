@@ -1,0 +1,8 @@
+{
+  "type": "transport",
+  "id": 18,
+  "action": {
+    "type": "playhead_previous",
+    "list": "00000000-0000-0000-0000-000000000001"
+  }
+}

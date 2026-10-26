@@ -1,0 +1,15 @@
+{
+  "type": "result",
+  "id": 46,
+  "ok": {
+    "data": {
+      "type": "devices",
+      "devices": [
+        {
+          "name": "Scarlett 2i2",
+          "output_channels": 2
+        }
+      ]
+    }
+  }
+}

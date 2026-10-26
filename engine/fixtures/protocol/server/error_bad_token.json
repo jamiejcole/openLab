@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "bad_token",
+  "message": "wrong token",
+  "protocol_version": 1
+}
