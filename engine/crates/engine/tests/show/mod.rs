@@ -332,16 +332,18 @@ pub fn run_until_idle(s: &mut OfflineShow, cue: CueId, limit: u64) -> u64 {
 
 static GATED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 static PROBED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-static CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+// One condvar per mutex: macOS pthreads refuse a condvar used with two mutexes.
+static GATE_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+static PROBED_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// A probe that records each file it is asked for and blocks while the file is gated (a stalled
 /// volume), then probes it for real.
 pub fn gated_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
     PROBED.lock().unwrap().push(path.to_path_buf());
-    CHANGED.notify_all();
+    PROBED_CHANGED.notify_all();
     let mut gated = GATED.lock().unwrap();
     while gated.iter().any(|g| g == path) {
-        gated = CHANGED.wait(gated).unwrap();
+        gated = GATE_CHANGED.wait(gated).unwrap();
     }
     drop(gated);
     openlab_audio::probe(path)
@@ -353,7 +355,7 @@ pub fn gate(path: &Path) {
 
 pub fn release(path: &Path) {
     GATED.lock().unwrap().retain(|g| g != path);
-    CHANGED.notify_all();
+    GATE_CHANGED.notify_all();
 }
 
 /// The order `gated_probe` was asked for these files in (repeats included).
@@ -374,6 +376,6 @@ pub fn wait_probed(paths: &[PathBuf], n: usize) {
     while probed.iter().filter(|p| paths.contains(p)).count() < n {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         assert!(!left.is_zero(), "probes never came");
-        probed = CHANGED.wait_timeout(probed, left).unwrap().0;
+        probed = PROBED_CHANGED.wait_timeout(probed, left).unwrap().0;
     }
 }
