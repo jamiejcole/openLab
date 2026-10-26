@@ -19,6 +19,9 @@ mod time;
 mod transport;
 mod types;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, HashSet};
 
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};

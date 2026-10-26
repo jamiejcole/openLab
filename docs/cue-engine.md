@@ -201,7 +201,7 @@ A control cue is a cue like any other (pre-wait, post-wait, continue mode, opera
 
 - The operation is dated on `A`: an operation in the lookahead window acts on its own sample (`StopVoice { at: A }`, not `now`); a late one (`A < now`) acts at `now`, except a start, which is dated `A` like any trigger so later timing keeps its schedule (the late rule then applies to voices).
 - The cue is still in its action while it acts, so a trigger from its target back to it is ignored (`TriggerIgnored`).
-- **Targets**: a cue with no target, a missing target, itself as target or a target of the wrong kind has static problems (see [Broken cues](#broken-cues-cue-06-nfr-07)): it is `broken` and its action never runs. The run-time checks (`NoTarget`, `TargetMissing`, `TargetWrongKind`: the cue does nothing, its timing and continue apply) remain as a second line of defence.
+- **Targets**: a cue with no target, a missing target, itself as target or a target of the wrong kind has static problems (see [Broken cues](#broken-cues-cue-06-nfr-07)): it is `broken` and its action never runs. The run-time checks (`NoTarget`, `TargetMissing`, `TargetWrongKind`: the cue does nothing, its timing and continue apply) remain for static problems that are out of date (a model change the binary did not signal, release builds only).
 - Targets that are groups use the group operations ([Operations on a group](#operations-on-a-group)): Stop/Pause/Load/Reset reach every descendant, Start starts the group in its mode, a target inside a group runs its idle groups adopted.
 
 | Cue | Action at `A` |
