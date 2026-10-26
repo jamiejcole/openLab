@@ -28,11 +28,23 @@ The engine's control thread (ARCHITECTURE §3.1, §3.2): it owns the workspace, 
 `Inbox::Client { message, reply }` carries a `ClientMessage` already decoded and authenticated by the network layer (M4.3). Every `command`, `transport`, `undo`, `redo` and `request` gets exactly one `result` on `reply`; broadcasts go to the outbound channel. `Inbox::Probe` is internal feedback; `Inbox::Shutdown` (or `goodbye { shutdown: true }`) ends the loop, which then hard-stops the show (two Panics).
 
 - **Transport** → the cue-engine input of docs/protocol.md's table (`hard_stop` = `Stop { fade_out: None }`), handled at once; `result` ok means "handed to the cue engine".
-- **Command / undo / redo** → `History` on the workspace, then `engine.model_changed()` before the engine's next call (M4.2 contract), a `model_changed { revision }` broadcast, a `document` broadcast, then the `result` with that revision, then one `Tick` so the edit takes effect now (a deleted running cue stops on the next block). A refused command changes nothing: `command_refused`. `unsignalled_model_changes()` is checked after every engine call; a rise is logged as an error.
+- **Command / undo / redo** → `History` on the workspace, then `engine.model_changed()` before the engine's next call (M4.2 contract), one `model_changed { revision, upserts, deletes }` broadcast (below), a `document` broadcast, then the `result` with that revision, then one `Tick` so the edit takes effect now (a deleted running cue stops on the next block). A refused command changes nothing: `command_refused`. `unsignalled_model_changes()` is checked after every engine call; a rise is logged as an error.
 - **Requests**: `snapshot` answers `snapshot` then `result`; `list_devices` answers at once from the last device list read (no device call on the control thread; offline: `ControlConfig::devices`); every other request is `unsupported` until M4.4.
 - **Ordering across channels**: a command's `model_changed` goes to the outbound channel before its `result` goes to `reply`. M4.3 must keep that order per connection (e.g. drain the broadcasts before writing a reply).
 
-`model_changed` carries **no upserts or deletes yet** (M4.1a): it is a revision bump, so a client sees the change and can request a snapshot. Arm/Disarm cues' `SetArmed` changes go through the same path as a runtime change (no undo step; the document becomes dirty, since a save stores it — QLab confirmation in PROGRESS M2.17).
+### Model changes (M4.1a)
+
+Every model edit (command, undo, redo, a relink command, an Arm/Disarm `SetArmed`) broadcasts exactly one `model_changed`; the revision rises by one per message, so a client that sees a gap requests a `snapshot`. A newly opened or reverted workspace is a `snapshot`, not a diff (M4.4). A command refused by `History`, or an undo/redo with nothing to do, sends nothing.
+
+The contents are derived from the edit, not by diffing workspaces. Commands touch cues by id and nothing else (`core::changes`): `Command::footprint()` lists the cue ids a command added, removed, moved or edited (a transaction: the union). For an undo or redo the footprint is that of the step about to be applied (`History::peek_undo`/`peek_redo`; the inverse is itself a command). `SetArmed` names the cues whose flag changed. After the edit, `model_changes(&workspace, &footprint)` reads those cues from the new workspace: one pass over the tree with hash lookups, no per-cue allocation unless the cue is sent. What is sent is O(cues named), not O(show): renaming one cue in a 2,000-cue show is one upsert.
+
+- `deletes`: every removed or moved cue. Deleting movers first means a client never reasons about where a cue used to be, so several moves in one step (a transaction) land correctly applying `deletes` then `upserts` in order.
+- `upserts`: every named cue that exists after the edit, at its final `(list, parent, index)`, in tree order (ascending within a container, parents first). A named cue inside another named group is not sent separately: the group's upsert carries its subtree. So the one case that costs more than the footprint is editing a group itself (rename, mode): its subtree travels with it, as the protocol defines a group upsert.
+- A move is therefore a delete plus an upsert in one message.
+
+No command edits cue lists, patches, network patches or settings yet; their upserts/deletes are defined (and applied by `Workspace::apply_changes`) but not produced. When such a command exists, its footprint grows the same way.
+
+`Workspace::apply_changes` is the reference client: deletes (an unknown id is ignored), then upserts (a cue already present is replaced wherever it is). Tests (`core/tests/commands_prop.rs`, `engine/tests/control_model.rs`) assert mirror == engine workspace after every step of random command/undo/redo sequences.
 
 ## Time and wake rules (ARCHITECTURE §3.2)
 
@@ -59,7 +71,7 @@ Each run segment gets its own mixer `VoiceId`, allocated by the loop and **never
 | `Ramp` | mixer `Ramp` (`Master` / `CueOutput` / `Crosspoint`), no gangs (the Fade's values are already per output) |
 | `DevampVoice { stop }` | mixer `Devamp` |
 | `PreviewStart` / `PreviewStop` | as `StartVoice` (offset 0, never a primed stream) / `StopVoice`, on the cue's own patch until PB-09's audition output (M2.21) |
-| `SetArmed` | applied to the model before the engine's next call, then `model_changed()` |
+| `SetArmed` | applied to the model before the engine's next call, then `model_changed()` with an upsert of each cue whose flag changed |
 
 - **Routing** (`VoiceStart`): master `master_db`; cue output `o` at its level (muted or beyond the patch's outputs: silent); listed crosspoints (muted: silent); the patch's mixer matrix; the integrated fade-in (none when starting part way in) and fade-out. dB → gain with core's `db_to_gain` (the mixer's conversion).
 - **Slice table**: `plan::cue_slices` turns trims, markers and play counts into `plan_at_rate`'s table (markers outside the trims are dropped; the slice the out point falls in plays as the marker that ends it says), then skips `offset` frames of the action with loops unrolled. An offset at or past a finite action's end plays nothing: the action ends on its start sample. A table that cannot be built (`LoopTooShort`, M3.17, or bad markers) fails the run (`ActionFailed { stream_failed }`, a `bad_plan` notice) and is listed in the workspace warnings as soon as the file is probed (the pre-show view; a `CueProblem` for it would need core and protocol changes — open question in PROGRESS).
@@ -145,6 +157,6 @@ Debug builds of the binary install `assert_no_alloc::AllocDisabler` as the globa
 ## Deferred
 
 - Choosing the device and its rate/buffer from the machine settings (M5.13; today the default device at start), a watchdog for a device that stops calling back while still listed (PROGRESS M4.2g).
-- M4.1a upserts; M4.3 WebSocket server (fan-out of the outbound channel, reply ordering above); M4.4 new/open/save/relink (a newly opened workspace gets a new `Control`'s engine, model sync and `Availability`); M4.5 OSC; M4.7 xruns/underruns in status.
+- M4.3 WebSocket server (fan-out of the outbound channel, reply ordering above); M4.4 new/open/save/relink (a newly opened workspace gets a new `Control`'s engine, model sync and `Availability`); M4.5 OSC; M4.7 xruns/underruns in status.
 - File-system watching (a file that disappears is found when its stream fails).
 - Progress for cues without a voice (pre-waits, Wait cues, post-waits) needs a cue-engine query.
