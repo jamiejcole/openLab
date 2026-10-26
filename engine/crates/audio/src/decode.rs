@@ -145,9 +145,10 @@ pub struct SeekIndex {
 }
 
 impl SeekIndex {
+    /// Checkpoint 0 does not exist (a file shorter than one spacing has none) and is not flat.
     fn is_flat(&self, j: u64) -> bool {
-        usize::try_from(j - 1)
-            .ok()
+        j.checked_sub(1)
+            .and_then(|i| usize::try_from(i).ok())
             .and_then(|i| self.flat.get(i))
             .copied()
             .unwrap_or(false)
@@ -1867,6 +1868,17 @@ mod tests {
 
     /// L-R7: checkpoints whose window is digital silence verify at any alignment, so they are
     /// marked flat and neither the probe nor a seek relies on them.
+    /// Fuzz finding (tests/fuzz-findings/flac-damaged-no-checkpoints.flac): a damaged file with
+    /// no checkpoints asked for checkpoint 0 and underflowed.
+    #[test]
+    fn checkpoint_zero_is_not_flat() {
+        let empty = SeekIndex {
+            hashes: Vec::new(),
+            flat: Vec::new(),
+        };
+        assert!(!empty.is_flat(0));
+    }
+
     #[test]
     fn silent_checkpoints_are_flat_and_seeks_in_such_a_file_stay_exact() {
         let mut b = std::fs::read(fixture("silence-lead.flac")).unwrap();
