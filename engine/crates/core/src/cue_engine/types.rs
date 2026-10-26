@@ -480,6 +480,13 @@ pub enum Action {
         cue: CueId,
         problems: Vec<CueProblem>,
     },
+    /// A group gained or lost a descendant (any depth) shown with static problems: `warning`
+    /// is the new `CueEngine::has_broken_descendant`. The group itself is not broken (QLab 5
+    /// shows a warning on it). Also sent, with `false`, once for a deleted group that had one.
+    GroupWarningChanged {
+        group: CueId,
+        warning: bool,
+    },
     Warning(EngineWarning),
 }
 
