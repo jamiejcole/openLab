@@ -22,6 +22,8 @@ use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use uuid::Uuid;
 
+pub mod device;
+
 pub const RATE: u32 = 8000;
 pub const BLOCK: u64 = 64;
 

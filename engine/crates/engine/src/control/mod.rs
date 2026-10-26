@@ -9,6 +9,7 @@
 //! [`Control::handle`] for each inbox message and [`Control::tick`] on every wake.
 
 mod checks;
+pub mod devices;
 mod inbox;
 mod media;
 pub mod offline;
@@ -25,24 +26,25 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::Sender;
 use openlab_audio::{
-    COMMAND_CAPACITY, CommandKind, DeviceMonitor, DiskStreamer, MediaError, MixerController,
-    StreamerConfig, VoiceId,
+    COMMAND_CAPACITY, CommandKind, DiskStreamer, MediaError, MixerController, StreamerConfig,
+    VoiceId,
 };
 use openlab_core::protocol::{
-    ClientMessage, CueMeter, CueProblems, CueStateEntry, DocumentState, ErrorBody, ErrorCode,
-    LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem, Request, RuntimeChange,
-    ServerMessage, Snapshot, TransportAction, WireProblem, WireWarning,
+    ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
+    ErrorCode, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem, Request,
+    ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem, WireWarning,
 };
 use openlab_core::{
-    Action, CommandError, Cue, CueEngine, CueId, CueKind, CueState, DeviceInfo, EngineConfig,
-    EngineConfigError, History, Input, MachineSettings, MediaStatus, SampleTime, Workspace,
-    seconds_to_samples,
+    Action, BrokenReason, CommandError, Cue, CueEngine, CueId, CueKind, CueState, DeviceInfo,
+    EngineConfig, EngineConfigError, History, Input, MachineSettings, MediaStatus, PatchResolution,
+    SampleTime, Workspace, seconds_to_samples,
 };
 
 pub use inbox::{Inbox, OUTBOUND_CAPACITY, ProbeAnswer};
 pub use media::PROBE_WORKERS;
 
 use checks::PlanChecks;
+use devices::{DEVICE_LOSS_GRACE, Device, DeviceAnswer, DeviceEvent};
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
 use patches::Patches;
@@ -68,9 +70,8 @@ const FEEDBACK_LIMIT: usize = 4096;
 /// How the control loop reaches the audio side, besides the mixer controller. The clock is the
 /// mixer's either way; this carries what only a device has.
 pub enum Backend {
-    /// A device stream opened with `open_output`. Device loss and reopen (`needs_reopen`,
-    /// `MixerPending`) are M4.2b: the monitor is where that policy plugs in.
-    Device { monitor: DeviceMonitor },
+    /// A device stream on the device thread: list, loss and reopen ([`devices`]).
+    Device(Box<Device>),
     /// The offline render driver: nothing but the clock.
     Offline,
 }
@@ -78,9 +79,21 @@ pub enum Backend {
 impl Backend {
     fn alloc_violations(&self) -> u64 {
         match self {
-            Self::Device { monitor } => monitor.alloc_violations(),
+            Self::Device(d) => d.alloc_violations(),
             Self::Offline => 0,
         }
+    }
+
+    fn device(&self) -> Option<&Device> {
+        match self {
+            Self::Device(d) => Some(d),
+            Self::Offline => None,
+        }
+    }
+
+    /// The device is down (an outage): sample time stands still.
+    fn is_down(&self) -> bool {
+        self.device().is_some_and(Device::is_down)
     }
 }
 
@@ -96,7 +109,8 @@ pub struct ControlConfig {
     /// The show file, if saved: relative media references resolve against its folder.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
-    /// Devices present (fixed until M4.2b's device list).
+    /// Devices present, for the offline backend (a device backend plays on its open stream's
+    /// device and lists what the host lists).
     pub devices: Vec<DeviceInfo>,
     /// Output patch matrices the mixer was built with.
     pub mixer_patches: usize,
@@ -168,6 +182,9 @@ pub struct Control {
     voices: Voices,
     checks: PlanChecks,
     patches: Patches,
+    /// What patches resolve against: the device the mixer plays on (none once an outage has
+    /// outlasted its grace period).
+    playable: Vec<DeviceInfo>,
     out: Outbound,
     backend: Backend,
     config: ControlConfig,
@@ -239,7 +256,11 @@ impl Control {
             config.probe_timeout,
         )?;
         let cue_outputs = mixer.cue_outputs();
-        let patches = Patches::new(config.mixer_patches, cue_outputs);
+        let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
+        let playable = match backend.device() {
+            Some(d) => vec![playable_device(d)],
+            None => config.devices.clone(),
+        };
         let mut control = Self {
             ws,
             history: History::new(),
@@ -250,6 +271,7 @@ impl Control {
             voices: Voices::new(),
             checks: PlanChecks::default(),
             patches,
+            playable,
             out: Outbound::new(outbound),
             backend,
             config,
@@ -302,6 +324,7 @@ impl Control {
         match msg {
             Inbox::Client { message, reply } => return self.client(message, &reply),
             Inbox::Probe(answer) => self.probe_answer(answer),
+            Inbox::Device(answer) => self.device_answer(answer),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -310,6 +333,7 @@ impl Control {
     /// One wake of the loop: feedback from the mixer, the streams and the probes, due
     /// deadlines, priming, reports, then `pump` (ARCHITECTURE §3.2; docs/audio.md: every tick).
     pub fn tick(&mut self) {
+        self.poll_device();
         let now = self.now();
         self.flush_media(now);
         let mut fx = Effects::default();
@@ -362,6 +386,10 @@ impl Control {
     /// How long the loop may wait for the inbox before it must tick again: until the next
     /// deadline enters the lookahead window, a deferred report becomes due, or [`MAX_WAIT`].
     pub fn wait_hint(&self) -> Duration {
+        // Nothing becomes due by waiting while sample time stands still.
+        if self.backend.is_down() {
+            return MAX_WAIT;
+        }
         let frames = wake_frames(
             self.engine.next_deadline(),
             self.deferred.iter().map(|(at, _)| *at),
@@ -377,7 +405,14 @@ impl Control {
         match message {
             ClientMessage::Transport { id, action } => {
                 let scope = orphan_scope(&action);
+                let panic = matches!(action, TransportAction::Panic);
                 self.feed(transport_input(action), now);
+                // During an outage a panic fade could only play once the device is back, so
+                // it stops everything at once: a second Panic within the fade is a hard stop
+                // (unless this one already was).
+                if panic && self.backend.is_down() && self.engine.panic_end().is_some() {
+                    self.feed(Input::Panic, now);
+                }
                 if let Some(scope) = scope {
                     self.silence_orphans(scope, now);
                 }
@@ -418,7 +453,19 @@ impl Control {
                     );
                     reply(to, ok(id, None));
                 }
-                // Documents and devices are M4.4.
+                Request::ListDevices => reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Ok(OkBody {
+                            revision: None,
+                            data: Some(ResultData::Devices {
+                                devices: self.device_list(),
+                            }),
+                        }),
+                    },
+                ),
+                // Documents are M4.4.
                 _ => reply(
                     to,
                     ServerMessage::Result {
@@ -474,9 +521,13 @@ impl Control {
             }
             _ => openlab_audio::Fade::NONE,
         };
+        let floor = self.stop_floor();
         let commands = orphans
             .into_iter()
-            .map(|voice| (now, CommandKind::StopVoice { voice, fade }))
+            .map(|voice| {
+                let at = self.voices.stop_date(voice, now, floor);
+                (at, CommandKind::StopVoice { voice, fade })
+            })
             .collect();
         self.send_commands(commands);
     }
@@ -512,14 +563,21 @@ impl Control {
     /// resolution (a newly opened workspace), else only changes.
     fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.media.sync(&self.ws);
-        let (cmds, changed) =
-            self.patches
-                .sync(&self.ws, &self.config.machine, &self.config.devices);
+        self.primes_dirty = true;
+        self.sync_patches(all)
+    }
+
+    /// Resolves the patches against the playable devices and brings the mixer's matrices,
+    /// output delays and master level up to date. Returns the `Availability` for the patches
+    /// whose resolution changed (`all`: every patch).
+    fn sync_patches(&mut self, all: bool) -> Vec<Input> {
+        let (cmds, changed) = self
+            .patches
+            .sync(&self.ws, &self.config.machine, &self.playable);
         let now = self.now();
         for cmd in cmds {
             self.mixer.send(now, cmd);
         }
-        self.primes_dirty = true;
         self.warnings_dirty = true;
         let patches = if all {
             self.patches.resolutions()
@@ -533,6 +591,185 @@ impl Control {
                 media: Vec::new(),
                 patches,
             }]
+        }
+    }
+
+    /// While the device is down, voice stops are dated on the first sample the mixer renders
+    /// when it is back (sample time stands still meanwhile, and `now` is one block past it):
+    /// a stopped voice must not play one more block after the outage.
+    fn stop_floor(&self) -> Option<SampleTime> {
+        self.backend
+            .is_down()
+            .then(|| self.mixer.samples_rendered())
+    }
+
+    fn poll_device(&mut self) {
+        let events = match &mut self.backend {
+            Backend::Device(d) => d.poll(),
+            Backend::Offline => return,
+        };
+        self.device_events(events);
+    }
+
+    fn device_answer(&mut self, answer: DeviceAnswer) {
+        let events = match &mut self.backend {
+            Backend::Device(d) => d.answer(answer),
+            Backend::Offline => return,
+        };
+        self.device_events(events);
+    }
+
+    /// The device policy (docs/control.md "Devices", PROGRESS M3.22).
+    fn device_events(&mut self, events: Vec<DeviceEvent>) {
+        let name = self
+            .backend
+            .device()
+            .map(|d| d.info().name.clone())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                DeviceEvent::Lost { why } => {
+                    let message = format!(
+                        "audio device \"{name}\" lost ({why}): the show is held where it was \
+                         cut and resumes there if the device is back within {} s",
+                        DEVICE_LOSS_GRACE.as_secs()
+                    );
+                    self.log(LogLevel::Error, message.clone());
+                    self.runtime(vec![RuntimeChange::Warning {
+                        warning: notice("device_lost", message, None),
+                    }]);
+                    self.warnings_dirty = true;
+                }
+                DeviceEvent::GraceExpired => self.device_grace_expired(&name),
+                DeviceEvent::Restored => self.device_restored(&name),
+                // Patches resolve against the device the mixer plays on, so a change in the
+                // list changes them only through a loss or a reopen; resolving again is cheap.
+                DeviceEvent::ListChanged => {
+                    let now = self.now();
+                    for input in self.sync_patches(false) {
+                        self.feed(input, now);
+                    }
+                }
+                DeviceEvent::OpenFailed {
+                    attempt,
+                    error,
+                    retry_in,
+                } => self.log(
+                    LogLevel::Warn,
+                    format!(
+                        "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
+                         next in {:.2} s",
+                        retry_in.as_secs_f64()
+                    ),
+                ),
+                DeviceEvent::Warn(message) => self.log(LogLevel::Warn, message),
+                DeviceEvent::MixerGone => {
+                    self.log(
+                        LogLevel::Error,
+                        "the audio engine could not be recovered from the lost device: \
+                         restart openLab to play sound again"
+                            .to_owned(),
+                    );
+                    self.warnings_dirty = true;
+                }
+            }
+        }
+    }
+
+    /// The outage outlasted the grace period: the patches on the device are reported missing
+    /// (loaded cues on them unload, starts are refused as broken), every run with a voice
+    /// fails with `device_lost`, and every voice is stopped so nothing resumes when the device
+    /// comes back.
+    fn device_grace_expired(&mut self, name: &str) {
+        let now = self.now();
+        self.playable.clear();
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
+        let runs = self.voices.on_device();
+        let failed = runs.len();
+        for (cue, run) in runs {
+            self.feed(
+                Input::ActionFailed {
+                    cue,
+                    run,
+                    reason: BrokenReason::DeviceLost,
+                },
+                now,
+            );
+        }
+        // Orphaned tails and anything the engine no longer owns.
+        let floor = self.stop_floor();
+        let commands = self
+            .voices
+            .playing_ids()
+            .into_iter()
+            .map(|voice| {
+                let at = self.voices.stop_date(voice, now, floor);
+                let fade = openlab_audio::Fade::NONE;
+                (at, CommandKind::StopVoice { voice, fade })
+            })
+            .collect();
+        self.send_commands(commands);
+        self.log(
+            LogLevel::Error,
+            format!(
+                "audio device \"{name}\" still lost after {} s: {failed} cue(s) playing on it \
+                 failed; still reconnecting",
+                DEVICE_LOSS_GRACE.as_secs()
+            ),
+        );
+        self.warnings_dirty = true;
+    }
+
+    /// The stream was reopened: patches resolve against the device again (cues that failed
+    /// with `device_lost` become playable), voices held through the outage play on.
+    fn device_restored(&mut self, name: &str) {
+        let now = self.now();
+        let Some(device) = self.backend.device() else {
+            return;
+        };
+        let block = device.info().block_frames;
+        self.playable = vec![playable_device(device)];
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
+        self.log(LogLevel::Info, format!("audio device \"{name}\" is back"));
+        if let Some(b) = block
+            && u64::from(b) != self.config.block_frames
+        {
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "audio device \"{name}\" reopened with {b}-frame buffers instead of {}: \
+                     commands may land up to a block late",
+                    self.config.block_frames
+                ),
+            );
+        }
+        self.warnings_dirty = true;
+    }
+
+    /// The output devices for a `list_devices` request.
+    fn device_list(&self) -> Vec<DeviceEntry> {
+        match self.backend.device() {
+            Some(d) => d
+                .listed()
+                .iter()
+                .map(|l| DeviceEntry {
+                    name: l.name.clone(),
+                    output_channels: u32::from(l.max_channels()),
+                })
+                .collect(),
+            None => self
+                .config
+                .devices
+                .iter()
+                .map(|d| DeviceEntry {
+                    name: d.name.clone(),
+                    output_channels: d.output_channels,
+                })
+                .collect(),
         }
     }
 
@@ -570,6 +807,7 @@ impl Control {
         }
         for key in std::mem::take(&mut self.ready_media) {
             let mut fx = Effects::default();
+            let floor = self.stop_floor();
             let mut env = Env {
                 ws: &self.ws,
                 media: &self.media,
@@ -578,6 +816,7 @@ impl Control {
                 rate: self.rate,
                 cue_outputs: self.cue_outputs,
                 now,
+                floor,
             };
             self.voices.media_ready(&key, &mut env, &mut fx);
             self.follow(fx, now);
@@ -631,6 +870,7 @@ impl Control {
         let mut armed = false;
         let mut fx = Effects::default();
         {
+            let floor = self.stop_floor();
             let mut env = Env {
                 ws: &self.ws,
                 media: &self.media,
@@ -639,6 +879,7 @@ impl Control {
                 rate: self.rate,
                 cue_outputs: self.cue_outputs,
                 now,
+                floor,
             };
             for action in actions {
                 if let Some(change) = RuntimeChange::from_action(action, &self.engine) {
@@ -759,6 +1000,7 @@ impl Control {
             })
             .collect();
         self.media.prioritize(keys.iter().map(String::as_str));
+        let floor = self.stop_floor();
         let mut env = Env {
             ws: &self.ws,
             media: &self.media,
@@ -767,6 +1009,7 @@ impl Control {
             rate: self.rate,
             cue_outputs: self.cue_outputs,
             now,
+            floor,
         };
         self.voices.prime(&wanted, self.config.max_primes, &mut env);
     }
@@ -979,6 +1222,7 @@ impl Control {
                 Some(cue),
             ));
         }
+        self.device_warnings(&mut list);
         if self.seen.alloc_violations > 0 {
             list.push(notice(
                 "realtime_allocation",
@@ -994,6 +1238,84 @@ impl Control {
             self.resend_warnings = !self
                 .out
                 .send_state(ServerMessage::Warnings { warnings: list });
+        }
+    }
+
+    /// The device's notices: an outage, a mixer that could not be recovered, patches that map
+    /// more device channels than the device has (`outputs_dropped`), device outputs that
+    /// patches give different delays.
+    fn device_warnings(&self, list: &mut Vec<WireWarning>) {
+        if let Some(d) = self.backend.device() {
+            let name = &d.info().name;
+            if d.is_gone() {
+                list.push(notice(
+                    "device_unrecoverable",
+                    "the audio engine could not be recovered from the lost device: restart \
+                     openLab to play sound again"
+                        .to_owned(),
+                    None,
+                ));
+            } else if d.grace_expired() {
+                list.push(notice(
+                    "device_lost",
+                    format!(
+                        "audio device \"{name}\" is lost: the cues that played on it were \
+                         stopped, and cues on it cannot start; reconnecting"
+                    ),
+                    None,
+                ));
+            } else if d.is_down() {
+                list.push(notice(
+                    "device_lost",
+                    format!(
+                        "audio device \"{name}\" is lost: the show is held and resumes if it \
+                         is back within {} s; reconnecting",
+                        DEVICE_LOSS_GRACE.as_secs()
+                    ),
+                    None,
+                ));
+            }
+            if d.info().outputs_dropped && !d.is_down() {
+                list.push(notice(
+                    "outputs_dropped",
+                    format!(
+                        "audio device \"{name}\" has {} output channel(s), fewer than the {} \
+                         the show was opened with: the others are not heard",
+                        d.info().channels,
+                        self.cue_outputs
+                    ),
+                    None,
+                ));
+            }
+        }
+        for patch in &self.ws.patches {
+            if let Some(PatchResolution::ChannelsMissing {
+                device,
+                needed,
+                available,
+            }) = self.patches.resolution(patch.id)
+            {
+                list.push(notice(
+                    "outputs_dropped",
+                    format!(
+                        "patch \"{}\" maps {needed} channel(s) of \"{device}\", which has \
+                         {available}: its cues cannot play",
+                        patch.name
+                    ),
+                    None,
+                ));
+            }
+        }
+        for output in self.patches.delay_conflicts() {
+            list.push(notice(
+                "output_delay_conflict",
+                format!(
+                    "device output {} has different delays in different patches; the longest \
+                     is used",
+                    u32::from(output) + 1
+                ),
+                None,
+            ));
         }
     }
 
@@ -1119,6 +1441,16 @@ impl Control {
         self.media.preload_reserved()
     }
 
+    /// Device-thread jobs not answered yet (a test driver waits for them; none offline).
+    pub fn device_jobs_pending(&self) -> usize {
+        self.backend.device().map_or(0, Device::jobs_in_flight)
+    }
+
+    /// The device is down: an outage, sample time standing still.
+    pub fn device_down(&self) -> bool {
+        self.backend.is_down()
+    }
+
     /// Feedback waiting for its sample.
     pub fn deferred(&self) -> usize {
         self.deferred.len()
@@ -1145,6 +1477,15 @@ impl Control {
     /// No voice, alias or deferred report is left.
     pub fn is_idle(&self) -> bool {
         self.voices.is_idle() && self.deferred.is_empty()
+    }
+}
+
+/// The device patches resolve against while `d` plays: its name, with the mixer outputs that
+/// reach it.
+fn playable_device(d: &Device) -> DeviceInfo {
+    DeviceInfo {
+        name: d.info().name.clone(),
+        output_channels: u32::from(d.info().channels),
     }
 }
 
