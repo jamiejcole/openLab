@@ -119,8 +119,9 @@ pub struct VoiceRec {
     held: Option<SampleTime>,
     /// How much later than the engine dated it the voice started (held by its probe).
     delay: u64,
-    /// The mixer was asked to resume it (`ResumeVoice`), so a rejection may be of a resume.
-    resumed_voice: bool,
+    /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
+    /// the voice never played (any other rejection is of a resume).
+    start_id: Option<VoiceId>,
 }
 
 impl VoiceRec {
@@ -131,6 +132,11 @@ impl VoiceRec {
     fn failure(&self, reason: BrokenReason) -> Input {
         let unplayed = match &self.phase {
             Phase::Waiting { start, .. } => start.is_some(),
+            // `frames_written` counts frames the disk worker put in the ring, not frames the
+            // mixer played: frames in the ring are about to sound (or have), so a failure after
+            // any was written is taken as during play. A prime fills the ring before the start,
+            // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
+            // handed to a start, so it cannot make an unplayed start look played.
             Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
             Phase::Ended => false,
         };
@@ -471,6 +477,7 @@ impl Voices {
                 r.delay = at - start;
                 let preview = r.preview;
                 let held = r.held.take().is_some();
+                r.start_id = Some(id);
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
                     fx.commands.push((t.max(at), queued(id, q)));
@@ -605,7 +612,6 @@ impl Voices {
                         new_id: new,
                     },
                 ));
-                r.resumed_voice = true;
                 self.insert(new, r);
             }
             Phase::Waiting {
@@ -874,12 +880,14 @@ impl Voices {
                     return;
                 };
                 let Some(r) = self.remove(id) else { return };
-                // The rejection of a first start: the voice never played (M4.14).
+                // A refused start: the voice never played (M4.14). Decided by the id the mixer
+                // refused, not by whether a resume was sent since (a start refused while a
+                // pause and resume were on their way is still a start that never played).
                 fx.feedback.push(failure(
                     r.cue,
                     r.run,
                     BrokenReason::VoiceRejected,
-                    !r.resumed_voice,
+                    r.start_id == Some(voice),
                 ));
                 // A refused resume leaves the voice paused under its old id: let it go.
                 if voice == id
@@ -1024,12 +1032,12 @@ impl Voices {
         if r.listed {
             self.finished(id, at, FinishReason::EndOfStream, fx);
         } else if let Some(r) = self.remove(id) {
-            fx.feedback.push(failure(
-                r.cue,
-                r.run,
-                BrokenReason::VoiceRejected,
-                !r.resumed_voice,
-            ));
+            // Never listed: the mixer never took its start, so it never played.
+            fx.feedback.push(Input::StartFailed {
+                cue: r.cue,
+                run: r.run,
+                reason: BrokenReason::VoiceRejected,
+            });
         }
     }
 
@@ -1281,7 +1289,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         devamp_stop: false,
         held: None,
         delay: 0,
-        resumed_voice: false,
+        start_id: None,
     }
 }
 

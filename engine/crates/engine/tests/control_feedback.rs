@@ -311,3 +311,58 @@ fn a_lost_rejection_breaks_the_cue() {
         ))
     );
 }
+
+#[test]
+fn a_refused_first_start_is_skipped_and_fires_its_auto_follow() {
+    // M4.14: one voice in the pool, so cue 2's start is refused (`PoolFull`). It never played:
+    // the binary reports `StartFailed`, so cue 2 is skipped and its auto-follow starts cue 3.
+    let long = wav(&dc(8000, 0.5));
+    let other = wav(&dc(8000, 0.5));
+    let mut c2 = audio(2, &other, 1);
+    c2.continue_mode = ContinueMode::AutoFollow;
+    let c3 = cue(3, CueKind::Wait { duration: 1.0 });
+    let ws = workspace(vec![audio(1, &long, 0), c2, c3]);
+    let mut mixer = mixer_config();
+    mixer.max_voices = 1;
+    let config = config(&ws);
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer, config).unwrap();
+    s.settle_media();
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    assert_eq!(
+        states(&s.take_outbound(), id(2)).last(),
+        Some(&(
+            WireCueState::Broken,
+            Some(openlab_core::protocol::WireBrokenReason::VoiceRejected)
+        ))
+    );
+    assert_eq!(s.control().engine().state(id(3)), CueState::Running);
+}
+
+#[test]
+fn a_start_refused_while_a_pause_and_resume_were_on_their_way_is_still_skipped() {
+    // As above, with Pause All and Resume All sent before the refusal comes back: the mixer
+    // refused the start (under the id it was started with), so the voice never played.
+    let long = wav(&dc(8000, 0.5));
+    let other = wav(&dc(8000, 0.5));
+    let mut c2 = audio(2, &other, 1);
+    c2.continue_mode = ContinueMode::AutoFollow;
+    let c3 = cue(3, CueKind::Wait { duration: 1.0 });
+    let ws = workspace(vec![audio(1, &long, 0), c2, c3]);
+    let mut mixer = mixer_config();
+    mixer.max_voices = 1;
+    let config = config(&ws);
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer, config).unwrap();
+    s.settle_media();
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 2);
+    s.transport(TransportAction::PauseAll);
+    s.transport(TransportAction::ResumeAll);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Running);
+}
