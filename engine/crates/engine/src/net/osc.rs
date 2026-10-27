@@ -904,11 +904,15 @@ impl Actor {
         let ip = match peer {
             Peer::Udp(ip) | Peer::Tcp { ip, .. } => ip,
         };
-        // Just before the input, so the show log says where a GO came from (DX-02).
-        let _ = self.inbox.send(Inbox::Trigger {
-            source: format!("osc {ip}"),
-            detail: super::describe(&message),
-        });
+        // Just before the input, so the show log says where a GO came from (DX-02). Only
+        // transport actions are triggers: a command is an edit, and a chatty controller
+        // sending those must not double the inbox traffic.
+        if matches!(message, ClientMessage::Transport { .. }) {
+            let _ = self.inbox.send(Inbox::Trigger {
+                source: format!("osc {ip}"),
+                detail: super::describe(&message),
+            });
+        }
         let sent = self.inbox.send(Inbox::Client {
             message,
             reply: self.reply_tx.clone(),

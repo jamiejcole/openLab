@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use openlab_core::protocol::{LogEntry, LogKind, LogLevel};
@@ -84,6 +85,8 @@ impl LogSink {
 #[derive(Debug)]
 pub struct LogWriter {
     thread: Option<JoinHandle<()>>,
+    /// Signalled when the thread has written what was queued and ended.
+    done: Receiver<()>,
 }
 
 impl LogWriter {
@@ -96,23 +99,33 @@ impl LogWriter {
     ) -> io::Result<(LogSink, Self)> {
         let (sink, rx) = LogSink::detached(QUEUE_CAPACITY);
         let dropped = Arc::clone(&sink.dropped);
+        let (done_tx, done) = bounded(1);
         let thread = thread::Builder::new()
             .name("openlab-log".into())
-            .spawn(move || run(&rx, RotatingFile::new(dir, limits), &dropped, &clock))?;
+            .spawn(move || {
+                run(&rx, RotatingFile::new(dir, limits), &dropped, &clock);
+                let _ = done_tx.send(());
+            })?;
         Ok((
             sink,
             Self {
                 thread: Some(thread),
+                done,
             },
         ))
     }
 
-    /// Waits for the thread to write what is queued. Every sink must be dropped first, or this
-    /// waits for them.
-    pub fn finish(mut self) {
-        if let Some(thread) = self.thread.take() {
+    /// Waits up to `wait` for the thread to write what is queued and end; returns whether it
+    /// did. A hung disk, or a sink that outlives the control loop, must not hang the engine's
+    /// shutdown: the thread is then left behind (the process is about to exit).
+    pub fn finish(mut self, wait: Duration) -> bool {
+        let ended = self.done.recv_timeout(wait).is_ok();
+        if let Some(thread) = self.thread.take()
+            && ended
+        {
             let _ = thread.join();
         }
+        ended
     }
 }
 
@@ -359,7 +372,7 @@ mod tests {
         sink.offer(&entry(1));
         sink.offer(&entry(2));
         drop(sink);
-        writer.finish();
+        assert!(writer.finish(Duration::from_secs(30)));
         let text = fs::read_to_string(dir.path().join("Logs/openlab.log")).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3, "{text}");
@@ -368,5 +381,19 @@ mod tests {
         assert_eq!(note.level, LogLevel::Warn);
         let first: LogEntry = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(first, entry(1));
+    }
+
+    #[test]
+    fn finish_gives_up_when_a_sink_outlives_the_control_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sink, writer) = LogWriter::start(
+            dir.path().join("Logs"),
+            LogLimits::default(),
+            EpochClock::new(|| 1_700_000_000_000),
+        )
+        .unwrap();
+        // The sink is still alive, so the thread keeps waiting for lines: shutdown must not.
+        assert!(!writer.finish(Duration::from_millis(50)));
+        drop(sink);
     }
 }
