@@ -108,7 +108,7 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 
 ### Snapshot
 
-`revision` (the model revision it is at), `runtime_seq` (the last `runtime` `seq` folded in), `document`, `workspace` (the show-file workspace object, [file-format.md](file-format.md) section 4), `cue_states` (cues not idle: `{cue, state, reason?}`), `problems` (`{cue, problems}` for cues with static problems), `group_warnings` (group ids with a broken descendant), `playheads` (`{list, cue}`), `previewing` (cue ids), `warnings`.
+`revision` (the model revision it is at), `runtime_seq` (the last `runtime` `seq` folded in), `document`, `workspace` (the show-file workspace object, [file-format.md](file-format.md) section 4), `cue_states` (cues not idle: `{cue, state, reason?}`), `problems` (`{cue, problems}` for cues with static problems), `group_warnings` (group ids with a broken descendant; such a group with no run of its own is in `cue_states` as `broken`, with no `reason` and no `problems` entry), `playheads` (`{list, cue}`), `previewing` (cue ids), `warnings`.
 
 ### Model changes
 
@@ -133,9 +133,9 @@ The `model_changed` for revision N is always sent before the `result` that repor
 
 | Type | Fields | Source |
 |---|---|---|
-| `cue_state` | `cue`, `state`, `reason?` | `Action::StateChanged`. `state`: `idle`, `loaded`, `pre_waiting`, `running`, `paused`, `post_waiting`, `fading`, `stopping`, `broken`. `reason` (`voice_rejected`, `stream_failed`, `device_lost`) is set when it broke while running |
+| `cue_state` | `cue`, `state`, `reason?` | `Action::StateChanged`. `state`: `idle`, `loaded`, `pre_waiting`, `running`, `paused`, `post_waiting`, `fading`, `stopping`, `broken`. `reason` (`voice_rejected`, `stream_failed`, `device_lost`) is set when it broke while running. A `broken` state with no `reason` is a cue with static problems (listed in `problems`) or, with neither, a group with a broken descendant (`group_warning: true` is the reason; it has no problems of its own and still starts) |
 | `problems` | `cue`, `problems` | `ProblemsChanged`: the full list of static problems, empty when none |
-| `group_warning` | `group`, `warning` | `GroupWarningChanged` |
+| `group_warning` | `group`, `warning` | `GroupWarningChanged`: the group has a descendant shown with problems, which is why it shows as broken (its `cue_state` is `broken` while it has no run) |
 | `playhead` | `list`, `cue` | `PlayheadChanged` |
 | `preview` | `cue`, `active` | `PreviewChanged` |
 | `warning` | `warning` | `Warning`, and `GoIgnored` as a `go_ignored` warning |

@@ -376,8 +376,8 @@ pub enum RuntimeChange {
         cue: CueId,
         problems: Vec<WireProblem>,
     },
-    /// A group gained or lost a descendant with static problems (a warning on the group, not
-    /// broken).
+    /// A group gained or lost a descendant with static problems: why the group shows as broken
+    /// (QLab 5), although it has no problems of its own and still starts.
     GroupWarning {
         group: CueId,
         warning: bool,

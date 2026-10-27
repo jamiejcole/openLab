@@ -841,21 +841,26 @@ fn feedback(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
 }
 
 #[test]
-fn a_group_in_a_panic_restarts_on_start_and_a_child_started_on_its_own_runs_it_on() {
+fn a_group_in_a_panic_restarts_on_start_and_a_child_started_on_its_own_ends_it() {
     let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
     rig.start(0, 1);
     rig.panic(100);
     assert_eq!(rig.state(1), CueState::Stopping);
-    // GO on a child during the panic: it starts afresh, and its group runs on (adopted)
-    // instead of staying `stopping` until that child ends.
+    // GO on a child during the panic: it starts afresh on its own, and its group stops waiting
+    // (it would otherwise stay `stopping` until that child ends) and ends at once, as a child
+    // started on its own does not make its group run (M2.24, QLab check G4).
     let start = rig.start(200, 3);
     assert_eq!(voice_starts(&start), vec![(id(3), 200)]);
-    assert_eq!(changes(&start, 1), vec![(CueState::Running, 200)]);
+    assert_eq!(changes(&start, 1), vec![(CueState::Idle, 200)]);
+    // Its other child finishes its panic fade on its own.
+    assert_eq!(rig.state(2), CueState::Stopping);
     let end = rig.tick(1100);
     assert_eq!(changes(&end, 2), vec![(CueState::Idle, 1100)]);
-    assert_eq!(rig.state(1), CueState::Running);
+    assert!(changes(&end, 1).is_empty());
+    assert_eq!(rig.state(3), CueState::Running);
     let done = feedback(&mut rig, 5000, 3);
-    assert_eq!(changes(&done, 1), vec![(CueState::Idle, 5000)]);
+    assert_eq!(changes(&done, 3), vec![(CueState::Idle, 5000)]);
+    assert!(changes(&done, 1).is_empty());
 
     // Start on the group during its panic: everything in it stops at once and it starts again.
     let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);

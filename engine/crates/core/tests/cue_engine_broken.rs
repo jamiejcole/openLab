@@ -473,11 +473,12 @@ fn go_on_a_broken_cue_does_not_start_it_but_keeps_its_auto_continue() {
 }
 
 #[test]
-fn a_broken_cue_never_auto_follows() {
+fn a_cue_with_static_problems_auto_follows_like_a_disarmed_one() {
+    // M2.24 (QLab check P5): it is skipped, and the cue it auto-follows into starts.
     let mut rig = Rig::new(vec![timed(start_cue(1, None), 0.0, 0.0, AF), memo(2)]);
     let go = rig.go(0);
-    assert!(starts(&go).is_empty());
-    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(starts(&go), vec![(id(2), 0)]);
+    assert_eq!(rig.state(1), CueState::Broken);
     assert!(rig.engine.next_deadline().is_none());
 }
 
@@ -591,7 +592,7 @@ fn a_cue_that_breaks_during_its_pre_wait_skips_its_action() {
 }
 
 #[test]
-fn a_group_with_a_broken_child_is_not_broken_but_does_not_follow() {
+fn a_group_with_a_broken_child_shows_broken_runs_and_follows() {
     let mut rig = Rig::new(vec![
         timed(
             cue(1, group(vec![sound(2), start_cue(3, None)])),
@@ -601,9 +602,9 @@ fn a_group_with_a_broken_child_is_not_broken_but_does_not_follow() {
         ),
         memo(4),
     ]);
+    // M2.24 (QLab check G6): it shows as broken, with no problem of its own, and can be GOed.
     assert!(rig.problems(1).is_empty());
-    assert_eq!(rig.state(1), CueState::Idle);
-    // Not broken, but it shows a warning (QLab 5).
+    assert_eq!(rig.state(1), CueState::Broken);
     assert!(rig.engine.has_broken_descendant(id(1)));
     let go = rig.go(0);
     assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(3) }]);
@@ -617,10 +618,10 @@ fn a_group_with_a_broken_child_is_not_broken_but_does_not_follow() {
             at: 1000,
         },
     );
-    // The group completes, but a child of its run was broken: no auto-follow (as for a child
-    // that broke while it ran).
-    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 1000)]);
-    assert!(starts(&end).is_empty());
+    // The group completes and auto-follows: its broken child was skipped (QLab check G2), not
+    // broken while it ran. It shows as broken again.
+    assert_eq!(changes(&end, 1), vec![(CueState::Broken, 1000)]);
+    assert_eq!(starts(&end), vec![(id(4), 1000)]);
 }
 
 fn group_warnings(actions: &[Action]) -> Vec<(CueId, bool)> {
@@ -647,9 +648,11 @@ fn a_group_shows_a_warning_while_a_descendant_is_broken() {
     let missing = rig.media(10, "media/a.wav", MediaStatus::Missing);
     assert_eq!(group_warnings(&missing), vec![(id(2), true), (id(1), true)]);
     assert_eq!(warned(&rig), [true, true, false]);
-    // The groups are not broken.
+    // The groups show as broken (QLab check G6), with no problems of their own.
     assert!(rig.problems(1).is_empty() && rig.problems(2).is_empty());
-    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(1), CueState::Broken);
+    assert_eq!(changes(&missing, 1), vec![(CueState::Broken, 10)]);
+    assert_eq!(rig.state(6), CueState::Idle);
     assert_eq!(
         rig.engine.broken_cues(),
         vec![(id(3), &[CueProblem::MediaMissing { media: media() }][..])]
@@ -666,6 +669,8 @@ fn a_group_shows_a_warning_while_a_descendant_is_broken() {
         vec![(id(2), false), (id(1), false)]
     );
     assert_eq!(warned(&rig), [false; 3]);
+    assert_eq!(changes(&all_fixed, 1), vec![(CueState::Idle, 40)]);
+    assert_eq!(rig.state(2), CueState::Idle);
     // Not a group, or not a cue: no warning.
     assert!(!rig.engine.has_broken_descendant(id(3)));
     assert!(!rig.engine.has_broken_descendant(id(99)));
@@ -1025,9 +1030,9 @@ fn the_pre_show_list_is_in_workspace_order() {
 }
 
 #[test]
-fn go_on_a_broken_auto_follow_cue_leaves_the_playhead_on_the_cue_it_would_follow_into() {
-    // Regression (review M2): the playhead skipped cue 2, which the broken cue's auto-follow
-    // can never start, so cue 2 was lost for the show.
+fn go_on_a_broken_auto_follow_cue_starts_the_cue_it_follows_into_and_moves_past_it() {
+    // M2.24 (QLab check P5): the broken cue's auto-follow fires (it is skipped), so the cue it
+    // follows into starts and the playhead moves past it.
     let mut rig = Rig::new(vec![
         timed(sound(1), 0.0, 0.0, AF),
         sound_of(2, "media/b.wav", 1),
@@ -1036,9 +1041,9 @@ fn go_on_a_broken_auto_follow_cue_leaves_the_playhead_on_the_cue_it_would_follow
     rig.media(0, "media/a.wav", MediaStatus::Missing);
     let go = rig.go(10);
     assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
-    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(2)));
-    assert_eq!(voice_starts(&rig.go(20)), vec![(id(2), 20)]);
-    // Inside a chain: an auto-continue into the broken auto-follow cue stops there too.
+    assert_eq!(voice_starts(&go), vec![(id(2), 10)]);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    // Inside a chain: an auto-continue into the broken auto-follow cue goes on through it.
     let mut rig = Rig::new(vec![
         timed(memo(1), 0.0, 0.0, AC),
         timed(sound(2), 0.0, 0.0, AF),
@@ -1046,8 +1051,9 @@ fn go_on_a_broken_auto_follow_cue_leaves_the_playhead_on_the_cue_it_would_follow
         memo(4),
     ]);
     rig.media(0, "media/a.wav", MediaStatus::Missing);
-    rig.go(10);
-    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    let go = rig.go(10);
+    assert_eq!(starts(&go), vec![(id(1), 10), (id(3), 10)]);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(4)));
     // A broken auto-continue cue's continue fires, so it is still skipped over.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AC), memo(2), memo(3)]);
     rig.media(0, "media/a.wav", MediaStatus::Missing);
