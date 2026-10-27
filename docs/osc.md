@@ -1,68 +1,82 @@
 # OSC API (NET-01, NET-02, NET-05, TRG-03, DOC-02)
 
-Status: implemented. The socket-free layer is `engine/crates/engine/src/osc/` (decoding, address dispatch, passcode and updates state, replies); the UDP and TCP listeners and the update messages are `engine/crates/engine/src/net/osc.rs` and `osc_mirror.rs` (see "Listeners" below and [network.md](network.md)). `host::run_show` starts them; if port 53000 is taken the engine logs a warning and runs without OSC. This file lists exactly what is done; anything not listed is not implemented.
+Status: implemented, matched to what QLab 5.5.3 was measured to do (M4.5b; the captures are `docs/handoff/qlab-osc-findings.md` on the `qlab-osc-findings` branch). The socket-free layer is `engine/crates/engine/src/osc/` (decoding, address dispatch, patterns, passcode and updates state, replies); the UDP and TCP listeners and the update messages are `engine/crates/engine/src/net/osc.rs` and `osc_mirror.rs` (see "Listeners" below and [network.md](network.md)). `host::run_show` starts them; if port 53000 is taken the engine logs a warning and runs without OSC. This file lists exactly what is done; anything not listed is not implemented.
 
-The address space follows QLab 5's OSC dictionary, so existing remotes keep working where openLab has the feature. Where we were unsure what QLab does, we chose the more conservative behaviour and list it under "Open questions".
+The address space follows QLab 5's OSC dictionary, so existing remotes keep working where openLab has the feature. Where openLab does something else on purpose, it is listed under "Differences from QLab".
 
 ## Transport
 
-- UDP and TCP on port **53000**, IPv4, on every interface (as QLab does: set a passcode on a network you do not control). Replies and updates to a UDP peer go to its IP address on port **53001**.
+- UDP and TCP on port **53000**, IPv4, on every interface (as QLab does: set a passcode on a network you do not control). Replies and updates to a UDP peer go to its IP address on port **53001**, whatever port it sent from (`/udpReplyPort` is not implemented).
 - TCP carries OSC 1.1 SLIP frames (END `0xC0` at both ends; `0xDB 0xDC` is a literal END, `0xDB 0xDD` a literal ESC). The length-prefixed framing of OSC 1.0 is not supported.
 - A UDP peer is identified by its IP address, a TCP peer by its connection.
 
 ## Listeners
 
-Both sockets run on the network runtime (the one that serves the UI over WebSocket; no extra threads). One task owns all OSC state: the sessions, a copy of the workspace and the TCP connection table. The sockets' tasks only pass bytes to it through bounded queues, so one slow or hostile peer never delays another, and the control thread is never waited for or blocked. UDP datagrams have a queue of their own (256) and the task takes **datagrams first** (at most 32 in a row, then the queues at random), so a TCP peer that streams requests cannot make a console's datagrams find the queue full or wait behind a whole read of the flood (a TCP read of 4 KiB can hold a hundred messages, so taking the queues in turn was not fair in work done: under load a datagram waited long enough to age out). The kernel's own receive buffer in front of the socket is not under our control without a new dependency; a burst of a few hundred datagrams faster than the server reads them can overflow it and those datagrams are lost without being counted. Operators' remotes send single messages, far below that.
+Both sockets run on the network runtime (the one that serves the UI over WebSocket; no extra threads). One task owns all OSC state: the sessions, a copy of the workspace and the TCP connection table. The sockets' tasks only pass bytes to it through bounded queues, so one slow or hostile peer never delays another, and the control thread is never waited for or blocked. UDP datagrams have a queue of their own (256) and the task takes **datagrams first** (at most 32 in a row, then the queues at random), so a TCP peer that streams requests cannot make a console's datagrams find the queue full or wait behind a whole read of the flood. The kernel's own receive buffer in front of the socket is not under our control without a new dependency; a burst of a few hundred datagrams faster than the server reads them can overflow it and those datagrams are lost without being counted. Operators' remotes send single messages, far below that.
 
-- **Input.** Each accepted message becomes the same `command` or `transport` message a WebSocket client sends, on a reply channel of its own. Request ids start at 2^63 and never reach `u64::MAX` (the WebSocket server's own id); the control loop answers each request on the channel it came from, so they cannot clash with a UI client's anyway. At most 256 requests may be unanswered at once; beyond that new inputs are dropped and counted (`inputs_dropped`), so a UDP flood cannot pile up in the control inbox. A request the control loop answers with an error is counted (`control_refused`); it gets no reply to the OSC peer.
-- **The workspace copy.** Answering `/cue/1/name`, resolving `/cue/{number}` and `/cue_id/{id}`, a cue's OSC trigger and the passcode all read a copy the OSC task keeps from the engine's own messages: the `snapshot` it asks for at start, then `model_changed` (applied with `Workspace::apply_changes`), `runtime` (playheads, cue states), `document`, and the broadcast `snapshot` the engine sends when a workspace is opened, created or reverted (installed unless it is at or below the revision and seq the copy holds; passcode sessions end if the workspace or its passcode changed). That snapshot is the only signal of a replacement: a revert keeps the path and sends no `model_changed`. Nothing asks the control thread a question per message. A gap in the revision or seq, an edit that does not apply, a `document` message with another file path, or a broadcast queue that overflowed makes it ask for a new snapshot. While that is out, broadcasts wait (as in the WebSocket server), so the copy never goes back in time, and **OSC input waits too**: no `/cue/5` or trigger address is resolved against a copy known to be wrong. The same holds until the first snapshot arrives. Input that waited longer than `max_input_age` (2 s) is dropped and counted (`inputs_dropped`), so a console mashing GO while the engine starts does not have every press replayed at once. A lost `model_changed` is only noticed at the next broadcast (PROGRESS M4.4a): until then the copy can be stale.
-- **Active cue list.** `/go` and `/playhead` act on the first cue list of the workspace; the engine has no other notion of an active list.
-- **Sessions end** (`/connect` and `/updates` forgotten) when the workspace id or the passcode in a new snapshot differs from the one before, and for a TCP peer when its connection closes. A passcode edit reaches the OSC task as a `model_changed` settings upsert (sessions end when the passcode differs after it is applied) or in a snapshot. Today no command edits workspace settings; a snapshot replaces the workspace on open/new/revert (PROGRESS M4.4a: those must reach every client).
-- **Replies.** UDP: to the sender's IP on port 53001 (a datagram is never answered on its source port). TCP: SLIP-framed on the same connection. Sending never waits: a full socket buffer or write queue loses the message (`send_failed`). A TCP peer that does not read for 10 s (one write that makes no progress) is disconnected.
-- **TCP connections.** At most 16 at once (the WebSocket server's limit; far above the consoles, Companion and scripts a show has; each costs a task, a 64 KiB frame limit and a 256-message write queue). The next is closed at accept, counted (`tcp_refused`) and logged as a warning at most once per 10 s with a count (`Inbox::Log`, like the WebSocket server). There is no keepalive (no new dependency for socket options), so a peer that vanished without closing (a laptop that dropped off Wi-Fi) would hold its slot. Instead, when the table is full the task closes the connection that has been silent longest, if it has sent nothing for `tcp_idle_evict` (60 s) and is not subscribed to updates, and logs it (warning). The new connection waits up to 0.5 s for that slot, then is refused if none was freed. Connections subscribed to updates are never closed this way (a console that only listens must stay), and **with a passcode set neither is one that has completed `/connect`**: a stranger's idle connections must not be able to push a console out, so with the table full of consoles the newcomer is refused. The cost is that a console that vanished without closing holds its slot until a write to it fails. A connection that vanished is found when a write to it fails or times out. A host that opens 16 connections and subscribes them all can hold every slot: the same trust assumption as the rest of an unauthenticated OSC port.
-- **Counters.** `WsServer::osc_stats()` returns the `OscStats` plus `udp_dropped` (the task's queue was full), `tcp_refused`, `inputs_dropped`, `send_failed`, `control_refused` and `tcp_connections`. Malformed, oversize, bad-address, throttled and dropped input is also logged, as one warning with counts, every 10 s while it happens.
+- **Input.** Each accepted message becomes the same `command` or `transport` message a WebSocket client sends, on a reply channel of its own. Request ids start at 2^63 and never reach `u64::MAX` (the WebSocket server's own id); the control loop answers each request on the channel it came from, so they cannot clash with a UI client's anyway. At most `max_inflight` (default 2048, above the 1024 inputs one datagram can make) requests may be unanswered at once; beyond that new inputs are dropped and counted (`inputs_dropped`), so a UDP flood cannot pile up in the control inbox. A request the control loop answers with an error is counted (`control_refused`); it gets no reply to the OSC peer.
+- **The workspace copy.** Answering `/cue/1/name`, resolving `/cue/{number}` and `/cue_id/{id}`, a cue's OSC trigger, the queries below and the passcode all read a copy the OSC task keeps from the engine's own messages: the `snapshot` it asks for at start, then `model_changed` (applied with `Workspace::apply_changes`), `runtime` (playheads, cue states), `document`, and the broadcast `snapshot` the engine sends when a workspace is opened, created or reverted (installed unless it is at or below the revision and seq the copy holds; passcode sessions end if the workspace or its passcode changed). That snapshot is the only signal of a replacement: a revert keeps the path and sends no `model_changed`. Nothing asks the control thread a question per message. A gap in the revision or seq, an edit that does not apply, a `document` message with another file path, or a broadcast queue that overflowed makes it ask for a new snapshot. While that is out, broadcasts wait (as in the WebSocket server), so the copy never goes back in time, and **OSC input waits too**: no `/cue/5` or trigger address is resolved against a copy known to be wrong. The same holds until the first snapshot arrives. Input that waited longer than `max_input_age` (2 s) is dropped and counted (`inputs_dropped`), so a console mashing GO while the engine starts does not have every press replayed at once. A lost `model_changed` is only noticed at the next broadcast (PROGRESS M4.4a): until then the copy can be stale.
+- **Active cue list.** `/go` and `/playhead/next|previous` act on the **active** cue list: the list whose playhead moved last (QLab: the list on display, which selecting a cue or setting the playhead in another list switches). It starts as the first list. The copy updates it from every playhead move it hears of, and the OSC task sets it at once, ahead of that broadcast, when it forwards a message that moves a list's playhead, so a `/go` right after `/playhead/20` acts on the list that holds cue 20. Cue numbers are looked up in **all** lists (QLab numbers are unique across the workspace), whichever list is active. The engine has no selection of its own: "selected" is the playhead (QLab's default "lock playhead to selection"), so `/select/...` and `/playhead/...` are the same and `/cue/selected/...` is `/cue/playhead/...`.
+- **Sessions end** (`/connect` and `/updates` forgotten) when the workspace id or the passcode in a new snapshot differs from the one before, for a TCP peer when its connection closes, and for a UDP peer after 60 s of silence (below). A passcode edit reaches the OSC task as a `model_changed` settings upsert (sessions end when the passcode differs after it is applied) or in a snapshot.
+- **Replies.** UDP: to the sender's IP on port 53001 (a datagram is never answered on its source port). TCP: SLIP-framed on the same connection, all the replies to one read in one queue entry. Sending never waits: a full socket buffer or write queue loses the message (`send_failed`). A TCP peer that does not read for 10 s (one write that makes no progress) is disconnected. Each connection may have 4 MiB of replies queued and not yet written, and all connections 64 MiB together; past either, further replies are dropped and counted (`send_failed`), so a peer that asks for large replies and does not read cannot make the server hold them.
+- **TCP connections.** At most **256** at once (QLab took 1000 in the capture; each costs a task, a decoder and a write queue). The worst case of memory is 256 half-sent frames: 4 KiB each for a peer that may not ask yet, up to 1 MiB each for one that may (no passcode, or connected), 256 MiB. The next connection is closed at accept, counted (`tcp_refused`) and logged as a warning at most once per 10 s with a count (`Inbox::Log`, like the WebSocket server). There is no keepalive (no new dependency for socket options), so a peer that vanished without closing (a laptop that dropped off Wi-Fi) would hold its slot. Instead, when the table is full the task closes the connection that has been silent longest, if it has sent nothing for `tcp_idle_evict` (60 s) and is not subscribed to updates, and logs it (warning). The new connection waits up to 0.5 s for that slot, then is refused if none was freed. Connections subscribed to updates are never closed this way (a console that only listens must stay), and **with a passcode set neither is one that has completed `/connect`**: a stranger's idle connections must not be able to push a console out, so with the table full of consoles the newcomer is refused. The cost is that a console that vanished without closing holds its slot until a write to it fails. A host that opens 256 connections and subscribes them all can hold every slot: the same trust assumption as the rest of an unauthenticated OSC port.
+- **Counters.** `WsServer::osc_stats()` returns the `OscStats` plus `udp_dropped` (the task's queue was full), `tcp_refused`, `inputs_dropped`, `send_failed`, `control_refused` and `tcp_connections`. Malformed, oversize, bad-address, throttled, capped and dropped input is also logged, as one warning with counts, every 10 s while it happens.
 
 ## Limits
 
 | Limit | Value | When exceeded |
 |---|---|---|
-| Datagram or SLIP frame | 64 KiB | datagram: dropped, counted as malformed; stream: the frame is skipped to its next END without being buffered, counted as `oversize_frames` |
+| Datagram | 64 KiB (UDP carries 65507 bytes at most) | dropped, counted as malformed |
+| SLIP frame (one message or bundle over TCP) | **1 MiB** from a peer that may ask; **4 KiB** from one that may not yet (a passcode is set and it has not connected) | the frame is skipped to its next END without being buffered, counted as `oversize_frames` |
 | Bundle nesting | 4 levels (the outermost counts as 1) | whole packet dropped, malformed |
 | Messages in one packet | 128 | whole packet dropped, malformed |
 | Array nesting in type tags | 4 levels | message dropped, malformed |
 | Address | 256 bytes, 8 `/`-separated parts, no empty part (one trailing `/` is allowed) | dropped, counted as `bad_address` |
 | Peers with a session (connected or subscribed) | 1024 | a full table refuses newcomers (their `/connect` or `/updates` gets an error reply) until idle UDP peers expire or TCP connections close; existing peers are never evicted, so a flood of forged sources cannot push out a real console |
-| Replies per datagram or stream read | 16 | the rest are dropped, counted as `replies_dropped` |
-| Reply JSON body | 1400 bytes | replaced by an `error` reply with data `"reply too large"` (keeps a reply near one unfragmented UDP datagram) |
-| Reply and update bytes to one UDP source IP | 16 KiB burst, refilling 8 KiB/s (headers counted) | further replies dropped, counted as `replies_throttled`; further updates as `updates_throttled` |
-| Open TCP connections | 16 | an idle unsubscribed one (silent 60 s) is closed for the newcomer; otherwise the next is closed at accept, counted as `tcp_refused`, logged (at most every 10 s) |
+| Replies per datagram or stream read | 1024 | the rest are dropped, counted as `replies_dropped` |
+| Reply bytes per datagram or stream read | 2 MiB | the rest are dropped, counted as `replies_dropped` |
+| Inputs per datagram or stream read | 1024 | the rest are not produced, counted as `inputs_capped` |
+| Cues one pattern, or `/cue/active`, may act on or answer for | 1024 | the cues found are used, the rest are not; counted as `matches_capped` |
+| Pattern alternatives (the product of its `{..}` groups) | 64 | the message gets an `error` reply |
+| Matching work of one message | 2,000,000 steps; a cue number longer than 256 characters is not matched by a pattern | matching stops; counted as `matches_capped` |
+| Reply body to a peer that may ask | what fits a UDP datagram (65507 bytes in all) over UDP; 1 MiB over TCP | replaced by an `error` reply with no data (QLab sends nothing over UDP when a reply cannot fit) |
+| Reply body to a peer that may not ask yet | 1400 bytes (about one unfragmented datagram) | replaced by an `error` reply with no data |
+| Reply bytes to one UDP source IP that may not ask yet | 16 KiB burst, refilling 8 KiB/s (headers counted) | further replies dropped, counted as `replies_throttled` |
+| Open TCP connections | 256 | an idle unsubscribed one (silent 60 s) is closed for the newcomer; otherwise the next is closed at accept, counted as `tcp_refused`, logged (at most every 10 s) |
+| Bytes queued to write, per TCP connection / all connections | 4 MiB / 64 MiB | the reply is dropped, counted as `send_failed` |
 | Datagrams waiting for the server | 256 | further datagrams dropped, counted as `udp_dropped` |
 | Age of input when it is handled | 2 s | dropped, counted in `inputs_dropped` |
-| Requests to the engine not yet answered | 256 | further inputs dropped, counted as `inputs_dropped` |
-| Update messages from one change | 32 cues | one `/update/workspace/{ws}` instead |
+| Requests to the engine not yet answered | 2048 | further inputs dropped, counted as `inputs_dropped` |
+| Cues reported one by one after one change | 32 | one `/update/workspace/{ws}/cue_id/__root__` (and the dashboard) instead |
+| Group nesting written by `/cueLists` and the cue objects | 16 levels | deeper groups are written with no children |
+
+**Why 1024 replies per read.** A wildcard answers once per matched cue (QLab does), so a show of several hundred cues must be able to answer `/cue/*/name` in full from one datagram; 1024 matches the per-message match cap. A reply is about 250 bytes unless a note or `/cueLists` is in it, so the byte cap (2 MiB) is what bounds the work in the odd case of large notes. The per-IP byte budget of 16 KiB is kept only for a peer that may not ask yet: it can only be sent small refusals, and its source address may be forged, so it must not become an amplifier. A peer that may ask (no passcode, or connected) is not budgeted: a UDP peer is only an IP address, so forged traffic from a console's own address can make us send it replies up to the caps above, which is the accepted cost of answering large UDP replies as QLab does. On macOS a datagram over 9216 bytes needs a raised `net.inet.udp.maxdgram` on the sender's side (and ours); a reply that cannot be sent is counted as `send_failed`.
 
 Bundle time tags are ignored: every message runs when it arrives, in bundle order. Bundles are flattened.
 
-Malformed or oversize input never reaches the engine. It is dropped and counted (`OscStats`: `packets`, `messages`, `malformed`, `oversize_frames`, `bad_address`, `unknown_address`, `wrong_workspace`, `denied`, `rejected`, `replies_dropped`, `replies_throttled`, `updates_throttled`).
+Malformed or oversize input never reaches the engine. It is dropped and counted (`OscStats`: `packets`, `messages`, `malformed`, `oversize_frames`, `bad_address`, `unknown_address`, `wrong_workspace`, `denied`, `rejected`, `replies_dropped`, `replies_throttled`, `updates_dropped`, `duplicates_dropped`, `matches_capped`, `inputs_capped`).
 
 ## Addresses
 
-Every address may be prefixed with `/workspace/{id}`, where `{id}` is the open workspace's id (compared case-insensitively). A message for another id is ignored, with no reply (counted as `wrong_workspace`). Address matching is exact and case-sensitive. **Wildcards and alternatives (`* ? [ ] { }`) are not expanded**; such an address gets an error reply, unless it is exactly a cue's OSC trigger address (the trigger is looked up first, so trigger addresses may contain those characters).
+Every workspace address may be prefixed with `/workspace/{id}`, where `{id}` is the open workspace's id **in upper case, as replies write it**. A message for another id, a non-id, or the right id in lower case gets an `error` reply that holds only `address` and `status`. Application-level addresses (`/version`, `/workspaces`, `/updates`) are not available under the prefix (`error`). Address matching is exact and case-sensitive: `/GO`, `/Cue/1/start`, `/cue/1/NAME`, `/cue/1/prewait` and `/cue_id/` with a lower-case UUID are all unknown addresses (`error`).
 
-Each accepted message becomes the same input the UI sends (`docs/protocol.md`); OSC adds no engine behaviour. "The list" below is the active cue list.
+Each accepted message becomes the same input the UI sends (`docs/protocol.md`); OSC adds no engine behaviour. "The list" below is the active cue list. **A message that succeeds gets no reply** (QLab sends none for actions, writes and `/updates`); one that fails gets an `error` reply, and an address nothing answers to (that is no cue's trigger) gets one too.
 
 | Address | Arguments | Becomes |
 |---|---|---|
-| `/go` | none (any are ignored) | `transport go` on the list |
-| `/panic` | none | `transport panic` |
-| `/pause` | none | `transport pause_all` |
-| `/resume` | none | `transport resume_all` |
-| `/playhead/next`, `/playhead/previous` | none | `transport playhead_next` / `playhead_previous` |
-| `/playhead/{number}` | none | `transport set_playhead_by_number` |
-| `/select/next`, `/select/previous`, `/select/{number}` | none | the same as `/playhead/...` (see open questions) |
+| `/go` | none; an int, float or other non-string argument is ignored | `transport go` on the list |
+| `/go "3"` | a string: a cue number | `transport set_playhead` to that cue (in whichever list holds it), then `go` on that list: the cue starts and the playhead moves to the cue after it. Nothing is started if there is no such cue, the string is empty, or the cue is inside a group (a playhead cannot rest there): `error` |
+| `/stop` | none | `transport stop_all`: every cue and preview stops at once |
+| `/hardStop` | none | `transport hard_stop_all` (the same as `/stop` today: stops have no fade-out yet) |
+| `/panic` | none | `transport panic` (every cue fades out over the workspace's panic duration; a second one stops everything) |
+| `/pause`, `/resume` | none | `transport pause_all` / `resume_all` |
+| `/playhead/next`, `/playhead/previous` | none | `transport playhead_next` / `playhead_previous` on the list |
+| `/playhead/{number}`, `/select/{number}` | none | `transport set_playhead_by_number` on the list that holds the cue (any list; it becomes the active one). `error` if there is no such cue or it is inside a group |
+| `/select/next`, `/select/previous` | none | the same as `/playhead/...` |
 | `/cue/{number}/start` | none | `transport start` |
 | `/cue/{number}/stop` | none | `transport stop` (no fade) |
 | `/cue/{number}/hardStop` | none | `transport hard_stop` |
+| `/cue/{number}/panic` | none | `transport panic_cue`: the cue and what is in it fade out over the panic duration; nothing else is touched |
 | `/cue/{number}/pause`, `/resume` | none | `transport pause` / `resume` |
 | `/cue/{number}/load` | optional time in seconds, at least 0 | `transport load` (`at` 0 if omitted) |
 | `/cue/{number}/reset` | none | `transport reset` |
@@ -71,81 +85,110 @@ Each accepted message becomes the same input the UI sends (`docs/protocol.md`); 
 | `/cue/{number}/number` | one string, int or float; an empty string clears the number | `command set_cue_numbers` |
 | `/cue/{number}/preWait`, `/postWait` | one number, finite and at least 0 | `command set_cue_property` |
 | `/cue/{number}/armed`, `/flagged` | int 0 or 1, or an OSC boolean | `command set_cue_property` |
-| `/cue/{number}/{property}` | none | a reply with the current value (see Replies) |
-| `/cue_id/{id}/...` | as `/cue/{number}/...` | the cue is found by its id (a UUID) instead of its number |
-| _any other address_ | none | if it is exactly some cue's OSC trigger address (TRG-03), `transport start` for that cue; otherwise dropped and counted as `unknown_address` |
+| `/cue/{number}/{property}` | none | a reply with the current value (see Replies). Also readable: `uniqueID`, `isLoaded`, `isRunning`, `isPaused`, `isBroken` (read-only; a write is an `error`) |
+| `/cue_id/{ID}/...` | as `/cue/{number}/...` | the cue is found by its id (a UUID, **upper case**) instead of its number |
+| `/cue/selected/{property}`, `/cue/playhead/{property}` | as the property | the cue at the playhead of the active list (see Queries). Not for actions |
+| `/cue/active/{property}` | as the property | every running cue (see Queries). Not for actions |
+| _any other address_ | none | if it is exactly some cue's OSC trigger address (TRG-03), `transport start` for that cue; otherwise an `error` reply (counted as `unknown_address`) |
 
-A cue is found by its number as written in the address; the words `selected`, `playhead` and `active` have no special meaning and are looked up as numbers. A number or id that matches no cue gets an error reply. Arguments of the wrong type or count get an error reply; nothing is sent to the engine.
+A cue number is looked up in **all** cue lists, at any depth, as written in the address (the words `selected`, `playhead` and `active` are the exceptions above). A number or id that matches no cue gets an error reply. Arguments of the wrong type or count get an error reply; nothing is sent to the engine.
 
-`/stop` (stop everything) is **not implemented**: the protocol has no stop-all action yet (PROGRESS M4.1b). It gets an error reply. Use `/panic` or `/cue/{number}/stop`.
+Not implemented: level and time properties beyond pre-wait and post-wait, `/new`, `/save`, `/udpReplyPort`, the other QLab application and workspace queries.
 
-Not implemented: `/cue/{number}/panic`, level and time properties beyond pre-wait and post-wait, `/cue/selected/...`, `/cue/active/...`, `/cue/playhead/...`, `/version`, `/workspaces`, `/cueLists`, `/runningCues`, `/new`, `/save`, and the other QLab application and workspace queries.
+### Patterns
+
+The cue-number part of `/cue/{number}/{verb}` is an OSC address pattern when it has `*`, `?`, `[...]` or `{a,b}` in it: `*` any run of characters (also none), `?` one character, `[abc]` and `[a-c]` one of those, `[!a-c]` none of those, `{a,b}` one of the alternatives (not nested). A pattern is matched against every cue number, in **every list and inside groups**, in workspace order (each list, then its cues, a group before its children). It acts on, or answers for, **every match**:
+
+- A read (`/cue/*/name`) answers **once per match**, each with the matched cue's own address in the JSON (`/workspace/{ID}/cue/3/name`, or `/cue_id/{ID}/name` for a cue without a number) while the OSC address of the reply is the one asked (`/reply/cue/*/name`). `*` also matches the cue lists (their number is empty, so does a cue without a number): a list answers `name` with its name and `number` with `""`, at its `cue_id` address, and is skipped by every other property and by actions. A match that has no such property gets an `error` of its own.
+- An action (`/cue/{1,2}/start`, `/cue/*/stop`) is sent for each cue matched, in order. A write reaches every match. An argument that is wrong for the verb is an `error` reply for each match.
+- No match, or a pattern that is not valid (unclosed `[` or `{`, `{` in `{`, a stray `]` or `}`, more than 64 alternatives): one `error` reply.
+- Pattern characters elsewhere in the address are not expanded. The address may still be exactly a cue's OSC trigger (looked up first), which can therefore contain such characters.
+- The work is bounded: at most 1024 matches (the first 1024 are used, counted as `matches_capped`), 64 alternatives, 2 million matching steps for the whole message, and a number longer than 256 characters is not matched by a pattern (use its exact address).
 
 ## Connecting and the passcode (NET-02)
 
 - **No passcode set** (none, or empty): no message needs `/connect`. `/connect` with any argument is accepted.
-- **Passcode set**: every message except `/connect` is refused until the peer has sent `/connect` with the right passcode (one string argument; a missing or non-string argument counts as wrong). Refused messages get a `denied` reply over TCP and **no reply over UDP** (the source address of a datagram may be forged); both are counted as `denied`. The refusal comes before any cue lookup, so nothing about the show leaks.
-- `/connect` forms: `/connect` and `/workspace/{id}/connect`.
+- **`/connect` replies** are QLab's: `{"status":"ok","data":"ok:view|edit|control"}` when accepted (the rights granted, joined by `|`; until the passcode table with rights exists (PROGRESS M4.5c) every grant is all three), and a wrong passcode is `{"status":"ok","data":"badpass"}` (status `ok`, not an error). The passcode is a string, or an integer (`1234` sent as int32 is accepted like `"1234"`); no argument, or another type, counts as wrong (QLab connects such a peer with no rights, which we cannot yet express). A lockout is `denied`; a full peer table is `error`.
+- **Passcode set**: every message except `/connect`, `/version` and `/workspaces` is refused until the peer has sent `/connect` with the right passcode, and the refusal is a **`denied` reply over UDP and TCP** (QLab answers both). The reply holds `address`, `status` and `workspace_id` (an application-level message such as `/updates` is `{"address":"/updates","status":"denied"}`). The refusal comes before any cue lookup, so nothing about the show leaks. Because the source address of a datagram may be forged, a UDP reply to a peer that has not connected is held to the per-source-IP byte budget (16 KiB burst, 8 KiB/s) and to 1400 bytes; both are counted.
+- `/connect` forms: `/connect` and `/workspace/{ID}/connect`.
 - A wrong `/connect` from a peer that is already connected is answered `badpass` and changes nothing: it neither disconnects the peer nor counts toward a lockout (a UDP peer is only an IP address, so anyone sharing or forging it could otherwise cut a console off mid-show).
-- Failures are counted per remote IP address, for TCP too (reconnecting does not reset them). After 5 wrong passcodes from one IP, while not connected, that IP is locked out for 30 s: `/connect` during the lockout is answered `denied` without checking the passcode. Across all IPs together, 50 wrong passcodes in 60 s make every new `/connect` get `denied` until the window ends (so rotating forged source addresses does not give unlimited guesses). Peers already connected are unaffected by either.
+- Failures are counted per remote IP address, for TCP too (reconnecting does not reset them). After 5 wrong passcodes from one IP, while not connected, that IP is locked out for 30 s: `/connect` during the lockout is answered `denied` without checking the passcode. Across all IPs together, 50 wrong passcodes in 60 s make every new `/connect` get `denied` until the window ends (so rotating forged source addresses does not give unlimited guesses). Peers already connected are unaffected by either. **This differs from QLab's, on purpose** (see "Differences from QLab").
 - **Known addresses.** The engine remembers up to 64 IP addresses that completed a `/connect` (until the passcode changes or another workspace opens). A **correct** passcode from a known address passes both the per-IP lockout and the global budget, so an attacker's forged wrong guesses cannot keep the operator's console from reconnecting after its session expired or a TCP link dropped. A wrong passcode from a known address still counts and is still refused. Remaining trade-off: a device that has never connected can be blocked by an attacker's wrong guesses (first-time devices during an attack). To recover, wait for the window (60 s) or lockout (30 s) to end, or connect once from an address that is already known; the app can also reset all sessions.
-- Limits of the guards: an attacker rotating 1024 forged addresses can evict the oldest reply budget (bounded: still at most 16 KiB per forged address and 16 replies per datagram), and forged traffic from the console's own address can drain its reply budget (its commands still work). Without a passcode a forged `/connect` takes a session slot just as `/updates 1` does; slots free as UDP peers go idle (10 minutes).
+- Limits of the guards: an attacker rotating 1024 forged addresses can evict the oldest reply budget (bounded: still at most 16 KiB per forged address), and forged traffic from the console's own address can make us send it replies (a peer that has connected is not budgeted: see "Limits"). Without a passcode a forged `/connect` takes a session slot just as `/updates 1` does; slots free as UDP peers go idle (60 s).
 - Because a connected UDP peer is only an IP address, any packet from that address (including a forged one) can switch its `/updates` subscription on or off (`/updates 0`). It cannot disconnect the peer.
-- A UDP peer's connection and update subscription end after 10 minutes without any packet from it; a TCP peer's end when the connection closes. The runtime clears all of them when the passcode changes or another workspace opens.
+- **A UDP peer is forgotten after 60 s of UDP silence**: its `/connect` and its update subscription end, as QLab's do (measured: still there at 58 s, gone at 62 s). Any message from it within the window renews it. A TCP peer's session ends when the connection closes. The runtime clears all of them when the passcode changes or another workspace opens. A display that only listens must therefore send something at least once a minute over UDP (QLab's remotes do), or use TCP. Unlike QLab, a bare `/updates 1` after the session was forgotten subscribes again by itself.
 - The passcode comparison does not stop at the first differing byte (its time depends on the longer string, not on where they differ; it does not hide whether the lengths are equal). It travels in clear text: this is access control for a trusted show network, not security against an attacker on the wire.
-- **Without a passcode, OSC is for trusted networks only.** Any host can then get replies and subscribe to updates, and a forged UDP source address can direct our replies at someone else. The caps above (replies per read, reply size, per-IP byte budget) bound that, but do not remove it. Set a passcode on any network you do not control. The update fan-out applies the same per-IP budget to UDP peers.
-- Permission levels (view, edit, control) are not implemented: a connected peer may do everything the API offers.
+- **Without a passcode, OSC is for trusted networks only.** Any host can then get replies and subscribe to updates, and a forged UDP source address can direct our replies and updates at someone else (up to the caps above, with no byte budget). Set a passcode on any network you do not control.
+- Permission levels (view, edit, control) are not implemented: a connected peer may do everything the API offers, and `/connect` says so (`ok:view|edit|control`). The rights table is PROGRESS M4.5c.
+
+### Identical messages
+
+A message that is identical (same address and arguments) to the previous one from the same peer, received less than **100 ms** earlier, is dropped: no action, no reply, `/go` included (QLab does; measured with two `/go` 50 ms apart starting one cue). Only the last message handled for each peer is remembered, and a dropped repeat does not renew the time, so a message sent every 50 ms is handled every other time. A peer is one UDP IP address or one TCP connection. Memory is bounded: one fingerprint for each of at most 1024 peers; with more peers than that, the peers past it are not deduplicated until entries leave the window (at most 100 ms later). A client that polls the same query faster than every 100 ms gets answers to some of the polls only.
 
 ## Updates (NET-05)
 
-`/updates 1` (int or boolean true) subscribes the peer, `/updates 0` unsubscribes; it needs `/connect` first when a passcode is set. Anything else gets an error reply.
+`/updates 1` (int or boolean true) subscribes the peer, `/updates 0` unsubscribes; it needs `/connect` first when a passcode is set. **No reply when it is allowed**; a bad argument is an `error` reply, and a refusal is `denied`, both without `workspace_id`.
 
-A subscribed peer is sent these messages (to its IP on port 53001 for UDP, SLIP-framed on its connection for TCP). **This is our reading of QLab 5's update scheme, not something we could check** (open question 13); no other formats are sent. `{ws}` is the workspace id, `{cue}` and `{list}` are ids, all as they appear in replies.
+A subscribed peer is sent these messages exactly as QLab sends them (to its IP on port 53001 for UDP, whatever port it sent `/updates` from; SLIP-framed on its own connection for TCP, and on no other). `{WS}`, `{ID}` and `{LIST}` are upper-case UUIDs; `__root__` is lower case. One message per datagram. QLab sends each burst twice about 100 ms apart; **we send each once**.
 
 | Address | Argument | Sent when |
 |---|---|---|
-| `/update/workspace/{ws}` | none | the workspace changed beyond one cue's properties: a cue was added, removed or moved, a cue list or patch changed, a new snapshot replaced the copy, or one change touched more than 32 cues (then this one message stands for them) |
-| `/update/workspace/{ws}/cue_id/{cue}` | none | a cue changed: it was edited (also for each cue added, removed or moved), or it started, stopped, paused, finished or broke (any cue state change) |
-| `/update/workspace/{ws}/cueList/{list}/playbackPosition` | the cue id the playhead is on, as a string; empty string when it is past the end | a playhead moved |
+| `/update/workspace/{WS}/cue_id/{ID}` | none | the cue changed. For a **property edit** of a cue that stays where it is: that cue only. For a **state change** (start, pause, resume, stop, finish, break): the cue, then each group around it (nearest first), then its cue list (`{ID}` is the list's id), then `__root__`. For a cue **added, removed or moved**: the cue, the groups and the list it was in and is in, then `__root__` |
+| `/update/workspace/{WS}/cue_id/__root__` | none | with state changes and changes of shape (above); alone for a change to the cue lists themselves, and instead of the cue-by-cue messages when one change touched more than 32 cues ("ask again for everything") |
+| `/update/workspace/{WS}/cueList/{LIST}/playbackPosition` | the id of the cue the playhead is on, as a string; **no argument** when it is past the end (or the list is empty) | a playhead moved |
+| `/update/workspace/{WS}/dashboard` | none | last in the change, when a playhead moved, a cue **started** (went from idle or loaded to running, pre-waiting or paused), or the cue tree changed shape. Not for a pause, resume or finish |
 
-Order within one change: the workspace update, then the cue updates, then playhead updates. A message is built once and sent to every subscriber. Update messages carry no data beyond this: the peer asks (`/cue/{number}/name` and the other reads) for what it wants to know.
+There is no workspace-level update message: patches and settings edits send nothing (QLab has no message for them). A change of workspace (open, new, revert) is `__root__` and the dashboard, with a `playbackPosition` for each list whose playhead moved. Order within one change: the cue messages, `__root__`, the playhead messages, the dashboard; a message is built once and sent to every subscriber. Update messages carry no data beyond this: the peer asks (`/cue/{number}/name` and the other reads) for what it wants to know. Switching the displayed list in QLab sends nothing and so does moving our active list without moving a playhead.
 
-Updates to a UDP peer share its reply byte budget (16 KiB burst, 8 KiB/s refill, headers counted: about 70 updates a second sustained), so a forged subscription cannot aim more than that at a victim; the ones over it are dropped and counted (`updates_throttled`). A TCP peer is paced by its connection (see Listeners). A peer that fell behind loses updates and should ask again for what it displays when it sees `/update/workspace/{ws}`; there is no catch-up.
+Updates to a UDP peer are not held to the byte budget (a peer must have connected first when a passcode is set, and a subscription lapses after 60 s of silence); updates are small and follow what the show does. A TCP peer is paced by its connection (see Listeners). A peer that fell behind loses updates and should ask again for what it displays when it sees `__root__`; there is no catch-up.
 
 ## Replies
 
-A reply is an OSC message to the sender whose address is `/reply` followed by the address that was sent (prefix included), with one string argument holding JSON:
+A reply is an OSC message to the sender whose address is `/reply` followed by the address that was sent (prefix included), with one string argument holding JSON, with exactly the keys QLab's have:
 
 ```json
-{"workspace_id": "<uuid>", "address": "/cue/1/name", "status": "ok", "data": "Opening"}
+{"status": "ok", "address": "/workspace/<ID>/cue/1/name", "workspace_id": "<ID>", "data": "Opening"}
 ```
 
-`status` is one of `ok`, `error`, `denied`. Replies are sent for:
+- `status` is `ok`, `error` or `denied`. `address` is always the full `/workspace/{ID}/...` form of what was asked, even when it was sent without the prefix (the exception: a wildcard, `selected`, `playhead` or `active` answers with the matched cue's own address); `workspace_id` is on every workspace-level reply; `data` is there only when there is a value: errors and refusals have none.
+- Application-level replies (`/version`, `/workspaces`, and the `denied` or `error` of `/updates`) have `address` as sent and no `workspace_id`. The reply to a message for another workspace has only `address` and `status`.
+- Replies are sent for: `/connect` (above); reads; the queries below; and anything that failed or was refused. Successful actions (`/go`, `/cue/1/start`, `/stop`, property writes, `/updates`) get none.
+- Key order is not fixed (QLab's varies too).
 
-- `/connect`: `ok` with data `"ok"`; `error` with data `"badpass"`; `denied` when locked out; `error` with data `"too many peers"` if the peer table is full.
-- `/updates`: `ok` with data `"ok"`, or `error`.
-- a property read (`/cue/{number}/{property}` with no argument): `ok` with the value as JSON (string, number or boolean), or `error` if the cue has no such property.
-- anything refused: `error` with a short text in `data` (no such cue, bad argument, no cue list, unsupported address, wildcard) or `denied` (TCP only, see above).
+### Queries
 
-Every reply carries the workspace id, as QLab's do, including `denied` ones to peers that have not connected.
+| Address | Reply `data` |
+|---|---|
+| `/version` | our version (`CARGO_PKG_VERSION`, the engine's), as the string; QLab answers its own (`5.5.3`) |
+| `/workspaces` | `[{"version", "displayName" (the workspace name), "udpReplyPort", "uniqueID" (the workspace id), "port"}]`; one entry, the open workspace; the ports are the ones the server is bound to |
+| `/cue/selected/{property}`, `/cue/playhead/{property}` | the property of the cue at the active list's playhead; `error` when there is none |
+| `/cue/active/{property}` | **one reply per running cue**; one `error` when none runs |
+| `/runningCues` | an array of cue objects: the running cues (waiting, playing, fading or stopping; not paused, loaded or broken); `[]` when none |
+| `/runningOrPausedCues` | the running cues and the paused ones |
+| `/selectedCues` | the cue at the active list's playhead, in an array; `[]` when none |
+| `/cueLists` | an array of cue-list objects (`"type": "Cue List"`, `"number": ""`) each with its cues under `cues`, groups nested (to 16 levels) |
+| `/playheadID` | the id of the cue at the active list's playhead, or `"none"` |
+| `/playheadId` | the same, at the address `/playheadID`, with `"deprecated": true` and a `warning` (the spelling is deprecated) |
 
-Successful actions (`/go`, `/cue/1/start`, property writes, ...) get no reply.
+A cue object has QLab's fields: `number`, `uniqueID`, `cues` (the children of a group), `colorName/live`, `flagged`, `listName`, `type`, `colorName`, `name`, `armed`. `listName` is the cue's name and `colorName/live` its colour (QLab's is the colour it is showing live). `type` is `Audio`, `Group` or `Cue List` as QLab writes them; the names for the other kinds (`Fade`, `Start`, `Stop`, `Pause`, `Load`, `Reset`, `Devamp`, `GoTo`, `Arm`, `Disarm`, `Wait`, `Memo`, `Network`) are ours (QLab's were not measured). `/cue/{number}/isRunning` and the other state properties follow the same states as the queries.
 
-## Open questions (QLab behaviour we could not confirm)
+## Differences from QLab
 
-These choices are conservative and may change once checked against QLab 5.
+- **Lockout.** QLab backs off per TCP connection for a fraction of a second, doubling with each wrong passcode, and does not share the back-off between connections or with UDP (measured). openLab keeps its own, stricter guard (above): 5 wrong passcodes from one IP lock it out for 30 s, with a global budget of 50 per minute and a set of known addresses that always get through with the right passcode. A show's network is small and a guessed passcode gives control of the show, so we prefer the slower, shared guard; the replies are QLab's (`denied`).
+- **Passcode rights** are not implemented (M4.5c): every connected peer gets `view|edit|control`. QLab connects a peer that sends `/connect` with no argument with no rights; we treat it as a wrong passcode.
+- **Resubscribing after the session lapsed.** QLab also needs a workspace-level message; a bare `/updates 1` resubscribes with us.
+- **Updates are sent once**, not twice.
+- **Update details beyond the capture.** QLab sends a few more message sets for particular edits (for example a move sends the list and the dashboard only); ours follow the three rules above for every edit. Property edits do not send the list or the root, as in the capture.
+- **A reply too large for a datagram** is an `error` reply; QLab sends nothing.
+- **`/version`** is openLab's version, and the cue `type` names for kinds other than Audio, Group and Cue List are ours.
+- **Cue lists** answer to patterns only for `name`, `number` and `uniqueID`; QLab's answer every property.
+- **No `/udpReplyPort`, `/new`, `/save`**, or the other application and workspace queries.
 
-1. Reply status strings: we use `ok`, `error`, `denied` and the `/connect` data `badpass`.
-2. Which messages QLab replies to: we reply to `/connect`, `/updates`, property reads and refusals, but not to successful actions.
-3. Which addresses need a passcode when none is set: we require none.
-4. A wrong `/workspace/{id}` is ignored silently; QLab might reply with an error.
-5. Wildcards in addresses: we reject them; QLab may expand them.
-6. Case sensitivity of address parts (`hardStop`, `preWait`): we are case-sensitive.
-7. `/select/{number}`: openLab keeps no selection in the engine, so we move the playhead. In QLab, selection and playhead are linked by default but not always.
-8. `/stop` with no cue: needs the stop-all action (M4.1b).
-9. `/cue/selected`, `/cue/active`, `/cue/playhead` and similar names: unsupported until their meaning is confirmed.
-10. How long a UDP client stays connected or subscribed: we use 10 minutes of silence.
-11. Whether `/go` with an argument targets a cue: we ignore arguments.
-12. Level properties and further cue properties: no protocol command sets them by OSC yet.
-13. **The update messages are our reading of QLab 5's scheme** (`/update/workspace/{id}`, `.../cue_id/{cue_id}`, `.../cueList/{list_id}/playbackPosition {cue_id}`). To confirm: the exact addresses and capitalisation, whether QLab sends the cue update for every property change or also for running state, whether the playhead message carries the cue id (and what it carries past the end of the list), whether workspace-level updates are sent for added or removed cues, whether ids are upper-case, and whether QLab sends updates to a subscriber on the reply port or on the connection it came from (we use the reply port for UDP, the connection for TCP).
-14. The TCP connection limit (16) and the 64 KiB frame limit are ours; QLab's are unknown.
+## Open questions (QLab behaviour not yet measured)
+
+1. Whether `/playhead/{number}` and `/select/{number}` answer `error` for a cue that does not exist (we do) and for one inside a group (we do: a playhead cannot rest there).
+2. `/go ""`: QLab's behaviour was not checked (we answer `error` and start nothing).
+3. How long QLab's failure counter persists, and whether its UDP back-off is per IP (we have our own guard).
+4. Behaviour with two workspaces open (we serve one).
+5. Which properties besides name, notes and pre-wait QLab lets a view-only or edit-only peer write (PROGRESS M4.5c).
+6. Whether a cue's own fade-out changes how long `/cue/{n}/stop` takes (we have no stop fade-outs yet; stop is at once).

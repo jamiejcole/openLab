@@ -262,6 +262,8 @@ async fn fixture_held(ws: Workspace, hold: bool, tune: impl FnOnce(&mut OscConfi
         bind: Ipv4Addr::LOCALHOST.into(),
         port: 0,
         reply_port: udp.local_addr().unwrap().port(),
+        // Most tests send the same message again and again; the one about repeats turns it on.
+        duplicate_window: Duration::ZERO,
         ..OscConfig::default()
     };
     tune(&mut osc);
@@ -355,6 +357,18 @@ impl Fix {
         self.server.osc_stats().unwrap()
     }
 
+    /// A round trip that proves what was sent before it was handled: the server answers
+    /// `/version` in turn with everything else (QLab sends no reply to `/updates` or to actions).
+    async fn udp_sync(&self) {
+        self.udp_send(&msg("/version", vec![])).await;
+        assert_eq!(self.udp_recv().await.addr, "/reply/version");
+    }
+
+    async fn udp_subscribe(&self) {
+        self.udp_send(&msg("/updates", vec![OscType::Int(1)])).await;
+        self.udp_sync().await;
+    }
+
     /// Waits until the listener's counters satisfy `pred` (no sleeping: yields to the server's
     /// threads until it does, within the guard).
     async fn wait_stats(&self, what: &str, pred: impl Fn(&OscListenerStats) -> bool) {
@@ -375,6 +389,17 @@ struct Tcp {
 }
 
 impl Tcp {
+    /// As [`Fix::udp_sync`].
+    async fn sync(&mut self) {
+        self.send(&msg("/version", vec![])).await;
+        assert_eq!(self.recv().await.unwrap().addr, "/reply/version");
+    }
+
+    async fn subscribe(&mut self) {
+        self.send(&msg("/updates", vec![OscType::Int(1)])).await;
+        self.sync().await;
+    }
+
     async fn write(&self, bytes: &[u8]) {
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -450,8 +475,9 @@ fn body(m: &OscMessage) -> Value {
     serde_json::from_str(s).unwrap()
 }
 
+/// The workspace id as QLab (and so the OSC server) writes it: upper case.
 fn ws_id() -> String {
-    workspace(vec![]).id.to_string()
+    workspace(vec![]).id.to_string().to_uppercase()
 }
 
 fn go() -> ClientMessage {
@@ -598,14 +624,24 @@ async fn slip_frames_split_across_reads_and_joined_in_one_read() {
 }
 
 #[tokio::test]
-async fn passcode_refuses_udp_silently_and_tcp_with_denied() {
+async fn passcode_refuses_udp_and_tcp_with_denied() {
     let f = fixture(with_passcode("sesame")).await;
-    // UDP: no reply, nothing reaches control.
+    // UDP: denied, as QLab answers, and nothing reaches control.
     f.udp_send(&msg("/go", vec![])).await;
-    // The next reply that arrives is the one to the wrong passcode, so the refused /go got none.
+    let reply = f.udp_recv().await;
+    assert_eq!(reply.addr, "/reply/go");
+    assert_eq!(
+        body(&reply),
+        serde_json::json!({
+            "address": format!("/workspace/{}/go", ws_id()),
+            "status": "denied",
+            "workspace_id": ws_id(),
+        })
+    );
     f.udp_send(&msg("/connect", vec![text("wrong")])).await;
     let reply = f.udp_recv().await;
     assert_eq!(reply.addr, "/reply/connect");
+    assert_eq!(body(&reply)["status"], "ok");
     assert_eq!(body(&reply)["data"], "badpass");
     assert!(f.control.inputs().is_empty());
     assert_eq!(f.stats().osc.denied, 1);
@@ -617,13 +653,17 @@ async fn passcode_refuses_udp_silently_and_tcp_with_denied() {
     assert_eq!(denied.addr, "/reply/go");
     assert_eq!(body(&denied)["status"], "denied");
     assert!(f.control.inputs().is_empty());
+    assert_eq!(f.stats().osc.denied, 2);
 
     // After the right passcode both work.
     t.send(&msg("/connect", vec![text("sesame")])).await;
-    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    assert_eq!(
+        body(&t.recv().await.unwrap())["data"],
+        "ok:view|edit|control"
+    );
     t.send(&msg("/go", vec![])).await;
     f.udp_send(&msg("/connect", vec![text("sesame")])).await;
-    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
     f.udp_send(&msg("/go", vec![])).await;
     f.control
         .wait_seen("two GOs", |seen| {
@@ -638,8 +678,7 @@ async fn disconnect_frees_the_session() {
     let mut a = f.tcp().await;
     a.send(&msg("/connect", vec![text("sesame")])).await;
     assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
-    a.send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
+    a.subscribe().await;
     drop(a);
     f.wait_stats("the connection to be forgotten", |s| s.tcp_connections == 0)
         .await;
@@ -662,14 +701,22 @@ async fn disconnect_frees_the_session() {
     assert_eq!(f.stats().send_failed, 0);
 }
 
+/// The next update message: its address, and the string argument if it has one.
+async fn next_update(f: &Fix) -> (String, Vec<OscType>) {
+    let m = f.udp_recv().await;
+    assert!(m.addr.starts_with("/update/"), "{}", m.addr);
+    (m.addr, m.args)
+}
+
 #[tokio::test]
 async fn updates_report_cue_edits_and_playhead_moves() {
     let f = fixture(test_workspace()).await;
-    f.udp_send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    // No reply to `/updates`: QLab sends none.
+    f.udp_subscribe().await;
     let ws = ws_id();
+    let base = format!("/update/workspace/{ws}");
 
-    // A cue edit.
+    // A cue edit: that cue, and nothing else.
     let mut edited = test_workspace().cue_lists[0].cues[0].clone();
     edited.name = "Renamed".into();
     f.out
@@ -685,17 +732,15 @@ async fn updates_report_cue_edits_and_playhead_moves() {
         })
         .await
         .unwrap();
-    let update = f.udp_recv().await;
-    assert_eq!(
-        update.addr,
-        format!("/update/workspace/{ws}/cue_id/{}", id(1))
-    );
-    assert!(update.args.is_empty());
-    // The copy follows: a property read now answers with the new name.
+    let (addr, args) = next_update(&f).await;
+    assert_eq!(addr, format!("{base}/cue_id/{}", id(1)));
+    assert!(args.is_empty());
+    // The copy follows: a property read now answers with the new name (and, in order, nothing
+    // else came before it).
     f.udp_send(&msg("/cue/1/name", vec![])).await;
     assert_eq!(body(&f.udp_recv().await)["data"], "Renamed");
 
-    // A playhead move.
+    // A playhead move: the position (the cue's id as a string), then the dashboard.
     f.out
         .send(ServerMessage::Runtime {
             seq: 1,
@@ -706,17 +751,15 @@ async fn updates_report_cue_edits_and_playhead_moves() {
         })
         .await
         .unwrap();
-    let update = f.udp_recv().await;
+    let (addr, args) = next_update(&f).await;
     assert_eq!(
-        update.addr,
-        format!(
-            "/update/workspace/{ws}/cueList/{}/playbackPosition",
-            list_id()
-        )
+        addr,
+        format!("{base}/cueList/{}/playbackPosition", list_id())
     );
-    assert_eq!(update.args, vec![text(&id(2).to_string())]);
+    assert_eq!(args, vec![text(&id(2).to_string())]);
+    assert_eq!(next_update(&f).await, (format!("{base}/dashboard"), vec![]));
 
-    // Past the end: an empty cue id. The same playhead again says nothing.
+    // Past the end: no argument at all. The same playhead again says nothing.
     f.out
         .send(ServerMessage::Runtime {
             seq: 2,
@@ -737,9 +780,12 @@ async fn updates_report_cue_edits_and_playhead_moves() {
         })
         .await
         .unwrap();
-    assert_eq!(f.udp_recv().await.args, vec![text("")]);
+    let (addr, args) = next_update(&f).await;
+    assert!(addr.ends_with("/playbackPosition"));
+    assert!(args.is_empty());
+    assert_eq!(next_update(&f).await.0, format!("{base}/dashboard"));
 
-    // A cue starting.
+    // A cue starting: the cue, its list and the root, then the dashboard (a start).
     f.out
         .send(ServerMessage::Runtime {
             seq: 4,
@@ -751,20 +797,50 @@ async fn updates_report_cue_edits_and_playhead_moves() {
         })
         .await
         .unwrap();
+    let got: Vec<String> = vec![
+        next_update(&f).await.0,
+        next_update(&f).await.0,
+        next_update(&f).await.0,
+        next_update(&f).await.0,
+    ];
     assert_eq!(
-        f.udp_recv().await.addr,
-        format!("/update/workspace/{ws}/cue_id/{}", id(2))
+        got,
+        vec![
+            format!("{base}/cue_id/{}", id(2)),
+            format!("{base}/cue_id/{}", list_id()),
+            format!("{base}/cue_id/__root__"),
+            format!("{base}/dashboard"),
+        ]
     );
-
-    // /updates 0 stops them: the next thing to arrive is the reply to a read.
-    f.udp_send(&msg("/updates", vec![OscType::Int(0)])).await;
-    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    // Stopping it: the same three, and no dashboard.
     f.out
         .send(ServerMessage::Runtime {
             seq: 5,
             changes: vec![RuntimeChange::CueState {
-                cue: id(1),
+                cue: id(2),
                 state: WireCueState::Idle,
+                reason: None,
+            }],
+        })
+        .await
+        .unwrap();
+    for expected in [
+        format!("{base}/cue_id/{}", id(2)),
+        format!("{base}/cue_id/{}", list_id()),
+        format!("{base}/cue_id/__root__"),
+    ] {
+        assert_eq!(next_update(&f).await.0, expected);
+    }
+
+    // /updates 0 stops them: the next thing to arrive is the reply to a read.
+    f.udp_send(&msg("/updates", vec![OscType::Int(0)])).await;
+    f.udp_sync().await;
+    f.out
+        .send(ServerMessage::Runtime {
+            seq: 6,
+            changes: vec![RuntimeChange::CueState {
+                cue: id(1),
+                state: WireCueState::Running,
                 reason: None,
             }],
         })
@@ -775,11 +851,67 @@ async fn updates_report_cue_edits_and_playhead_moves() {
 }
 
 #[tokio::test]
-async fn updates_over_tcp_and_added_cues_update_the_workspace() {
+async fn updates_go_to_the_ip_on_the_reply_port_whatever_port_the_subscriber_sent_from() {
+    let f = fixture(test_workspace()).await;
+    // A second socket, on another port, subscribes: the updates still arrive on the reply port
+    // (`f.udp`), keyed on the IP, as QLab's do.
+    let other = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    assert_ne!(
+        other.local_addr().unwrap().port(),
+        f.udp.local_addr().unwrap().port()
+    );
+    other
+        .send_to(
+            &encode_message(&msg("/updates", vec![OscType::Int(1)])).unwrap(),
+            f.udp_target(),
+        )
+        .await
+        .unwrap();
+    f.udp_sync().await;
+    f.out
+        .send(ServerMessage::Runtime {
+            seq: 1,
+            changes: vec![RuntimeChange::Playhead {
+                list: list_id(),
+                cue: Some(id(2)),
+            }],
+        })
+        .await
+        .unwrap();
+    assert!(next_update(&f).await.0.ends_with("/playbackPosition"));
+}
+
+#[tokio::test]
+async fn updates_over_tcp_arrive_on_that_connection_only() {
     let f = fixture(test_workspace()).await;
     let mut t = f.tcp().await;
-    t.send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    t.subscribe().await;
+    let mut quiet = f.tcp().await;
+    f.udp_subscribe().await;
+    // A UDP subscriber is not a TCP one, and the other connection gets nothing.
+    f.out
+        .send(ServerMessage::Runtime {
+            seq: 1,
+            changes: vec![RuntimeChange::Playhead {
+                list: list_id(),
+                cue: Some(id(2)),
+            }],
+        })
+        .await
+        .unwrap();
+    let on_tcp = t.recv().await.unwrap();
+    assert!(on_tcp.addr.ends_with("/playbackPosition"));
+    assert_eq!(on_tcp.args, vec![text(&id(2).to_string())]);
+    assert!(next_update(&f).await.0.ends_with("/playbackPosition"));
+    quiet.sync().await;
+    drop(quiet);
+}
+
+#[tokio::test]
+async fn updates_over_tcp_and_added_cues_update_the_list_and_the_root() {
+    let f = fixture(test_workspace()).await;
+    let mut t = f.tcp().await;
+    t.subscribe().await;
     let mut added = test_workspace().cue_lists[0].cues[0].clone();
     added.id = id(3);
     added.number = Some("3".into());
@@ -797,14 +929,15 @@ async fn updates_over_tcp_and_added_cues_update_the_workspace() {
         .await
         .unwrap();
     let ws = ws_id();
-    assert_eq!(
-        t.recv().await.unwrap().addr,
-        format!("/update/workspace/{ws}")
-    );
-    assert_eq!(
-        t.recv().await.unwrap().addr,
-        format!("/update/workspace/{ws}/cue_id/{}", id(3))
-    );
+    // The cue, its list, the root and the dashboard: no workspace-level update.
+    for expected in [
+        format!("/update/workspace/{ws}/cue_id/{}", id(3)),
+        format!("/update/workspace/{ws}/cue_id/{}", list_id()),
+        format!("/update/workspace/{ws}/cue_id/__root__"),
+        format!("/update/workspace/{ws}/dashboard"),
+    ] {
+        assert_eq!(t.recv().await.unwrap().addr, expected);
+    }
     // The new cue is addressable.
     t.send(&msg("/cue/3/name", vec![])).await;
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
@@ -813,8 +946,7 @@ async fn updates_over_tcp_and_added_cues_update_the_workspace() {
 #[tokio::test]
 async fn a_gap_in_the_numbering_rebuilds_the_copy_from_a_snapshot() {
     let f = fixture(test_workspace()).await;
-    f.udp_send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    f.udp_subscribe().await;
     // The engine's workspace now differs (a cue was renamed in a message the OSC side never
     // saw); the next broadcast skips a revision.
     {
@@ -829,10 +961,14 @@ async fn a_gap_in_the_numbering_rebuilds_the_copy_from_a_snapshot() {
         })
         .await
         .unwrap();
-    // The rebuilt copy differs from the old one: one workspace update.
+    // The rebuilt copy differs from the old one: the root changed, and the dashboard.
     assert_eq!(
-        f.udp_recv().await.addr,
-        format!("/update/workspace/{}", ws_id())
+        next_update(&f).await.0,
+        format!("/update/workspace/{}/cue_id/__root__", ws_id())
+    );
+    assert_eq!(
+        next_update(&f).await.0,
+        format!("/update/workspace/{}/dashboard", ws_id())
     );
     f.udp_send(&msg("/cue/1/name", vec![])).await;
     assert_eq!(body(&f.udp_recv().await)["data"], "Changed");
@@ -877,41 +1013,41 @@ async fn a_new_passcode_in_a_snapshot_ends_every_session() {
 }
 
 #[tokio::test]
-async fn updates_to_a_udp_peer_are_limited_by_its_byte_budget() {
+async fn updates_to_a_subscriber_are_not_held_to_the_byte_budget_of_a_stranger() {
     let f = fixture(test_workspace()).await;
-    f.udp_send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
-    for seq in 1..=400 {
+    f.udp_subscribe().await;
+    // 60 cue changes: three messages each (the cue, its list, the root), about 24 KiB with
+    // headers, more than the 16 KiB burst a peer that may not ask is held to, and every one
+    // arrives (few enough for the socket's own receive buffer).
+    for seq in 1..=60u64 {
         f.out
             .send(ServerMessage::Runtime {
                 seq,
                 changes: vec![RuntimeChange::CueState {
                     cue: id(1),
-                    state: WireCueState::Running,
+                    state: if seq % 2 == 0 {
+                        WireCueState::Paused
+                    } else {
+                        WireCueState::Running
+                    },
                     reason: None,
                 }],
             })
             .await
             .unwrap();
     }
-    // Every update was either sent or held back. A datagram (about 100 bytes of OSC and 28 of
-    // headers) costs about 130 bytes of the 16 KiB burst, which the refill of a few ms barely
-    // changes: about 125 get through.
     let mut received = 0u64;
-    guard("the updates to be sent or held back", async {
+    guard("the updates to arrive", async {
         let mut buf = vec![0u8; 70_000];
-        loop {
-            while f.udp.try_recv_from(&mut buf).is_ok() {
-                received += 1;
-            }
-            if received + f.stats().osc.updates_throttled == 400 {
-                return;
-            }
-            tokio::task::yield_now().await;
+        // 60 changes x (cue, list, root), and the dashboard of the first one (a start).
+        while received < 181 {
+            f.udp.recv_from(&mut buf).await.unwrap();
+            received += 1;
         }
     })
     .await;
-    assert!((100..=140).contains(&received), "{received}");
+    assert_eq!(f.stats().osc.replies_throttled, 0);
+    assert_eq!(f.stats().osc.updates_dropped, 0);
 }
 
 #[tokio::test]
@@ -1009,11 +1145,12 @@ async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
         decode_packet(&buf[..n]).unwrap().remove(0)
     };
     send(msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&recv().await)["status"], "ok");
+    send(msg("/version", vec![])).await;
+    assert_eq!(recv().await.addr, "/reply/version");
     send(msg("/go", vec![])).await;
     // The cue ran (a state update for it) and the playhead moved to the next cue.
     let (mut started, mut moved) = (false, false);
-    let ws_id = ws.id.to_string();
+    let ws_id = ws.id.to_string().to_uppercase();
     while !(started && moved) {
         let m = recv().await;
         started |= m.addr == format!("/update/workspace/{ws_id}/cue_id/{}", id(1));
@@ -1026,7 +1163,7 @@ async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
 
 #[tokio::test]
 async fn unanswered_requests_are_capped_and_the_rest_dropped() {
-    let f = fixture(test_workspace()).await;
+    let f = fixture_with(test_workspace(), |c| c.max_inflight = 256).await;
     f.control
         .mute
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1365,10 +1502,8 @@ async fn an_idle_connection_is_closed_to_make_room_and_a_subscribed_one_is_not()
 
     // Subscribed connections are never closed for this: with the table full of them the next
     // is refused.
-    b.send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
-    c.send(&msg("/updates", vec![OscType::Int(1)])).await;
-    assert_eq!(body(&c.recv().await.unwrap())["status"], "ok");
+    b.subscribe().await;
+    c.subscribe().await;
     let mut d = f.tcp().await;
     assert!(d.recv().await.is_none());
     assert_eq!(f.stats().tcp_refused, 1);
@@ -1511,4 +1646,163 @@ async fn a_passcode_edit_that_fails_to_apply_still_ends_every_session() {
         }
     })
     .await;
+}
+
+// ---- QLab 5 behaviour (M4.5b) over real sockets
+
+#[tokio::test]
+async fn version_and_workspaces_report_the_bound_ports() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/version", vec![])).await;
+    let reply = f.udp_recv().await;
+    assert_eq!(
+        body(&reply),
+        serde_json::json!({
+            "address": "/version",
+            "status": "ok",
+            "data": env!("CARGO_PKG_VERSION"),
+        })
+    );
+    f.udp_send(&msg("/workspaces", vec![])).await;
+    let reply = f.udp_recv().await;
+    let json = body(&reply);
+    assert_eq!(json["address"], "/workspaces");
+    assert!(json.get("workspace_id").is_none());
+    let entry = &json["data"][0];
+    assert_eq!(entry["uniqueID"], ws_id());
+    assert_eq!(entry["port"], f.udp_port);
+    assert_eq!(entry["udpReplyPort"], f.udp.local_addr().unwrap().port());
+    assert_eq!(entry["version"], env!("CARGO_PKG_VERSION"));
+    assert!(entry["displayName"].is_string());
+    // Before a passcode: still answered.
+    let guarded = fixture(with_passcode("sesame")).await;
+    let mut t = guarded.tcp().await;
+    t.send(&msg("/workspaces", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+}
+
+#[tokio::test]
+async fn an_identical_message_within_the_window_is_dropped_over_the_wire() {
+    // A window an hour long: the second identical message is always a repeat, with no sleeping.
+    let f = fixture_with(test_workspace(), |c| {
+        c.duplicate_window = Duration::from_secs(3600);
+    })
+    .await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.udp_send(&msg("/go", vec![])).await;
+    // A different message is handled; its reply proves the repeats before it were seen.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    f.udp_send(&msg("/cue/2/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    f.control
+        .wait_seen("the one GO", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    assert_eq!(f.stats().osc.duplicates_dropped, 3);
+    assert_eq!(blank_ids(f.control.inputs()), vec![go()]);
+    // Another peer (a TCP connection) is not affected by what UDP sent.
+    let t = f.tcp().await;
+    t.send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("a GO over TCP", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 2
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn large_replies_go_over_udp_up_to_a_datagram_and_over_tcp_beyond() {
+    let mut ws = test_workspace();
+    ws.cue_lists[0].cues[0].notes = "m".repeat(100_000);
+    ws.cue_lists[0].cues[1].notes = "n".repeat(60_000);
+    let f = fixture(ws).await;
+    // 60 KB fits a datagram, and is sent whole (QLab does).
+    f.udp_send(&msg("/cue/2/notes", vec![])).await;
+    let reply = f.udp_recv().await;
+    assert_eq!(body(&reply)["data"].as_str().unwrap().len(), 60_000);
+    // 100 KB cannot: an error reply, with no data.
+    f.udp_send(&msg("/cue/1/notes", vec![])).await;
+    let json = body(&f.udp_recv().await);
+    assert_eq!(json["status"], "error");
+    assert!(json.get("data").is_none());
+    // Over TCP the same read is answered whole.
+    let mut t = f.tcp().await;
+    t.send(&msg("/cue/1/notes", vec![])).await;
+    let reply = t.recv().await.unwrap();
+    assert_eq!(body(&reply)["data"].as_str().unwrap().len(), 100_000);
+}
+
+#[tokio::test]
+async fn a_tcp_message_may_be_nearly_a_megabyte() {
+    let f = fixture(test_workspace()).await;
+    let t = f.tcp().await;
+    let notes = "x".repeat(900 * 1024);
+    t.send(&msg("/cue/1/notes", vec![text(&notes)])).await;
+    f.control
+        .wait_seen("the note", |seen| seen.iter().any(is_input))
+        .await;
+    let inputs = f.control.inputs();
+    let [ClientMessage::Command { command, .. }] = inputs.as_slice() else {
+        panic!("{inputs:?}")
+    };
+    let openlab_core::Command::SetCueProperty {
+        property: openlab_core::CueProperty::Notes { value },
+        ..
+    } = command.as_ref()
+    else {
+        panic!("{command:?}")
+    };
+    assert_eq!(value.len(), notes.len());
+    assert_eq!(f.stats().osc.oversize_frames, 0);
+}
+
+#[tokio::test]
+async fn a_peer_that_asks_and_does_not_read_cannot_make_the_server_hold_gigabytes() {
+    let mut ws = test_workspace();
+    ws.cue_lists[0].cues[0].notes = "m".repeat(900 * 1024);
+    let f = fixture(ws).await;
+    let t = f.tcp().await;
+    // 30 rounds of two reads of 900 KB (a read of the socket may hold both, and the server stops
+    // at 2 MiB of replies per read) that the peer never reads: 54 MB offered. The writer holds
+    // at most 4 MiB per connection that the socket has not taken, so the rest is dropped (and
+    // counted) instead of queued.
+    for round in 1..=30u64 {
+        t.send(&msg("/cue/1/notes", vec![])).await;
+        t.send(&msg("/cue/1/notes", vec![])).await;
+        f.wait_stats("the requests to be handled", |s| {
+            s.osc.messages == 2 * round
+        })
+        .await;
+    }
+    assert!(f.stats().send_failed > 0, "{:?}", f.stats());
+    assert!(f.stats().tcp_pending_bytes <= 4 * 1024 * 1024);
+    // When the peer goes, what was queued for it is released (the counters must not leak: past
+    // 64 MiB no connection would be sent anything).
+    drop(t);
+    f.wait_stats("the queued bytes to be released", |s| {
+        s.tcp_pending_bytes == 0 && s.tcp_connections == 0
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_tcp_connection_cap_defaults_to_256() {
+    assert_eq!(OscConfig::default().max_tcp_connections, 256);
+    let f = fixture_with(test_workspace(), |c| {
+        c.max_tcp_connections = OscConfig::default().max_tcp_connections;
+    })
+    .await;
+    // Many connections at once are served.
+    let mut conns = Vec::new();
+    for _ in 0..40 {
+        let mut t = f.tcp().await;
+        t.send(&msg("/version", vec![])).await;
+        assert_eq!(t.recv().await.unwrap().addr, "/reply/version");
+        conns.push(t);
+    }
+    assert_eq!(f.stats().tcp_refused, 0);
 }
