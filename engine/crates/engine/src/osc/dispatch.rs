@@ -8,7 +8,9 @@
 use std::ops::ControlFlow;
 
 use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
-use openlab_core::{Command, CueId, CueListId, CueProperty, NumberAssignment, WorkspaceId};
+use openlab_core::{
+    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscRight, WorkspaceId,
+};
 use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -31,8 +33,8 @@ pub trait OscShow {
     fn workspace_name(&self) -> &str {
         ""
     }
-    /// The workspace passcode. `None` or empty: no passcode, no `/connect` needed.
-    fn passcode(&self) -> Option<&str>;
+    /// The passcode table: what a peer may do without `/connect` and with each passcode.
+    fn access(&self) -> &OscAccess;
     /// The cue list `/go` and `/playhead` act on: the one whose playhead was last moved (QLab:
     /// the list on display).
     fn active_list(&self) -> Option<CueListId>;
@@ -380,6 +382,45 @@ fn verb_of(part: &str) -> Option<Verb> {
     })
 }
 
+/// The right a message needs, judged on its address and argument count alone so that nothing
+/// about the show is looked up before the peer is known to be allowed (docs/osc.md, "Rights").
+/// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
+///
+/// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
+/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
+///   and `/select`.
+/// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, the cue
+///   verbs `start` ... `preview`, `/playhead`) and a cue's own OSC trigger address. An address
+///   nothing answers to counts as a trigger, so a peer without Control learns nothing about which
+///   triggers exist.
+pub fn required_right(address: &Address, args: &[OscType]) -> Option<OscRight> {
+    Some(match address {
+        // QLab: `/updates` works at any access level; what an update carries is filtered by the
+        // View right when it is sent (`Osc::may_receive_updates`).
+        Address::Connect | Address::Version | Address::Workspaces | Address::Updates => {
+            return None;
+        }
+        Address::UdpReplyPort | Address::Query(_) | Address::Unsupported(_) => OscRight::View,
+        Address::Select(_) => OscRight::Edit,
+        Address::Go
+        | Address::Stop
+        | Address::HardStop
+        | Address::Panic
+        | Address::PauseAll
+        | Address::ResumeAll
+        | Address::Playhead(_)
+        | Address::Other(_)
+        | Address::Pattern(_) => OscRight::Control,
+        Address::Cue { verb, .. } => match verb {
+            // A property without an argument is a read.
+            Verb::Field(_) if args.is_empty() => OscRight::View,
+            Verb::Field(CueField::Notes) => OscRight::View,
+            Verb::Field(_) => OscRight::Edit,
+            _ => OscRight::Control,
+        },
+    })
+}
+
 /// Reply status strings.
 pub const STATUS_OK: &str = "ok";
 pub const STATUS_ERROR: &str = "error";
@@ -451,9 +492,19 @@ pub struct Resolved {
     /// The message matched more than [`MAX_MATCHES`] cues, or its patterns used up their budget:
     /// what was found is used, the rest is not.
     pub capped: bool,
+    /// The inputs start a cue through its own OSC trigger address. That needs Control whatever
+    /// the address looks like (a trigger may be shaped like a read), so the caller checks it.
+    pub trigger: bool,
 }
 
 impl Resolved {
+    fn trigger(cue: CueId) -> Self {
+        Self {
+            trigger: true,
+            ..Self::input(TransportAction::Start { cue })
+        }
+    }
+
     fn input(action: TransportAction) -> Self {
         Self {
             inputs: vec![OscInput::Transport(action)],
@@ -531,7 +582,7 @@ pub fn resolve(
 
 fn trigger_or_unknown(show: &dyn OscShow, path: &str) -> Resolved {
     match show.cue_by_osc_trigger(path) {
-        Some(cue) => Resolved::input(TransportAction::Start { cue }),
+        Some(cue) => Resolved::trigger(cue),
         None => Resolved {
             replies: vec![Reply::error()],
             unknown: true,
@@ -679,7 +730,7 @@ fn cue_message(
     if targets.is_empty() {
         // QLab: an error for an address that reaches nothing (the address as asked).
         if let Some(cue) = pattern_trigger(show, parsed, cue) {
-            return Resolved::input(TransportAction::Start { cue });
+            return Resolved::trigger(cue);
         }
         out.replies.push(Reply::error());
         return out;
@@ -920,14 +971,17 @@ fn format_number(value: f64) -> String {
     }
 }
 
-/// The argument of `/connect`: a string, or an integer (QLab takes `1234` sent as an int32 like
-/// the string); anything else counts as no passcode given.
+/// The argument of `/connect`: `None` when there is none (the peer connects without a passcode),
+/// else the string, or an integer as text (QLab takes `1234` sent as an int32 like the string).
+/// Anything else (another type, several arguments) is `Some("")`: no passcode in the table is
+/// empty, so it is a wrong passcode where the table has any, and never a connect without one.
 pub fn passcode_arg(args: &[OscType]) -> Option<String> {
     match args {
+        [] => None,
         [OscType::String(s)] => Some(s.clone()),
-        [OscType::Int(i)] => Some(i.to_string()),
-        [OscType::Long(i)] => Some(i.to_string()),
-        _ => None,
+        // Numbers never match: a passcode with a leading zero cannot be told from a shorter one,
+        // and QLab sends the passcode as a string.
+        _ => Some(String::new()),
     }
 }
 

@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 use openlab_core::protocol::{
     Delete, DocumentState, RuntimeChange, Snapshot, Upsert, WireCueState,
 };
-use openlab_core::{Cue, CueId, CueKind, CueList, CueListId, Workspace, WorkspaceId};
+use openlab_core::{Cue, CueId, CueKind, CueList, CueListId, OscAccess, Workspace, WorkspaceId};
 use serde_json::{Value, json};
 
 use crate::osc::{CueField, OscShow, Target, upper};
@@ -113,8 +113,9 @@ impl Mirror {
         self.workspace.id
     }
 
-    pub fn passcode(&self) -> Option<&str> {
-        self.workspace.settings.osc_passcode.as_deref()
+    /// The passcode table.
+    pub fn access(&self) -> &OscAccess {
+        &self.workspace.settings.osc_access
     }
 
     /// Takes the active list over from the copy this one replaces, if it is the same workspace
@@ -514,8 +515,8 @@ impl OscShow for MirrorShow<'_> {
         &self.0.workspace.name
     }
 
-    fn passcode(&self) -> Option<&str> {
-        self.0.passcode()
+    fn access(&self) -> &OscAccess {
+        self.0.access()
     }
 
     /// The list whose playhead moved last, else the first (the main list).
@@ -697,7 +698,7 @@ mod tests {
                 min_go_interval: 0.0,
                 panic_duration: 0.1,
                 autosave_interval: 30.0,
-                osc_passcode: None,
+                osc_access: OscAccess::default(),
                 master_db: 0.0,
                 hotkeys: TransportHotkeys::default(),
                 auto_number_start: 1.0,

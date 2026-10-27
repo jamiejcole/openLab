@@ -612,6 +612,36 @@ fn random_id() -> uuid::Uuid {
     uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
+/// A random number for the new workspace's passcode, from the OS; `None` if the OS refused.
+fn os_seed() -> Option<u32> {
+    let mut bytes = [0u8; 4];
+    getrandom::fill(&mut bytes)
+        .is_ok()
+        .then(|| u32::from_le_bytes(bytes))
+}
+
+/// The seed when the OS gave none: the clock's low bits are as good as a passcode needs to be
+/// here (it protects a show nobody has saved yet, and the operator sees and can change it).
+fn clock_seed() -> u32 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    u32::try_from(nanos & u128::from(u32::MAX)).unwrap_or(0)
+}
+
+/// A new workspace (WS-02) with QLab's default OSC access: no rights without a passcode, and one
+/// 4-digit passcode (from `seed`) with all rights, so a new show is never open to the network.
+pub(crate) fn new_workspace(
+    id: WorkspaceId,
+    list: CueListId,
+    patch: PatchId,
+    seed: u32,
+) -> Workspace {
+    let mut workspace = Workspace::new_empty(id, list, patch);
+    workspace.settings.osc_access = openlab_core::OscAccess::new_workspace(seed);
+    workspace
+}
+
 /// Relative media references of `ws` re-spelled so they name the same files from `new_dir`.
 fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> Vec<Relink> {
     let Some(new_dir) = new_dir.to_str() else {
@@ -668,10 +698,20 @@ impl Control {
                 if !self.doc_gate(id, to, discard_changes, false) {
                     return;
                 }
-                let workspace = Workspace::new_empty(
+                let seed = os_seed().unwrap_or_else(|| {
+                    self.log(
+                        LogLevel::Warn,
+                        "the system random source failed: the new workspace's OSC passcode comes \
+                         from the clock, so it is guessable; change it in the workspace settings"
+                            .to_owned(),
+                    );
+                    clock_seed()
+                });
+                let workspace = new_workspace(
                     WorkspaceId(random_id()),
                     CueListId(random_id()),
                     PatchId(random_id()),
+                    seed,
                 );
                 let loaded = Loaded {
                     workspace,
@@ -1341,5 +1381,28 @@ impl Control {
 
     pub fn runtime_seq(&self) -> u64 {
         self.runtime_seq
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The seed is injected, so a new workspace's passcode is the same for the same seed.
+    #[test]
+    fn a_new_workspace_gets_the_default_access_from_the_seed() {
+        let make = |seed| {
+            new_workspace(
+                WorkspaceId(uuid::Uuid::from_u128(1)),
+                CueListId(uuid::Uuid::from_u128(2)),
+                PatchId(uuid::Uuid::from_u128(3)),
+                seed,
+            )
+        };
+        let access = make(4821).settings.osc_access;
+        assert_eq!(access, openlab_core::OscAccess::new_workspace(4821));
+        assert_eq!(access.passcodes[0].passcode, "4821");
+        assert_eq!(make(4821), make(4821));
+        assert_ne!(make(1), make(2));
     }
 }

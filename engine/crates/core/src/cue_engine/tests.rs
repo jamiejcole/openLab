@@ -44,7 +44,7 @@ fn workspace(cues: Vec<Cue>) -> Workspace {
             min_go_interval: 0.0,
             panic_duration: 1.0,
             autosave_interval: 30.0,
-            osc_passcode: None,
+            osc_access: crate::OscAccess::default(),
             master_db: 0.0,
             hotkeys: crate::model::TransportHotkeys::default(),
             auto_number_start: 1.0,

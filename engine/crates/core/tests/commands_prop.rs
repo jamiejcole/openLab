@@ -46,8 +46,9 @@ fn cases(default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-/// Operations 0-10 edit the cue tree; 11 and up edit settings, patches and cue lists.
-const OPS: u8 = 25;
+/// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists and the OSC
+/// passcode table.
+const OPS: u8 = 28;
 
 struct Gen {
     next: u128,
@@ -431,7 +432,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::PlayheadNext,
         TransportKey::PlayheadPrevious,
     ][p.c as usize % 6];
-    match p.b % 9 {
+    match p.b % 8 {
         0 => WorkspaceSetting::MinGoInterval {
             value: time(p.c) / 10.0,
         },
@@ -439,17 +440,8 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         2 => WorkspaceSetting::AutosaveInterval {
             value: time(p.c) * 10.0,
         },
-        3 => WorkspaceSetting::OscPasscode {
-            value: [
-                None,
-                Some("pw".to_owned()),
-                Some(String::new()),
-                Some("x".repeat(300)),
-            ][p.c as usize % 4]
-                .clone(),
-        },
-        4 => WorkspaceSetting::MasterDb { value: level(p.c) },
-        5 | 6 => WorkspaceSetting::Hotkey {
+        3 => WorkspaceSetting::MasterDb { value: level(p.c) },
+        4 | 5 => WorkspaceSetting::Hotkey {
             key,
             value: ["a", "f5", "Bad Key", ""]
                 .get(p.d as usize % 5)
@@ -458,7 +450,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
                     modifiers: Modifiers::default(),
                 }),
         },
-        7 => WorkspaceSetting::AutoNumberStart { value: time(p.c) },
+        6 => WorkspaceSetting::AutoNumberStart { value: time(p.c) },
         _ => WorkspaceSetting::AutoNumberIncrement { value: time(p.c) },
     }
 }
@@ -525,7 +517,8 @@ fn network_property(p: &Pick) -> NetworkPatchProperty {
     }
 }
 
-/// Settings, patches, network patches and cue lists: operations 11 to 23. Ids are drawn from a
+/// Settings, patches, network patches, cue lists and the OSC passcode table: operations 11 to 23
+/// and 25 to 27. Ids are drawn from a
 /// small pool, so they collide with existing ones (refused) and re-use removed ones.
 fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
     let patch_ids: Vec<PatchId> = ws.patches.iter().map(|x| x.id).collect();
@@ -610,8 +603,40 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
             id: some_list(),
             name: format!("list {}", p.d % 4),
         },
+        // The OSC passcode table. The pool is small, so passcodes repeat (refused), go missing
+        // (refused) and come back; some are not digits and some rights break the View rule.
+        25 => Command::AddOscPasscode {
+            index: p.b as usize % (ws.settings.osc_access.passcodes.len() + 2),
+            passcode: osc_passcode(p.c),
+            rights: osc_rights(p.d),
+        },
+        26 => Command::RemoveOscPasscode {
+            passcode: osc_passcode(p.c),
+        },
+        27 => Command::SetOscRights {
+            target: if p.b.is_multiple_of(3) {
+                OscRightsTarget::NoPasscode
+            } else {
+                OscRightsTarget::Passcode {
+                    passcode: osc_passcode(p.c),
+                }
+            },
+            rights: osc_rights(p.d),
+        },
         _ => return None,
     })
+}
+
+fn osc_passcode(n: u32) -> String {
+    ["1111", "2222", "3333", "0", "12ab", ""][n as usize % 6].to_owned()
+}
+
+fn osc_rights(n: u32) -> OscRights {
+    OscRights {
+        view: !n.is_multiple_of(7),
+        edit: n.is_multiple_of(3),
+        control: n.is_multiple_of(5),
+    }
 }
 
 /// Operations 0–10 are the cue commands, 11–23 the model commands (`build_model`); 100 + n is
@@ -1585,7 +1610,7 @@ fn the_generator_exercises_every_command() {
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)
     for op in [
-        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22,
+        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 25, 26, 27,
     ] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,

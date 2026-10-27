@@ -123,7 +123,10 @@ impl Command {
                     command.collect(fp);
                 }
             }
-            Self::SetWorkspaceSetting { .. } => fp.settings = true,
+            Self::SetWorkspaceSetting { .. }
+            | Self::AddOscPasscode { .. }
+            | Self::RemoveOscPasscode { .. }
+            | Self::SetOscRights { .. } => fp.settings = true,
             Self::AddPatch { patch, .. } => {
                 fp.patches.changed.insert(patch.id);
             }

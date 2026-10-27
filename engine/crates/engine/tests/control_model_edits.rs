@@ -141,10 +141,17 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
     let revision = s.control().revision();
     let steps = [
         master(-3.0),
-        Command::SetWorkspaceSetting {
-            setting: WorkspaceSetting::OscPasscode {
-                value: Some("pw".into()),
-            },
+        Command::AddOscPasscode {
+            index: 0,
+            passcode: "4821".into(),
+            rights: openlab_core::OscRights::ALL,
+        },
+        Command::SetOscRights {
+            target: openlab_core::OscRightsTarget::NoPasscode,
+            rights: openlab_core::OscRights::NONE,
+        },
+        Command::RemoveOscPasscode {
+            passcode: "4821".into(),
         },
         Command::AddPatch {
             index: 2,
@@ -198,6 +205,10 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
     assert_eq!(s.control().workspace().patches.len(), 2);
     assert!(s.control().workspace().network_patches.is_empty());
     assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(
+        s.control().workspace().settings.osc_access,
+        openlab_core::OscAccess::default()
+    );
     assert!(s.control().snapshot().document.dirty);
 }
 

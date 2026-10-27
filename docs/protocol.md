@@ -157,7 +157,7 @@ M2.28 additions (also optional for the client, `PROTOCOL_VERSION` stays 1): a De
 | `cue` | `list`, `parent` (null: top level), `index`, `cue` | put the cue (new, changed or moved) at `index` among the cues of `parent`. A group's upsert carries its whole subtree and replaces it; its children are not upserted separately |
 | `cue_list` | `id`, `name`, `index` | name and place among the lists; its cues come as `cue` upserts |
 | `patch`, `network_patch` | `index`, `patch` | place among the patches |
-| `settings` | `name`, `settings` | the workspace name and settings |
+| `settings` | `name`, `settings` | the workspace name and settings; since show file v4 the settings carry `osc_access` (`{no_passcode: {view, edit, control}, passcodes: [{passcode, rights: {view, edit, control}}]}`) where they carried `osc_passcode` (M4.5c). The passcodes are visible to every client that holds a token, as the old one was. New commands `add_osc_passcode`, `remove_osc_passcode`, `set_osc_rights` (docs/commands.md); the `osc_passcode` setting command is gone. Swift treats settings and commands as opaque JSON, so no Swift type changes; M5.13a builds the UI |
 
 Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`. Deleting a cue list deletes its cues with it; the engine only removes empty lists, so the cues were deleted or moved out in the same or an earlier message.
 

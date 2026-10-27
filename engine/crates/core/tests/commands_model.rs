@@ -111,9 +111,6 @@ fn every_setting_can_be_set_and_undone() {
         setting(WorkspaceSetting::PanicDuration { value: 0.0 }),
         setting(WorkspaceSetting::PanicDuration { value: 60.0 }),
         setting(WorkspaceSetting::AutosaveInterval { value: 300.0 }),
-        setting(WorkspaceSetting::OscPasscode {
-            value: Some("s3cret".into()),
-        }),
         setting(WorkspaceSetting::MasterDb { value: -12.0 }),
         setting(WorkspaceSetting::AutoNumberStart { value: 100.0 }),
         setting(WorkspaceSetting::AutoNumberIncrement { value: 0.5 }),
@@ -149,48 +146,227 @@ fn a_setting_lands_in_its_field_and_nowhere_else() {
     assert_eq!(changed, expected);
 }
 
-#[test]
-fn the_osc_passcode_can_be_set_changed_and_cleared() {
+fn osc_ws() -> Workspace {
     let mut ws = workspace(vec![]);
-    let mut history = History::new();
-    for value in [Some("abc"), Some("abd"), None] {
-        let value = value.map(str::to_owned);
-        history
-            .execute(
-                &mut ws,
-                setting(WorkspaceSetting::OscPasscode {
-                    value: value.clone(),
-                }),
-            )
-            .unwrap();
-        assert_eq!(ws.settings.osc_passcode, value);
+    ws.settings.osc_access = OscAccess::new_workspace(1234);
+    ws
+}
+
+fn rights(view: bool, edit: bool, control: bool) -> OscRights {
+    OscRights {
+        view,
+        edit,
+        control,
     }
-    while history.undo(&mut ws).unwrap() {}
-    assert_eq!(ws.settings.osc_passcode, None);
+}
+
+fn add_pass(index: usize, passcode: &str, rights: OscRights) -> Command {
+    Command::AddOscPasscode {
+        index,
+        passcode: passcode.into(),
+        rights,
+    }
+}
+
+fn remove_pass(passcode: &str) -> Command {
+    Command::RemoveOscPasscode {
+        passcode: passcode.into(),
+    }
+}
+
+fn set_rights(passcode: Option<&str>, rights: OscRights) -> Command {
+    Command::SetOscRights {
+        target: match passcode {
+            Some(p) => OscRightsTarget::Passcode { passcode: p.into() },
+            None => OscRightsTarget::NoPasscode,
+        },
+        rights,
+    }
 }
 
 #[test]
-fn bad_passcodes_are_refused() {
-    let ws = workspace(vec![]);
-    let empty = WorkspaceSetting::OscPasscode {
-        value: Some(String::new()),
-    };
+fn passcodes_can_be_added_removed_and_given_rights_and_each_is_undone() {
+    let ws = osc_ws();
+    // Add: at the front, in the middle (index = length), position kept by undo.
+    let after = round_trip(&ws, add_pass(0, "5678", rights(true, false, false)));
+    assert_eq!(after.settings.osc_access.passcodes[0].passcode, "5678");
+    assert_eq!(after.settings.osc_access.passcodes[1].passcode, "1234");
+    let after = round_trip(&ws, add_pass(1, "5678", OscRights::ALL));
+    assert_eq!(after.settings.osc_access.passcodes[1].passcode, "5678");
+    // Remove: the row comes back where it was, with its rights.
+    let two = after;
+    let after = round_trip(&two, remove_pass("1234"));
+    assert_eq!(after.settings.osc_access.passcodes.len(), 1);
+    // Even the last row can go (undo brings it back).
+    round_trip(&ws, remove_pass("1234"));
+    // Rights of a row and of No Passcode.
+    let after = round_trip(&ws, set_rights(Some("1234"), rights(true, true, false)));
+    assert_eq!(
+        after.settings.osc_access.passcodes[0].rights,
+        rights(true, true, false)
+    );
+    let after = round_trip(&ws, set_rights(None, rights(true, false, false)));
+    assert_eq!(
+        after.settings.osc_access.no_passcode,
+        rights(true, false, false)
+    );
+    assert!(!after.settings.osc_access.requires_passcode());
+}
+
+#[test]
+fn osc_table_commands_land_in_the_settings_footprint() {
+    let ws = osc_ws();
+    for command in [
+        add_pass(0, "5678", OscRights::ALL),
+        remove_pass("1234"),
+        set_rights(None, OscRights::ALL),
+    ] {
+        assert!(command.footprint().settings);
+        let mut work = ws.clone();
+        work.apply(command).unwrap();
+    }
+}
+
+#[test]
+fn a_table_edit_is_announced_as_a_settings_upsert_carrying_the_table() {
+    let mut ws = osc_ws();
+    let command = add_pass(1, "42", rights(true, true, false));
+    ws.apply(command.clone()).unwrap();
+    let (upserts, deletes) = model_changes(&ws, &command.footprint());
+    assert!(deletes.is_empty());
     assert!(matches!(
-        refused(&ws, setting(empty)),
-        CommandError::InvalidValue(_)
+        upserts.as_slice(),
+        [Upsert::Settings { settings, .. }] if settings.osc_access == ws.settings.osc_access
     ));
-    let long = WorkspaceSetting::OscPasscode {
-        value: Some("x".repeat(MAX_OSC_PASSCODE_BYTES + 1)),
-    };
-    assert!(matches!(
-        refused(&ws, setting(long)),
-        CommandError::InvalidValue(_)
-    ));
+}
+
+#[test]
+fn bad_passcodes_and_rights_are_refused_and_change_nothing() {
+    let ws = osc_ws();
+    for passcode in [
+        "",
+        "12a4",
+        "abcd",
+        "١٢٣٤",
+        &"9".repeat(MAX_OSC_PASSCODE_DIGITS + 1),
+    ] {
+        assert!(
+            matches!(
+                refused(&ws, add_pass(0, passcode, OscRights::ALL)),
+                CommandError::InvalidValue(_)
+            ),
+            "{passcode:?}"
+        );
+    }
     // The longest allowed one is fine.
-    let longest = WorkspaceSetting::OscPasscode {
-        value: Some("x".repeat(MAX_OSC_PASSCODE_BYTES)),
-    };
-    round_trip(&ws, setting(longest));
+    round_trip(
+        &ws,
+        add_pass(0, &"9".repeat(MAX_OSC_PASSCODE_DIGITS), OscRights::ALL),
+    );
+    // A repeat, a missing row, an index past the end.
+    assert!(matches!(
+        refused(&ws, add_pass(0, "1234", OscRights::ALL)),
+        CommandError::InvalidValue(_)
+    ));
+    assert!(matches!(
+        refused(&ws, remove_pass("9999")),
+        CommandError::InvalidValue(_)
+    ));
+    assert!(matches!(
+        refused(&ws, set_rights(Some("9999"), OscRights::ALL)),
+        CommandError::InvalidValue(_)
+    ));
+    assert!(matches!(
+        refused(&ws, add_pass(3, "5678", OscRights::ALL)),
+        CommandError::IndexOutOfRange { .. }
+    ));
+    // Edit or Control without View.
+    for bad in [rights(false, true, false), rights(false, false, true)] {
+        for command in [
+            add_pass(0, "5678", bad),
+            set_rights(Some("1234"), bad),
+            set_rights(None, bad),
+        ] {
+            assert!(matches!(
+                refused(&ws, command),
+                CommandError::InvalidValue(_)
+            ));
+        }
+    }
+    // The error never repeats a passcode.
+    let text = refused(&ws, remove_pass("9999")).to_string();
+    assert!(!text.contains("9999"));
+}
+
+#[test]
+fn the_table_holds_at_most_sixteen_passcodes() {
+    let mut ws = workspace(vec![]);
+    for n in 0..MAX_OSC_PASSCODES {
+        ws.apply(add_pass(n, &format!("{n}"), OscRights::ALL))
+            .unwrap();
+    }
+    assert!(matches!(
+        refused(&ws, add_pass(0, "99", OscRights::ALL)),
+        CommandError::InvalidValue(_)
+    ));
+}
+
+#[test]
+fn setting_the_same_rights_is_not_an_edit() {
+    let ws = osc_ws();
+    let mut work = ws.clone();
+    let mut history = History::new();
+    assert!(
+        !history
+            .execute(&mut work, set_rights(None, OscRights::NONE))
+            .unwrap()
+    );
+    assert!(
+        !history
+            .execute(&mut work, set_rights(Some("1234"), OscRights::ALL))
+            .unwrap()
+    );
+    assert!(!history.can_undo());
+}
+
+/// A passcode that is not digits came from a file made before the table existed (migration
+/// keeps it). Undo and redo of edits around it work, and it can be removed and put back.
+#[test]
+fn a_legacy_passcode_survives_edits_and_undo() {
+    let mut ws = osc_ws();
+    ws.settings.osc_access.passcodes.push(OscPasscode {
+        passcode: "hunter2".into(),
+        rights: OscRights::ALL,
+    });
+    round_trip_unchecked(&ws, remove_pass("hunter2"));
+    // An unrelated setting is still accepted next to it.
+    let mut work = ws.clone();
+    work.apply(setting(WorkspaceSetting::PanicDuration { value: 3.0 }))
+        .unwrap();
+    // Removing and undoing puts it back although a new one like it would be refused.
+    let mut history = History::new();
+    history.execute(&mut work, remove_pass("hunter2")).unwrap();
+    assert!(history.undo(&mut work).unwrap());
+    assert!(
+        work.settings
+            .osc_access
+            .passcodes
+            .iter()
+            .any(|p| p.passcode == "hunter2")
+    );
+}
+
+/// As `round_trip`, without the check that the result loads back clean (the legacy passcode is
+/// a load warning).
+fn round_trip_unchecked(ws: &Workspace, command: Command) {
+    let mut work = ws.clone();
+    let mut history = History::new();
+    assert!(history.execute(&mut work, command).unwrap());
+    assert!(history.undo(&mut work).unwrap());
+    assert_eq!(&work, ws);
+    assert!(history.redo(&mut work).unwrap());
+    assert!(history.undo(&mut work).unwrap());
+    assert_eq!(&work, ws);
 }
 
 #[test]
@@ -1265,9 +1441,7 @@ fn a_client_following_model_changed_holds_the_workspace_after_model_edits() {
     let (mut mirror, mut history) = (ws.clone(), History::new());
     let commands = vec![
         level(-3.0),
-        setting(WorkspaceSetting::OscPasscode {
-            value: Some("pw".into()),
-        }),
+        add_pass(0, "4821", rights(true, true, false)),
         Command::AddPatch {
             index: 0,
             patch: patch(4, 4),

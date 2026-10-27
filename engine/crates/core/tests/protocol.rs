@@ -2452,6 +2452,40 @@ fn model_commands() -> Vec<(String, Command)> {
                 name: "Act 2".into(),
             },
         ),
+        (
+            "add_osc_passcode",
+            Command::AddOscPasscode {
+                index: 1,
+                passcode: "4821".into(),
+                rights: OscRights {
+                    view: true,
+                    edit: true,
+                    control: false,
+                },
+            },
+        ),
+        (
+            "remove_osc_passcode",
+            Command::RemoveOscPasscode {
+                passcode: "4821".into(),
+            },
+        ),
+        (
+            "set_osc_rights_passcode",
+            Command::SetOscRights {
+                target: OscRightsTarget::Passcode {
+                    passcode: "4821".into(),
+                },
+                rights: OscRights::ALL,
+            },
+        ),
+        (
+            "set_osc_rights_no_passcode",
+            Command::SetOscRights {
+                target: OscRightsTarget::NoPasscode,
+                rights: OscRights::NONE,
+            },
+        ),
     ]
     .into_iter()
     .map(|(name, command)| (name.to_owned(), command))
@@ -2465,7 +2499,6 @@ fn property_commands() -> Vec<(String, Command)> {
         WorkspaceSetting::MinGoInterval { value: 2.0 },
         WorkspaceSetting::PanicDuration { value: 1.5 },
         WorkspaceSetting::AutosaveInterval { value: 60.0 },
-        WorkspaceSetting::OscPasscode { value: None },
         WorkspaceSetting::MasterDb { value: -6.0 },
         WorkspaceSetting::Hotkey {
             key: TransportKey::StopAll,
@@ -2543,7 +2576,7 @@ fn property_commands() -> Vec<(String, Command)> {
     out
 }
 
-const MODEL_COMMAND_COUNT: usize = 13;
+const MODEL_COMMAND_COUNT: usize = 16;
 /// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
 /// stops compiling here until it has an index and a sample in [`model_commands`].
 fn model_command_idx(c: &Command) -> Option<usize> {
@@ -2571,6 +2604,9 @@ fn model_command_idx(c: &Command) -> Option<usize> {
         Command::RemoveCueList { .. } => 10,
         Command::MoveCueList { .. } => 11,
         Command::RenameCueList { .. } => 12,
+        Command::AddOscPasscode { .. } => 13,
+        Command::RemoveOscPasscode { .. } => 14,
+        Command::SetOscRights { .. } => 15,
     })
 }
 
@@ -2951,9 +2987,26 @@ fn arb_request() -> impl Strategy<Value = Request> {
 
 fn arb_command() -> impl Strategy<Value = Command> {
     prop_oneof![
-        arb_text().prop_map(|value| Command::SetWorkspaceSetting {
-            setting: WorkspaceSetting::OscPasscode { value: Some(value) }
+        (arb_text(), any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
+            |(passcode, view, edit, control)| Command::AddOscPasscode {
+                index: 0,
+                passcode,
+                rights: OscRights {
+                    view,
+                    edit,
+                    control
+                },
+            }
+        ),
+        (arb_text(), any::<bool>()).prop_map(|(passcode, none)| Command::SetOscRights {
+            target: if none {
+                OscRightsTarget::NoPasscode
+            } else {
+                OscRightsTarget::Passcode { passcode }
+            },
+            rights: OscRights::ALL,
         }),
+        arb_text().prop_map(|passcode| Command::RemoveOscPasscode { passcode }),
         (arb_text(), 0usize..9).prop_map(|(name, index)| Command::AddCueList {
             index,
             id: list_id(7),

@@ -44,7 +44,7 @@ The top level of every file is:
 
 ```json
 {
-  "format_version": 3,
+  "format_version": 4,
   "workspace": { … }
 }
 ```
@@ -65,7 +65,8 @@ The top level of every file is:
 | 0 | pre-release | Development format. Identical to v1 except the workspace's cue lists were stored under `"lists"`. Exists so the migration chain is exercised from day one. |
 | 1 | v0.0.1 (development) | Identical to v2 except that cues had no `second_trigger` and `second_trigger_on_release`. Upgrading gives every cue, at every depth, `"nothing"` and `false` (a v1 reader ignored those keys, so a hand-added value is replaced by the default). |
 | 2 | v0.0.1 (development) | Identical to v3 except that Devamp cues had no `devamp_mode`. Upgrading gives every Devamp cue, at every depth, `"current_slice"`, which is what a v2 Devamp cue did (it left whatever loop was playing); a hand-added value is replaced. Also, in v2 a Fade aimed at a Group set each child's levels to its values; from v3 it moves them by its values (QLab check F2). No upgrade can keep the old meaning (it depends on each child's level when the Fade runs), so loading a v0–v2 file warns once for every Fade cue whose target is a Group (`GroupFadeNowRelative`, shown as a load notice on that cue) and leaves the cue as it is; saving writes v3, after which the warning is gone. Old-version fixture: `v2-example.openlab`. |
-| 3 | v0.0.1 | Current. Adds the Devamp cue's `devamp_mode` (§5.3, M2.28). |
+| 3 | v0.0.1 (development) | Identical to v4 except that the settings had the single `osc_passcode` (string or `null`) where v4 has the `osc_access` table. Upgrading: a non-empty passcode becomes the one row of the table with all rights and No Passcode gets none (what the show did: nothing without `/connect`, everything with it); `null`, empty or absent becomes No Passcode with all rights and no rows (open, as before). A hand-added `osc_access` is replaced; a passcode that is not text is left for the model parse to refuse. Old-version fixtures: `v3-example.openlab` (a passcode) and `v3-no-passcode.openlab` (`null`). |
+| 4 | v0.0.1 | Current. Replaces `osc_passcode` by `osc_access` (§4.2, M4.5c). M2.29d's `media_hints` will be v5. |
 
 ## 3. Loading, validation and refusal
 
@@ -103,6 +104,9 @@ cue, and the cue shows as broken where it cannot run.
 | A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
 | A Fade cue aimed at a Group, in a file older than version 3 | Warning (`GroupFadeNowRelative`); kept: such a Fade now moves each child relative to its level (see §2, version 2) |
 | A cue hotkey that is one of the workspace's transport keys (`settings.hotkeys`, e.g. Space = GO) | Warning (`HotkeyUsedByWorkspace`, QLab 5's "Hotkey used by workspace"); kept, but the workspace action wins and the key never starts the cue (M2.28) |
+| OSC rights with Edit or Control but no View | Warning (`OscRightsNeedView`); Edit and Control are cleared |
+| An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
+| An OSC passcode that is not made of digits only | Warning (`OscPasscodeNotDigits`); kept, since dropping it would change who can connect (a v3 passcode may be any text) |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
@@ -131,7 +135,7 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `min_go_interval` | seconds, 0–10 | GOs closer together than this are ignored (double-GO protection). `0` = off. |
 | `panic_duration` | seconds, 0–60 | Fade-out time of Panic. |
 | `autosave_interval` | seconds, 5–3600 | How often unsaved changes are written to the recovery file. |
-| `osc_passcode` | string or `null` | Passcode OSC clients must send with `/connect`. `null` = no passcode. |
+| `osc_access` | object | The OSC passcode table (NET-02, `docs/osc.md` "Rights"): `no_passcode` (the rights of a peer that has not connected or connects without a passcode) and `passcodes` (rows). Rights are `{"view": bool, "edit": bool, "control": bool}`; a row is `{"passcode": string, "rights": rights}`. Edit and Control need View. A new workspace: `no_passcode` all false and one random 4-digit passcode with all rights. |
 | `master_db` | level | Global master. |
 | `hotkeys` | object | Transport keys: `go`, `stop_all` (Stop All / Panic), `pause_all`, `resume_all`, `playhead_next`, `playhead_previous`. Each is `null` (no key) or a hotkey object (§5.1). New workspaces get space, escape, `[`, `]`, down and up. |
 | `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
@@ -283,12 +287,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v3-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v4-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 3,                                   // (1)
+  "format_version": 4,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",
@@ -296,7 +300,10 @@ mode. The notes after the listing refer to the numbered lines.
       "min_go_interval": 0.5,                            // (2)
       "panic_duration": 3.0,
       "autosave_interval": 30.0,
-      "osc_passcode": "1234",
+      "osc_access": {
+        "no_passcode": { "view": false, "edit": false, "control": false },
+        "passcodes": [{ "passcode": "1234", "rights": { "view": true, "edit": true, "control": true } }]
+      },
       "master_db": -2.0,
       "hotkeys": {
         "go": { "key": "space", "modifiers": { "shift": false, "control": false, "alt": false, "command": false } },
