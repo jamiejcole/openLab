@@ -60,7 +60,7 @@ final class TransportKeysTests: XCTestCase {
     }
 
     func testUnsupportedAndMalformedHotkeysWarnNotCrash() throws {
-        let keys = TransportKeys(settings: try settings(#"{"go":{"key":"f5"},"pause_all":7,"resume_all":{}}"#))
+        let keys = TransportKeys(settings: try settings(#"{"go":{"key":"f13"},"pause_all":7,"resume_all":{}}"#))
         XCTAssertNil(keys.chord(for: .go))
         XCTAssertEqual(keys.warnings.count, 3)
         XCTAssertEqual(TransportKeys(settings: .string("nonsense")).chord(for: .go), KeyChord(" "))

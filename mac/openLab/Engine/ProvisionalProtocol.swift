@@ -9,6 +9,10 @@ import Foundation
 // here only. Today's engine has one workspace and never sends these; the session layer then
 // degrades to single-workspace behaviour (EngineSession).
 //
+// Cue hotkeys have no app-scope wire message yet (proposed: `hotkey { key, modifiers, phase }`,
+// docs/handoff/m5-protocol-requests.md); AppController fans a key press out as per-workspace
+// `start` / `trigger_released` instead.
+//
 // App-scope `panic` needs no name of its own: it is the ordinary `transport: panic`, which the
 // multi-workspace engine applies to every open workspace.
 
