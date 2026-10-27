@@ -57,7 +57,8 @@ Details of the replace in step 3:
 - **Not preserved (v0.0.1).** Extended attributes, Finder tags, ACLs and the creation date belong to the
   old inode and are lost when the file is replaced. Windows alternate data streams likewise.
 - **Leftover temp files.** A `<name>.<pid>-<n>.tmp` left by a crash is not touched by the write that
-  follows it. After a successful save, those beside the show file that belong to another process and
+  follows it; if its name is the one a write would use (a leftover of an earlier process with the
+  same pid), the write takes the next `<n>`, up to 16 names, rather than failing. After a successful save, those beside the show file that belong to another process and
   whose modification time is at least 60 s older than the file just saved are removed; younger ones may
   be another instance's write in progress. This process's own temp files and a user's own `.tmp` files
   (the name must match exactly) are never removed.
@@ -159,6 +160,8 @@ files, so call it off the control thread: the `scan_recovery` request runs it on
 never fails: unreadable content gives the defaults and a warning; invalid entries are dropped with a
 warning; `backup_keep` is clamped. The engine keeps a copy of a file that produced warnings as
 `settings.json.corrupt` (`.corrupt.1`, … if one exists, a few at most) before anything overwrites it. Workspace and patch ids in the file are normalised to lower-case hyphenated form on load. Unknown keys are ignored.
+
+The engine adds mappings itself in one case (M4.4c): a patch with no entry on this machine (a new workspace, a show from another Mac, a patch added later) is mapped to the first N outputs of the device the mixer plays on, when the device has at least N, and the file is rewritten (atomically, off the control thread; other entries are kept). Existing entries are never overwritten. Rules and edge cases: docs/control.md, Voices: "Default patch mapping". The rewrite keeps keys this version does not know (`MachineSettings::extra`), but it writes the engine's in-memory copy: **an external edit of `settings.json` while the engine runs is overwritten at the next auto-map**. If the file could not be read at start (an I/O error, not "missing"), or it produced warnings and its `.corrupt` copy could not be made, the engine keeps default mappings in memory only, warns once, and never writes the file (`ControlConfig::machine_writable`, `load_machine_settings_checked`). If the settings thread cannot start or has stopped, mappings stay in memory with a warning.
 
 `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator
 once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch
