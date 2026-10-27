@@ -244,11 +244,14 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let disk: DiskStatus
     let device: DeviceStatus
     let logDropped: UInt64
+    /// PB-10: the network output override is on, so Network cues send nothing.
+    let networkOutputDisabled: Bool
     enum CodingKeys: String, CodingKey {
         case xruns, disk, device
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
+        case networkOutputDisabled = "network_output_disabled"
     }
 }
 

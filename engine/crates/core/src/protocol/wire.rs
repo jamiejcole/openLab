@@ -146,6 +146,17 @@ pub enum WireProblem {
     NetworkPatchMissing {
         patch: NetworkPatchId,
     },
+    NetworkHostInvalid {
+        patch: NetworkPatchId,
+        reason: String,
+    },
+    NetworkHostUnresolved {
+        patch: NetworkPatchId,
+        reason: String,
+    },
+    NetworkMessageInvalid {
+        reason: String,
+    },
     StartedBroken,
 }
 
@@ -172,6 +183,17 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::NetworkPatchMissing { patch } => {
                 Self::NetworkPatchMissing { patch: *patch }
             }
+            CueProblem::NetworkHostInvalid { patch, reason } => Self::NetworkHostInvalid {
+                patch: *patch,
+                reason: reason.clone(),
+            },
+            CueProblem::NetworkHostUnresolved { patch, reason } => Self::NetworkHostUnresolved {
+                patch: *patch,
+                reason: reason.clone(),
+            },
+            CueProblem::NetworkMessageInvalid { reason } => Self::NetworkMessageInvalid {
+                reason: reason.clone(),
+            },
             CueProblem::StartedBroken => Self::StartedBroken,
         }
     }
@@ -449,7 +471,8 @@ impl RuntimeChange {
             | Action::DevampVoice { .. }
             | Action::SetArmed { .. }
             | Action::PreviewStart { .. }
-            | Action::PreviewStop { .. } => return None,
+            | Action::PreviewStop { .. }
+            | Action::SendOsc { .. } => return None,
         })
     }
 }

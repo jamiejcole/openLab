@@ -78,9 +78,9 @@ enum MainMenu {
                 item("menu.edit.undo", #selector(AppDelegate.undoEdit(_:)), "z"),
                 item("menu.edit.redo", #selector(AppDelegate.redoEdit(_:)), "Z"),
                 .separator(),
-                item("menu.edit.cut", #selector(NSText.cut(_:)), "x"),
-                item("menu.edit.copy", #selector(NSText.copy(_:)), "c"),
-                item("menu.edit.paste", #selector(NSText.paste(_:)), "v"),
+                item("menu.edit.cut", #selector(AppDelegate.cutCues(_:)), "x"),
+                item("menu.edit.copy", #selector(AppDelegate.copyCues(_:)), "c"),
+                item("menu.edit.paste", #selector(AppDelegate.pasteCues(_:)), "v"),
                 deleteItem(),
                 item("menu.edit.selectAll", #selector(NSText.selectAll(_:)), "a"),
             ]
@@ -108,6 +108,7 @@ enum MainMenu {
         }
         items.append(.separator())
         items.append(item("menu.cues.renumber", #selector(AppDelegate.renumberCues(_:)), "r"))
+        items.append(item("menu.cues.deleteNumbers", #selector(AppDelegate.deleteNumbers(_:)), "d"))
         let up = item(
             "menu.cues.moveUp", #selector(AppDelegate.moveCuesUp(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!))
         let down = item(
@@ -130,7 +131,9 @@ enum MainMenu {
         edit.autoenablesItems = !locked
         let editing = [
             #selector(AppDelegate.undoEdit(_:)), #selector(AppDelegate.redoEdit(_:)),
-            #selector(AppDelegate.deleteCues(_:)), #selector(NSText.cut(_:)), #selector(NSText.paste(_:)),
+            #selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.cutCues(_:)),
+            #selector(AppDelegate.copyCues(_:)), #selector(AppDelegate.pasteCues(_:)),
+            #selector(AppDelegate.deleteNumbers(_:)),
         ]
         for entry in edit.items {
             guard let action = entry.action else { continue }
