@@ -44,9 +44,6 @@ const MAX_BAD_FRAMES: u32 = 32;
 const INTERNAL_ID: RequestId = RequestId(u64::MAX);
 /// How long the control loop may take to produce the first snapshot.
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(10);
-/// Refused connections are logged at most this often (with a count), so a process that keeps
-/// knocking cannot flood the log.
-const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Timeouts and limits. The defaults are for production; tests shorten them.
 #[derive(Clone, Debug)]
@@ -65,6 +62,9 @@ pub struct ServerConfig {
     pub max_connections: usize,
     /// Connections still upgrading or waiting to say `hello`.
     pub max_handshaking: usize,
+    /// Refused connections are logged at most this often (with a count), so a process that
+    /// keeps knocking cannot flood the log.
+    pub refusal_log_interval: Duration,
 }
 
 impl Default for ServerConfig {
@@ -77,6 +77,7 @@ impl Default for ServerConfig {
             revision_wait: Duration::from_secs(2),
             max_connections: 16,
             max_handshaking: 8,
+            refusal_log_interval: Duration::from_secs(10),
         }
     }
 }
@@ -183,40 +184,74 @@ impl Drop for WsServer {
     }
 }
 
-/// Counts refused connections and logs them at most once per [`REFUSAL_LOG_INTERVAL`], so a UI
-/// that cannot connect (every slot held by something else) can be diagnosed.
-#[derive(Default)]
+/// Counts refused connections and logs them at most once per `refusal_log_interval`, so a UI
+/// that cannot connect (every slot held by something else) can be diagnosed. Refusals inside
+/// the interval are logged, with their count, once it has passed.
 struct Refusals {
+    interval: Duration,
     count: u64,
+    limit: &'static str,
     last_log: Option<Instant>,
 }
 
 impl Refusals {
-    fn refused(&mut self, inbox: &Sender<Inbox>, limit: &str) {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            count: 0,
+            limit: "",
+            last_log: None,
+        }
+    }
+
+    fn refused(&mut self, inbox: &Sender<Inbox>, limit: &'static str) {
         self.count += 1;
-        let now = Instant::now();
-        if self
-            .last_log
-            .is_some_and(|t| now.duration_since(t) < REFUSAL_LOG_INTERVAL)
-        {
+        self.limit = limit;
+        if self.due().is_some_and(|t| t <= Instant::now()) {
+            self.flush(inbox);
+        }
+    }
+
+    /// When the pending count may be logged; `None` if nothing is pending.
+    fn due(&self) -> Option<Instant> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(match self.last_log {
+            Some(t) => t + self.interval,
+            None => Instant::now(),
+        })
+    }
+
+    fn flush(&mut self, inbox: &Sender<Inbox>) {
+        if self.count == 0 {
             return;
         }
         let _ = inbox.send(Inbox::Log {
             level: LogLevel::Warn,
-            message: format!("UI server refused {} connection(s): {limit}", self.count),
+            message: format!(
+                "UI server refused {} connection(s): {}",
+                self.count, self.limit
+            ),
         });
         self.count = 0;
-        self.last_log = Some(now);
+        self.last_log = Some(Instant::now());
     }
 }
 
 async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
     let mut shutdown = shared.shutdown.clone();
-    let mut refusals = Refusals::default();
+    let mut refusals = Refusals::new(shared.config.refusal_log_interval);
     loop {
+        let due = refusals.due();
         let accepted = tokio::select! {
             _ = shutdown.changed() => return,
             accepted = listener.accept() => accepted,
+            // The last refusals of a burst are logged even if no connection follows.
+            () = sleep_until(due.unwrap_or_else(Instant::now)), if due.is_some() => {
+                refusals.flush(&shared.inbox);
+                continue;
+            }
         };
         let Ok((tcp, _)) = accepted else {
             // A transient accept failure (descriptor exhaustion): do not spin.

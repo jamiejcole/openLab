@@ -20,7 +20,7 @@ use openlab_core::protocol::{
     encode_client,
 };
 use openlab_core::{Command, CueKind, CueProperty, GroupMode};
-use openlab_engine::control::{Inbox, OUTBOUND_CAPACITY, OutboundTx, outbound_channel};
+use openlab_engine::control::{Inbox, OUTBOUND_CAPACITY, OutboundTx, ReplyTx, outbound_channel};
 use openlab_engine::net::{ServerConfig, WsServer};
 use show::{cue, id, list_id, workspace};
 use tokio::net::TcpStream;
@@ -39,6 +39,10 @@ struct Control {
     seen: Mutex<Vec<ClientMessage>>,
     /// `Inbox::Log` messages from the server.
     logs: Mutex<Vec<String>>,
+    /// While set, the client's own snapshot requests are answered (at the revision of the
+    /// moment they arrive) only when the test calls [`Control::release_replies`].
+    hold_snapshots: AtomicBool,
+    held_replies: Mutex<Vec<(ReplyTx, Vec<ServerMessage>)>>,
     shutdown: AtomicBool,
 }
 
@@ -110,10 +114,19 @@ fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
                 request: Request::Snapshot,
             } => {
                 let revision = c.revision.load(Ordering::SeqCst);
-                let _ = reply.send(ServerMessage::Snapshot {
-                    snapshot: Box::new(snapshot(revision)),
-                });
-                let _ = reply.send(ok(id, None));
+                let answer = vec![
+                    ServerMessage::Snapshot {
+                        snapshot: Box::new(snapshot(revision)),
+                    },
+                    ok(id, None),
+                ];
+                if id != RequestId(u64::MAX) && c.hold_snapshots.load(Ordering::SeqCst) {
+                    c.held_replies.lock().unwrap().push((reply, answer));
+                } else {
+                    for m in answer {
+                        let _ = reply.send(m);
+                    }
+                }
             }
             // A snapshot older than what was broadcast (as a reordered reply would be).
             ClientMessage::Request {
@@ -141,6 +154,16 @@ fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
                 }
             }
             ClientMessage::Hello { .. } => {}
+        }
+    }
+}
+
+impl Control {
+    fn release_replies(&self) {
+        for (reply, answer) in self.held_replies.lock().unwrap().drain(..) {
+            for m in answer {
+                let _ = reply.send(m);
+            }
         }
     }
 }
@@ -892,20 +915,16 @@ async fn a_requested_snapshot_never_reaches_the_client_after_a_newer_model_chang
     let f = fixture();
     let mut a = f.client().await;
     let mut b = f.client().await;
-    // One write: an undo whose `model_changed` the stand-in "loses" (revision 1), then a
-    // snapshot request (answered at revision 1).
-    for m in [
-        ClientMessage::Undo { id: RequestId(5) },
-        ClientMessage::Request {
+    // A asks for a snapshot; the stand-in takes it at revision 0 but holds the answer back.
+    f.control.hold_snapshots.store(true, Ordering::SeqCst);
+    send(
+        &mut a,
+        &ClientMessage::Request {
             id: RequestId(8),
             request: Request::Snapshot,
         },
-    ] {
-        a.feed(Message::text(encode_client(&m).unwrap()))
-            .await
-            .unwrap();
-    }
-    a.flush().await.unwrap();
+    )
+    .await;
     wait_seen(&f.control, |m| {
         matches!(
             m,
@@ -915,29 +934,28 @@ async fn a_requested_snapshot_never_reaches_the_client_after_a_newer_model_chang
             }
         )
     });
-    // Only now does B edit: revision 2 is newer than A's snapshot.
+    // B edits: revision 1, newer than A's snapshot. Once B has its model_changed, the fan-out
+    // has put it in A's queue too (it offers each message to every client in one go).
     send(&mut b, &rename(1)).await;
     wait_result(&mut b, 1).await;
-    let result = |n: u64| move |m: &ServerMessage| matches!(m, ServerMessage::Result { id, .. } if id.0 == n);
-    let changed2 = |m: &ServerMessage| matches!(m, ServerMessage::ModelChanged { revision: 2, .. });
+    // Only now does A's (older) snapshot reach A's connection: both are ready at once.
+    f.control.release_replies();
+    let result8 = |m: &ServerMessage| matches!(m, ServerMessage::Result { id, .. } if id.0 == 8);
+    let changed1 = |m: &ServerMessage| matches!(m, ServerMessage::ModelChanged { revision: 1, .. });
     let mut seen = vec![];
-    while has(&seen, result(5)).is_none()
-        || has(&seen, result(8)).is_none()
-        || has(&seen, changed2).is_none()
-    {
+    while has(&seen, result8).is_none() || has(&seen, changed1).is_none() {
         seen.push(next(&mut a).await.expect("closed"));
     }
     let snap = has(
         &seen,
-        |m| matches!(m, ServerMessage::Snapshot { snapshot } if snapshot.revision == 1),
+        |m| matches!(m, ServerMessage::Snapshot { snapshot } if snapshot.revision == 0),
     )
     .unwrap_or_else(|| panic!("no snapshot: {seen:?}"));
-    let changed = has(&seen, changed2).unwrap();
-    assert!(snap < changed, "snapshot 1 after model_changed 2: {seen:?}");
-    // The undo's result (revision 1) is covered by the snapshot; the snapshot's own result
-    // follows it.
-    assert!(snap < has(&seen, result(5)).unwrap(), "{seen:?}");
-    assert!(snap < has(&seen, result(8)).unwrap(), "{seen:?}");
+    assert!(
+        snap < has(&seen, changed1).unwrap(),
+        "snapshot 0 after model_changed 1: {seen:?}"
+    );
+    assert!(snap < has(&seen, result8).unwrap(), "{seen:?}");
 }
 
 #[tokio::test]
@@ -1082,7 +1100,11 @@ async fn expect_refused(port: u16) {
 
 #[tokio::test]
 async fn the_connection_after_the_limit_is_refused_and_logged_once() {
-    let config = ServerConfig::default();
+    let config = ServerConfig {
+        // No second log entry within the test, however slow the machine.
+        refusal_log_interval: Duration::from_secs(24 * 3600),
+        ..ServerConfig::default()
+    };
     let limit = config.max_connections;
     let f = fixture_with(config);
     let mut clients = vec![];
@@ -1139,4 +1161,49 @@ async fn frames_are_read_while_a_result_waits_for_its_model_changed() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn refusals_after_the_first_log_are_logged_once_the_interval_has_passed() {
+    let f = fixture_with(ServerConfig {
+        max_handshaking: 1,
+        refusal_log_interval: Duration::from_millis(50),
+        ..ServerConfig::default()
+    });
+    // A silent raw connection holds the only handshake slot.
+    let _held = TcpStream::connect(("127.0.0.1", f.server.port()))
+        .await
+        .unwrap();
+    // Every further connection is refused: the first refusal is logged at once, the others
+    // when the interval has passed, even though no connection follows them.
+    for _ in 0..3 {
+        expect_refused(f.server.port()).await;
+    }
+    let total = |logs: &[String]| -> u64 {
+        logs.iter()
+            .map(|l| {
+                l.trim_start_matches("UI server refused ")
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .sum()
+    };
+    // Hang guard only: the flush is the server's own timer.
+    let deadline = std::time::Instant::now() + GUARD;
+    loop {
+        let logs = f.control.logs.lock().unwrap().clone();
+        if total(&logs) >= 3 {
+            assert_eq!(total(&logs), 3, "{logs:?}");
+            assert!(logs.iter().all(|l| l.contains("handshaking")), "{logs:?}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not flushed: {logs:?}"
+        );
+        tokio::task::yield_now().await;
+    }
 }
