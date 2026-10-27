@@ -947,6 +947,32 @@ impl Control {
                     ),
                 ),
                 DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
+                DeviceEvent::Stalled { ms, log } => {
+                    if let Some(earlier) = log {
+                        let more = if earlier > 0 {
+                            format!(" ({earlier} more stall(s) since the last notice)")
+                        } else {
+                            String::new()
+                        };
+                        self.log_device(
+                            LogLevel::Warn,
+                            format!(
+                                "audio device \"{name}\": no audio callback for {ms} ms; the \
+                                 device is treated as lost if it stays silent{more}"
+                            ),
+                        );
+                    }
+                    self.warnings_dirty = true;
+                }
+                DeviceEvent::StallCleared { log } => {
+                    if log {
+                        self.log_device(
+                            LogLevel::Info,
+                            format!("audio device \"{name}\": audio callbacks resumed"),
+                        );
+                    }
+                    self.warnings_dirty = true;
+                }
                 DeviceEvent::Unrecoverable { why } => {
                     self.log_device(
                         LogLevel::Error,
@@ -1797,6 +1823,16 @@ impl Control {
                     format!(
                         "audio device \"{name}\" is lost: the cues that played on it were \
                          stopped, and cues on it cannot start; reconnecting"
+                    ),
+                    None,
+                ));
+            }
+            if d.is_stalled() && !d.is_down() {
+                list.push(notice(
+                    "device_stalled",
+                    format!(
+                        "audio device \"{name}\" has stopped calling back: it is treated as \
+                         lost if it stays silent"
                     ),
                     None,
                 ));
