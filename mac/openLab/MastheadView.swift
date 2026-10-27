@@ -32,6 +32,8 @@ final class MastheadView: NSView {
 
         notesView.setAX(AX.standbyNotes, label: loc("masthead.notes.label"))
         notesView.isEditable = false
+        // A focused text view swallows the transport keys (Space = GO), so it must not take focus.
+        notesView.isSelectable = false
         notesView.drawsBackground = false
         notesView.font = .systemFont(ofSize: 13)
         notesView.textColor = .secondaryLabelColor
