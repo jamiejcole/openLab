@@ -91,6 +91,15 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .command(id: $0, command) }
     }
 
+    func setProperty(_ cue: ModelID, _ property: CueProperty) async -> Result<OkBody, EngineError> {
+        await send(command: .setProperty(cue, property))
+    }
+
+    /// nil clears the number.
+    func setNumber(_ cue: ModelID, _ number: String?) async -> Result<OkBody, EngineError> {
+        await send(command: .setNumber(cue, number))
+    }
+
     func undo() async -> Result<OkBody, EngineError> { await client.send { .undo(id: $0) } }
     func redo() async -> Result<OkBody, EngineError> { await client.send { .redo(id: $0) } }
     func save() async -> Result<OkBody, EngineError> { await client.send { .request(id: $0, .save) } }
