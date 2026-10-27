@@ -397,6 +397,31 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.start(cue: running)).count, 1)
     }
 
+    func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
+        let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        XCTAssertEqual(app.frontKeys.chord(for: .previewSelected), KeyChord("v"))
+        wc.cueList.select([audio])
+        keyDoc = nil  // no workspace window is key: nothing is sent
+        await app.perform(.previewSelected)
+        XCTAssertTrue(transports(.preview(cue: audio)).isEmpty)
+        keyDoc = "doc-1"
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        XCTAssertTrue(store.previewing.contains(audio), "the welcome fixture has it previewing")
+        await app.perform(.previewSelected)
+        XCTAssertEqual(transports(.stopPreview(cue: audio)), ["doc-1"])
+        engine.push(
+            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"preview","cue":"\#(audio)","active":false}]}"#,
+            doc: "doc-1")
+        await assertEventually { !store.previewing.contains(audio) }
+        await app.perform(.previewSelected)
+        XCTAssertEqual(transports(.preview(cue: audio)), ["doc-1"])
+        wc.cueList.select([fade])
+        await app.perform(.previewSelected)
+        XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio cues")
+    }
+
     func testSelectingByHandMovesThePlayheadButRestoringDoesNot() async throws {
         let wc = try XCTUnwrap(app.windows["doc-1"])
         let target: ModelID = "00000000-0000-0000-0000-00000000000a"

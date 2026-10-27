@@ -324,6 +324,11 @@ final class AppController {
         case .startSelected: for id in selected { await run(.start(cue: id), on: store) }
         case .stopSelected: for id in selected { await run(.hardStop(cue: id), on: store) }
         case .resetSelected: for id in selected { await run(.reset(cue: id), on: store) }
+        case .previewSelected:
+            // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
+            for id in selected where store.model?.cue(id)?.kindType == "audio" {
+                await run(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id), on: store)
+            }
         case .pauseResumeSelected:
             for id in selected {
                 switch store.cueStates[id]?.state {
