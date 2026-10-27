@@ -152,12 +152,23 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
         2 | 3 => {
             let mut kind = audio();
             if let CueKind::Audio {
-                levels, start_time, ..
+                levels,
+                start_time,
+                media,
+                patch,
+                preload,
+                ..
             } = &mut kind
             {
                 levels.master_db = level(p.b);
                 levels.outputs = vec![out(level(p.c)); (p.d % 4) as usize];
                 *start_time = time(p.d / 4);
+                // A few files, two patches and some preloads, so the media and patch
+                // bookkeeping has something to tell apart.
+                *media =
+                    (!p.c.is_multiple_of(13)).then(|| MediaRef::new(MEDIA[(p.b / 5) as usize % 4]));
+                *patch = patch_id(1 + u128::from(p.c / 3 % 2));
+                *preload = (p.c / 7).is_multiple_of(2);
             }
             kind
         }
@@ -398,8 +409,11 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     })
 }
 
+const MEDIA: [&str; 4] = ["media/a.wav", "media/b.wav", "media/c.wav", "media/d.wav"];
+
 fn base() -> Workspace {
     let mut ws = workspace(vec![]);
+    ws.patches.push(patch(2, 2));
     // A second list, so positions, moves between lists and mirrors of both are exercised.
     ws.cue_lists.push(CueList {
         id: list_id(2),
@@ -620,6 +634,139 @@ proptest! {
             prop_assert!(deletes.len() <= named);
             mirror.apply_changes(&upserts, &deletes).unwrap();
             prop_assert_eq!(&mirror, &ws);
+        }
+    }
+}
+
+/// One random edit (a command, or an undo or redo of the last) applied to `ws`; returns its
+/// footprint when something changed. The same choice as the mirror test makes.
+fn random_edit(
+    ws: &mut Workspace,
+    g: &mut Gen,
+    history: &mut History,
+    p: &Pick,
+) -> Option<Footprint> {
+    match p.d % 9 {
+        0 => {
+            let fp = history.peek_undo().map(Command::footprint)?;
+            history.undo(ws).unwrap().then_some(fp)
+        }
+        1 => {
+            let fp = history.peek_redo().map(Command::footprint)?;
+            history.redo(ws).unwrap().then_some(fp)
+        }
+        _ => {
+            let command = build(ws, g, p.op, p)?;
+            let fp = command.footprint();
+            history.execute(ws, command).is_ok().then_some(fp)
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The cue index follows every edit from its footprint alone and equals one built from
+    /// scratch after each (commands, undo, redo, transactions that add, move and remove).
+    #[test]
+    fn the_cue_index_follows_footprints(sequence in picks(80)) {
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let mut history = History::new();
+        let mut index = CueIndex::build(&ws);
+        for p in &sequence {
+            let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) else { continue };
+            let structural: std::collections::BTreeSet<CueId> = fp
+                .added
+                .iter()
+                .chain(&fp.removed)
+                .chain(&fp.moved)
+                .copied()
+                .collect();
+            let touched = structural.iter().chain(&fp.edited).copied().collect();
+            let change = index.reconcile(&ws, &touched, &structural);
+            prop_assert!(matches!(change, IndexChange::Delta(_)));
+            prop_assert!(index.matches(&ws), "index differs from a rebuild");
+        }
+    }
+}
+
+fn status_input(ws: &Workspace, p: &Pick) -> Input {
+    let ids = all_ids(ws);
+    let list = ws.cue_lists[p.a as usize % ws.cue_lists.len()].id;
+    match p.c % 12 {
+        0 | 1 => Input::Start {
+            cue: choose(&ids, p.a).unwrap_or(cue_id(1)),
+        },
+        2 => Input::Stop {
+            cue: choose(&ids, p.a).unwrap_or(cue_id(1)),
+            fade_out: None,
+        },
+        3 => Input::Go { list },
+        4 | 5 => Input::MediaStatus {
+            media: MediaRef::new(MEDIA[p.b as usize % 4]),
+            status: [
+                MediaStatus::Missing,
+                MediaStatus::Available,
+                MediaStatus::Unsupported {
+                    reason: "no".into(),
+                },
+                MediaStatus::Unknown,
+            ][p.d as usize % 4]
+                .clone(),
+        },
+        6 => Input::PatchStatus {
+            patch: patch_id(1 + u128::from(p.b % 2)),
+            resolution: if p.d.is_multiple_of(2) {
+                PatchResolution::Unmapped
+            } else {
+                PatchResolution::Mapped {
+                    device: "d".into(),
+                    channels: vec![0, 1],
+                }
+            },
+        },
+        _ => Input::Tick,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// After any random sequence of commands, undos and redos, mixed with runtime inputs and
+    /// media and patch reports, an engine told only each edit's footprint
+    /// (`model_changed_cues`) has done exactly what an engine that rebuilds everything
+    /// (`model_changed`) has: the same actions on every call, the same broken cues and group
+    /// warnings, and its bookkeeping equals a from-scratch rebuild (M4.12a).
+    #[test]
+    fn incremental_problems_equal_a_full_rebuild(sequence in picks(80)) {
+        let config = EngineConfig::new(48_000, 0, 1).unwrap();
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let mut history = History::new();
+        let (mut inc, mut full) = (CueEngine::new(config), CueEngine::new(config));
+        let mut now = 0;
+        let mut call = |inc: &mut CueEngine, full: &mut CueEngine, ws: &Workspace, input: Input| {
+            now += 480;
+            let (a, b) = (inc.handle(ws, input.clone(), now), full.handle(ws, input, now));
+            prop_assert_eq!(a, b);
+            prop_assert_eq!(inc.unsignalled_model_changes(), 0);
+            inc.verify_problem_cache(ws).map_err(TestCaseError::fail)?;
+            prop_assert_eq!(inc.broken_cues(), full.broken_cues());
+            for id in all_ids(ws) {
+                prop_assert_eq!(inc.state(id), full.state(id));
+                prop_assert_eq!(inc.has_broken_descendant(id), full.has_broken_descendant(id));
+            }
+            Ok(())
+        };
+        inc.model_changed();
+        full.model_changed();
+        call(&mut inc, &mut full, &ws, Input::Tick)?;
+        for p in &sequence {
+            if let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) {
+                inc.model_changed_cues(&fp);
+                full.model_changed();
+                call(&mut inc, &mut full, &ws, Input::Tick)?;
+            }
+            call(&mut inc, &mut full, &ws, status_input(&ws, p))?;
         }
     }
 }
