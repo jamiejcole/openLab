@@ -257,9 +257,6 @@ impl CueEngine {
         let by = by.unwrap_or(target);
         match &model.kind {
             CueKind::Audio { slices, .. } => {
-                if mode == DevampMode::LoopingCue && !slices.is_empty() {
-                    return cx.warn(EngineWarning::DevampIgnored { cue: target });
-                }
                 let now = cx.now;
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);
@@ -273,6 +270,14 @@ impl CueEngine {
                 };
                 if !in_action {
                     return cx.warn(not_running);
+                }
+                // "Devamp looping cue" leaves only the cue's own loop; with slice markers every
+                // loop is a slice's (QLab check D7). Checked after "not running", as for the
+                // other mode. The markers are the model's: the run keeps no copy of the slice
+                // table its voice was planned with, so markers edited during playback count
+                // here (the voice itself keeps playing its planned slices).
+                if mode == DevampMode::LoopingCue && !slices.is_empty() {
+                    return cx.warn(EngineWarning::DevampIgnored { cue: target });
                 }
                 // One devamp at a time: the audio side would ignore a second, and its answer
                 // could not be told from the first one's.

@@ -215,6 +215,73 @@ fn v2_migration_sets_the_mode_of_nested_and_hand_edited_devamp_cues() {
     ));
 }
 
+/// Before v3 a Fade aimed at a group set its children's levels; since v3 it moves them
+/// (M2.28, QLab check F2). A v2 show with such Fades loads unchanged, with one warning per Fade
+/// (at any depth) for the user to check; a Fade of an audio cue, and a current file, get none.
+#[test]
+fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
+    let mut doc: serde_json::Value = serde_json::from_str(V2_EXAMPLE).unwrap();
+    let cues = doc["workspace"]["cue_lists"][0]["cues"]
+        .as_array_mut()
+        .unwrap();
+    let mut audio_fade = cues
+        .iter()
+        .find(|c| c["kind"]["type"] == "fade")
+        .unwrap()
+        .clone();
+    audio_fade["id"] = "00000000-0000-0000-0000-0000000000f2".into();
+    audio_fade["number"] = serde_json::Value::Null;
+    let mut nested = audio_fade.clone();
+    nested["id"] = "00000000-0000-0000-0000-0000000000f1".into();
+    nested["kind"]["target"] = "00000000-0000-0000-0000-000000000004".into();
+    let top = cues
+        .iter_mut()
+        .find(|c| c["kind"]["type"] == "fade")
+        .unwrap();
+    top["kind"]["target"] = "00000000-0000-0000-0000-000000000004".into();
+    let group = cues
+        .iter_mut()
+        .find(|c| c["kind"]["type"] == "group")
+        .unwrap();
+    let children = group["kind"]["children"].as_array_mut().unwrap();
+    children.push(nested);
+    children.push(audio_fade);
+    let v2 = doc.to_string();
+    let loaded = load_show(&v2).unwrap();
+    let pointed: Vec<_> = loaded
+        .warnings
+        .iter()
+        .map(|w| (w.severity, w.cue_id, w.kind.clone()))
+        .collect();
+    assert_eq!(
+        pointed,
+        vec![
+            (
+                Severity::Warning,
+                Some(cue_id(3)),
+                IssueKind::GroupFadeNowRelative
+            ),
+            (
+                Severity::Warning,
+                Some(cue_id(0xf1)),
+                IssueKind::GroupFadeNowRelative
+            ),
+        ]
+    );
+    assert!(loaded.warnings[0].to_string().contains("relative"));
+    // The Fades themselves are kept as they were.
+    let fade = loaded.workspace.find_cue(cue_id(3)).unwrap();
+    assert!(matches!(
+        fade.kind,
+        CueKind::Fade { target: Some(t), .. } if t == cue_id(4)
+    ));
+    // Saved as v3, the same show loads with no warning: the user has seen it.
+    let again = load_show(&save_show(&loaded.workspace).unwrap()).unwrap();
+    assert_eq!(again.warnings, vec![]);
+    // The unchanged v2 example's only Fade targets an audio cue.
+    assert_eq!(load_show(V2_EXAMPLE).unwrap().warnings, vec![]);
+}
+
 #[test]
 fn devamp_mode_values_are_snake_case_and_required() {
     for (name, value) in [
@@ -646,12 +713,18 @@ fn leaf_kind() -> impl Strategy<Value = CueKind> {
             load_to_time
         }),
         target().prop_map(|target| CueKind::Reset { target }),
-        (target(), any::<bool>(), any::<bool>()).prop_map(|(target, a, b)| CueKind::Devamp {
-            target,
-            start_next_cue: a,
-            stop_target_when_slice_ends: b,
-            devamp_mode: DevampMode::CurrentSlice,
-        }),
+        (target(), any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
+            |(target, a, b, looping)| CueKind::Devamp {
+                target,
+                start_next_cue: a,
+                stop_target_when_slice_ends: b,
+                devamp_mode: if looping {
+                    DevampMode::LoopingCue
+                } else {
+                    DevampMode::CurrentSlice
+                },
+            }
+        ),
         (target(), any::<bool>()).prop_map(|(target, then_go)| CueKind::GoTo { target, then_go }),
         target().prop_map(|target| CueKind::Arm { target }),
         target().prop_map(|target| CueKind::Disarm { target }),
@@ -923,7 +996,8 @@ proptest! {
         prop_assert_eq!(save_show(&loaded.workspace).unwrap(), text);
     }
 
-    /// Any workspace written as v1 (no second-trigger keys) loads as itself with the defaults.
+    /// Any workspace written as v1 (no second-trigger keys) loads as itself with the defaults
+/// (and the v2 Devamp mode).
     #[test]
     fn v1_documents_migrate_to_default_second_triggers(mut ws in any_workspace()) {
         repair(&mut ws);
@@ -934,6 +1008,8 @@ proptest! {
         for list in &mut ws.cue_lists {
             reset_second_triggers(&mut list.cues);
         }
+        // The v2 -> v3 step gives every Devamp cue the v2 behaviour.
+        set_devamp_modes(&mut ws, DevampMode::CurrentSlice);
         prop_assert_eq!(loaded, ws);
     }
 }
