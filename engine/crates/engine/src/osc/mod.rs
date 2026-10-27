@@ -111,6 +111,11 @@ impl Osc {
         self.sessions.known_len()
     }
 
+    /// Whether `peer` has completed `/connect`.
+    pub fn is_connected(&self, peer: Peer) -> bool {
+        self.sessions.is_connected(peer)
+    }
+
     /// A TCP connection closed.
     pub fn disconnect(&mut self, peer: Peer) {
         self.sessions.remove(peer);
