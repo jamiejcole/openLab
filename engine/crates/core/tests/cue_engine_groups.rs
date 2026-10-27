@@ -1964,3 +1964,97 @@ fn paused_nested_playlist_completing_on_resume_moves_the_outer_one_on() {
     let end = rig.ended(3000, 20, 3000);
     assert_eq!(running_at(&end, 2), Some(3000));
 }
+
+// ----- load past the end of a playlist or random group (M4.11b) -----
+
+fn followed(mut g: Cue) -> Cue {
+    g.continue_mode = ContinueMode::AutoFollow;
+    g
+}
+
+#[test]
+fn load_past_the_span_of_a_playlist_ends_the_group_at_the_start() {
+    // [2 s, 3 s] is a 5 s span; loaded to 100 s nothing is left to play: the auto-follow comes
+    // on the GO, not after the second wait.
+    let g = followed(grp(
+        1,
+        playlist(false, false),
+        vec![wait(10, 2.0), wait(11, 3.0)],
+    ));
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let start = rig.start(1000, 1);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert!(!changes(&start, 2).is_empty());
+    // The child the load reached stays loaded, unstarted.
+    assert_eq!(rig.state(10), CueState::Loaded);
+    assert_eq!(rig.state(11), CueState::Idle);
+}
+
+#[test]
+fn load_past_the_span_of_a_random_group_ends_the_group_at_the_start() {
+    let g = followed(grp(
+        1,
+        GroupMode::StartRandom,
+        vec![wait(10, 2.0), wait(11, 3.0)],
+    ));
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let start = rig.start(1000, 1);
+    assert!(!changes(&start, 2).is_empty());
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(10), CueState::Idle);
+    assert_eq!(rig.state(11), CueState::Idle);
+}
+
+#[test]
+fn load_within_the_span_of_a_playlist_still_loads_the_child_it_reaches() {
+    let g = followed(grp(
+        1,
+        playlist(false, false),
+        vec![wait(10, 2.0), wait(11, 3.0)],
+    ));
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 1.0,
+        },
+    );
+    rig.start(1000, 1);
+    // The first child was loaded 1 s in: 1 s of it is left.
+    assert_eq!(rig.state(10), CueState::Running);
+    assert_eq!(rig.engine.next_deadline(), Some(2000));
+}
+
+#[test]
+fn load_past_a_looping_playlist_does_not_clamp() {
+    let g = followed(grp(
+        1,
+        playlist(true, false),
+        vec![wait(10, 2.0), wait(11, 3.0)],
+    ));
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    rig.start(1000, 1);
+    assert_eq!(rig.state(1), CueState::Running);
+}
