@@ -69,5 +69,8 @@ when a file replaces an audio cue's file. Wanted: the engine stores it relative 
 (docs/file-format.md §4.3), on `AddCue` and `Kind` alike; the app does not know the show's folder rules.
 Also wanted: a `SetCueProperty` variant for an audio cue's `media` alone, so a replace does not send (and so
 overwrite) the whole kind with the app's copy of it.
-Pasting an audio cue into another workspace keeps its patch id; if that patch does not exist there the cue is
-broken (visible) until fixed. Wanted: `AddCue` could remap or report an unknown patch.
+Paste: the wire has only `paste`, which wants cues already prepared (docs/commands.md: `prepare_paste` is a Rust
+function). The app re-implements `prepare_paste` in `CueEditor.preparePaste` (fresh ids, targets follow or clear,
+used numbers cleared, missing patch / network destination becomes the first) from the model it holds, so it can
+drift from core. Wanted: a `paste` form that takes the raw clipboard and runs `prepare_paste` in the engine
+(fresh ids made by the engine), then delete the Swift copy.

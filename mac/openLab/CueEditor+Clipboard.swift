@@ -37,16 +37,40 @@ extension CueEditor {
         return cue
     }
 
-    /// Gives every cue in the tree a new id; a target that pointed into the copy follows it.
-    static func withFreshIDs(_ cue: JSONValue, newID: () -> ModelID = { ModelID(UUID().uuidString.lowercased()) })
-        -> JSONValue
-    {
-        var map: [String: String] = [:]
+    /// The extension test alone, cheap enough for every drag update.
+    static func hasAudioExtensions(_ urls: [URL]) -> Bool {
+        !urls.isEmpty && urls.allSatisfy { $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    /// The private pasteboard payload; bump `version` when its shape changes.
+    static let clipboardVersion = 1
+
+    /// The cues of a pasteboard payload; nil for anything that is not exactly what `copySelection` writes.
+    static func decodeClipboard(_ text: String) -> [JSONValue]? {
+        guard let root = JSONValue.parse(text), case .int(let v)? = root["version"], v == Int64(clipboardVersion),
+            let cues = root["cues"]?.arrayValue, !cues.isEmpty
+        else { return nil }
+        func valid(_ cue: JSONValue) -> Bool {
+            guard case .object = cue, cue["id"]?.stringValue != nil, case .object? = cue["kind"] else { return false }
+            return (cue["kind"]?["children"]?.arrayValue ?? []).allSatisfy(valid)
+        }
+        return cues.allSatisfy(valid) ? cues : nil
+    }
+
+    /// Core's `prepare_paste` (docs/commands.md; the wire has only `paste`, which wants cues already
+    /// prepared): fresh ids across the whole clipboard, a target kept if it is inside the clipboard
+    /// (follows the copy) or exists in the workspace, else cleared; numbers already used (or empty)
+    /// cleared; a missing audio patch or network destination becomes the workspace's first.
+    static func preparePaste(
+        _ clipboard: [JSONValue], in model: WorkspaceModel,
+        newID: () -> ModelID = { ModelID(UUID().uuidString.lowercased()) }
+    ) -> [JSONValue] {
+        var renamed: [String: String] = [:]
         func rename(_ v: JSONValue) -> JSONValue {
             var v = v
             if let old = v["id"]?.stringValue {
                 let new = newID().raw
-                map[old] = new
+                renamed[old] = new
                 v.set("id", .string(new))
             }
             if var kind = v["kind"], let kids = kind["children"]?.arrayValue {
@@ -55,15 +79,42 @@ extension CueEditor {
             }
             return v
         }
-        func retarget(_ v: JSONValue) -> JSONValue {
+        var existing = Set<String>()
+        var numbers = Set<String>()
+        func scan(_ cues: [Cue]) {
+            for c in cues {
+                existing.insert(c.id.raw)
+                if let n = c.number { numbers.insert(n) }
+                scan(c.children)
+            }
+        }
+        for list in model.cueLists { scan(list.cues) }
+        let patches = Set(model.patches.map(\.id.raw))
+        let networks = Set(model.networkPatches.map(\.id.raw))
+        func fix(_ v: JSONValue) -> JSONValue {
             var v = v
+            if let n = v["number"]?.stringValue, n.isEmpty || !numbers.insert(n).inserted {
+                v.set("number", .null)
+            }
             guard var kind = v["kind"] else { return v }
-            if let t = kind["target"]?.stringValue, let new = map[t] { kind.set("target", .string(new)) }
-            if let kids = kind["children"]?.arrayValue { kind.set("children", .array(kids.map(retarget))) }
+            if let t = kind["target"]?.stringValue {
+                if let new = renamed[t] {
+                    kind.set("target", .string(new))
+                } else if !existing.contains(t) {
+                    kind.set("target", .null)
+                }
+            }
+            if let p = kind["patch"]?.stringValue, !patches.contains(p), let first = model.patches.first {
+                kind.set("patch", .string(first.id.raw))
+            }
+            if let d = kind["destination"]?.stringValue, !networks.contains(d), let first = model.networkPatches.first {
+                kind.set("destination", .string(first.id.raw))
+            }
+            if let kids = kind["children"]?.arrayValue { kind.set("children", .array(kids.map(fix))) }
             v.set("kind", kind)
             return v
         }
-        return retarget(rename(cue))
+        return clipboard.map(rename).map(fix)
     }
 
     // MARK: Finder drops
@@ -71,7 +122,13 @@ extension CueEditor {
     /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
     @discardableResult
     func addFiles(_ urls: [URL], parent: ModelID?, index: Int) async -> [ModelID] {
+        // The inspector commit below can take a while and the list can change meanwhile: remember the cue
+        // the drop landed before and find its place again afterwards.
+        let anchor = children(of: parent).dropFirst(max(0, index)).first?.id
         guard await begin(), let list = cueList?.listID else { return [] }
+        let siblings = children(of: parent)
+        if let parent, cueList?.node(parent) == nil { return [] }
+        let index = anchor.flatMap { a in siblings.firstIndex { $0.id == a } } ?? siblings.count
         guard let files = Self.audioFiles(urls) else {
             notify(loc("edit.error.dropNotAudio"))
             return []
@@ -99,6 +156,10 @@ extension CueEditor {
         return ids
     }
 
+    private func children(of parent: ModelID?) -> [CueNode] {
+        parent.flatMap { cueList?.node($0) }?.children ?? cueList?.roots ?? []
+    }
+
     /// A file dropped on an audio cue replaces its file; a running cue is left alone.
     func replaceFile(of id: ModelID, with url: URL) async {
         guard await begin() else { return }
@@ -122,7 +183,9 @@ extension CueEditor {
 
     private func writePasteboard(_ nodes: [CueNode]) -> Bool {
         guard !nodes.isEmpty,
-            let text = try? JSONValue.object(["cues": .array(nodes.map(Self.fullJSON))]).text()
+            let text = try? JSONValue.object([
+                "version": .int(Int64(Self.clipboardVersion)), "cues": .array(nodes.map(Self.fullJSON)),
+            ]).text()
         else { return false }
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: Self.pasteType)
@@ -142,19 +205,15 @@ extension CueEditor {
     /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
     func paste() async {
         guard await begin(), let list = cueList?.listID else { return }
-        guard let text = pasteboard.string(forType: Self.pasteType),
-            let cues = JSONValue.parse(text)?["cues"]?.arrayValue, !cues.isEmpty
+        guard let text = pasteboard.string(forType: Self.pasteType), let clipboard = Self.decodeClipboard(text),
+            let model = store.model
         else { return NSSound.beep() }
-        let place = Self.insertion(selected: selectedNodes(), roots: (cueList?.roots ?? []))
-        var ids: [ModelID] = []
-        var commands: [Command] = []
-        for (n, cue) in cues.enumerated() {
-            let fresh = Self.withFreshIDs(cue)
-            guard let id = fresh["id"]?.stringValue else { return NSSound.beep() }
-            ids.append(ModelID(id))
-            commands.append(.addCue(fresh, list: list, parent: place.parent, index: place.index + n))
-        }
-        guard let command = Command.transaction(commands), report(await store.send(command: command)) else { return }
+        let place = Self.insertion(selected: selectedNodes(), roots: cueList?.roots ?? [])
+        let cues = Self.preparePaste(clipboard, in: model)
+        let ids = cues.compactMap { $0["id"]?.stringValue.map { ModelID($0) } }
+        guard ids.count == cues.count else { return NSSound.beep() }
+        let at = Command.position(list: list, parent: place.parent, index: place.index)
+        guard report(await store.send(command: .paste(at: at, cues: cues))) else { return }
         cueList?.selectAsUser(ids)
     }
 

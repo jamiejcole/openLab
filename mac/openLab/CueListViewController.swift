@@ -592,7 +592,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// What a file drop does, or nil to refuse it: all audio files, nothing in Show Mode. A single
     /// file dropped on an audio cue's row replaces its file; anything else makes cues where it lands.
     func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
-        guard !isEditLocked, CueEditor.audioFiles(urls) != nil else { return nil }
+        guard !isEditLocked, CueEditor.hasAudioExtensions(urls) else { return nil }
         if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
             node.cue.kindType == "audio"
         {
