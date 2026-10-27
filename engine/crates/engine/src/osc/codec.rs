@@ -9,8 +9,15 @@
 
 use rosc::{OscMessage, OscPacket};
 
-/// Largest datagram or SLIP frame accepted. Commands are tiny; this bounds memory per packet.
+/// Largest datagram accepted (the most a UDP datagram can carry is just under this anyway).
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
+/// Largest SLIP frame (one OSC message or bundle over TCP) accepted from a peer that may speak.
+/// QLab takes 100 KB cue names over TCP; commands are tiny, so this is for long notes and names.
+pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// Largest frame from a peer that is not allowed to do anything yet (a passcode is set and it has
+/// not sent `/connect`): enough for `/connect`, small enough that a few hundred strangers'
+/// half-sent frames cost little memory.
+pub const MAX_UNAUTH_FRAME_BYTES: usize = 4 * 1024;
 /// Most bundles inside one another (the outermost counts as 1).
 pub const MAX_BUNDLE_DEPTH: usize = 4;
 /// Most messages one packet may flatten to.
@@ -28,7 +35,7 @@ const BUNDLE_TAG: &[u8; 8] = b"#bundle\0";
 pub enum DecodeError {
     #[error("empty packet")]
     Empty,
-    #[error("packet of {len} bytes is over the {MAX_PACKET_BYTES}-byte limit")]
+    #[error("packet of {len} bytes is over the {MAX_FRAME_BYTES}-byte limit")]
     TooLarge { len: usize },
     #[error("bundles nested deeper than {MAX_BUNDLE_DEPTH}")]
     BundleTooDeep,
@@ -48,7 +55,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<Vec<OscMessage>, DecodeError> {
     if bytes.is_empty() {
         return Err(DecodeError::Empty);
     }
-    if bytes.len() > MAX_PACKET_BYTES {
+    if bytes.len() > MAX_FRAME_BYTES {
         return Err(DecodeError::TooLarge { len: bytes.len() });
     }
     let mut out = Vec::new();
@@ -177,7 +184,7 @@ pub struct SlipDecoder {
 
 impl Default for SlipDecoder {
     fn default() -> Self {
-        Self::new(MAX_PACKET_BYTES)
+        Self::new(MAX_FRAME_BYTES)
     }
 }
 
@@ -190,6 +197,12 @@ impl SlipDecoder {
             bad: false,
             skipping: false,
         }
+    }
+
+    /// Changes the frame limit for the frames that follow (and the one under way). The caller
+    /// raises it once a peer is allowed to speak; the buffer is never allocated ahead of data.
+    pub fn set_max_frame(&mut self, max_frame: usize) {
+        self.max_frame = max_frame;
     }
 
     /// Appends the events found in `data` to `events`.
