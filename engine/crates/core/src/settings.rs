@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::backup::{DEFAULT_BACKUP_KEEP, MAX_BACKUP_KEEP};
 use crate::cue::MAX_CHANNELS;
+use crate::media_path::{PathStyle, comparison_key, to_portable};
 use crate::model::{OutputPatch, PatchId, WorkspaceId};
 
 pub const SETTINGS_VERSION: u32 = 1;
@@ -21,6 +22,9 @@ pub const MAX_SETTINGS_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DEVICE_CHANNEL: u32 = 1023;
 const MAX_DEVICE_NAME_BYTES: usize = 512;
 const MAX_WORKSPACES: usize = 10_000;
+/// Recently opened shows kept (WS-08).
+pub const MAX_RECENT_FILES: usize = 10;
+const MAX_RECENT_PATH_BYTES: usize = 4096;
 
 /// Where one patch plays on this machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +51,10 @@ pub struct MachineSettings {
     /// Keyed by workspace id (lower-case hyphenated UUID).
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceMachineSettings>,
+    /// Show files opened or saved lately, newest first, at most [`MAX_RECENT_FILES`] (WS-08).
+    /// Native paths as the OS spells them.
+    #[serde(default)]
+    pub recent_files: Vec<String>,
 }
 
 fn default_backup_keep() -> u32 {
@@ -59,6 +67,7 @@ impl Default for MachineSettings {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
             workspaces: BTreeMap::new(),
+            recent_files: Vec::new(),
         }
     }
 }
@@ -145,6 +154,23 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
             .or_insert(WorkspaceMachineSettings { patches });
     }
     settings.workspaces = workspaces;
+    let before = settings.recent_files.len();
+    let mut seen = Vec::new();
+    settings.recent_files.retain(|path| {
+        let key = comparison_key(&to_portable(path, PathStyle::host()));
+        let keep = !path.is_empty()
+            && path.len() <= MAX_RECENT_PATH_BYTES
+            && !path.contains('\0')
+            && !seen.contains(&key);
+        if keep {
+            seen.push(key);
+        }
+        keep
+    });
+    settings.recent_files.truncate(MAX_RECENT_FILES);
+    if settings.recent_files.len() != before {
+        warnings.push("recent files: invalid, duplicate or surplus entries dropped".into());
+    }
 }
 
 fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
@@ -195,6 +221,27 @@ impl MachineSettings {
             .patches
             .insert(patch.to_string(), mapping);
         Ok(())
+    }
+
+    /// Puts `path` first in the recent files (WS-08), dropping an earlier entry for the same
+    /// file (compared like media paths: case, NFC and `..` ignored) and the oldest beyond
+    /// [`MAX_RECENT_FILES`]. An empty or absurdly long path is ignored.
+    pub fn push_recent_file(&mut self, path: &str) {
+        if path.is_empty() || path.len() > MAX_RECENT_PATH_BYTES || path.contains('\0') {
+            return;
+        }
+        let key = comparison_key(&to_portable(path, PathStyle::host()));
+        self.recent_files
+            .retain(|p| comparison_key(&to_portable(p, PathStyle::host())) != key);
+        self.recent_files.insert(0, path.to_owned());
+        self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Keeps the recent files for which `exists` is true. Returns whether any was dropped.
+    pub fn prune_recent_files(&mut self, exists: impl Fn(&str) -> bool) -> bool {
+        let before = self.recent_files.len();
+        self.recent_files.retain(|p| exists(p));
+        self.recent_files.len() != before
     }
 
     pub fn clear_patch_mapping(&mut self, workspace: WorkspaceId, patch: PatchId) {
@@ -272,7 +319,7 @@ pub fn resolve_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::PatchOutput;
+    use crate::model::{CueListId, PatchOutput, Workspace};
 
     fn ws(n: u128) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(n))
@@ -522,5 +569,64 @@ mod tests {
                 outputs: 3
             }
         );
+    }
+
+    #[test]
+    fn recent_files_are_newest_first_deduplicated_and_bounded() {
+        let mut settings = MachineSettings::default();
+        for n in 0..MAX_RECENT_FILES + 5 {
+            settings.push_recent_file(&format!("/shows/show{n}.openlab"));
+        }
+        assert_eq!(settings.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(
+            settings.recent_files[0],
+            format!("/shows/show{}.openlab", MAX_RECENT_FILES + 4)
+        );
+        // Opening an older one again moves it to the front, spelled as just given.
+        let oldest = settings.recent_files[MAX_RECENT_FILES - 1].clone();
+        settings.push_recent_file(&oldest.to_uppercase());
+        assert_eq!(settings.recent_files[0], oldest.to_uppercase());
+        assert_eq!(settings.recent_files.len(), MAX_RECENT_FILES);
+        assert!(!settings.recent_files.contains(&oldest));
+        settings.push_recent_file("");
+        settings.push_recent_file(&"x".repeat(5000));
+        assert_eq!(settings.recent_files.len(), MAX_RECENT_FILES);
+    }
+
+    #[test]
+    fn missing_recent_files_are_pruned() {
+        let mut settings = MachineSettings::default();
+        settings.push_recent_file("/a.openlab");
+        settings.push_recent_file("/b.openlab");
+        assert!(settings.prune_recent_files(|p| p == "/b.openlab"));
+        assert_eq!(settings.recent_files, vec!["/b.openlab".to_owned()]);
+        assert!(!settings.prune_recent_files(|_| true));
+    }
+
+    #[test]
+    fn loading_cleans_recent_files_and_old_files_without_the_key_load() {
+        let loaded = load_settings(r#"{"settings_version": 1}"#);
+        assert!(loaded.warnings.is_empty());
+        assert!(loaded.settings.recent_files.is_empty());
+        let many: Vec<String> = (0..30).map(|n| format!("\"/s/{n}.openlab\"")).collect();
+        let text = format!(
+            r#"{{"settings_version": 1, "recent_files": ["", "/s/0.openlab", "/S/0.openlab", {}]}}"#,
+            many.join(",")
+        );
+        let loaded = load_settings(&text);
+        assert_eq!(loaded.settings.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(loaded.settings.recent_files[0], "/s/0.openlab");
+        assert_eq!(loaded.warnings.len(), 1);
+        let wrong = load_settings(r#"{"settings_version": 1, "recent_files": [1]}"#);
+        assert!(wrong.settings.recent_files.is_empty());
+    }
+
+    #[test]
+    fn new_empty_workspace_is_valid_and_round_trips() {
+        let ws = Workspace::new_empty(ws(1), CueListId(Uuid::from_u128(2)), pid(3));
+        let text = crate::save_show(&ws).unwrap();
+        let loaded = crate::load_show(&text).unwrap();
+        assert_eq!(loaded.workspace, ws);
+        assert!(loaded.warnings.is_empty());
     }
 }

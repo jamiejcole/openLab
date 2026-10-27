@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": 62,
+  "request": {
+    "type": "open",
+    "path": "/Users/sam/Shows/Hamlet.openlab",
+    "recovery": "ignore"
+  }
+}

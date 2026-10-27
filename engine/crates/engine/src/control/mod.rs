@@ -1636,11 +1636,13 @@ fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
 
 fn request_name(r: &Request) -> &'static str {
     match r {
-        Request::New => "new",
+        Request::New { .. } => "new",
         Request::Open { .. } => "open",
+        Request::OpenRecovery { .. } => "open_recovery",
+        Request::ScanRecovery => "scan_recovery",
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",
-        Request::Revert => "revert",
+        Request::Revert { .. } => "revert",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::Snapshot => "snapshot",

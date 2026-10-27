@@ -1,0 +1,11 @@
+{
+  "type": "result",
+  "id": 47,
+  "ok": {
+    "data": {
+      "type": "recovery_offer",
+      "workspace_name": "Hamlet",
+      "modified_ms": 1700000000000
+    }
+  }
+}
