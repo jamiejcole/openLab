@@ -171,8 +171,13 @@ impl CueEngine {
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
-        let next = playhead::after_go(&path, |c| self.is_armed(c), |c| self.has_problems(c.id));
-        self.move_playhead(list, next, cx);
+        let next = playhead::after_go(
+            &path,
+            |c| self.is_armed(c),
+            |c| self.has_problems(c.id),
+            |c| self.busy(c.id) || self.continued.contains(&c.id),
+        );
+        self.move_playhead_after(list, next, Some(cue.id), cx);
         Ok(())
     }
 
@@ -188,6 +193,8 @@ impl CueEngine {
                 cue: playhead.cue,
             });
         }
+        // (Also when the order is the same: a cue moved into the group just before it.)
+        self.forget_continues(cx.ws, list, None);
         if edited {
             self.note_unsignalled();
         }
@@ -271,7 +278,7 @@ impl CueEngine {
                         broken: None,
                         ..
                     })) if !g.stopping => {
-                        if looping && !g.adopted && g.playlist.is_some() && g.devamp.is_none() {
+                        if looping && g.playlist.is_some() && g.devamp.is_none() {
                             g.devamp = Some((by, start_next));
                         } else {
                             cx.warn(EngineWarning::DevampIgnored { cue: target });

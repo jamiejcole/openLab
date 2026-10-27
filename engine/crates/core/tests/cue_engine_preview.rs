@@ -186,7 +186,7 @@ fn a_preview_leaves_the_playhead_the_double_go_timer_and_groups_alone() {
     let playhead = rig.engine.playhead(list_id(1));
     rig.preview(900, 11);
     assert_eq!(rig.engine.playhead(list_id(1)), playhead);
-    // A previewed child does not make its idle group run adopted.
+    // A previewed child does not make its idle group run (nor does a started one, M2.24).
     assert_eq!(rig.state(10), CueState::Idle);
     let early = rig.go(950);
     assert!(early.contains(&Action::GoIgnored {
