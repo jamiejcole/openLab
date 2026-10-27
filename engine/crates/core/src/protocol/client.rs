@@ -214,6 +214,13 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// Switches output overrides (PB-10) for the whole engine, every open workspace: not saved
+    /// in any show file and gone when the engine restarts, as QLab's Overrides are. The
+    /// `status` message reports them. Answers `ok` with no data.
+    SetOutputOverrides {
+        /// Network cues still run, complete and continue, but send nothing.
+        network_disabled: bool,
+    },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,

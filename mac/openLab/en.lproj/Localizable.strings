@@ -21,6 +21,26 @@
 "menu.edit.copy" = "Copy";
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
+"menu.edit.delete" = "Delete";
+"menu.cues" = "Cues";
+"menu.cues.new" = "New %@ Cue";
+"menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
+"menu.cues.renumber" = "Renumber Selected Cues...";
+"menu.cues.moveUp" = "Move Selected Cues Up";
+"menu.cues.moveDown" = "Move Selected Cues Down";
+"edit.ok" = "OK";
+"edit.cancel" = "Cancel";
+"edit.renumber.title" = "Renumber Selected Cues";
+"edit.renumber.start" = "First number:";
+"edit.renumber.increment" = "Increment:";
+"edit.renumber.ok" = "Renumber";
+"edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
+"edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
+"edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
+"edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
+"edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
+"edit.error.refused" = "The engine refused the edit: %@";
+"edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
 "menu.transport" = "Transport";
 "menu.transport.go" = "GO";
@@ -132,6 +152,9 @@
 "problem.patch_missing" = "The output patch is missing";
 "problem.device_unavailable" = "The output device is unavailable";
 "problem.network_patch_missing" = "The network patch is missing";
+"problem.network_host_invalid" = "The network destination cannot be used";
+"problem.network_host_unresolved" = "The network host cannot be found";
+"problem.network_message_invalid" = "The OSC message cannot be sent";
 "problem.started_broken" = "The cue started while broken";
 
 "cue.colour.none" = "None";
@@ -247,6 +270,9 @@
 "problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
+"problem.network_host_invalid" = "Network patch {patch} cannot be used: {reason}.";
+"problem.network_host_unresolved" = "The host of network patch {patch} cannot be found: {reason}.";
+"problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
 
 "warning.unknown" = "Unrecognised warning: {type}";
