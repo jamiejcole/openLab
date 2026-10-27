@@ -808,3 +808,91 @@ fn m2_a_paused_cue_whose_stream_fails_before_playing_follows_only_on_resume() {
     assert!(starts(&rig.at(40, Input::Resume { cue: id(1) })).is_empty());
     assert!(starts(&rig.tick(10_000)).is_empty());
 }
+
+// ----- fix round 3 (final re-review of M2.24) -----
+
+fn children_of(rig: &mut Rig, n: u128) -> &mut Vec<Cue> {
+    let cues = &mut rig.ws.cue_lists[0].cues;
+    match cues.iter_mut().find(|c| c.id == id(n)).map(|c| &mut c.kind) {
+        Some(CueKind::Group { children, .. }) => children,
+        _ => panic!("no group {n}"),
+    }
+}
+
+#[test]
+fn h1_deleting_the_standby_cue_inside_a_group_keeps_the_visit_and_plays_nothing_twice() {
+    let g = timed(
+        grp(
+            1,
+            GroupMode::StartFirstAndEnter,
+            vec![wait(10, 1.0), memo(11), memo(12)],
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(11)));
+    assert!(starts(&rig.tick(1000)).contains(&(id(2), 1000)));
+    // The operator deletes the standby cue: the playhead moves to 12, still in the group.
+    children_of(&mut rig, 1).retain(|c| c.id != id(11));
+    rig.tick(1100);
+    assert_eq!(rig.playhead(), Some(id(12)));
+    rig.go(1200);
+    // 2 has played in this visit: passed over, not played again.
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+#[test]
+fn h1_a_standby_cue_dragged_into_a_group_enters_it_afresh() {
+    let p = timed(
+        grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2), memo(3), wait(12, 1.0)]);
+    rig.go(0);
+    rig.tick(1000);
+    assert!(starts(&rig.tick(2000)).contains(&(id(2), 2000)));
+    rig.at(
+        2100,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(12)),
+        },
+    );
+    // The standby cue is dragged into the playlist: the playhead is now inside it.
+    let c = rig.ws.cue_lists[0].cues.pop().unwrap();
+    children_of(&mut rig, 1).push(c);
+    rig.tick(2200);
+    assert_eq!(rig.playhead(), Some(id(12)));
+    rig.go(2300);
+    // The group does not run in this visit, so 2 will not fire: the playhead stands on it.
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn h1_a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_unchanged() {
+    // Found by the property suite: [G [10], 12, 2, 3] → [G [10, 12], 2, 3] keeps every cue's
+    // place in the list's order, but the playhead on 12 is now inside G.
+    let g = timed(grp(1, GroupMode::Timeline, vec![memo(10)]), 0.0, 0.0, AC);
+    let mut rig = Rig::new(vec![g, memo(12), memo(2), memo(3)]);
+    let go = rig.go(0);
+    // G completes at once and its auto-continue starts 12.
+    assert!(starts(&go).contains(&(id(12), 0)));
+    rig.at(
+        100,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(12)),
+        },
+    );
+    let c = rig.ws.cue_lists[0].cues.remove(1);
+    children_of(&mut rig, 1).push(c);
+    rig.tick(200);
+    rig.go(300);
+    // A fresh visit: G's continue does not fire now, so the playhead stands on 2.
+    assert_eq!(rig.playhead(), Some(id(2)));
+}

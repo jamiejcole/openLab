@@ -512,17 +512,18 @@ impl CueEngine {
         for list in &cx.ws.cue_lists {
             match self.playheads.get_mut(&list.id) {
                 Some(playhead) => {
-                    let old = playhead.cue;
                     let (edited, moved) = playhead.sync(&list.cues);
                     changed |= edited;
                     if moved {
-                        let new = playhead.cue;
                         cx.out.push(Action::PlayheadChanged {
                             list: list.id,
-                            cue: new,
+                            cue: playhead.cue,
                         });
-                        self.forget_continues(cx.ws, list.id, old, new, None);
                     }
+                    // An edit can put the playhead into a group without moving it (the cue
+                    // dragged into the group, which can leave the positions' order as it was)
+                    // or move it within one (its cue deleted): look whenever edits are followed.
+                    self.forget_continues(cx.ws, list.id, None);
                 }
                 None => {
                     changed = true;
@@ -569,13 +570,14 @@ impl CueEngine {
         else {
             return cx.warn(EngineWarning::UnknownList { list });
         };
-        let old = self.playhead(list);
         if let Some(playhead) = self.playheads.get_mut(&list)
             && step(playhead, cues)
         {
-            let new = playhead.cue;
-            cx.out.push(Action::PlayheadChanged { list, cue: new });
-            self.forget_continues(cx.ws, list, old, new, None);
+            cx.out.push(Action::PlayheadChanged {
+                list,
+                cue: playhead.cue,
+            });
+            self.forget_continues(cx.ws, list, None);
         }
     }
 
@@ -628,43 +630,36 @@ impl CueEngine {
         gone: Option<CueId>,
         cx: &mut Ctx,
     ) {
-        let old = self.playhead(list);
         if let Some(playhead) = self.playheads.get_mut(&list)
             && playhead.set(cue)
         {
             cx.out.push(Action::PlayheadChanged { list, cue });
-            self.forget_continues(cx.ws, list, old, cue, gone);
+            self.forget_continues(cx.ws, list, gone);
         }
     }
 
-    /// The playhead moved from `old` to `new`: every group it entered (`new` is inside it,
-    /// `old` was not), except by the GO on that group itself (`gone`), forgets that its last
-    /// run fired its continue. That memory belongs to the entry it was made in, so leaving a
-    /// group entered afresh (a jump, stepping, an edit, a GoTo) stands on the cue right after
-    /// it, whatever the group did earlier in the show (see `playhead::after_go`).
-    fn forget_continues(
-        &mut self,
-        ws: &Workspace,
-        list: CueListId,
-        old: Option<CueId>,
-        new: Option<CueId>,
-        gone: Option<CueId>,
-    ) {
-        if self.continued.is_empty() {
-            return;
-        }
+    /// The list's playhead moved, or the list was edited: every group the playhead is in now
+    /// and was not in when the engine last looked (`Playhead::around`) has been entered, and,
+    /// unless it was entered by the GO on that group itself (`gone`), forgets that its run fired
+    /// its continue. That memory belongs to the visit it was made in, so leaving a group
+    /// entered afresh (a jump, stepping, a GoTo, an edit that moves the playhead or the cue into
+    /// it) stands on the cue right after it, whatever the group did earlier in the show; an edit
+    /// that leaves the playhead in the same groups keeps the visit (see `playhead::after_go`).
+    fn forget_continues(&mut self, ws: &Workspace, list: CueListId, gone: Option<CueId>) {
         let Some(cues) = ws.cue_lists.iter().find(|l| l.id == list).map(|l| &l.cues) else {
             return;
         };
-        let before = old
+        let Some(playhead) = self.playheads.get_mut(&list) else {
+            return;
+        };
+        let now = playhead
+            .cue
             .map(|id| playhead::groups_around(cues, id))
             .unwrap_or_default();
-        for group in new
-            .map(|id| playhead::groups_around(cues, id))
-            .unwrap_or_default()
-        {
-            if !before.contains(&group) && Some(group) != gone {
-                self.continued.remove(&group);
+        let before = std::mem::replace(&mut playhead.around, now);
+        for group in &playhead.around {
+            if !before.contains(group) && Some(*group) != gone {
+                self.continued.remove(group);
             }
         }
     }

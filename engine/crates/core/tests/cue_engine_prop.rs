@@ -166,9 +166,10 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 54] = [
+const OPS: [u8; 55] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
+    30,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -1160,6 +1161,8 @@ struct Run {
     /// last entered them other than by the GO on the group itself: only such a group can have
     /// fired a continue the playhead may skip when it leaves the group.
     since_entry: BTreeSet<CueId>,
+    /// The groups around the playhead when last looked at (after each move and each call).
+    ph_around: Vec<CueId>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1202,6 +1205,28 @@ impl Run {
             group_warnings: BTreeMap::new(),
             ph: None,
             since_entry: BTreeSet::new(),
+            ph_around: Vec::new(),
+        }
+    }
+
+    /// The playhead is now inside the groups `around` (outermost first), having come from
+    /// `from`: each group it was not in before has been entered and starts a new visit, unless
+    /// it was entered from the group itself or was active (now, or in this call).
+    fn enter(&mut self, around: Vec<CueId>, from: Option<CueId>, active_now: &BTreeSet<CueId>) {
+        let before = std::mem::replace(&mut self.ph_around, around);
+        for &g in &self.ph_around {
+            if before.contains(&g) || from == Some(g) {
+                continue;
+            }
+            let active = active_now.contains(&g)
+                || self.reported.get(&g).is_some_and(|s| {
+                    !matches!(s, CueState::Idle | CueState::Broken | CueState::Loaded)
+                });
+            if active {
+                self.since_entry.insert(g);
+            } else {
+                self.since_entry.remove(&g);
+            }
         }
     }
 
@@ -1257,27 +1282,19 @@ impl Run {
         let mut arm = Vec::new();
         let ph_before = self.ph;
         let mut moves = 0usize;
+        // Groups reported active in this call.
+        let mut active_now: BTreeSet<CueId> = BTreeSet::new();
         for action in &actions {
             match action {
                 Action::PlayheadChanged { list, cue } if *list == self.list => {
                     moves += 1;
                     let cues = &self.ws.cue_lists[0].cues;
-                    let old = self.ph.map(|o| groups_around(cues, o)).unwrap_or_default();
                     let new = cue.map(|n| groups_around(cues, n)).unwrap_or_default();
-                    for g in new.into_iter().filter(|g| !old.contains(g)) {
-                        // (Entered by its own GO: what its run fires belongs to this entry.)
-                        if self.ph == Some(g) && matches!(self.input, Input::Go { .. }) {
-                            continue;
-                        }
-                        let active = self.reported.get(&g).is_some_and(|s| {
-                            !matches!(s, CueState::Idle | CueState::Broken | CueState::Loaded)
-                        });
-                        if active {
-                            self.since_entry.insert(g);
-                        } else {
-                            self.since_entry.remove(&g);
-                        }
-                    }
+                    // (From the group itself into it: a GO on the group, whose run's continue
+                    // belongs to this visit. Stepping in from the group also lands here, where
+                    // the engine forgets more: this side only checks less.)
+                    let from = self.ph;
+                    self.enter(new, from, &active_now);
                     self.ph = *cue;
                 }
                 Action::GroupWarningChanged { group, warning } => {
@@ -1322,6 +1339,7 @@ impl Run {
                     self.seen.insert(*cue);
                     if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
                         self.since_entry.insert(*cue);
+                        active_now.insert(*cue);
                     }
                 }
                 Action::StartVoice { at, .. }
@@ -1371,6 +1389,13 @@ impl Run {
                 self.last_at.insert(after, at);
             }
         }
+        // An edit can put the playhead into a group without moving it (its cue dragged in): the
+        // groups around it are compared with the last ones seen, as the engine does.
+        let around = self
+            .ph
+            .map(|p| groups_around(&self.ws.cue_lists[0].cues, p))
+            .unwrap_or_default();
+        self.enter(around, None, &active_now);
         // No cue is passed over when a GO leaves a group that fires no continue (Playhead; M2.24
         // fix rounds 1–2): the group has not been active since the playhead entered it and is
         // not running now, so its continue targets never fire, and the playhead must stand on
@@ -2013,6 +2038,30 @@ impl Run {
                         reason: BrokenReason::StreamFailed,
                     }
                 }
+            }
+            30 => {
+                // Model edit: move a cue into a group (to the end of its children), so the
+                // playhead can find itself inside a group it did not move into.
+                let cues = &self.ws.cue_lists[0].cues;
+                let mut groups = Vec::new();
+                each(cues, &mut |c| {
+                    if matches!(c.kind, CueKind::Group { .. }) {
+                        groups.push(c.id);
+                    }
+                });
+                let into = groups
+                    .get(usize::from(s.b) % groups.len().max(1))
+                    .copied()
+                    .filter(|g| *g != target && !groups_around(cues, *g).contains(&target));
+                if let Some(g) = into
+                    && let Some(c) = take(&mut self.ws.cue_lists[0].cues, target)
+                {
+                    match find_mut(&mut self.ws.cue_lists[0].cues, g).map(|x| &mut x.kind) {
+                        Some(CueKind::Group { children, .. }) => children.push(c),
+                        _ => self.ws.cue_lists[0].cues.push(c),
+                    }
+                }
+                Input::Tick
             }
             29 => {
                 // The key that triggers it is released (second trigger on release).

@@ -15,6 +15,11 @@ pub(super) struct Playhead {
     pub cue: Option<CueId>,
     /// The list's positions when last synced, to find where a deleted cue stood.
     order: Vec<CueId>,
+    /// The groups around the playhead cue, outermost first, as of the last time the engine
+    /// looked (after each move and each edit of the list): entering a group is a group in
+    /// this set now that was not before, whether the playhead moved or the list was edited
+    /// around it (see `CueEngine::forget_continues`).
+    pub around: Vec<CueId>,
 }
 
 impl Playhead {
@@ -24,6 +29,7 @@ impl Playhead {
         Self {
             cue: order.first().copied(),
             order,
+            around: Vec::new(),
         }
     }
 
@@ -194,8 +200,8 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 ///
 /// Leaving a group, the playhead goes to the cue after the group's own continue chain only if
 /// the group's continue fires or has fired (`continues`: it has a run, or its run fired its
-/// continue during the playhead's current visit); a group with no run fires none, so the playhead stands on the cue right
-/// after it and its continue targets are not lost.
+/// continue during the playhead's current visit); a group with no run fires none, so the
+/// playhead stands on the cue right after it and its continue targets are not lost.
 ///
 /// `broken` says which cues have static problems: a broken Devamp cue starts no next cue (its
 /// own continue mode applies instead). A broken cue's auto-continue and auto-follow both still
