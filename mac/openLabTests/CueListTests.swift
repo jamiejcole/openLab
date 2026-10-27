@@ -488,8 +488,18 @@ final class CueListTests: XCTestCase {
 
     func testProblemTextIsLocalisedOrShownRaw() {
         for t in [
-            "no_target", "target_missing", "target_self", "target_wrong_kind", "nothing_to_fade", "no_media",
-            "media_missing", "media_unsupported", "patch_missing", "device_unavailable", "network_patch_missing", "started_broken",
+            "no_target",
+            "target_missing",
+            "target_self",
+            "target_wrong_kind",
+            "nothing_to_fade",
+            "no_media",
+            "media_missing",
+            "media_unsupported",
+            "patch_missing",
+            "device_unavailable",
+            "network_patch_missing",
+            "started_broken",
         ] {
             XCTAssertNotEqual(CueStateStyle.problemText(t), t, t)
         }
