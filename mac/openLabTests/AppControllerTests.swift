@@ -422,6 +422,20 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio cues")
     }
 
+    func testDisconnectClearsPreviewMarksAndInspectorButton() async throws {
+        let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        wc.cueList.select([audio])
+        wc.inspector.setSelection([audio])
+        await assertEventually { wc.inspector.previewButton.isEnabled }
+        XCTAssertTrue(store.previewing.contains(audio))
+        engine.dropConnections()
+        await assertEventually { store.connectionState != .connected }
+        XCTAssertTrue(store.previewing.isEmpty, "nothing is known to be previewing while disconnected")
+        XCTAssertFalse(wc.inspector.previewButton.isEnabled, "Preview needs a connection")
+    }
+
     func testSelectingByHandMovesThePlayheadButRestoringDoesNot() async throws {
         let wc = try XCTUnwrap(app.windows["doc-1"])
         let target: ModelID = "00000000-0000-0000-0000-00000000000a"

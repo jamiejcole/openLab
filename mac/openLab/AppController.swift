@@ -30,8 +30,11 @@ final class AppController {
     /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
     var keyCacheCount: Int { keyCache.count }
     private var keySubs: [ModelID: AnyCancellable] = [:]
-    private var keyCache: [ObjectIdentifier: (settings: JSONValue?, shadowed: Set<KeyChord>, keys: TransportKeys)] =
-        [:]
+    private var keyCache:
+        [ObjectIdentifier: (
+            settings: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>, keys: TransportKeys
+        )] =
+            [:]
     /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).
     var isRecordingKey: @MainActor () -> Bool = { NSApp.keyWindow?.firstResponder is HotkeyRecorder }
     /// Menu-bar keys outside the Transport menu; a cue hotkey on one never fires (Cmd-Q stays Quit).
@@ -269,14 +272,17 @@ final class AppController {
         let id = ObjectIdentifier(store)
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
         let cached = keyCache[id]
+        let same = cached?.settings == settings && cached?.cueChords == cueChords
         let keys =
-            cached?.settings == settings
-            ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
-        // Transport keys win over cue hotkeys: a cue hotkey on a transport chord does not fire.
+            same
+            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
+            : TransportKeys(settings: settings, cueChords: cueChords)
+        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
+        // fixed app defaults (L, P, V) already yielded to cue hotkeys inside `TransportKeys`.
         let shadowed = cueChords.intersection(keys.chords.values)
-        if let cached, cached.settings == settings, cached.shadowed == shadowed { return cached.keys }
-        keyCache[id] = (settings, shadowed, keys)
-        if cached?.settings != settings || cached == nil {
+        if let cached, same, cached.shadowed == shadowed { return cached.keys }
+        keyCache[id] = (settings, cueChords, shadowed, keys)
+        if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {

@@ -109,7 +109,9 @@ struct TransportKeys: Equatable {
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    init(settings: JSONValue?) {
+    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (L, P, V) that one of them
+    /// uses yields to it, so an app default never silently takes a show's key.
+    init(settings: JSONValue?, cueChords: Set<KeyChord> = []) {
         let hotkeys = settings?["hotkeys"]
         for (field, command, fallback) in Self.fields {
             var chord = fallback
@@ -131,7 +133,9 @@ struct TransportKeys: Equatable {
             chords[command] = chord
         }
         for (command, chord) in Self.fixed {
-            if let error = Self.validate(chord, for: command, in: chords) {
+            if cueChords.contains(chord) {
+                warnings.append("\(command.rawValue) key: yields to a cue hotkey, no key bound")
+            } else if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append("\(command.rawValue) key: \(Self.describe(error)), no key bound")
             } else {
                 chords[command] = chord

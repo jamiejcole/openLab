@@ -233,8 +233,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             case .progress, .notices: break
             }
         }
-        connectionSub = store.$connectionState.sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.updatePreviewButton() }
+        connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
+            MainActor.assumeIsolated { self?.updatePreviewButton(connected: state == .connected) }
         }
         render()
     }
@@ -398,10 +398,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// Show Mode does not lock it: a preview plays outside the show and edits nothing (QLab's docs
     /// do not say; the safe reading is that the operator can still audition).
-    func updatePreviewButton() {
+    func updatePreviewButton(connected: Bool? = nil) {
         let active = cue.map { store.previewing.contains($0.id) } ?? false
         previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
-        previewButton.isEnabled = cue?.kindType == "audio" && store.connectionState == .connected
+        previewButton.isEnabled = cue?.kindType == "audio" && (connected ?? (store.connectionState == .connected))
     }
 
     @objc private func previewClicked() {
