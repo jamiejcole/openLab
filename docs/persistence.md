@@ -51,8 +51,12 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
   recovery file; a newer one replaces only its own target's, the old answer is `Ok(None)`), so several open
   workspaces never displace each other's autosaves;
 - at most `MAX_PENDING_TARGETS` (16) targets wait in the normal queue; a new target beyond that moves the
-  oldest waiting autosave to a write-through queue that runs first. It is written, never dropped, and still
-  coalesces per target. The total is bounded by the distinct targets in use, at most the open workspaces (8);
+  oldest waiting autosave to a write-through queue that runs first, so the cap itself never costs an
+  autosave. That queue still coalesces per target and is capped at `MAX_FORCED_TARGETS` (32): during a
+  long disk hang, closed workspaces and Save As paths add targets beyond the open ones (8). When it is
+  full the oldest forced autosave is shed (`Ok(None)`, counted by `shed_autosaves()`); a later autosave of
+  a still-open workspace replaces it anyway. Shutdown still discards pending autosaves, so a caller that
+  needs a final autosave (M4.15g) must wait on its reply;
 - manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
   durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
 - `clear_recovery(workspace, show_path)` runs after the job in flight (the writer is one thread), removes that

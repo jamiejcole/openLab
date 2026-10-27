@@ -12,7 +12,9 @@ use std::thread;
 
 use common::*;
 use openlab_core::Workspace;
-use openlab_engine::persist::{JobKind, MAX_PENDING_TARGETS, PersistError, SaveReport, SaveWriter};
+use openlab_engine::persist::{
+    JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, PersistError, SaveReport, SaveWriter,
+};
 
 struct Gate {
     writer: SaveWriter,
@@ -44,6 +46,7 @@ fn named(name: &str) -> Workspace {
     ws
 }
 
+type AutosaveAnswer = Receiver<Result<Option<std::path::PathBuf>, PersistError>>;
 type SaveAnswer = Receiver<Result<SaveReport, PersistError>>;
 
 /// Starts a save and waits until the writer is stuck inside it.
@@ -302,36 +305,134 @@ fn a_manual_save_of_one_workspace_does_not_cover_anothers_autosave() {
     assert!(env.dirs.recovery_path(a.id, pa.as_deref()).exists());
 }
 
-#[test]
-fn targets_beyond_the_cap_are_written_through_not_dropped() {
-    let env = env();
-    let gate = gated(&env);
-    let first = occupy(&gate, &env);
-    let n = MAX_PENDING_TARGETS as u64 + 3;
-    let answers: Vec<_> = (1..=n)
+/// Holds the writer, then queues `n` distinct targets 1..=n. Targets beyond the cap move to the
+/// write-through queue in arrival order.
+fn overflowed(env: &Env, gate: &Gate, n: u64) -> (SaveAnswer, Vec<AutosaveAnswer>) {
+    let first = occupy(gate, env);
+    let answers = (1..=n)
         .map(|i| {
-            let (w, p) = target(&env, i);
+            let (w, p) = target(env, i);
             gate.writer.autosave(w, p, 2)
         })
         .collect();
-    // Nothing was dropped on arrival.
+    (first, answers)
+}
+
+#[test]
+fn write_through_autosaves_run_first_and_nothing_is_lost_to_the_normal_cap() {
+    let env = env();
+    let gate = gated(&env);
+    let n = MAX_PENDING_TARGETS as u64 + 3;
+    let (first, answers) = overflowed(&env, &gate, n);
     assert!(answers.iter().all(|a| a.try_recv().is_err()));
-    for _ in 0..=n {
-        gate.release.send(()).unwrap();
-    }
-    first.recv().unwrap().unwrap();
-    for a in &answers {
-        assert!(a.recv().unwrap().unwrap().is_some());
-    }
-    // Overflowed targets still coalesce with themselves.
-    let (w, p) = target(&env, 1);
     gate.release.send(()).unwrap();
+    first.recv().unwrap().unwrap();
+    // Targets 1..=3 were pushed out of the normal queue and must run before 4..=n.
+    for (i, answer) in answers.iter().enumerate() {
+        assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+        assert!(answers[i + 1..].iter().all(|a| a.try_recv().is_err()));
+        gate.release.send(()).unwrap();
+        assert!(
+            answer.recv().unwrap().unwrap().is_some(),
+            "target {}",
+            i + 1
+        );
+    }
+    assert!(gate.started.try_recv().is_err());
+    assert_eq!(gate.writer.shed_autosaves(), 0);
+}
+
+#[test]
+fn a_newer_autosave_replaces_one_waiting_in_the_write_through_queue() {
+    let env = env();
+    let gate = gated(&env);
+    let n = MAX_PENDING_TARGETS as u64 + 3;
+    let (first, answers) = overflowed(&env, &gate, n);
+    // Target 1 sits in the write-through queue.
+    let (mut w, p) = target(&env, 1);
+    w.name = "one-new".into();
+    let newer = gate.writer.autosave(w, p, 3);
+    assert!(matches!(answers[0].try_recv().unwrap(), Ok(None)));
+    gate.release.send(()).unwrap();
+    first.recv().unwrap().unwrap();
+    // The replacement keeps target 1's slot, so it runs first, and exactly once.
+    assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+    gate.release.send(()).unwrap();
+    let path = newer.recv().unwrap().unwrap().unwrap();
+    assert!(std::fs::read_to_string(path).unwrap().contains("one-new"));
+    for answer in answers.iter().skip(1) {
+        assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+        gate.release.send(()).unwrap();
+        assert!(answer.recv().unwrap().unwrap().is_some());
+    }
+    assert!(gate.started.try_recv().is_err());
+}
+
+#[test]
+fn clearing_a_write_through_target_cancels_its_write() {
+    let env = env();
+    let gate = gated(&env);
+    let n = MAX_PENDING_TARGETS as u64 + 3;
+    let (first, answers) = overflowed(&env, &gate, n);
+    let (w, p) = target(&env, 2);
+    let clear = gate.writer.clear_recovery(w.id, p.clone());
+    assert!(matches!(answers[1].try_recv().unwrap(), Ok(None)));
+    gate.release.send(()).unwrap();
+    first.recv().unwrap().unwrap();
+    for (i, answer) in answers.iter().enumerate() {
+        if i == 1 {
+            continue;
+        }
+        assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+        gate.release.send(()).unwrap();
+        assert!(answer.recv().unwrap().unwrap().is_some());
+    }
+    gate.release.send(()).unwrap();
+    clear.recv().unwrap().unwrap();
+    assert!(!env.dirs.recovery_path(w.id, p.as_deref()).exists());
+}
+
+#[test]
+fn the_write_through_queue_is_capped_and_sheds_the_oldest_with_a_count() {
+    let env = env();
+    let gate = gated(&env);
+    let extra = 5u64;
+    let n = (MAX_PENDING_TARGETS + MAX_FORCED_TARGETS) as u64 + extra;
+    let (first, answers) = overflowed(&env, &gate, n);
+    // The oldest `extra` targets were shed unwritten; the rest wait.
+    for answer in &answers[..extra as usize] {
+        assert!(matches!(answer.try_recv().unwrap(), Ok(None)));
+    }
     assert!(
-        gate.writer
-            .autosave(w, p, 3)
-            .recv()
-            .unwrap()
-            .unwrap()
-            .is_some()
+        answers[extra as usize..]
+            .iter()
+            .all(|a| a.try_recv().is_err())
     );
+    assert_eq!(gate.writer.shed_autosaves(), extra);
+    gate.release.send(()).unwrap();
+    first.recv().unwrap().unwrap();
+    for answer in &answers[extra as usize..] {
+        assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+        gate.release.send(()).unwrap();
+        assert!(answer.recv().unwrap().unwrap().is_some());
+    }
+    assert!(gate.started.try_recv().is_err());
+}
+
+#[test]
+fn saved_revisions_are_remembered_for_the_most_recent_workspaces_only() {
+    let env = env();
+    let writer = SaveWriter::spawn(env.dirs.clone()).unwrap();
+    let n = MAX_PENDING_TARGETS as u64 + 1;
+    for i in 1..=n {
+        let (w, _) = target(&env, i);
+        let path = env.show_dir().join(format!("S{i}.openlab"));
+        writer.save(w, path, 1, 20, 5).recv().unwrap().unwrap();
+    }
+    // The newest is covered: no recovery file for already-saved state.
+    let (w, p) = target(&env, n);
+    assert!(matches!(writer.autosave(w, p, 5).recv().unwrap(), Ok(None)));
+    // The oldest was evicted: the worst case is one redundant autosave, never a lost one.
+    let (w, p) = target(&env, 1);
+    assert!(writer.autosave(w, p, 5).recv().unwrap().unwrap().is_some());
 }

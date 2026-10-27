@@ -10,10 +10,13 @@
 //!   what names the recovery file); a newer one replaces only its own target's, so several
 //!   open workspaces never displace each other's autosaves;
 //! - at most [`MAX_PENDING_TARGETS`] targets wait in the normal queue. A new target beyond that
-//!   pushes the oldest waiting autosave into a write-through queue that runs before the rest:
-//!   it is written, never dropped. The write-through queue still coalesces per target, so the
-//!   total is bounded by the number of distinct targets in use (at most the open workspaces,
-//!   8 by WS-02);
+//!   pushes the oldest waiting autosave into a write-through queue that runs before the rest,
+//!   so the cap itself never costs an autosave. That queue still coalesces per target, and is
+//!   capped at [`MAX_FORCED_TARGETS`]: during a long disk hang closed workspaces and Save As
+//!   paths add targets beyond the open ones (8 by WS-02), and when it is full the oldest
+//!   forced autosave is shed (answered `Ok(None)`, counted by
+//!   [`SaveWriter::shed_autosaves`]). That is safe: an autosave is a recovery convenience and
+//!   the next autosave of a still-open workspace replaces it anyway;
 //! - manual saves run before pending autosaves, and an autosave whose revision is not newer
 //!   than the last durably saved one of its workspace is dropped (no recovery file for
 //!   already-saved state).
@@ -55,6 +58,8 @@ struct SaveJob {
 
 /// Hard cap on targets waiting in the normal autosave queue; see the module docs.
 pub const MAX_PENDING_TARGETS: usize = 16;
+/// Hard cap on the write-through queue; see the module docs.
+pub const MAX_FORCED_TARGETS: usize = 32;
 
 struct AutosaveJob {
     workspace: Box<Workspace>,
@@ -85,6 +90,8 @@ struct State {
     autosaves: VecDeque<AutosaveJob>,
     /// Autosaves pushed out of `autosaves` by the cap; written before it, at most one per target.
     forced: VecDeque<AutosaveJob>,
+    /// Autosaves shed because `forced` was full.
+    shed: u64,
     /// Newest revision per workspace that a manual save has made durable (the most recent
     /// [`MAX_PENDING_TARGETS`] workspaces; an evicted one only risks one redundant autosave).
     saved: VecDeque<(WorkspaceId, u64)>,
@@ -112,6 +119,11 @@ pub struct SaveWriter {
 }
 
 impl SaveWriter {
+    /// How many pending autosaves were shed because the write-through queue was full.
+    pub fn shed_autosaves(&self) -> u64 {
+        self.shared.lock().shed
+    }
+
     pub fn spawn(dirs: AppDirs) -> io::Result<Self> {
         Self::spawn_inner(dirs, None)
     }
@@ -210,6 +222,12 @@ impl SaveWriter {
             if state.autosaves.len() >= MAX_PENDING_TARGETS
                 && let Some(oldest) = state.autosaves.pop_front()
             {
+                if state.forced.len() >= MAX_FORCED_TARGETS
+                    && let Some(shed) = state.forced.pop_front()
+                {
+                    state.shed += 1;
+                    let _ = shed.reply.send(Ok(None));
+                }
                 state.forced.push_back(oldest);
             }
             state.autosaves.push_back(job);
