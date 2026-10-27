@@ -627,3 +627,31 @@ fn a_client_that_does_not_keep_up_loses_pushes_not_state_and_gets_the_newest_lat
     let (_, _, newest) = tail_seq(&mut s, Some(0));
     assert_eq!(seq, newest);
 }
+
+#[test]
+fn retrying_into_a_full_queue_does_not_use_up_the_push_budget() {
+    let ws = workspace(vec![]);
+    let (c, clock) = pushing(&ws);
+    let mut s = OfflineShow::with_outbound_capacity(ws, mixer_config(), c, 8).unwrap();
+    s.take_outbound();
+    clock.set(T0 + 20_000);
+    // Two notes fit with their pushes; the next two leave the queue half full and their
+    // pushes are held back.
+    for n in 0..4 {
+        note(&mut s, n);
+    }
+    // A client that does not read for longer than the budget has ticks.
+    for _ in 0..(2 * 200) {
+        s.tick();
+    }
+    let stuck = pushed(&s.take_outbound());
+    assert_eq!(stuck.len(), 2, "{stuck:#?}");
+    // It catches up within the same window: the held-back record goes out on the next tick,
+    // and new records are pushed as they are made.
+    s.tick();
+    let [(_, held)] = pushed(&s.take_outbound()).try_into().unwrap();
+    assert_eq!(held.message, "note 3");
+    note(&mut s, 4);
+    let [(_, live)] = pushed(&s.take_outbound()).try_into().unwrap();
+    assert_eq!(live.message, "note 4");
+}
