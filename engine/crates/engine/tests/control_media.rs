@@ -618,10 +618,39 @@ fn a_start_on_a_deferred_file_fails_at_the_hold_limit_when_the_share_stays_dead(
     }
 }
 
-/// On the system disk nothing is ever held back: two slow probes and a slow third (all given
-/// up on or stuck) leave a short file probed at once, and a GO on it plays.
-#[test]
-fn slow_probes_on_the_system_disk_never_delay_a_short_file() {
+/// The system volume as the engine spells it on this host: `/` on Unix, the system drive
+/// (`%SystemDrive%`, `C:` if unset) on Windows. The test files live under the target dir, which
+/// need not be on it (GitHub's Windows runners check out to `D:`), so the tests that need the
+/// system disk say so instead of relying on where the checkout happens to be.
+fn on_the_system_disk(_: &std::path::Path) -> String {
+    if cfg!(windows) {
+        std::env::var("SystemDrive")
+            .map(|d| d.trim_end_matches(['\\', '/']).to_owned())
+            .unwrap_or_else(|_| "C:".to_owned())
+    } else {
+        "/".to_owned()
+    }
+}
+
+/// Every test file (the target's temp dir) on a volume of its own that is neither `/` nor the
+/// system drive; only the open show file can exempt it.
+fn on_the_show_disk(path: &std::path::Path) -> String {
+    if path.starts_with(env!("CARGO_TARGET_TMPDIR")) {
+        "/Volumes/ShowDisk".to_owned()
+    } else {
+        openlab_engine::control::watch::bucket_of(path)
+    }
+}
+
+/// Two slow probes and a slow third (all given up on or stuck) on a volume `volume` puts the
+/// files on, with the show file at `show_path`: the short file is probed at once and a GO on
+/// it plays, or (`delayed`) its probe waits behind the stalled volume.
+#[allow(clippy::unwrap_used)]
+fn slow_probes_and_a_short_file(
+    volume: fn(&std::path::Path) -> String,
+    show_path: Option<std::path::PathBuf>,
+    delayed: bool,
+) {
     let slow: Vec<_> = (0..3).map(|_| wav(&dc(200, 0.5))).collect();
     let short = wav(&dc(200, 0.5));
     for p in &slow {
@@ -638,10 +667,31 @@ fn slow_probes_on_the_system_disk_never_delay_a_short_file() {
     let mut c = config(&ws);
     c.probe = gated_probe;
     c.probe_clock = time.clock();
+    c.probe_volume = Some(volume);
+    c.show_path = show_path;
     let timeout = c.probe_timeout;
     let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(&slow, 2);
     time.advance(timeout + std::time::Duration::from_secs(1));
+    if delayed {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while s.control().abandoned_probe_workers() < 2 {
+            assert!(std::time::Instant::now() < deadline);
+            s.step();
+            std::thread::yield_now();
+        }
+        // The volume is stalled: one trial (the third slow file) hangs, the short file waits.
+        wait_probed(&slow, 3);
+        for _ in 0..50 {
+            s.step();
+        }
+        assert_eq!(s.control().probes_pending(), 2);
+        assert!(probe_order(std::slice::from_ref(&short)).is_empty());
+        for p in &slow {
+            release(p);
+        }
+        return;
+    }
     // Both stuck workers are replaced; the third slow file takes one fresh worker, the short
     // file another. Only the third slow file is still pending.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -657,6 +707,28 @@ fn slow_probes_on_the_system_disk_never_delay_a_short_file() {
     for p in &slow {
         release(p);
     }
+}
+
+/// On the system disk nothing is ever held back: two slow probes and a slow third (all given
+/// up on or stuck) leave a short file probed at once, and a GO on it plays.
+#[test]
+fn slow_probes_on_the_system_disk_never_delay_a_short_file() {
+    slow_probes_and_a_short_file(on_the_system_disk, None, false);
+}
+
+/// Nor on the volume holding the open show file, whatever that volume is (on Windows the show
+/// and its media usually sit on a drive other than `C:`).
+#[test]
+fn slow_probes_on_the_show_files_volume_never_delay_a_short_file() {
+    let show = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("Show.openlab");
+    slow_probes_and_a_short_file(on_the_show_disk, Some(show), false);
+}
+
+/// The same volume without the show file on it is an ordinary other volume: the two stuck
+/// probes stall it, and the short file's probe waits behind the one trial.
+#[test]
+fn slow_probes_on_another_volume_delay_a_short_file_on_it() {
+    slow_probes_and_a_short_file(on_the_show_disk, None, true);
 }
 
 /// A cue whose stream stalls underruns for its whole planned length, so the engine completes
