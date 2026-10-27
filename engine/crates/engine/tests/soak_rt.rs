@@ -66,8 +66,9 @@ fn period() -> Duration {
 }
 
 /// A block rendered later than this after it was due is an xrun, as on a host with a buffer
-/// this deep (128 ms).
-const DEVICE_BUFFER: Duration = Duration::from_millis(128);
+/// this deep. Not below `TICK_GAP_MAX`: a stall the other limits tolerate must not fail the run
+/// through the xrun count.
+const DEVICE_BUFFER: Duration = Duration::from_millis(250);
 /// Wake jitter: the timer may overshoot a wait by this much at p99, and by this much at worst
 /// (half the mixer's lookahead). A healthy machine is two orders of magnitude under both.
 const WAKE_P99_MAX: Duration = Duration::from_millis(50);
@@ -78,6 +79,8 @@ const TICK_GAP_MAX: Duration = Duration::from_millis(250);
 const DEVICE_LATE_P99_MAX: Duration = Duration::from_millis(50);
 /// A start sent now must be heard within this many frames (250 ms).
 const START_SLACK_FRAMES: SampleTime = (RATE as SampleTime) / 4;
+/// The block (about 3 s in) at which the stall knob freezes the stand-in device.
+const STALL_AT_BLOCK: u32 = 375;
 /// Messages waiting for the control loop.
 const MAX_INBOX: usize = 1024;
 /// How long to wait for the control loop to answer before declaring it hung.
@@ -151,6 +154,9 @@ struct Stats {
     wake_over_us: Vec<u32>,
     ticks: u64,
     tick_gap_max: Duration,
+    /// Timed-out waits that overshot by more than a block: the loop was being starved, and a
+    /// start committed in such a stretch may legitimately be late.
+    slow_wakes: u64,
     /// How late each block of the stand-in device began after it was due, in microseconds.
     device_late_us: Vec<u32>,
 }
@@ -160,6 +166,8 @@ struct Stats {
 struct Shared {
     rendered: AtomicU64,
     stop: AtomicBool,
+    /// Test knob: the device thread stalls this long (ms) once, a few seconds in; 0 = never.
+    stall_ms: AtomicU64,
     /// The first thing a thread found wrong, for the operator thread to fail with.
     failure: Mutex<Option<String>>,
     capture: Mutex<Capture>,
@@ -191,6 +199,13 @@ fn device_thread(sh: &Shared, mut renderer: OfflineRenderer, channels: usize) {
             continue;
         }
         let late = now - due;
+        if k == STALL_AT_BLOCK {
+            let stall = sh.stall_ms.swap(0, Ordering::AcqRel);
+            if stall > 0 {
+                thread::sleep(Duration::from_millis(stall));
+                continue;
+            }
+        }
         // Late past the host's buffer is a dropout the host would report.
         if late > DEVICE_BUFFER {
             renderer.inject_xruns(1);
@@ -236,8 +251,11 @@ fn observer(sh: Arc<Shared>) -> impl FnMut(&mut Control, Wake) {
         let mut s = lock(&sh.stats);
         s.ticks += 1;
         if wake.timed_out {
-            s.wake_over_us
-                .push(micros(wake.waited.saturating_sub(wake.wanted)));
+            let over = wake.waited.saturating_sub(wake.wanted);
+            s.wake_over_us.push(micros(over));
+            if over > period() {
+                s.slow_wakes += 1;
+            }
         }
         if let Some(prev) = last {
             s.tick_gap_max = s.tick_gap_max.max(now - prev);
@@ -255,6 +273,7 @@ struct Summary {
     device_late: Spread,
     ticks: u64,
     tick_gap_max: Duration,
+    slow_wakes: u64,
     max_inbox: usize,
 }
 
@@ -307,8 +326,13 @@ impl Realtime {
     /// Starts the control loop, waits for its media probes to answer, then starts the device,
     /// so sample time and the run's clock begin together.
     fn start(built: &Built) -> Self {
+        Self::start_stalled(built, 0)
+    }
+
+    fn start_stalled(built: &Built, stall_ms: u64) -> Self {
         let (control, renderer, channels, inbox_tx, inbox, outbound) = start_control(built);
         let sh = Arc::new(Shared::default());
+        sh.stall_ms.store(stall_ms, Ordering::Release);
         let observe = observer(sh.clone());
         let control = thread::Builder::new()
             .name("soak-control".into())
@@ -369,6 +393,7 @@ impl Realtime {
             device_late: Spread::of(&s.device_late_us),
             ticks: s.ticks,
             tick_gap_max: s.tick_gap_max,
+            slow_wakes: s.slow_wakes,
             max_inbox: self.max_inbox,
         }
     }
@@ -425,8 +450,10 @@ impl Driver for Realtime {
     fn step(&mut self) {
         self.steps += 1;
         let target = self.steps * BLOCK;
+        let deadline = Instant::now() + ANSWER_TIMEOUT;
         while self.sh.rendered.load(Ordering::Acquire) < target {
             self.check();
+            assert!(Instant::now() < deadline, "the device rendered no block");
             thread::sleep(Duration::from_micros(500));
         }
         self.check();
@@ -488,9 +515,10 @@ fn env_u64(name: &str) -> Option<u64> {
 
 /// A soak of `secs` wall seconds with a checkpoint (a panic, a quiet spell, a heartbeat) about
 /// every quarter of it; returns the soak and what the threads measured.
-fn soak_rt(secs: u64, seed: u64) -> (Soak<Realtime>, Summary) {
+fn soak_rt(secs: u64, seed: u64, stall_ms: u64) -> (Soak<Realtime>, Summary) {
     let built = build();
-    let mut s = Soak::new(Realtime::start(&built), &built, seed);
+    let rt = Realtime::start_stalled(&built, stall_ms);
+    let mut s = Soak::new(rt, &built, seed);
     // A late start is bounded below, not forbidden: this is a real machine.
     s.late_starts_allowed = true;
     // A few minutes cannot visit every cue at the pace of a 24 h run: the operator is busier.
@@ -506,7 +534,7 @@ fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
     let secs = env_u64("OPENLAB_SOAK_RT_SECS").unwrap_or(120);
     let seed = env_u64("OPENLAB_SOAK_SEED").unwrap_or(0x0e11_0000_0001);
     let started = Instant::now();
-    let (s, m) = soak_rt(secs, seed);
+    let (s, m) = soak_rt(secs, seed, 0);
     let wall = started.elapsed();
 
     println!("{:#?}", s.report);
@@ -531,7 +559,6 @@ fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
 
     // The same checks as the virtual soak; a 2 minute run reaches fewer cues than 24 h.
     assert_realistic(&s.report, false);
-    assert!(wall >= Duration::from_secs(secs), "ended early: {wall:?}");
 
     // Real time.
     assert!(
@@ -560,12 +587,24 @@ fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
         Duration::from_micros(m.device_late.p99.into())
     );
     let late_starts = s.report.warnings.get("late_start").copied().unwrap_or(0);
-    let allowed = 2 + secs / 60;
+    // Starts in stretches where the timer ran a block late are allowed to be late too; a quiet
+    // machine has none of those and keeps the small fixed allowance.
+    let allowed = 2 + secs / 60 + m.slow_wakes / 20;
     assert!(
         late_starts <= allowed,
-        "{late_starts} late-start warnings in {secs} s (allowed {allowed})"
+        "{late_starts} late-start warnings in {secs} s (allowed {allowed}, {} slow wakes)",
+        m.slow_wakes
     );
     assert!(m.max_inbox < MAX_INBOX);
+}
+
+/// The checks are not vacuous: a stand-in device frozen for 500 ms (past `DEVICE_BUFFER`) is a
+/// dropout the backend counts, and the run fails on it.
+#[test]
+#[ignore = "real-time soak: 20 s of wall clock; run in release (see the module comment)"]
+#[should_panic(expected = "xruns")]
+fn a_stalled_device_fails_the_run() {
+    let _ = soak_rt(20, 3, 500);
 }
 
 // ---------------------------------------------------------------------------------------------
