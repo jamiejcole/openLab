@@ -2,7 +2,8 @@
 
 //! Crash-safe file replacement (NFR-04).
 
-use std::fs::{self, OpenOptions};
+use std::ffi::OsStr;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -138,17 +139,6 @@ pub(crate) fn write_atomic_inner(
             "path has no file name",
         )));
     };
-    // Unique per write and created with `create_new`: a second process saving the same show,
-    // a user's own `.tmp` file or a planted symlink can never be written through or clobbered.
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let mut tmp_name = name.to_os_string();
-    tmp_name.push(format!(
-        ".{}-{}.tmp",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp = path.with_file_name(tmp_name);
-
     // The replacement keeps the old file's mode. A read-only file is the operator's way of
     // saying "do not change this", and a rename would silently override it.
     #[cfg(unix)]
@@ -163,8 +153,9 @@ pub(crate) fn write_atomic_inner(
         Err(_) => None,
     };
 
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let (tmp, mut file) = create_tmp(path, name, &COUNTER)?;
     let staged = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         #[cfg(unix)]
         if let Some(permissions) = old_permissions {
             file.set_permissions(permissions)?;
@@ -185,6 +176,37 @@ pub(crate) fn write_atomic_inner(
     }
     sync_parent(path);
     Ok(())
+}
+
+/// How many temp names one write tries before giving up.
+const TMP_NAME_TRIES: u32 = 16;
+
+/// Creates the temp file `<name>.<pid>-<n>.tmp` beside `path`, with `create_new`, so a second
+/// process saving the same show, a user's own `.tmp` file or a planted symlink can never be
+/// written through or clobbered. A name that exists already (a crash leftover of an earlier
+/// process that had this pid, which stale-file cleanup skips as "our own") is skipped for the
+/// next `n`, a bounded number of times.
+fn create_tmp(
+    path: &Path,
+    name: &OsStr,
+    counter: &AtomicU64,
+) -> Result<(PathBuf, File), PersistError> {
+    let mut tries = 0;
+    loop {
+        let mut tmp_name = name.to_os_string();
+        tmp_name.push(format!(
+            ".{}-{}.tmp",
+            std::process::id(),
+            counter.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = path.with_file_name(tmp_name);
+        tries += 1;
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < TMP_NAME_TRIES => {}
+            Err(e) => return Err(PersistError::io("write", &tmp)(e)),
+        }
+    }
 }
 
 /// Makes the rename itself durable. Best effort: the data is already safe, and not every
@@ -358,6 +380,47 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn tmp_for(dir: &Path, n: u64) -> PathBuf {
+        dir.join(format!("show.openlab.{}-{n}.tmp", std::process::id()))
+    }
+
+    #[test]
+    fn an_existing_temp_name_is_skipped_and_left_alone() {
+        let dir = scratch("tmp-taken");
+        let target = dir.join("show.openlab");
+        for n in 5..8 {
+            fs::write(tmp_for(&dir, n), b"leftover").unwrap();
+        }
+        let counter = AtomicU64::new(5);
+        let (tmp, _file) = create_tmp(&target, OsStr::new("show.openlab"), &counter).unwrap();
+        assert_eq!(tmp, tmp_for(&dir, 8));
+        for n in 5..8 {
+            assert_eq!(fs::read(tmp_for(&dir, n)).unwrap(), b"leftover");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn temp_names_are_tried_a_bounded_number_of_times() {
+        let dir = scratch("tmp-all-taken");
+        let target = dir.join("show.openlab");
+        let tries = u64::from(TMP_NAME_TRIES);
+        for n in 0..tries {
+            fs::write(tmp_for(&dir, n), b"leftover").unwrap();
+        }
+        let counter = AtomicU64::new(0);
+        let out = create_tmp(&target, OsStr::new("show.openlab"), &counter);
+        assert!(
+            matches!(&out, Err(PersistError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists),
+            "{out:?}"
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), tries);
+        for n in 0..tries {
+            assert_eq!(fs::read(tmp_for(&dir, n)).unwrap(), b"leftover");
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
