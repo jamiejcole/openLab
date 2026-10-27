@@ -274,17 +274,32 @@ fn roomy_playing_show(mixer_patches: usize) -> OfflineShow {
     s
 }
 
-/// The last block of each output is exactly cue 1's DC on output 0 and silence on output 1.
+/// Every sample since cue 1's voice was first heard is exactly its DC on output 0 and silence
+/// on output 1: no edit since made a single sample move.
 fn heard_as_routed(s: &OfflineShow) {
-    let block = BLOCK as usize;
+    let from = first_nonzero(&s.channel(0)).expect("cue 1 is heard");
+    heard_as_routed_since(s, from);
+}
+
+/// [`heard_as_routed`] from sample `from` on.
+fn heard_as_routed_since(s: &OfflineShow, from: usize) {
     for (ch, want) in [(0, 0.5f32), (1, 0.0)] {
         let x = s.channel(ch);
-        let tail = &x[x.len() - block..];
-        assert!(
-            tail.iter().all(|v| v.to_bits() == want.to_bits()),
-            "output {ch}: {tail:?}"
-        );
+        assert!(x.len() > from, "nothing rendered since {from}");
+        if let Some(i) = x[from..].iter().position(|v| v.to_bits() != want.to_bits()) {
+            panic!("output {ch}, sample {}: {}", from + i, x[from + i]);
+        }
     }
+}
+
+/// The last block of output 0 is exactly `want` (after a level edit's de-zipper ramp).
+fn last_block_of_output_0(s: &OfflineShow, want: f32) {
+    let x = s.channel(0);
+    let tail = &x[x.len() - BLOCK as usize..];
+    assert!(
+        tail.iter().all(|v| v.to_bits() == want.to_bits()),
+        "want {want}: {tail:?}"
+    );
 }
 
 fn notice_codes(s: &OfflineShow) -> Vec<String> {
@@ -399,9 +414,75 @@ fn a_resize_under_a_playing_voice_leaves_it_as_it_started_and_applies_to_the_nex
     run_until_idle(&mut s, id(1), 8000);
     s.run(BLOCK * 16);
     // A start after the voice left plays through the patch as it is now.
+    let restart = s.channel(0).len();
     start(&mut s, 1);
     s.run(BLOCK * 8);
+    let heard = restart + first_nonzero(&s.channel(0)[restart..]).unwrap();
+    heard_as_routed_since(&s, heard);
+}
+
+#[test]
+fn a_voice_kept_on_its_old_layout_by_a_resize_still_follows_the_patch_settings() {
+    let mut s = roomy_playing_show(4);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    command(
+        &mut s,
+        Command::SetPatchProperty {
+            id: patch_id(),
+            property: PatchProperty::ChannelCount { value: 3 },
+        },
+    );
+    s.run(BLOCK * 8);
     heard_as_routed(&s);
+    let set = |s: &mut OfflineShow, property| {
+        command(
+            s,
+            Command::SetPatchProperty {
+                id: patch_id(),
+                property,
+            },
+        );
+        s.run(BLOCK * 8);
+    };
+    // The operator mutes the output the playing cue is on: it goes silent.
+    set(
+        &mut s,
+        PatchProperty::OutputMute {
+            output: 0,
+            value: true,
+        },
+    );
+    last_block_of_output_0(&s, 0.0);
+    set(
+        &mut s,
+        PatchProperty::OutputMute {
+            output: 0,
+            value: false,
+        },
+    );
+    last_block_of_output_0(&s, 0.5);
+    // The patch master and the output level reach it too, and polarity.
+    set(&mut s, PatchProperty::MasterDb { value: -6.0 });
+    last_block_of_output_0(&s, 0.5 * openlab_core::db_to_gain(-6.0));
+    set(&mut s, PatchProperty::MasterDb { value: 0.0 });
+    set(
+        &mut s,
+        PatchProperty::OutputLevel {
+            output: 0,
+            value: -12.0,
+        },
+    );
+    last_block_of_output_0(&s, 0.5 * openlab_core::db_to_gain(-12.0));
+    set(
+        &mut s,
+        PatchProperty::OutputPolarity {
+            output: 0,
+            value: true,
+        },
+    );
+    last_block_of_output_0(&s, -(0.5 * openlab_core::db_to_gain(-12.0)));
+    assert!(s.control().engine().state(id(1)).is_active());
 }
 
 #[test]
@@ -466,7 +547,8 @@ fn a_paused_voice_keeps_its_slot_and_resumes_as_routed() {
     assert!(notice_codes(&s).contains(&"mixer_patches_exhausted".to_owned()));
     s.transport(TransportAction::Resume { cue: id(1) });
     s.run(BLOCK * 8);
-    heard_as_routed(&s);
+    let resumed = s.channel(0).len() - BLOCK as usize * 2;
+    heard_as_routed_since(&s, resumed);
 }
 
 #[test]

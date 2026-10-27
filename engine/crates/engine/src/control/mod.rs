@@ -794,9 +794,9 @@ impl Control {
             self.patches
                 .sync(&self.ws, &self.config.machine, &self.playable, &busy);
         let now = self.now();
-        for cmd in cmds {
-            self.mixer.send(now, cmd);
-        }
+        // One batch (split only past the queue's size), so a master move changes every patch
+        // on the same sample.
+        self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
         self.warnings_dirty = true;
         let patches = if all {
             self.patches.resolutions()
