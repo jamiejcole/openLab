@@ -3,12 +3,13 @@
 //! The cue engine's voice actions carried out on the mixer and the disk streamer, and the
 //! mixer's events turned back into feedback (docs/control.md "Voices" and "Feedback").
 //!
-//! Every run segment (`RunId`) gets its own mixer `VoiceId`, allocated here and never reused, so
+//! Every run segment (`RunId`) gets its own mixer `VoiceId`, from the engine's [`VoiceIds`] (never
+//! reused), so
 //! voices of a replaced engine (a new workspace) can never be mistaken for the new one's. A
 //! resume re-keys the mixer voice to a fresh `VoiceId` for the fresh `RunId`; the old id stays an
 //! alias until the voice is gone, so late events and meter entries under it still name the cue.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use openlab_core::{
 use super::media::{MediaCatalog, Probe};
 use super::patches::Patches;
 use super::plan::{PlanFailure, PlanSpec, cue_slices};
+use super::voice_ids::VoiceIds;
 
 /// Most ids kept for the next meter read (meters are read at 30 Hz, so this is never reached in
 /// practice; it bounds memory if they are not).
@@ -50,6 +52,8 @@ pub struct Env<'a> {
     pub media: &'a MediaCatalog,
     pub streamer: &'a mut DiskStreamer,
     pub patches: &'a Patches,
+    /// Where new voice ids come from (shared by the engine, not the voice table).
+    pub ids: &'a mut VoiceIds,
     pub rate: NonZeroU32,
     pub cue_outputs: usize,
     /// The scheduling time of the call.
@@ -122,6 +126,8 @@ pub struct VoiceRec {
     /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
     /// the voice never played (any other rejection is of a resume).
     start_id: Option<VoiceId>,
+    /// The mixer patch slot its start was routed through (it keeps it until it ends).
+    slot: Option<u16>,
 }
 
 impl VoiceRec {
@@ -186,7 +192,6 @@ pub struct Voices {
     primes: HashMap<CueId, Prime>,
     /// Starts that used a primed stream (a cold start prepares one on the spot).
     prime_hits: u64,
-    next_voice: u64,
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more (docs/audio.md, Meters).
     gone: Vec<(VoiceId, CueId)>,
@@ -203,16 +208,7 @@ enum PrepError {
 
 impl Voices {
     pub fn new() -> Self {
-        Self {
-            next_voice: 1,
-            ..Self::default()
-        }
-    }
-
-    fn new_id(&mut self) -> VoiceId {
-        let id = VoiceId(self.next_voice);
-        self.next_voice = self.next_voice.saturating_add(1);
-        id
+        Self::default()
     }
 
     /// Voice records alive (loaded, waiting, playing or kept for a resume).
@@ -304,7 +300,7 @@ impl Voices {
 
     fn load(&mut self, cue: CueId, run: RunId, offset: u64, env: &mut Env<'_>, fx: &mut Effects) {
         self.release(run);
-        let id = self.new_id();
+        let id = env.ids.next();
         let prepared = match self.prepare(cue, offset, env, fx) {
             Ok(p) => Some(p),
             Err(PrepError::Pending) => None,
@@ -357,7 +353,7 @@ impl Voices {
             }
             _ => {
                 self.release(run);
-                let id = self.new_id();
+                let id = env.ids.next();
                 let prepared = if preview {
                     None
                 } else {
@@ -428,12 +424,21 @@ impl Voices {
                     return;
                 }
                 Err(PrepError::Empty) => {
-                    // Nothing to play: the action ends on its start sample.
+                    // Nothing to play (a load or start at or past the cue's end, M4.11b): the
+                    // action ends on its start sample. Its length is the offset itself, so the
+                    // core dates the end, and a chained successor, on that sample instead of
+                    // on the late report below (a `late_start` warning).
                     if let Some(r) = self.remove(id) {
                         let at = match r.phase {
                             Phase::Waiting { start, .. } => start.unwrap_or(env.now),
                             _ => env.now,
                         };
+                        if !r.preview {
+                            // A start the probe held up ends when it is released, as a played
+                            // one counts the delay in.
+                            let frames = offset.saturating_add(env.now.saturating_sub(at));
+                            fx.feedback.push(Input::ActionLength { cue, run, frames });
+                        }
                         fx.deferred.push((at, Input::ActionEnded { cue, run, at }));
                     }
                     return;
@@ -478,6 +483,7 @@ impl Voices {
                 let preview = r.preview;
                 let held = r.held.take().is_some();
                 r.start_id = Some(id);
+                r.slot = Some(vs.patch);
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
                     fx.commands.push((t.max(at), queued(id, q)));
@@ -585,7 +591,7 @@ impl Voices {
         let Some(old) = self.by_run.get(&paused).copied() else {
             return;
         };
-        let new = self.new_id();
+        let new = env.ids.next();
         let Some(mut r) = self.recs.remove(&old) else {
             return;
         };
@@ -1088,6 +1094,16 @@ impl Voices {
         v
     }
 
+    /// Mixer patch slots a voice in the mixer may still play through (started, paused or
+    /// stopping; previews and orphans included): a slot is reused only once none does.
+    pub fn slots_in_use(&self) -> BTreeSet<u16> {
+        self.recs
+            .values()
+            .filter(|r| matches!(r.phase, Phase::Playing))
+            .filter_map(|r| r.slot)
+            .collect()
+    }
+
     /// Every voice started in the mixer (previews included).
     pub fn playing_ids(&self) -> Vec<VoiceId> {
         let mut v: Vec<VoiceId> = self
@@ -1290,6 +1306,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         held: None,
         delay: 0,
         start_id: None,
+        slot: None,
     }
 }
 

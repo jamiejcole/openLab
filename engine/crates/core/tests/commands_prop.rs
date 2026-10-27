@@ -934,6 +934,47 @@ round_trip_tests! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases(128)))]
 
+    /// `BatchSet` is applied in place with rollback. The oracle is the plain `Transaction` of the
+    /// same sets, which snapshots the whole workspace: result, inverse and workspace bytes must
+    /// match whether the batch applies or one cue (a missing id, a cue without the property, an
+    /// invalid value halfway) refuses it, and undo and redo must restore exactly.
+    #[test]
+    fn batch_set_matches_the_snapshot_transaction(
+        prefix in picks(30),
+        p in pick(),
+        len in 0usize..14,
+        missing_at in proptest::option::of(0usize..14),
+    ) {
+        let (ws, _) = after_prefix(&prefix);
+        let ids = all_ids(&ws);
+        let mut selected: Vec<CueId> = (0..len as u32)
+            .filter_map(|n| choose(&ids, p.a.wrapping_add(n.wrapping_mul(p.c | 1))))
+            .collect();
+        if let Some(at) = missing_at {
+            selected.insert(at.min(selected.len()), cue_id(987_654));
+        }
+        let prop = property(&ws, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13][p.d as usize % 13], &p);
+        let oracle = Command::Transaction {
+            commands: selected
+                .iter()
+                .map(|&id| Command::SetCueProperty { id, property: prop.clone() })
+                .collect(),
+        };
+        let batch = Command::BatchSet { ids: selected, property: prop };
+
+        let mut expected = ws.clone();
+        let expected_result = expected.apply(oracle);
+        let mut actual = ws.clone();
+        let actual_result = actual.apply(batch.clone());
+        prop_assert_eq!(&actual_result, &expected_result);
+        prop_assert_eq!(bytes(&actual), bytes(&expected));
+        if actual_result.is_err() {
+            prop_assert_eq!(bytes(&actual), bytes(&ws));
+        }
+        check_command(&ws, batch)?;
+    }
+
+
     /// Whatever happens, every step keeps the invariants; undoing everything gives back the
     /// empty workspace step by step, and redoing everything the final one.
     #[test]
