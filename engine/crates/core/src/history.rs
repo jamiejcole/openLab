@@ -3,7 +3,7 @@
 //! Unlimited undo and redo (ED-07). The engine owns one [`History`] per open workspace and
 //! changes the workspace only through it.
 
-use crate::command::{Command, CommandError, Inverse};
+use crate::command::{Command, CommandError, CueProperty, Inverse};
 use crate::model::Workspace;
 
 /// The undo and redo stacks. Each entry is the command that reverses one step, so redo needs no
@@ -113,21 +113,69 @@ impl History {
     }
 }
 
-/// One step that undoes `older` and `newer` (the step of the edit after it). Two steps that set
-/// the same single value are undone by the older alone; otherwise `newer` is undone first.
-/// Chains stay flat, as in a transaction.
+/// One step that undoes `older` and `newer` (the step of the edit after it). `newer` is undone
+/// first. A step of `newer` that sets a single value `older` also sets is left out: `older`
+/// comes later and puts that value back to what it was before the gesture. So a gesture's step
+/// holds one command per value however long it runs. Chains stay flat, as in a transaction.
 fn merge(older: Inverse, newer: Inverse) -> Inverse {
-    if older.same_slot(&newer) {
-        return older;
+    let flat = |step: Inverse| match step {
+        Command::Transaction { commands } => commands,
+        other => vec![other],
+    };
+    let older = flat(older);
+    let mut commands: Vec<Command> = flat(newer)
+        .into_iter()
+        .filter(|step| {
+            !older
+                .iter()
+                .any(|o| o.same_slot(step) && independent(step, &older))
+        })
+        .collect();
+    if commands.is_empty() && older.len() == 1 {
+        return older
+            .into_iter()
+            .next()
+            .unwrap_or(Command::Transaction { commands: vec![] });
     }
-    let mut commands = Vec::new();
-    for step in [newer, older] {
-        match step {
-            Command::Transaction { commands: inner } => commands.extend(inner),
-            other => commands.push(other),
-        }
+    commands.extend(older);
+    if commands.len() == 1 {
+        return commands
+            .pop()
+            .unwrap_or(Command::Transaction { commands: vec![] });
     }
     Command::Transaction { commands }
+}
+
+/// Whether dropping `step` is safe. A `Kind` replaces a cue's target and group mode too, so
+/// dropping a `Kind` step is only safe if no step of the chain sets one of those on that cue.
+fn independent(step: &Command, chain: &[Command]) -> bool {
+    // A move depends on the other positions in its container: it may only be dropped when the
+    // older step is that one move alone.
+    if matches!(
+        step,
+        Command::MoveCue { .. }
+            | Command::MovePatch { .. }
+            | Command::MoveNetworkPatch { .. }
+            | Command::MoveCueList { .. }
+    ) {
+        return chain.len() == 1;
+    }
+    let Command::SetCueProperty {
+        id,
+        property: CueProperty::Kind { .. },
+    } = step
+    else {
+        return true;
+    };
+    !chain.iter().any(|c| {
+        matches!(
+            c,
+            Command::SetCueProperty {
+                id: other,
+                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
+            } if other == id
+        )
+    })
 }
 
 fn is_empty_transaction(command: &Command) -> bool {

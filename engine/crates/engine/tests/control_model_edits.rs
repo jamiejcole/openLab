@@ -245,27 +245,31 @@ fn removing_a_patch_a_cue_uses_is_refused_with_the_cue_named() {
 }
 
 #[test]
-fn a_patch_cannot_be_moved_under_a_playing_cue_until_it_stops() {
+fn patch_layout_is_frozen_while_any_voice_plays_and_free_when_none_does() {
     let mut s = playing_show();
     let mut mirror = Mirror::new(&s);
+    // Nothing plays: every layout change is fine.
+    command(
+        &mut s,
+        Command::MovePatch {
+            id: patch_id(),
+            index: 1,
+        },
+    );
+    command(
+        &mut s,
+        Command::MovePatch {
+            id: patch_id(),
+            index: 0,
+        },
+    );
+    assert_eq!(mirror.catch_up(&mut s), 2);
+
     start(&mut s, 1);
     s.run(BLOCK * 8);
     assert!(s.control().engine().state(id(1)).is_active());
     let revision = s.control().revision();
-    let order = || vec![patch_id(), patch(2).id];
-    assert_eq!(
-        s.control()
-            .workspace()
-            .patches
-            .iter()
-            .map(|p| p.id)
-            .collect::<Vec<_>>(),
-        order()
-    );
-
-    // Anything that shifts patch 1's slot (index 0) is refused: insert before it, move it,
-    // move another past it, remove (forced: the cue uses it).
-    for blocked in [
+    let blocked = [
         Command::AddPatch {
             index: 0,
             patch: patch(3),
@@ -278,9 +282,27 @@ fn a_patch_cannot_be_moved_under_a_playing_cue_until_it_stops() {
             id: patch(2).id,
             index: 0,
         },
+        // Even a patch no cue names: a voice may still sit on its slot.
+        Command::RemovePatch {
+            id: patch(2).id,
+            even_if_used: false,
+        },
         Command::RemovePatch {
             id: patch_id(),
             even_if_used: true,
+        },
+        // An append followed by a move to the front shifts every slot.
+        Command::Transaction {
+            commands: vec![
+                Command::AddPatch {
+                    index: 2,
+                    patch: patch(3),
+                },
+                Command::MovePatch {
+                    id: patch(3).id,
+                    index: 0,
+                },
+            ],
         },
         Command::Transaction {
             commands: vec![
@@ -291,21 +313,22 @@ fn a_patch_cannot_be_moved_under_a_playing_cue_until_it_stops() {
                 },
             ],
         },
-    ] {
-        let replies = send(&mut s, blocked.clone(), None);
-        let message = refusal(&replies).unwrap_or_else(|| panic!("{blocked:?} was allowed"));
+        // A bigger patch no longer fits its device mapping: the running cue would go silent.
+        Command::SetPatchProperty {
+            id: patch_id(),
+            property: PatchProperty::ChannelCount { value: 4 },
+        },
+    ];
+    for command in blocked {
+        let replies = send(&mut s, command.clone(), None);
+        let message = refusal(&replies).unwrap_or_else(|| panic!("{command:?} was allowed"));
         assert!(message.contains("playing"), "{message}");
     }
     assert_eq!(mirror.catch_up(&mut s), 0);
     assert_eq!(s.control().revision(), revision);
-    assert_eq!(
-        s.control().workspace().settings.master_db,
-        0.0,
-        "the transaction applied nothing"
-    );
+    assert_eq!(s.control().workspace().settings.master_db, 0.0);
 
-    // What does not move the playing cue's slot is fine: edits in place, an append, and the
-    // removal of the unused patch behind it.
+    // What keeps the layout is fine: edits in place and an append.
     command(
         &mut s,
         Command::SetPatchProperty {
@@ -320,23 +343,9 @@ fn a_patch_cannot_be_moved_under_a_playing_cue_until_it_stops() {
             patch: patch(3),
         },
     );
-    command(
-        &mut s,
-        Command::RemovePatch {
-            id: patch(3).id,
-            even_if_used: false,
-        },
-    );
-    command(
-        &mut s,
-        Command::RemovePatch {
-            id: patch(2).id,
-            even_if_used: false,
-        },
-    );
-    assert_eq!(mirror.catch_up(&mut s), 4);
+    assert_eq!(mirror.catch_up(&mut s), 2);
 
-    // Stopped, the same move goes through.
+    // Stopped, the same edits go through.
     s.transport(TransportAction::HardStop { cue: id(1) });
     run_until_idle(&mut s, id(1), 8000);
     // The stopped voice leaves the mixer a moment after the cue is idle.
@@ -348,7 +357,14 @@ fn a_patch_cannot_be_moved_under_a_playing_cue_until_it_stops() {
             patch: patch(4),
         },
     );
-    assert_eq!(mirror.catch_up(&mut s), 1);
+    command(
+        &mut s,
+        Command::SetPatchProperty {
+            id: patch_id(),
+            property: PatchProperty::ChannelCount { value: 4 },
+        },
+    );
+    assert_eq!(mirror.catch_up(&mut s), 2);
     assert_eq!(s.control().workspace().patches[0].id, patch(4).id);
 }
 
@@ -533,4 +549,36 @@ fn a_new_cue_list_can_be_played_and_removed() {
             .iter()
             .any(|p| p.list == new)
     );
+}
+
+#[test]
+fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
+    let mut s = playing_show();
+    let mut mirror = Mirror::new(&s);
+    let name = |v: &str| Command::SetCueProperty {
+        id: id(1),
+        property: openlab_core::CueProperty::Name { value: v.into() },
+    };
+    for step in [
+        name("a"),
+        master(-2.0),
+        Command::SetPatchProperty {
+            id: patch_id(),
+            property: PatchProperty::MasterDb { value: -1.0 },
+        },
+        name("b"),
+        master(-4.0),
+    ] {
+        send(&mut s, step, Some("g"));
+        assert_eq!(mirror.catch_up(&mut s), 1);
+    }
+    let after = s.control().workspace().clone();
+    undo(&mut s);
+    assert_eq!(mirror.catch_up(&mut s), 1);
+    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert!(!s.control().snapshot().document.can_undo);
+    let rid = s.request_id();
+    s.send(ClientMessage::Redo { id: rid });
+    assert_eq!(mirror.catch_up(&mut s), 1);
+    assert_eq!(s.control().workspace(), &after);
 }

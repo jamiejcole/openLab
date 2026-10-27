@@ -22,7 +22,7 @@ pub struct Touched<T: Ord> {
     /// Added, renamed, moved or edited: sent as an upsert at their final place.
     pub changed: BTreeSet<T>,
     pub removed: BTreeSet<T>,
-    /// Something moved, so every member is sent: each upsert puts its item at its final index,
+    /// Something moved (or several items changed), so every member is sent: each upsert puts its item at its final index,
     /// ascending, which sorts the client's copy whatever the old order was.
     pub reordered: bool,
 }
@@ -286,9 +286,17 @@ fn collection<T, Id: Ord + Copy>(
             .into_iter()
             .map(delete),
     );
+    // One touched item can be put at its final index on its own: the others keep their relative
+    // order. With two or more, upserting just those could leave a client's copy in another
+    // order than ours (each upsert moves one item past the still-misplaced other), so the whole
+    // collection is sent, ascending: each upsert then places its item after all before it are
+    // final.
+    let is_touched = |id: &Id| touched.changed.contains(id) || touched.removed.contains(id);
+    let everything =
+        touched.reordered || items.iter().filter(|i| is_touched(&id_of(i))).count() > 1;
     for (index, item) in items.iter().enumerate() {
         let id = id_of(item);
-        if touched.reordered || touched.changed.contains(&id) || touched.removed.contains(&id) {
+        if everything || is_touched(&id) {
             upserts.push(upsert(item, index as u64));
         }
     }
