@@ -244,11 +244,14 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let disk: DiskStatus
     let device: DeviceStatus
     let logDropped: UInt64
+    /// PB-10: the network output override is on, so Network cues send nothing.
+    let networkOutputDisabled: Bool
     enum CodingKeys: String, CodingKey {
         case xruns, disk, device
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
+        case networkOutputDisabled = "network_output_disabled"
     }
 }
 
@@ -272,12 +275,94 @@ struct RecoveryEntryInfo: Hashable, Sendable, Decodable {
     }
 }
 
+/// The pre-show check (SM-06, NFR-07); Rust: `PreshowReport`. Every list is sorted for display.
+struct PreshowSummary: Hashable, Sendable, Decodable {
+    let brokenCues: UInt64
+    /// Missing or unsupported files: causes of broken cues, not counted in `total`.
+    let media: UInt64
+    /// Patches with no device that some cue uses (spare patches are listed but not counted); not in `total`.
+    let patches: UInt64
+    /// Destinations with status `missing`; `networkUnchecked` ones are neither a problem nor known fine.
+    let network: UInt64
+    let networkUnchecked: UInt64
+    /// `system` entries that are problems (`preload_over_budget` is information and not counted).
+    let system: UInt64
+    /// `brokenCues + system`: the problem rows a list shows.
+    let total: UInt64
+    enum CodingKeys: String, CodingKey {
+        case media, patches, network, system, total
+        case brokenCues = "broken_cues"
+        case networkUnchecked = "network_unchecked"
+    }
+}
+
+struct PreshowCue: Hashable, Sendable, Decodable {
+    let cue: ModelID
+    let list: ModelID
+    let number: String?
+    let name: String
+    let problems: [WireProblem]
+}
+
+/// `missing` or `unsupported`. A string so a status added later still decodes.
+struct PreshowStatus: Hashable, Sendable, Decodable, ExpressibleByStringLiteral {
+    let raw: String
+    init(stringLiteral value: String) { raw = value }
+    init(from decoder: Decoder) throws { raw = try decoder.singleValueContainer().decode(String.self) }
+    static let missing: PreshowStatus = "missing"
+    static let unsupported: PreshowStatus = "unsupported"
+    /// Network destinations only: the destination exists, reachability is not probed.
+    static let notChecked: PreshowStatus = "not_checked"
+}
+
+struct PreshowMedia: Hashable, Sendable, Decodable {
+    let path: String
+    let status: PreshowStatus
+    let reason: String?
+    let cues: [ModelID]
+}
+
+struct PreshowPatch: Hashable, Sendable, Decodable {
+    let patch: ModelID
+    /// Nil when the workspace has no such patch.
+    let name: String?
+    let device: String?
+    let mapped: Bool
+    let resolution: WireVariant?
+    let cues: [ModelID]
+}
+
+struct PreshowTarget: Hashable, Sendable, Decodable {
+    let patch: ModelID
+    let name: String?
+    let host: String?
+    let port: UInt16?
+    let `protocol`: String?
+    let status: PreshowStatus
+    let cues: [ModelID]
+}
+
+struct PreshowReport: Hashable, Sendable, Decodable {
+    let ok: Bool
+    let summary: PreshowSummary
+    let brokenCues: [PreshowCue]
+    let media: [PreshowMedia]
+    let patches: [PreshowPatch]
+    let network: [PreshowTarget]
+    let system: [WireWarning]
+    enum CodingKeys: String, CodingKey {
+        case ok, summary, media, patches, network, system
+        case brokenCues = "broken_cues"
+    }
+}
+
 enum ResultData: Sendable, Equatable, Decodable {
     case devices([DeviceEntry])
     case relink(relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID])
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
     case logTail(entries: [ShowLogEntry], dropped: UInt64)
+    case preshowCheck(PreshowReport)
     /// A data type this client does not know; the raw object is kept (see ProvisionalProtocol).
     case other(type: String, json: JSONValue)
 
@@ -301,6 +386,7 @@ enum ResultData: Sendable, Equatable, Decodable {
             self = .logTail(
                 entries: try c.decode([ShowLogEntry].self, forKey: "entries"),
                 dropped: try c.decode(UInt64.self, forKey: "dropped"))
+        case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }

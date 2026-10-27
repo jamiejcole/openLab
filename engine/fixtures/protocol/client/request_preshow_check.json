@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 52,
+  "request": {
+    "type": "preshow_check"
+  }
+}

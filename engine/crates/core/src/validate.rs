@@ -272,6 +272,35 @@ pub(crate) fn subtree_issues(
     checker.issues
 }
 
+/// Issues `settings` would raise on load, including silent repairs (a command's result must
+/// save and load back unchanged).
+pub(crate) fn settings_problems(settings: &WorkspaceSettings) -> Vec<ValidationIssue> {
+    let mut repaired = settings.clone();
+    let mut checker = Checker::default();
+    checker.settings(&mut repaired);
+    if repaired != *settings {
+        checker.warn(None, IssueKind::InvalidValue { field: "settings" });
+    }
+    checker.issues
+}
+
+/// As [`settings_problems`], for one output patch.
+pub(crate) fn patch_problems(patch: &OutputPatch) -> Vec<ValidationIssue> {
+    let mut repaired = patch.clone();
+    let mut checker = Checker::default();
+    checker.patch(&mut repaired);
+    if checker.issues.is_empty() && repaired != *patch {
+        checker.warn(
+            None,
+            IssueKind::InvalidPatchValue {
+                patch: patch.id,
+                field: "patch",
+            },
+        );
+    }
+    checker.issues
+}
+
 fn duplicates<T: Copy + Eq + Hash>(ids: impl Iterator<Item = T>) -> Vec<T> {
     let mut seen = HashSet::new();
     ids.filter(|id| !seen.insert(*id)).collect()

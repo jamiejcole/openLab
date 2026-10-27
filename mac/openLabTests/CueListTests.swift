@@ -499,6 +499,9 @@ final class CueListTests: XCTestCase {
             "patch_missing",
             "device_unavailable",
             "network_patch_missing",
+            "network_host_invalid",
+            "network_host_unresolved",
+            "network_message_invalid",
             "started_broken",
         ] {
             XCTAssertNotEqual(CueStateStyle.problemText(t), t, t)
@@ -520,6 +523,20 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(try icon(H.fade).accessibilityLabel(), loc("cue.state.broken"))
         XCTAssertTrue(try XCTUnwrap(try icon(H.fade).toolTip).contains(loc("problem.target_missing")))
         XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[1].isHidden, "idle shows no icon")
+    }
+
+    func testPreviewingRowHasItsOwnLabelledMark() async throws {
+        let h = try await H()
+        func mark() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.intro)).images[2] }
+        XCTAssertTrue(try mark().isHidden)
+        try h.runtime(#"{"type":"preview","cue":"\#(H.intro)","active":true}"#)
+        XCTAssertFalse(try mark().isHidden)
+        XCTAssertEqual(try mark().accessibilityLabel(), loc("cue.previewing"))
+        XCTAssertEqual(
+            try XCTUnwrap(h.cell("status", H.intro)).images[1].accessibilityLabel(), loc("cue.state.running"),
+            "the show state is still shown beside it")
+        try h.runtime(#"{"type":"preview","cue":"\#(H.intro)","active":false}"#)
+        XCTAssertTrue(try mark().isHidden)
     }
 
     func testRuntimeStateChangeReloadsOnlyThatRow() async throws {
