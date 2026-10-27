@@ -447,6 +447,7 @@ impl CueEngine {
                 self.availability(Vec::new(), vec![(patch, resolution)], cx);
             }
             Input::Availability { media, patches } => self.availability(media, patches, cx),
+            Input::DeviceLost => self.device_lost(cx),
         }
     }
 
@@ -1163,32 +1164,47 @@ impl CueEngine {
         match old {
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
             // schedule. Auto-follow waits for a successful completion, so it never fires.
+            // A lost device (M4.2g, as QLab) ends the run for good: its pre-wait and post-wait
+            // are cancelled too, so nothing it scheduled starts by itself after the device
+            // returns.
             Slot::Active(mut run) => {
                 run.broken = Some(reason);
                 run.unplayed = unplayed;
                 run.voice = Voice::None;
                 // Skipped before it played: it follows as of now (as a cue skipped for static
                 // problems does at its action start); one that broke while playing never does.
-                let follow = run.follow && unplayed && run.stop_end.is_none();
+                let follow = run.follow
+                    && unplayed
+                    && run.stop_end.is_none()
+                    && reason != BrokenReason::DeviceLost;
                 run.stop_end = None;
                 run.devamp = None;
-                // Paused: a paused show starts nothing, so the skipped action's end, and with it
-                // the follow, is held until the resume (as a deadline on the pause sample, which
-                // the resume moves to the resume sample); a stop or panic cancels it.
-                if let (true, Some(paused), Phase::Action { start, .. }) =
-                    (follow, run.paused_at, run.phase)
-                {
-                    run.phase = Phase::Action {
-                        start,
-                        end: Some(paused),
-                    };
-                    run.length = None;
-                    self.slots.insert(cue, Slot::Active(run));
-                    return self.report(cue, before, cx.now, cx);
-                }
-                run.follow = false;
-                if matches!(run.phase, Phase::Action { .. }) {
+                if reason == BrokenReason::DeviceLost {
+                    // First, before the paused hold: a lost device never follows and never
+                    // waits for a resume.
+                    run.follow = false;
+                    run.post_wait = None;
                     run.phase = Phase::Done;
+                } else {
+                    // Paused: a paused show starts nothing, so the skipped action's end, and
+                    // with it the follow, is held until the resume (as a deadline on the pause
+                    // sample, which the resume moves to the resume sample); a stop or panic
+                    // cancels it.
+                    if let (true, Some(paused), Phase::Action { start, .. }) =
+                        (follow, run.paused_at, run.phase)
+                    {
+                        run.phase = Phase::Action {
+                            start,
+                            end: Some(paused),
+                        };
+                        run.length = None;
+                        self.slots.insert(cue, Slot::Active(run));
+                        return self.report(cue, before, cx.now, cx);
+                    }
+                    run.follow = false;
+                    if matches!(run.phase, Phase::Action { .. }) {
+                        run.phase = Phase::Done;
+                    }
                 }
                 let seq = run.seq;
                 self.slots.insert(cue, Slot::Active(run));
