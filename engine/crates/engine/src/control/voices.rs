@@ -438,11 +438,10 @@ impl Voices {
                             _ => env.now,
                         };
                         if !r.preview {
-                            fx.feedback.push(Input::ActionLength {
-                                cue,
-                                run,
-                                frames: offset,
-                            });
+                            // A start the probe held up ends when it is released, as a played
+                            // one counts the delay in.
+                            let frames = offset.saturating_add(env.now.saturating_sub(at));
+                            fx.feedback.push(Input::ActionLength { cue, run, frames });
                         }
                         fx.deferred.push((at, Input::ActionEnded { cue, run, at }));
                     }

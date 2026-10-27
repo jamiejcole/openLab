@@ -14,7 +14,8 @@
 //! cycles), and random input sequences: every operation, model edits (deletes, moves out of
 //! groups, reorders, mode and timing changes), Arm/Disarm changes applied to the model as the
 //! binary does, Panic, Pause All / Resume All, random media and device availability (static
-//! broken cues), device loss, previews, and faults of the simulated mixer (a voice that ends early or fails).
+//! broken cues), device loss, previews, and faults of the simulated mixer (a voice that ends
+//! early or fails).
 //!
 //! **Simulated mixer.** [`Sim`] answers the engine's voice actions like the real mixer would,
 //! on virtual time: a voice ends after its length (end reports are delivered late, at the next
@@ -166,10 +167,10 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 56] = [
+const OPS: [u8; 61] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
-    30, 31,
+    30, 31, 31, 31, 31, 31, 31,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -1121,7 +1122,8 @@ struct Outcome {
     raw: Vec<Action>,
     /// What the show can notice: no preview actions, no warnings of preview calls.
     shown: Vec<Action>,
-    /// What each `DeviceLost` of the run found: a running group, a paused run, a broken cue.
+    /// What each `DeviceLost` of the run found: a running group, a paused run, a broken run
+    /// with its continue pending.
     lost: Vec<&'static str>,
 }
 
@@ -2075,20 +2077,53 @@ impl Run {
             // The output device was lost: every runtime stops at once, groups, paused runs and
             // broken runs with a continue pending included (M4.2h).
             31 => {
-                let mut found = Vec::new();
+                // The binary fails every live voice with `device_lost` first (types.rs), and a
+                // voice failing alone on an auto-continue cue (a broken run with its continue
+                // still pending) is what the device loss then finds.
+                let live: Vec<(CueId, RunId)> = self
+                    .engine
+                    .cue_states()
+                    .filter(|(id, st)| {
+                        st.is_active()
+                            && self
+                                .ws
+                                .find_cue(*id)
+                                .is_some_and(|c| matches!(c.kind, CueKind::Audio { .. }))
+                    })
+                    .filter_map(|(id, _)| Some((id, self.engine.run_of(id)?)))
+                    .filter(|(_, run)| self.sim.voices.contains_key(run))
+                    .collect();
+                let operator = Kind::Operator { trigger: false };
+                if s.b.is_multiple_of(3) {
+                    let pending = live.iter().find(|(id, _)| {
+                        self.ws.find_cue(*id).is_some_and(|c| {
+                            c.continue_mode == ContinueMode::AutoContinue && c.post_wait > 0.0
+                        })
+                    });
+                    if let Some(&(cue, run)) = pending {
+                        let reason = BrokenReason::StreamFailed;
+                        self.call(Input::ActionFailed { cue, run, reason }, operator)?;
+                        if self.engine.state(cue) == CueState::Broken {
+                            self.lost.push("broken run");
+                        }
+                    }
+                } else if s.b % 3 == 1 {
+                    for (cue, run) in live {
+                        let reason = BrokenReason::DeviceLost;
+                        self.call(Input::ActionFailed { cue, run, reason }, operator)?;
+                    }
+                }
                 for (id, st) in self.engine.cue_states() {
                     let is_group = self
                         .ws
                         .find_cue(id)
                         .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
                     match st {
-                        CueState::Paused => found.push("paused"),
-                        CueState::Broken => found.push("broken"),
-                        st if is_group && st.is_active() => found.push("group"),
+                        CueState::Paused => self.lost.push("paused"),
+                        st if is_group && st.is_active() => self.lost.push("group"),
                         _ => {}
                     }
                 }
-                self.lost.extend(found);
                 Input::DeviceLost
             }
             29 => {
@@ -2474,18 +2509,18 @@ fn follow_case() -> impl Strategy<Value = Case> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
 
-    /// M4.11b: for a cue whose length core knows (a Wait or Fade, a memo, a control cue, a
-    /// disarmed cue), loading at any time at or past `pre-wait + action` is the same as loading
-    /// at exactly that: the same state, the same start and the same deadlines.
+    /// M4.11b: loading a Wait, Fade, memo or control cue (armed or not) to a time at or past
+    /// `pre-wait + action` leaves it loaded, holding nothing; started, its action is over at
+    /// once, and its post-wait counts from the load time (`W - (t - P)` left, none if <= 0).
     #[test]
-    fn a_load_past_the_end_is_a_load_to_the_end(
+    fn a_load_past_the_end_ends_the_action_and_counts_the_post_wait_from_the_time(
         kind in 0u8..4,
         pre in 0u8..8,
         action in 0u8..8,
         post in 0u8..8,
-        extra in 0u16..2000,
+        extra in 0u16..40,
         armed in any::<bool>(),
-        follow in 0u8..3,
+        auto_continue in any::<bool>(),
     ) {
         let pre = f64::from(pre) * 0.5;
         let action = f64::from(action) * 0.5;
@@ -2508,46 +2543,58 @@ proptest! {
                 stop_target_when_done: false,
             },
         };
-        let length = pre + if matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. }) { action } else { 0.0 };
+        let timed = matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. });
+        let length = pre + if timed { action } else { 0.0 };
+        let time = length + f64::from(extra) * 0.5;
         let mut c = cue(1, kind);
         c.pre_wait = pre;
         c.post_wait = post;
-        c.continue_mode = mode(follow);
-        c.armed = armed;
-        let mut next = cue(2, audio());
-        next.pre_wait = 0.0;
-        let ws = workspace(vec![c, next]);
-        let play = |time: f64| {
-            let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
-            let mut last = None;
-            let mut out = vec![];
-            for input in [
-                Input::Tick,
-                Input::Load { cue: cue_id(1), time },
-                Input::Start { cue: cue_id(1) },
-            ] {
-                out.push(handle_as_binary(&mut engine, &ws, &mut last, input, 10_000));
-            }
-            // Everything that happens later, up to well past any wait.
-            let mut now = 10_000;
-            while let Some(d) = engine.next_deadline().filter(|d| *d < 200_000) {
-                now = d.max(now);
-                out.push(handle_as_binary(&mut engine, &ws, &mut last, Input::Tick, now));
-            }
-            (out, engine.state(cue_id(1)))
+        c.continue_mode = if auto_continue {
+            ContinueMode::AutoContinue
+        } else {
+            ContinueMode::DoNotContinue
         };
-        // The load itself leaves the cue loaded, never completed.
-        {
-            let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
-            let mut last = None;
-            handle_as_binary(&mut engine, &ws, &mut last, Input::Load { cue: cue_id(1), time: length + f64::from(extra) }, 0);
-            prop_assert_eq!(engine.state(cue_id(1)), CueState::Loaded);
-            prop_assert_eq!(engine.state(cue_id(2)), CueState::Idle);
-            prop_assert_eq!(engine.next_deadline(), None);
+        c.armed = armed;
+        let ws = workspace(vec![c, cue(2, audio())]);
+        let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+        let mut last = None;
+        let call = |engine: &mut CueEngine, last: &mut Option<Workspace>, input, now| {
+            handle_as_binary(engine, &ws, last, input, now)
+        };
+        call(&mut engine, &mut last, Input::Tick, 0);
+        call(
+            &mut engine,
+            &mut last,
+            Input::Load {
+                cue: cue_id(1),
+                time,
+            },
+            0,
+        );
+        prop_assert_eq!(engine.state(cue_id(1)), CueState::Loaded);
+        prop_assert_eq!(engine.state(cue_id(2)), CueState::Idle);
+        prop_assert_eq!(engine.next_deadline(), None);
+        call(
+            &mut engine,
+            &mut last,
+            Input::Start { cue: cue_id(1) },
+            10_000,
+        );
+        let state = engine.state(cue_id(1));
+        prop_assert!(
+            !matches!(
+                state,
+                CueState::PreWaiting | CueState::Running | CueState::Fading
+            ),
+            "{state:?}"
+        );
+        let left = post - (time - pre);
+        if auto_continue && left > 0.0 {
+            prop_assert_eq!(
+                engine.next_deadline(),
+                Some(10_000 + (left * 1000.0).round() as u64)
+            );
         }
-        let at_end = play(length);
-        let past = play(length + f64::from(extra) + 0.001);
-        prop_assert_eq!(at_end, past);
     }
 
     #[test]
@@ -2799,10 +2846,11 @@ fn the_generator_reaches_what_the_rules_are_about() {
             *seen.entry(name).or_default() += 1;
         }
     }
-    // DeviceLost reaches groups, paused runs and broken cues (M4.2h).
-    for what in ["group", "paused", "broken"] {
+    // DeviceLost reaches running groups, paused runs and broken runs with a continue pending
+    // (M4.2h).
+    for what in ["group", "paused", "broken run"] {
         let n = lost.iter().filter(|l| **l == what).count();
-        assert!(n >= 3, "DeviceLost found {what} only {n} times");
+        assert!(n >= 10, "DeviceLost found {what} only {n} times");
     }
     let wanted = [
         "StartVoice",
