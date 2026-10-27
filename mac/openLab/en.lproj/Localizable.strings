@@ -73,6 +73,7 @@
 "cue.type.target" = "Target";
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
+"cue.type.network" = "Network";
 
 "cuelist.label" = "Cue list";
 "cuelist.col.number" = "Number";
@@ -81,6 +82,47 @@
 "cuelist.col.preWait" = "Pre-Wait";
 "cuelist.col.duration" = "Duration";
 "cuelist.col.postWait" = "Post-Wait";
+
+"cuelist.col.status" = "Status";
+"cue.target.missing" = "Missing target";
+"cue.playhead" = "Playhead";
+"cue.playhead.inside" = "Playhead is inside this group";
+"cue.flagged" = "Flagged";
+
+"cue.state.idle" = "Idle";
+"cue.state.loaded" = "Loaded";
+"cue.state.preWaiting" = "Pre-waiting";
+"cue.state.running" = "Running";
+"cue.state.paused" = "Paused";
+"cue.state.postWaiting" = "Post-waiting";
+"cue.state.fading" = "Fading";
+"cue.state.stopping" = "Stopping";
+"cue.state.broken" = "Broken";
+"cue.broken.voiceRejected" = "The audio engine rejected the cue";
+"cue.broken.streamFailed" = "The audio file could not be read while playing";
+"cue.broken.deviceLost" = "The audio device was lost";
+"cue.broken.group" = "A cue inside this group is broken";
+
+"problem.no_target" = "No target";
+"problem.target_missing" = "The target cue is missing";
+"problem.target_self" = "The cue targets itself";
+"problem.target_wrong_kind" = "The target is the wrong kind of cue";
+"problem.no_media" = "No media file";
+"problem.media_missing" = "The media file is missing";
+"problem.media_unsupported" = "The media file is not supported";
+"problem.patch_missing" = "The output patch is missing";
+"problem.device_unavailable" = "The output device is unavailable";
+"problem.network_patch_missing" = "The network patch is missing";
+"problem.started_broken" = "The cue started while broken";
+
+"cue.colour.red" = "Red";
+"cue.colour.orange" = "Orange";
+"cue.colour.green" = "Green";
+"cue.colour.blue" = "Blue";
+"cue.colour.purple" = "Purple";
+
+"cue.continue.autoContinue" = "Auto-continue";
+"cue.continue.autoFollow" = "Auto-follow";
 
 "inspector.empty" = "No cue selected";
 
