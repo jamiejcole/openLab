@@ -263,6 +263,20 @@ final class FakeEngine: EngineTransport {
                 c, id,
                 ok: .object(["data": .object(["type": .string("log_tail"), "entries": .array([]), "dropped": .int(0)])])
             )
+        case .preshowCheck:
+            let summary: JSONValue = .object([
+                "broken_cues": .int(0), "media": .int(0), "patches": .int(0), "network": .int(0),
+                "network_unchecked": .int(0), "system": .int(0), "total": .int(0),
+            ])
+            result(
+                c, id,
+                ok: .object([
+                    "data": .object([
+                        "type": .string("preshow_check"), "ok": .bool(true), "summary": summary,
+                        "broken_cues": .array([]), "media": .array([]), "patches": .array([]),
+                        "network": .array([]), "system": .array([]),
+                    ])
+                ]))
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
