@@ -1058,6 +1058,12 @@ impl MediaWatch {
         std::mem::take(&mut self.notices_changed)
     }
 
+    /// The volumes skipped now (stalled or failing): the probes defer to them too, so the
+    /// watch's notice is the only one.
+    pub fn stalled_volumes(&self) -> impl Iterator<Item = &str> {
+        self.volumes.keys().map(String::as_str)
+    }
+
     /// The workspace-level notices in force. A volume's notice stands from its first stall
     /// until it answers, through its retries.
     pub fn notices(&self, list: &mut Vec<WireWarning>) {
