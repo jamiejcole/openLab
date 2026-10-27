@@ -893,3 +893,70 @@ fn k1b_setting_a_workspace_key_as_a_cue_hotkey_is_not_refused() {
         Some(hotkey("space"))
     );
 }
+
+/// Shuffled without loop: "play previous" on the pass's first child stops the group too, and on
+/// a later child goes back to the one before it in the pass's order.
+#[test]
+fn s4_play_previous_on_the_first_child_of_a_shuffled_playlist_stops_it() {
+    let group = with(
+        grp(
+            1,
+            GroupMode::Playlist {
+                loop_: false,
+                shuffle: true,
+            },
+            vec![sound(11), sound(12), sound(13)],
+        ),
+        SecondTrigger::PlayPrevious,
+    );
+    let mut rig = Rig::new(vec![group]);
+    let playing = |rig: &Rig| {
+        [11, 12, 13]
+            .into_iter()
+            .filter(|n| rig.state(*n) == CueState::Running)
+            .collect::<Vec<_>>()
+    };
+    rig.start(0, 1);
+    let first = playing(&rig);
+    assert_eq!(first.len(), 1);
+    let first = first[0];
+    let run = rig.run(first);
+    rig.at(
+        500,
+        Input::ActionEnded {
+            cue: id(first),
+            run,
+            at: 500,
+        },
+    );
+    let second = playing(&rig);
+    assert_eq!(second.len(), 1);
+    assert_ne!(second[0], first);
+    // On the pass's second child it goes back to the first.
+    let out = rig.start(600, 1);
+    assert_eq!(voice_starts(&out), vec![id(first)]);
+    // On the pass's first child it stops the playlist.
+    let out = rig.start(700, 1);
+    assert_eq!(voice_stops(&out).len(), 1, "{out:?}");
+    assert!(voice_starts(&out).is_empty(), "{out:?}");
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert!(playing(&rig).is_empty());
+}
+
+/// "Devamp looping cue" aimed at a sliced cue that is not running says the target is not
+/// running, as the other mode does, before it looks at the slices.
+#[test]
+fn d7_devamp_looping_cue_on_a_stopped_sliced_cue_reports_not_running() {
+    let mut rig = Rig::new(vec![
+        sliced_sound(1, 1),
+        devamp_cue(2, 1, DevampMode::LoopingCue, false),
+    ]);
+    let out = rig.start(0, 2);
+    assert_eq!(
+        warnings(&out),
+        vec![EngineWarning::TargetNotRunning {
+            cue: id(2),
+            target: id(1)
+        }]
+    );
+}

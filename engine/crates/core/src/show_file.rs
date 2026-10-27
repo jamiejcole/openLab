@@ -6,8 +6,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cue::{Cue, CueKind};
 use crate::model::Workspace;
-use crate::validate::{Severity, ValidationIssue, repair};
+use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
 pub const FORMAT_VERSION: u32 = 3;
@@ -89,10 +90,12 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     // serde_json's recursion limit bounds nesting in every parse below.
     let probe: VersionProbe = serde_json::from_str(text).map_err(LoadError::Syntax)?;
     let version = probe.format_version.ok_or(LoadError::MissingVersion)?;
+    let mut from = FORMAT_VERSION;
     let file: ShowFileIn = match u32::try_from(version) {
         // Parse straight from text so errors carry line and column.
         Ok(FORMAT_VERSION) => serde_json::from_str(text).map_err(LoadError::Model)?,
         Ok(old) if old < FORMAT_VERSION => {
+            from = old;
             let value = serde_json::from_str(text).map_err(LoadError::Syntax)?;
             serde_json::from_value(migrate(value, old)?).map_err(LoadError::Model)?
         }
@@ -104,7 +107,10 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
         }
     };
     let mut workspace = file.workspace;
-    let issues = repair(&mut workspace);
+    let mut issues = repair(&mut workspace);
+    if from < 3 {
+        issues.extend(group_fades_now_relative(&workspace));
+    }
     if issues.iter().any(|issue| issue.severity == Severity::Error) {
         let errors = issues
             .into_iter()
@@ -116,6 +122,40 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
         workspace,
         warnings: issues,
     })
+}
+
+/// Before v3 a Fade aimed at a group set each child's levels to its values; since v3 (M2.28,
+/// QLab check F2) it moves them by its values. No migration can keep the old meaning (it depends
+/// on each child's level when the Fade runs), so every such Fade of an older file is pointed
+/// out for the user to check. Iterative, so nesting depth cannot overflow the stack.
+fn group_fades_now_relative(workspace: &Workspace) -> Vec<ValidationIssue> {
+    let mut out = Vec::new();
+    for list in &workspace.cue_lists {
+        let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
+        while let Some(level) = stack.last_mut() {
+            let Some(cue) = level.next() else {
+                stack.pop();
+                continue;
+            };
+            if let CueKind::Fade {
+                target: Some(target),
+                ..
+            } = &cue.kind
+                && matches!(
+                    workspace.find_cue(*target).map(|t| &t.kind),
+                    Some(CueKind::Group { .. })
+                )
+            {
+                out.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    cue_id: Some(cue.id),
+                    kind: IssueKind::GroupFadeNowRelative,
+                });
+            }
+            stack.push(cue.children().iter());
+        }
+    }
+    out
 }
 
 /// Serialises a workspace: pretty-printed, fields in a fixed order, trailing newline, so equal

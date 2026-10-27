@@ -320,7 +320,8 @@ impl CueEngine {
     /// loops. Without loop, "next" after the last child completes the group (as if that child
     /// had ended) and "previous" on the first child stops the group (QLab check S4). Shuffled, the
     /// pass's order is followed (a new pass after its end, as usual; "previous" from its first
-    /// child wraps to its last). A paused playlist resumes on the new child. The new child's
+    /// child wraps to its last with loop, and stops the group without). A paused playlist
+    /// resumes on the new child. The new child's
     /// start is charged to the chain budget like any playlist move.
     pub(super) fn playlist_skip(&mut self, group: CueId, back: bool, at: SampleTime, cx: &mut Ctx) {
         let state = self.state(group);
