@@ -43,9 +43,16 @@ const ID_BASE: u64 = 1 << 63;
 /// and counted: the actor never blocks, so this is what keeps a UDP flood from piling up in the
 /// control inbox.
 const MAX_INFLIGHT: usize = 256;
-/// Events from all connections waiting for the actor (each connection waits in its own read
-/// loop beyond this, which holds that sender back through TCP).
+/// TCP events (data, open, close) waiting for the actor; each connection waits in its own read
+/// loop beyond this, which holds that sender back through TCP.
 const EVENT_QUEUE: usize = 256;
+/// Datagrams waiting for the actor. A queue of their own, and the actor takes from the two
+/// queues in turn: a TCP peer that floods (it waits, holding its place in line) must not make
+/// the datagrams of a console find the queue full.
+const UDP_QUEUE: usize = 256;
+/// How long an accepted connection waits for the actor to close an idle one when the table is
+/// full, before it is refused.
+const EVICT_WAIT: Duration = Duration::from_millis(500);
 /// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt.
 const TAP_QUEUE: usize = 1024;
 /// Messages waiting to be written to one TCP connection.
@@ -70,6 +77,15 @@ pub struct OscConfig {
     pub max_tcp_connections: usize,
     /// One write to a TCP peer that takes longer than this closes the connection.
     pub write_timeout: Duration,
+    /// A TCP connection that has sent nothing for this long, and has not asked for updates, may
+    /// be closed to make room when the table is full (a peer that vanished without a FIN or
+    /// RST would otherwise hold its slot for good). Connections that are subscribed to
+    /// updates are never closed for this.
+    pub tcp_idle_evict: Duration,
+    /// Input (not replies) that waited longer than this for the actor, because the copy of the
+    /// workspace was not ready or the actor was behind, is dropped and counted: a console
+    /// mashing GO while the engine starts must not have every press replayed at once.
+    pub max_input_age: Duration,
     /// Refused connections are logged at most this often, with a count.
     pub refusal_log_interval: Duration,
     /// Dropped or malformed input is logged (once, with counts) this often, if there was any.
@@ -84,6 +100,8 @@ impl Default for OscConfig {
             reply_port: OSC_REPLY_PORT,
             max_tcp_connections: 16,
             write_timeout: Duration::from_secs(10),
+            tcp_idle_evict: Duration::from_secs(60),
+            max_input_age: Duration::from_secs(2),
             refusal_log_interval: Duration::from_secs(10),
             stats_log_interval: Duration::from_secs(10),
         }
@@ -162,15 +180,16 @@ pub fn bind(config: &OscConfig) -> io::Result<Bound> {
 }
 
 /// Starts the tasks on `runtime`. `inbox` is the control inbox. The [`Tap`] goes to the hub's
-/// fan-out task.
+/// fan-out task. `None` (and a log entry): the sockets could not be registered, OSC is off.
 pub fn start(
     runtime: &tokio::runtime::Runtime,
     bound: Bound,
     config: OscConfig,
     inbox: Sender<Inbox>,
-) -> (Running, Tap) {
+) -> Option<(Running, Tap)> {
     let shared = Arc::new(Shared::default());
     let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE);
+    let (udp_tx, udp_rx) = mpsc::channel(UDP_QUEUE);
     let (tap_tx, tap_rx) = mpsc::channel(TAP_QUEUE);
     let lagged = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
@@ -196,14 +215,7 @@ pub fn start(
             level: LogLevel::Warn,
             message: "OSC server could not register its sockets and is off".into(),
         });
-        // Nothing consumes the tap: it only fills, marks itself lagged and stops copying.
-        return (
-            Running {
-                ports,
-                stats: shared,
-            },
-            tap,
-        );
+        return None;
     };
     let udp = Arc::new(udp);
 
@@ -223,35 +235,53 @@ pub fn start(
         listener: OscListenerStats::default(),
         reported: Problems::default(),
     };
-    runtime.spawn(actor.run(events_rx, tap_rx, reply_rx, lagged, wake));
-    runtime.spawn(udp_loop(udp, events_tx.clone(), shared.clone()));
+    runtime.spawn(actor.run(events_rx, udp_rx, tap_rx, reply_rx, lagged, wake));
+    runtime.spawn(udp_loop(udp, udp_tx, shared.clone()));
     runtime.spawn(accept_loop(tcp, events_tx, config, inbox, shared.clone()));
-    (
+    Some((
         Running {
             ports,
             stats: shared,
         },
         tap,
-    )
+    ))
 }
 
 enum Event {
     Datagram {
         ip: IpAddr,
         bytes: Vec<u8>,
+        at: Instant,
     },
     TcpOpen {
         conn: u64,
         ip: IpAddr,
         out: mpsc::Sender<Vec<u8>>,
+        /// Closes the connection.
+        close: Arc<Notify>,
     },
     TcpData {
         conn: u64,
         bytes: Vec<u8>,
+        at: Instant,
     },
     TcpClosed {
         conn: u64,
     },
+    /// The table is full and a connection is waiting: close an idle one if there is one.
+    Evict,
+}
+
+/// The next event from either queue, fairly: with both ready, each is as likely to be taken.
+/// `None`: a queue closed (the sockets' tasks are gone).
+async fn next_input(
+    udp: &mut mpsc::Receiver<Event>,
+    tcp: &mut mpsc::Receiver<Event>,
+) -> Option<Event> {
+    tokio::select! {
+        event = udp.recv() => event,
+        event = tcp.recv() => event,
+    }
 }
 
 async fn udp_loop(socket: Arc<UdpSocket>, events: mpsc::Sender<Event>, shared: Arc<Shared>) {
@@ -263,6 +293,7 @@ async fn udp_loop(socket: Arc<UdpSocket>, events: mpsc::Sender<Event>, shared: A
                 let event = Event::Datagram {
                     ip: from.ip(),
                     bytes,
+                    at: Instant::now(),
                 };
                 match events.try_send(event) {
                     Ok(()) => {}
@@ -308,7 +339,21 @@ async fn accept_loop(
             tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         };
-        let Ok(slot) = slots.clone().try_acquire_owned() else {
+        let slot = match slots.clone().try_acquire_owned() {
+            Ok(slot) => Some(slot),
+            Err(_) => {
+                // Full: the actor may close an idle connection (a vanished peer); wait a
+                // moment for the slot.
+                if events.send(Event::Evict).await.is_err() {
+                    return;
+                }
+                match timeout(EVICT_WAIT, slots.clone().acquire_owned()).await {
+                    Ok(Ok(slot)) => Some(slot),
+                    _ => None,
+                }
+            }
+        };
+        let Some(slot) = slot else {
             shared.tcp_refused.fetch_add(1, Ordering::Relaxed);
             refusals.refused(&inbox, "connection limit reached");
             continue;
@@ -334,10 +379,17 @@ async fn tcp_connection(
     let _ = stream.set_nodelay(true);
     let stream = Arc::new(stream);
     let (out, out_rx) = mpsc::channel(TCP_WRITE_QUEUE);
-    if events.send(Event::TcpOpen { conn, ip, out }).await.is_err() {
+    // Rung by the writer when the peer stops reading, and by the actor to close the connection.
+    let dead = Arc::new(Notify::new());
+    let open = Event::TcpOpen {
+        conn,
+        ip,
+        out,
+        close: dead.clone(),
+    };
+    if events.send(open).await.is_err() {
         return;
     }
-    let dead = Arc::new(Notify::new());
     let writer = tokio::spawn(tcp_writer(
         stream.clone(),
         out_rx,
@@ -358,7 +410,8 @@ async fn tcp_connection(
                         let bytes = buf.get(..n).unwrap_or_default().to_vec();
                         // Waits when the actor is behind: this connection stops reading and
                         // TCP holds the peer back.
-                        if events.send(Event::TcpData { conn, bytes }).await.is_err() {
+                        let data = Event::TcpData { conn, bytes, at: Instant::now() };
+                        if events.send(data).await.is_err() {
                             break;
                         }
                     }
@@ -452,6 +505,9 @@ struct TcpConn {
     ip: IpAddr,
     decoder: SlipDecoder,
     out: mpsc::Sender<Vec<u8>>,
+    close: Arc<Notify>,
+    /// When it last sent anything (when it opened, before that).
+    last_rx: Instant,
 }
 
 struct Actor {
@@ -479,6 +535,7 @@ impl Actor {
     async fn run(
         mut self,
         mut events: mpsc::Receiver<Event>,
+        mut udp: mpsc::Receiver<Event>,
         mut tap: mpsc::Receiver<ServerMessage>,
         mut replies: ReplyRx,
         lagged: Arc<AtomicBool>,
@@ -520,7 +577,10 @@ impl Actor {
                     }
                     None => return,
                 },
-                event = events.recv(), if ready => match event {
+                // Not while a snapshot is out: a `/cue/5` or a trigger address must not be
+                // resolved against a copy just found to be wrong (it could start the cue that
+                // used to be 5). Input waits, within the age limit.
+                event = next_input(&mut udp, &mut events), if ready && !waiting => match event {
                     Some(event) => self.event(event),
                     None => return,
                 },
@@ -615,6 +675,7 @@ impl Actor {
         let Some(mirror) = &mut self.mirror else {
             return true;
         };
+        let passcode = mirror.passcode().map(str::to_owned);
         let applied = match &message {
             ServerMessage::ModelChanged {
                 revision,
@@ -628,6 +689,11 @@ impl Actor {
         match applied {
             Applied::Stale => true,
             Applied::Updates(updates) => {
+                // A settings edit that changed the passcode ends every session, as a snapshot
+                // with another passcode does.
+                if mirror.passcode() != passcode.as_deref() {
+                    self.osc.reset_sessions();
+                }
                 self.fan_out(&updates);
                 true
             }
@@ -637,31 +703,41 @@ impl Actor {
 
     fn event(&mut self, event: Event) {
         match event {
-            Event::Datagram { ip, bytes } => {
+            Event::Datagram { ip, bytes, at } => {
+                let stale = at.elapsed() >= self.config.max_input_age;
                 let peer = Peer::Udp(ip);
                 let now = self.now();
                 let Some(mirror) = &self.mirror else { return };
                 let outcome = self
                     .osc
                     .handle_datagram(peer, now, &bytes, &MirrorShow(mirror));
-                self.carry_out(peer, outcome);
+                self.carry_out(peer, outcome, stale);
             }
-            Event::TcpOpen { conn, ip, out } => {
+            Event::TcpOpen {
+                conn,
+                ip,
+                out,
+                close,
+            } => {
                 self.tcp.insert(
                     conn,
                     TcpConn {
                         ip,
                         decoder: SlipDecoder::default(),
                         out,
+                        close,
+                        last_rx: Instant::now(),
                     },
                 );
             }
-            Event::TcpData { conn, bytes } => {
+            Event::TcpData { conn, bytes, at } => {
+                let stale = at.elapsed() >= self.config.max_input_age;
                 let now = self.now();
                 let Some(mirror) = &self.mirror else { return };
                 let Some(connection) = self.tcp.get_mut(&conn) else {
                     return;
                 };
+                connection.last_rx = Instant::now();
                 let peer = Peer::Tcp {
                     conn,
                     ip: connection.ip,
@@ -673,8 +749,9 @@ impl Actor {
                     &bytes,
                     &MirrorShow(mirror),
                 );
-                self.carry_out(peer, outcome);
+                self.carry_out(peer, outcome, stale);
             }
+            Event::Evict => self.evict(),
             Event::TcpClosed { conn } => {
                 if let Some(connection) = self.tcp.remove(&conn) {
                     self.osc.disconnect(Peer::Tcp {
@@ -687,10 +764,47 @@ impl Actor {
         self.publish();
     }
 
+    /// Closes the connection that has been silent longest, if it has been silent for
+    /// `tcp_idle_evict` and is not subscribed to updates, to make room for a new one.
+    fn evict(&mut self) {
+        let idle = self.config.tcp_idle_evict;
+        let subscribed: HashSet<u64> = self
+            .osc
+            .update_subscribers()
+            .into_iter()
+            .filter_map(|p| match p {
+                Peer::Tcp { conn, .. } => Some(conn),
+                Peer::Udp(_) => None,
+            })
+            .collect();
+        let victim = self
+            .tcp
+            .iter()
+            .filter(|(conn, c)| !subscribed.contains(conn) && c.last_rx.elapsed() >= idle)
+            .min_by_key(|(_, c)| c.last_rx)
+            .map(|(conn, _)| *conn);
+        let Some(conn) = victim else { return };
+        if let Some(c) = self.tcp.remove(&conn) {
+            self.osc.disconnect(Peer::Tcp { conn, ip: c.ip });
+            c.close.notify_one();
+            let _ = self.inbox.send(Inbox::Log {
+                level: LogLevel::Warn,
+                message: format!(
+                    "OSC server closed an idle TCP connection from {} to make room",
+                    c.ip
+                ),
+            });
+        }
+    }
+
     /// Sends what an input produced: the inputs to the control loop, the replies to the peer.
-    fn carry_out(&mut self, peer: Peer, outcome: OscOutcome) {
+    fn carry_out(&mut self, peer: Peer, outcome: OscOutcome, stale: bool) {
         for input in outcome.inputs {
-            self.forward(input);
+            if stale {
+                self.listener.inputs_dropped += 1;
+            } else {
+                self.forward(input);
+            }
         }
         for reply in &outcome.replies {
             if let Ok(bytes) = encode_message(reply) {

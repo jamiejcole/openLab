@@ -20,7 +20,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{CueKind, GroupMode, Workspace};
 use openlab_engine::control::{
-    Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, outbound_channel, runner,
+    Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, ReplyTx, outbound_channel, runner,
 };
 use openlab_engine::net::{OscConfig, OscListenerStats, ServerConfig, WsServer};
 use openlab_engine::osc::{SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode};
@@ -47,6 +47,9 @@ struct Stand {
     logs: Mutex<Vec<String>>,
     /// While set, transports and commands are not answered.
     mute: std::sync::atomic::AtomicBool,
+    /// While set, snapshot answers wait for [`Stand::release`].
+    hold: std::sync::atomic::AtomicBool,
+    held: Mutex<Vec<(ReplyTx, Vec<ServerMessage>)>>,
     changed: Notify,
 }
 
@@ -69,6 +72,38 @@ impl Stand {
     }
 
     /// What was sent besides the OSC server's own snapshot requests.
+    /// Snapshot requests so far.
+    fn snapshot_requests(&self) -> usize {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    ClientMessage::Request {
+                        request: Request::Snapshot,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Answers the held snapshot requests, and the ones after them at once.
+    fn release(&self) {
+        self.hold.store(false, std::sync::atomic::Ordering::SeqCst);
+        for (reply, answer) in self.held.lock().unwrap().drain(..) {
+            for m in answer {
+                let _ = reply.send(m);
+            }
+        }
+    }
+
+    fn set_name(&self, name: &str) {
+        self.workspace.lock().unwrap().as_mut().unwrap().cue_lists[0].cues[0].name = name.into();
+    }
+
     fn inputs(&self) -> Vec<ClientMessage> {
         self.seen
             .lock()
@@ -130,10 +165,19 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                         request: Request::Snapshot,
                     } => {
                         let ws = c.workspace.lock().unwrap().clone().unwrap();
-                        let _ = reply.send(ServerMessage::Snapshot {
-                            snapshot: Box::new(snapshot(&ws, 0)),
-                        });
-                        let _ = reply.send(ok(id));
+                        let answer = vec![
+                            ServerMessage::Snapshot {
+                                snapshot: Box::new(snapshot(&ws, 0)),
+                            },
+                            ok(id),
+                        ];
+                        if c.hold.load(std::sync::atomic::Ordering::SeqCst) {
+                            c.held.lock().unwrap().push((reply, answer));
+                        } else {
+                            for m in answer {
+                                let _ = reply.send(m);
+                            }
+                        }
                     }
                     ClientMessage::Transport { id, .. } | ClientMessage::Command { id, .. }
                         if !c.mute.load(std::sync::atomic::Ordering::SeqCst) =>
@@ -208,6 +252,11 @@ async fn fixture(ws: Workspace) -> Fix {
 }
 
 async fn fixture_with(ws: Workspace, tune: impl FnOnce(&mut OscConfig)) -> Fix {
+    fixture_held(ws, false, tune).await
+}
+
+/// `hold`: the first snapshot request is not answered until [`Stand::release`].
+async fn fixture_held(ws: Workspace, hold: bool, tune: impl FnOnce(&mut OscConfig)) -> Fix {
     let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut osc = OscConfig {
         bind: Ipv4Addr::LOCALHOST.into(),
@@ -220,6 +269,9 @@ async fn fixture_with(ws: Workspace, tune: impl FnOnce(&mut OscConfig)) -> Fix {
     let (out, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     let control = Arc::new(Stand::default());
     *control.workspace.lock().unwrap() = Some(ws);
+    control
+        .hold
+        .store(hold, std::sync::atomic::Ordering::SeqCst);
     let server = WsServer::start(
         inbox.clone(),
         outbound,
@@ -306,12 +358,13 @@ impl Fix {
     /// Waits until the listener's counters satisfy `pred` (no sleeping: yields to the server's
     /// threads until it does, within the guard).
     async fn wait_stats(&self, what: &str, pred: impl Fn(&OscListenerStats) -> bool) {
-        guard(what, async {
+        let done = tokio::time::timeout(GUARD, async {
             while !pred(&self.stats()) {
                 tokio::task::yield_now().await;
             }
         })
         .await;
+        assert!(done.is_ok(), "hang: {what}: {:?}", self.stats());
     }
 }
 
@@ -332,6 +385,22 @@ impl Tcp {
                 Err(e) => panic!("{e}"),
             }
         }
+    }
+
+    /// Like `write`, but `false` (instead of a panic) once the server has closed the connection.
+    async fn try_write_all(&self, bytes: &[u8]) -> bool {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            if self.stream.writable().await.is_err() {
+                return false;
+            }
+            match self.stream.try_write(rest) {
+                Ok(n) => rest = &rest[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return false,
+            }
+        }
+        true
     }
 
     async fn send(&self, m: &OscMessage) {
@@ -825,12 +894,24 @@ async fn updates_to_a_udp_peer_are_limited_by_its_byte_budget() {
             .await
             .unwrap();
     }
-    f.wait_stats("the 400 updates to be handled", |s| {
-        s.osc.updates_throttled > 0
+    // Every update was either sent or held back. A datagram (about 100 bytes of OSC and 28 of
+    // headers) costs about 130 bytes of the 16 KiB burst, which the refill of a few ms barely
+    // changes: about 125 get through.
+    let mut received = 0u64;
+    guard("the updates to be sent or held back", async {
+        let mut buf = vec![0u8; 70_000];
+        loop {
+            while f.udp.try_recv_from(&mut buf).is_ok() {
+                received += 1;
+            }
+            if received + f.stats().osc.updates_throttled == 400 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
     })
     .await;
-    // The 16 KiB burst is a few hundred bytes short of 400 updates of about 115 bytes each.
-    assert!(f.stats().osc.updates_throttled < 400);
+    assert!((100..=140).contains(&received), "{received}");
 }
 
 #[tokio::test]
@@ -1037,4 +1118,296 @@ async fn a_port_in_use_turns_osc_off_with_a_log_entry_and_the_ui_server_still_st
         }
         other => panic!("{other:?}"),
     }
+}
+
+fn read_notes() -> OscMessage {
+    msg("/cue/1/notes", vec![])
+}
+
+#[tokio::test]
+async fn tcp_flooders_cannot_starve_udp() {
+    // An unauthenticated TCP peer that streams requests as fast as the server reads them (a
+    // runaway script) used to fill the one shared queue and make the console's datagrams find
+    // it full.
+    let f = fixture(with_passcode("sesame")).await;
+    let frame = slip_encode(&encode_message(&msg("/cue/1/name", vec![])).unwrap());
+    let burst: Vec<u8> = frame
+        .iter()
+        .copied()
+        .cycle()
+        .take(frame.len() * 50)
+        .collect();
+    let mut flooders = Vec::new();
+    for _ in 0..4 {
+        let t = f.tcp().await;
+        let burst = burst.clone();
+        flooders.push(tokio::spawn(async move {
+            loop {
+                let mut rest = burst.as_slice();
+                while !rest.is_empty() {
+                    if t.stream.writable().await.is_err() {
+                        return;
+                    }
+                    match t.stream.try_write(rest) {
+                        Ok(n) => rest = &rest[n..],
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => return,
+                    }
+                }
+            }
+        }));
+    }
+    f.udp_send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "ok");
+    for _ in 0..100 {
+        f.udp_send(&msg("/go", vec![])).await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+    let all = tokio::time::timeout(
+        GUARD / 2,
+        f.control.wait_seen("every /go", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 100
+        }),
+    )
+    .await;
+    assert!(all.is_ok(), "{:?}", f.stats());
+    assert_eq!(f.stats().udp_dropped, 0);
+    for flooder in flooders {
+        flooder.abort();
+    }
+}
+
+#[tokio::test]
+async fn input_waits_while_a_resync_snapshot_is_out() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    // The engine's workspace moves on; the OSC side finds out by a gap and asks, and the
+    // answer is held.
+    f.control
+        .hold
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.control.set_name("Changed");
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 5,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    f.control
+        .wait_for("the resync request", |c| c.snapshot_requests() == 2)
+        .await;
+    // Resolved against the old copy this would answer "Opening"; it must wait for the new one.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    // Time for the server's threads to take the datagram, if they were going to.
+    for _ in 0..1000 {
+        tokio::task::yield_now().await;
+    }
+    f.control.release();
+    assert_eq!(body(&f.udp_recv().await)["data"], "Changed");
+}
+
+#[tokio::test]
+async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    f.control
+        .hold
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.control.set_name("Second");
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 5,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    f.control
+        .wait_for("the resync request", |c| c.snapshot_requests() == 2)
+        .await;
+    // With the snapshot out the actor reads no broadcasts: more than the tap holds fill it.
+    let drained = async |extra: u64| {
+        for seq in 1..=extra {
+            f.out
+                .send(ServerMessage::Runtime {
+                    seq,
+                    changes: vec![],
+                })
+                .await
+                .unwrap();
+        }
+        // The fan-out task has taken every message (and, as it takes the next only after
+        // offering the one before, offered all but possibly the last).
+        while f.out.capacity() < f.out.max_capacity() {
+            tokio::task::yield_now().await;
+        }
+    };
+    guard("the broadcasts to be fanned out", async {
+        drained(1100).await;
+        drained(1).await;
+    })
+    .await;
+    f.control.set_name("Third");
+    f.control.release();
+    // The held answer ("Second") is installed, then the lag is noticed and a third snapshot
+    // taken ("Third").
+    f.control
+        .wait_for("the rebuild request", |c| c.snapshot_requests() == 3)
+        .await;
+    guard("the rebuilt copy", async {
+        loop {
+            f.udp_send(&msg("/cue/1/name", vec![])).await;
+            if body(&f.udp_recv().await)["data"] == "Third" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_tcp_peer_that_never_reads_is_closed_and_stalls_nobody() {
+    let mut ws = test_workspace();
+    ws.cue_lists[0].cues[0].notes = "x".repeat(1200);
+    let f = fixture_with(ws, |c| c.write_timeout = Duration::from_millis(200)).await;
+    // A small receive buffer, so that a few MB of replies are more than the two sockets hold
+    // (the server drops replies it cannot queue: the queue is what it can hold, not the flood).
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let a = Tcp {
+        stream: socket
+            .connect((Ipv4Addr::LOCALHOST, f.tcp_port).into())
+            .await
+            .unwrap(),
+        decoder: SlipDecoder::default(),
+        frames: Vec::new(),
+    };
+    let frame = slip_encode(&encode_message(&read_notes()).unwrap());
+    let burst: Vec<u8> = frame
+        .iter()
+        .copied()
+        .cycle()
+        .take(frame.len() * 100)
+        .collect();
+    // The actor answers far faster than the writer drains, so most replies are dropped at the
+    // queue (at most 16 per read, and 256 queued); enough get through only if the flood is
+    // large: the server's send buffer alone can take a few MB.
+    for _ in 0..8000 {
+        // The server may close the connection part-way: that is what is being tested.
+        if !a.try_write_all(&burst).await {
+            break;
+        }
+    }
+    // Others are served meanwhile.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    f.wait_stats("the stalled connection to be closed", |s| {
+        s.tcp_connections == 0
+    })
+    .await;
+    drop(a);
+    let mut b = f.tcp().await;
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["data"], "Opening");
+}
+
+#[tokio::test]
+async fn an_idle_connection_is_closed_to_make_room_and_a_subscribed_one_is_not() {
+    let f = fixture_with(test_workspace(), |c| {
+        c.max_tcp_connections = 2;
+        c.tcp_idle_evict = Duration::ZERO;
+    })
+    .await;
+    let mut a = f.tcp().await;
+    a.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
+    let mut b = f.tcp().await;
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    // Full: a, the one silent longest, is closed for c.
+    let mut c = f.tcp().await;
+    c.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&c.recv().await.unwrap())["status"], "ok");
+    assert!(
+        a.recv().await.is_none(),
+        "the oldest idle connection stayed"
+    );
+    assert_eq!(f.stats().tcp_refused, 0);
+    f.control
+        .wait_for("the eviction log", |s| {
+            s.logs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("OSC server closed an idle TCP connection"))
+        })
+        .await;
+    // b stayed.
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+
+    // Subscribed connections are never closed for this: with the table full of them the next
+    // is refused.
+    b.send(&msg("/updates", vec![OscType::Int(1)])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    c.send(&msg("/updates", vec![OscType::Int(1)])).await;
+    assert_eq!(body(&c.recv().await.unwrap())["status"], "ok");
+    let mut d = f.tcp().await;
+    assert!(d.recv().await.is_none());
+    assert_eq!(f.stats().tcp_refused, 1);
+}
+
+#[tokio::test]
+async fn input_that_waited_for_the_first_snapshot_too_long_is_dropped() {
+    let f = fixture_held(test_workspace(), true, |c| c.max_input_age = Duration::ZERO).await;
+    for _ in 0..3 {
+        f.udp_send(&msg("/go", vec![])).await;
+    }
+    f.control
+        .wait_for("the first snapshot request", |c| c.snapshot_requests() == 1)
+        .await;
+    f.control.release();
+    f.wait_stats("the three GOs to be dropped", |s| s.inputs_dropped == 3)
+        .await;
+    assert!(f.control.inputs().is_empty());
+}
+
+#[tokio::test]
+async fn a_passcode_changed_by_an_edit_ends_every_session() {
+    let f = fixture(with_passcode("sesame")).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    let mut settings = with_passcode("hunter2").settings;
+    settings.osc_passcode = Some("hunter2".into());
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![Upsert::Settings {
+                name: "test".into(),
+                settings: Box::new(settings),
+            }],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    guard("the session to end", async {
+        loop {
+            t.send(&msg("/cue/1/name", vec![])).await;
+            if body(&t.recv().await.unwrap())["status"] == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    t.send(&msg("/connect", vec![text("hunter2")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
 }

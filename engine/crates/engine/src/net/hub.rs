@@ -267,3 +267,79 @@ mod tests {
         assert!(r.rx.try_recv().is_err());
     }
 }
+
+#[cfg(test)]
+mod tap_tests {
+    use futures_util::FutureExt;
+    use openlab_core::protocol::{DocumentState, LogLevel};
+
+    use super::*;
+
+    fn tap(capacity: usize) -> (Tap, mpsc::Receiver<ServerMessage>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (
+            Tap {
+                tx,
+                lagged: Arc::new(AtomicBool::new(false)),
+                wake: Arc::new(Notify::new()),
+            },
+            rx,
+        )
+    }
+
+    fn runtime(seq: u64) -> ServerMessage {
+        ServerMessage::Runtime {
+            seq,
+            changes: vec![],
+        }
+    }
+
+    #[test]
+    fn only_the_messages_that_change_the_workspace_are_forwarded() {
+        let (tap, mut rx) = tap(8);
+        tap.offer(&runtime(1));
+        tap.offer(&ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![],
+            deletes: vec![],
+        });
+        tap.offer(&ServerMessage::Document {
+            document: DocumentState {
+                path: None,
+                dirty: false,
+                can_undo: false,
+                can_redo: false,
+            },
+        });
+        tap.offer(&ServerMessage::Log {
+            level: LogLevel::Info,
+            message: String::new(),
+        });
+        tap.offer(&ServerMessage::Meters {
+            outputs: vec![],
+            cues: vec![],
+        });
+        tap.offer(&ServerMessage::Progress { items: vec![] });
+        assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 3);
+        assert!(!tap.lagged.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_full_queue_marks_the_tap_lagged_wakes_the_consumer_and_stops_copying() {
+        let (tap, mut rx) = tap(2);
+        tap.offer(&runtime(1));
+        tap.offer(&runtime(2));
+        assert!(!tap.lagged.load(Ordering::Acquire));
+        tap.offer(&runtime(3));
+        assert!(tap.lagged.load(Ordering::Acquire));
+        // The wake is stored: a consumer that was idle sees it.
+        assert!(tap.wake.notified().now_or_never().is_some());
+        // Lagged: nothing more is queued, even with room, until the consumer clears the flag.
+        while rx.try_recv().is_ok() {}
+        tap.offer(&runtime(4));
+        assert!(rx.try_recv().is_err());
+        tap.lagged.store(false, Ordering::Release);
+        tap.offer(&runtime(5));
+        assert!(rx.try_recv().is_ok());
+    }
+}

@@ -156,8 +156,10 @@ impl WsServer {
             });
         let (osc, tap) = match osc_bound {
             Some((bound, osc_config)) => {
-                let (running, tap) = osc::start(&runtime, bound, osc_config, inbox.clone());
-                (Some(running), Some(tap))
+                match osc::start(&runtime, bound, osc_config, inbox.clone()) {
+                    Some((running, tap)) => (Some(running), Some(tap)),
+                    None => (None, None),
+                }
             }
             None => (None, None),
         };
