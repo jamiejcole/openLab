@@ -467,7 +467,8 @@ final class AppControllerTests: XCTestCase {
         await disconnect()
         await assertEventually {
             await self.sessionScheduler.fire()
-            return self.app.session.connectionState == .connected && self.app.session.stores["doc-1"]?.connectionState == .connected
+            let session = self.app.session
+            return session.connectionState == .connected && session.stores["doc-1"]?.connectionState == .connected
         }
         await settle()
         XCTAssertEqual(app.windows.count, 1)
@@ -485,7 +486,9 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(closeMessages().isEmpty)
     }
 
-    private func newRequests() -> Int { engine.requestCount { if case .new = $0 { return true } else { return false } } }
+    private func newRequests() -> Int {
+        engine.requestCount { if case .new = $0 { return true } else { return false } }
+    }
 
     func testDirtySingleWorkspaceNewDontSaveRetriesWithDiscard() async throws {
         try await build(.single)
