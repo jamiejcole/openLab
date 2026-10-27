@@ -1,0 +1,8 @@
+{
+  "type": "result",
+  "id": 49,
+  "error": {
+    "code": "unsaved_changes",
+    "message": "the workspace has unsaved changes"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "request",
+  "id": 48,
+  "request": {
+    "type": "open_recovery",
+    "workspace_id": "00000000-0000-0000-0000-000000000007",
+    "path_hash": "0123456789abcdef",
+    "modified_ms": 1700000000000,
+    "discard_changes": true
+  }
+}
