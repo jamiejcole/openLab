@@ -4,6 +4,8 @@ How cues run: lifecycle states, timing, continue modes, groups, GO and the playh
 
 Status: M2.1–M2.8, M2.10, M2.11, M2.14, M2.15, M2.24 (CUE-02, CUE-03, CUE-04, CUE-05 with preview/audition on the engine side (the separate audition output, PB-09, is later), CUE-06 and NFR-07 engine side, CT-10 audio levels, CT-11..CT-17, CT-19..CT-22, PB-01..PB-05, CL-06 engine side). See [Not yet](#not-yet).
 
+QLab 5 details that the published docs settle or leave open (groups, control cues, Fade, Panic, preview) are recorded point by point in [handoff/decisions/qlab-confirm.md](handoff/decisions/qlab-confirm.md); behaviour marked "unconfirmed" there is a decision, not a QLab fact.
+
 Two rules decided by the user (M2.13):
 
 1. **Second trigger is ignored** by default. Start, GO or a continue on a cue that is already active (pre-waiting, running, post-waiting, fading or stopping) does nothing: no restart, no voice action, timers untouched; it reports a `TriggerIgnored { cue, state }` warning. GO still counts as a GO and moves the playhead as usual. A trigger on a **paused** cue resumes it. This is the cue's `second_trigger` option `nothing`; the other options (M2.14, QLab 5) are in [Second trigger](#second-trigger-m214).
