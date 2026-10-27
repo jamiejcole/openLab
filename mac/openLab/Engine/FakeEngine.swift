@@ -207,6 +207,7 @@ final class FakeEngine: EngineTransport {
         let cue = ModelID("00000000-0000-0000-0000-000000000021")
         switch action {
         case .go: fakeState(.running, cue, doc: doc)
+        case .start(let started): fakeState(.running, started, doc: doc)
         case .pause(cue): fakeState(.paused, cue, doc: doc)
         case .resume(cue): fakeState(.running, cue, doc: doc)
         case .stop(cue, _), .hardStop(cue), .panicCue(cue): fakeState(.idle, cue, doc: doc)

@@ -30,7 +30,18 @@ final class AppController {
     /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
     var keyCacheCount: Int { keyCache.count }
     private var keySubs: [ModelID: AnyCancellable] = [:]
-    private var keyCache: [ObjectIdentifier: (settings: JSONValue?, keys: TransportKeys)] = [:]
+    private var keyCache: [ObjectIdentifier: (settings: JSONValue?, shadowed: Set<KeyChord>, keys: TransportKeys)] =
+        [:]
+    /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).
+    var isRecordingKey: @MainActor () -> Bool = { NSApp.keyWindow?.firstResponder is HotkeyRecorder }
+    /// Menu-bar keys outside the Transport menu; a cue hotkey on one never fires (Cmd-Q stays Quit).
+    var menuChords: @MainActor () -> Set<KeyChord> = HotkeyRules.currentMenuChords
+    /// Cues fired by a held key that want `trigger_released`, by key code.
+    private var heldTriggers: [UInt16: [(store: WorkspaceStore, cue: ModelID)]] = [:]
+    /// A modal panel or alert is running (cue hotkeys must not reach through it).
+    var isModalUp: @MainActor () -> Bool = { NSApp.modalWindow != nil }
+    private var resignObserver: Any?
+    private var keyUpMonitor: Any?
 
     private var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
@@ -46,6 +57,12 @@ final class AppController {
         self.session = session
         self.scheduler = scheduler
         self.timeout = timeout
+        // A key released while the app is inactive never reaches the monitor: forget held keys.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in  // No trigger_released is sent: a cue is never stopped without an observed key release.
+            MainActor.assumeIsolated { self?.heldTriggers = [:] }
+        }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
         launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
@@ -70,8 +87,12 @@ final class AppController {
             windows[doc] = wc
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
-            keySubs[doc] = store.changes.sink { [weak self] _ in
-                MainActor.assumeIsolated { _ = self?.keys(for: store) }
+            // Only model changes can move keys (runtime ticks must not walk every cue).
+            keySubs[doc] = store.changes.sink { [weak self] change in
+                switch change {
+                case .reset, .model: MainActor.assumeIsolated { _ = self?.keys(for: store) }
+                case .runtime, .progress, .notices: break
+                }
             }
             if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.window?.title = n.name }
             show(doc)
@@ -83,6 +104,7 @@ final class AppController {
     private func dropWindow(_ doc: ModelID) {
         guard let wc = windows.removeValue(forKey: doc) else { return }
         keyCache[ObjectIdentifier(wc.store)] = nil
+        for key in heldTriggers.keys { heldTriggers[key]?.removeAll { $0.store === wc.store } }
         keySubs[doc] = nil
         wc.window?.close()
     }
@@ -142,6 +164,10 @@ final class AppController {
             let consumed = MainActor.assumeIsolated { self?.handleKeyDown(event) == nil }
             return consumed ? nil : event
         }
+        keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleKeyUp(event) }
+            return event
+        }
     }
 
     /// The monitor's body, callable from tests. Esc always goes on to the responder. A key-map
@@ -153,11 +179,58 @@ final class AppController {
             firePanic()
             return event
         }
-        guard let chord = KeyChord(event: event), let command = frontKeys.command(for: chord), canPerform(command)
-        else { return event }
-        let isRepeat = event.isARepeat
-        Task { await perform(command, isRepeat: isRepeat) }
-        return nil
+        guard !isRecordingKey(), let chord = KeyChord(event: event) else { return event }
+        if let command = frontKeys.command(for: chord), canPerform(command) {
+            let isRepeat = event.isARepeat
+            Task { await perform(command, isRepeat: isRepeat) }
+            return nil
+        }
+        return fireCueHotkeys(chord, event: event) ? nil : event
+    }
+
+    /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6). The
+    /// wire has no app-scope hotkey message yet (m5-protocol-requests.md), so each workspace gets a
+    /// `start` for its matching cues; `start` applies the cue's second-trigger rule. Typing keys
+    /// stay with a text field being edited; a held key fires once; a menu key is never taken.
+    private func fireCueHotkeys(_ chord: KeyChord, event: NSEvent) -> Bool {
+        if chord.typesCharacters, isTextEditing() { return false }
+        if menuChords().contains(chord) || cueHotkeysBlocked() { return false }
+        var matched = false
+        for (_, store) in session.stores.sorted(by: { $0.key.raw < $1.key.raw }) {
+            for id in cueHotkeys(for: store).filter({ $0.chord == chord }).map(\.cue) {
+                matched = true
+                if event.isARepeat { continue }
+                if store.model?.cue(id)?.raw["second_trigger_on_release"] == .bool(true),
+                    !(heldTriggers[event.keyCode] ?? []).contains(where: { $0.store === store && $0.cue == id })
+                {
+                    heldTriggers[event.keyCode, default: []].append((store, id))
+                }
+                Task { await run(.start(cue: id), on: store) }
+            }
+        }
+        return matched
+    }
+
+    /// Keys stay with a modal panel or alert, a sheet, the launcher and a panel that is not ours
+    /// (file open/save). Monitoring windows such as the Log window, and no key window at all (app
+    /// active, windows behind), still let hotkeys fire.
+    private func cueHotkeysBlocked() -> Bool {
+        if isModalUp() { return true }
+        guard let key = keyWindow() else { return false }
+        return key.attachedSheet != nil || key === launcher.window || key is NSPanel
+    }
+
+    /// The cue hotkeys of `store` that fire: a chord equal to one of its transport keys belongs to
+    /// the transport key (logged once in `keys(for:)`).
+    private func cueHotkeys(for store: WorkspaceStore) -> [(cue: ModelID, chord: KeyChord)] {
+        let taken = Set(keys(for: store).chords.values)
+        return (store.model?.cueHotkeys ?? []).filter { !taken.contains($0.chord) }
+    }
+
+    /// Key up: `trigger_released` for the cues this key fired that use second-trigger-on-release.
+    func handleKeyUp(_ event: NSEvent) {
+        guard let held = heldTriggers.removeValue(forKey: event.keyCode) else { return }
+        for (store, id) in held { Task { await run(.triggerReleased(cue: id), on: store) } }
     }
 
     private func firePanic() { Task { _ = await panicAll() } }
@@ -194,10 +267,22 @@ final class AppController {
     func keys(for store: WorkspaceStore) -> TransportKeys {
         let settings = store.model?.settings
         let id = ObjectIdentifier(store)
-        if let cached = keyCache[id], cached.settings == settings { return cached.keys }
-        let keys = TransportKeys(settings: settings)
-        keyCache[id] = (settings, keys)
-        for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
+        let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
+        let cached = keyCache[id]
+        let keys =
+            cached?.settings == settings
+            ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
+        // Transport keys win over cue hotkeys: a cue hotkey on a transport chord does not fire.
+        let shadowed = cueChords.intersection(keys.chords.values)
+        if let cached, cached.settings == settings, cached.shadowed == shadowed { return cached.keys }
+        keyCache[id] = (settings, shadowed, keys)
+        if cached?.settings != settings || cached == nil {
+            for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
+        }
+        for chord in shadowed.subtracting(cached?.shadowed ?? []) {
+            _ = store.receive(
+                .log(.warn, "cue hotkey \(chord.display) is a transport key here: the cue will not fire from it"))
+        }
         return keys
     }
 
