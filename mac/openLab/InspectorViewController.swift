@@ -19,6 +19,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let preWaitField = NSTextField()
     let postWaitField = NSTextField()
     let targetField = NSTextField()
+    let oscField = NSTextField()
+    let hotkeyField = HotkeyRecorder()
+    let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
+    let secondTriggerPopup = NSPopUpButton()
+    let onReleaseCheck = NSButton(checkboxWithTitle: loc("inspector.onRelease"), target: nil, action: nil)
+    /// Seams: the workspace's transport keys and the menu bar's keys, for hotkey validation.
+    var transportKeys: (() -> TransportKeys)?
+    var menuChords: @MainActor () -> Set<KeyChord> = HotkeyRules.currentMenuChords
+    static let secondTriggers = [
+        "nothing", "panic", "stop", "hard_stop", "hard_stop_and_restart", "devamp", "play_next", "play_previous",
+    ]
     let durationLabel = NSTextField(labelWithString: "")
     let kindIcon = NSImageView()
     let notesView = NSTextView()
@@ -52,6 +63,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return store.model?.cue(id)
     }
 
+    /// `triggers` is replaced whole, so an edit made before the engine answered the previous one
+    /// (OSC typed, then a key recorded) must start from what was sent, not from the stale model.
+    private var pendingTriggers: [ModelID: JSONValue] = [:]
+
+    /// The selected cue as edits should see it: the model's, with unanswered triggers applied.
+    private var cueForEdit: Cue? {
+        guard var c = cue else { return nil }
+        if let t = pendingTriggers[c.id] { c.raw.set("triggers", t) }
+        return c
+    }
+
     func field(_ f: InspectorField) -> NSTextField? {
         switch f {
         case .number: return numberField
@@ -59,6 +81,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .preWait: return preWaitField
         case .postWait: return postWaitField
         case .target: return targetField
+        case .osc: return oscField
         case .notes: return nil
         }
     }
@@ -73,7 +96,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         emptyLabel.textColor = .tertiaryLabelColor
         for (f, id) in [
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
-            (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
+            (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget), (oscField, AX.inspectorOSC),
         ] {
             f.setAX(id)
             f.delegate = self
@@ -164,6 +187,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         item.label = loc("inspector.tab.basics")
         item.view = columns
         tabView.addTabViewItem(item)
+        tabView.addTabViewItem(triggersTab(row: row, column: column))
         tabView.setAX(AX.inspectorTabs)
 
         for v in [tabView, emptyLabel, messageLabel] {
@@ -190,6 +214,75 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             }
         }
         render()
+    }
+
+    /// The Triggers tab: hotkey (recorder, Clear), second trigger and on-release, OSC address.
+    private func triggersTab(
+        row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
+    ) -> NSTabViewItem {
+        hotkeyField.setAX(AX.inspectorHotkey)
+        hotkeyField.isEditable = false
+        hotkeyField.isSelectable = false
+        hotkeyField.isBezeled = true
+        hotkeyField.bezelStyle = .roundedBezel
+        hotkeyField.placeholderString = loc("inspector.hotkey.click")
+        hotkeyField.onRecord = { [weak self] event in
+            if let chord = KeyChord(event: event) { self?.record(chord) }
+        }
+        hotkeyClear.setAX(AX.inspectorHotkeyClear)
+        hotkeyClear.target = self
+        hotkeyClear.action = #selector(clearHotkey)
+        secondTriggerPopup.setAX(AX.inspectorSecondTrigger)
+        secondTriggerPopup.target = self
+        secondTriggerPopup.action = #selector(popupChanged(_:))
+        for key in Self.secondTriggers {
+            secondTriggerPopup.menu?.addItem(
+                NSMenuItem(title: loc("inspector.secondTrigger.\(key)"), action: nil, keyEquivalent: ""))
+        }
+        onReleaseCheck.setAX(AX.inspectorOnRelease)
+        onReleaseCheck.target = self
+        onReleaseCheck.action = #selector(checkChanged(_:))
+        oscField.placeholderString = loc("inspector.osc.placeholder")
+        hotkeyField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        oscField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        let hotkeyRow = NSStackView(views: [hotkeyField, hotkeyClear])
+        hotkeyRow.spacing = 6
+        let left = column(
+            [
+                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck, row(loc("inspector.osc"), oscField),
+            ], nil)
+        let right = column([row(loc("inspector.secondTrigger"), secondTriggerPopup)], 200)
+        let columns = NSStackView(views: [left, right])
+        columns.alignment = .top
+        columns.spacing = 40
+        columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let item = NSTabViewItem(identifier: "triggers")
+        item.label = loc("inspector.tab.triggers")
+        item.view = columns
+        return item
+    }
+
+    /// A recorded chord: refused with a message, or sent as the cue's new hotkey. Returns whether
+    /// it was sent. The other trigger fields are kept.
+    @discardableResult
+    func record(_ chord: KeyChord) -> Bool {
+        guard let cue = cueForEdit, let model = store.model else { return false }
+        if let error = HotkeyRules.validate(
+            chord, for: cue.id, in: model, keys: transportKeys?() ?? TransportKeys(settings: model.settings),
+            menuChords: menuChords())
+        {
+            messageLabel.stringValue = loc(HotkeyRules.messageKey(error))
+            return false
+        }
+        messageLabel.stringValue = ""
+        send(InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON)), cue: cue.id, key: "hotkey", revert: [])
+        return true
+    }
+
+    @objc func clearHotkey() {
+        guard let cue = cueForEdit, cue.raw["triggers"]?["hotkey"].map({ $0 != .null }) == true else { return }
+        messageLabel.stringValue = ""
+        send(InspectorEdit.setTriggers(cue, hotkey: .some(nil)), cue: cue.id, key: "hotkey", revert: [])
     }
 
     private func fillPopups() {
@@ -265,6 +358,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         continuePopup.selectItem(at: Self.continueModes.firstIndex(of: mode) ?? 0)
         // Auto-follow takes its post-wait from the action's end (core: not used), so it is not editable.
         postWaitField.isEnabled = mode != "auto_follow"
+        let hotkey = cue.raw["triggers"]?["hotkey"].flatMap { $0 == .null ? nil : $0 }
+        hotkeyField.stringValue = hotkey.map { KeyChord(hotkey: $0)?.display ?? ($0["key"]?.stringValue ?? "") } ?? ""
+        hotkeyClear.isEnabled = hotkey != nil
+        onReleaseCheck.isEnabled = hotkey != nil
+        onReleaseCheck.state = cue.raw["second_trigger_on_release"] == .bool(true) ? .on : .off
+        let second = cue.raw["second_trigger"]?.stringValue ?? "nothing"
+        secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: second) ?? 0)
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
     }
@@ -275,7 +375,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     @discardableResult
     func commit(_ f: InspectorField) -> Bool {
         dirty.remove(f)
-        guard let cue, let model = store.model else { return true }
+        guard let cue = cueForEdit, let model = store.model else { return true }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
         switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
         case .failure(let r):
@@ -318,9 +418,15 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         editSeq[seqKey] = n
         nextTask += 1
         let taskID = nextTask
+        let property = command.json["property"]
+        let sentTriggers = property?["type"]?.stringValue == "triggers" ? property?["value"] : nil
+        if let sentTriggers { pendingTriggers[cue] = sentTriggers }
         inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
-            defer { inFlight[taskID] = nil }
+            defer {
+                inFlight[taskID] = nil
+                if let sentTriggers, pendingTriggers[cue] == sentTriggers { pendingTriggers[cue] = nil }
+            }
             if case .failure(let error) = await store.send(command: command) {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
@@ -344,6 +450,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .selfTarget: key = "inspector.invalid.selfTarget"
         case .notApplicable: key = "inspector.invalid.notApplicable"
         case .decimalComma: key = "inspector.invalid.decimalComma"
+        case .invalidOSC: key = "inspector.invalid.osc"
         }
         messageLabel.stringValue = loc(key)
     }
@@ -386,6 +493,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let i = sender.indexOfSelectedItem
         if sender === colourPopup, Self.colours.indices.contains(i) {
             send(.setProperty(cue.id, .color(Self.colours[i])), cue: cue.id, key: "colour", revert: [])
+        } else if sender === secondTriggerPopup, Self.secondTriggers.indices.contains(i) {
+            send(
+                .setProperty(cue.id, .secondTrigger(Self.secondTriggers[i])), cue: cue.id, key: "second", revert: [])
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
             send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, key: "continue", revert: [])
         }
@@ -394,6 +504,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     @objc private func checkChanged(_ sender: NSButton) {
         guard let cue else { return }
         let on = sender.state == .on
+        if sender === onReleaseCheck {
+            send(.setProperty(cue.id, .secondTriggerOnRelease(on)), cue: cue.id, key: "release", revert: [])
+            return
+        }
         send(
             .setProperty(cue.id, sender === flaggedCheck ? .flagged(on) : .armed(on)), cue: cue.id,
             key: sender === flaggedCheck ? "flagged" : "armed", revert: [])
