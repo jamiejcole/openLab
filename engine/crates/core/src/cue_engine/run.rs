@@ -195,6 +195,18 @@ pub(super) struct GroupRun {
     pub playlist: Option<PlaylistRun>,
     /// The sample of the last "play next/previous" second trigger: at most one per sample.
     pub skipped: Option<SampleTime>,
+    /// A playlist whose current child broke while playing (QLab check Q2): it starts no further
+    /// child and its action ends on that child's nominal end (the run's `Phase::Action` end).
+    pub halt: Option<Halt>,
+}
+
+/// A halted playlist's auto-follow (see `GroupRun::halt`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Halt {
+    /// Samples after the action's end at which the auto-follow fires: the nominal pre-wait and
+    /// length of every child the playlist would still have played. `None`: one of them has no
+    /// known end (unknown or infinite length, a loop), so the group does not auto-follow.
+    pub rest: Option<SampleTime>,
 }
 
 /// Where a playlist group is in its pass.
