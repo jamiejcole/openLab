@@ -248,6 +248,12 @@ pub enum Input {
         media: Vec<(MediaRef, MediaStatus)>,
         patches: Vec<(PatchId, PatchResolution)>,
     },
+    /// The output device went away (M4.2g, as QLab 5). The binary has already failed the audio
+    /// runs with `ActionFailed { device_lost }`; this hard-stops every other active run (memo,
+    /// Wait, control, Fade and group cues, and runs broken earlier), so no pre-wait, post-wait,
+    /// auto-continue or auto-follow set before the loss fires after the device returns. Loaded
+    /// and settled-broken cues keep their state.
+    DeviceLost,
 }
 
 /// What the binary knows about a media file.
