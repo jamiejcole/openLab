@@ -15,10 +15,13 @@
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
 
-use crate::decode::{FrameSource, MediaError, MediaWarning, scale_round};
+use crate::decode::{FrameSource, MIN_MEDIA_RATE, MediaError, MediaWarning, scale_round};
+use crate::mixer::MAX_SAMPLE_RATE;
 
 /// Target FFT input chunk; the resampler rounds it to a whole number of rate-ratio periods.
 const FFT_CHUNK: usize = 1024;
+
+const RESAMPLE_RATES: std::ops::RangeInclusive<u32> = MIN_MEDIA_RATE..=MAX_SAMPLE_RATE;
 
 struct Rs {
     fft: Fft<f32>,
@@ -62,6 +65,16 @@ impl Pipeline {
         let rs = if rate == device_rate {
             None
         } else {
+            // rubato sizes its FFT chunk from the rate ratio (a 1 Hz source at 48 kHz asks for a
+            // 49-million-frame chunk, gigabytes): refuse rates the decoder would never accept.
+            for r in [rate, device_rate] {
+                if !RESAMPLE_RATES.contains(&r) {
+                    return Err(MediaError::Unsupported(format!(
+                        "resampling {rate} Hz to {device_rate} Hz: rates must be \
+                         {MIN_MEDIA_RATE}..={MAX_SAMPLE_RATE} Hz"
+                    )));
+                }
+            }
             let fft = Fft::<f32>::new(
                 rate as usize,
                 device_rate as usize,
@@ -436,6 +449,22 @@ mod tests {
                 ),
                 "{rate}->{device}: {r:?}"
             );
+        }
+    }
+
+    /// A rate the decoder would refuse must not reach rubato, whose chunk grows with the ratio
+    /// (1 Hz to 48 kHz was a multi-gigabyte allocation found by the decode fuzzer).
+    #[test]
+    fn absurd_rates_are_refused_before_sizing_buffers() {
+        for (from, to) in [(1, 48_000), (7_999, 48_000), (48_000, 1), (48_000, 384_001)] {
+            let p = Preloaded::from_samples(1, from, vec![0.0; 16]);
+            let frames = p.info().frames;
+            let r = Pipeline::new(
+                open_source(Media::Preloaded(p), Seeking::Direct).unwrap(),
+                frames,
+                to,
+            );
+            assert!(matches!(r, Err(MediaError::Unsupported(_))), "{from}->{to}");
         }
     }
 

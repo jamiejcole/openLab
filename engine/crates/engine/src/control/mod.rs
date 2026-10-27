@@ -18,7 +18,7 @@ pub mod plan;
 pub mod runner;
 mod voices;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -206,10 +206,6 @@ pub struct Control {
     deferred: Vec<(SampleTime, Input)>,
     /// Probe answers not yet handed to the engine (sent together as `Availability`).
     pending_media: Vec<(openlab_core::MediaRef, MediaStatus)>,
-    /// Files some cue asks to preload, built on the first probe answer after an edit: a probe
-    /// answer must not scan the whole workspace (2,000 answers would be quadratic, NFR-24).
-    preload_keys: Option<HashSet<String>>,
-    preload_scans: u64,
     ready_media: Vec<String>,
     primes_dirty: bool,
     warnings_dirty: bool,
@@ -297,8 +293,6 @@ impl Control {
             runtime_seq: 0,
             deferred: Vec::new(),
             pending_media: Vec::new(),
-            preload_keys: None,
-            preload_scans: 0,
             ready_media: Vec::new(),
             primes_dirty: true,
             warnings_dirty: true,
@@ -320,6 +314,7 @@ impl Control {
         let now = control.now();
         // A newly opened workspace: tell the engine, report the playheads (docs/cue-engine.md).
         control.engine.model_changed();
+        control.media.sync(&control.ws);
         let mut inputs = vec![Input::Tick];
         inputs.extend(control.sync_workspace(true));
         for input in inputs {
@@ -581,7 +576,7 @@ impl Control {
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        self.engine.model_changed();
+        self.engine.model_changed_cues(footprint);
         self.revision += 1;
         let (upserts, deletes) = model_changes(&self.ws, footprint);
         self.out.send(ServerMessage::ModelChanged {
@@ -589,14 +584,14 @@ impl Control {
             upserts,
             deletes,
         });
+        self.media.sync_cues(&self.ws, footprint);
         self.sync_workspace(false)
     }
 
-    /// Brings media, patches and primes in line with the workspace. `all` reports every patch
-    /// resolution (a newly opened workspace), else only changes.
+    /// Brings patches and primes in line with the workspace (the media catalog is followed by
+    /// the caller: whole for a newly opened workspace, from the footprint for an edit). `all`
+    /// reports every patch resolution (a newly opened workspace), else only changes.
     fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
-        self.media.sync(&self.ws);
-        self.preload_keys = None;
         self.primes_dirty = true;
         self.sync_patches(all)
     }
@@ -836,18 +831,18 @@ impl Control {
             ProbeAnswer::Probed { key, .. } => Some(key.clone()),
             ProbeAnswer::Preloaded { .. } => None,
         };
-        let none = HashSet::new();
-        let preload = match &answer {
-            ProbeAnswer::Probed { .. } => &*self.preload_keys.get_or_insert_with(|| {
-                self.preload_scans += 1;
-                preload_keys(&self.ws)
-            }),
-            ProbeAnswer::Preloaded { .. } => &none,
-        };
-        let wants = |key: &str, probed: &openlab_audio::Probed| {
-            probed.preload_advised() || preload.contains(key)
-        };
-        if let Some(status) = self.media.answer(answer, wants) {
+        if let ProbeAnswer::Preloaded { key, .. } = &answer {
+            // A preload that lands changes what a stream of the file reads: primes built from
+            // the file before it are rebuilt from memory, before the operator's GO needs them.
+            let was = self.media.is_preloaded(key);
+            let key = key.clone();
+            self.media.answer(answer);
+            if self.media.is_preloaded(&key) != was {
+                self.primes_dirty = true;
+            }
+            return;
+        }
+        if let Some(status) = self.media.answer(answer) {
             self.pending_media.push(status);
             if let Some(key) = key {
                 self.ready_media.push(key);
@@ -1465,12 +1460,6 @@ impl Control {
         self.checks.builds()
     }
 
-    /// Whole-workspace scans for preload requests so far (a cost measure: one per model version
-    /// that gets probe answers, however many answers).
-    pub fn preload_scans(&self) -> u64 {
-        self.preload_scans
-    }
-
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
@@ -1502,6 +1491,16 @@ impl Control {
         self.streamer.open_streams()
     }
 
+    /// Starts that used a primed stream (not a cold start).
+    pub fn prime_hits(&self) -> u64 {
+        self.voices.prime_hits()
+    }
+
+    /// Whether the cue's primed stream reads preloaded samples.
+    pub fn primed_from_memory(&self, cue: CueId) -> bool {
+        self.voices.primed_from_memory(cue)
+    }
+
     /// Cues with a primed stream.
     pub fn primed(&self) -> Vec<CueId> {
         let mut v: Vec<CueId> = self.voices.primed().collect();
@@ -1514,9 +1513,19 @@ impl Control {
         self.media.pending()
     }
 
+    /// Preload jobs started and not answered yet.
+    pub fn preloads_pending(&self) -> usize {
+        self.media.preloads_pending()
+    }
+
     /// Probe workers replaced because they were stuck.
     pub fn abandoned_probe_workers(&self) -> usize {
         self.media.abandoned_workers()
+    }
+
+    /// Cues the media catalog has read from the workspace (see `MediaCatalog::cues_read`).
+    pub fn media_cues_read(&self) -> u64 {
+        self.media.cues_read()
     }
 
     /// Memory taken from the preload budget.
@@ -1733,23 +1742,6 @@ fn groups(cues: &[Cue], f: &mut impl FnMut(CueId)) {
             groups(children, f);
         }
     }
-}
-
-fn preload_keys(ws: &Workspace) -> HashSet<String> {
-    let mut keys = HashSet::new();
-    for list in &ws.cue_lists {
-        visit(&list.cues, &mut |c| {
-            if let CueKind::Audio {
-                media: Some(m),
-                preload: true,
-                ..
-            } = &c.kind
-            {
-                keys.insert(m.as_str().to_owned());
-            }
-        });
-    }
-    keys
 }
 
 fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
