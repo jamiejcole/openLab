@@ -71,11 +71,13 @@ fn touches_files(m: &ClientMessage) -> bool {
     matches!(
         m,
         ClientMessage::Request {
-            request: Request::New
+            request: Request::New { .. }
                 | Request::Open { .. }
                 | Request::Save
                 | Request::SaveAs { .. }
-                | Request::Revert
+                | Request::Revert { .. }
+                | Request::OpenRecovery { .. }
+                | Request::ScanRecovery
                 | Request::Relink { .. },
             ..
         }
