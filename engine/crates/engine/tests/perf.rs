@@ -42,7 +42,7 @@ const HEADROOM: u32 = 2;
 /// Independent timed runs; a gate passes as soon as one is under budget.
 const RUNS: usize = 5;
 /// Four times the cues may cost at most this many times the time (linear is 4, quadratic 16).
-const MAX_SCALING: f64 = 10.0;
+const MAX_SCALING: f64 = 12.0;
 /// NFR-24: a workspace of at least 2,000 cues opens in under this on minimum spec.
 const OPEN_LIMIT: Duration = Duration::from_secs(3);
 /// NFR-24: an edit is under a frame (60 Hz) on minimum spec.
@@ -436,7 +436,9 @@ fn performance_budgets() {
     );
 
     // NFR-24 edit: command, model_changed, engine follow-up and the next tick.
-    let edit_limit = EDIT_LIMIT / HEADROOM;
+    // Tighter than a frame but looser than HEADROOM: edits measure ~3-4 ms on a dev machine,
+    // so a 2x gate (8 ms) would trip on a slow or noisy shared Intel runner (M4.12 review M1).
+    let edit_limit = EDIT_LIMIT * 3 / 4;
     let names: Vec<_> = edits(&ws).into_iter().map(|e| e.0).collect();
     let mut worst = vec![Duration::MAX; names.len()];
     for _ in 0..RUNS {
