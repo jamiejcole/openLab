@@ -128,6 +128,7 @@ pub enum WireProblem {
     TargetWrongKind {
         target: CueId,
     },
+    NothingToFade,
     NoMedia,
     MediaMissing {
         media: MediaRef,
@@ -156,6 +157,7 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::TargetMissing { target } => Self::TargetMissing { target: *target },
             CueProblem::TargetSelf => Self::TargetSelf,
             CueProblem::TargetWrongKind { target } => Self::TargetWrongKind { target: *target },
+            CueProblem::NothingToFade => Self::NothingToFade,
             CueProblem::NoMedia => Self::NoMedia,
             CueProblem::MediaMissing { media } => Self::MediaMissing {
                 media: media.clone(),
