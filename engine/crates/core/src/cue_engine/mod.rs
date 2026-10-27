@@ -505,7 +505,13 @@ impl CueEngine {
             Input::StopAll => self.stop_all(cx),
             Input::PanicCue { cue } => {
                 if self.known(cue, cx) {
-                    self.panic_tree(cue, cx);
+                    // A second press on a cue already fading out in a panic stops it at once
+                    // (QLab check Q7).
+                    if self.fading_in_panic(cue, cx) {
+                        self.stop_tree(cue, None, cx);
+                    } else {
+                        self.panic_tree(cue, cx);
+                    }
                 }
             }
             Input::PauseAll => self.pause_all(cx),
