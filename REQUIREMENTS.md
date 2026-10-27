@@ -302,7 +302,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 20. Documentation
 - [ ] **DOC-01** `v0.0.1` User manual (getting started, every cue type, show-day checklist).
-- [ ] **DOC-02** `v0.0.1` OSC API reference.
+- [x] **DOC-02** `v0.0.1` OSC API reference.
 - [x] **DOC-03** `v0.0.1` Workspace file format specification.
 - [ ] **DOC-04** `v0.0.1` Contributor guide (build, architecture, testing rules).
 

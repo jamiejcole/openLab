@@ -57,6 +57,13 @@ async fn next(c: &mut Client) -> ServerMessage {
     }
 }
 
+/// `goodbye { shutdown }`, then waits for the server to close the connection: dropping a client
+/// that still has unread messages would reset the socket and could lose the goodbye.
+async fn shut_down(c: &mut Client) {
+    send(c, ClientMessage::Goodbye { shutdown: true }).await;
+    while let Ok(Some(Ok(_))) = tokio::time::timeout(GUARD, c.next()).await {}
+}
+
 async fn send(c: &mut Client, message: ClientMessage) {
     c.send(Message::text(encode_client(&message).unwrap()))
         .await
@@ -224,7 +231,7 @@ async fn a_second_client_gets_the_new_snapshot_and_keeps_receiving_changes() {
             }
         }
 
-        send(&mut a, ClientMessage::Goodbye { shutdown: true }).await;
+        shut_down(&mut a).await;
     })
     .await
     .expect("hang: the session over the wire did not finish");
@@ -345,7 +352,7 @@ async fn a_stalled_open_fails_with_io_and_the_requester_keeps_receiving_broadcas
         .await;
         assert!(matches!(result_of(&mut a, 3).await, Outcome::Ok(_)));
         let _ = snapshot_next(&mut b).await;
-        send(&mut a, ClientMessage::Goodbye { shutdown: true }).await;
+        shut_down(&mut a).await;
     })
     .await
     .expect("hang");
@@ -376,21 +383,44 @@ async fn a_lost_snapshot_answer_does_not_blind_a_connection_for_good() {
         assert!(matches!(result_of(&mut a, 9).await, Outcome::Ok(_)));
         send(&mut b, rename_command(2, "while stuck")).await;
         assert!(matches!(result_of(&mut b, 2).await, Outcome::Ok(_)));
-        // A stops holding broadcasts and resyncs: it gets a snapshot with B's edit ...
-        let resynced = snapshot_next(&mut a).await;
-        assert_eq!(
-            resynced.workspace.find_cue(id(1)).unwrap().name,
-            "while stuck"
-        );
+        // A stops holding broadcasts and resyncs. It learns of B's edit either in the snapshot
+        // or, if the edit came after the resync, as an ordinary change.
+        let mut revision = 0;
+        loop {
+            match next(&mut a).await {
+                ServerMessage::Snapshot { snapshot } => {
+                    revision = snapshot.revision;
+                    if snapshot.workspace.find_cue(id(1)).unwrap().name == "while stuck" {
+                        break;
+                    }
+                }
+                ServerMessage::ModelChanged {
+                    revision: r,
+                    upserts,
+                    ..
+                } => {
+                    assert_eq!(r, revision + 1, "no gap after the resync");
+                    revision = r;
+                    let renamed = upserts.iter().any(|u| {
+                        matches!(u, openlab_core::protocol::Upsert::Cue { cue, .. }
+                            if cue.id == id(1) && cue.name == "while stuck")
+                    });
+                    if renamed {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
         // ... and then B's later edits as ordinary changes.
         send(&mut b, rename_command(3, "later")).await;
         loop {
-            if let ServerMessage::ModelChanged { revision, .. } = next(&mut a).await {
-                assert_eq!(revision, resynced.revision + 1);
+            if let ServerMessage::ModelChanged { revision: r, .. } = next(&mut a).await {
+                assert_eq!(r, revision + 1);
                 break;
             }
         }
-        send(&mut b, ClientMessage::Goodbye { shutdown: true }).await;
+        shut_down(&mut b).await;
     })
     .await
     .expect("hang");
