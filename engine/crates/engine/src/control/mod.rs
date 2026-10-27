@@ -63,6 +63,11 @@ use voices::{Effects, Env, Voices};
 
 /// The longest the loop sleeps without a reason to wake (ARCHITECTURE §3.2).
 pub const MAX_WAIT: Duration = Duration::from_millis(5);
+/// The longest floor on the wait after a tick that saw sample time standing still (see
+/// [`stall_floor`]): the mixer renders whole blocks, so waiting less for a deadline to enter
+/// the window only spins the loop (a stalled device before the watchdog declares it lost, or
+/// the wake between two callbacks).
+pub const MIN_STALL_WAIT: Duration = Duration::from_millis(1);
 /// Progress and meters go out at most this often (docs/protocol.md §4).
 pub const REPORT_HZ: u64 = 30;
 /// Cues primed from each playhead (ARCHITECTURE §3.5).
@@ -238,6 +243,9 @@ pub struct Control {
     /// `now` never goes back: after a reopen with a smaller block it stays at least where it
     /// was.
     now_floor: SampleTime,
+    /// `samples_rendered` at the last tick, and whether that tick saw it unchanged.
+    last_tick_rendered: SampleTime,
+    last_tick_stalled: bool,
     cue_outputs: usize,
     revision: u64,
     saved_revision: u64,
@@ -336,6 +344,8 @@ impl Control {
             rate,
             block,
             now_floor: 0,
+            last_tick_rendered: 0,
+            last_tick_stalled: false,
             cue_outputs,
             revision: 0,
             saved_revision: 0,
@@ -412,6 +422,9 @@ impl Control {
     /// One wake of the loop: feedback from the mixer, the streams and the probes, due
     /// deadlines, priming, reports, then `pump` (ARCHITECTURE §3.2; docs/audio.md: every tick).
     pub fn tick(&mut self) {
+        let rendered = self.mixer.samples_rendered();
+        self.last_tick_stalled = rendered == self.last_tick_rendered;
+        self.last_tick_rendered = rendered;
         self.poll_device();
         let now = self.now();
         self.flush_media(now);
@@ -478,7 +491,18 @@ impl Control {
             self.block,
         );
         let secs = frames as f64 / f64::from(self.rate.get());
-        Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
+        let wait = Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()));
+        // A deadline enters the window only when sample time moves, and it moves in whole
+        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
+        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
+        // would spin. The floor is a quarter block at most, so a small device block cannot
+        // slip past the window. The first wake after a tick that saw progress is not floored,
+        // and a message ends any wait at once.
+        if self.last_tick_stalled {
+            wait.max(stall_floor(self.block, self.rate.get()))
+        } else {
+            wait
+        }
     }
 
     fn client(&mut self, message: ClientMessage, to: &ReplyTx) -> Flow {
@@ -1784,6 +1808,13 @@ fn playable_device(d: &Device) -> DeviceInfo {
         name: d.info().name.clone(),
         output_channels: u32::from(d.info().channels),
     }
+}
+
+/// The shortest wait after a tick that saw no progress: [`MIN_STALL_WAIT`], or a quarter of a
+/// device block when that is shorter.
+pub fn stall_floor(block: u64, rate: u32) -> Duration {
+    let quarter = Duration::from_secs_f64(block as f64 / f64::from(rate.max(1)) / 4.0);
+    MIN_STALL_WAIT.min(quarter)
 }
 
 /// Frames from `rendered` until the loop must tick: when the engine's next deadline enters the
