@@ -23,6 +23,7 @@ use openlab_core::protocol::{
     ClientMessage, LogLevel, Outcome, Request, RequestId, ServerMessage, TransportAction,
 };
 use rosc::{OscMessage, OscType};
+use socket2::{Domain, Socket, Type};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Notify, Semaphore, mpsc};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout};
@@ -187,9 +188,25 @@ pub struct Bound {
     ports: OscPorts,
 }
 
+/// Buffer size asked for on the UDP socket. A datagram may be up to 65507 bytes, and macOS
+/// refuses (`EMSGSIZE`) one larger than the send buffer, whose default there is 9216
+/// (`net.inet.udp.maxdgram`); on Windows a receive buffer that is too small truncates one. The
+/// kernel may grant less, or double it.
+const UDP_BUFFER: usize = 1 << 20;
+
+/// Binds the UDP socket with buffers big enough for the largest reply. Failing to set them is not
+/// an error: the socket still works, only large replies might not.
+fn bind_udp(addr: SocketAddr) -> io::Result<StdUdp> {
+    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, None)?;
+    let _ = socket.set_send_buffer_size(UDP_BUFFER);
+    let _ = socket.set_recv_buffer_size(UDP_BUFFER);
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
+
 /// Binds both sockets. Done before the tasks start so the caller knows whether OSC is up.
 pub fn bind(config: &OscConfig) -> io::Result<Bound> {
-    let udp = StdUdp::bind(SocketAddr::new(config.bind, config.port))?;
+    let udp = bind_udp(SocketAddr::new(config.bind, config.port))?;
     let tcp = StdListener::bind(SocketAddr::new(config.bind, config.port))?;
     udp.set_nonblocking(true)?;
     tcp.set_nonblocking(true)?;
