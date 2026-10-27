@@ -38,16 +38,22 @@ pub enum CueContainer {
 pub struct CueIndex {
     /// The lists in workspace order.
     lists: Vec<CueListId>,
-    /// The container of every cue.
-    place: HashMap<CueId, CueContainer>,
+    /// The container of every cue, and its position among the container's cues.
+    place: HashMap<CueId, Place>,
     /// The cues of every non-empty container, in order.
     kids: HashMap<CueContainer, Vec<CueId>>,
-    /// Every cue's position in its container's `kids`.
-    pos: HashMap<CueId, usize>,
     /// Two cues had one id when it was built.
     duplicates: bool,
     /// Cue ids compared by lookups (a cost measure; not part of what the index says).
     steps: Steps,
+}
+
+/// Where a cue is: its container and its position in the container's `kids` (one map, so
+/// following an edit along a long list hashes each cue once).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Place {
+    container: CueContainer,
+    at: usize,
 }
 
 /// A cost counter two indexes never differ by: equality, and so [`CueIndex::matches`], is about
@@ -129,9 +135,11 @@ impl CueIndex {
                     continue;
                 };
                 if let std::collections::hash_map::Entry::Vacant(e) = index.place.entry(cue.id) {
-                    e.insert(container);
                     let kids = index.kids.entry(container).or_default();
-                    index.pos.insert(cue.id, kids.len());
+                    e.insert(Place {
+                        container,
+                        at: kids.len(),
+                    });
                     kids.push(cue.id);
                     visit(cue);
                 } else {
@@ -165,13 +173,13 @@ impl CueIndex {
 
     /// The container of `id`.
     pub fn container(&self, id: CueId) -> Option<CueContainer> {
-        self.place.get(&id).copied()
+        self.place.get(&id).map(|p| p.container)
     }
 
     /// The group `id` is in (`None` at the top level of a list, or for an unknown cue).
     pub fn parent(&self, id: CueId) -> Option<CueId> {
-        match self.place.get(&id) {
-            Some(CueContainer::Group(g)) => Some(*g),
+        match self.container(id) {
+            Some(CueContainer::Group(g)) => Some(g),
             _ => None,
         }
     }
@@ -222,7 +230,7 @@ impl CueIndex {
         let mut path = Vec::new();
         let mut at = id;
         for _ in 0..=self.place.len() {
-            let container = *self.place.get(&at)?;
+            let container = self.container(at)?;
             path.push(self.position(at)?);
             match container {
                 CueContainer::Group(g) => at = g,
@@ -238,9 +246,10 @@ impl CueIndex {
 
     /// `id`'s position among the cues of its container.
     pub fn position(&self, id: CueId) -> Option<usize> {
-        let kids = self.kids(*self.place.get(&id)?);
-        match self.pos.get(&id) {
-            Some(&at) if kids.get(at) == Some(&id) => Some(at),
+        let place = *self.place.get(&id)?;
+        let kids = self.kids(place.container);
+        match place.at {
+            at if kids.get(at) == Some(&id) => Some(at),
             // Kept in step with `kids`; looking along is the safety net.
             _ => kids.iter().position(|k| *k == id),
         }
@@ -248,11 +257,11 @@ impl CueIndex {
 
     /// The list `id` is in.
     pub fn list_of(&self, id: CueId) -> Option<CueListId> {
-        let mut container = *self.place.get(&id)?;
+        let mut container = self.container(id)?;
         for _ in 0..=self.place.len() {
             match container {
                 CueContainer::List(list) => return Some(list),
-                CueContainer::Group(g) => container = *self.place.get(&g)?,
+                CueContainer::Group(g) => container = self.container(g)?,
             }
         }
         None
@@ -267,7 +276,7 @@ impl CueIndex {
         }
         let mut at = id;
         for _ in 0..=self.place.len() {
-            let container = *self.place.get(&at)?;
+            let container = self.container(at)?;
             let next = self.position(at)?.saturating_add(1);
             if let Some(next) = self.kids(container).get(next) {
                 return Some(*next);
@@ -319,7 +328,7 @@ impl CueIndex {
     fn find<'w>(&self, ws: &'w Workspace, id: CueId) -> Option<(CueContainer, &'w Cue)> {
         // The ancestors, nearest first, ending at the cue's list.
         let mut chain = vec![id];
-        let first = *self.place.get(&id)?;
+        let first = self.container(id)?;
         let mut container = first;
         let list = loop {
             match container {
@@ -329,7 +338,7 @@ impl CueIndex {
                         return None;
                     }
                     chain.push(g);
-                    container = *self.place.get(&g)?;
+                    container = self.container(g)?;
                 }
             }
         };
@@ -346,7 +355,7 @@ impl CueIndex {
     /// The cue `id` among `cues`: at its recorded position, else (an edit shifted it along its
     /// level, or the record is stale) the first with the id.
     fn child<'w>(&self, cues: &'w [Cue], id: CueId) -> Option<&'w Cue> {
-        if let Some(cue) = self.pos.get(&id).and_then(|&at| cues.get(at))
+        if let Some(cue) = self.place.get(&id).and_then(|p| cues.get(p.at))
             && cue.id == id
         {
             self.steps.add(1);
@@ -430,9 +439,8 @@ impl CueIndex {
                     continue;
                 }
                 if new_ids.contains(&id)
-                    && let Some(old) = self.place.remove(&id)
+                    && let Some(Place { container: old, .. }) = self.place.remove(&id)
                 {
-                    self.pos.remove(&id);
                     if let CueContainer::Group(g) = old {
                         delta.former_parents.insert(g);
                     }
@@ -453,7 +461,7 @@ impl CueIndex {
             }
         };
         for (&id, &(container, cue)) in &located {
-            let before = self.place.get(&id).copied();
+            let before = self.container(id);
             if structural.contains(&id) || before != Some(container) {
                 enqueue(container, &mut work);
                 if let Some(old) = before {
@@ -471,7 +479,7 @@ impl CueIndex {
             }
         }
         for id in &absent {
-            if let Some(&old) = self.place.get(id) {
+            if let Some(old) = self.container(*id) {
                 enqueue(old, &mut work);
             }
         }
@@ -524,8 +532,11 @@ impl CueIndex {
                 self.kids.insert(container, new.clone())
             };
             for (at, cue) in cues.iter().enumerate() {
-                self.pos.insert(cue.id, at);
-                match self.place.insert(cue.id, container) {
+                match self
+                    .place
+                    .insert(cue.id, Place { container, at })
+                    .map(|p| p.container)
+                {
                     None => {
                         delta.fresh.push(cue.id);
                         if matches!(cue.kind, CueKind::Group { .. })
@@ -556,10 +567,10 @@ impl CueIndex {
         // A cue its container dropped and no other took is gone, with what it held.
         let mut tops: Vec<(CueId, CueContainer)> = left
             .into_iter()
-            .filter(|(id, from)| self.place.get(id) == Some(from))
+            .filter(|(id, from)| self.container(*id) == Some(*from))
             .collect();
         for id in absent {
-            if let Some(&from) = self.place.get(&id)
+            if let Some(from) = self.container(id)
                 && !tops.iter().any(|(t, _)| *t == id)
             {
                 tops.push((id, from));
@@ -574,7 +585,6 @@ impl CueIndex {
                 if self.place.remove(&id).is_none() {
                     continue;
                 }
-                self.pos.remove(&id);
                 delta.gone.push(id);
                 for kid in self
                     .kids
@@ -582,7 +592,7 @@ impl CueIndex {
                     .unwrap_or_default()
                 {
                     // A kid that moved elsewhere this edit is no longer this group's.
-                    if self.place.get(&kid) == Some(&CueContainer::Group(id)) {
+                    if self.container(kid) == Some(CueContainer::Group(id)) {
                         stack.push(kid);
                     }
                 }
