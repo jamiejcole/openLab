@@ -117,6 +117,16 @@ impl Mirror {
         self.workspace.settings.osc_passcode.as_deref()
     }
 
+    /// Takes the active list over from the copy this one replaces, if it is the same workspace
+    /// and the list is still there.
+    pub fn inherit_active(&mut self, old: &Mirror) {
+        if old.workspace.id == self.workspace.id
+            && let Some(list) = old.active
+        {
+            self.set_active(list);
+        }
+    }
+
     /// Makes `list` the active one, ahead of the playhead broadcast that will say the same: a
     /// `/go` right after `/playhead/20` (a cue in another list) must act on that list.
     pub fn set_active(&mut self, list: CueListId) {

@@ -1691,6 +1691,7 @@ pub fn transport_input(action: TransportAction) -> Input {
     match action {
         TransportAction::Go { list } => Input::Go { list },
         TransportAction::Panic => Input::Panic,
+        TransportAction::GoFrom { list, cue } => Input::GoFrom { list, cue },
         TransportAction::StopAll | TransportAction::HardStopAll => Input::StopAll,
         TransportAction::PanicCue { cue } => Input::PanicCue { cue },
         TransportAction::PauseAll => Input::PauseAll,

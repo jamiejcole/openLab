@@ -73,6 +73,12 @@ pub enum TransportAction {
         list: CueListId,
     },
     Panic,
+    /// GO from `cue` in one step (OSC `/go "3"`): the playhead moves to it, then GO. Nothing is
+    /// started if `cue` is not a playhead position of `list` (`not_in_list` warning).
+    GoFrom {
+        list: CueListId,
+        cue: CueId,
+    },
     /// Stops every cue and preview at once (`Input::StopAll`).
     StopAll,
     /// The same as `stop_all` today: there are no stop fade-outs yet, so a stop is already at

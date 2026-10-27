@@ -776,7 +776,12 @@ impl Actor {
 
     /// Replaces the copy. Sessions end when the passcode or the workspace is not the same as
     /// before: a console that connected with the old passcode must not keep control.
-    fn install(&mut self, new: Mirror) {
+    fn install(&mut self, mut new: Mirror) {
+        // The active list is the operator's place, not part of the workspace: a replacement of
+        // the copy (save as, a resync, a snapshot broadcast) keeps it while its list exists.
+        if let Some(old) = &self.mirror {
+            new.inherit_active(old);
+        }
         let updates = match &self.mirror {
             Some(old) => {
                 if old.workspace_id() != new.workspace_id() || old.passcode() != new.passcode() {
@@ -841,10 +846,15 @@ impl Actor {
                 let stale = at.elapsed() >= self.config.max_input_age;
                 let peer = Peer::Udp(ip);
                 let now = self.now();
+                let arrived = at.saturating_duration_since(self.start);
                 let Some(mirror) = &self.mirror else { return };
-                let outcome = self
-                    .osc
-                    .handle_datagram(peer, now, &bytes, &MirrorShow(mirror));
+                let outcome = self.osc.handle_datagram_arrived(
+                    peer,
+                    now,
+                    arrived,
+                    &bytes,
+                    &MirrorShow(mirror),
+                );
                 self.carry_out(peer, outcome, stale);
             }
             Event::TcpOpen {
@@ -869,6 +879,7 @@ impl Actor {
             Event::TcpData { conn, bytes, at } => {
                 let stale = at.elapsed() >= self.config.max_input_age;
                 let now = self.now();
+                let arrived = at.saturating_duration_since(self.start);
                 let Some(mirror) = &self.mirror else { return };
                 let Some(connection) = self.tcp.get_mut(&conn) else {
                     return;
@@ -878,9 +889,10 @@ impl Actor {
                     conn,
                     ip: connection.ip,
                 };
-                let outcome = self.osc.handle_stream(
+                let outcome = self.osc.handle_stream_arrived(
                     peer,
                     now,
+                    arrived,
                     &mut connection.decoder,
                     &bytes,
                     &MirrorShow(mirror),
@@ -987,6 +999,7 @@ impl Actor {
     fn note_active_list(&mut self, input: &OscInput) {
         let OscInput::Transport(
             TransportAction::Go { list }
+            | TransportAction::GoFrom { list, .. }
             | TransportAction::SetPlayhead { list, .. }
             | TransportAction::SetPlayheadByNumber { list, .. }
             | TransportAction::PlayheadNext { list }
@@ -1079,7 +1092,9 @@ impl Actor {
                 continue;
             };
             for &peer in &subscribers {
-                self.send(peer, bytes.clone());
+                if self.osc.update_allowed(peer, now, bytes.len()) {
+                    self.send(peer, bytes.clone());
+                }
             }
         }
         self.publish();
