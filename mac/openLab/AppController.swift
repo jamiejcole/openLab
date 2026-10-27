@@ -459,7 +459,12 @@ final class AppController {
             NSSound.beep()
             return false
         }
-        if isPlaying(store), !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
+        // One prompt: playing outranks Show Mode (QLab asks before closing a workspace in Show Mode).
+        if isPlaying(store) {
+            if !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
+        } else if windows[doc]?.isShowMode == true, !alerts.confirmCloseInShowMode(workspace: name(of: doc)) {
+            return false
+        }
         guard let discard = await resolveUnsaved(doc) else { return false }
         switch await bounded({ await self.session.close(doc: doc, discardChanges: discard) }) {
         case .success?:
@@ -491,7 +496,11 @@ final class AppController {
         for doc in Array(windows.keys) {
             if await !commitEdits(doc) { return false }
         }
-        if session.stores.values.contains(where: isPlaying), !alerts.confirmQuitWhilePlaying() { return false }
+        if session.stores.values.contains(where: isPlaying) {
+            if !alerts.confirmQuitWhilePlaying() { return false }
+        } else if windows.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
+            return false
+        }
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
             if await resolveUnsaved(info.doc) == nil { return false }

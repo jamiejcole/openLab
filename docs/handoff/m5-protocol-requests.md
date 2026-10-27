@@ -50,3 +50,10 @@ Swift name goes in `ProvisionalProtocol.swift` when it is agreed.
 Also: the app refuses (at record time) a cue hotkey that equals a transport key, a menu key or another
 cue's hotkey; the engine's `SetCueProperty::Triggers` accepts any of them, so a second client can still
 create the duplicates. Core could warn in `validate`.
+
+## Show Mode (M5.12)
+
+Show Mode (SM-01) is UI-only state, kept per window in memory and lost on relaunch; the engine does not know it.
+SM-07 (no system sleep while a workspace is open in Show Mode, engine M4.9) needs it: wanted is a per-doc
+`set_show_mode { on }` command (or a flag on `document`) so the engine can hold the sleep assertion and a
+second client can show the same mode. Until then the app does not tell the engine.

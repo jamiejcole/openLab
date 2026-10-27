@@ -62,9 +62,13 @@ final class WallClockLabel: NSTextField {
     }
 }
 
-/// Bottom bar: Edit/Show switch (visual only until M5.12), area toggles, status text, settings.
+/// Bottom bar: Edit/Show switch (Show Mode, M5.12), area toggles, status text, settings.
 final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
+    /// The switch was used (true: Show Mode).
+    var onModeChange: ((Bool) -> Void)?
+    /// "SHOW MODE" text: the mode is never shown by colour alone.
+    let showModeLabel = NSTextField(labelWithString: "")
 
     let modeSwitch = NSSegmentedControl(
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
@@ -94,6 +98,13 @@ final class FooterBar: NSView {
         setAX(AX.footer)
         modeSwitch.selectedSegment = 0
         modeSwitch.setAX(AX.modeSwitch, label: loc("footer.mode.label"))
+        modeSwitch.target = self
+        modeSwitch.action = #selector(modeChanged)
+        showModeLabel.setAX(AX.showModeLabel, label: loc("footer.showMode.indicator"))
+        showModeLabel.stringValue = loc("footer.showMode.indicator")
+        showModeLabel.font = .systemFont(ofSize: 12, weight: .bold)
+        showModeLabel.textColor = .systemOrange
+        showModeLabel.isHidden = true
         statusButton.isBordered = false
         statusButton.imagePosition = .imageLeading
         statusButton.setAX(AX.statusLabel)
@@ -124,7 +135,7 @@ final class FooterBar: NSView {
         settingsButton.toolTip = loc("footer.settings")
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(views: [modeSwitch] + [.toolbar, .masthead].compactMap { toggles[$0] })
+        let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
         let bar = NSStackView(views: [left, NSStackView(views: [statusButton, noticeLabel]), right])
         bar.distribution = .equalCentering
@@ -178,6 +189,14 @@ final class FooterBar: NSView {
         p.show(relativeTo: statusButton.bounds, of: statusButton, preferredEdge: .maxY)
         popover = p
     }
+
+    /// Reflects the window's mode in the switch and the indicator (also when set from the menu).
+    func setShowMode(_ on: Bool) {
+        modeSwitch.selectedSegment = on ? 1 : 0
+        showModeLabel.isHidden = !on
+    }
+
+    @objc private func modeChanged() { onModeChange?(modeSwitch.selectedSegment == 1) }
 
     @objc private func toggled(_ sender: NSButton) {
         guard LayoutArea.allCases.indices.contains(sender.tag) else { return }

@@ -71,6 +71,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
+        footer.onModeChange = { [weak self] show in self?.setShowMode(show) }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
@@ -96,6 +97,21 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func showLog() {
         logWindow.showWindow(nil)
         Task { await logWindow.refresh() }
+    }
+
+    /// Show Mode (SM-01) belongs to this window only and is not saved: the protocol has no field for
+    /// it (docs/handoff/m5-protocol-requests.md). Locks the inspector and cue-type row; transport,
+    /// hotkeys, the sidebar and the layout toggles keep working, as in QLab.
+    private(set) var isShowMode = false
+
+    func setShowMode(_ on: Bool) {
+        guard on != isShowMode else { return }
+        isShowMode = on
+        inspector.isLocked = on
+        cueToolbar.isLocked = on
+        footer.setShowMode(on)
+        let title = loc("window.main.title")
+        window?.title = on ? String(format: loc("window.main.title.showMode"), title) : title
     }
 
     private func syncSidebarList() {
