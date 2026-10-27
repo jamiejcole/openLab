@@ -479,10 +479,11 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
     s.settle_media();
     assert_eq!(s.control().primed(), vec![id(1)]);
     assert!(!s.control().primed_from_memory(id(1)));
-    // Switching preload on starts the job. A tick that does not read inboxes primes again
-    // while the job is out: the prime is from the file, whenever the job answers.
+    // Switching preload on starts the job. Ticking Control directly does not read the inbox, so
+    // the preload answer cannot land before this check however fast the worker is: the prime is
+    // from the file.
     set_preload(&mut s, 1, true);
-    s.tick();
+    s.control_mut().tick();
     assert!(!s.control().primed_from_memory(id(1)));
     s.settle_media();
     s.run(BLOCK);
