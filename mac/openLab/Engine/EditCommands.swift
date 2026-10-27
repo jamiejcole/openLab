@@ -14,6 +14,10 @@ enum CueProperty: Hashable, Sendable {
     case postWait(Double)
     case continueMode(String)
     case target(ModelID?)
+    /// `triggers { hotkey, osc }`; the hotkey is a show-file hotkey object (`KeyChord.hotkeyJSON`).
+    case triggers(hotkey: JSONValue?, osc: String?)
+    case secondTrigger(String)
+    case secondTriggerOnRelease(Bool)
 
     var json: JSONValue {
         func p(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
@@ -27,6 +31,10 @@ enum CueProperty: Hashable, Sendable {
         case .postWait(let v): return p("post_wait", .double(v))
         case .continueMode(let v): return p("continue_mode", .string(v))
         case .target(let v): return p("target", v.map { .string($0.raw) } ?? .null)
+        case .triggers(let hotkey, let osc):
+            return p("triggers", .object(["hotkey": hotkey ?? .null, "osc": osc.map { .string($0) } ?? .null]))
+        case .secondTrigger(let v): return p("second_trigger", .string(v))
+        case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
         }
     }
 }
