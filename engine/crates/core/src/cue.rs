@@ -2,8 +2,11 @@
 
 //! Cues and their kinds. Times are seconds (f64), levels are dB (f64).
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::media_path::file_name;
 use crate::model::{CueId, NetworkPatchId, PatchId};
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
@@ -45,6 +48,29 @@ impl Cue {
             CueKind::Group { children, .. } => children,
             _ => &[],
         }
+    }
+
+    /// The name to show for the cue (M2.29c, QLab check R2). Assigning a file never writes
+    /// `name`: an empty `name` means "named after the file", so a rename of the file shows at
+    /// once and a name the user typed is never touched. The file name keeps its extension and
+    /// is shown as stored (no case or Unicode-form change). OSC and the model still see `name`.
+    pub fn display_name(&self) -> Cow<'_, str> {
+        display_name(self)
+    }
+}
+
+/// See [`Cue::display_name`].
+pub fn display_name(cue: &Cue) -> Cow<'_, str> {
+    if !cue.name.is_empty() {
+        return Cow::Borrowed(&cue.name);
+    }
+    match &cue.kind {
+        // Split on `/` only: a backslash is a legal macOS file-name character, and Windows
+        // separators were converted when the `MediaRef` was made.
+        CueKind::Audio {
+            media: Some(media), ..
+        } => Cow::Borrowed(file_name(media.as_str())),
+        _ => Cow::Borrowed(""),
     }
 }
 
