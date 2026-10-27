@@ -50,6 +50,11 @@ jobs:
       - name: Performance budget gate
         if: matrix.os == 'macos-26-intel'
         run: cargo test --release --locked -p openlab-engine --test perf -- --ignored --nocapture
+      # NFR-09/QA-05: 24 h of a generated show, run by a random operator, in virtual time on the
+      # offline driver (about a minute in release); a ten-minute run is in the normal suite.
+      - name: Soak test (24 h virtual)
+        if: matrix.os == 'macos-26-intel'
+        run: cargo test --release --locked -p openlab-engine --test soak -- --ignored --nocapture
 
   cargo-deny:
     runs-on: ubuntu-24.04
@@ -74,7 +79,7 @@ jobs:
       FUZZ_TOOLCHAIN: nightly-2026-10-15
     steps:
       - uses: actions/checkout@v7
-      # The osc target links openlab-engine, which pulls in cpal; ALSA headers are needed to build it on Linux.
+      # The osc, osc_session and protocol targets link openlab-engine, which pulls in cpal; ALSA headers are needed to build it on Linux.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
       - uses: Swatinem/rust-cache@v2
