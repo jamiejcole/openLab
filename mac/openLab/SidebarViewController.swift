@@ -109,7 +109,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private(set) var transportButtons: [String: NSButton] = [:]
     private(set) var lists: [CueList] = []
-    private(set) var shownList: ModelID?
+    /// The list the window shows; asked for whenever the selection is drawn, never cached.
+    var shownProvider: () -> ModelID? = { nil }
+    var shownList: ModelID? { shownProvider() }
     /// Active cues in the order they started; a snapshot starts them in list order.
     private(set) var activeCues: [ModelID] = []
     /// Rows redrawn in place by updates, oldest first (tests check that only the rows that
@@ -194,7 +196,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         view = root
         listTable.reloadData()
         activeTable.reloadData()
-        applyShownSelection()
+        syncSelection()
     }
 
     private func configure(_ table: NSTableView, id: String, label: String, scroll: NSScrollView) {
@@ -218,14 +220,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     // MARK: Cue lists
 
-    /// Tells the sidebar which list the window shows; the window calls this after the cue list
+    /// Redraws the selection from `shownProvider`; the window calls this after the cue list has
     /// switched (a click here, a deleted list, a new snapshot).
-    func setShownList(_ id: ModelID?) {
-        shownList = id
-        applyShownSelection()
-    }
-
-    private func applyShownSelection() {
+    func syncSelection() {
         guard isViewLoaded else { return }
         settingSelection = true
         defer { settingSelection = false }
@@ -240,7 +237,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         lists = store.model?.cueLists ?? []
         if isViewLoaded {
             listTable.reloadData()
-            applyShownSelection()
+            syncSelection()
         }
     }
 
@@ -347,7 +344,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         guard !settingSelection, (notification.object as? NSTableView) === listTable else { return }
         let row = listTable.selectedRow
         guard lists.indices.contains(row) else { return }
-        shownList = lists[row].id
         onSelectList?(lists[row].id)
     }
 

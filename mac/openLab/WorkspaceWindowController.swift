@@ -54,6 +54,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sub = store.changes.sink { [weak self] _ in
             MainActor.assumeIsolated { self?.syncSidebarList() }
         }
+        sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
             self?.syncSidebarList()
@@ -68,7 +69,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func syncSidebarList() {
-        if sidebar.shownList != cueList.listID { sidebar.setShownList(cueList.listID) }
+        sidebar.syncSelection()
     }
 
     private func wire(_ button: NSButton?, _ action: Selector) {
