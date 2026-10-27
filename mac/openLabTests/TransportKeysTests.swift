@@ -20,6 +20,7 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(keys.chord(for: .playheadNext), KeyChord(KeyChord.down, [.command, .shift]))
         XCTAssertEqual(keys.chord(for: .pauseResumeSelected), KeyChord("p"))
         XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("l"))
+        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("v"))
         XCTAssertNil(keys.chord(for: .stopAll))
         XCTAssertNil(keys.chord(for: .panic))
         XCTAssertTrue(keys.warnings.isEmpty)

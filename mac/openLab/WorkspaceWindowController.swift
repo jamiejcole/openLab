@@ -19,7 +19,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPanic: (() -> Void)?
     /// Pause, resume or panic of one cue, from the Active Cues panel.
     var onCueAction: ((TransportAction) -> Void)? {
-        didSet { sidebar.onCueAction = onCueAction }
+        didSet {
+            sidebar.onCueAction = onCueAction
+            inspector.onTransport = onCueAction
+        }
     }
     /// Relink missing media was asked for (Warnings row or File menu).
     var onRelink: (() -> Void)? {
