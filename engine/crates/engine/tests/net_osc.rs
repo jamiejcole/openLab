@@ -1173,7 +1173,13 @@ async fn tcp_flooders_cannot_starve_udp() {
     )
     .await;
     assert!(all.is_ok(), "{:?}", f.stats());
-    assert_eq!(f.stats().udp_dropped, 0);
+    // None dropped at the queue and none aged out waiting behind the flood.
+    let stats = f.stats();
+    assert_eq!(
+        (stats.udp_dropped, stats.inputs_dropped),
+        (0, 0),
+        "{stats:?}"
+    );
     for flooder in flooders {
         flooder.abort();
     }
