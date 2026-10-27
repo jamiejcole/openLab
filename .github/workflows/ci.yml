@@ -44,6 +44,10 @@ jobs:
       - name: CPU budget gate
         if: matrix.os == 'macos-26-intel'
         run: cargo test --release --locked -p openlab-audio --test cpu_budget -- --ignored --nocapture
+      # NFR-24/NFR-25 proxies (M4.12): a 2,000-cue show opens, edits and idles within budget.
+      - name: Performance budget gate
+        if: matrix.os == 'macos-26-intel'
+        run: cargo test --release --locked -p openlab-engine --test perf -- --ignored --nocapture
 
   cargo-deny:
     runs-on: ubuntu-24.04
