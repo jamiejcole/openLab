@@ -11,6 +11,10 @@ func loc(_ key: String) -> String {
 /// Hyphenated on purpose: dotted names are reserved for localisation keys.
 enum AX {
     static let mainWindow = "main-window"
+    static let launcherWindow = "launcher-window"
+    static let launcherNew = "launcher-new"
+    static let launcherOpen = "launcher-open"
+    static let launcherRecentPrefix = "launcher-recent-"
     static let goButton = "go-button"
     static let standbyField = "standby-field"
     static let standbyNotes = "standby-notes"

@@ -31,6 +31,8 @@ final class FakeEngine: EngineTransport {
 
     // Observation.
     private(set) var received: [ClientMessage] = []
+    /// The same messages with the doc of the connection that sent them (nil: the app connection).
+    private(set) var receivedFrom: [(doc: ModelID?, message: ClientMessage)] = []
     private(set) var connectCount = 0
     private(set) var connections: [FakeConnection] = []
 
@@ -103,7 +105,7 @@ final class FakeEngine: EngineTransport {
 
     // MARK: Server side
 
-    private func addDoc(_ snapshot: JSONValue, path: String?) -> ModelID {
+    func addDoc(_ snapshot: JSONValue, path: String?) -> ModelID {
         let doc = ModelID("doc-\(nextDoc)")
         nextDoc += 1
         var s = snapshot
@@ -168,6 +170,7 @@ final class FakeEngine: EngineTransport {
             return fail(c, .badRequest, "unreadable frame", close: false)
         }
         received.append(message)
+        receivedFrom.append((c.doc, message))
         guard c.welcomed else {
             guard case .hello(let h) = message else { return fail(c, .badToken, "hello first", close: true) }
             return handleHello(h, from: c)
