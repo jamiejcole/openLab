@@ -17,7 +17,7 @@ use openlab_core::protocol::{
     decode_server, encode_client,
 };
 use openlab_core::{Command, CueKind, CueProperty, GroupMode};
-use openlab_engine::control::{Backend, Control, OUTBOUND_CAPACITY, runner};
+use openlab_engine::control::{Backend, Control, OUTBOUND_CAPACITY, outbound_channel, runner};
 use openlab_engine::net::{ServerConfig, WsServer};
 use show::{config, cue, id, list_id, mixer_config, workspace};
 use tokio_tungstenite::connect_async;
@@ -36,7 +36,7 @@ async fn commands_and_transport_over_the_wire() {
     )]);
     let (ctl, _mixer) = Mixer::new(mixer_config()).unwrap();
     let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-    let (out_tx, outbound) = crossbeam_channel::bounded(OUTBOUND_CAPACITY);
+    let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     let control = Control::new(
         ws.clone(),
         ctl,

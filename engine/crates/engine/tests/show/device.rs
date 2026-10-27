@@ -19,7 +19,9 @@ use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportA
 use openlab_engine::control::devices::{
     self, DeviceLayer, DeviceLister, ListedDevice, MixerBack, OpenFailure, OpenStream, StreamInfo,
 };
-use openlab_engine::control::{Backend, Control, ControlConfig, Flow, Inbox};
+use openlab_engine::control::{
+    Backend, Control, ControlConfig, Flow, Inbox, OutboundRx, outbound_channel, reply_channel,
+};
 
 use super::{BLOCK, RATE, mixer_config};
 
@@ -277,7 +279,7 @@ pub struct DeviceShow {
     wall: Arc<Mutex<Duration>>,
     inbox: Receiver<Inbox>,
     inbox_tx: Sender<Inbox>,
-    outbound: Receiver<ServerMessage>,
+    outbound: OutboundRx,
     /// Captured audio per device channel.
     capture: Vec<Vec<f32>>,
     next_id: u64,
@@ -308,7 +310,7 @@ impl DeviceShow {
             clock,
         )
         .unwrap();
-        let (out_tx, outbound) = crossbeam_channel::bounded(4096);
+        let (out_tx, outbound) = outbound_channel(4096);
         let control = Control::new(
             ws,
             ctl,
@@ -472,10 +474,10 @@ impl DeviceShow {
     }
 
     pub fn send(&mut self, message: ClientMessage) -> Vec<ServerMessage> {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, mut rx) = reply_channel();
         self.pump_inbox();
         let _ = self.control.handle(Inbox::Client { message, reply: tx });
-        rx.try_iter().collect()
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     pub fn transport(&mut self, action: TransportAction) -> Vec<ServerMessage> {
@@ -489,7 +491,7 @@ impl DeviceShow {
     }
 
     pub fn take_outbound(&mut self) -> Vec<ServerMessage> {
-        self.outbound.try_iter().collect()
+        std::iter::from_fn(|| self.outbound.try_recv().ok()).collect()
     }
 
     pub fn inbox(&self) -> Sender<Inbox> {

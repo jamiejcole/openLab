@@ -20,10 +20,11 @@ use openlab_core::protocol::{
     encode_client,
 };
 use openlab_core::{Command, CueKind, CueProperty, GroupMode};
-use openlab_engine::control::{Inbox, OUTBOUND_CAPACITY};
+use openlab_engine::control::{Inbox, OUTBOUND_CAPACITY, OutboundTx, outbound_channel};
 use openlab_engine::net::{ServerConfig, WsServer};
 use show::{cue, id, list_id, workspace};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
@@ -36,12 +37,14 @@ const GUARD: Duration = Duration::from_secs(20);
 struct Control {
     revision: AtomicU64,
     seen: Mutex<Vec<ClientMessage>>,
+    /// `Inbox::Log` messages from the server.
+    logs: Mutex<Vec<String>>,
     shutdown: AtomicBool,
 }
 
 struct Fix {
     server: WsServer,
-    out: Sender<ServerMessage>,
+    out: OutboundTx,
     inbox: Sender<Inbox>,
     control: Arc<Control>,
     thread: Option<thread::JoinHandle<()>>,
@@ -79,43 +82,59 @@ fn ok(id: RequestId, revision: Option<u64>) -> ServerMessage {
 
 /// Answers like the real control loop: a command bumps the revision, broadcasts
 /// `model_changed`, then replies.
-fn control_thread(rx: &Receiver<Inbox>, out: &Sender<ServerMessage>, c: &Control) {
+/// Replies go to a connection that may already be gone: not an error here.
+fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
     while let Ok(msg) = rx.recv() {
-        let Inbox::Client { message, reply } = msg else {
-            break;
+        let (message, reply) = match msg {
+            Inbox::Client { message, reply } => (message, reply),
+            Inbox::Log { message, .. } => {
+                c.logs.lock().unwrap().push(message);
+                continue;
+            }
+            _ => break,
         };
         c.seen.lock().unwrap().push(message.clone());
         match message {
             ClientMessage::Command { id, .. } => {
                 let revision = c.revision.fetch_add(1, Ordering::SeqCst) + 1;
-                out.send(ServerMessage::ModelChanged {
+                out.blocking_send(ServerMessage::ModelChanged {
                     revision,
                     upserts: vec![],
                     deletes: vec![],
                 })
                 .unwrap();
-                reply.send(ok(id, Some(revision))).unwrap();
+                let _ = reply.send(ok(id, Some(revision)));
             }
             ClientMessage::Request {
                 id,
                 request: Request::Snapshot,
             } => {
                 let revision = c.revision.load(Ordering::SeqCst);
-                reply
-                    .send(ServerMessage::Snapshot {
-                        snapshot: Box::new(snapshot(revision)),
-                    })
-                    .unwrap();
-                reply.send(ok(id, None)).unwrap();
+                let _ = reply.send(ServerMessage::Snapshot {
+                    snapshot: Box::new(snapshot(revision)),
+                });
+                let _ = reply.send(ok(id, None));
+            }
+            // A snapshot older than what was broadcast (as a reordered reply would be).
+            ClientMessage::Request {
+                id,
+                request: Request::Relink { .. },
+            } => {
+                let _ = reply.send(ServerMessage::Snapshot {
+                    snapshot: Box::new(snapshot(0)),
+                });
+                let _ = reply.send(ok(id, None));
             }
             // A revision bump whose `model_changed` is "lost".
             ClientMessage::Undo { id } => {
                 let revision = c.revision.fetch_add(1, Ordering::SeqCst) + 1;
-                reply.send(ok(id, Some(revision))).unwrap();
+                let _ = reply.send(ok(id, Some(revision)));
             }
             ClientMessage::Transport { id, .. }
             | ClientMessage::Redo { id }
-            | ClientMessage::Request { id, .. } => reply.send(ok(id, None)).unwrap(),
+            | ClientMessage::Request { id, .. } => {
+                let _ = reply.send(ok(id, None));
+            }
             ClientMessage::Goodbye { shutdown } => {
                 if shutdown {
                     c.shutdown.store(true, Ordering::SeqCst);
@@ -128,7 +147,7 @@ fn control_thread(rx: &Receiver<Inbox>, out: &Sender<ServerMessage>, c: &Control
 
 fn fixture_with(config: ServerConfig) -> Fix {
     let (inbox, rx) = crossbeam_channel::unbounded();
-    let (out, outbound) = crossbeam_channel::bounded(OUTBOUND_CAPACITY);
+    let (out, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     let control = Arc::new(Control::default());
     let server = WsServer::start(inbox.clone(), outbound, config).unwrap();
     let thread = {
@@ -467,13 +486,13 @@ async fn every_client_gets_the_broadcasts() {
     let mut a = f.client().await;
     let mut b = f.client().await;
     f.out
-        .send(ServerMessage::Runtime {
+        .try_send(ServerMessage::Runtime {
             seq: 1,
             changes: vec![],
         })
         .unwrap();
     f.out
-        .send(ServerMessage::Log {
+        .try_send(ServerMessage::Log {
             level: LogLevel::Info,
             message: "hi".into(),
         })
@@ -489,7 +508,7 @@ async fn every_client_gets_the_broadcasts() {
     send(&mut a, &go(3)).await;
     wait_result(&mut a, 3).await;
     f.out
-        .send(ServerMessage::Runtime {
+        .try_send(ServerMessage::Runtime {
             seq: 2,
             changes: vec![],
         })
@@ -507,7 +526,7 @@ async fn broadcasts_the_welcome_snapshot_already_contains_are_not_repeated() {
     let mut c = f.client().await;
     for revision in [4, 5, 6] {
         f.out
-            .send(ServerMessage::ModelChanged {
+            .try_send(ServerMessage::ModelChanged {
                 revision,
                 upserts: vec![],
                 deletes: vec![],
@@ -525,7 +544,7 @@ async fn a_gap_is_recovered_with_a_snapshot_request() {
     let f = fixture();
     let mut c = f.client().await;
     f.out
-        .send(ServerMessage::ModelChanged {
+        .try_send(ServerMessage::ModelChanged {
             revision: 1,
             upserts: vec![],
             deletes: vec![],
@@ -534,7 +553,7 @@ async fn a_gap_is_recovered_with_a_snapshot_request() {
     // Revision 2 is lost on the way (the control loop's outbound channel was full).
     f.control.revision.store(3, Ordering::SeqCst);
     f.out
-        .send(ServerMessage::ModelChanged {
+        .try_send(ServerMessage::ModelChanged {
             revision: 3,
             upserts: vec![],
             deletes: vec![],
@@ -564,7 +583,7 @@ async fn a_gap_is_recovered_with_a_snapshot_request() {
     ));
     // Later broadcasts continue from the snapshot.
     f.out
-        .send(ServerMessage::ModelChanged {
+        .try_send(ServerMessage::ModelChanged {
             revision: 4,
             upserts: vec![],
             deletes: vec![],
@@ -599,7 +618,7 @@ async fn a_big_subtree_upsert_goes_through() {
         },
     );
     f.out
-        .send(ServerMessage::ModelChanged {
+        .try_send(ServerMessage::ModelChanged {
             revision: 1,
             upserts: vec![Upsert::Cue {
                 list: list_id(),
@@ -627,7 +646,7 @@ async fn a_message_over_the_frame_cap_makes_the_client_resnapshot() {
     let mut b = f.client().await;
     // 33 MiB of log text cannot be sent (MAX_SERVER_FRAME_BYTES is 32 MiB).
     f.out
-        .send(ServerMessage::Log {
+        .try_send(ServerMessage::Log {
             level: LogLevel::Info,
             message: "x".repeat(33 * 1024 * 1024),
         })
@@ -649,13 +668,13 @@ async fn meters_and_progress_are_relayed() {
     let f = fixture();
     let mut c = f.client().await;
     f.out
-        .send(ServerMessage::Meters {
+        .try_send(ServerMessage::Meters {
             outputs: vec![],
             cues: vec![],
         })
         .unwrap();
     f.out
-        .send(ServerMessage::Progress { items: vec![] })
+        .try_send(ServerMessage::Progress { items: vec![] })
         .unwrap();
     assert!(matches!(
         next(&mut c).await,
@@ -684,16 +703,24 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
             for n in 0..total {
                 // 16 KiB each: far more than the socket buffers and the client queue hold.
                 let message = format!("{n:08}{}", "x".repeat(16 * 1024));
-                // The control loop's own channel never fills because the fan-out never waits
-                // for a client; a send that cannot complete means it blocked.
-                out.send_timeout(
-                    ServerMessage::Log {
-                        level: LogLevel::Info,
-                        message,
-                    },
-                    GUARD,
-                )
-                .unwrap();
+                // The control loop's own channel never stays full because the fan-out never
+                // waits for a client; one that does not drain within the guard means it blocked.
+                let mut m = ServerMessage::Log {
+                    level: LogLevel::Info,
+                    message,
+                };
+                let deadline = std::time::Instant::now() + GUARD;
+                loop {
+                    match out.try_send(m) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(back)) => {
+                            assert!(std::time::Instant::now() < deadline, "fan-out blocked");
+                            m = back;
+                            thread::yield_now();
+                        }
+                        Err(TrySendError::Closed(_)) => panic!("fan-out gone"),
+                    }
+                }
             }
         })
     };
@@ -839,4 +866,277 @@ async fn stopping_the_server_closes_every_connection() {
     f.server.stop();
     expect_closed(&mut a).await;
     expect_closed(&mut b).await;
+}
+
+// --- regression: snapshot ordering -----------------------------------------------------------
+
+/// Blocks until the stand-in has seen a message matching `pred` (hang-guarded). Nothing on the
+/// test's own runtime needs to run meanwhile: the server has its own.
+fn wait_seen(c: &Control, pred: impl Fn(&ClientMessage) -> bool) {
+    let deadline = std::time::Instant::now() + GUARD;
+    loop {
+        if c.seen.lock().unwrap().iter().any(&pred) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "hang");
+        thread::yield_now();
+    }
+}
+
+fn has(seen: &[ServerMessage], pred: impl Fn(&ServerMessage) -> bool) -> Option<usize> {
+    seen.iter().position(pred)
+}
+
+#[tokio::test]
+async fn a_requested_snapshot_never_reaches_the_client_after_a_newer_model_changed() {
+    let f = fixture();
+    let mut a = f.client().await;
+    let mut b = f.client().await;
+    // One write: an undo whose `model_changed` the stand-in "loses" (revision 1), then a
+    // snapshot request (answered at revision 1).
+    for m in [
+        ClientMessage::Undo { id: RequestId(5) },
+        ClientMessage::Request {
+            id: RequestId(8),
+            request: Request::Snapshot,
+        },
+    ] {
+        a.feed(Message::text(encode_client(&m).unwrap()))
+            .await
+            .unwrap();
+    }
+    a.flush().await.unwrap();
+    wait_seen(&f.control, |m| {
+        matches!(
+            m,
+            ClientMessage::Request {
+                id: RequestId(8),
+                ..
+            }
+        )
+    });
+    // Only now does B edit: revision 2 is newer than A's snapshot.
+    send(&mut b, &rename(1)).await;
+    wait_result(&mut b, 1).await;
+    let result = |n: u64| move |m: &ServerMessage| matches!(m, ServerMessage::Result { id, .. } if id.0 == n);
+    let changed2 = |m: &ServerMessage| matches!(m, ServerMessage::ModelChanged { revision: 2, .. });
+    let mut seen = vec![];
+    while has(&seen, result(5)).is_none()
+        || has(&seen, result(8)).is_none()
+        || has(&seen, changed2).is_none()
+    {
+        seen.push(next(&mut a).await.expect("closed"));
+    }
+    let snap = has(
+        &seen,
+        |m| matches!(m, ServerMessage::Snapshot { snapshot } if snapshot.revision == 1),
+    )
+    .unwrap_or_else(|| panic!("no snapshot: {seen:?}"));
+    let changed = has(&seen, changed2).unwrap();
+    assert!(snap < changed, "snapshot 1 after model_changed 2: {seen:?}");
+    // The undo's result (revision 1) is covered by the snapshot; the snapshot's own result
+    // follows it.
+    assert!(snap < has(&seen, result(5)).unwrap(), "{seen:?}");
+    assert!(snap < has(&seen, result(8)).unwrap(), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_snapshot_older_than_what_the_client_has_is_followed_by_a_fresh_one() {
+    let f = fixture();
+    let mut c = f.client().await;
+    send(&mut c, &rename(1)).await;
+    wait_result(&mut c, 1).await;
+    // The stand-in answers with a snapshot at revision 0, behind the client's 1.
+    send(
+        &mut c,
+        &ClientMessage::Request {
+            id: RequestId(2),
+            request: Request::Relink {
+                folder: "/x".into(),
+            },
+        },
+    )
+    .await;
+    let mut seen = wait_result(&mut c, 2).await;
+    let fresh = |m: &ServerMessage| matches!(m, ServerMessage::Snapshot { snapshot } if snapshot.revision == 1);
+    while has(&seen, fresh).is_none() {
+        seen.push(next(&mut c).await.expect("closed"));
+    }
+    let stale = has(
+        &seen,
+        |m| matches!(m, ServerMessage::Snapshot { snapshot } if snapshot.revision == 0),
+    )
+    .unwrap_or_else(|| panic!("{seen:?}"));
+    assert!(stale < has(&seen, fresh).unwrap(), "{seen:?}");
+    // And the connection goes on from the fresh one.
+    f.out.try_send(changed(1)).unwrap();
+    f.out.try_send(changed(2)).unwrap();
+    assert!(matches!(
+        next(&mut c).await,
+        Some(ServerMessage::ModelChanged { revision: 2, .. })
+    ));
+}
+
+// --- slow-client policy and limits -----------------------------------------------------------
+
+/// Hands `m` to the fan-out from a plain thread, failing if it does not drain within the guard.
+fn push(out: &OutboundTx, mut m: ServerMessage) {
+    let deadline = std::time::Instant::now() + GUARD;
+    loop {
+        match out.try_send(m) {
+            Ok(()) => return,
+            Err(TrySendError::Full(back)) => {
+                assert!(std::time::Instant::now() < deadline, "fan-out blocked");
+                m = back;
+                thread::yield_now();
+            }
+            Err(TrySendError::Closed(_)) => panic!("fan-out gone"),
+        }
+    }
+}
+
+fn changed(revision: u64) -> ServerMessage {
+    ServerMessage::ModelChanged {
+        revision,
+        upserts: vec![],
+        deletes: vec![],
+    }
+}
+
+#[tokio::test]
+async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broadcasts() {
+    let f = fixture_with(ServerConfig {
+        // The stalled client must not be closed while the queue fills.
+        write_timeout: Duration::from_secs(120),
+        ..ServerConfig::default()
+    });
+    f.control.revision.store(5, Ordering::SeqCst);
+    let mut stalled = f.client().await;
+    let mut live = f.client().await;
+    // Far more than the socket buffers and the 1024-message queue hold (16 KiB each).
+    let total = 4000usize;
+    let producer = {
+        let out = f.out.clone();
+        thread::spawn(move || {
+            for n in 0..total {
+                let message = format!("{n:08}{}", "x".repeat(16 * 1024));
+                push(
+                    &out,
+                    ServerMessage::Log {
+                        level: LogLevel::Info,
+                        message,
+                    },
+                );
+            }
+        })
+    };
+    // The fan-out offers each message to every client in turn: once the live client has the
+    // last one, the stalled client's queue has overflowed.
+    for n in 0..total {
+        match next(&mut live).await {
+            Some(ServerMessage::Log { message, .. }) => {
+                assert!(message.starts_with(&format!("{n:08}")));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    producer.join().unwrap();
+    // It reads again: some logs (what was already on the way), then a fresh snapshot instead
+    // of the lost rest.
+    let mut logs = 0;
+    loop {
+        match next(&mut stalled).await.expect("closed") {
+            ServerMessage::Log { .. } => logs += 1,
+            ServerMessage::Snapshot { snapshot } => {
+                assert_eq!(snapshot.revision, 5);
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(
+        logs < total,
+        "nothing was dropped: the queue never overflowed"
+    );
+    // Later broadcasts are filtered against the snapshot: 5 is in it, 6 is new.
+    f.out.try_send(changed(5)).unwrap();
+    f.out.try_send(changed(6)).unwrap();
+    assert!(matches!(
+        next(&mut stalled).await,
+        Some(ServerMessage::ModelChanged { revision: 6, .. })
+    ));
+    // The server's own snapshot request leaks no result.
+    send(&mut stalled, &go(1)).await;
+    assert_eq!(wait_result(&mut stalled, 1).await.len(), 1);
+}
+
+/// Waits until the server closes a new connection without upgrading it.
+async fn expect_refused(port: u16) {
+    let mut tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(GUARD, tokio::io::AsyncReadExt::read(&mut tcp, &mut buf))
+        .await
+        .expect("not refused");
+    assert!(matches!(n, Ok(0) | Err(_)), "{n:?}");
+}
+
+#[tokio::test]
+async fn the_connection_after_the_limit_is_refused_and_logged_once() {
+    let config = ServerConfig::default();
+    let limit = config.max_connections;
+    let f = fixture_with(config);
+    let mut clients = vec![];
+    for _ in 0..limit {
+        clients.push(f.client().await);
+    }
+    // The 17th (and 18th) are closed at accept, before any upgrade.
+    expect_refused(f.server.port()).await;
+    expect_refused(f.server.port()).await;
+    // Each refusal is sent to the inbox before its socket closes; a round trip through the
+    // stand-in orders after both.
+    send(&mut clients[0], &go(1)).await;
+    wait_result(&mut clients[0], 1).await;
+    let logs = f.control.logs.lock().unwrap().clone();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert!(logs[0].contains("connection limit"), "{logs:?}");
+    // Every admitted client still works.
+    for (n, c) in clients.iter_mut().enumerate() {
+        let n = n as u64 + 10;
+        send(c, &go(n)).await;
+        wait_result(c, n).await;
+    }
+}
+
+#[tokio::test]
+async fn frames_are_read_while_a_result_waits_for_its_model_changed() {
+    let f = fixture_with(ServerConfig {
+        // Longer than the guard: the held result can only go out through its model_changed.
+        revision_wait: Duration::from_secs(600),
+        ..ServerConfig::default()
+    });
+    let mut c = f.client().await;
+    // The stand-in "loses" the undo's model_changed: its result (revision 1) is held.
+    send(&mut c, &ClientMessage::Undo { id: RequestId(5) }).await;
+    // A GO meanwhile is read, forwarded and answered at once.
+    send(&mut c, &go(6)).await;
+    assert!(matches!(
+        next(&mut c).await,
+        Some(ServerMessage::Result {
+            id: RequestId(6),
+            ..
+        })
+    ));
+    // The model_changed arrives late: then, and only then, the held result.
+    f.out.try_send(changed(1)).unwrap();
+    assert!(matches!(
+        next(&mut c).await,
+        Some(ServerMessage::ModelChanged { revision: 1, .. })
+    ));
+    assert!(matches!(
+        next(&mut c).await,
+        Some(ServerMessage::Result {
+            id: RequestId(5),
+            ..
+        })
+    ));
 }
