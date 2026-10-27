@@ -1275,18 +1275,28 @@ impl Control {
         match answer {
             NetAnswer::SendFailed {
                 cue,
-                destination,
-                reason,
-            } => self.net_warning(cue, format!("message to {destination} not sent: {reason}")),
+                ref destination,
+                ref reason,
+                ..
+            } => {
+                let message = format!("message to {destination} not sent: {reason}");
+                // A TCP failure also asks for a fresh look-up of the host.
+                let reports = self.net.answer(answer, now);
+                self.network_reports(reports, now);
+                self.net_warning(cue, message);
+            }
             lookup @ NetAnswer::Lookup { .. } => {
                 let reports = self.net.answer(lookup, now);
                 self.network_reports(reports, now);
-                self.note_lookup_limit();
             }
         }
+        self.note_lookup_limit();
     }
 
     fn note_lookup_limit(&mut self) {
+        for note in self.net.take_notes() {
+            self.log(LogLevel::Warn, note);
+        }
         if self.net.take_limit_note() {
             self.log(
                 LogLevel::Warn,
