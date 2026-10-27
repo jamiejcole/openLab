@@ -18,7 +18,7 @@ pub mod plan;
 pub mod runner;
 mod voices;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -206,6 +206,10 @@ pub struct Control {
     deferred: Vec<(SampleTime, Input)>,
     /// Probe answers not yet handed to the engine (sent together as `Availability`).
     pending_media: Vec<(openlab_core::MediaRef, MediaStatus)>,
+    /// Files some cue asks to preload, built on the first probe answer after an edit: a probe
+    /// answer must not scan the whole workspace (2,000 answers would be quadratic, NFR-24).
+    preload_keys: Option<HashSet<String>>,
+    preload_scans: u64,
     ready_media: Vec<String>,
     primes_dirty: bool,
     warnings_dirty: bool,
@@ -293,6 +297,8 @@ impl Control {
             runtime_seq: 0,
             deferred: Vec::new(),
             pending_media: Vec::new(),
+            preload_keys: None,
+            preload_scans: 0,
             ready_media: Vec::new(),
             primes_dirty: true,
             warnings_dirty: true,
@@ -590,6 +596,7 @@ impl Control {
     /// resolution (a newly opened workspace), else only changes.
     fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.media.sync(&self.ws);
+        self.preload_keys = None;
         self.primes_dirty = true;
         self.sync_patches(all)
     }
@@ -825,13 +832,20 @@ impl Control {
     }
 
     fn probe_answer(&mut self, answer: ProbeAnswer) {
-        let ws = &self.ws;
-        let wants = |key: &str, probed: &openlab_audio::Probed| {
-            probed.preload_advised() || cue_wants_preload(ws, key)
-        };
         let key = match &answer {
             ProbeAnswer::Probed { key, .. } => Some(key.clone()),
             ProbeAnswer::Preloaded { .. } => None,
+        };
+        let none = HashSet::new();
+        let preload = match &answer {
+            ProbeAnswer::Probed { .. } => &*self.preload_keys.get_or_insert_with(|| {
+                self.preload_scans += 1;
+                preload_keys(&self.ws)
+            }),
+            ProbeAnswer::Preloaded { .. } => &none,
+        };
+        let wants = |key: &str, probed: &openlab_audio::Probed| {
+            probed.preload_advised() || preload.contains(key)
         };
         if let Some(status) = self.media.answer(answer, wants) {
             self.pending_media.push(status);
@@ -1451,6 +1465,12 @@ impl Control {
         self.checks.builds()
     }
 
+    /// Whole-workspace scans for preload requests so far (a cost measure: one per model version
+    /// that gets probe answers, however many answers).
+    pub fn preload_scans(&self) -> u64 {
+        self.preload_scans
+    }
+
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
@@ -1715,8 +1735,8 @@ fn groups(cues: &[Cue], f: &mut impl FnMut(CueId)) {
     }
 }
 
-fn cue_wants_preload(ws: &Workspace, key: &str) -> bool {
-    let mut wants = false;
+fn preload_keys(ws: &Workspace) -> HashSet<String> {
+    let mut keys = HashSet::new();
     for list in &ws.cue_lists {
         visit(&list.cues, &mut |c| {
             if let CueKind::Audio {
@@ -1724,13 +1744,12 @@ fn cue_wants_preload(ws: &Workspace, key: &str) -> bool {
                 preload: true,
                 ..
             } = &c.kind
-                && m.as_str() == key
             {
-                wants = true;
+                keys.insert(m.as_str().to_owned());
             }
         });
     }
-    wants
+    keys
 }
 
 fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {

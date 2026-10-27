@@ -69,10 +69,10 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - Commit with plain terminal commands: `git add …` then `git commit -m "…"`.
 - **Never add `Co-authored-by` or any AI-attribution trailer.**
 - Message style: short imperative subject with area prefix, e.g. `core: add continue-mode state transitions`, `audio: equal-power fade curve`, `mac: cue list outline view`.
-- Don't push, rebase shared history, or force anything unless the orchestrator asks.
+- Don't push, rebase shared history, or force anything unless the orchestrator asks. Changes reach `main` only through a PR that the orchestrator merges after CI is green; nobody pushes to `main` directly.
 
 ## Workflow
-- The orchestrator follows `.claude/skills/orchestrate/SKILL.md`: brief → `implementer` agent → verify → `pr-reviewer` agent (adversarial, High/Medium/Low) → fix → merge → push → CI.
+- The orchestrator follows `.claude/skills/orchestrate/SKILL.md`: brief → `implementer` agent → verify → `pr-reviewer` agent (adversarial, High/Medium/Low) → fix → push task branch → PR into `main` → CI green → orchestrator merges.
 - Agent definitions: `.claude/agents/implementer.md`, `.claude/agents/pr-reviewer.md`. High and Medium review findings block merge.
 
 ## Known environment facts
