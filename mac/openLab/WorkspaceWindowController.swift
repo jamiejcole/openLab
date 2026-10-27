@@ -64,6 +64,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
         }
+        cueList.onFileDrop = { [weak self] drop in
+            Task {
+                switch drop {
+                case .replace(let id, let url): await self?.editor.replaceFile(of: id, with: url)
+                case .insert(let urls, let parent, let index):
+                    await self?.editor.addFiles(urls, parent: parent, index: index)
+                }
+            }
+        }
         cueToolbar.onAdd = { [weak self] kind in Task { await self?.editor.add(kind) } }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView

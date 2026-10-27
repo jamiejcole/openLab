@@ -352,6 +352,10 @@ pub struct SystemStatus {
     /// received missed a push and reads the gap with `log_tail`. Absent from older engines: 0.
     #[serde(default)]
     pub log_seq: u64,
+    /// The OSC/network output override is on (PB-10): Network cues send nothing. The UI must
+    /// show this plainly while it is true.
+    #[serde(default)]
+    pub network_output_disabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

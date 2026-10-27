@@ -152,6 +152,7 @@ fn device_show(clock: &ManualClock) -> DeviceShow {
     let ws = workspace(vec![]);
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
     let mut machine = MachineSettings::default();
     machine
         .set_patch_mapping(

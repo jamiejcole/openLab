@@ -247,12 +247,15 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     /// The newest show-log record's `seq`; above the last `log_entry` received means a push was
     /// lost. 0 when absent (an engine from before the field).
     let logSeq: UInt64
+    /// PB-10: the network output override is on, so Network cues send nothing.
+    let networkOutputDisabled: Bool
     enum CodingKeys: String, CodingKey {
         case xruns, disk, device
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
         case logSeq = "log_seq"
+        case networkOutputDisabled = "network_output_disabled"
     }
 
     init(from decoder: Decoder) throws {
@@ -264,6 +267,7 @@ struct SystemStatus: Hashable, Sendable, Decodable {
         device = try c.decode(DeviceStatus.self, forKey: .device)
         logDropped = try c.decode(UInt64.self, forKey: .logDropped)
         logSeq = try c.decodeIfPresent(UInt64.self, forKey: .logSeq) ?? 0
+        networkOutputDisabled = try c.decodeIfPresent(Bool.self, forKey: .networkOutputDisabled) ?? false
     }
 }
 

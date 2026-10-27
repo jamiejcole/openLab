@@ -22,7 +22,7 @@ final class StatusLogTests: XCTestCase {
                 {"cpu_percent":8.2,"engine_load":0.1,"xruns":0,
                  "disk":{"streams":2,"underrun_frames":0,"healthy":true},
                  "device":{"name":"Built-in","state":"ok","sample_rate":48000,"block_frames":256,"channels":2,"latency_ms":9.0},
-                 "log_dropped":0}
+                 "log_dropped":0,"network_output_disabled":false}
                 """#.utf8))
     }
 

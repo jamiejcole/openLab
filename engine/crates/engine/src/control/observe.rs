@@ -154,7 +154,7 @@ impl Control {
     }
 
     /// `cue 5 "Storm"`, for log lines.
-    fn cue_label(&self, id: CueId) -> String {
+    pub(super) fn cue_label(&self, id: CueId) -> String {
         match self.ws.find_cue(id) {
             Some(cue) => match &cue.number {
                 Some(n) if !n.is_empty() => format!("cue {n} \"{}\"", cue.name),
@@ -410,6 +410,7 @@ impl Control {
             underrun_frames: self.mixer.underrun_frames(),
             device_name,
             device_state,
+            network_output_disabled: self.net.disabled(),
         }
     }
 
@@ -441,6 +442,7 @@ impl Control {
             streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
             log_dropped: self.config.show_log.dropped(),
             log_seq: self.config.show_log.seq(),
+            network_output_disabled: self.net.disabled(),
             device,
             cpu_seconds: (self.config.cpu_probe)(),
             // Worst callback since the previous status (read-and-reset; this is its only
