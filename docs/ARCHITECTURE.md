@@ -149,7 +149,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>-<path-hash>.openlab` (bound to the show file's path, so a duplicated show is never offered the original's work; `<workspace-id>.openlab` before the first save). On launch, a recovery file newer than the show file triggers a restore prompt. A recovery file is never deleted on a timestamp comparison: older ones are moved aside and deleted only after a successful save.
 - **Backups**: on each manual save, the previous version is kept in `<app-support>/openLab/Backups/<workspace-id>-<path-hash>/` (rolling, default 20; per show path so duplicates do not rotate each other out).
 - Details of the I/O (file names, rotation, recovery decision, settings schema, relink flow): `docs/persistence.md`. Pure logic is in `openlab-core`; file work is in `crates/engine/src/persist/`. Saves clone the workspace and run on a writer thread, never the control thread.
-- **Per-machine settings** (device mapping for each workspace's patches, preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
+- **Per-machine settings** (device mapping for each workspace's patches, engine preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). UI-owned state (window layout, recent files) lives in the macOS app's UserDefaults, not there (decision M1.14: [handoff/decisions/qlab-confirm.md](handoff/decisions/qlab-confirm.md)). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
 
 ## 6. UI protocol (engine ↔ UI)
 
