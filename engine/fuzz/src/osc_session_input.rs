@@ -153,7 +153,7 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             }
             3 => {
                 osc.reset_sessions();
-                if !osc.update_subscribers().is_empty() || osc.known_ips() != 0 {
+                if !osc.update_subscribers(now).is_empty() || osc.known_ips() != 0 {
                     return Err("a reset left sessions behind".into());
                 }
                 if (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))) {
@@ -165,8 +165,9 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                     addr: "/update/workspace/x".into(),
                     args: vec![],
                 };
-                for subscriber in osc.update_subscribers() {
-                    if let Some(bytes) = osc.prepare_update(subscriber, now, &update)
+                for subscriber in osc.update_subscribers(now) {
+                    if let Some(bytes) = osc.encode_update(&update)
+                        && osc.update_allowed(subscriber, now, bytes.len(), show.passcode.is_some())
                         && decode_packet(&bytes).is_err()
                     {
                         return Err("an update did not decode".into());
@@ -174,11 +175,11 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                 }
             }
         }
-        if osc.known_ips() > MAX_KNOWN_IPS || osc.update_subscribers().len() > MAX_PEERS {
+        if osc.known_ips() > MAX_KNOWN_IPS || osc.update_subscribers(now).len() > MAX_PEERS {
             return Err("a table grew past its bound".into());
         }
         if locked_out_for_good
-            && (!osc.update_subscribers().is_empty()
+            && (!osc.update_subscribers(now).is_empty()
                 || (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))))
         {
             return Err("a peer got a session without the passcode".into());

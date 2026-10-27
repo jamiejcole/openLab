@@ -26,6 +26,8 @@ openlab-core = { version = "0.0.1", path = "../core" }
 # Default features off: `time` is only for printing OSC time tags, which nothing here does.
 rosc = { version = "0.11.4", default-features = false }
 serde_json = "1.0.154"
+# Sets the OSC UDP socket's buffer sizes before it is bound (std cannot); already in the tree through tokio.
+socket2 = "0.6.5"
 thiserror = "2.0.21"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }

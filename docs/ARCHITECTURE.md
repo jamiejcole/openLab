@@ -14,9 +14,9 @@ openLab is two programs that talk over a local socket:
 ┌──────────────────────── openlab-engine (Rust, headless) ────────────────────────┐
 │                                                                                  │
 │  audio thread (cpal callback)  ◄── lock-free SPSC queues ──  control thread      │
-│   mixer, voices, fades,            (time-stamped commands)    owns Workspace,    │
-│   matrix, patches, meters    ──►  (status / returns)          CueEngine, undo,   │
-│        ▲                                                       persistence       │
+│   mixer, voices, fades,            (time-stamped commands)    owns Engine + N    │
+│   matrix, patches, meters    ──►  (status / returns)          Docs (Workspace,   │
+│        ▲                                                       CueEngine, undo)  │
 │        │ SPSC ring buffers of decoded audio                         ▲            │
 │  disk threads (decode → resample → buffer)                          │ channel    │
 │                                                                     │            │
@@ -30,6 +30,7 @@ openLab is two programs that talk over a local socket:
 ```
 
 - **The engine is the single source of truth.** It owns the workspace model, undo history, cue runtime state, timing and audio. UIs mirror state and send commands; they never compute show behaviour.
+- **One engine process holds every open workspace** (at most 8, REQUIREMENTS §21): one audio device, clock and mixer shared by N `Doc`s, each with its own workspace, undo history, cue engine and runtime state (QLab 5 runs several workspaces in one app; one process can bind OSC 53000 and answers for all of them).
 - **UI faults cannot stop playback** (NFR-01): the UI is a separate process. If it dies the engine keeps playing and relaunches it.
 - **Platform-specific code is thin.** The engine is portable Rust (macOS + Windows CI from day one). Only the UI is per-platform.
 
@@ -65,12 +66,13 @@ Keep the crate count at three. Add a module before adding a crate.
 | Thread | Owns | May block? | Talks via |
 |---|---|---|---|
 | **Audio** (cpal callback, OS real-time priority) | `Mixer`, voice pool, fade ramps, output patches | **Never** | `rtrb` SPSC queues in/out; atomics for meters, clock |
-| **Control** (one thread, event loop) | `Workspace`, `CueEngine`, undo stack, scheduler | Briefly (no disk I/O on it either — hand to I/O helpers) | `crossbeam-channel` inbox; SPSC to audio; broadcast to network |
+| **Control** (one thread, event loop) | the shared `Engine` (mixer controller, voice and patch-slot allocators, device state) and N `Doc`s, each with `Workspace`, `CueEngine`, undo stack, scheduler | Briefly (no disk I/O on it either — hand to I/O helpers) | `crossbeam-channel` inbox; SPSC to audio; broadcast to network |
 | **Disk** (small pool, default 2) | decoders, resamplers | Yes | per-voice SPSC ring buffers to audio; request channel from control |
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
+| **Watch** (`openlab-watch`, M2.25) | the media files' stat state (metadata only, no decoding) | Yes (a hung network volume can block a stat) | job channel from control (watch, unwatch, reset); one batched `Inbox::Watch` per pass, only when something changed; a control-side watchdog abandons a stalled worker |
 
-Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. Reading a show (open, revert, recovery check and scan) runs on a document worker that answers through the inbox too, and saves and autosaves go to the writer thread; the control thread only clones the workspace and polls for the result. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+The watch thread (`openlab-watch`) polls every cataloged media file's metadata for missing, back, changed and moved files (details: [`docs/persistence.md`](persistence.md) "Media watch and follow", [`docs/control.md`](control.md) "Media watch"). Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. Reading a show (open, recovery check and scan) runs on a document worker that answers through the inbox too, and saves and autosaves go to the writer thread; the control thread only clones the workspace and polls for the result. The worker also builds everything an opened doc needs (workspace, cue engine with its problem cache, media catalog index, plan checks) as `DocParts`, so installing a doc on the control thread is an insert plus probe jobs and slot commands, within one audio block (~5 ms) even for 2,000 cues; a closed doc is dropped off the control thread (writer/doc thread). One doc read runs at a time engine-wide (a second is `command_refused`). The control loop ticks every doc and wakes at the earliest `wait_hint` of any. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
 
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
@@ -114,6 +116,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
            ─► output patch (level, mute, delay, polarity) ─► master ─► device ─► meters (atomics)
 ```
 
+- **Shared mixer, several workspaces** (M4.15): the mixer sees voices and patch matrices, not docs. Patch matrix slots (the shared 64) come from a free-list allocator keyed `(DocId, PatchId)`, so removing or reordering a patch never reroutes a running voice; a freed slot is zeroed, and with no slot free the patch is `Unmapped` with a `mixer_patches_exhausted` warning. A workspace's master level is folded into its matrix gains (workspace master x patch master x output level) and the mixer master stays at unity. `VoiceId`s come from one engine-wide counter with an `owner: VoiceId -> DocId` map; mixer events, stream errors and meter listings are routed by owner, and an event for an unowned voice (a closed doc's) is ignored. Device-output delay (an openLab extra: QLab has no such setting, so low priority) is one value per physical output, so `sync_delays` runs over every doc's mapped patches and a conflict is an `output_delay_conflict` warning in each doc. Device loss stops every doc.
 - **Loaded** state = ring buffer primed. The engine keeps cues near the playhead primed (next 16 cues by default, plus targets of those cues and any cue with a hotkey/OSC trigger). Primed cues meet NFR-20; a cold cue starts as soon as its buffer fills (~tens of ms) and this is shown as a warning, never a failure.
 - Optional per-cue **preload to RAM** (AUD-05) decodes the whole file once.
 - **Fades** are per-voice gain ramps evaluated per sample on the audio thread from a curve id + start/end gain + start/end sample (no per-sample allocation, no table rebuilds). Curves: linear, equal-power, S-curve, log, exp.
@@ -140,18 +143,20 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 - A workspace is a single JSON file, extension **`.openlab`**, pretty-printed, stable key order, `"format_version": N` at the top. Spec in `docs/file-format.md`.
 - Media paths: relative (forward slashes) when under the show file's folder, absolute otherwise. Portable across macOS/Windows (NFR-32).
+- **Media identity is path first** (M2.29): while the stored path exists, the cue stays on it. When the path is gone, on macOS local volumes the engine follows the file by (device, inode) to its new place, and rewrites the cue's `MediaRef` as a model edit outside undo. Network and FAT volumes, and Windows (file IDs are M2.29f), are path-only. Show-file v3 will add advisory `media_hints` (M2.29d) so files moved while the show was closed are found. The cue's display name follows its file when `name` is empty (`display_name`, M2.29c).
 - **Load**: parse → migrate (`vN → vN+1` chain, each step a pure function with fixture tests) → validate (unique ids, valid targets, sane ranges). Invalid content produces load warnings or a clean refusal with a reason — never a panic. Fuzzed (QA-04).
 - **Save** is atomic: write `name.openlab.tmp` in the same directory, `fsync`, rename over the original.
 - **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>-<path-hash>.openlab` (bound to the show file's path, so a duplicated show is never offered the original's work; `<workspace-id>.openlab` before the first save). On launch, a recovery file newer than the show file triggers a restore prompt. A recovery file is never deleted on a timestamp comparison: older ones are moved aside and deleted only after a successful save.
 - **Backups**: on each manual save, the previous version is kept in `<app-support>/openLab/Backups/<workspace-id>-<path-hash>/` (rolling, default 20; per show path so duplicates do not rotate each other out).
 - Details of the I/O (file names, rotation, recovery decision, settings schema, relink flow): `docs/persistence.md`. Pure logic is in `openlab-core`; file work is in `crates/engine/src/persist/`. Saves clone the workspace and run on a writer thread, never the control thread.
-- **Per-machine settings** (device mapping for each workspace's patches, preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
+- **Per-machine settings** (device mapping for each workspace's patches, engine preferences) live in `<app-support>/openLab/settings.json`, not in the show file (WS-06/07). UI-owned state (window layout, recent files) lives in the macOS app's UserDefaults, not there (decision M1.14: [handoff/decisions/qlab-confirm.md](handoff/decisions/qlab-confirm.md)). `<app-support>` = `~/Library/Application Support` (macOS), `%APPDATA%` (Windows).
 
 ## 6. UI protocol (engine ↔ UI)
 
 - **Transport**: WebSocket on `127.0.0.1`, random port. JSON text frames; meters may move to binary frames if profiling demands it.
 - **Auth**: the engine generates a random token at start and writes `{port, token, pid}` to `<app-support>/openLab/engine.json` (mode 0600). Clients send it in `hello`.
 - **Versioning**: `hello { protocol_version }`; the engine refuses incompatible clients with a clear error.
+- **One connection, one workspace** (M4.15): `hello` may name a doc (`workspace`); the connection is then bound to it, `welcome` carries that doc's snapshot, and every command, transport and request acts on it, with revisions and `runtime_seq` counted per doc. A `hello` without one is an unbound app connection: `welcome` lists the open workspaces (`doc`, `workspace_id`, name, path, dirty), and a `workspaces` message follows each change to the list, a name, a path or a dirty flag. Workspace-bound messages on it answer `no_workspace`. `new`, `open`, `open_recovery` answer `opened { doc }` (an already-open path answers `already_open`); `close` (bound, or `close { doc }`) refuses with `unsaved_changes` unless `discard_changes`, then sends `closed { doc }` to its connections and closes them. `revert` does not exist (QLab 5 has none). Broadcasts are tagged with their doc and each connection gets only its own doc's (plus `workspaces` when unbound); the OSC task sees all. Two actions are app-scope, sent on any connection and applied to every doc: `panic` (Esc, once or twice) and hotkey triggers (a hotkey fires in every open workspace, in front or not); Pause All, GO and the other transport keys act on one doc, the front window's, which is the UI's notion (no engine front workspace). Opening a file whose workspace id is already open gives the new doc a fresh workspace id and marks it dirty (QLab 5 does the same for a Finder duplicate).
 - **Messages** (envelope `{"type": "...", ...}`):
   - client → engine: `hello`, `command` (model edit, with client request `id`), `transport` (go, stop, panic, pause_all, resume_all, playhead, start/stop/pause cue), `undo`, `redo`, `request` (open, save, save_as, new, relink, device list, …), `goodbye`.
   - engine → client: `welcome` (full snapshot), `model_changed` (entity upserts/deletes + monotonically increasing `revision`), `runtime` (cue state changes, event-driven), `progress` (elapsed/remaining for running cues, ≤ 30 Hz batch), `meters` (≤ 30 Hz), `log`, `warnings`, `result { id, ok | error }`.
@@ -162,16 +167,17 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 - UDP and TCP (SLIP-framed) on port **53000**; UDP replies to the sender on 53001 — matching QLab so existing tools connect unchanged.
 - Address space follows QLab 5's OSC dictionary for the v0.0.1 subset (see REQUIREMENTS §21): `/go`, `/stop`, `/panic`, `/pause`, `/resume`, `/playhead/{number}`, `/select/{number}`, `/cue/{number}/start|stop|pause|...`, `/cue_id/{id}/...`, `/workspace/{id}/...` prefixed forms, `/connect {passcode}`, `/updates {1|0}`, JSON replies where QLab sends them. `docs/osc.md` lists exactly what is implemented, written in our own words.
+- **Several workspaces** (M4.15; QLab 5 sends a message to every open workspace listening on its port): one listener serves all docs. A message with no workspace prefix goes to every doc listening on that port, whichever window is in front, so an un-prefixed `/go` fires every open workspace's GO; `/workspace/{id}/...` and `/workspace/{name}/...` pick one. A query gets one reply per doc, each with its `workspace_id` and the address rewritten to the prefixed form; a doc where it fails replies with an error status. `/connect` and its passcode, session and lockout state are per doc (keyed peer + doc): un-prefixed, every doc checks its own passcode and answers (`ok:<rights>` or `badpass`); closing a doc ends its sessions; per-IP budgets stay per IP. `/updates` goes to every doc but gets no reply, and a doc sends updates only to sessions connected to it; a prefixed `/updates` is an error. `/version` and `/workspaces` are application messages; `/workspaces` is one reply listing every open doc in open order (not front order), without `workspace_id`. With no doc open an addressed message errors like an unknown workspace id. Per-workspace listen ports are a later setting (PROGRESS M4.15j); the engine never needs a "front" workspace for OSC.
 - Incoming OSC is parsed on network threads and becomes the same `transport`/`command` inputs the UI sends. Malformed packets are dropped and counted.
 - Network cues send OSC via the writer/network side, never from the audio thread. The OSC output override (PB-10) is checked at send time.
 
 ## 8. Process lifecycle & supervision
 
 - `openLab.app` contains the engine at `Contents/MacOS/openlab-engine`.
-- **App launch**: read `engine.json`; if a live engine answers, connect (UI was restarted). Otherwise spawn the engine (detached, its own process group) and connect.
-- **UI quits normally**: if cues are running, confirm (SM-05); then send `goodbye { shutdown: true }` and the engine exits after saving recovery state.
+- **App launch**: read `engine.json`; if a live engine answers, connect (UI was restarted). Otherwise spawn the engine (detached, its own process group) and connect. The engine starts with no workspace open; the app decides what to open (recovery check, last workspaces, none) by sending `new`/`open`/`open_recovery`.
+- **UI quits normally**: if cues are running, confirm (SM-05); then send `goodbye { shutdown: true }` and the engine exits after a final recovery write for every dirty doc.
 - **UI crashes** (socket drops without `goodbye`): engine keeps playing, logs it, and relaunches the app after 1 s via the OS (`open -b <bundle id>` on macOS), at most 3 times per minute. The relaunched UI reconnects and receives a full snapshot.
-- **Engine crashes** (must not happen; tested heavily): UI shows a full-window alarm, relaunches the engine and offers to restore from the recovery file. Audio has stopped — this is the one unrecoverable case, which is why the engine is kept small and isolated from GUI frameworks.
+- **Engine crashes** (must not happen; tested heavily): UI shows a full-window alarm, relaunches the engine and offers to restore from the recovery file. Audio has stopped — this is the one unrecoverable case, which is why the engine is kept small and isolated from GUI frameworks. Holding all workspaces in one process (M4.15) widens this: a crash stops every open show, not one. Accepted to share one device, clock and OSC port as QLab does; mitigations are the no-panic rules, fuzzing, the soak runs and a recovery file per dirty doc.
 - Show Mode sleep prevention (SM-07) is asserted by the engine (IOPMAssertion on macOS) so it holds even while the UI restarts.
 
 ## 9. macOS app (Swift + AppKit)
@@ -179,7 +185,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - **Swift 6, AppKit only, deployment target macOS 12.0.** No SwiftUI (immature tables/outlines on 12), no Observation framework (macOS 14+). Use Combine and delegates. The compiler's availability checking against 12.0 is the guard for Monterey.
 - **UI built in code** — no storyboards or XIBs (main menu included). Keeps diffs reviewable and avoids XML merge conflicts.
 - **No third-party Swift dependencies** without orchestrator approval. `URLSessionWebSocketTask` for the socket, `Codable` for messages.
-- **Structure**: `EngineClient` (socket, reconnect, message codec) → `WorkspaceStore` (mirrored model + runtime state, publishes changes) → AppKit view controllers. View controllers never talk to the socket directly.
+- **Structure**: `EngineClient` (socket, reconnect, message codec) → `WorkspaceStore` (mirrored model + runtime state, publishes changes) → AppKit view controllers. View controllers never talk to the socket directly. One window per open workspace, each with its own `EngineClient` bound to that doc (`hello { workspace }`) and its own `WorkspaceStore`; an app-level session holds the unbound connection and owns launch, New/Open/recovery flows, the workspace list, recent files and the quit walk (one save prompt per dirty workspace). The front window decides which doc GO, Pause All and the other window-scoped keys address; Esc sends the app-scope `panic`. Closing a workspace while cues play asks first; closing the last one shows a launcher window. No `NSDocument` subclass.
 - **Main window layout follows QLab 5** (UI-07): toolbar and GO/standby area on top, cue list (`NSOutlineView`, view-based, cell reuse for ≥ 2,000 cues) in the centre, sidebar (cue lists, active cues, warnings), tabbed inspector at the bottom. Dark appearance by default.
 - **Assets**: SF Symbols and original artwork only (UI-08). Never copy QLab icons, images, names or text.
 - **Strings**: all user-facing text in `Localizable.strings` from day one (UI-06).
@@ -207,10 +213,10 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 | macOS UI | XCTest (view logic vs. mock `EngineClient`), XCUITest (real headless engine) | editing flows, show mode, reconnect after engine/UI restart |
 | Sanitizers | ASan/TSan (nightly Rust job; Xcode scheme options for Swift) | memory/thread errors |
 
-**CI (GitHub Actions)**, every push and PR:
+**CI (GitHub Actions)**, on every PR (once, via `pull_request`), every push to `main`, nightly, and on demand. A `changes` job skips what a change cannot affect: Rust jobs, `cargo deny` and fuzz only when `engine/` changes, the app job when `mac/` or `engine/` changes, everything when CI or the Makefile changes; a docs-only PR runs nothing heavy. Branch protection requires the single `CI Result` job, which passes when every job that ran passed:
 - Rust: `fmt --check`, `clippy -D warnings`, `test` on macOS arm64, macOS Intel (x86_64, while GitHub offers an Intel runner) and Windows x64; `cargo deny check` (licences must be GPLv3-compatible, advisories).
 - macOS app: `xcodegen` + `xcodebuild test` (unit + UI tests).
-- Perf budget test and the 24 h virtual soak (release, about a minute) on the Intel runner; a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
+- CPU budget, perf budget and the 24 h virtual soak (release) on the Intel runner, on `main` pushes and the nightly run only (not on PRs, to keep PR feedback fast); a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
 - Pin the Xcode version in CI. Xcode 27.1's minimum macOS deployment target is exactly 12.0 — **a future Xcode that drops 12.0 must not be adopted** without a plan for Monterey.
 
 ## 12. Dependencies
@@ -227,6 +233,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | assert_no_alloc | RT allocation guard (debug/test; a normal dependency of openlab-audio for the debug device-callback guard, and of openlab-engine for the debug global allocator, M3.21) | BSD-1-Clause |
 | rosc | OSC encode/decode | MIT/Apache-2.0 |
 | tokio, tokio-tungstenite | async networking, WebSocket | MIT |
+| socket2 | OSC UDP socket buffer sizes (macOS refuses a reply larger than its 9216-byte default send buffer; already in the lock file through tokio) | MIT/Apache-2.0 |
 | futures-util (`sink` only) | `StreamExt`/`SinkExt` on the WebSocket stream (M4.3; already in the lock file) | MIT/Apache-2.0 |
 | getrandom | OS CSPRNG for the session token (M4.3; std has none; already in the tree through uuid/tempfile) | MIT/Apache-2.0 |
 | serde, serde_json | serialisation | MIT/Apache-2.0 |
@@ -234,6 +241,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | thiserror | error types | MIT/Apache-2.0 |
 | dirs | per-platform app-support paths | MIT/Apache-2.0 |
 | unicode-normalization | NFC normalisation of media paths (core; pure) | MIT/Apache-2.0 |
+| libc (macOS only, direct) | `statfs`, `getfsstat`, `getattrlist` for the media follow (M2.29b/d); `fsgetpath` is declared by hand. Already in the lock file | MIT/Apache-2.0 |
 | tempfile (dev) | temp dirs in persistence tests | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
