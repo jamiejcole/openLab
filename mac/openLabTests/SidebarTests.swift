@@ -256,6 +256,26 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(label.stringValue.replacingOccurrences(of: "\u{202f}", with: " "), "2:03:10 PM")
     }
 
+    func testWallClockTimerEndsWhenTheLabelIsGone() throws {
+        var timer: Timer?
+        weak var gone: WallClockLabel?
+        autoreleasepool {
+            let window = NSWindow(
+                contentRect: .init(x: 0, y: 0, width: 200, height: 50), styleMask: [], backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            let label = WallClockLabel()
+            window.contentView?.addSubview(label)
+            timer = label.timer
+            gone = label
+            window.close()  // leaves the label attached, as closing a workspace window does
+        }
+        XCTAssertNil(gone)
+        let t = try XCTUnwrap(timer)
+        // Either the window's teardown detached the label or the next tick finds it gone.
+        if t.isValid { t.fire() }
+        XCTAssertFalse(t.isValid)
+    }
+
     func testFooterHasTheClock() async throws {
         let wc = try await make()
         XCTAssertEqual(wc.footer.clock.accessibilityIdentifier(), AX.wallClock)

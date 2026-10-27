@@ -11,7 +11,7 @@ enum LayoutArea: CaseIterable {
 /// fixed date and call `refresh()`; the one-second timer runs only while the label is in a window.
 final class WallClockLabel: NSTextField {
     var now: () -> Date = { Date() }
-    private var timer: Timer?
+    private(set) var timer: Timer?
 
     /// The user's own time style (12 or 24 hour) with seconds.
     static func makeFormatter(locale: Locale = .current, timeZone: TimeZone = .current) -> DateFormatter {
@@ -47,8 +47,15 @@ final class WallClockLabel: NSTextField {
         timer = nil
         guard window != nil else { return }
         refresh()
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] t in
+            // Closing a window doesn't detach its views, so viewDidMoveToWindow(nil) may never
+            // come: the timer ends itself once the label or its window is gone.
+            let alive = MainActor.assumeIsolated { () -> Bool in
+                guard let self, let window = self.window else { return false }
+                if window.isVisible { self.refresh() }
+                return true
+            }
+            if !alive { t.invalidate() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
