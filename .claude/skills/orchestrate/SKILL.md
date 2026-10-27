@@ -9,7 +9,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 
 ## Token budget (the user's usage limit is the binding constraint)
 - Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work: the mixer/audio-thread code, lock-free queues, the cue-engine state machine, and reviews of those. Everything else (persistence, protocol plumbing, UI views, docs, fixes from a review) stays on Sonnet.
-- One implementer at a time unless parallel work is blocking; parallel agents burn the 5-hour limit fastest.
+- At most 3 subagents in parallel, of which at most 2 on Opus (allowed mixes: 2 Opus; 1 Opus + 2 Sonnet; 3 Sonnet). Parallel implementers must touch disjoint files and use worktrees.
 - Review once per batch. Re-review only when there was a High, and then only the fix commits. Lows don't get a fix round — batch them into a cleanup task.
 - Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
 - Orchestrator: read report files with `head`/`grep`, not in full; don't re-run checks the agent already proved unless merging.
