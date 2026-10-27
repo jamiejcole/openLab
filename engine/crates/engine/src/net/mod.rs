@@ -2,8 +2,8 @@
 
 //! The network layer (ARCHITECTURE §3.1, §6): a tokio runtime with two threads that serves the
 //! UI protocol over WebSocket on `127.0.0.1` (docs/network.md). It talks to the control thread
-//! only through the control inbox (`Inbox::Client`, one reply channel per message) and the
-//! outbound broadcast channel; it never touches the workspace.
+//! only through the control inbox (`Inbox::Client`, one reply channel per connection; `Inbox::Log`)
+//! and the outbound broadcast channel; it never touches the workspace.
 
 mod hub;
 mod token;
@@ -21,6 +21,4 @@ pub enum NetError {
     Runtime(std::io::Error),
     #[error("could not listen on 127.0.0.1: {0}")]
     Bind(std::io::Error),
-    #[error("could not start a network thread: {0}")]
-    Thread(std::io::Error),
 }

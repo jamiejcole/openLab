@@ -18,7 +18,8 @@ use openlab_core::{MAX_SHOW_FILE_BYTES, load_show};
 
 use crate::control::devices::{self, CpalDevices, StartError};
 use crate::control::{
-    Backend, Control, ControlConfig, ControlError, Inbox, OUTBOUND_CAPACITY, runner,
+    Backend, Control, ControlConfig, ControlError, Inbox, OUTBOUND_CAPACITY, outbound_channel,
+    runner,
 };
 use crate::net::{NetError, ServerConfig, WsServer};
 use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
@@ -46,7 +47,7 @@ pub enum HostError {
     Control(#[from] ControlError),
     #[error("network: {0}")]
     Net(#[from] NetError),
-    #[error("could not start the control thread: {0}")]
+    #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
 }
 
@@ -102,9 +103,21 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
     }
-    let (out_tx, outbound) = crossbeam_channel::bounded(OUTBOUND_CAPACITY);
+    let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     // Port and token are what M4.9 writes to `engine.json`.
     let server = WsServer::start(inbox_tx.clone(), outbound, ServerConfig::default())?;
+    // Runs until the parent closes stdin (or it is not connected) or a client says
+    // `goodbye { shutdown }`, which ends the control loop. Process exit policy is M4.9's.
+    // Started before the control loop so that a failure leaves nothing running: without it
+    // the engine would outlive its parent.
+    let stdin_inbox = inbox_tx.clone();
+    thread::Builder::new()
+        .name("openlab-stdin".into())
+        .spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            let _ = stdin_inbox.send(Inbox::Shutdown);
+        })
+        .map_err(HostError::Thread)?;
     let control = Control::new(
         ws,
         ctl,
@@ -117,15 +130,6 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
         .name("openlab-control".into())
         .spawn(move || runner::run(control, &inbox))
         .map_err(HostError::Thread)?;
-    // Runs until the parent closes stdin (or it is not connected) or a client says
-    // `goodbye { shutdown }`, which ends the control loop. Process exit policy is M4.9's.
-    let stdin_inbox = inbox_tx.clone();
-    let _ = thread::Builder::new()
-        .name("openlab-stdin".into())
-        .spawn(move || {
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
-            let _ = stdin_inbox.send(Inbox::Shutdown);
-        });
     // The control loop stops the show; dropping it ends the device thread, which drops the
     // stream (and the mixer) there.
     let _ = worker.join();

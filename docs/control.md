@@ -14,7 +14,7 @@ The engine's control thread (ARCHITECTURE §3.1, §3.2): it owns the workspace, 
 
 | Thread | Owns | Talks via |
 |---|---|---|
-| control (`openlab-control`) | `Control` | crossbeam-channel inbox in; bounded outbound channel (`OUTBOUND_CAPACITY` 4096) out; `MixerController` (SPSC) to the audio thread |
+| control (`openlab-control`) | `Control` | crossbeam-channel inbox in; bounded outbound channel (`OUTBOUND_CAPACITY` 4096, a tokio `mpsc` channel: `outbound_channel`) out; `MixerController` (SPSC) to the audio thread |
 | probe workers (`openlab-probe-N`, `PROBE_WORKERS` = 2) | `probe`, `preload_within` | two job channels from control (high priority first); answers through the control inbox (`Inbox::Probe`) |
 | device (`openlab-device`) | the device layer (cpal) and the open stream | job channel from control (open, close); answers through the control inbox (`Inbox::Device`) |
 | device list (`openlab-device-list`) | the device lister | list requests from control; answers through the control inbox (`Inbox::Device`) |
@@ -25,7 +25,7 @@ The engine's control thread (ARCHITECTURE §3.1, §3.2): it owns the workspace, 
 
 ## Inbox and replies
 
-`Inbox::Client { message, reply }` carries a `ClientMessage` already decoded and authenticated by the network layer (docs/network.md). Every `command`, `transport`, `undo`, `redo` and `request` gets exactly one `result` on `reply`; broadcasts go to the outbound channel. `Inbox::Probe` is internal feedback; `Inbox::Shutdown` (or `goodbye { shutdown: true }`) ends the loop, which then hard-stops the show (two Panics).
+`Inbox::Client { message, reply }` carries a `ClientMessage` already decoded and authenticated by the network layer (docs/network.md). Every `command`, `transport`, `undo`, `redo` and `request` gets exactly one `result` on `reply`; broadcasts go to the outbound channel. Both are tokio channels (`reply_channel`: unbounded; `outbound_channel`: bounded, `try_send`), so the network layer's tasks wait on them without threads of their own while the control thread only ever sends without blocking. `Inbox::Log { level, message }` is a log entry from the network layer (refused connections), sent out like the loop's own `log`. `Inbox::Probe` is internal feedback; `Inbox::Shutdown` (or `goodbye { shutdown: true }`) ends the loop, which then hard-stops the show (two Panics).
 
 - **Transport** → the cue-engine input of docs/protocol.md's table (`hard_stop` = `Stop { fade_out: None }`), handled at once; `result` ok means "handed to the cue engine".
 - **Command / undo / redo** → `History` on the workspace, then `engine.model_changed()` before the engine's next call (M4.2 contract), one `model_changed { revision, upserts, deletes }` broadcast (below), a `document` broadcast, then the `result` with that revision, then one `Tick` so the edit takes effect now (a deleted running cue stops on the next block). A refused command changes nothing: `command_refused`. `unsignalled_model_changes()` is checked after every engine call; a rise is logged as an error.

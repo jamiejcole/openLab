@@ -3,25 +3,25 @@
 //! The WebSocket server: accept, authenticate, then relay between one client and the control
 //! thread (docs/network.md, docs/protocol.md section 2).
 
+use std::collections::VecDeque;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdListener};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION, ProtocolError,
-    Request, RequestId, ServerMessage, decode_client, decode_hello, encode_server,
+    ClientMessage, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION,
+    ProtocolError, Request, RequestId, ServerMessage, decode_client, decode_hello, encode_server,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
-use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout, timeout_at};
+use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
@@ -29,7 +29,7 @@ use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
 use super::NetError;
 use super::hub::{self, Broadcast, Hub, Kind};
 use super::token::{constant_time_eq, generate_token};
-use crate::control::Inbox;
+use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
 
 /// Bytes a connection may send before it has authenticated: the HTTP upgrade request plus the
 /// 4 KiB `hello`. The WebSocket library would buffer a whole message up to its size limit before
@@ -44,6 +44,9 @@ const MAX_BAD_FRAMES: u32 = 32;
 const INTERNAL_ID: RequestId = RequestId(u64::MAX);
 /// How long the control loop may take to produce the first snapshot.
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(10);
+/// Refused connections are logged at most this often (with a count), so a process that keeps
+/// knocking cannot flood the log.
+const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Timeouts and limits. The defaults are for production; tests shorten them.
 #[derive(Clone, Debug)]
@@ -81,7 +84,7 @@ impl Default for ServerConfig {
 struct Shared {
     token: String,
     inbox: Sender<Inbox>,
-    hub: Hub,
+    hub: Arc<Hub>,
     config: ServerConfig,
     handshaking: Arc<Semaphore>,
     connections: Arc<Semaphore>,
@@ -92,11 +95,8 @@ struct Shared {
 pub struct WsServer {
     port: u16,
     token: String,
-    shared: Arc<Shared>,
-    stop_flag: Arc<AtomicBool>,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
-    distributor: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for WsServer {
@@ -114,7 +114,7 @@ impl WsServer {
     /// the connected clients.
     pub fn start(
         inbox: Sender<Inbox>,
-        outbound: Receiver<ServerMessage>,
+        outbound: OutboundRx,
         config: ServerConfig,
     ) -> Result<Self, NetError> {
         let token = generate_token()?;
@@ -133,21 +133,13 @@ impl WsServer {
         let shared = Arc::new(Shared {
             token: token.clone(),
             inbox,
-            hub: Hub::default(),
+            hub: Arc::new(Hub::default()),
             handshaking: Arc::new(Semaphore::new(config.max_handshaking)),
             connections: Arc::new(Semaphore::new(config.max_connections)),
             config,
             shutdown: shutdown_rx,
         });
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let distributor = {
-            let shared = shared.clone();
-            let stop = stop_flag.clone();
-            thread::Builder::new()
-                .name("openlab-net-fanout".into())
-                .spawn(move || hub::distribute(&shared.hub, &outbound, &stop))
-                .map_err(NetError::Thread)?
-        };
+        runtime.spawn(hub::distribute(shared.hub.clone(), outbound));
         let accept_shared = shared.clone();
         runtime.spawn(async move {
             if let Ok(listener) = TcpListener::from_std(listener) {
@@ -157,11 +149,8 @@ impl WsServer {
         Ok(Self {
             port,
             token,
-            shared,
-            stop_flag,
             shutdown,
             runtime: Mutex::new(Some(runtime)),
-            distributor: Mutex::new(Some(distributor)),
         })
     }
 
@@ -174,10 +163,9 @@ impl WsServer {
         &self.token
     }
 
-    /// Closes every connection and stops the threads.
+    /// Closes every connection and stops the runtime (and with it the fan-out task).
     pub fn stop(&self) {
         let _ = self.shutdown.send(true);
-        self.stop_flag.store(true, Ordering::Release);
         let runtime = self
             .runtime
             .lock()
@@ -186,15 +174,6 @@ impl WsServer {
         if let Some(runtime) = runtime {
             runtime.shutdown_background();
         }
-        let distributor = self
-            .distributor
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(handle) = distributor {
-            let _ = handle.join();
-        }
-        let _ = &self.shared;
     }
 }
 
@@ -204,8 +183,36 @@ impl Drop for WsServer {
     }
 }
 
+/// Counts refused connections and logs them at most once per [`REFUSAL_LOG_INTERVAL`], so a UI
+/// that cannot connect (every slot held by something else) can be diagnosed.
+#[derive(Default)]
+struct Refusals {
+    count: u64,
+    last_log: Option<Instant>,
+}
+
+impl Refusals {
+    fn refused(&mut self, inbox: &Sender<Inbox>, limit: &str) {
+        self.count += 1;
+        let now = Instant::now();
+        if self
+            .last_log
+            .is_some_and(|t| now.duration_since(t) < REFUSAL_LOG_INTERVAL)
+        {
+            return;
+        }
+        let _ = inbox.send(Inbox::Log {
+            level: LogLevel::Warn,
+            message: format!("UI server refused {} connection(s): {limit}", self.count),
+        });
+        self.count = 0;
+        self.last_log = Some(now);
+    }
+}
+
 async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
     let mut shutdown = shared.shutdown.clone();
+    let mut refusals = Refusals::default();
     loop {
         let accepted = tokio::select! {
             _ = shutdown.changed() => return,
@@ -218,9 +225,11 @@ async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
         };
         // Over the limits: refuse by closing at once, before any state is allocated.
         let Ok(pending) = shared.handshaking.clone().try_acquire_owned() else {
+            refusals.refused(&shared.inbox, "too many connections still handshaking");
             continue;
         };
         let Ok(slot) = shared.connections.clone().try_acquire_owned() else {
+            refusals.refused(&shared.inbox, "connection limit reached");
             continue;
         };
         let shared = shared.clone();
@@ -356,6 +365,13 @@ async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermi
 /// The connection ended (or must end).
 struct Closed;
 
+/// A `result` waiting for the `model_changed` it reports (docs/protocol.md section 4).
+struct Held {
+    revision: u64,
+    deadline: Instant,
+    message: ServerMessage,
+}
+
 struct Conn {
     ws: Ws,
     shared: Arc<Shared>,
@@ -363,31 +379,29 @@ struct Conn {
     bcast: mpsc::Receiver<Broadcast>,
     lagged: Arc<AtomicBool>,
     wake: Arc<Notify>,
-    reply_tx: Sender<ServerMessage>,
-    reply_rx: mpsc::UnboundedReceiver<ServerMessage>,
+    reply_tx: ReplyTx,
+    reply_rx: ReplyRx,
     /// Last `model_changed` revision / `runtime` seq this client has been sent or was told by a
     /// snapshot; older broadcasts are skipped.
     last_rev: u64,
     last_seq: u64,
+    /// Client requests sent to the control loop whose `result` has not been written yet.
     inflight: usize,
-    /// Own `snapshot` requests not yet answered. Broadcasts wait while one is out.
-    internal_pending: usize,
+    /// Requests that answer with a `snapshot` (the server's own, id [`INTERNAL_ID`], and the
+    /// client's `snapshot`/`open`/`new`/`revert`) whose `result` has not arrived. While one is
+    /// out, broadcasts wait in the queue: one made after the control loop took the snapshot
+    /// must not reach the client before it (the snapshot would then take the client back),
+    /// and one made before is filtered against the snapshot's revision and seq.
+    snapshot_waits: Vec<RequestId>,
+    /// Results held back for their `model_changed`, in arrival order.
+    held: VecDeque<Held>,
     bad_frames: u32,
     last_heard: Instant,
-    closed: Arc<AtomicBool>,
 }
 
 async fn run(shared: Arc<Shared>, ws: Ws) {
     let registration = shared.hub.register();
-    let (reply_tx, reply_rx_c) = crossbeam_channel::unbounded();
-    let (fw_tx, reply_rx) = mpsc::unbounded_channel();
-    let closed = Arc::new(AtomicBool::new(false));
-    let forwarder = {
-        let closed = closed.clone();
-        thread::Builder::new()
-            .name("openlab-net-reply".into())
-            .spawn(move || forward_replies(&reply_rx_c, &fw_tx, &closed))
-    };
+    let (reply_tx, reply_rx) = reply_channel();
     let mut conn = Conn {
         ws,
         hub_id: registration.id,
@@ -399,49 +413,15 @@ async fn run(shared: Arc<Shared>, ws: Ws) {
         last_rev: 0,
         last_seq: 0,
         inflight: 0,
-        internal_pending: 0,
+        snapshot_waits: Vec::new(),
+        held: VecDeque::new(),
         bad_frames: 0,
         last_heard: Instant::now(),
-        closed,
         shared,
     };
-    if forwarder.is_err() {
-        let _ = conn
-            .send(&error_message(
-                ErrorCode::Internal,
-                "engine is out of threads",
-            ))
-            .await;
-    } else {
-        let _ = conn.session().await;
-    }
-    conn.closed.store(true, Ordering::Release);
+    let _ = conn.session().await;
     conn.shared.hub.unregister(conn.hub_id);
     let _ = timeout(conn.shared.config.write_timeout, conn.ws.close(None)).await;
-}
-
-/// Moves replies from the control loop's crossbeam channel into the connection's task. One
-/// small thread per connection (a few at most): crossbeam cannot wake a tokio task.
-fn forward_replies(
-    rx: &Receiver<ServerMessage>,
-    tx: &mpsc::UnboundedSender<ServerMessage>,
-    closed: &AtomicBool,
-) {
-    loop {
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(message) => {
-                if tx.send(message).is_err() {
-                    break;
-                }
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                if closed.load(Ordering::Acquire) {
-                    break;
-                }
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-        }
-    }
 }
 
 fn request_id(message: &ClientMessage) -> Option<RequestId> {
@@ -453,6 +433,17 @@ fn request_id(message: &ClientMessage) -> Option<RequestId> {
         | ClientMessage::Request { id, .. } => Some(*id),
         ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => None,
     }
+}
+
+/// Whether the control loop answers this with a `snapshot` (docs/protocol.md section 3).
+fn answers_with_snapshot(message: &ClientMessage) -> bool {
+    matches!(
+        message,
+        ClientMessage::Request {
+            request: Request::Snapshot | Request::Open { .. } | Request::New | Request::Revert,
+            ..
+        }
+    )
 }
 
 impl Conn {
@@ -490,17 +481,27 @@ impl Conn {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.last_heard = Instant::now();
         loop {
-            if self.internal_pending == 0 && self.lagged.load(Ordering::Acquire) {
+            let waiting = !self.snapshot_waits.is_empty();
+            if !waiting && self.lagged.load(Ordering::Acquire) {
                 self.resync()?;
+                continue;
             }
+            // While a snapshot is coming, held results wait for it (it covers their revision:
+            // the control loop answered them before taking it).
+            let deadline = self
+                .held
+                .iter()
+                .map(|h| h.deadline)
+                .min()
+                .filter(|_| !waiting);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => return Ok(()),
                 // Only wakes the loop; `resync` runs at the top of the next turn.
                 () = wake.notified() => {}
                 // Broadcasts before replies: the `model_changed` of a command is queued here
-                // before its `result` is ready (ordering also enforced in `reply`).
-                item = self.bcast.recv(), if self.internal_pending == 0 => match item {
+                // before its `result` is ready (ordering also enforced by `held`).
+                item = self.bcast.recv(), if !waiting => match item {
                     Some(b) => self.broadcast(b).await?,
                     None => return Ok(()),
                 },
@@ -529,6 +530,9 @@ impl Conn {
                         Some(Ok(_)) => {}
                     }
                 }
+                () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
+                    self.release_held().await?;
+                }
                 _ = ticker.tick() => {
                     if self.inflight < MAX_INFLIGHT
                         && self.last_heard.elapsed() > config.dead_after
@@ -542,7 +546,7 @@ impl Conn {
     }
 
     fn ask_snapshot(&mut self) -> Result<(), Closed> {
-        self.internal_pending += 1;
+        self.snapshot_waits.push(INTERNAL_ID);
         self.shared
             .inbox
             .send(Inbox::Client {
@@ -602,25 +606,29 @@ impl Conn {
                     return Ok(());
                 }
                 self.last_seq = s;
+                return self.send_text(&b.text).await;
             }
-            Kind::State | Kind::Lossy => {}
+            Kind::State | Kind::Lossy => return self.send_text(&b.text).await,
         }
-        self.send_text(&b.text).await
+        self.send_text(&b.text).await?;
+        self.release_held().await
     }
 
-    /// Holds a `result` back until the `model_changed` it reports has been sent (docs/protocol.md
-    /// section 4), unless that message was lost (client lagged, or the control loop's outbound
-    /// channel was full): then it goes after `revision_wait` and the client, seeing
-    /// `result.revision` ahead of its own, asks for a snapshot.
-    async fn catch_up(&mut self, revision: u64) -> Result<(), Closed> {
-        let deadline = Instant::now() + self.shared.config.revision_wait;
-        while self.last_rev < revision
-            && self.internal_pending == 0
-            && !self.lagged.load(Ordering::Acquire)
+    /// Writes the held results whose `model_changed` has been written (or covered by a
+    /// snapshot), and, unless a snapshot is coming, those that waited `revision_wait`: their
+    /// `model_changed` was lost (the control loop's outbound channel was full) and the client,
+    /// seeing `result.revision` ahead of its own, asks for a snapshot.
+    async fn release_held(&mut self) -> Result<(), Closed> {
+        let now = Instant::now();
+        let timed_out_ok = self.snapshot_waits.is_empty();
+        while let Some(i) = self
+            .held
+            .iter()
+            .position(|h| h.revision <= self.last_rev || (timed_out_ok && h.deadline <= now))
         {
-            match timeout_at(deadline, self.bcast.recv()).await {
-                Ok(Some(b)) => self.broadcast(b).await?,
-                Ok(None) | Err(_) => break,
+            if let Some(h) = self.held.remove(i) {
+                self.inflight = self.inflight.saturating_sub(1);
+                self.send(&h.message).await?;
             }
         }
         Ok(())
@@ -629,20 +637,37 @@ impl Conn {
     async fn reply(&mut self, message: ServerMessage) -> Result<(), Closed> {
         match &message {
             ServerMessage::Snapshot { snapshot } => {
+                if snapshot.revision < self.last_rev || snapshot.runtime_seq < self.last_seq {
+                    // Behind what the client was already sent: stale (a client reusing an id
+                    // can lift the wait early) or the numbering restarted. Either way a fresh
+                    // snapshot follows at once and settles it. Not dropped: if the numbering
+                    // restarted, the fresh one would be "behind" too and never get through.
+                    self.lagged.store(true, Ordering::Release);
+                }
                 self.last_rev = snapshot.revision;
                 self.last_seq = snapshot.runtime_seq;
+                self.send(&message).await?;
+                return self.release_held().await;
             }
-            ServerMessage::Result { id, .. } if *id == INTERNAL_ID => {
-                self.internal_pending = self.internal_pending.saturating_sub(1);
-                return Ok(());
-            }
-            ServerMessage::Result { outcome, .. } => {
-                self.inflight = self.inflight.saturating_sub(1);
+            ServerMessage::Result { id, outcome } => {
+                if let Some(i) = self.snapshot_waits.iter().position(|w| w == id) {
+                    self.snapshot_waits.swap_remove(i);
+                    if *id == INTERNAL_ID {
+                        return self.release_held().await;
+                    }
+                }
                 if let Outcome::Ok(ok) = outcome
                     && let Some(revision) = ok.revision
+                    && revision > self.last_rev
                 {
-                    self.catch_up(revision).await?;
+                    self.held.push_back(Held {
+                        revision,
+                        deadline: Instant::now() + self.shared.config.revision_wait,
+                        message,
+                    });
+                    return Ok(());
                 }
+                self.inflight = self.inflight.saturating_sub(1);
             }
             _ => {}
         }
@@ -693,13 +718,20 @@ impl Conn {
                 Err(Closed)
             }
             other => {
-                if request_id(&other) == Some(INTERNAL_ID) {
+                let Some(id) = request_id(&other) else {
+                    return Ok(());
+                };
+                if id == INTERNAL_ID {
                     return self
                         .send(&error_message(
                             ErrorCode::BadRequest,
                             "request id is reserved",
                         ))
                         .await;
+                }
+                // Before the send: the control loop may answer at once.
+                if answers_with_snapshot(&other) {
+                    self.snapshot_waits.push(id);
                 }
                 self.inflight += 1;
                 let sent = self.shared.inbox.send(Inbox::Client {

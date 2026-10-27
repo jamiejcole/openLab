@@ -2,13 +2,17 @@
 
 //! The control thread's inbox and its outbound channel (ARCHITECTURE §3.1: a crossbeam-channel
 //! inbox in, a broadcast to the network out).
+//!
+//! Replies and broadcasts travel on tokio channels: the network layer's tasks wait on them
+//! without a thread of their own, and sending from the (synchronous) control thread never
+//! blocks (`UnboundedSender::send`, `Sender::try_send`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crossbeam_channel::{Sender, TrySendError};
 use openlab_audio::{MediaError, Preloaded, Probed};
-use openlab_core::protocol::{ClientMessage, ServerMessage};
+use openlab_core::protocol::{ClientMessage, LogLevel, ServerMessage};
+use tokio::sync::mpsc::{self, error::TrySendError};
 
 /// Everything that wakes the control thread besides its timers.
 #[derive(Debug)]
@@ -19,12 +23,14 @@ pub enum Inbox {
     /// to the outbound channel.
     Client {
         message: ClientMessage,
-        reply: Sender<ServerMessage>,
+        reply: ReplyTx,
     },
     /// A probe worker's answer (internal feedback).
     Probe(ProbeAnswer),
     /// The device thread's answer (internal feedback, docs/control.md "Devices").
     Device(super::devices::DeviceAnswer),
+    /// A log entry from another thread (the network layer), sent out like the loop's own.
+    Log { level: LogLevel, message: String },
     /// Stop the control loop.
     Shutdown,
 }
@@ -51,7 +57,7 @@ pub enum ProbeAnswer {
 /// (docs/protocol.md §2). State messages without a sequence (`document`, `warnings`) are never
 /// lost silently: the caller resends the latest once there is room ([`Outbound::send_state`]).
 pub struct Outbound {
-    tx: Sender<ServerMessage>,
+    tx: OutboundTx,
     dropped: u64,
     lossy_dropped: u64,
 }
@@ -59,8 +65,27 @@ pub struct Outbound {
 /// Outbound messages that can wait for the network thread before one is dropped.
 pub const OUTBOUND_CAPACITY: usize = 4096;
 
+/// Where the control loop answers one client.
+pub type ReplyTx = mpsc::UnboundedSender<ServerMessage>;
+pub type ReplyRx = mpsc::UnboundedReceiver<ServerMessage>;
+
+/// A reply channel. Unbounded: a client has at most a bounded number of requests in flight
+/// (the network layer stops reading beyond that), and each gets a bounded number of replies.
+pub fn reply_channel() -> (ReplyTx, ReplyRx) {
+    mpsc::unbounded_channel()
+}
+
+/// The control loop's side of the broadcast channel.
+pub type OutboundTx = mpsc::Sender<ServerMessage>;
+pub type OutboundRx = mpsc::Receiver<ServerMessage>;
+
+/// The broadcast channel, holding `capacity` messages (at least one).
+pub fn outbound_channel(capacity: usize) -> (OutboundTx, OutboundRx) {
+    mpsc::channel(capacity.max(1))
+}
+
 impl Outbound {
-    pub fn new(tx: Sender<ServerMessage>) -> Self {
+    pub fn new(tx: OutboundTx) -> Self {
         Self {
             tx,
             dropped: 0,
@@ -77,9 +102,9 @@ impl Outbound {
 
     /// Meters and progress: dropped while the channel is half full, to keep room for the rest.
     pub fn send_lossy(&mut self, message: ServerMessage) {
-        if self.tx.capacity().is_some_and(|c| self.tx.len() * 2 >= c)
-            || self.offer(message).is_err()
-        {
+        let max = self.tx.max_capacity();
+        let queued = max.saturating_sub(self.tx.capacity());
+        if queued * 2 >= max || self.offer(message).is_err() {
             self.lossy_dropped += 1;
         }
     }
@@ -91,13 +116,13 @@ impl Outbound {
 
     /// Whether a message would fit now.
     pub fn has_room(&self) -> bool {
-        !self.tx.is_full()
+        self.tx.capacity() > 0
     }
 
     fn offer(&mut self, message: ServerMessage) -> Result<(), ()> {
         match self.tx.try_send(message) {
             // Nobody listens (no network layer yet): nothing to lose.
-            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
+            Ok(()) | Err(TrySendError::Closed(_)) => Ok(()),
             Err(TrySendError::Full(_)) => Err(()),
         }
     }
@@ -114,6 +139,6 @@ impl Outbound {
 }
 
 /// Answers one client: a reply that cannot be delivered (the client went away) is dropped.
-pub fn reply(to: &Sender<ServerMessage>, message: ServerMessage) {
-    let _ = to.try_send(message);
+pub fn reply(to: &ReplyTx, message: ServerMessage) {
+    let _ = to.send(message);
 }

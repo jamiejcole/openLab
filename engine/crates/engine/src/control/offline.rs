@@ -17,7 +17,10 @@ use openlab_audio::{Mixer, MixerConfig, OfflineRenderer};
 use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportAction};
 use openlab_core::{SampleTime, Workspace};
 
-use super::{Backend, Control, ControlConfig, ControlError, Flow, Inbox, OUTBOUND_CAPACITY};
+use super::{
+    Backend, Control, ControlConfig, ControlError, Flow, Inbox, OUTBOUND_CAPACITY, OutboundRx,
+    outbound_channel, reply_channel,
+};
 
 /// How long the driver waits for a disk worker or a probe before giving up on a block (and
 /// counting it in [`OfflineShow::stalls`]).
@@ -28,7 +31,7 @@ pub struct OfflineShow {
     renderer: OfflineRenderer,
     inbox_tx: Sender<Inbox>,
     inbox: Receiver<Inbox>,
-    outbound: Receiver<ServerMessage>,
+    outbound: OutboundRx,
     block: usize,
     channels: usize,
     capture: Vec<f32>,
@@ -68,7 +71,7 @@ impl OfflineShow {
         let channels = mixer_rt.output_channels();
         let block = usize::try_from(config.block_frames.max(1)).unwrap_or(1);
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-        let (out_tx, outbound) = crossbeam_channel::bounded(capacity.max(1));
+        let (out_tx, outbound) = outbound_channel(capacity);
         let control = Control::new(ws, ctl, Backend::Offline, config, inbox_tx.clone(), out_tx)?;
         Ok(Self {
             control,
@@ -101,10 +104,10 @@ impl OfflineShow {
 
     /// Sends a client message and returns the replies to it.
     pub fn send(&mut self, message: ClientMessage) -> Vec<ServerMessage> {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, mut rx) = reply_channel();
         self.pump_inbox();
         let _ = self.control.handle(Inbox::Client { message, reply: tx });
-        rx.try_iter().collect()
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A transport action with a fresh request id.
@@ -236,7 +239,7 @@ impl OfflineShow {
 
     /// Messages broadcast since the last call.
     pub fn take_outbound(&mut self) -> Vec<ServerMessage> {
-        self.outbound.try_iter().collect()
+        std::iter::from_fn(|| self.outbound.try_recv().ok()).collect()
     }
 
     /// The inbox, for messages from outside (as the network layer would send them).
