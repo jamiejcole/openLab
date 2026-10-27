@@ -171,22 +171,36 @@ fn marker_name(pid: u32) -> String {
     format!("{PREFIX}{pid}{SUFFIX}")
 }
 
+/// Written and locked under a temporary name (not a marker name), then renamed into place:
+/// another engine starting at the same moment never sees this marker empty or unlocked. The
+/// lock belongs to the open file, so it survives the rename.
 fn create(dir: &Path, me: &RunInfo) -> io::Result<RunMarker> {
     fs::create_dir_all(dir)?;
     let path = dir.join(marker_name(me.pid));
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)?;
-    // Without the lock a second instance would take this run for a dead one; the marker still
-    // does its main job, so a filesystem without locks is not an error.
-    let _ = file.try_lock();
-    file.write_all(me.to_json().as_bytes())?;
-    // Best effort: after a power cut the marker should still name its run.
-    let _ = file.sync_all();
-    Ok(RunMarker { path, file })
+    let temp = dir.join(format!(".{}.tmp", marker_name(me.pid)));
+    let written = (|| {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)?;
+        // Without the lock a second instance would take this run for a dead one; the marker
+        // still does its main job, so a filesystem without locks is not an error.
+        let _ = file.try_lock();
+        file.write_all(me.to_json().as_bytes())?;
+        // Best effort: after a power cut the marker should still name its run.
+        let _ = file.sync_all();
+        fs::rename(&temp, &path)?;
+        Ok(file)
+    })();
+    match written {
+        Ok(file) => Ok(RunMarker { path, file }),
+        Err(e) => {
+            let _ = fs::remove_file(&temp);
+            Err(e)
+        }
+    }
 }
 
 /// Leftover markers in `dir`: read, then removed. A marker some live process still holds is
@@ -221,7 +235,15 @@ fn take_leftovers(dir: &Path) -> Vec<Option<RunInfo>> {
 /// `Some(details)` for a marker whose run is over (removed here), `None` for a live one or one
 /// that cannot be opened.
 fn take_one(path: &Path) -> Option<Option<RunInfo>> {
+    // Only a regular file is a marker: reading a FIFO (or a device) named like one would hang
+    // the start. Checked before opening (opening a FIFO can block) and again on the opened file.
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut file = OpenOptions::new().read(true).write(true).open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     match file.try_lock() {
         Ok(()) => {}
         // Another engine is running with it.
@@ -249,7 +271,7 @@ fn crash_reports_of(crash_dir: &Path, info: &RunInfo) -> Vec<String> {
         return Vec::new();
     };
     // Second resolution in the name: a report in the start's own second counts.
-    let since = time::compact(info.started_ms.div_euclid(1000) * 1000);
+    let since = time::compact(info.started_ms.div_euclid(1000).saturating_mul(1000));
     let pid = info.pid.to_string();
     let mut names: Vec<String> = entries
         .take(MAX_SCAN)
@@ -431,6 +453,63 @@ mod tests {
         assert_eq!(entry.show_time, None);
         assert_eq!(entry.message, previous[0].message());
         second.unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn the_marker_appears_complete_under_its_name_and_no_temporary_file_is_left() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
+        fs::create_dir_all(&dir).unwrap();
+        // A temporary file from a start that died while writing is not a marker.
+        fs::write(dir.join(".running-3.json.tmp"), "").unwrap();
+        let (marker, previous) = RunMarker::start(&dir, &crashes, &info(3, T0));
+        assert!(previous.is_empty(), "{previous:?}");
+        let marker = marker.unwrap();
+        assert_eq!(markers(&dir), ["running-3.json"]);
+        let text = fs::read_to_string(marker.path()).unwrap();
+        assert_eq!(RunInfo::from_json(&text), Some(info(3, T0)));
+        // Still locked after the rename: another start leaves it alone.
+        let (other, previous) = RunMarker::start(&dir, &crashes, &info(4, T0 + 1));
+        assert!(previous.is_empty(), "{previous:?}");
+        other.unwrap().finish().unwrap();
+        marker.finish().unwrap();
+        assert!(markers(&dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_marker_does_not_hang_the_start() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
+        fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("running-12.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (marker, previous) = RunMarker::start(&dir, &crashes, &info(13, T0));
+        assert!(previous.is_empty(), "{previous:?}");
+        assert_eq!(markers(&dir), ["running-12.json", "running-13.json"]);
+        marker.unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn extreme_start_times_in_a_marker_do_not_panic() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&crashes).unwrap();
+        fs::write(crashes.join("crash-20231114T221320Z-20.txt"), "report").unwrap();
+        for (pid, started) in [(20, i64::MIN), (21, i64::MAX)] {
+            fs::write(dir.join(marker_name(pid)), info(pid, started).to_json()).unwrap();
+        }
+        let (marker, previous) = RunMarker::start(&dir, &crashes, &info(22, T0));
+        assert_eq!(previous.len(), 2, "{previous:?}");
+        for run in &previous {
+            let _ = run.message();
+        }
+        marker.unwrap().finish().unwrap();
     }
 
     #[test]
