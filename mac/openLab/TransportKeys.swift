@@ -2,7 +2,7 @@
 
 import AppKit
 
-/// The transport commands in the Transport menu, in menu order. Raw values are the persisted names.
+/// The transport commands in the Transport menu, in menu order.
 enum TransportCommand: String, CaseIterable, Codable, Sendable {
     case go, stopAll, pauseAll, resumeAll, panic
     case playheadPrevious, playheadNext
@@ -12,7 +12,7 @@ enum TransportCommand: String, CaseIterable, Codable, Sendable {
 }
 
 /// A key and modifiers in the form `NSMenuItem` takes (`key` lowercase; modifiers in `mask`).
-struct KeyChord: Codable, Hashable, Sendable {
+struct KeyChord: Hashable, Sendable {
     var key: String
     var mask: UInt
 
@@ -29,6 +29,29 @@ struct KeyChord: Codable, Hashable, Sendable {
     static let up = String(utf16CodeUnits: [unichar(NSUpArrowFunctionKey)], count: 1)
     static let down = String(utf16CodeUnits: [unichar(NSDownArrowFunctionKey)], count: 1)
 
+    /// The chord of a pressed key (`charactersIgnoringModifiers` and the event's modifiers).
+    init?(event: NSEvent) {
+        guard let key = event.charactersIgnoringModifiers, !key.isEmpty else { return nil }
+        self.init(key, event.modifierFlags)
+    }
+
+    /// A show-file hotkey (`{key, modifiers}`, docs/file-format.md section 5.1): `key` is a
+    /// lower-case name ("space", "escape", "down", "[", "a"). Names with no character form
+    /// (function keys) give nil.
+    init?(hotkey: JSONValue) {
+        guard let name = hotkey["key"]?.stringValue else { return nil }
+        let names = [
+            "space": " ", "escape": Self.escape, "up": Self.up, "down": Self.down, "return": "\r", "tab": "\t",
+        ]
+        guard let key = names[name] ?? (name.count == 1 ? name : nil) else { return nil }
+        var mods: NSEvent.ModifierFlags = []
+        let flags: [(String, NSEvent.ModifierFlags)] = [
+            ("shift", .shift), ("control", .control), ("alt", .option), ("command", .command),
+        ]
+        for (field, flag) in flags where hotkey["modifiers"]?[field] == .bool(true) { mods.insert(flag) }
+        self.init(key, mods)
+    }
+
     /// Plain and Shift/Option chords insert characters, so a text field being edited must keep them.
     var typesCharacters: Bool { modifiers.isDisjoint(with: [.command, .control]) }
 }
@@ -40,82 +63,94 @@ enum KeyBindError: Error, Equatable {
     case cueHotkey
 }
 
-/// Transport key bindings. QLab keeps its key map per workspace; the protocol has no field for it,
-/// so it lives in `UserDefaults` for the whole app (docs/handoff/m5-protocol-requests.md).
+/// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
+/// workspace). How each model field maps:
+/// - `go`, `pause_all`, `resume_all`: bound as given. Absent: the QLab default (Space, `[`, `]`);
+///   `null`: no key.
+/// - `stop_all`: Esc is the fixed app-wide panic, so it binds nothing; any other key binds Stop All.
+/// - `playhead_next` / `playhead_previous`: a bare Down / Up means "the selection moves the
+///   playhead" (cue list behaviour), so it binds nothing; any other key binds Next / Previous Cue.
+///   Absent: Shift-Cmd-Down / Up (QLab's menu keys).
+/// - The model has no fields for the selected-cue keys: Load Selected `L` and Pause/Resume
+///   Selected `P` are fixed app defaults, dropped if a show's key already uses the chord.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
-/// binding that equals another transport binding or a cue hotkey is refused when it is made, so
-/// no key ever means two things; (3) while a text field is being edited, chords that type
-/// characters do not fire (the Transport menu items are disabled then), chords with Command or
-/// Control still do.
-@MainActor
-final class KeyMap {
-    static let defaultsKey = "transportKeyMap"
-    /// QLab 5 defaults: Space GO, [ Pause All, ] Resume All, P pause/resume, L load, Shift-Cmd-arrows
-    /// for the playhead. Stop All and the other selection commands have no QLab default key.
-    static let defaults: [TransportCommand: KeyChord] = [
-        .go: KeyChord(" "), .pauseAll: KeyChord("["), .resumeAll: KeyChord("]"),
-        .pauseResumeSelected: KeyChord("p"), .loadSelected: KeyChord("l"),
-        .playheadNext: KeyChord(KeyChord.down, [.command, .shift]),
-        .playheadPrevious: KeyChord(KeyChord.up, [.command, .shift]),
+/// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
+/// show the first field in the order above wins and the later one is dropped with a warning;
+/// (3) while a text field is edited, chords that type characters (no Cmd/Ctrl) do not fire.
+struct TransportKeys: Equatable {
+    private(set) var chords: [TransportCommand: KeyChord] = [:]
+    private(set) var warnings: [String] = []
+
+    static let fixed: [(TransportCommand, KeyChord)] = [
+        (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")),
     ]
 
-    private(set) var bindings: [TransportCommand: KeyChord]
-    private let store: UserDefaults
-    /// Set by the owner of the cue hotkeys (M5.7); a hotkey makes the chord unavailable here.
-    var isCueHotkey: (KeyChord) -> Bool = { _ in false }
-    var onChange: (() -> Void)?
+    private static let fields: [(String, TransportCommand, KeyChord?)] = [
+        ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
+        ("resume_all", .resumeAll, KeyChord("]")),
+        ("playhead_next", .playheadNext, KeyChord(KeyChord.down, [.command, .shift])),
+        ("playhead_previous", .playheadPrevious, KeyChord(KeyChord.up, [.command, .shift])),
+    ]
 
-    init(store: UserDefaults = .standard) {
-        self.store = store
-        bindings = Self.load(store) ?? Self.defaults
-    }
-
-    func chord(for command: TransportCommand) -> KeyChord? { bindings[command] }
-
-    func command(for chord: KeyChord) -> TransportCommand? {
-        bindings.first { $0.value == chord }?.key
-    }
-
-    func bind(_ command: TransportCommand, to chord: KeyChord) -> KeyBindError? {
-        guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
-        let arrow = chord.key == KeyChord.up || chord.key == KeyChord.down
-        if arrow, chord.modifiers.isDisjoint(with: [.command, .control, .option]) { return .reserved }
-        if let other = self.command(for: chord), other != command { return .duplicate(of: other) }
-        if isCueHotkey(chord) { return .cueHotkey }
-        bindings[command] = chord
-        save()
-        return nil
-    }
-
-    func unbind(_ command: TransportCommand) {
-        bindings[command] = nil
-        save()
-    }
-
-    func resetToDefaults() {
-        bindings = Self.defaults
-        save()
-    }
-
-    private func save() {
-        let raw = Dictionary(uniqueKeysWithValues: bindings.map { ($0.key.rawValue, $0.value) })
-        if let data = try? JSONEncoder().encode(raw) { store.set(data, forKey: Self.defaultsKey) }
-        onChange?()
-    }
-
-    /// A damaged or conflicting stored map is ignored (defaults), never trusted: a duplicate would
-    /// make one key do two things.
-    private static func load(_ store: UserDefaults) -> [TransportCommand: KeyChord]? {
-        guard let data = store.data(forKey: defaultsKey),
-            let raw = try? JSONDecoder().decode([String: KeyChord].self, from: data)
-        else { return nil }
-        var result: [TransportCommand: KeyChord] = [:]
-        for (name, chord) in raw {
-            guard let command = TransportCommand(rawValue: name), command != .panic, chord.key != KeyChord.escape
-            else { return nil }
-            result[command] = chord
+    /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
+    init(settings: JSONValue?, isCueHotkey: (KeyChord) -> Bool = { _ in false }) {
+        let hotkeys = settings?["hotkeys"]
+        for (field, command, fallback) in Self.fields {
+            var chord = fallback
+            if let value = hotkeys?[field] {
+                if value == .null {
+                    chord = nil
+                } else {
+                    chord = KeyChord(hotkey: value)
+                    if chord == nil { warnings.append("hotkeys.\(field): key not supported, no key bound") }
+                }
+            }
+            guard let chord else { continue }
+            if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
+            if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
+            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+                warnings.append("hotkeys.\(field): \(Self.describe(error)), no key bound")
+                continue
+            }
+            chords[command] = chord
         }
-        return Set(result.values).count == result.count ? result : nil
+        for (command, chord) in Self.fixed {
+            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+                warnings.append("\(command.rawValue) key: \(Self.describe(error)), no key bound")
+            } else {
+                chords[command] = chord
+            }
+        }
+    }
+
+    func chord(for command: TransportCommand) -> KeyChord? { chords[command] }
+    func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
+
+    /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
+    /// loader above and the key-map editor (M5.11a).
+    static func validate(
+        _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],
+        isCueHotkey: (KeyChord) -> Bool = { _ in false }
+    ) -> KeyBindError? {
+        guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
+        if isBareArrow(chord) { return .reserved }
+        if let other = existing.first(where: { $0.value == chord && $0.key != command })?.key {
+            return .duplicate(of: other)
+        }
+        return isCueHotkey(chord) ? .cueHotkey : nil
+    }
+
+    private static func isBareArrow(_ chord: KeyChord) -> Bool {
+        (chord.key == KeyChord.up || chord.key == KeyChord.down)
+            && chord.modifiers.isDisjoint(with: [.command, .control, .option])
+    }
+
+    private static func describe(_ error: KeyBindError) -> String {
+        switch error {
+        case .reserved: return "reserved key"
+        case .duplicate(let other): return "same key as \(other.rawValue)"
+        case .cueHotkey: return "same key as a cue hotkey"
+        }
     }
 }

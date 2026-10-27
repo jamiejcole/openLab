@@ -3,11 +3,10 @@
 import AppKit
 
 @main
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
     @MainActor private(set) lazy var engineSession = EngineMode.fromLaunchArguments().makeSession()
     @MainActor private(set) lazy var appController = AppController(session: engineSession)
-    @MainActor private var transportMenu: NSMenu?
 
     static func main() {
         let app = NSApplication.shared
@@ -18,12 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
-        let menu = MainMenu.make(keyMap: appController.keyMap)
-        transportMenu = menu.transport
-        appController.keyMap.onChange = { [weak self] in
-            guard let self, let transport = self.transportMenu else { return }
-            MainMenu.applyKeys(to: transport, self.appController.keyMap)
-        }
+        let menu = MainMenu.make()
+        menu.transport.delegate = self
         NSApp.mainMenu = menu.bar
         NSApp.windowsMenu = menu.windows
         NSApp.helpMenu = menu.help
@@ -73,5 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return true
         }
         return appController.canPerform(command)
+    }
+
+    /// The Transport menu shows the key window's workspace keys.
+    @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
+        MainMenu.applyKeys(to: menu, appController.frontKeys)
     }
 }

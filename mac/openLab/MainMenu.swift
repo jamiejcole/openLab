@@ -12,7 +12,7 @@ enum MainMenu {
         let help: NSMenu
     }
 
-    static func make(keyMap: KeyMap) -> Menus {
+    static func make(keys: TransportKeys = TransportKeys(settings: nil)) -> Menus {
         let windows = menu(
             "menu.window",
             [
@@ -23,7 +23,7 @@ enum MainMenu {
             ]
         )
         let help = menu("menu.help", [item("menu.help.openLabHelp", #selector(NSApplication.showHelp(_:)), "?")])
-        let transport = transportMenu(keyMap)
+        let transport = transportMenu(keys)
         let bar = NSMenu()
         for submenu in [appMenu(), fileMenu(), editMenu(), transport, windows, help] {
             let holder = NSMenuItem()
@@ -80,7 +80,7 @@ enum MainMenu {
 
     /// Items carry their command in `representedObject`; keys come from the key map, so they follow
     /// a remap (see `applyKeys`). Panic has no key equivalent here: Esc is handled app-wide.
-    private static func transportMenu(_ keyMap: KeyMap) -> NSMenu {
+    private static func transportMenu(_ keys: TransportKeys) -> NSMenu {
         var items: [NSMenuItem] = []
         for command in TransportCommand.allCases {
             if command == .playheadPrevious || command == .loadSelected { items.append(.separator()) }
@@ -89,15 +89,15 @@ enum MainMenu {
             items.append(entry)
         }
         let transport = menu("menu.transport", items)
-        applyKeys(to: transport, keyMap)
+        applyKeys(to: transport, keys)
         return transport
     }
 
-    static func applyKeys(to transport: NSMenu, _ keyMap: KeyMap) {
+    static func applyKeys(to transport: NSMenu, _ keys: TransportKeys) {
         for entry in transport.items {
             guard let raw = entry.representedObject as? String, let command = TransportCommand(rawValue: raw)
             else { continue }
-            let chord = keyMap.chord(for: command)
+            let chord = keys.chord(for: command)
             entry.keyEquivalent = chord?.key ?? ""
             entry.keyEquivalentModifierMask = chord?.modifiers ?? []
         }
