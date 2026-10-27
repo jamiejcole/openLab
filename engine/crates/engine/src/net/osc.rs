@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
+use openlab_core::OscAccess;
 use openlab_core::protocol::{
     ClientMessage, LogLevel, Outcome, Request, RequestId, ServerMessage, TransportAction,
 };
@@ -805,8 +806,9 @@ impl Actor {
         }
     }
 
-    /// Replaces the copy. Sessions end when the passcode or the workspace is not the same as
-    /// before: a console that connected with the old passcode must not keep control.
+    /// Replaces the copy. Sessions end when the workspace is not the same as before, or the
+    /// passcode table lost or changed something (`access_changed`): a console that connected with
+    /// a passcode that is gone, or rights that are now smaller, must not keep control.
     fn install(&mut self, mut new: Mirror) {
         // The active list is the operator's place, not part of the workspace: a replacement of
         // the copy (save as, a resync, a snapshot broadcast) keeps it while its list exists.
@@ -815,7 +817,9 @@ impl Actor {
         }
         let updates = match &self.mirror {
             Some(old) => {
-                if old.workspace_id() != new.workspace_id() || old.passcode() != new.passcode() {
+                if old.workspace_id() != new.workspace_id()
+                    || access_changed(old.access(), new.access())
+                {
                     self.osc.reset_sessions();
                 }
                 old.updates_to(&new)
@@ -844,7 +848,7 @@ impl Actor {
         let Some(mirror) = &mut self.mirror else {
             return true;
         };
-        let passcode = mirror.passcode().map(str::to_owned);
+        let access = mirror.access().clone();
         let applied = match &message {
             ServerMessage::ModelChanged {
                 revision,
@@ -855,10 +859,10 @@ impl Actor {
             ServerMessage::Document { document } => mirror.document(document),
             _ => return true,
         };
-        // A settings edit that changed the passcode ends every session, as a snapshot with
-        // another passcode does. Checked whatever the outcome: an edit that failed part-way
-        // may have applied its settings first.
-        if mirror.passcode() != passcode.as_deref() {
+        // A settings edit that changed the passcode table ends every session, as a snapshot with
+        // another table does. Checked whatever the outcome: an edit that failed part-way may
+        // have applied its settings first.
+        if access_changed(&access, mirror.access()) {
             self.osc.reset_sessions();
         }
         match applied {
@@ -953,8 +957,7 @@ impl Actor {
         let locked = self
             .mirror
             .as_ref()
-            .and_then(Mirror::passcode)
-            .is_some_and(|p| !p.is_empty());
+            .is_some_and(|m| m.access().requires_passcode());
         let subscribed: HashSet<u64> = self
             .osc
             .update_subscribers(self.now())
@@ -1140,7 +1143,7 @@ impl Actor {
             return;
         }
         let workspace = upper(mirror.workspace_id());
-        let passcode_set = mirror.passcode().is_some_and(|p| !p.is_empty());
+        let passcode_set = mirror.access().requires_passcode();
         for update in updates {
             let message = update_message(&workspace, update);
             let Some(bytes) = self.osc.encode_update(&message) else {
@@ -1185,4 +1188,11 @@ fn update_message(workspace: &str, update: &Update) -> OscMessage {
             args: Vec::new(),
         },
     }
+}
+/// Whether moving from the table `old` to `new` can take something away from a session: a row
+/// was removed or has other rights, or the No Passcode rights changed. Only adding rows keeps
+/// sessions, so that adding a passcode mid-show does not make every UDP console connect again.
+fn access_changed(old: &OscAccess, new: &OscAccess) -> bool {
+    old.no_passcode != new.no_passcode
+        || old.passcodes.iter().any(|row| !new.passcodes.contains(row))
 }

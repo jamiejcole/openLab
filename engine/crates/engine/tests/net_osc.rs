@@ -18,7 +18,7 @@ use openlab_core::protocol::{
     ClientMessage, DocumentState, OkBody, Outcome, Request, RequestId, RuntimeChange,
     ServerMessage, Snapshot, TransportAction, Upsert, WireCueState,
 };
-use openlab_core::{CueKind, GroupMode, Workspace};
+use openlab_core::{CueKind, GroupMode, OscAccess, OscPasscode, OscRights, Workspace};
 use openlab_engine::control::{
     Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, ReplyTx, outbound_channel, runner,
 };
@@ -247,9 +247,20 @@ fn test_workspace() -> Workspace {
     ws
 }
 
+/// No Passcode has no rights; one passcode has all (what a v3 show with a passcode migrates to).
+fn single_passcode(code: &str) -> openlab_core::OscAccess {
+    openlab_core::OscAccess {
+        no_passcode: openlab_core::OscRights::NONE,
+        passcodes: vec![openlab_core::OscPasscode {
+            passcode: code.into(),
+            rights: openlab_core::OscRights::ALL,
+        }],
+    }
+}
+
 fn with_passcode(code: &str) -> Workspace {
     let mut ws = test_workspace();
-    ws.settings.osc_passcode = Some(code.into());
+    ws.settings.osc_access = single_passcode(code);
     ws
 }
 
@@ -1035,7 +1046,7 @@ async fn a_new_passcode_in_a_snapshot_ends_every_session() {
     // The engine's workspace gets another passcode; a gap makes the OSC side take it.
     {
         let mut guard = f.control.workspace.lock().unwrap();
-        guard.as_mut().unwrap().settings.osc_passcode = Some("hunter2".into());
+        guard.as_mut().unwrap().settings.osc_access = single_passcode("hunter2");
     }
     f.out
         .send(ServerMessage::ModelChanged {
@@ -1601,7 +1612,7 @@ async fn a_passcode_changed_by_an_edit_ends_every_session() {
     t.send(&msg("/connect", vec![text("sesame")])).await;
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
     let mut settings = with_passcode("hunter2").settings;
-    settings.osc_passcode = Some("hunter2".into());
+    settings.osc_access = single_passcode("hunter2");
     f.out
         .send(ServerMessage::ModelChanged {
             revision: 1,
@@ -1685,7 +1696,7 @@ async fn a_passcode_edit_that_fails_to_apply_still_ends_every_session() {
     t.send(&msg("/connect", vec![text("sesame")])).await;
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
     let mut settings = with_passcode("hunter2").settings;
-    settings.osc_passcode = Some("hunter2".into());
+    settings.osc_access = single_passcode("hunter2");
     // The settings apply, then the cue upsert into a list that is not there fails.
     f.out
         .send(ServerMessage::ModelChanged {
@@ -2053,4 +2064,269 @@ async fn udp_reply_port_over_tcp_is_ignored_and_invalid_ports_do_not_move_replie
     assert_eq!(body(&f.udp_recv().await)["status"], "error");
     f.udp_send(&msg("/version", vec![])).await;
     assert_eq!(f.udp_recv().await.addr, "/reply/version");
+}
+
+// ---- passcode rights over real sockets (M4.5c)
+
+fn rights(view: bool, edit: bool, control: bool) -> OscRights {
+    OscRights {
+        view,
+        edit,
+        control,
+    }
+}
+
+fn row(passcode: &str, rights: OscRights) -> OscPasscode {
+    OscPasscode {
+        passcode: passcode.into(),
+        rights,
+    }
+}
+
+/// Nothing without a passcode; 1111 View; 2222 View + Edit; 3333 View + Control; 4444 all.
+fn rights_table(none: OscRights) -> OscAccess {
+    OscAccess {
+        no_passcode: none,
+        passcodes: vec![
+            row("1111", rights(true, false, false)),
+            row("2222", rights(true, true, false)),
+            row("3333", rights(true, false, true)),
+            row("4444", OscRights::ALL),
+        ],
+    }
+}
+
+fn with_table(access: OscAccess) -> Workspace {
+    let mut ws = test_workspace();
+    ws.settings.osc_access = access;
+    ws
+}
+
+fn status(m: &OscMessage) -> String {
+    body(m)["status"].as_str().unwrap_or_default().to_owned()
+}
+
+/// What the control loop was sent so far that is not a snapshot request.
+fn input_count(f: &Fix) -> usize {
+    f.control.inputs().len()
+}
+
+#[tokio::test]
+async fn rights_are_enforced_over_tcp() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("1111")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["data"], "ok:view");
+    // View: reads, and notes.
+    t.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["data"], "Opening");
+    t.send(&msg("/cue/1/notes", vec![text("a note")])).await;
+    f.control
+        .wait_seen("the notes edit", |seen| {
+            seen.iter()
+                .any(|m| matches!(m, ClientMessage::Command { .. }))
+        })
+        .await;
+    assert_eq!(input_count(&f), 1);
+    // Not Edit, not Control: denied, and nothing reaches the control loop.
+    for m in [
+        msg("/cue/1/name", vec![text("x")]),
+        msg("/cue/1/preWait", vec![OscType::Float(2.0)]),
+        msg("/select/1", vec![]),
+        msg("/go", vec![]),
+        msg("/playhead/1", vec![]),
+        msg("/cue/1/start", vec![]),
+        msg("/lights/blackout", vec![]),
+    ] {
+        t.send(&m).await;
+        assert_eq!(status(&t.recv().await.unwrap()), "denied", "{}", m.addr);
+    }
+    assert_eq!(input_count(&f), 1);
+    assert_eq!(f.stats().osc.denied, 7);
+    // Another connection with the rights for each.
+    let mut c = f.tcp().await;
+    c.send(&msg("/connect", vec![text("3333")])).await;
+    assert_eq!(body(&c.recv().await.unwrap())["data"], "ok:view|control");
+    c.send(&msg("/go", vec![])).await;
+    c.send(&msg("/cue/1/name", vec![text("x")])).await;
+    assert_eq!(status(&c.recv().await.unwrap()), "denied");
+    let mut e = f.tcp().await;
+    e.send(&msg("/connect", vec![text("2222")])).await;
+    assert_eq!(body(&e.recv().await.unwrap())["data"], "ok:view|edit");
+    e.send(&msg("/cue/1/name", vec![text("New")])).await;
+    e.send(&msg("/go", vec![])).await;
+    assert_eq!(status(&e.recv().await.unwrap()), "denied");
+    f.control
+        .wait_seen("go and the rename", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 3
+        })
+        .await;
+    assert_eq!(f.stats().osc.denied, 9);
+}
+
+#[tokio::test]
+async fn rights_are_enforced_over_udp() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    // Not connected: the No Passcode row has nothing.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(status(&f.udp_recv().await), "denied");
+    f.udp_send(&msg("/connect", vec![text("2222")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit");
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    f.udp_send(&msg("/go", vec![])).await;
+    let denied = f.udp_recv().await;
+    assert_eq!(denied.addr, "/reply/go");
+    assert_eq!(status(&denied), "denied");
+    f.udp_send(&msg("/select/1", vec![])).await;
+    f.control
+        .wait_seen("the select", |seen| seen.iter().any(is_input))
+        .await;
+    assert_eq!(input_count(&f), 1);
+    // The same address with another passcode raises the rights.
+    f.udp_send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 2
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn no_passcode_rights_apply_without_connecting_and_connect_without_an_argument_gives_them() {
+    let f = fixture(with_table(rights_table(rights(true, false, false)))).await;
+    // View without connecting, over both transports.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    let mut t = f.tcp().await;
+    t.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["data"], "Opening");
+    t.send(&msg("/go", vec![])).await;
+    assert_eq!(status(&t.recv().await.unwrap()), "denied");
+    // `/connect` with no argument says what the peer has.
+    t.send(&msg("/connect", vec![])).await;
+    let reply = t.recv().await.unwrap();
+    assert_eq!(body(&reply)["status"], "ok");
+    assert_eq!(body(&reply)["data"], "ok:view");
+    f.udp_send(&msg("/connect", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view");
+    t.send(&msg("/go", vec![])).await;
+    assert_eq!(status(&t.recv().await.unwrap()), "denied");
+    assert!(f.control.inputs().is_empty());
+    // And the table's other rows are still reachable.
+    t.send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(
+        body(&t.recv().await.unwrap())["data"],
+        "ok:view|edit|control"
+    );
+    t.send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO", |seen| seen.iter().any(is_input))
+        .await;
+}
+
+#[tokio::test]
+async fn a_new_workspaces_table_asks_for_its_passcode() {
+    // What `Request::New` makes: nothing without the passcode, all rights with it.
+    let f = fixture(with_table(OscAccess::new_workspace(731))).await;
+    f.udp_send(&msg("/connect", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:");
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(status(&f.udp_recv().await), "denied");
+    f.udp_send(&msg("/connect", vec![text("0731")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+}
+
+fn settings_upsert(access: OscAccess) -> Upsert {
+    Upsert::Settings {
+        name: "test".into(),
+        settings: Box::new(with_table(access).settings),
+    }
+}
+
+#[tokio::test]
+async fn adding_a_passcode_keeps_sessions_but_narrowing_the_table_ends_them() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    let mut console = f.tcp().await;
+    console.send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&console.recv().await.unwrap())["status"], "ok");
+    // A row is added mid-show: nobody has to connect again.
+    let mut grown = rights_table(OscRights::NONE);
+    grown
+        .passcodes
+        .push(row("5555", rights(true, false, false)));
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![settings_upsert(grown.clone())],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    // The new row works, and the console's session survived it.
+    let mut viewer = f.tcp().await;
+    guard("the new row to work", async {
+        loop {
+            viewer.send(&msg("/connect", vec![text("5555")])).await;
+            if body(&viewer.recv().await.unwrap())["data"] == "ok:view" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    console.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&console.recv().await.unwrap())["data"], "Opening");
+    // The console's row loses Control: its session ends, and it must connect again.
+    let mut narrowed = grown;
+    narrowed.passcodes[3].rights = rights(true, true, false);
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 2,
+            upserts: vec![settings_upsert(narrowed)],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    guard("the session to end", async {
+        loop {
+            console.send(&msg("/cue/1/name", vec![])).await;
+            if status(&console.recv().await.unwrap()) == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    console.send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&console.recv().await.unwrap())["data"], "ok:view|edit");
+    // A change of the No Passcode rights ends sessions too, and applies to peers that never
+    // connected.
+    let mut stranger = f.tcp().await;
+    stranger.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(status(&stranger.recv().await.unwrap()), "denied");
+    let mut opened = rights_table(OscRights::NONE);
+    opened.no_passcode = rights(true, false, false);
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 3,
+            upserts: vec![settings_upsert(opened)],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    guard("the No Passcode rights to apply", async {
+        loop {
+            stranger.send(&msg("/cue/1/name", vec![])).await;
+            if status(&stranger.recv().await.unwrap()) == "ok" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
 }

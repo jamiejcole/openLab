@@ -248,6 +248,19 @@ fn new_save_as_open_and_revert_round_trip_through_the_protocol() {
     assert_eq!(snap.workspace.cue_lists.len(), 1);
     assert!(snap.workspace.cue_lists[0].cues.is_empty());
     assert_ne!(snap.workspace.id, saved.id);
+    // QLab's default OSC access (M4.5c): nothing without a passcode, one 4-digit passcode with
+    // all rights (the digits are random).
+    let access = &snap.workspace.settings.osc_access;
+    assert_eq!(access.no_passcode, openlab_core::OscRights::NONE);
+    assert_eq!(access.passcodes.len(), 1);
+    assert_eq!(access.passcodes[0].rights, openlab_core::OscRights::ALL);
+    assert!(
+        access.passcodes[0].passcode.len() == 4
+            && access.passcodes[0]
+                .passcode
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+    );
     assert_eq!(
         error_code(&request(&mut r.s, Request::Save)),
         ErrorCode::NoWorkspace
@@ -786,7 +799,7 @@ fn workspace_settings_travel_with_the_file_and_machine_settings_do_not() {
     ws.settings.min_go_interval = 0.5;
     ws.settings.panic_duration = 3.0;
     ws.settings.autosave_interval = 45.0;
-    ws.settings.osc_passcode = Some("secret".into());
+    ws.settings.osc_access = openlab_core::OscAccess::new_workspace(77);
     ws.settings.master_db = -6.0;
     let mut r = rig(ws.clone());
     let path = r.env.show_path();

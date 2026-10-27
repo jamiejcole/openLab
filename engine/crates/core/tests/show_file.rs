@@ -12,7 +12,9 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v3-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
+const V3_EXAMPLE: &str = include_str!("../../../fixtures/show/v3-example.openlab");
+const V3_NO_PASSCODE: &str = include_str!("../../../fixtures/show/v3-no-passcode.openlab");
 const V2_EXAMPLE: &str = include_str!("../../../fixtures/show/v2-example.openlab");
 const V1_EXAMPLE: &str = include_str!("../../../fixtures/show/v1-example.openlab");
 const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab");
@@ -68,6 +70,98 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
 fn golden_fixture_is_in_canonical_form() {
     let loaded = load_show(EXAMPLE).unwrap();
     assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
+}
+
+/// v3 had one passcode: it becomes the one row of the table with all rights, and No Passcode
+/// has none, so a show that needed `/connect` still does and what it grants is what it did
+/// (M4.5c). Apart from the table the show is the current example.
+#[test]
+fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
+    let loaded = load_show(V3_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    let current = load_show(EXAMPLE).unwrap().workspace;
+    assert_eq!(loaded.workspace, current);
+    assert_eq!(
+        current.settings.osc_access,
+        OscAccess {
+            no_passcode: OscRights::NONE,
+            passcodes: vec![OscPasscode {
+                passcode: "1234".into(),
+                rights: OscRights::ALL,
+            }],
+        }
+    );
+}
+
+/// v3 with no passcode (`null`) was open to every peer: No Passcode keeps all rights.
+#[test]
+fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
+    let loaded = load_show(V3_NO_PASSCODE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.workspace.settings.osc_access, OscAccess::default());
+    assert_eq!(
+        loaded.workspace.settings.osc_access.no_passcode,
+        OscRights::ALL
+    );
+    assert!(loaded.workspace.settings.osc_access.passcodes.is_empty());
+    // Apart from the table it is the same show.
+    let mut current = load_show(EXAMPLE).unwrap().workspace;
+    current.settings.osc_access = OscAccess::default();
+    assert_eq!(loaded.workspace, current);
+}
+
+#[test]
+fn v3_migration_edge_cases() {
+    let with = |value: serde_json::Value| {
+        let mut doc: serde_json::Value = serde_json::from_str(V3_EXAMPLE).unwrap();
+        doc["workspace"]["settings"]["osc_passcode"] = value;
+        // A hand-added table in a v3 file is replaced.
+        doc["workspace"]["settings"]["osc_access"] = serde_json::json!("junk");
+        load_show(&doc.to_string())
+    };
+    // An empty passcode meant none.
+    let open = with(serde_json::json!("")).unwrap().workspace;
+    assert_eq!(open.settings.osc_access, OscAccess::default());
+    // A passcode that is not digits is kept (with a warning): the show must not be locked out.
+    let loaded = with(serde_json::json!("hunter2")).unwrap();
+    assert_eq!(
+        loaded.workspace.settings.osc_access.passcodes[0].passcode,
+        "hunter2"
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| matches!(w.kind, IssueKind::OscPasscodeNotDigits { row: 0 }))
+    );
+    // A passcode of the wrong type, or settings that are no object, are left for the model
+    // parse to refuse (an error, never a panic or a silently open show).
+    for bad in [
+        serde_json::json!(1234),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        assert!(matches!(with(bad), Err(LoadError::Model(_))));
+    }
+    let doc = serde_json::json!({"format_version": 3, "workspace": {"settings": 5}});
+    assert!(matches!(
+        load_show(&doc.to_string()),
+        Err(LoadError::Model(_))
+    ));
+    let doc = serde_json::json!({"format_version": 3, "workspace": 5});
+    assert!(matches!(
+        load_show(&doc.to_string()),
+        Err(LoadError::Model(_))
+    ));
+    let doc = serde_json::json!({"format_version": 3});
+    assert!(matches!(
+        load_show(&doc.to_string()),
+        Err(LoadError::Model(_))
+    ));
+    assert!(matches!(
+        migrate(serde_json::json!([1]), 3),
+        Err(LoadError::Migration { from: 3, .. })
+    ));
 }
 
 #[test]
@@ -383,7 +477,7 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 3", "\"format_version\": 7", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 4", "\"format_version\": 7", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
@@ -861,6 +955,33 @@ fn assign_ids(cues: &mut [Cue], next: &mut u128) {
     }
 }
 
+fn any_rights() -> impl Strategy<Value = OscRights> {
+    (any::<bool>(), any::<bool>(), any::<bool>()).prop_map(|(view, edit, control)| OscRights {
+        view,
+        edit,
+        control,
+    })
+}
+
+/// Tables of every shape, including ones repair must fix: Edit or Control without View, empty,
+/// over-long and repeated passcodes (from a small pool, so repeats are common), more rows than
+/// the limit, and text that is not digits.
+fn any_access() -> impl Strategy<Value = OscAccess> {
+    let passcode = prop_oneof![
+        "[0-9]{1,4}",
+        "[0-3]",
+        text(),
+        Just(String::new()),
+        Just("9".repeat(MAX_OSC_PASSCODE_BYTES + 1)),
+    ];
+    let row =
+        (passcode, any_rights()).prop_map(|(passcode, rights)| OscPasscode { passcode, rights });
+    (any_rights(), vec(row, 0..24)).prop_map(|(no_passcode, passcodes)| OscAccess {
+        no_passcode,
+        passcodes,
+    })
+}
+
 fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
     let hotkeys = vec(option::of(hotkey()), 6).prop_map(|keys| {
         let [
@@ -882,7 +1003,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
     });
     (
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
-        option::of(text()),
+        any_access(),
         level(),
         hotkeys,
         (num(0.0..=100.0), num(0.1..=10.0)),
@@ -890,7 +1011,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         .prop_map(
             |(
                 (min_go_interval, panic_duration, autosave_interval),
-                osc_passcode,
+                osc_access,
                 master_db,
                 hotkeys,
                 (start, step),
@@ -899,7 +1020,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     min_go_interval,
                     panic_duration,
                     autosave_interval,
-                    osc_passcode,
+                    osc_access,
                     master_db,
                     hotkeys,
                     auto_number_start: start,
@@ -1003,6 +1124,9 @@ proptest! {
         repair(&mut ws);
         let mut doc: serde_json::Value = serde_json::from_str(&save_show(&ws).unwrap()).unwrap();
         strip_second_triggers(&mut doc);
+        // A v1 file has the single passcode field (none here), not the table.
+        doc["workspace"]["settings"].as_object_mut().unwrap().remove("osc_access");
+        ws.settings.osc_access = OscAccess::default();
         doc["format_version"] = 1.into();
         let loaded = load_show(&doc.to_string()).unwrap().workspace;
         for list in &mut ws.cue_lists {
@@ -1012,6 +1136,46 @@ proptest! {
         set_devamp_modes(&mut ws, DevampMode::CurrentSlice);
         prop_assert_eq!(loaded, ws);
     }
+
+    /// Any workspace with any single passcode, written as v3, loads with the table the passcode
+    /// becomes, everything else as it was.
+    #[test]
+    fn v3_documents_migrate_their_passcode_into_the_table(
+        mut ws in any_workspace(),
+        passcode in option::of(text()),
+    ) {
+        repair(&mut ws);
+        let doc = as_v3(&ws, &passcode);
+        let loaded = load_show(&doc.to_string()).unwrap().workspace;
+        ws.settings.osc_access = migrated_access(&passcode);
+        repair(&mut ws);
+        prop_assert_eq!(loaded, ws);
+    }
+}
+
+/// What a v3 file's `osc_passcode` becomes (M4.5c): none or empty is No Passcode with all rights
+/// and an empty table; a passcode is one row with all rights and No Passcode with none.
+fn migrated_access(passcode: &Option<String>) -> OscAccess {
+    match passcode.as_deref() {
+        None | Some("") => OscAccess::default(),
+        Some(code) => OscAccess {
+            no_passcode: OscRights::NONE,
+            passcodes: vec![OscPasscode {
+                passcode: code.to_owned(),
+                rights: OscRights::ALL,
+            }],
+        },
+    }
+}
+
+/// `ws` as a version 3 file with this passcode.
+fn as_v3(ws: &Workspace, passcode: &Option<String>) -> serde_json::Value {
+    let mut doc: serde_json::Value = serde_json::from_str(&save_show(ws).unwrap()).unwrap();
+    let settings = doc["workspace"]["settings"].as_object_mut().unwrap();
+    settings.remove("osc_access");
+    settings.insert("osc_passcode".into(), serde_json::json!(passcode));
+    doc["format_version"] = 3.into();
+    doc
 }
 
 fn strip_second_triggers(value: &mut serde_json::Value) {

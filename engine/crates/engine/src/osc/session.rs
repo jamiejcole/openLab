@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
+use openlab_core::{OscAccess, OscRights};
+
 /// Who sent a message. A UDP peer is its IP address (the source port changes per sender
 /// socket, and replies go to port 53001 unless the peer set another with `/udpReplyPort`); a TCP peer is the connection, with the
 /// remote address so failures count per machine, not per connection.
@@ -70,9 +72,10 @@ pub const OPEN_REPLY_BYTES_PER_SEC: u64 = 64 * 1024;
 /// Which reply budget a UDP source is held to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Budget {
-    /// A passcode is set and the source has not connected: it is only sent small refusals.
+    /// Nothing may be asked without a passcode and the source has not connected: it is only sent
+    /// small refusals.
     Strict,
-    /// No passcode is set and the source has not connected.
+    /// A peer without a passcode may ask and the source has not connected with one.
     Open,
 }
 
@@ -87,7 +90,9 @@ impl Budget {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectResult {
-    Accepted,
+    /// Connected; the peer has these rights from now on (those of the passcode it gave, or the
+    /// No Passcode row's if it gave none).
+    Accepted(OscRights),
     /// Wrong passcode. A peer that was already connected stays connected.
     BadPasscode,
     /// This IP, or everyone, has failed too often lately.
@@ -98,7 +103,9 @@ pub enum ConnectResult {
 
 #[derive(Debug)]
 struct Session {
-    connected: bool,
+    /// The rights `/connect` gave, from a passcode of the table. A connect without one stores
+    /// nothing: the peer has the No Passcode rights already.
+    rights: Option<OscRights>,
     updates: bool,
     /// Where `/udpReplyPort` sent this UDP peer's replies and updates; `None`: the server default.
     /// Lives in the session, so it goes with it (idle expiry, `clear`).
@@ -155,54 +162,80 @@ impl Sessions {
         }
     }
 
+    /// Whether `peer` completed `/connect` with a passcode of the table.
     pub fn is_connected(&self, peer: Peer) -> bool {
-        self.peers.get(&peer).is_some_and(|s| s.connected)
+        self.peers.get(&peer).is_some_and(|s| s.rights.is_some())
     }
 
-    /// `/connect`. `expected` is the workspace passcode (`None` or empty: none set, anyone is
-    /// accepted); `given` is what the peer sent.
+    /// The rights `/connect` gave `peer`, or `None` if it has not connected with a passcode (it
+    /// then has the No Passcode rights).
+    pub fn rights(&self, peer: Peer) -> Option<OscRights> {
+        self.peers.get(&peer)?.rights
+    }
+
+    /// `/connect` against the passcode table; `given` is what the peer sent (`None`: nothing).
     ///
-    /// A peer that is already connected is never disconnected or locked out by a later
-    /// `/connect`, right or wrong: UDP peers are only an IP address, so anyone sharing it (or
-    /// forging it) could otherwise cut a console off mid-show.
+    /// - A passcode in the table: the peer gets that row's rights and a session that keeps them.
+    /// - No argument: the reply is the No Passcode rights (QLab: a peer that connects without a
+    ///   passcode gets the rights of "No Passcode"). Nothing is stored, because they are what an
+    ///   unconnected peer has anyway, so this costs no table slot, counts no failure and proves
+    ///   nothing (not a known address). The same holds for any argument when the table has no
+    ///   passcodes, as a workspace without a passcode accepted any `/connect`.
+    /// - A passcode not in the table: `BadPasscode`, counted towards the lockouts.
+    ///
+    /// A peer that connected with a passcode is never disconnected, downgraded by a connect
+    /// without one, or locked out by a later `/connect`, right or wrong: UDP peers are only an IP
+    /// address, so anyone sharing it (or forging it) could otherwise cut a console off mid-show.
+    /// A correct passcode can raise or lower its rights to that row's.
     pub fn connect(
         &mut self,
         peer: Peer,
         now: Duration,
-        expected: Option<&str>,
+        access: &OscAccess,
         given: Option<&str>,
     ) -> ConnectResult {
-        let ok = match expected.filter(|p| !p.is_empty()) {
-            None => true,
-            Some(expected) => given.is_some_and(|g| constant_time_eq(expected, g)),
+        let current = self.rights(peer);
+        let guess = given.filter(|_| !access.passcodes.is_empty());
+        let Some(guess) = guess else {
+            return ConnectResult::Accepted(current.unwrap_or(access.no_passcode));
         };
-        if self.is_connected(peer) {
+        // Every row is compared, the matching one included, so the time does not tell which row
+        // (or whether any) matched.
+        let mut matched: Option<OscRights> = None;
+        for row in &access.passcodes {
+            if constant_time_eq(&row.passcode, guess) && matched.is_none() {
+                matched = Some(row.rights);
+            }
+        }
+        if current.is_some() {
             self.touch(peer, now);
-            return if ok {
-                ConnectResult::Accepted
-            } else {
-                ConnectResult::BadPasscode
+            let Some(rights) = matched else {
+                return ConnectResult::BadPasscode;
             };
+            if let Some(session) = self.peers.get_mut(&peer) {
+                session.rights = Some(rights);
+            }
+            return ConnectResult::Accepted(rights);
         }
         // A correct passcode from an address that connected before gets through the lockouts,
         // so an attacker's wrong guesses cannot keep the operator out after a dropped link.
-        let known_and_right = ok && self.known.contains(&peer.ip());
+        let known_and_right = matched.is_some() && self.known.contains(&peer.ip());
         if !known_and_right && self.locked_out(peer.ip(), now) {
             return ConnectResult::LockedOut;
         }
-        if !ok {
+        let Some(rights) = matched else {
             self.record_failure(peer.ip(), now);
             return ConnectResult::BadPasscode;
-        }
+        };
         if !self.ensure(peer, now) {
             return ConnectResult::TableFull;
         }
         self.failures.remove(&peer.ip());
         self.remember(peer.ip());
         if let Some(session) = self.peers.get_mut(&peer) {
-            session.connected = true;
+            session.rights = Some(rights);
         }
-        ConnectResult::Accepted
+        ConnectResult::Accepted(rights)
     }
 
     /// Notes that `ip` completed a `/connect`; the oldest is forgotten past [`MAX_KNOWN_IPS`].
@@ -267,7 +300,7 @@ impl Sessions {
             if let Some(session) = self.peers.get_mut(&peer) {
                 session.updates = false;
                 session.last_seen = now;
-                if !session.connected && session.reply_port.is_none() {
+                if session.rights.is_none() && session.reply_port.is_none() {
                     self.peers.remove(&peer);
                 }
             }
@@ -399,7 +432,7 @@ impl Sessions {
         self.peers.insert(
             peer,
             Session {
-                connected: false,
+                rights: None,
                 updates: false,
                 reply_port: None,
                 last_seen: now,

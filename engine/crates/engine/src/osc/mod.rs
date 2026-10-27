@@ -15,6 +15,7 @@ mod session;
 
 use std::time::Duration;
 
+use openlab_core::{OscRight, OscRights};
 use rosc::OscMessage;
 use serde_json::json;
 
@@ -28,7 +29,7 @@ pub use dispatch::{
     Address, CueField, CueRef, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, MAX_MATCHES,
     MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, OscInput, OscShow, Parsed, PlayheadTarget, Query,
     Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target, Verb,
-    parse_address, reply_message, resolve, upper,
+    parse_address, reply_message, required_right, resolve, upper,
 };
 pub use pattern::{
     BudgetSpent, CuePattern, MATCH_BUDGET, MAX_ALTERNATIVES, MAX_MATCH_CHARS, PatternError,
@@ -44,10 +45,6 @@ pub use session::{
 pub const OSC_PORT: u16 = 53000;
 /// The UDP port replies and updates go to.
 pub const OSC_REPLY_PORT: u16 = 53001;
-
-/// The rights every `/connect` is granted, until passcodes carry rights of their own (PROGRESS
-/// M4.5c): QLab's `ok:` + the rights joined by `|`.
-pub const GRANTED_RIGHTS: &str = "view|edit|control";
 
 /// How often idle UDP peers are looked for.
 const EXPIRE_EVERY: Duration = Duration::from_secs(10);
@@ -70,7 +67,8 @@ pub struct OscStats {
     /// `/workspace/{id}/...` for another workspace (or the right id in the wrong case); answered
     /// with an error.
     pub wrong_workspace: u64,
-    /// Messages refused for want of `/connect`.
+    /// Messages refused for want of a right: before `/connect`, or the passcode's rights do not
+    /// include what the message needs.
     pub denied: u64,
     /// Messages answered with an error reply (bad cue, bad argument, unsupported).
     pub rejected: u64,
@@ -148,11 +146,12 @@ struct Asked<'a> {
     workspace: openlab_core::WorkspaceId,
     asked: &'a str,
     path: &'a str,
-    /// The peer may ask (no passcode is set, or it has connected).
+    /// The peer may ask: its rights include View.
     authed: bool,
-    /// The peer has completed `/connect`. A UDP peer that has not is held to a byte budget.
+    /// The peer completed `/connect` with a passcode of the table. A UDP peer that has not is
+    /// held to a byte budget.
     connected: bool,
-    /// A passcode is set.
+    /// A peer without a passcode has no rights at all, not even View.
     passcode_set: bool,
 }
 
@@ -195,7 +194,7 @@ impl Osc {
         self.sessions.known_len()
     }
 
-    /// Whether `peer` has completed `/connect`.
+    /// Whether `peer` completed `/connect` with a passcode of the table.
     pub fn is_connected(&self, peer: Peer) -> bool {
         self.sessions.is_connected(peer)
     }
@@ -295,8 +294,15 @@ impl Osc {
         self.call_match_budget = MATCH_BUDGET;
     }
 
+    /// What `peer` may do: the rights `/connect` gave it, else the No Passcode rights.
+    fn rights_of(&self, peer: Peer, show: &dyn OscShow) -> OscRights {
+        self.sessions
+            .rights(peer)
+            .unwrap_or(show.access().no_passcode)
+    }
+
     fn may_ask(&self, peer: Peer, show: &dyn OscShow) -> bool {
-        show.passcode().is_none_or(str::is_empty) || self.sessions.is_connected(peer)
+        self.rights_of(peer, show).allows(OscRight::View)
     }
 
     fn handle_packet(
@@ -347,12 +353,11 @@ impl Osc {
             return;
         };
         let workspace = show.workspace_id();
-        let passcode = show.passcode().filter(|p| !p.is_empty());
-        let connected = self.sessions.is_connected(peer);
-        let authed = passcode.is_none() || connected;
+        let rights = self.rights_of(peer, show);
+        let authed = rights.allows(OscRight::View);
         let ask = Asked {
-            connected,
-            passcode_set: passcode.is_some(),
+            connected: self.sessions.is_connected(peer),
+            passcode_set: show.access().requires_passcode(),
             peer,
             now,
             workspace,
@@ -377,7 +382,9 @@ impl Osc {
         }
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
-            let result = self.sessions.connect(peer, now, passcode, given.as_deref());
+            let result = self
+                .sessions
+                .connect(peer, now, show.access(), given.as_deref());
             let reply = reply_for_connect(result);
             self.push_reply(&ask, &reply, out);
             return;
@@ -386,7 +393,7 @@ impl Osc {
         if parsed.address == Address::UdpReplyPort && matches!(peer, Peer::Tcp { .. }) {
             return;
         }
-        if !authed {
+        if required_right(&parsed.address, &message.args).is_some_and(|r| !rights.allows(r)) {
             self.stats.denied += 1;
             let scope = if matches!(parsed.address, Address::Updates | Address::UdpReplyPort) {
                 Scope::App
@@ -555,11 +562,11 @@ impl Osc {
     }
 }
 
-/// QLab's answers to `/connect`: `ok:` and the granted rights, `badpass` as an `ok` status (not
-/// an error), `denied` while locked out.
+/// QLab's answers to `/connect`: `ok:` and the granted rights (`ok:view|edit`, `ok:` for none),
+/// `badpass` as an `ok` status (not an error), `denied` while locked out.
 fn reply_for_connect(result: ConnectResult) -> Reply {
     match result {
-        ConnectResult::Accepted => Reply::ok(json!(format!("ok:{GRANTED_RIGHTS}"))),
+        ConnectResult::Accepted(rights) => Reply::ok(json!(format!("ok:{}", rights.text()))),
         ConnectResult::BadPasscode => Reply::ok(json!("badpass")),
         ConnectResult::LockedOut => Reply::denied(),
         ConnectResult::TableFull => Reply::error(),

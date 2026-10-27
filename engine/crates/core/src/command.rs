@@ -22,12 +22,13 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::command_model::{
-    NetworkPatchProperty, PatchProperty, WorkspaceSetting, apply_model, no_change,
+    NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
 };
 use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
 };
+use crate::osc_access::OscRights;
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
     walk_mut,
@@ -230,6 +231,24 @@ pub enum Command {
     RenameCueList {
         id: CueListId,
         name: String,
+    },
+    /// Adds a row to the OSC passcode table at `index` (0 to the current count; NET-02). The
+    /// passcode is 1 to 32 digits, not already in the table; Edit and Control need View; the
+    /// table holds at most 16.
+    AddOscPasscode {
+        index: usize,
+        passcode: String,
+        rights: OscRights,
+    },
+    /// Removes a row. Any passcode may go, the last included: with no row and No Passcode
+    /// without rights nobody can connect, which the user can undo.
+    RemoveOscPasscode {
+        passcode: String,
+    },
+    /// Sets the rights of a row, or of the No Passcode row. Edit and Control need View.
+    SetOscRights {
+        target: OscRightsTarget,
+        rights: OscRights,
     },
 }
 
