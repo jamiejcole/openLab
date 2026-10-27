@@ -23,7 +23,8 @@ final class AppController {
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
     /// A text field or text view is being edited: keys that type must stay with it.
     var isTextEditing: @MainActor () -> Bool = { (NSApp.keyWindow?.firstResponder as? NSText)?.isEditable == true }
-    let keyMap: KeyMap
+    /// Per workspace: its `settings.hotkeys` as last read (a change re-reads and warns once).
+    private var keyCache: [ObjectIdentifier: (settings: JSONValue?, keys: TransportKeys)] = [:]
 
     private var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
@@ -35,12 +36,8 @@ final class AppController {
     private var closing: Set<ModelID> = []
     private(set) var quitting = false
 
-    init(
-        session: EngineSession, keyMap: KeyMap = KeyMap(), scheduler: Scheduler = SystemScheduler(),
-        timeout: Double = 5
-    ) {
+    init(session: EngineSession, scheduler: Scheduler = SystemScheduler(), timeout: Double = 5) {
         self.session = session
-        self.keyMap = keyMap
         self.scheduler = scheduler
         self.timeout = timeout
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
@@ -138,8 +135,7 @@ final class AppController {
             firePanic()
             return event
         }
-        guard let key = event.charactersIgnoringModifiers, !key.isEmpty,
-            let command = keyMap.command(for: KeyChord(key, event.modifierFlags)), canPerform(command)
+        guard let chord = KeyChord(event: event), let command = frontKeys.command(for: chord), canPerform(command)
         else { return event }
         let isRepeat = event.isARepeat
         Task { await perform(command, isRepeat: isRepeat) }
@@ -176,12 +172,29 @@ final class AppController {
 
     // MARK: Transport commands (menu items and keys)
 
+    /// The transport keys of `store`'s workspace. A show file whose hotkeys conflict or are
+    /// unusable is logged to that store once per change (never a crash).
+    func keys(for store: WorkspaceStore) -> TransportKeys {
+        let settings = store.model?.settings
+        let id = ObjectIdentifier(store)
+        if let cached = keyCache[id], cached.settings == settings { return cached.keys }
+        let keys = TransportKeys(settings: settings)
+        keyCache[id] = (settings, keys)
+        for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
+        return keys
+    }
+
+    /// The key window's keys (the defaults when no workspace window is key).
+    var frontKeys: TransportKeys {
+        frontController.map { keys(for: $0.store) } ?? TransportKeys(settings: nil)
+    }
+
     /// Whether the menu item for `command` may fire now. Disabled items also let their key through
     /// to the text field being edited (see `KeyMap` for the precedence rule).
     func canPerform(_ command: TransportCommand) -> Bool {
         if command == .panic { return true }
         guard frontController != nil else { return false }
-        if let chord = keyMap.chord(for: command), chord.typesCharacters, isTextEditing() { return false }
+        if let chord = frontKeys.chord(for: command), chord.typesCharacters, isTextEditing() { return false }
         return true
     }
 

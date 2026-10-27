@@ -57,7 +57,7 @@ final class AppControllerTests: XCTestCase {
         let info = engine.info
         let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
         app = AppController(
-            session: session, keyMap: KeyMap(store: Self.scratchDefaults()), scheduler: quitScheduler)
+            session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -74,11 +74,23 @@ final class AppControllerTests: XCTestCase {
         app = nil
     }
 
-    static func scratchDefaults() -> UserDefaults {
-        let name = "openlab-test-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name) ?? .standard
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+    static func hotkey(_ key: String, _ mods: [String] = []) -> String {
+        let flags = ["shift", "control", "alt", "command"].map { "\"\($0)\":\(mods.contains($0))" }.joined(
+            separator: ",")
+        return #"{"key":"\#(key)","modifiers":{\#(flags)}}"#
+    }
+
+    /// Replaces the workspace's `settings.hotkeys` as the engine would (a `settings` upsert).
+    private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        var settings = try XCTUnwrap(store.model?.settings)
+        settings.set("hotkeys", try XCTUnwrap(JSONValue.parse(hotkeys)))
+        let name = store.model?.name ?? ""
+        let upsert = #"{"type":"settings","name":"\#(name)","settings":\#(try settings.text())}"#
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#, doc: doc
+        )
+        await assertEventually { store.model?.settings == settings }
     }
 
     /// A second, clean workspace.
@@ -153,12 +165,12 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testNoRevertInTheMenus() {
-        let titles = MainMenu.make(keyMap: KeyMap(store: Self.scratchDefaults())).bar.items.flatMap {
+        let titles = MainMenu.make().bar.items.flatMap {
             $0.submenu?.items.map(\.title) ?? []
         }
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
-            MainMenu.make(keyMap: KeyMap(store: Self.scratchDefaults())).bar.items[1].submenu?.items.map(
+            MainMenu.make().bar.items[1].submenu?.items.map(
                 \.keyEquivalent), ["n", "o", "", "w"])
     }
 
@@ -354,13 +366,48 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
     }
 
-    func testRemappedKeyDispatchesAndTheOldKeyDoesNot() async throws {
+    func testKeysComeFromTheWorkspaceSettingsAndFallBackToDefaults() async throws {
+        let list = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
         keyDoc = "doc-1"
-        XCTAssertNil(app.keyMap.bind(.go, to: KeyChord("g")))
+        try await setHotkeys("doc-1", #"{"go":\#(Self.hotkey("g")),"pause_all":null}"#)
         let old = try keyEvent(" ")
-        XCTAssertTrue(app.handleKeyDown(old) === old)
+        XCTAssertTrue(app.handleKeyDown(old) === old, "Space is no longer GO in this show")
         XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
-        await assertEventually { !transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty }
+        await assertEventually { !transports(list).isEmpty }
+        let none = try keyEvent("[")
+        XCTAssertTrue(app.handleKeyDown(none) === none, "null: no key")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("]")), "absent resume_all: QLab default")
+    }
+
+    func testEachWindowUsesItsOwnWorkspacesKeys() async throws {
+        let second = try await addWorkspace()
+        try await setHotkeys(second, #"{"go":\#(Self.hotkey("g"))}"#)
+        keyDoc = second
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord("g"))
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        await assertEventually { !transports(go).isEmpty }
+        keyDoc = "doc-1"
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "))
+        let g = try keyEvent("g")
+        XCTAssertTrue(app.handleKeyDown(g) === g)
+        await settle()
+        XCTAssertEqual(transports(go), [second])
+    }
+
+    func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        keyDoc = "doc-1"
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f5","modifiers":{}}}"#)
+        let keys = app.frontKeys
+        XCTAssertEqual(keys.chord(for: .go), KeyChord("x"))
+        XCTAssertNil(keys.chord(for: .pauseAll), "the later field loses")
+        XCTAssertNil(keys.chord(for: .resumeAll))
+        let warnings = store.logEntries.filter { $0.level == .warn }.map(\.message)
+        XCTAssertEqual(warnings.count, 2, "\(warnings)")
+        _ = app.frontKeys  // read again: not logged twice
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 2)
     }
 
     func testAHeldKeyFiresOnce() async throws {
@@ -382,29 +429,36 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.canPerform(.go))
     }
 
-    func testMenuKeyEquivalentsFollowTheKeyMap() throws {
-        let menus = MainMenu.make(keyMap: app.keyMap)
+    func testMenuKeyEquivalentsFollowTheKeyWindowsKeys() async throws {
+        keyDoc = "doc-1"
+        let menus = MainMenu.make()
         func item(_ c: TransportCommand) -> NSMenuItem? {
             menus.transport.items.first { $0.representedObject as? String == c.rawValue }
         }
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, " ")
         XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
         XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+        XCTAssertEqual(
+            item(.playheadNext)?.keyEquivalent, "", "the model's bare Down: the selection moves the playhead")
+        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "the model's Esc is the app-wide panic")
         XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
-        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "")
+        XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
         let commands = menus.transport.items.compactMap { $0.representedObject as? String }
         XCTAssertEqual(commands.count, TransportCommand.allCases.count)
 
-        XCTAssertEqual(app.keyMap.bind(.go, to: KeyChord("g", .command)), nil)
-        MainMenu.applyKeys(to: menus.transport, app.keyMap)
+        try await setHotkeys(
+            "doc-1",
+            #"{"go":\#(Self.hotkey("g", ["command"])),"playhead_next":\#(Self.hotkey("down", ["command", "shift"]))}"#)
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, "g")
         XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
     }
 
     func testTransportMenuTitlesAreLocalised() {
-        let menus = MainMenu.make(keyMap: app.keyMap)
+        let menus = MainMenu.make()
         for entry in menus.transport.items where !entry.isSeparatorItem {
             XCTAssertFalse(entry.title.hasPrefix("menu."), entry.title)
         }
