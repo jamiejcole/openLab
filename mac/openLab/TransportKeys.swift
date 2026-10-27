@@ -6,7 +6,7 @@ import AppKit
 enum TransportCommand: String, CaseIterable, Codable, Sendable {
     case go, stopAll, pauseAll, resumeAll, panic
     case playheadPrevious, playheadNext
-    case loadSelected, startSelected, pauseResumeSelected, stopSelected, resetSelected
+    case loadSelected, startSelected, pauseResumeSelected, stopSelected, resetSelected, previewSelected
 
     var titleKey: String { "menu.transport.\(rawValue)" }
 }
@@ -84,8 +84,8 @@ enum KeyBindError: Error, Equatable {
 /// - `playhead_next` / `playhead_previous`: a bare Down / Up means "the selection moves the
 ///   playhead" (cue list behaviour), so it binds nothing; any other key binds Next / Previous Cue.
 ///   Absent: Shift-Cmd-Down / Up (QLab's menu keys).
-/// - The model has no fields for the selected-cue keys: Load Selected `L` and Pause/Resume
-///   Selected `P` are fixed app defaults, dropped if a show's key already uses the chord.
+/// - The model has no fields for the selected-cue keys: Load Selected `L`, Pause/Resume
+///   Selected `P` and Preview Selected `V` (QLab's key) are fixed app defaults, dropped if a show's key already uses the chord.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
 /// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
@@ -98,7 +98,7 @@ struct TransportKeys: Equatable {
     private(set) var warnings: [String] = []
 
     static let fixed: [(TransportCommand, KeyChord)] = [
-        (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")),
+        (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")), (.previewSelected, KeyChord("v")),
     ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [

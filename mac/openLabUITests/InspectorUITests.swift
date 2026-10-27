@@ -31,4 +31,37 @@ final class InspectorUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Thunder"].waitForExistence(timeout: 10), "the list shows the new name")
         XCTAssertFalse(app.staticTexts["Intro"].exists)
     }
+
+    func testPreviewButtonMarksTheRowAndClears() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-OpenLabEngine", "fake"]
+        app.launch()
+        let windows = app.windows.matching(identifier: "main-window")
+        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
+        app.typeKey("w", modifierFlags: .command)
+        let one = NSPredicate(format: "count == 1")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
+            .completed)
+
+        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
+        app.staticTexts["Intro"].click()
+        let button = app.buttons["inspector-preview"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        XCTAssertEqual(button.title, "Preview")
+        let marks = app.images.matching(identifier: "cue-preview").matching(
+            NSPredicate(format: "label == 'Previewing'"))
+        XCTAssertEqual(marks.count, 0)
+
+        button.click()
+        XCTAssertTrue(marks.firstMatch.waitForExistence(timeout: 10), "the row shows it is previewing")
+        XCTAssertEqual(button.title, "Stop Preview")
+
+        button.click()
+        let gone = NSPredicate(format: "count == 0")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: marks)], timeout: 10),
+            .completed)
+        XCTAssertEqual(button.title, "Preview")
+    }
 }
