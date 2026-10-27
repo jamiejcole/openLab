@@ -5,7 +5,7 @@
 //! matrix gains (patch master × output level, mute, polarity) on the mapped device outputs.
 //!
 //! Patches resolve against the device the mixer plays on (the control loop's `playable` list:
-//! empty once a device outage has outlasted its grace period; docs/control.md "Devices"). Per
+//! empty during a device outage; docs/control.md "Devices"). Per
 //! output alignment delay is a device-output setting in the mixer (`SetOutput`), not a matrix
 //! gain: each device output gets the delay of the patch outputs mapped to it (the longest, if
 //! patches disagree, listed as a conflict).
