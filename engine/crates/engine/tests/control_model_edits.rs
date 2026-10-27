@@ -3,17 +3,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Settings, patch, network patch and cue list commands through the control loop (M1.12,
-//! ED-07): what clients are sent, what the engine and mixer do with them, the refusal to move
-//! a patch under a playing cue (M4.2f), undo coalescing and edits that change nothing.
+//! ED-07): what clients are sent, what the engine and mixer do with them, patch layout edits
+//! under a playing voice (stable mixer slots, M4.2f/M4.15b), the workspace master in the
+//! matrices, undo coalescing and edits that change nothing.
 
 mod show;
 
+use openlab_core::protocol::WireWarning;
 use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, ServerMessage, TransportAction, WireProblem,
 };
 use openlab_core::{
-    Command, CueKind, CueState, NetworkPatch, NetworkPatchProperty, NetworkProtocol, OutputPatch,
-    PatchId, PatchOutput, PatchProperty, TransportKey, Workspace, WorkspaceSetting,
+    Command, CueKind, NetworkPatch, NetworkPatchProperty, NetworkProtocol, OutputPatch, PatchId,
+    PatchMapping, PatchOutput, PatchProperty, TransportKey, Workspace, WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
@@ -244,155 +246,253 @@ fn removing_a_patch_a_cue_uses_is_refused_with_the_cue_named() {
     assert_eq!(s.control().revision(), revision);
 }
 
-#[test]
-fn patch_layout_is_frozen_while_any_voice_plays_and_free_when_none_does() {
-    let mut s = playing_show();
-    let mut mirror = Mirror::new(&s);
-    // Nothing plays: every layout change is fine.
-    command(
-        &mut s,
-        Command::MovePatch {
-            id: patch_id(),
-            index: 1,
-        },
-    );
-    command(
-        &mut s,
-        Command::MovePatch {
-            id: patch_id(),
-            index: 0,
-        },
-    );
-    assert_eq!(mirror.catch_up(&mut s), 2);
+/// A show like [`playing_show`] with room for four patches in the mixer: patch 2 (unused by
+/// any cue) is mapped crossed, to device outputs 1 and 0, so a voice that ended up on its
+/// matrix would be heard on output 1 instead of 0.
+fn roomy_playing_show(mixer_patches: usize) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 20, 0.5));
+    let mut ws = workspace(vec![audio(1, &path, 0)]);
+    ws.patches.push(patch(2));
+    let mut c = config(&ws);
+    for (n, channels) in [(2, vec![1, 0]), (3, vec![1, 1]), (4, vec![1, 0])] {
+        c.machine
+            .set_patch_mapping(
+                ws.id,
+                patch(n).id,
+                PatchMapping {
+                    device: "Offline".into(),
+                    channels,
+                },
+            )
+            .unwrap();
+    }
+    c.mixer_patches = mixer_patches;
+    let mut m = mixer_config();
+    m.patches = mixer_patches;
+    let mut s = OfflineShow::new(ws, m, c).unwrap();
+    s.settle_media();
+    s
+}
 
+/// The last block of each output is exactly cue 1's DC on output 0 and silence on output 1.
+fn heard_as_routed(s: &OfflineShow) {
+    let block = BLOCK as usize;
+    for (ch, want) in [(0, 0.5f32), (1, 0.0)] {
+        let x = s.channel(ch);
+        let tail = &x[x.len() - block..];
+        assert!(
+            tail.iter().all(|v| v.to_bits() == want.to_bits()),
+            "output {ch}: {tail:?}"
+        );
+    }
+}
+
+fn notice_codes(s: &OfflineShow) -> Vec<String> {
+    s.control()
+        .snapshot()
+        .warnings
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, .. } => Some(code),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn patch_layout_edits_succeed_while_a_voice_plays_and_keep_its_routing() {
+    let mut s = roomy_playing_show(4);
+    let mut mirror = Mirror::new(&s);
     start(&mut s, 1);
     s.run(BLOCK * 8);
     assert!(s.control().engine().state(id(1)).is_active());
-    let revision = s.control().revision();
-    let blocked = [
+    heard_as_routed(&s);
+    let edits = [
+        // Insert before the playing cue's patch (index 0): every later patch shifts.
         Command::AddPatch {
             index: 0,
             patch: patch(3),
         },
         Command::MovePatch {
             id: patch_id(),
-            index: 1,
+            index: 2,
         },
         Command::MovePatch {
             id: patch(2).id,
             index: 0,
         },
-        // Even a patch no cue names: a voice may still sit on its slot.
         Command::RemovePatch {
-            id: patch(2).id,
+            id: patch(3).id,
             even_if_used: false,
         },
-        Command::RemovePatch {
-            id: patch_id(),
-            even_if_used: true,
-        },
-        // An append followed by a move to the front shifts every slot.
+        // An append followed by a move to the front, as one step.
         Command::Transaction {
             commands: vec![
                 Command::AddPatch {
                     index: 2,
-                    patch: patch(3),
+                    patch: patch(4),
                 },
                 Command::MovePatch {
-                    id: patch(3).id,
+                    id: patch(4).id,
                     index: 0,
                 },
             ],
         },
-        Command::Transaction {
-            commands: vec![
-                master(-1.0),
-                Command::MovePatch {
-                    id: patch_id(),
-                    index: 1,
-                },
-            ],
-        },
-        // A bigger patch no longer fits its device mapping: the running cue would go silent.
-        Command::SetPatchProperty {
-            id: patch_id(),
-            property: PatchProperty::ChannelCount { value: 4 },
-        },
     ];
-    for command in blocked {
-        let replies = send(&mut s, command.clone(), None);
-        let message = refusal(&replies).unwrap_or_else(|| panic!("{command:?} was allowed"));
-        assert!(message.contains("playing"), "{message}");
+    let count = edits.len();
+    for edit in edits {
+        command(&mut s, edit.clone());
+        s.run(BLOCK * 4);
+        heard_as_routed(&s);
+        assert!(s.control().engine().state(id(1)).is_active(), "{edit:?}");
     }
-    assert_eq!(mirror.catch_up(&mut s), 0);
-    assert_eq!(s.control().revision(), revision);
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
-
-    // What keeps the layout is fine: edits in place and an append.
-    command(
-        &mut s,
-        Command::SetPatchProperty {
-            id: patch_id(),
-            property: PatchProperty::MasterDb { value: -3.0 },
-        },
+    // Undo and redo of every step are layout edits too.
+    for _ in 0..count {
+        assert!(refusal(&undo(&mut s)).is_none());
+        s.run(BLOCK * 4);
+        heard_as_routed(&s);
+    }
+    assert_eq!(
+        s.control()
+            .workspace()
+            .patches
+            .iter()
+            .map(|p| p.id)
+            .collect::<Vec<_>>(),
+        vec![patch_id(), patch(2).id]
     );
-    command(
-        &mut s,
-        Command::AddPatch {
-            index: 2,
-            patch: patch(3),
-        },
-    );
-    assert_eq!(mirror.catch_up(&mut s), 2);
-
-    // Stopped, the same edits go through.
-    s.transport(TransportAction::HardStop { cue: id(1) });
-    run_until_idle(&mut s, id(1), 8000);
-    // The stopped voice leaves the mixer a moment after the cue is idle.
-    s.run(BLOCK * 16);
-    command(
-        &mut s,
-        Command::AddPatch {
-            index: 0,
-            patch: patch(4),
-        },
-    );
-    command(
-        &mut s,
-        Command::SetPatchProperty {
-            id: patch_id(),
-            property: PatchProperty::ChannelCount { value: 4 },
-        },
-    );
-    assert_eq!(mirror.catch_up(&mut s), 2);
-    assert_eq!(s.control().workspace().patches[0].id, patch(4).id);
+    for _ in 0..count {
+        let rid = s.request_id();
+        let replies = s.send(ClientMessage::Redo { id: rid });
+        assert!(refusal(&replies).is_none());
+        s.run(BLOCK * 4);
+        heard_as_routed(&s);
+    }
+    assert_eq!(mirror.catch_up(&mut s), 3 * count);
+    assert!(s.control().engine().state(id(1)).is_active());
+    assert!(!notice_codes(&s).contains(&"mixer_patches_exhausted".to_owned()));
 }
 
 #[test]
-fn undo_and_redo_of_a_patch_move_are_held_to_the_same_rule() {
-    let mut s = playing_show();
-    command(
-        &mut s,
-        Command::MovePatch {
-            id: patch_id(),
-            index: 1,
-        },
-    );
+fn a_resize_under_a_playing_voice_leaves_it_as_it_started_and_applies_to_the_next_start() {
+    let mut s = roomy_playing_show(4);
     start(&mut s, 1);
     s.run(BLOCK * 8);
-    let revision = s.control().revision();
-    let replies = undo(&mut s);
-    assert!(refusal(&replies).unwrap().contains("playing"));
-    assert_eq!(s.control().revision(), revision);
-    // The step stayed: after the cue stops, undo works.
+    heard_as_routed(&s);
+    // Four outputs: the machine's mapping (two channels) no longer fits, so the patch cannot
+    // play new starts, but the voice already sounding keeps the layout it started with.
+    command(
+        &mut s,
+        Command::SetPatchProperty {
+            id: patch_id(),
+            property: PatchProperty::ChannelCount { value: 4 },
+        },
+    );
+    s.run(BLOCK * 8);
+    heard_as_routed(&s);
+    assert!(s.control().engine().state(id(1)).is_active());
+    // Undo while it still plays: back to two outputs, still as routed.
+    assert!(refusal(&undo(&mut s)).is_none());
+    s.run(BLOCK * 8);
+    heard_as_routed(&s);
     s.transport(TransportAction::HardStop { cue: id(1) });
     run_until_idle(&mut s, id(1), 8000);
-    // The stopped voice leaves the mixer a moment after the cue is idle.
     s.run(BLOCK * 16);
-    let replies = undo(&mut s);
-    assert!(refusal(&replies).is_none());
-    assert_eq!(s.control().workspace().patches[0].id, patch_id());
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // A start after the voice left plays through the patch as it is now.
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    heard_as_routed(&s);
+}
+
+#[test]
+fn a_patch_with_no_free_mixer_slot_waits_for_the_one_a_voice_still_uses() {
+    // Two slots: patch 901 (cue 1, slot 0) and patch 2 (slot 1).
+    let mut s = roomy_playing_show(2);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    // Patch 901 is removed (with its cue's reference left dangling, as an undo of its add
+    // would) and patch 3 added: slot 0 still carries the playing voice, so 3 has none.
+    command(
+        &mut s,
+        Command::Transaction {
+            commands: vec![
+                Command::RemovePatch {
+                    id: patch_id(),
+                    even_if_used: true,
+                },
+                Command::AddPatch {
+                    index: 1,
+                    patch: patch(3),
+                },
+            ],
+        },
+    );
+    s.run(BLOCK * 8);
+    heard_as_routed(&s);
+    assert!(notice_codes(&s).contains(&"mixer_patches_exhausted".to_owned()));
+    // The voice ends; its slot is freed and patch 3 gets it (mapped to output 1 twice).
+    s.transport(TransportAction::Panic);
+    s.run(RATE as u64);
+    s.run(BLOCK * 16);
+    assert!(!notice_codes(&s).contains(&"mixer_patches_exhausted".to_owned()));
+    let x = s.channel(0);
+    assert!(x[x.len() - BLOCK as usize..].iter().all(|v| *v == 0.0));
+}
+
+#[test]
+fn a_paused_voice_keeps_its_slot_and_resumes_as_routed() {
+    let mut s = roomy_playing_show(2);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK * 8);
+    command(
+        &mut s,
+        Command::Transaction {
+            commands: vec![
+                Command::RemovePatch {
+                    id: patch_id(),
+                    even_if_used: true,
+                },
+                Command::AddPatch {
+                    index: 1,
+                    patch: patch(3),
+                },
+            ],
+        },
+    );
+    s.run(BLOCK * 8);
+    // The paused voice still holds slot 0, so patch 3 must wait for it.
+    assert!(notice_codes(&s).contains(&"mixer_patches_exhausted".to_owned()));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(BLOCK * 8);
+    heard_as_routed(&s);
+}
+
+#[test]
+fn the_workspace_master_scales_each_sample_exactly() {
+    let samples = ramp(RATE as usize);
+    let path = wav(&samples);
+    for db in [0.0, -6.0, -20.0] {
+        let mut ws = workspace(vec![audio(1, &path, 0)]);
+        ws.settings.master_db = db;
+        let mut s = show(ws);
+        // Past the matrices' de-zipper ramp from the mixer's identity start.
+        s.run(BLOCK * 4);
+        start(&mut s, 1);
+        s.run(RATE as u64 / 2);
+        let out = s.channel(0);
+        let first = first_nonzero(&out).unwrap();
+        let g = openlab_core::db_to_gain(db);
+        let n = RATE as usize / 4;
+        for (i, (y, x)) in out[first..first + n].iter().zip(&samples).enumerate() {
+            assert_eq!(y.to_bits(), (g * x).to_bits(), "{db} dB, sample {i}");
+        }
+        if db == 0.0 {
+            // Bit for bit the file: what the mixer's own master at unity gave before.
+            assert_eq!(&out[first..first + n], &samples[..n]);
+        }
+    }
 }
 
 #[test]
@@ -584,7 +684,7 @@ fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
 }
 
 #[test]
-fn a_refusal_for_another_reason_wins_over_the_playing_guard() {
+fn removing_a_patch_a_playing_cue_uses_is_still_refused_as_used() {
     let mut s = playing_show();
     start(&mut s, 1);
     s.run(BLOCK * 8);

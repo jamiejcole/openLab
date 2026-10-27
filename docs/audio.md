@@ -231,7 +231,7 @@ out_gain[d]  = (mute ? 0 : level) · (invert ? −1 : 1)
 | `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames` |
 | `SetPatchRouting { patch, cue_output, device_output, gain }` | one patch's cue output → device output gain (default: identity in every patch) (AUD-07) |
 | `SetOutput { output, settings }` | per device output: level, mute, polarity, delay (AUD-07, PB-11) |
-| `SetMaster { gain }` | global master (PB-11) |
+| `SetMaster { gain }` | global master (PB-11). The control loop does not send it: each workspace's master is folded into its patch matrices (docs/control.md, Patches), so the mixer master stays at unity |
 
 - Gains are linear `f32`. Use `db_to_linear` and `linear_to_db`, where −120 dB and below is exactly 0.0 (ARCHITECTURE §4).
 - Every gain the mixer applies is clamped to ±`MAX_GAIN` (+24 dB, `MAX_GAIN_DB`). This is a safety net; the show model stops at +12 dB. NaN counts as 0.0.
