@@ -17,7 +17,7 @@ use std::thread;
 use common::{Env, env, names, set_mtime};
 use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, RecoveryChoice, Request, RequestId, ResultData,
-    ServerMessage, Snapshot, WireCueState,
+    ServerMessage, Snapshot, WireCueState, WireProblem,
 };
 use openlab_core::{Command, CueKind, CueProperty, MediaRef, Workspace, load_show, save_show};
 use openlab_engine::control::offline::OfflineShow;
@@ -1242,9 +1242,17 @@ fn save_as_in_another_folder_keeps_relative_media_pointing_at_the_same_files() {
         .expect("snapshot");
     assert_eq!(media_of(&snap.workspace), expected);
     assert!(!snap.document.can_undo);
-    // The file is still found from the new folder.
+    // The file is still found from the new folder, and plays: an empty catalog would show no
+    // problem either.
     r.s.settle_media();
     assert!(r.s.control().snapshot().problems.is_empty());
+    let from = r.s.audio().len();
+    start(&mut r.s, 1);
+    r.s.run(BLOCK * 20);
+    assert!(
+        r.s.audio()[from..].iter().any(|x| *x != 0.0),
+        "the cue plays after the folder change"
+    );
     // The original file is untouched.
     let original = load_show(&fs::read_to_string(a.path().join("show.openlab")).unwrap())
         .unwrap()
@@ -1571,4 +1579,145 @@ fn reopening_the_same_show_spelled_differently_keeps_the_autosave_just_restored(
         r.env.dirs.recovery_path(id, Some(&path)).exists(),
         "the autosave restored from is not deleted by the discard"
     );
+}
+
+/// A show with a missing file on cue 1 and a present one on cue 2.
+fn media_ws() -> Workspace {
+    let present = wav(&dc(2000, 0.5));
+    let missing = fresh_path("wav");
+    assert!(!missing.exists());
+    workspace(vec![audio(1, &missing, 0), audio(2, &present, 0)])
+}
+
+/// The media catalog of the replaced workspace is live: the missing file is a problem of its
+/// cue, the present file plays (a catalog that was reset and never refilled has neither).
+fn assert_media_is_live(s: &mut OfflineShow, what: &str) {
+    s.settle_media();
+    let problems = s.control().snapshot().problems;
+    assert!(
+        problems.iter().any(|p| p.cue == id(1)
+            && p.problems
+                .iter()
+                .any(|x| matches!(x, WireProblem::MediaMissing { .. }))),
+        "{what}: no MediaMissing for the missing file: {problems:?}"
+    );
+    assert!(
+        !problems.iter().any(|p| p.cue == id(2)),
+        "{what}: {problems:?}"
+    );
+    let from = s.audio().len();
+    start(s, 2);
+    s.run(BLOCK * 20);
+    assert!(
+        s.audio()[from..].iter().any(|x| *x != 0.0),
+        "{what}: the present file's cue is silent"
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
+#[test]
+fn media_is_probed_again_after_open() {
+    let mut r = rig(memo_ws("blank", &[5]));
+    let path = r.env.show_dir().join("media.openlab");
+    write_show(&path, &media_ws());
+    ok_result(&request(&mut r.s, open(&path)));
+    assert_media_is_live(&mut r.s, "open");
+}
+
+#[test]
+fn media_is_probed_again_after_revert() {
+    let mut r = rig(media_ws());
+    let path = r.env.show_path();
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: path.to_string_lossy().into_owned(),
+        },
+    ));
+    rename(&mut r.s, 2, "edited");
+    ok_result(&request(
+        &mut r.s,
+        Request::Revert {
+            discard_changes: true,
+        },
+    ));
+    assert_media_is_live(&mut r.s, "revert");
+}
+
+#[test]
+fn media_is_probed_again_after_open_recovery() {
+    let mut r = rig(media_ws());
+    let path = r.env.show_path();
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: path.to_string_lossy().into_owned(),
+        },
+    ));
+    let (env, path, id) = crash_with_autosave(r);
+    // The show file is damaged: only the autosave is left.
+    fs::write(&path, "{ corrupt").unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    ok_result(&request(
+        &mut r.s,
+        Request::OpenRecovery {
+            workspace_id: id,
+            path_hash: None,
+            modified_ms: None,
+            discard_changes: false,
+        },
+    ));
+    assert_media_is_live(&mut r.s, "open_recovery");
+}
+
+#[test]
+fn media_is_probed_again_after_new() {
+    // New has no media; what matters is that the old show's files are forgotten and a later
+    // open starts from a clean catalog.
+    let mut r = rig(media_ws());
+    ok_result(&request(
+        &mut r.s,
+        Request::New {
+            discard_changes: true,
+        },
+    ));
+    assert!(r.s.control().snapshot().problems.is_empty());
+    let path = r.env.show_dir().join("media.openlab");
+    write_show(&path, &media_ws());
+    ok_result(&request(&mut r.s, open(&path)));
+    assert_media_is_live(&mut r.s, "new then open");
+}
+
+#[test]
+fn an_answer_already_in_the_inbox_when_the_timeout_fires_is_not_reported_as_io() {
+    let mut r = rig_tweak(memo_ws("one", &[1]), |c| {
+        c.doc_timeout = std::time::Duration::from_secs(20);
+    });
+    let other = r.env.show_dir().join("other.openlab");
+    write_show(&other, &memo_ws("other", &[7]));
+    let (tx, mut rx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(1),
+            request: open(&other),
+        },
+        reply: tx,
+    });
+    // The worker has read the file and posted its answer, which nobody has applied yet.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while r.s.control().doc_answers_posted() == 0 && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(r.s.control().doc_answers_posted(), 1);
+    r.clock.advance(25_000);
+    // A tick that does not apply the inbox first: the timeout check runs with the answer unread.
+    r.s.control_mut().tick();
+    assert!(rx.try_recv().is_err(), "not failed with io");
+    assert_eq!(r.s.control().stuck_doc_workers(), 0);
+    r.s.tick();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Snapshot { .. }
+    ));
+    assert_eq!(r.s.control().workspace().name, "other");
 }
