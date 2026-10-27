@@ -140,9 +140,42 @@ fn encode(message: &ServerMessage) -> Option<Arc<str>> {
     (text.len() <= MAX_SERVER_FRAME_BYTES).then(|| Arc::from(text))
 }
 
+/// A second consumer of the control thread's broadcasts: the OSC side, which keeps a copy of
+/// the workspace from them. Only the messages that change it are forwarded.
+pub struct Tap {
+    pub tx: mpsc::Sender<ServerMessage>,
+    /// Set when a message did not fit: the copy is behind and must be rebuilt from a snapshot.
+    pub lagged: Arc<AtomicBool>,
+    /// Wakes the consumer so it notices `lagged` while idle.
+    pub wake: Arc<Notify>,
+}
+
+impl Tap {
+    fn offer(&self, message: &ServerMessage) {
+        if !matches!(
+            message,
+            ServerMessage::ModelChanged { .. }
+                | ServerMessage::Runtime { .. }
+                | ServerMessage::Document { .. }
+        ) {
+            return;
+        }
+        if self.lagged.load(Ordering::Acquire) {
+            return;
+        }
+        if self.tx.try_send(message.clone()).is_err() {
+            self.lagged.store(true, Ordering::Release);
+            self.wake.notify_one();
+        }
+    }
+}
+
 /// The fan-out task: runs until the control side hangs up (or the runtime stops).
-pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx) {
+pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: Option<Tap>) {
     while let Some(message) = outbound.recv().await {
+        if let Some(tap) = &tap {
+            tap.offer(&message);
+        }
         hub.deliver(&message);
     }
 }

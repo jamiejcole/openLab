@@ -6,9 +6,13 @@
 //! and the outbound broadcast channel; it never touches the workspace.
 
 mod hub;
+mod osc;
+mod osc_mirror;
+mod refusals;
 mod token;
 mod ws;
 
+pub use osc::{OscConfig, OscListenerStats, OscPorts};
 pub use token::{constant_time_eq, generate_token};
 pub use ws::{ServerConfig, WsServer};
 

@@ -63,7 +63,13 @@ pub struct OscStats {
     pub replies_dropped: u64,
     /// Replies not sent to a UDP source that used up its byte budget.
     pub replies_throttled: u64,
+    /// Update messages not sent to a UDP subscriber that used up its byte budget, or not
+    /// encodable.
+    pub updates_throttled: u64,
 }
+
+/// IP and UDP headers, counted against the reply budget.
+const UDP_HEADER_BYTES: u64 = 28;
 
 /// Most replies from one datagram or one stream read.
 pub const MAX_REPLIES_PER_CALL: usize = 16;
@@ -243,6 +249,32 @@ impl Osc {
         }
     }
 
+    /// Encodes an update message for `peer` (NET-05), or `None` if it must not be sent: not
+    /// encodable, or `peer` is a UDP source that used up its byte budget (shared with its
+    /// replies, so subscribing from a forged address cannot aim more than the budget at a
+    /// victim). TCP peers are paced by their connection instead. `now` as for the handlers.
+    pub fn prepare_update(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        message: &OscMessage,
+    ) -> Option<Vec<u8>> {
+        let Ok(bytes) = encode_message(message) else {
+            self.stats.updates_throttled += 1;
+            return None;
+        };
+        if matches!(peer, Peer::Udp(_)) {
+            let cost = u64::try_from(bytes.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(UDP_HEADER_BYTES);
+            if !self.sessions.spend_reply_bytes(peer.ip(), now, cost) {
+                self.stats.updates_throttled += 1;
+                return None;
+            }
+        }
+        Some(bytes)
+    }
+
     /// Queues a reply unless a cap says no: at most [`MAX_REPLIES_PER_CALL`] per datagram or
     /// stream read, and for UDP peers a per-source-IP byte budget (a forged source address must
     /// not turn us into an amplifier). Dropped replies are counted.
@@ -256,10 +288,9 @@ impl Osc {
                 self.stats.replies_dropped += 1;
                 return;
             };
-            // Plus the IP and UDP headers.
             let cost = u64::try_from(bytes.len())
                 .unwrap_or(u64::MAX)
-                .saturating_add(28);
+                .saturating_add(UDP_HEADER_BYTES);
             if !self.sessions.spend_reply_bytes(peer.ip(), now, cost) {
                 self.stats.replies_throttled += 1;
                 return;
