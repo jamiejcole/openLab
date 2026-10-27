@@ -160,6 +160,8 @@ never fails: unreadable content gives the defaults and a warning; invalid entrie
 warning; `backup_keep` is clamped. The engine keeps a copy of a file that produced warnings as
 `settings.json.corrupt` (`.corrupt.1`, … if one exists, a few at most) before anything overwrites it. Workspace and patch ids in the file are normalised to lower-case hyphenated form on load. Unknown keys are ignored.
 
+The engine adds mappings itself in one case (M4.4c): a workspace with no patch mapping at all on this machine (a new one, or a show from another Mac) gets each patch mapped to the first N outputs of the device the mixer plays on, and the file is rewritten (atomically, off the control thread; other workspaces' entries are kept). Existing mappings are never overwritten. Rules and edge cases: docs/control.md, Voices: "Default patch mapping".
+
 `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator
 once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch
 silent and its cues broken, never a crash.
