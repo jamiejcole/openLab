@@ -1,0 +1,14 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_osc_passcode",
+    "index": 1,
+    "passcode": "4821",
+    "rights": {
+      "view": true,
+      "edit": true,
+      "control": false
+    }
+  }
+}

@@ -8,7 +8,9 @@
 use std::ops::ControlFlow;
 
 use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
-use openlab_core::{Command, CueId, CueListId, CueProperty, NumberAssignment, WorkspaceId};
+use openlab_core::{
+    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscRight, WorkspaceId,
+};
 use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -31,8 +33,8 @@ pub trait OscShow {
     fn workspace_name(&self) -> &str {
         ""
     }
-    /// The workspace passcode. `None` or empty: no passcode, no `/connect` needed.
-    fn passcode(&self) -> Option<&str>;
+    /// The passcode table: what a peer may do without `/connect` and with each passcode.
+    fn access(&self) -> &OscAccess;
     /// The cue list `/go` and `/playhead` act on: the one whose playhead was last moved (QLab:
     /// the list on display).
     fn active_list(&self) -> Option<CueListId>;
@@ -377,6 +379,43 @@ fn verb_of(part: &str) -> Option<Verb> {
         "isPaused" => Verb::Field(CueField::IsPaused),
         "isBroken" => Verb::Field(CueField::IsBroken),
         _ => return None,
+    })
+}
+
+/// The right a message needs, judged on its address and argument count alone so that nothing
+/// about the show is looked up before the peer is known to be allowed (docs/osc.md, "Rights").
+/// `None` for `/connect`, `/version` and `/workspaces`, which every peer may send.
+///
+/// - View: every read, `/updates`, `/udpReplyPort`, and writing a cue's `notes`.
+/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
+///   and `/select`.
+/// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, the cue
+///   verbs `start` ... `preview`, `/playhead`) and a cue's own OSC trigger address. An address
+///   nothing answers to counts as a trigger, so a peer without Control learns nothing about which
+///   triggers exist.
+pub fn required_right(address: &Address, args: &[OscType]) -> Option<OscRight> {
+    Some(match address {
+        Address::Connect | Address::Version | Address::Workspaces => return None,
+        Address::Updates | Address::UdpReplyPort | Address::Query(_) | Address::Unsupported(_) => {
+            OscRight::View
+        }
+        Address::Select(_) => OscRight::Edit,
+        Address::Go
+        | Address::Stop
+        | Address::HardStop
+        | Address::Panic
+        | Address::PauseAll
+        | Address::ResumeAll
+        | Address::Playhead(_)
+        | Address::Other(_)
+        | Address::Pattern(_) => OscRight::Control,
+        Address::Cue { verb, .. } => match verb {
+            // A property without an argument is a read.
+            Verb::Field(_) if args.is_empty() => OscRight::View,
+            Verb::Field(CueField::Notes) => OscRight::View,
+            Verb::Field(_) => OscRight::Edit,
+            _ => OscRight::Control,
+        },
     })
 }
 
@@ -920,14 +959,17 @@ fn format_number(value: f64) -> String {
     }
 }
 
-/// The argument of `/connect`: a string, or an integer (QLab takes `1234` sent as an int32 like
-/// the string); anything else counts as no passcode given.
+/// The argument of `/connect`: `None` when there is none (the peer connects without a passcode),
+/// else the string, or an integer as text (QLab takes `1234` sent as an int32 like the string).
+/// Anything else (another type, several arguments) is `Some("")`: no passcode in the table is
+/// empty, so it is a wrong passcode where the table has any, and never a connect without one.
 pub fn passcode_arg(args: &[OscType]) -> Option<String> {
     match args {
+        [] => None,
         [OscType::String(s)] => Some(s.clone()),
         [OscType::Int(i)] => Some(i.to_string()),
         [OscType::Long(i)] => Some(i.to_string()),
-        _ => None,
+        _ => Some(String::new()),
     }
 }
 

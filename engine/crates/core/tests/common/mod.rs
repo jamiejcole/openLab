@@ -131,7 +131,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             min_go_interval: 0.0,
             panic_duration: 5.0,
             autosave_interval: 30.0,
-            osc_passcode: None,
+            osc_access: openlab_core::OscAccess::default(),
             master_db: 0.0,
             hotkeys: TransportHotkeys::default(),
             auto_number_start: 1.0,

@@ -22,11 +22,8 @@ use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
     PatchOutput, Workspace, WorkspaceSettings,
 };
+use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
 use crate::validate::{patch_problems, settings_problems, visit};
-
-/// Longest OSC passcode, bytes. Far above any typed passcode; keeps a hostile client from
-/// putting megabytes into every snapshot.
-pub const MAX_OSC_PASSCODE_BYTES: usize = 256;
 
 /// The inverse of a change that changed nothing. `History` ignores it.
 pub(crate) fn no_change() -> Inverse {
@@ -66,10 +63,6 @@ pub enum WorkspaceSetting {
     AutosaveInterval {
         value: f64,
     },
-    /// `None` = OSC is open (NET-02). An empty passcode is refused: clear it instead.
-    OscPasscode {
-        value: Option<String>,
-    },
     /// Global master level (PB-11).
     MasterDb {
         value: f64,
@@ -99,9 +92,6 @@ impl WorkspaceSetting {
             Self::AutosaveInterval { .. } => Self::AutosaveInterval {
                 value: s.autosave_interval,
             },
-            Self::OscPasscode { .. } => Self::OscPasscode {
-                value: s.osc_passcode.clone(),
-            },
             Self::MasterDb { .. } => Self::MasterDb { value: s.master_db },
             Self::Hotkey { key, .. } => Self::Hotkey {
                 key: *key,
@@ -121,7 +111,6 @@ impl WorkspaceSetting {
             Self::MinGoInterval { value } => s.min_go_interval = *value,
             Self::PanicDuration { value } => s.panic_duration = *value,
             Self::AutosaveInterval { value } => s.autosave_interval = *value,
-            Self::OscPasscode { value } => s.osc_passcode.clone_from(value),
             Self::MasterDb { value } => s.master_db = *value,
             Self::Hotkey { key, value } => hotkey_slot_mut(s, *key).clone_from(value),
             Self::AutoNumberStart { value } => s.auto_number_start = *value,
@@ -178,16 +167,6 @@ fn set_setting(
     setting: &WorkspaceSetting,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    if let WorkspaceSetting::OscPasscode { value: Some(pass) } = setting {
-        if pass.is_empty() {
-            return Err(CommandError::InvalidValue(
-                "an OSC passcode cannot be empty; clear it instead",
-            ));
-        }
-        if pass.len() > MAX_OSC_PASSCODE_BYTES {
-            return Err(CommandError::InvalidValue("the OSC passcode is too long"));
-        }
-    }
     let old = setting.current(&ws.settings);
     let mut candidate = ws.settings.clone();
     setting.write(&mut candidate);
@@ -215,6 +194,119 @@ fn set_setting(
     }
     ws.settings = candidate;
     Ok(Command::SetWorkspaceSetting { setting: old })
+}
+
+// ---------------------------------------------------------------------------------------------
+// OSC passcode table (NET-02, M4.5c)
+
+/// Which row of the OSC passcode table [`Command::SetOscRights`] sets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OscRightsTarget {
+    /// The rights of a peer that has not connected, or connected without a passcode.
+    NoPasscode,
+    Passcode {
+        passcode: String,
+    },
+}
+
+/// Row index of `passcode`. The error does not repeat it: it is a secret and errors are logged.
+fn osc_row(ws: &Workspace, passcode: &str) -> Result<usize, CommandError> {
+    ws.settings
+        .osc_access
+        .passcodes
+        .iter()
+        .position(|e| e.passcode == passcode)
+        .ok_or(CommandError::InvalidValue(
+            "that OSC passcode is not in the table",
+        ))
+}
+
+fn check_rights(rights: OscRights) -> Result<(), CommandError> {
+    if rights.is_consistent() {
+        Ok(())
+    } else {
+        Err(CommandError::InvalidValue(
+            "Edit and Control rights need View",
+        ))
+    }
+}
+
+fn add_osc_passcode(
+    ws: &mut Workspace,
+    index: usize,
+    passcode: &str,
+    rights: OscRights,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    let table = &mut ws.settings.osc_access.passcodes;
+    // An undo puts back a row that existed, whatever load let through (a legacy passcode that
+    // is not digits); a new row is held to the rule.
+    if !restoring && !is_valid_new_passcode(passcode) {
+        return Err(CommandError::InvalidValue(
+            "an OSC passcode is 1 to 32 digits",
+        ));
+    }
+    check_rights(rights)?;
+    if table.iter().any(|e| e.passcode == passcode) {
+        return Err(CommandError::InvalidValue(
+            "that OSC passcode is already in the table",
+        ));
+    }
+    if table.len() >= MAX_OSC_PASSCODES && !restoring {
+        return Err(CommandError::InvalidValue("the OSC passcode table is full"));
+    }
+    check_index(index, table.len(), true)?;
+    table.insert(
+        index,
+        OscPasscode {
+            passcode: passcode.to_owned(),
+            rights,
+        },
+    );
+    Ok(Command::RemoveOscPasscode {
+        passcode: passcode.to_owned(),
+    })
+}
+
+fn remove_osc_passcode(ws: &mut Workspace, passcode: &str) -> Result<Inverse, CommandError> {
+    let at = osc_row(ws, passcode)?;
+    let row = ws.settings.osc_access.passcodes.remove(at);
+    Ok(Command::AddOscPasscode {
+        index: at,
+        passcode: row.passcode,
+        rights: row.rights,
+    })
+}
+
+fn set_osc_rights(
+    ws: &mut Workspace,
+    target: &OscRightsTarget,
+    rights: OscRights,
+) -> Result<Inverse, CommandError> {
+    check_rights(rights)?;
+    let slot = match target {
+        OscRightsTarget::NoPasscode => &mut ws.settings.osc_access.no_passcode,
+        OscRightsTarget::Passcode { passcode } => {
+            let at = osc_row(ws, passcode)?;
+            let row = ws
+                .settings
+                .osc_access
+                .passcodes
+                .get_mut(at)
+                .ok_or(CommandError::Internal)?;
+            &mut row.rights
+        }
+    };
+    let old = *slot;
+    if old == rights {
+        return Ok(no_change());
+    }
+    *slot = rights;
+    Ok(Command::SetOscRights {
+        target: target.clone(),
+        rights: old,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -635,6 +727,13 @@ pub(crate) fn apply_model(
 ) -> Option<Result<Inverse, CommandError>> {
     Some(match command {
         Command::SetWorkspaceSetting { setting } => set_setting(ws, setting, restoring),
+        Command::AddOscPasscode {
+            index,
+            passcode,
+            rights,
+        } => add_osc_passcode(ws, *index, passcode, *rights, restoring),
+        Command::RemoveOscPasscode { passcode } => remove_osc_passcode(ws, passcode),
+        Command::SetOscRights { target, rights } => set_osc_rights(ws, target, *rights),
         Command::AddPatch { index, patch } => add_patch(ws, *index, patch),
         Command::RemovePatch { id, even_if_used } => remove_patch(ws, *id, *even_if_used),
         Command::MovePatch { id, index } => patch_index(ws, *id).and_then(|from| {

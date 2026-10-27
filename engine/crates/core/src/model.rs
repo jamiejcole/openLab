@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::cue::{Cue, Hotkey, Modifiers};
+use crate::osc_access::OscAccess;
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
@@ -75,7 +76,7 @@ impl Workspace {
                 min_go_interval: 0.0,
                 panic_duration: 1.0,
                 autosave_interval: 30.0,
-                osc_passcode: None,
+                osc_access: OscAccess::default(),
                 master_db: 0.0,
                 hotkeys: TransportHotkeys::default(),
                 auto_number_start: 1.0,
@@ -197,8 +198,8 @@ pub struct WorkspaceSettings {
     pub panic_duration: f64,
     /// Autosave period while dirty (NFR-05), 5 s to 1 h.
     pub autosave_interval: f64,
-    /// Required by `/connect` before OSC control is accepted (NET-02). `None` = open.
-    pub osc_passcode: Option<String>,
+    /// Who may do what over OSC (NET-02): the passcode table with each passcode's rights.
+    pub osc_access: OscAccess,
     /// Global master level (PB-11).
     pub master_db: f64,
     pub hotkeys: TransportHotkeys,

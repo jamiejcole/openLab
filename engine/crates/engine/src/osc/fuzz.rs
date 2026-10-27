@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::ops::ControlFlow;
 use std::time::Duration;
 
-use openlab_core::{CueId, CueListId, WorkspaceId};
+use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -16,15 +16,15 @@ use super::{
 };
 
 struct FuzzShow {
-    passcode: Option<&'static str>,
+    access: OscAccess,
 }
 
 impl OscShow for FuzzShow {
     fn workspace_id(&self) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(1))
     }
-    fn passcode(&self) -> Option<&str> {
-        self.passcode
+    fn access(&self) -> &OscAccess {
+        &self.access
     }
     fn active_list(&self) -> Option<CueListId> {
         Some(CueListId(Uuid::from_u128(2)))
@@ -84,7 +84,37 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
         return Ok(());
     };
     let show = FuzzShow {
-        passcode: (mode & 2 != 0).then_some("1234"),
+        // Bit 1: a table with passcodes (all rights; view only), No Passcode with no rights,
+        // or view only when bit 2 is also set; else open.
+        access: if mode & 2 != 0 {
+            OscAccess {
+                no_passcode: if mode & 4 != 0 {
+                    OscRights {
+                        view: true,
+                        edit: false,
+                        control: false,
+                    }
+                } else {
+                    OscRights::NONE
+                },
+                passcodes: vec![
+                    OscPasscode {
+                        passcode: "1234".to_owned(),
+                        rights: OscRights::ALL,
+                    },
+                    OscPasscode {
+                        passcode: "5678".to_owned(),
+                        rights: OscRights {
+                            view: true,
+                            edit: true,
+                            control: false,
+                        },
+                    },
+                ],
+            }
+        } else {
+            OscAccess::default()
+        },
     };
     let mut osc = Osc::new();
     let udp = Peer::Udp(IpAddr::V4(Ipv4Addr::LOCALHOST));

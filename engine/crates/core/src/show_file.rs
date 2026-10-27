@@ -11,7 +11,7 @@ use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -179,6 +179,7 @@ pub fn migrate(mut document: Value, from: u32) -> Result<Value, LoadError> {
             0 => v0_to_v1(document),
             1 => v1_to_v2(document),
             2 => v2_to_v3(document),
+            3 => v3_to_v4(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -228,6 +229,48 @@ fn v2_to_v3(document: Value) -> Result<Value, String> {
             kind.insert("devamp_mode".into(), "current_slice".into());
         }
     })
+}
+
+/// v4 replaced the single `osc_passcode` by the rights table `osc_access` (M4.5c). A passcode
+/// becomes the one row of the table with all rights and No Passcode gets none, which is what the
+/// show did (nothing without `/connect`, everything with it); no passcode (null or empty) becomes
+/// No Passcode with all rights, an open show as before. A v3 reader ignored unknown keys, so a
+/// hand-added `osc_access` is replaced. A document that is not shaped like this (no settings
+/// object, a passcode that is not text) is left for the model parse to refuse, as the cue steps
+/// do.
+fn v3_to_v4(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    if let Some(settings) = root
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("settings"))
+        .and_then(Value::as_object_mut)
+    {
+        let all = serde_json::json!({ "view": true, "edit": true, "control": true });
+        let none = serde_json::json!({ "view": false, "edit": false, "control": false });
+        let access = match settings.get("osc_passcode") {
+            None | Some(Value::Null) => Some(serde_json::json!({
+                "no_passcode": all,
+                "passcodes": [],
+            })),
+            Some(Value::String(code)) if code.is_empty() => Some(serde_json::json!({
+                "no_passcode": all,
+                "passcodes": [],
+            })),
+            Some(Value::String(code)) => Some(serde_json::json!({
+                "no_passcode": none,
+                "passcodes": [{ "passcode": code, "rights": all }],
+            })),
+            Some(_) => None,
+        };
+        if let Some(access) = access {
+            settings.remove("osc_passcode");
+            settings.insert("osc_access".into(), access);
+        }
+    }
+    root.insert("format_version".into(), 4.into());
+    Ok(document)
 }
 
 /// Applies `upgrade` to every cue object of the document (any depth) and sets its

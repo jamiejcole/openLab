@@ -1,0 +1,8 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "remove_osc_passcode",
+    "passcode": "4821"
+  }
+}

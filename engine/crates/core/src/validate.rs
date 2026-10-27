@@ -20,6 +20,9 @@ use crate::model::{
     CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
     WorkspaceSettings,
 };
+use crate::osc_access::{
+    MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
+};
 
 /// Deepest allowed cue nesting (a top-level cue is depth 1). Keeps every valid workspace within
 /// the JSON parser's recursion limit, so whatever saves also loads.
@@ -134,6 +137,15 @@ pub enum IssueKind {
     /// group, and since version 3 a group Fade moves each child relative to its level (QLab 5,
     /// check F2) where it used to set it, so the cue may now sound different. Kept as it is.
     GroupFadeNowRelative,
+    /// An OSC rights set had Edit or Control without View: they were cleared. `row` is the
+    /// passcode row (`None`: the No Passcode row).
+    OscRightsNeedView { row: Option<usize> },
+    /// The OSC passcode in row `row` was removed (`reason`: empty, too long, a repeat, or past
+    /// the table's size limit). Passcodes are never named: they are secret.
+    OscPasscodeDropped { row: usize, reason: &'static str },
+    /// The OSC passcode in row `row` is not made of digits only (QLab's are numeric): kept, since
+    /// removing it would change who can connect, but the user should replace it.
+    OscPasscodeNotDigits { row: usize },
 }
 
 impl fmt::Display for ValidationIssue {
@@ -217,6 +229,21 @@ impl fmt::Display for ValidationIssue {
                 "this Fade targets a group: fades aimed at groups now move each child relative \
                  to its own level, as in QLab 5, instead of setting it; check that it still does \
                  what the show needs"
+            ),
+            IssueKind::OscRightsNeedView { row: Some(row) } => write!(
+                f,
+                "OSC passcode row {row}: Edit and Control need View; they were cleared"
+            ),
+            IssueKind::OscRightsNeedView { row: None } => write!(
+                f,
+                "OSC No Passcode rights: Edit and Control need View; they were cleared"
+            ),
+            IssueKind::OscPasscodeDropped { row, reason } => {
+                write!(f, "OSC passcode row {row} removed: {reason}")
+            }
+            IssueKind::OscPasscodeNotDigits { row } => write!(
+                f,
+                "OSC passcode row {row} is not made of digits only; replace it"
             ),
             IssueKind::SecondTriggerNeedsPlaylist => write!(
                 f,
@@ -427,6 +454,45 @@ impl Checker {
         }
     }
 
+    /// The OSC passcode table (M4.5c): rights need View; rows that are empty, too long, repeated
+    /// or past the table's size are removed (the first of a repeat stays). A passcode that is
+    /// not digits is kept and pointed out: dropping it would silently lock a console out of a
+    /// show migrated from a file whose passcode was any text.
+    fn osc_access(&mut self, access: &mut OscAccess) {
+        if !access.no_passcode.is_consistent() {
+            access.no_passcode = access.no_passcode.consistent();
+            self.warn(None, IssueKind::OscRightsNeedView { row: None });
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let rows = std::mem::take(&mut access.passcodes);
+        for (row, mut entry) in rows.into_iter().enumerate() {
+            let reason = if entry.passcode.is_empty() {
+                Some("it is empty")
+            } else if entry.passcode.len() > MAX_OSC_PASSCODE_BYTES {
+                Some("it is too long")
+            } else if seen.contains(&entry.passcode) {
+                Some("it repeats an earlier row")
+            } else if access.passcodes.len() >= MAX_OSC_PASSCODES {
+                Some("the table is full")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                self.warn(None, IssueKind::OscPasscodeDropped { row, reason });
+                continue;
+            }
+            if !entry.rights.is_consistent() {
+                entry.rights = entry.rights.consistent();
+                self.warn(None, IssueKind::OscRightsNeedView { row: Some(row) });
+            }
+            if !is_valid_new_passcode(&entry.passcode) {
+                self.warn(None, IssueKind::OscPasscodeNotDigits { row });
+            }
+            seen.insert(entry.passcode.clone());
+            access.passcodes.push(entry);
+        }
+    }
+
     fn settings(&mut self, s: &mut WorkspaceSettings) {
         self.time_in(
             None,
@@ -450,6 +516,7 @@ impl Checker {
             3600.0,
         );
         self.level(None, "settings.master_db", &mut s.master_db);
+        self.osc_access(&mut s.osc_access);
         let keys = &s.hotkeys;
         for (field, key) in [
             ("settings.hotkeys.go", &keys.go),
