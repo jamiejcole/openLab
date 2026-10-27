@@ -31,6 +31,11 @@ enum EngineMode: Equatable {
             return EngineSession(transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load() })
         case .fake(let mode):
             let engine = FakeEngine(mode: mode)
+            if mode == .multi {
+                // Two clean workspaces so UI tests start with several windows and no save prompts.
+                for doc in engine.openDocs { engine.setDocument(doc, dirty: false) }
+                _ = engine.addDoc(FakeEngine.emptySnapshot(name: "Second"), path: nil)
+            }
             let info = engine.info
             return EngineSession(transport: engine, infoProvider: { .success(info) })
         }

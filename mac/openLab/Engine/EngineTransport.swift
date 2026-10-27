@@ -47,6 +47,12 @@ protocol EngineConnection: AnyObject {
     /// The next text frame. Throws when the connection is closed or has failed.
     func receive() async throws -> String
     func close()
+    /// `send`, returning once the frame has been handed to the OS (the app is about to quit).
+    func sendAndFlush(_ text: String) async
+}
+
+extension EngineConnection {
+    func sendAndFlush(_ text: String) async { send(text) }
 }
 
 /// Opens connections: `WebSocketTransport` for the real engine, `FakeEngine` in tests and UI tests.
@@ -99,6 +105,13 @@ final class WebSocketConnection: EngineConnection {
                 engineLog.error("websocket send failed: \(error.localizedDescription, privacy: .public)")
                 task.cancel(with: .abnormalClosure, reason: nil)
             }
+        }
+    }
+
+    func sendAndFlush(_ text: String) async {
+        let task = task
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            task.send(.string(text)) { _ in cont.resume() }
         }
     }
 

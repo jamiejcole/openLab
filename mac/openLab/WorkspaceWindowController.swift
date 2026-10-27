@@ -2,9 +2,19 @@
 
 import AppKit
 
-/// Owns the main window and its QLab-style layout: masthead, cue-type row, cue list over
-/// inspector, optional right sidebar, footer. Built in code; no model attached yet.
-final class MainWindowController: NSWindowController {
+/// One open workspace's window and its QLab-style layout: masthead, cue-type row, cue list over
+/// inspector, optional right sidebar, footer. Built in code; it holds only its own store. Close
+/// requests and the GO / Pause All / Panic controls are handed to `AppController` through the
+/// closures below: this class never closes itself or talks to the session.
+@MainActor
+final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
+    let store: WorkspaceStore
+    /// Asked on every user close (Cmd-W, close button); the window stays open until the owner closes it.
+    var onCloseRequest: (() -> Void)?
+    /// These address this window's own store: a click can land on a window that is not key.
+    var onGo: (() -> Void)?
+    var onPauseAll: (() -> Void)?
+    var onPanic: (() -> Void)?
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let cueList = CueListViewController()
@@ -14,7 +24,8 @@ final class MainWindowController: NSWindowController {
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
 
-    init() {
+    init(store: WorkspaceStore) {
+        self.store = store
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -24,10 +35,28 @@ final class MainWindowController: NSWindowController {
         window.isReleasedWhenClosed = false  // closing must never destroy the window (M5.17)
         window.minSize = NSSize(width: 800, height: 500)
         super.init(window: window)
+        window.delegate = self
         window.contentView = buildContent()
         window.center()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
+        wire(masthead.goButton, #selector(goClicked))
+        wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
+        wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+    }
+
+    private func wire(_ button: NSButton?, _ action: Selector) {
+        button?.target = self
+        button?.action = action
+    }
+
+    @objc private func goClicked() { onGo?() }
+    @objc private func pauseAllClicked() { onPauseAll?() }
+    @objc private func panicClicked() { onPanic?() }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        onCloseRequest?()
+        return false
     }
 
     @available(*, unavailable)
