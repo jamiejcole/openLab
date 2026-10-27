@@ -64,6 +64,7 @@
 "error.detail.generic" = "An unexpected error occurred.";
 "error.openFailed" = "Could not open the workspace: %@";
 "error.saveFailed" = "Could not save the workspace: %@";
+"error.transportFailed" = "Transport command failed: %@";
 "error.closeFailed" = "Could not close the workspace: %@";
 "menu.window.bringAllToFront" = "Bring All to Front";
 

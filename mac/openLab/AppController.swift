@@ -21,9 +21,13 @@ final class AppController {
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
+    var beep: @MainActor () -> Void = { NSSound.beep() }
     /// A text field or text view is being edited: keys that type must stay with it.
     var isTextEditing: @MainActor () -> Bool = { (NSApp.keyWindow?.firstResponder as? NSText)?.isEditable == true }
     /// Per workspace: its `settings.hotkeys` as last read (a change re-reads and warns once).
+    /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
+    var keyCacheCount: Int { keyCache.count }
+    private var keySubs: [ModelID: AnyCancellable] = [:]
     private var keyCache: [ObjectIdentifier: (settings: JSONValue?, keys: TransportKeys)] = [:]
 
     private var subs: [AnyCancellable] = []
@@ -56,17 +60,27 @@ final class AppController {
             let wc = WorkspaceWindowController(store: store)
             wc.onCloseRequest = { [weak self] in Task { await self?.closeWorkspace(doc) } }
             wc.onGo = { [weak self] in Task { await self?.go(store) } }
-            wc.onPauseAll = { Task { _ = await store.transport(.pauseAll) } }
-            wc.onResumeAll = { Task { _ = await store.transport(.resumeAll) } }
+            wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
+            wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
             windows[doc] = wc
+            // Hotkey warnings are logged when the settings arrive, not at the first key press.
+            _ = keys(for: store)
+            keySubs[doc] = store.changes.sink { [weak self] _ in
+                MainActor.assumeIsolated { _ = self?.keys(for: store) }
+            }
             if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.window?.title = n.name }
             show(doc)
         }
-        for doc in windows.keys where stores[doc] == nil {
-            windows.removeValue(forKey: doc)?.window?.close()
-        }
+        for doc in windows.keys where stores[doc] == nil { dropWindow(doc) }
         showLauncherIfNoWindows()
+    }
+
+    private func dropWindow(_ doc: ModelID) {
+        guard let wc = windows.removeValue(forKey: doc) else { return }
+        keyCache[ObjectIdentifier(wc.store)] = nil
+        keySubs[doc] = nil
+        wc.window?.close()
     }
 
     private func updateTitles(_ list: [WorkspaceInfo]) {
@@ -167,7 +181,7 @@ final class AppController {
     @discardableResult
     func pauseAllFront() async -> Result<OkBody, EngineError>? {
         guard let store = frontController?.store else { return nil }
-        return await store.transport(.pauseAll)
+        return await run(.pauseAll, on: store)
     }
 
     // MARK: Transport commands (menu items and keys)
@@ -193,6 +207,9 @@ final class AppController {
     /// to the text field being edited (see `KeyMap` for the precedence rule).
     func canPerform(_ command: TransportCommand) -> Bool {
         if command == .panic { return true }
+        // Stop All waits for the engine's atomic `stop_all` (PR #19, PROGRESS M5.11b): a loop of
+        // per-cue stops would miss a cue started meanwhile. Panic (Esc) is the stop-everything.
+        if command == .stopAll { return false }
         guard frontController != nil else { return false }
         if let chord = frontKeys.chord(for: command), chord.typesCharacters, isTextEditing() { return false }
         return true
@@ -212,41 +229,52 @@ final class AppController {
         let list = store.model?.cueLists.first?.id
         switch command {
         case .go: _ = await go(store)
-        case .pauseAll: await store.transport(.pauseAll)
-        case .resumeAll: await store.transport(.resumeAll)
-        // ponytail: per-cue hard stops until PR #19's `stop_all` lands (PROGRESS M5.11).
-        case .stopAll:
-            for id in activeCues(store) { await store.transport(.hardStop(cue: id)) }
+        case .pauseAll: await run(.pauseAll, on: store)
+        case .resumeAll: await run(.resumeAll, on: store)
+        case .stopAll: break  // disabled until `stop_all` exists (canPerform)
         case .panic: break
-        case .playheadNext: if let list { await store.transport(.playheadNext(list: list)) }
-        case .playheadPrevious: if let list { await store.transport(.playheadPrevious(list: list)) }
-        case .loadSelected: if let id = selected.last { await store.transport(.load(cue: id, at: 0)) }
-        case .startSelected: for id in selected { await store.transport(.start(cue: id)) }
-        case .stopSelected: for id in selected { await store.transport(.hardStop(cue: id)) }
-        case .resetSelected: for id in selected { await store.transport(.reset(cue: id)) }
+        case .playheadNext: if let list { await run(.playheadNext(list: list), on: store) }
+        case .playheadPrevious: if let list { await run(.playheadPrevious(list: list), on: store) }
+        case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
+        case .startSelected: for id in selected { await run(.start(cue: id), on: store) }
+        case .stopSelected: for id in selected { await run(.hardStop(cue: id), on: store) }
+        case .resetSelected: for id in selected { await run(.reset(cue: id), on: store) }
         case .pauseResumeSelected:
             for id in selected {
                 switch store.cueStates[id]?.state {
-                case .paused?: await store.transport(.resume(cue: id))
-                case .running?, .fading?, .preWaiting?, .postWaiting?: await store.transport(.pause(cue: id))
+                case .paused?: await run(.resume(cue: id), on: store)
+                case .running?, .fading?, .preWaiting?, .postWaiting?: await run(.pause(cue: id), on: store)
                 default: break
                 }
             }
         }
     }
 
-    private func activeCues(_ store: WorkspaceStore) -> [ModelID] {
-        let live: Set<WireCueState> = [.running, .fading, .paused, .preWaiting, .postWaiting]
-        return store.cueStates.filter { live.contains($0.value.state) }.keys.sorted { $0.raw < $1.raw }
+    /// Esc: every workspace, by the engine's app-scope panic.
+    func panicAll() async -> Result<OkBody, EngineError> {
+        let result = await session.panicAll()
+        if case .failure(let e) = result { for store in session.stores.values { report(e, on: store) } }
+        return result
     }
 
-    /// Esc: every workspace, by the engine's app-scope panic.
-    func panicAll() async -> Result<OkBody, EngineError> { await session.panicAll() }
+    /// Sends a transport action. A refused or undeliverable one (not connected, timeout, refusal)
+    /// beeps and goes to the show log: an operator pressing GO must never be left guessing.
+    @discardableResult
+    private func run(_ action: TransportAction, on store: WorkspaceStore) async -> Result<OkBody, EngineError> {
+        let result = await store.transport(action)
+        if case .failure(let e) = result { report(e, on: store) }
+        return result
+    }
+
+    private func report(_ error: EngineError, on store: WorkspaceStore) {
+        beep()
+        _ = store.receive(.log(.error, String(format: loc("error.transportFailed"), describe(error))))
+    }
 
     @discardableResult
     private func go(_ store: WorkspaceStore) async -> Result<OkBody, EngineError>? {
         guard let list = store.model?.cueLists.first?.id else { return nil }
-        return await store.go(list: list)
+        return await run(.go(list: list), on: store)
     }
 
     // MARK: File New / Open
@@ -305,7 +333,7 @@ final class AppController {
         guard let discard = await resolveUnsaved(doc) else { return false }
         switch await bounded({ await self.session.close(doc: doc, discardChanges: discard) }) {
         case .success?:
-            windows.removeValue(forKey: doc)?.window?.close()
+            dropWindow(doc)
         case .failure(let e)?:
             alerts.showError(String(format: loc("error.closeFailed"), describe(e)))
             return false

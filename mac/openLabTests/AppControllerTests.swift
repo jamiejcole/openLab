@@ -286,15 +286,73 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
     }
 
-    func testStopAllHardStopsEveryLiveCueOfTheKeyWorkspaceOnly() async throws {
-        let second = try await addWorkspace()
-        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+    func testStopAllIsDisabledUntilTheEngineHasAtomicStopAll() async throws {
         keyDoc = "doc-1"
+        XCTAssertFalse(app.canPerform(.stopAll))
         await app.perform(.stopAll)
-        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
-        keyDoc = second  // nothing is running there
-        await app.perform(.stopAll)
-        XCTAssertEqual(transports(.hardStop(cue: running)).count, 1)
+        await settle()
+        XCTAssertTrue(
+            engine.receivedFrom.allSatisfy {
+                if case .transport = $0.message { return false } else { return true }
+            }, "no per-cue stops")
+        // A key bound to it passes through instead of being swallowed.
+        try await setHotkeys("doc-1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
+        let s = try keyEvent("s")
+        XCTAssertTrue(app.handleKeyDown(s) === s)
+    }
+
+    func testFailedTransportBeepsAndLogsInsteadOfBeingDropped() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        engine.dropConnections()
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 1)
+        let errors = store.logEntries.filter { $0.level == .error }.map(\.message)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.hasPrefix("Transport command failed") == true, "\(errors)")
+    }
+
+    func testSuccessfulTransportDoesNotBeep() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 0)
+    }
+
+    func testPlayheadSendsTheFinalSelectionEvenBeforeTheEchoArrives() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let a: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let b: ModelID = "00000000-0000-0000-0000-00000000000b"  // the playhead already
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        func click(_ id: ModelID) {
+            let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(id))
+            wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        click(a)
+        click(b)  // back on the cue the (not yet moved) playhead is on
+        await assertEventually { !transports(.setPlayhead(list: list, cue: b)).isEmpty }
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: a)).count, 1)
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: b)).count, 1)
+    }
+
+    func testKeyCacheIsEvictedWhenAWorkspaceCloses() async throws {
+        let second = try await addWorkspace()
+        let before = app.keyCacheCount
+        XCTAssertGreaterThanOrEqual(before, 2)
+        _ = await app.session.close(doc: second, discardChanges: true)
+        await assertEventually { app.windows[second] == nil }
+        XCTAssertEqual(app.keyCacheCount, before - 1)
+    }
+
+    func testHotkeyWarningsAreLoggedWhenTheSettingsArriveNotAtTheFirstKeyPress() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        await assertEventually { store.logEntries.contains { $0.level == .warn } }
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
     }
 
     func testSelectedCueCommandsUseTheSelection() async throws {
