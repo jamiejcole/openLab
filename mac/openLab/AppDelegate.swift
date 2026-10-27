@@ -53,6 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
 
+    @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
+
+    @MainActor @objc func relinkMedia(_ sender: Any?) {
+        guard let store = appController.frontController?.store else { return }
+        Task { await appController.relinkMedia(on: store) }
+    }
+
     @MainActor @objc func transportCommand(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return
@@ -64,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(relinkMedia(_:)) || item.action == #selector(showLog(_:)) {
+            return appController.frontController != nil
+        }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return true
         }
