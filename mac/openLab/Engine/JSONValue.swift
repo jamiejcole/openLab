@@ -69,6 +69,16 @@ enum JSONValue: Hashable, Sendable, Codable {
         return nil
     }
 
+    /// Any JSON number as a Double (a whole-number time arrives as an integer).
+    var doubleValue: Double? {
+        switch self {
+        case .double(let v): return v
+        case .int(let v): return Double(v)
+        case .uint(let v): return Double(v)
+        default: return nil
+        }
+    }
+
     var arrayValue: [JSONValue]? {
         if case .array(let a) = self { return a }
         return nil

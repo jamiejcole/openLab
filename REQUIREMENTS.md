@@ -72,9 +72,9 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ## 3. Cue Lists & Carts
 - [ ] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
 - [ ] **CL-02** `v0.0.1` Cue list shows: number, name, type icon, target, pre-wait, duration, post-wait, continue mode, colour, state; columns configurable.
-- [ ] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
+- [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
 - [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
-- [ ] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
+- [x] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
 - [ ] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
 
 ---
@@ -139,7 +139,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **PB-09** Audition / preview: play a cue to a separate audition output without affecting show outputs or triggering follow-ons.
 - [ ] **PB-10** `v0.0.1` Global output overrides: independently disable MIDI, OSC/network, timecode output (for rehearsal/editing), with clear on-screen indication.
 - [ ] **PB-11** `v0.0.1` Master level per output and global master.
-- [ ] **PB-12** `v0.0.1` Wall clock and per-show countdown/elapsed timers visible.
+- [x] **PB-12** `v0.0.1` Wall clock and per-show countdown/elapsed timers visible.
 
 ---
 
