@@ -23,7 +23,60 @@
 "menu.window" = "Window";
 "menu.window.minimize" = "Minimize";
 "menu.window.zoom" = "Zoom";
+"menu.window.main" = "Main Window";
 "menu.window.bringAllToFront" = "Bring All to Front";
+
+"masthead.go" = "GO";
+"masthead.go.label" = "Go";
+"masthead.standby.none" = "No cue standing by";
+"masthead.notes.label" = "Notes for the standing-by cue";
+
+"cue.type.audio" = "Audio";
+"cue.type.group" = "Group";
+"cue.type.memo" = "Memo";
+"cue.type.wait" = "Wait";
+"cue.type.fade" = "Fade";
+"cue.type.start" = "Start";
+"cue.type.stop" = "Stop";
+"cue.type.pause" = "Pause";
+"cue.type.load" = "Load";
+"cue.type.reset" = "Reset";
+"cue.type.devamp" = "Devamp";
+"cue.type.goto" = "Go To";
+"cue.type.target" = "Target";
+"cue.type.arm" = "Arm";
+"cue.type.disarm" = "Disarm";
+
+"cuelist.label" = "Cue list";
+"cuelist.col.number" = "Number";
+"cuelist.col.name" = "Name";
+"cuelist.col.target" = "Target";
+"cuelist.col.preWait" = "Pre-Wait";
+"cuelist.col.duration" = "Duration";
+"cuelist.col.postWait" = "Post-Wait";
+
+"inspector.empty" = "No cue selected";
+
+"transport.reset" = "Reset all";
+"transport.pause" = "Pause all";
+"transport.resume" = "Resume all";
+"transport.panic" = "Panic";
+"sidebar.tabs.label" = "Sidebar view";
+"sidebar.tab.cueLists" = "Cue Lists";
+"sidebar.tab.activeCues" = "Active Cues";
+"sidebar.list.label" = "Cue lists";
+"sidebar.newList" = "New List";
+"sidebar.newCart" = "New Cart";
+
+"footer.mode.label" = "Mode";
+"footer.mode.edit" = "Edit";
+"footer.mode.show" = "Show";
+"footer.toggle.toolbar" = "Show or hide the cue toolbar";
+"footer.toggle.masthead" = "Show or hide the GO area";
+"footer.toggle.inspector" = "Show or hide the inspector";
+"footer.toggle.sidebar" = "Show or hide the sidebar";
+"footer.settings" = "Settings";
+"footer.status.empty" = "0 cues in 1 list";
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";
