@@ -1534,7 +1534,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 14;
+const ENGINE_PROBLEM_COUNT: usize = 15;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -1551,6 +1551,7 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::NetworkHostUnresolved { .. } => 11,
         CueProblem::NetworkMessageInvalid { .. } => 12,
         CueProblem::StartedBroken => 13,
+        CueProblem::NothingToFade => 14,
     }
 }
 
@@ -1570,6 +1571,7 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::NetworkHostUnresolved { .. } => 11,
         WireProblem::NetworkMessageInvalid { .. } => 12,
         WireProblem::StartedBroken => 13,
+        WireProblem::NothingToFade => 14,
     }
 }
 
@@ -1857,6 +1859,7 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             CueProblem::TargetWrongKind { target: t },
             WireProblem::TargetWrongKind { target: t },
         ),
+        (CueProblem::NothingToFade, WireProblem::NothingToFade),
         (CueProblem::NoMedia, WireProblem::NoMedia),
         (
             CueProblem::MediaMissing { media: media() },
