@@ -1021,30 +1021,51 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
 }
 
 // ---- M4.2g stall watchdog: a stream that stops calling back with no error, device listed ----
+//
+// Two stages (docs/control.md "Devices"): a `device_stalled` warning after 500 ms of silence
+// (nothing stops), a loss after 3 s. The supervisor samples every tick; these tests tick every
+// 25 ms of the injected clock, as the real loop's 5 ms is finer still.
 
-const STALL_STEP: Duration = Duration::from_millis(100);
+const STALL_STEP_MS: u64 = 25;
 
-/// Moves the wall clock `steps` times by `STALL_STEP`, ticking after each (no settling: the
-/// loss itself is what the test looks at).
-fn idle_wall(s: &mut DeviceShow, steps: u32) {
-    for _ in 0..steps {
-        s.advance(STALL_STEP);
+/// Moves the wall clock by `ms` in 25 ms steps, ticking after each (no settling: the loss
+/// itself is what the test looks at).
+fn idle_ms(s: &mut DeviceShow, ms: u64) {
+    for _ in 0..ms / STALL_STEP_MS {
+        s.advance(Duration::from_millis(STALL_STEP_MS));
         s.tick();
     }
 }
 
+fn stalled_warning(msgs: &[ServerMessage]) -> Option<bool> {
+    workspace_warnings(msgs).map(|w| w.contains(&"device_stalled".to_owned()))
+}
+
 #[test]
-fn a_stream_that_stops_calling_back_is_lost_as_stalled_after_the_limit() {
+fn a_silent_stream_is_warned_about_at_500_ms_and_lost_as_stalled_at_3_s() {
     let mut s = running_cue_show();
     s.take_outbound();
     s.fake.stall();
-    // 400 ms of silence is under the 500 ms limit.
-    idle_wall(&mut s, 4);
+    idle_ms(&mut s, 450);
+    assert_eq!(stalled_warning(&s.take_outbound()), None);
+    idle_ms(&mut s, 100);
+    // The first stage: a warning and a log, and nothing stops.
+    let msgs = s.take_outbound();
+    assert_eq!(stalled_warning(&msgs), Some(true), "{msgs:?}");
+    assert!(
+        logs(&msgs, LogLevel::Warn)
+            .iter()
+            .any(|m| m.contains("no audio callback"))
+    );
     assert!(!s.control().device_down());
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
-    idle_wall(&mut s, 1);
+    idle_ms(&mut s, 2300);
+    assert!(!s.control().device_down(), "lost before the loss limit");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.take_outbound();
+    idle_ms(&mut s, 300);
     s.settle_devices();
-    assert!(s.control().device_down(), "the stalled stream was not lost");
+    assert!(s.control().device_down(), "the hung stream was not lost");
     let msgs = s.take_outbound();
     // As an unplug: the cue stops at once, a log and the device_lost notice go out.
     assert!(broken_device_lost(&msgs, 1));
@@ -1056,11 +1077,51 @@ fn a_stream_that_stops_calling_back_is_lost_as_stalled_after_the_limit() {
         logs(&msgs, LogLevel::Error)
     );
     assert!(notices(&msgs).contains(&"device_lost".to_owned()));
-    assert!(
-        workspace_warnings(&msgs)
-            .unwrap()
-            .contains(&"device_lost".to_owned())
+    // The loss replaces the warning.
+    assert_eq!(
+        workspace_warnings(&msgs),
+        Some(vec!["device_lost".to_owned()])
     );
+}
+
+#[test]
+fn a_600_ms_pause_is_warned_about_and_then_forgotten_and_the_show_goes_on() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+    s.fake.unstall();
+    s.run(BLOCK * 2);
+    let msgs = s.take_outbound();
+    assert_eq!(stalled_warning(&msgs), Some(false), "the warning stayed");
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains("callbacks resumed"))
+    );
+    idle_ms(&mut s, 5000);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    // A second pause starts from the new last callback.
+    s.fake.stall();
+    idle_ms(&mut s, 2500);
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 1000);
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn callbacks_that_resume_just_before_the_loss_limit_are_not_a_loss() {
+    let mut s = running_cue_show();
+    s.fake.stall();
+    idle_ms(&mut s, 2900);
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 2000);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 }
 
 #[test]
@@ -1068,7 +1129,7 @@ fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
     let mut s = running_cue_show();
     let opens = s.fake.opens();
     s.fake.stall();
-    idle_wall(&mut s, 5);
+    idle_ms(&mut s, 3100);
     s.settle_devices();
     assert!(s.control().device_down());
     // Still listed, so no hot-plug shortcut: the reopen waits out the backoff (250 ms).
@@ -1086,102 +1147,173 @@ fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
 }
 
 #[test]
-fn callbacks_that_resume_just_before_the_limit_are_not_a_loss() {
-    let mut s = running_cue_show();
-    s.fake.stall();
-    idle_wall(&mut s, 4);
-    s.fake.unstall();
-    s.run(BLOCK);
-    // Silent again: the limit counts from the last callback, not from the first stall.
-    s.fake.stall();
-    idle_wall(&mut s, 4);
-    assert!(!s.control().device_down());
-    s.fake.unstall();
-    s.run(BLOCK);
-    idle_wall(&mut s, 20);
-    assert!(!s.control().device_down());
-    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
-}
-
-#[test]
-fn a_reopened_stream_gets_a_startup_grace_before_its_first_callback() {
+fn a_reopened_stream_gets_one_loss_limit_for_its_first_callback() {
     let mut s = running_cue_show();
     lose(&mut s);
-    // The device is back and reopened, but the host takes a while to start calling back.
+    // The host takes a long while to start calling back after the reopen.
+    s.fake.silent_next_open();
     s.fake.plug(listed(DEV, DEV_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
     assert!(!s.control().device_down());
-    s.fake.stall();
-    idle_wall(&mut s, 4);
+    s.take_outbound();
+    idle_ms(&mut s, 1500);
     assert!(!s.control().device_down(), "lost inside the startup grace");
+    assert_ne!(stalled_warning(&s.take_outbound()), Some(true));
     s.fake.unstall();
     s.run(BLOCK);
-    idle_wall(&mut s, 10);
+    idle_ms(&mut s, 5000);
     assert!(!s.control().device_down());
+
     // A stream that never calls back at all is lost once the grace is over.
     let mut s = running_cue_show();
     lose(&mut s);
+    s.fake.silent_next_open();
     s.fake.plug(listed(DEV, DEV_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
-    s.fake.stall();
-    idle_wall(&mut s, 6);
-    s.settle_devices();
-    assert!(s.control().device_down());
-}
-
-#[test]
-fn a_clock_jump_is_no_evidence_of_a_stall() {
-    let mut s = running_cue_show();
-    s.fake.stall();
-    idle_wall(&mut s, 3);
-    // The Mac sleeps: the wall clock leaps a minute between two ticks.
-    s.advance(Duration::from_secs(60));
-    s.tick();
-    s.settle_devices();
-    assert!(!s.control().device_down(), "a clock jump declared a stall");
-    // The watchdog started over at the jump: 400 ms after it is still fine ...
-    idle_wall(&mut s, 4);
-    assert!(!s.control().device_down());
-    // ... and a stream that is really hung is still found after the limit.
-    idle_wall(&mut s, 1);
-    s.settle_devices();
-    assert!(s.control().device_down());
-
-    // A stream that wakes up with the Mac is never lost.
-    let mut s = running_cue_show();
-    s.advance(Duration::from_secs(3600));
-    s.tick();
-    s.run(BLOCK);
-    idle_wall(&mut s, 10);
-    assert!(!s.control().device_down());
-}
-
-#[test]
-fn a_stream_that_is_not_up_is_not_watched() {
-    let mut s = running_cue_show();
-    lose(&mut s);
-    let opens = s.fake.opens();
-    // Down (closed by us, waiting for the backoff and the device): silence is not a stall,
-    // and neither is it a second loss or a reopen storm.
     s.take_outbound();
-    s.wait_wall(Duration::from_millis(200), 2);
-    assert_eq!(s.fake.opens(), opens, "no attempt before the backoff");
+    idle_ms(&mut s, 3500);
+    s.settle_devices();
+    // Lost (and, the host being fine on the next open, already reopened).
     assert!(
         logs(&s.take_outbound(), LogLevel::Error)
             .iter()
-            .all(|m| !m.contains("stalled"))
+            .any(|m| m.contains("stalled"))
     );
 }
 
 #[test]
-fn the_stall_limit_follows_the_buffer_period() {
-    use openlab_engine::control::devices::stall_limit;
+fn a_process_freeze_is_no_evidence_of_a_stall() {
+    // Both threads stop together for 2 s (and 60 s, an hour): the supervisor wakes first, finds
+    // the count unchanged, and must not take that for silence it watched.
+    for freeze in [2, 60, 3600] {
+        let mut s = running_cue_show();
+        s.take_outbound();
+        s.fake.stall();
+        idle_ms(&mut s, 100);
+        s.advance(Duration::from_secs(freeze));
+        s.tick();
+        s.settle_devices();
+        assert!(
+            !s.control().device_down(),
+            "a {freeze} s freeze was a stall"
+        );
+        assert_eq!(stalled_warning(&s.take_outbound()), None);
+        // The window started over at the freeze: a hang is still found, after its own time.
+        idle_ms(&mut s, 2900);
+        assert!(!s.control().device_down());
+        idle_ms(&mut s, 300);
+        s.settle_devices();
+        assert!(s.control().device_down());
+    }
+    // A live stream is untouched by it.
+    let mut s = running_cue_show();
+    s.advance(Duration::from_secs(3600));
+    s.tick();
+    s.run(BLOCK);
+    idle_ms(&mut s, 1000);
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_sparse_supervisor_cannot_declare_a_stall() {
+    // Ticks 200 ms apart (a starved control thread) never add up to a watched silence.
+    let mut s = running_cue_show();
+    s.fake.stall();
+    for _ in 0..40 {
+        s.advance(Duration::from_millis(200));
+        s.tick();
+    }
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_sleep_gives_the_stream_one_loss_limit_to_wake_up() {
+    // The monotonic clock stops while the Mac sleeps (macOS `Instant`); the sleep-counting
+    // clock does not. The device is quiet for 2 s before and takes its time after the wake.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    idle_ms(&mut s, 2000);
+    s.sleep(Duration::from_secs(60));
+    idle_ms(&mut s, 2900);
+    assert!(
+        !s.control().device_down(),
+        "lost inside the post-wake grace"
+    );
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 5000);
+    assert!(!s.control().device_down());
+
+    // A device that never wakes is found after the grace.
+    let mut s = running_cue_show();
+    s.fake.stall();
+    s.sleep(Duration::from_secs(60));
+    idle_ms(&mut s, 3200);
+    s.settle_devices();
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn a_stream_that_is_not_up_is_not_watched() {
+    // Closing: the host still holds the callback, the mixer is polled for.
+    let mut s = running_cue_show();
+    s.fake.hold_on_close(true);
+    lose(&mut s);
+    let opens = s.fake.opens();
+    s.take_outbound();
+    idle_ms(&mut s, 5000);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    assert!(
+        logs(&msgs, LogLevel::Warn)
+            .iter()
+            .all(|m| !m.contains("no audio callback"))
+    );
+    assert_eq!(s.fake.opens(), opens, "no reopen while the mixer is held");
+    s.fake.drop_held();
+
+    // Opening: an open that takes long.
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.close_gate();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    idle_ms(&mut s, 1100);
+    s.take_outbound();
+    idle_ms(&mut s, 5000);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    s.fake.open_gate();
+    s.settle_devices();
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_device_missing_from_the_list_is_reported_as_unlisted_not_stalled() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.unplug(DEV, false);
+    s.wait_wall(Duration::from_secs(2), 2);
+    assert!(s.control().device_down());
+    let errors = logs(&s.take_outbound(), LogLevel::Error);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("no longer listed"), "{errors:?}");
+}
+
+#[test]
+fn the_stall_limits_follow_the_buffer_period() {
+    use openlab_engine::control::devices::{stall_limit, stall_loss_limit};
     let ms = Duration::from_millis;
-    // Small buffers: the 500 ms floor.
+    // Small buffers: the floors.
     assert_eq!(stall_limit(Some(64), 48_000), ms(500));
     assert_eq!(stall_limit(None, 48_000), ms(500));
     assert_eq!(stall_limit(Some(512), 0), ms(500));
-    // Big buffers: 20 periods (4096 frames at 44.1 kHz is 92.9 ms).
-    let big = stall_limit(Some(4096), 44_100);
-    assert!(big > ms(1850) && big < ms(1870), "{big:?}");
+    assert_eq!(stall_loss_limit(Some(64), 48_000), ms(3000));
+    assert_eq!(stall_loss_limit(None, 48_000), ms(3000));
+    // Big buffers: 20 and 50 periods (4096 frames at 44.1 kHz is 92.9 ms).
+    let warn = stall_limit(Some(4096), 44_100);
+    assert!(warn > ms(1850) && warn < ms(1870), "{warn:?}");
+    let loss = stall_loss_limit(Some(4096), 44_100);
+    assert!(loss > ms(4640) && loss < ms(4650), "{loss:?}");
 }

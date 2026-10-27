@@ -18,7 +18,7 @@ use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use openlab_audio::{
@@ -34,14 +34,25 @@ pub const STABLE_UP: Duration = Duration::from_secs(5);
 /// How often the device list is read (hot-plug; a device the host stops calling back for
 /// without an error shows as gone from the list).
 pub const DEVICE_POLL: Duration = Duration::from_secs(1);
-/// The least time a running stream may go without a callback before it counts as lost
-/// (M4.2g watchdog); the limit is the longer of this and [`STALL_PERIODS`] buffer periods.
-pub const STALL_MIN: Duration = Duration::from_millis(500);
-/// Buffer periods without a callback that count as a stall, for big buffers.
-pub const STALL_PERIODS: u32 = 20;
-/// Two supervisor samples further apart than this (the Mac slept, the process was suspended)
-/// are no evidence about the stream: the watchdog starts over instead of declaring a stall.
-pub const CLOCK_JUMP: Duration = Duration::from_secs(5);
+/// Stall watchdog, first stage (M4.2g): a running stream silent for the longer of this and
+/// [`STALL_WARN_PERIODS`] buffer periods raises the `device_stalled` warning. Nothing stops.
+pub const STALL_WARN_MIN: Duration = Duration::from_millis(500);
+/// Buffer periods of silence for the warning, for big buffers.
+pub const STALL_WARN_PERIODS: u32 = 20;
+/// Second stage: silence for the longer of this and [`STALL_LOSS_PERIODS`] buffer periods is a
+/// device loss (reason `stalled`).
+pub const STALL_LOSS_MIN: Duration = Duration::from_secs(3);
+/// Buffer periods of silence for the loss, for big buffers.
+pub const STALL_LOSS_PERIODS: u32 = 50;
+/// Supervisor samples inside the silent window before either stage may fire: only silence the
+/// supervisor watched at its normal cadence counts.
+pub const STALL_MIN_SAMPLES: u32 = 10;
+/// The least gap between two supervisor samples that is no evidence (the process was frozen,
+/// the thread starved); the bound is the longer of this and an eighth of the warning limit.
+pub const STALL_MAX_GAP: Duration = Duration::from_millis(100);
+/// How much further the system clock (which counts sleep) may move than the monotonic one
+/// between two samples before the Mac is taken to have slept.
+pub const SLEEP_SLACK: Duration = Duration::from_secs(1);
 /// An open or close the device thread has not finished, or a mixer the host library has not
 /// handed back, after this long makes the device unrecoverable until openLab restarts (a late
 /// answer still counts). Also how long a list read may take before it is reported stuck.
@@ -59,6 +70,15 @@ pub type WallClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 /// The system's monotonic clock.
 pub fn system_clock() -> WallClock {
     Arc::new(Instant::now)
+}
+
+/// A clock that keeps counting while the Mac sleeps (the monotonic [`WallClock`] stops, on
+/// macOS): compared with it between two samples, it shows a sleep. Tests inject their own.
+pub type SleepClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+
+/// The system clock.
+pub fn system_sleep_clock() -> SleepClock {
+    Arc::new(SystemTime::now)
 }
 
 /// What the device thread uses to reach the host's audio system: cpal ([`CpalDevices`]), or a
@@ -352,6 +372,7 @@ pub fn start_with_timeout(
         })
         .map_err(StartError::Thread)?;
     let now = wall();
+    let sleep_clock = system_sleep_clock();
     // The stream is bound to the concrete device it opened (never the system default).
     let request = OpenRequest {
         device_id: Some(info.device_id.clone()),
@@ -368,12 +389,8 @@ pub fn start_with_timeout(
         next_list: now + DEVICE_POLL,
         missing_reads: 0,
         callbacks_at_list: info.monitor.callbacks(),
-        stall: Stall {
-            limit: stall_limit(info.block_frames, info.sample_rate),
-            callbacks: info.monitor.callbacks(),
-            since: now,
-            sampled: now,
-        },
+        stall: Stall::new(&info, now, sleep_clock()),
+        sleep_clock,
         request,
         stream: Stream::Up,
         info,
@@ -446,27 +463,61 @@ enum Stream {
     Gone,
 }
 
-/// How long a stream of `block_frames` frames per callback at `rate` may go without calling
-/// back: [`STALL_MIN`], or [`STALL_PERIODS`] buffer periods if that is longer.
+/// The silence of a stream of `block_frames` frames per callback at `rate` that raises the
+/// warning: [`STALL_WARN_MIN`], or [`STALL_WARN_PERIODS`] buffer periods if that is longer.
 pub fn stall_limit(block_frames: Option<u32>, rate: u32) -> Duration {
-    let periods = match block_frames {
-        Some(frames) if frames > 0 && rate > 0 => {
-            Duration::from_secs_f64(f64::from(frames) / f64::from(rate))
-                .saturating_mul(STALL_PERIODS)
-        }
-        _ => Duration::ZERO,
-    };
-    periods.max(STALL_MIN)
+    periods(block_frames, rate, STALL_WARN_PERIODS).max(STALL_WARN_MIN)
 }
 
-/// The stall watchdog's state for the running stream: the callback count when it last moved.
+/// The silence that is a loss: [`STALL_LOSS_MIN`] or [`STALL_LOSS_PERIODS`] buffer periods.
+/// It is also the grace a stream gets for its first callback after an open or a wake.
+pub fn stall_loss_limit(block_frames: Option<u32>, rate: u32) -> Duration {
+    periods(block_frames, rate, STALL_LOSS_PERIODS).max(STALL_LOSS_MIN)
+}
+
+fn periods(block_frames: Option<u32>, rate: u32, n: u32) -> Duration {
+    match block_frames {
+        Some(frames) if frames > 0 && rate > 0 => {
+            Duration::from_secs_f64(f64::from(frames) / f64::from(rate)).saturating_mul(n)
+        }
+        _ => Duration::ZERO,
+    }
+}
+
+/// The stall watchdog's state for the running stream.
 struct Stall {
-    limit: Duration,
+    warn_limit: Duration,
+    loss_limit: Duration,
     callbacks: u64,
-    /// When the count last moved, or the watchdog was armed (the startup grace).
+    /// When the count last moved, or the silent window was started over.
     since: Instant,
-    /// The previous supervisor sample.
+    /// Samples inside the window.
+    samples: u32,
+    /// The previous supervisor sample, on both clocks.
     sampled: Instant,
+    sampled_sys: SystemTime,
+    /// No stage fires before this: the first callback after an open or a wake gets one loss
+    /// limit. Cleared by the next callback.
+    quiet_until: Option<Instant>,
+    /// The warning is up.
+    warned: bool,
+}
+
+impl Stall {
+    fn new(info: &StreamInfo, now: Instant, sys: SystemTime) -> Self {
+        let loss_limit = stall_loss_limit(info.block_frames, info.sample_rate);
+        Stall {
+            warn_limit: stall_limit(info.block_frames, info.sample_rate),
+            loss_limit,
+            callbacks: info.monitor.callbacks(),
+            since: now,
+            samples: 0,
+            sampled: now,
+            sampled_sys: sys,
+            quiet_until: Some(now + loss_limit),
+            warned: false,
+        }
+    }
 }
 
 /// The current outage.
@@ -481,6 +532,11 @@ pub enum DeviceEvent {
     Lost { why: String },
     /// The device plays again (the stream was reopened).
     Restored,
+    /// The stream has not called back for `ms` ms (first stage of the stall watchdog): a
+    /// warning, nothing stops.
+    Stalled { ms: u64 },
+    /// The stalled stream calls back again.
+    StallCleared,
     /// The device list changed.
     ListChanged,
     /// A reopen attempt failed; the next one is in `retry_in`.
@@ -517,6 +573,7 @@ pub struct Device {
     /// The stream's callback count at the previous list read.
     callbacks_at_list: u64,
     stall: Stall,
+    sleep_clock: SleepClock,
     request: OpenRequest,
     stream: Stream,
     /// The open stream, or the last one while it is down.
@@ -698,38 +755,81 @@ impl Device {
         }
     }
 
-    /// Starts the stall watchdog over for the stream now up: its limit from the buffer size
-    /// (known once it runs), and a grace of one limit before the first callback is due.
-    fn arm_stall(&mut self, now: Instant) {
-        self.stall = Stall {
-            limit: stall_limit(self.info.block_frames, self.info.sample_rate),
-            callbacks: self.info.monitor.callbacks(),
-            since: now,
-            sampled: now,
-        };
+    /// Uses another clock for sleep detection (tests).
+    pub fn with_sleep_clock(mut self, clock: SleepClock) -> Self {
+        self.stall.sampled_sys = clock();
+        self.sleep_clock = clock;
+        self
     }
 
-    /// A running stream whose callback count has not moved for the stall limit, while the
-    /// device is still listed and no error came, is lost like an unplugged one. Only streams
-    /// that are up are checked (not one being closed, reopened or down), and a gap between
-    /// samples beyond [`CLOCK_JUMP`] (sleep/wake) is no evidence: the watchdog starts over.
+    /// The first stage of the stall watchdog is up: the stream is silent but not yet lost.
+    pub fn is_stalled(&self) -> bool {
+        self.stall.warned
+    }
+
+    /// Starts the stall watchdog over for the stream now up: its limits from the buffer size
+    /// (known once it runs), and a grace of one loss limit for the first callback.
+    fn arm_stall(&mut self, now: Instant) {
+        self.stall = Stall::new(&self.info, now, (self.sleep_clock)());
+    }
+
+    /// The stall watchdog (M4.2g), for a stream that is up (not one being closed, reopened or
+    /// down). Silence in the callback count, with the device still listed and no host error,
+    /// has two stages: a warning at `warn_limit` (cleared when callbacks resume), a loss like
+    /// an unplug at `loss_limit`. Only silence the supervisor watched counts: a gap between two
+    /// samples above `max(STALL_MAX_GAP, warn_limit / 8)` (the process was frozen, a thread
+    /// starved) is no evidence and starts the window over, a stage needs `STALL_MIN_SAMPLES`
+    /// samples in the window, and a sleep of the Mac (the system clock moved on further than
+    /// the monotonic one) gives a post-wake grace of one loss limit.
     fn check_stall(&mut self, now: Instant, events: &mut Vec<DeviceEvent>) {
-        let gap = now.saturating_duration_since(self.stall.sampled);
+        let sys = (self.sleep_clock)();
         let callbacks = self.info.monitor.callbacks();
-        if gap > CLOCK_JUMP || callbacks != self.stall.callbacks {
-            self.stall.callbacks = callbacks;
-            self.stall.since = now;
-            self.stall.sampled = now;
+        let st = &mut self.stall;
+        let gap = now.saturating_duration_since(st.sampled);
+        let sys_gap = sys.duration_since(st.sampled_sys).unwrap_or(Duration::ZERO);
+        st.sampled = now;
+        st.sampled_sys = sys;
+        if callbacks != st.callbacks {
+            st.callbacks = callbacks;
+            st.since = now;
+            st.samples = 0;
+            st.quiet_until = None;
+            if std::mem::take(&mut st.warned) {
+                events.push(DeviceEvent::StallCleared);
+            }
             return;
         }
-        self.stall.sampled = now;
-        let silent = now.saturating_duration_since(self.stall.since);
-        if silent >= self.stall.limit {
-            let why = format!(
-                "stalled: the stream has not called back for {} ms",
-                silent.as_millis()
-            );
+        if sys_gap > gap.saturating_add(SLEEP_SLACK) {
+            st.since = now;
+            st.samples = 0;
+            st.quiet_until = Some(now + st.loss_limit);
+            return;
+        }
+        if gap > STALL_MAX_GAP.max(st.warn_limit / 8) {
+            st.since = now;
+            st.samples = 0;
+            return;
+        }
+        st.samples = st.samples.saturating_add(1);
+        if st.quiet_until.is_some_and(|q| now < q) || st.samples < STALL_MIN_SAMPLES {
+            return;
+        }
+        let silent = now.saturating_duration_since(st.since);
+        let ms = u64::try_from(silent.as_millis()).unwrap_or(u64::MAX);
+        if silent >= st.loss_limit {
+            // The list may already say why it went quiet.
+            let why = if self.listed.iter().any(|d| d.id == self.info.device_id) {
+                format!("stalled: the stream has not called back for {ms} ms")
+            } else {
+                format!(
+                    "{} is no longer listed, and the stream has not called back for {ms} ms",
+                    self.info.name
+                )
+            };
             self.lose(now, why, events);
+        } else if silent >= st.warn_limit && !st.warned {
+            st.warned = true;
+            events.push(DeviceEvent::Stalled { ms });
         }
     }
 
@@ -741,6 +841,7 @@ impl Device {
             .alloc_base
             .saturating_add(self.info.monitor.alloc_violations());
         self.missing_reads = 0;
+        self.stall.warned = false;
         self.outage = Some(Outage {
             next_try: now + backoff(self.attempts),
         });
