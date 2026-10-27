@@ -56,7 +56,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 
 ## 2. Workspace & Files
 - [ ] **WS-01** `v0.0.1` A workspace is a single document containing cue lists, carts, patches, settings and references to media.
-- [ ] **WS-02** `v0.0.1` New / Open / Save / Save As / Revert / Close; multiple workspaces open at once.
+- [ ] **WS-02** `v0.0.1` New / Open / Save / Save As / Close; multiple workspaces open at once (no Revert, as QLab 5).
 - [ ] **WS-03** `v0.0.1` Media referenced by relative path when inside the workspace folder, absolute otherwise; relink missing media (single and batch "find in folder").
 - [ ] **WS-04** "Bundle workspace": copy workspace + all referenced media into one self-contained folder for transport between machines.
 - [ ] **WS-05** Workspace templates (start a new show from a saved template).
@@ -213,7 +213,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **NET-02** `v0.0.1` OSC passcode / access control for the API.
 - [ ] **NET-03** Web-based remote (phone/tablet browser) served by openLab: GO, Stop, playhead, active cues, notes. No app install required.
 - [ ] **NET-04** `low` Bitfocus Companion module.
-- [ ] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
+- [x] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
 
 ---
 
@@ -314,7 +314,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **NFR-09 / QA-05** soak via accelerated virtual-clock runs (24 h simulated) plus a shorter real-time run.
 - **NFR-31** Windows compiles and passes tests in CI; no installer, no hardware validation.
-- **WS-02** one workspace open at a time.
+- **WS-02** at most 8 workspaces open; they share one audio device (AUD-03).
 - **CL-05** cue lists only (carts later).
 - **CUE-09** hotkey and OSC triggers only.
 - **CT-10** audio level fades only (video fades in v0.0.2).

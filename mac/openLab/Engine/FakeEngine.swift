@@ -23,6 +23,8 @@ final class FakeEngine: EngineTransport {
     /// When set, `hello` is answered with this `error` and the connection closes.
     var refuseAuth: ErrorCode?
     var holdResults = false
+    /// `sendAndFlush` never returns (a stalled socket), in tests of the quit path.
+    var holdFlush = false
     /// Answers every request with an `ok` that does not decode (a changed server, in tests).
     var garbleResults = false
     enum WelcomeFault { case none, silent, garbled }
@@ -31,6 +33,8 @@ final class FakeEngine: EngineTransport {
 
     // Observation.
     private(set) var received: [ClientMessage] = []
+    /// The same messages with the doc of the connection that sent them (nil: the app connection).
+    private(set) var receivedFrom: [(doc: ModelID?, message: ClientMessage)] = []
     private(set) var connectCount = 0
     private(set) var connections: [FakeConnection] = []
 
@@ -103,7 +107,7 @@ final class FakeEngine: EngineTransport {
 
     // MARK: Server side
 
-    private func addDoc(_ snapshot: JSONValue, path: String?) -> ModelID {
+    func addDoc(_ snapshot: JSONValue, path: String?) -> ModelID {
         let doc = ModelID("doc-\(nextDoc)")
         nextDoc += 1
         var s = snapshot
@@ -168,6 +172,7 @@ final class FakeEngine: EngineTransport {
             return fail(c, .badRequest, "unreadable frame", close: false)
         }
         received.append(message)
+        receivedFrom.append((c.doc, message))
         guard c.welcomed else {
             guard case .hello(let h) = message else { return fail(c, .badToken, "hello first", close: true) }
             return handleHello(h, from: c)
@@ -340,6 +345,11 @@ final class FakeConnection: EngineConnection {
     func send(_ text: String) {
         guard !isClosed else { return }
         engine?.handle(text, from: self)
+    }
+
+    func sendAndFlush(_ text: String) async {
+        send(text)
+        if engine?.holdFlush == true { await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in } }
     }
 
     func receive() async throws -> String {
