@@ -167,6 +167,9 @@ pub struct ControlConfig {
     pub probe_timeout: Duration,
     /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
     pub probe_clock: media::ProbeClock,
+    /// Which volume a media path is on, for probe scheduling (tests inject one; the media
+    /// watch's `bucket_of` by default).
+    pub probe_volume: Option<fn(&std::path::Path) -> String>,
     /// The show log: its ring always, and the disk writer's sink when the host started one
     /// (docs/logging.md).
     pub show_log: crate::diag::ShowLog,
@@ -207,6 +210,7 @@ impl ControlConfig {
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
             probe_clock: media::ProbeClock::system(),
+            probe_volume: None,
             show_log: crate::diag::ShowLog::default(),
             status: None,
             push_log: false,
@@ -359,6 +363,10 @@ impl Control {
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;
+        let mut media = media;
+        if let Some(volume) = config.probe_volume {
+            media.set_volume_of(volume);
+        }
         let cue_outputs = mixer.cue_outputs();
         let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
         let playable = match backend.device() {
@@ -520,6 +528,18 @@ impl Control {
                 ),
             );
             self.pending_media.extend(stuck);
+        }
+        for (volume, stalled) in self.media.take_volume_events() {
+            // Not a "does not answer" warning: that notice is the media watch's alone.
+            let message = if stalled {
+                format!(
+                    "probes of volume \"{volume}\" are held back: two files did not answer in \
+                     time; one is tried at a time"
+                )
+            } else {
+                format!("probes of volume \"{volume}\" run again: it answered")
+            };
+            self.log(LogLevel::Info, message);
         }
         if self.media.take_limit_reached() {
             self.log(
@@ -1200,6 +1220,7 @@ impl Control {
     fn supervise_watch(&mut self) {
         self.watch.apply(self.media.take_key_changes());
         self.watch.supervise();
+        self.media.set_watch_stalled(self.watch.stalled_volumes());
         for (level, message) in self.watch.take_logs() {
             self.log(level, message);
         }
