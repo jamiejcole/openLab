@@ -894,7 +894,8 @@ mod tests {
         v.resize(v.len() + data_len as usize, 0);
         let path = dir.join(name);
         std::fs::write(&path, v).unwrap();
-        path.to_str().unwrap().to_owned()
+        // The catalog keys files by `MediaRef`'s portable form (`/` on Windows too).
+        MediaRef::new(path.to_str().unwrap()).as_str().to_owned()
     }
 
     fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
