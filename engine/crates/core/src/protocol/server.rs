@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::wire::{RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireWarning};
+use super::wire::{
+    RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireResolution, WireWarning,
+};
 use super::{
     MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode,
     encode_pretty,
@@ -12,8 +14,8 @@ use super::{
 use crate::command::CommandError;
 use crate::cue::Cue;
 use crate::model::{
-    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace, WorkspaceId,
-    WorkspaceSettings,
+    CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
+    Workspace, WorkspaceId, WorkspaceSettings,
 };
 
 /// Every `type` the engine may send.
@@ -148,6 +150,124 @@ pub enum ResultData {
         /// They are still in `entries` while they are in the engine's memory.
         dropped: u64,
     },
+    /// Answer to `preshow_check` (SM-06).
+    /// Boxed: the report is large and a `ServerMessage` is passed around by value.
+    PreshowCheck(Box<PreshowReport>),
+}
+
+/// The pre-show check (SM-06, NFR-07): everything that would keep the show from running,
+/// computed from the engine's state when the request is handled (no disk or network I/O: media
+/// status is the latest probe, `docs/control.md`). Every list is sorted for display.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PreshowReport {
+    /// True when nothing is listed as a problem (`network` entries that are only `not_checked`
+    /// are not problems).
+    pub ok: bool,
+    pub summary: PreshowSummary,
+    /// Cues with static problems, in workspace order (lists in order, cues depth-first).
+    pub broken_cues: Vec<PreshowCue>,
+    /// Media files that are missing or cannot be played, by path.
+    pub media: Vec<PreshowMedia>,
+    /// Output patches with no device to play on, in workspace order, then patches cues name that
+    /// the workspace does not have, by id.
+    pub patches: Vec<PreshowPatch>,
+    /// Network destinations cues use, by name, then destinations cues name that the workspace
+    /// does not have, by id.
+    pub network: Vec<PreshowTarget>,
+    /// The workspace-level warnings in force (device lost or stalled, damaged media, cues whose
+    /// slices cannot play, ...), as in the `warnings` message, minus the `cue_broken` notices
+    /// that `broken_cues` lists; by `code`, then cue, then message.
+    pub system: Vec<WireWarning>,
+}
+
+/// How many entries each list of a [`PreshowReport`] has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreshowSummary {
+    pub broken_cues: u64,
+    pub media: u64,
+    pub patches: u64,
+    /// Destinations with status `missing` (the problems).
+    pub network: u64,
+    /// Destinations with status `not_checked`: reachability is not probed, so they are neither
+    /// a problem nor known to be fine.
+    pub network_unchecked: u64,
+    pub system: u64,
+    /// `broken_cues + media + patches + network + system`.
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreshowCue {
+    pub cue: CueId,
+    pub list: CueListId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// The name shown in the cue list (a cue named after its file shows the file name).
+    pub name: String,
+    pub problems: Vec<WireProblem>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreshowMediaStatus {
+    /// Not found on disk.
+    Missing,
+    /// Found but cannot be played; see `reason`.
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreshowMedia {
+    pub path: String,
+    pub status: PreshowMediaStatus,
+    /// For `unsupported`: the probe's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The cues that use the file, in workspace order.
+    pub cues: Vec<CueId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreshowPatch {
+    pub patch: PatchId,
+    /// Absent when the workspace has no such patch (a cue names a deleted one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The device this machine maps the patch to; absent when it is not mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Whether this machine has a device mapping for the patch (WS-07).
+    pub mapped: bool,
+    /// Why the patch cannot play; absent when the workspace has no such patch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<WireResolution>,
+    /// The audio cues on the patch, in workspace order (empty for an unused patch).
+    pub cues: Vec<CueId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreshowTargetStatus {
+    /// The workspace has no such destination (a cue names a deleted one).
+    Missing,
+    /// The destination exists; reachability is not probed in this version.
+    NotChecked,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreshowTarget {
+    pub patch: NetworkPatchId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<NetworkProtocol>,
+    pub status: PreshowTargetStatus,
+    /// The network cues that use the destination, in workspace order.
+    pub cues: Vec<CueId>,
 }
 
 /// One show-log record (DX-02): what the engine writes to its log file, one JSON line each.
