@@ -683,13 +683,13 @@ impl<D: Driver> Soak<D> {
                 self.transport("reset", TransportAction::Reset { cue });
             }
             66..=67 => {
-                // A cue loaded past its own end would finish the moment it started (and its
-                // successor, started on that, would warn as late), so only the long clips are
-                // loaded into.
+                // Half the loads are 0.5 s in, which is past the end of the short clips: such a
+                // cue sits loaded at its end and finishes on its start sample, its successor
+                // starting on that sample (M4.11b; no `late_start`).
                 let (cue, at) = if self.rng.chance(50) {
                     (self.cue_of(), 0.0)
                 } else {
-                    (id(self.rng.pick(&[1, 6, 12, 14])), 0.5)
+                    (self.cue_of(), 0.5)
                 };
                 self.transport("load", TransportAction::Load { cue, at });
             }
