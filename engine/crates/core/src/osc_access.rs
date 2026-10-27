@@ -112,13 +112,17 @@ impl Default for OscAccess {
 
 impl OscAccess {
     /// A new workspace's table (QLab 5): No Passcode has no rights, and there is one 4-digit
-    /// passcode with all rights, made from `seed`. The caller draws the seed (core has no
+    /// passcode (1000 to 9999: a seed below 1000 gets 1000 added, so no leading zero, so a console that sends it as a number still
+    /// matches) with all rights, made from `seed`. The caller draws the seed (core has no
     /// randomness), so the result is the same for the same seed.
     pub fn new_workspace(seed: u32) -> Self {
         Self {
             no_passcode: OscRights::NONE,
             passcodes: vec![OscPasscode {
-                passcode: format!("{:04}", seed % 10_000),
+                passcode: format!(
+                    "{}",
+                    seed % 10_000 + if seed % 10_000 < 1000 { 1000 } else { 0 }
+                ),
                 rights: OscRights::ALL,
             }],
         }
@@ -177,7 +181,7 @@ mod tests {
         let access = OscAccess::new_workspace(42);
         assert_eq!(access.no_passcode, OscRights::NONE);
         assert_eq!(access.passcodes.len(), 1);
-        assert_eq!(access.passcodes[0].passcode, "0042");
+        assert_eq!(access.passcodes[0].passcode, "1042");
         assert_eq!(access.passcodes[0].rights, OscRights::ALL);
         assert_eq!(
             OscAccess::new_workspace(123_456).passcodes[0].passcode,

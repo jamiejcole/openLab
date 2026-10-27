@@ -817,10 +817,10 @@ impl Actor {
         }
         let updates = match &self.mirror {
             Some(old) => {
-                if old.workspace_id() != new.workspace_id()
-                    || access_changed(old.access(), new.access())
-                {
+                if old.workspace_id() != new.workspace_id() {
                     self.osc.reset_sessions();
+                } else if access_changed(old.access(), new.access()) {
+                    self.osc.end_sessions();
                 }
                 old.updates_to(&new)
             }
@@ -863,7 +863,7 @@ impl Actor {
         // another table does. Checked whatever the outcome: an edit that failed part-way may
         // have applied its settings first.
         if access_changed(&access, mirror.access()) {
-            self.osc.reset_sessions();
+            self.osc.end_sessions();
         }
         match applied {
             Applied::Stale => true,

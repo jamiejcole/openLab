@@ -2235,7 +2235,7 @@ async fn a_new_workspaces_table_asks_for_its_passcode() {
     assert_eq!(body(&f.udp_recv().await)["data"], "ok:");
     f.udp_send(&msg("/cue/1/name", vec![])).await;
     assert_eq!(status(&f.udp_recv().await), "denied");
-    f.udp_send(&msg("/connect", vec![text("0731")])).await;
+    f.udp_send(&msg("/connect", vec![text("1731")])).await;
     assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
     f.udp_send(&msg("/cue/1/name", vec![])).await;
     assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
