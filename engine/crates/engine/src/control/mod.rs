@@ -13,6 +13,7 @@ pub mod devices;
 mod docs;
 mod inbox;
 mod media;
+mod netout;
 mod observe;
 pub mod offline;
 mod patches;
@@ -40,8 +41,8 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, model_changes_indexed,
-    seconds_to_samples,
+    MediaStatus, NetworkPatchId, OscArg, PatchResolution, SampleTime, Workspace, model_changes,
+    model_changes_indexed, seconds_to_samples,
 };
 
 pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
@@ -50,6 +51,7 @@ pub use inbox::{
     outbound_channel, reply_channel,
 };
 pub use media::{PROBE_WORKERS, ProbeClock};
+pub use netout::{Destination, LINK_QUEUE, NetAnswer, NetTransport, SystemTransport, Transport};
 
 use crate::persist::AppDirs;
 use checks::PlanChecks;
@@ -57,6 +59,7 @@ use devices::{Device, DeviceAnswer, DeviceEvent};
 use docs::Docs;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
+use netout::{NetOut, SendOutcome};
 use observe::Observe;
 use patches::Patches;
 use voices::{Effects, Env, Voices};
@@ -157,6 +160,9 @@ pub struct ControlConfig {
     pub status: Option<crate::diag::StatusConfig>,
     /// Process CPU seconds for `status` (tests inject a fake).
     pub cpu_probe: fn() -> Option<f64>,
+    /// What Network cues send through and host names are looked up with (tests inject a
+    /// stand-in).
+    pub net: NetTransport,
 }
 
 impl ControlConfig {
@@ -184,6 +190,7 @@ impl ControlConfig {
             show_log: crate::diag::ShowLog::default(),
             status: None,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
+            net: NetTransport::default(),
         }
     }
 }
@@ -222,6 +229,8 @@ pub struct Control {
     mixer: MixerController,
     streamer: DiskStreamer,
     media: MediaCatalog,
+    /// Network cues' output and the look-ups of their hosts (CT-30, PB-10, NFR-07).
+    net: NetOut,
     voices: Voices,
     checks: PlanChecks,
     patches: Patches,
@@ -302,6 +311,7 @@ impl Control {
             .as_ref()
             .and_then(|p| p.parent())
             .map(PathBuf::from);
+        let net = NetOut::new(config.net.clone(), inbox.clone(), config.sample_rate);
         let docs = Docs::new(&config, inbox.clone())?;
         let media = MediaCatalog::new(
             inbox,
@@ -325,6 +335,7 @@ impl Control {
             mixer,
             streamer,
             media,
+            net,
             voices: Voices::new(),
             checks: PlanChecks::default(),
             patches,
@@ -401,6 +412,7 @@ impl Control {
             Inbox::Client { message, reply } => return self.client(message, &reply),
             Inbox::Probe(answer) => self.probe_answer(answer),
             Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Net(answer) => self.net_answer(answer),
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Log { level, message } => self.log(level, message),
             Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
@@ -445,6 +457,8 @@ impl Control {
                 ),
             );
         }
+        let reports = self.net.tick(now);
+        self.network_reports(reports, now);
         self.deliver_deferred(now);
         if self.engine.is_due(now) {
             self.feed(Input::Tick, now);
@@ -573,6 +587,18 @@ impl Control {
                         },
                     );
                 }
+                Request::SetOutputOverrides { network_disabled } => {
+                    if self.net.disabled() != network_disabled {
+                        self.net.set_disabled(network_disabled);
+                        let text = if network_disabled {
+                            "network output disabled: Network cues send nothing"
+                        } else {
+                            "network output enabled"
+                        };
+                        self.log(LogLevel::Warn, text.to_owned());
+                    }
+                    reply(to, ok(id, None));
+                }
                 Request::Relink { .. } => reply(
                     to,
                     ServerMessage::Result {
@@ -680,7 +706,13 @@ impl Control {
     /// reports every patch resolution (a newly opened workspace), else only changes.
     fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.primes_dirty = true;
-        self.sync_patches(all)
+        let mut inputs = self.sync_patches(all);
+        let now = self.now();
+        let reports = self.net.sync(&self.ws.network_patches, all, now);
+        if !reports.is_empty() {
+            inputs.push(Input::NetworkAvailability { patches: reports });
+        }
+        inputs
     }
 
     /// Resolves the patches against the playable devices and brings the mixer's matrices,
@@ -1055,10 +1087,18 @@ impl Control {
             }
         }
         for action in actions {
-            if let Action::SetArmed { cue, armed: value } = action
-                && set_armed(&mut self.ws, *cue, *value)
-            {
-                armed.push(*cue);
+            match action {
+                Action::SetArmed { cue, armed: value } if set_armed(&mut self.ws, *cue, *value) => {
+                    armed.push(*cue);
+                }
+                Action::SendOsc {
+                    cue,
+                    destination,
+                    address,
+                    args,
+                    ..
+                } => self.send_osc(*cue, *destination, address, args),
+                _ => {}
             }
         }
         if !changes.is_empty() {
@@ -1071,6 +1111,84 @@ impl Control {
             self.document();
         }
         feedback
+    }
+
+    /// A Network cue's turn (CT-30): encodes the message and hands it to its destination's
+    /// worker. Whatever goes wrong is a warning; the cue completes regardless (QLab: a Network
+    /// cue does not wait for, or learn of, delivery).
+    fn send_osc(
+        &mut self,
+        cue: CueId,
+        destination: NetworkPatchId,
+        address: &str,
+        args: &[OscArg],
+    ) {
+        let Some(patch) = self
+            .ws
+            .network_patches
+            .iter()
+            .find(|p| p.id == destination)
+            .cloned()
+        else {
+            // Cannot happen: a cue without its patch has a problem and does not send.
+            self.net_warning(cue, "network patch missing".to_owned());
+            return;
+        };
+        if self.net.disabled() {
+            let label = self.cue_label(cue);
+            self.record(
+                LogKind::Engine,
+                LogLevel::Info,
+                format!(
+                    "{label}: network output is disabled, {address} to {} not sent",
+                    patch.name
+                ),
+                Some(cue),
+                None,
+            );
+            return;
+        }
+        let packet = match netout::packet(address, args, patch.protocol) {
+            Ok(p) => p,
+            Err(e) => return self.net_warning(cue, format!("message not sent: {e}")),
+        };
+        match self.net.send(&patch, cue, packet) {
+            SendOutcome::Queued | SendOutcome::Suppressed => {}
+            SendOutcome::Refused(why) => {
+                self.net_warning(cue, format!("message to {} not sent: {why}", patch.name));
+            }
+        }
+    }
+
+    /// A worker's answer: a failed send is a warning; a look-up goes to the cue engine.
+    fn net_answer(&mut self, answer: NetAnswer) {
+        let now = self.now();
+        match answer {
+            NetAnswer::SendFailed {
+                cue,
+                destination,
+                reason,
+            } => self.net_warning(cue, format!("message to {destination} not sent: {reason}")),
+            lookup @ NetAnswer::Lookup { .. } => {
+                let reports = self.net.answer(lookup, now);
+                self.network_reports(reports, now);
+            }
+        }
+    }
+
+    fn network_reports(&mut self, patches: netout::Reports, now: SampleTime) {
+        if !patches.is_empty() {
+            self.feed(Input::NetworkAvailability { patches }, now);
+        }
+    }
+
+    /// A show-time notice (`network_send_failed`) for a Network cue, logged and sent to clients.
+    fn net_warning(&mut self, cue: CueId, message: String) {
+        let changes = vec![RuntimeChange::Warning {
+            warning: notice("network_send_failed", message, Some(cue)),
+        }];
+        self.observe_changes(&changes);
+        self.runtime(changes);
     }
 
     /// Sends the mixer commands and notices of `fx`; queues its deferred feedback; returns its
@@ -1585,6 +1703,17 @@ impl Control {
         self.model_change_walks
     }
 
+    /// Network look-ups under way plus messages queued or being sent (the offline driver waits
+    /// for zero).
+    pub fn net_busy(&self) -> usize {
+        self.net.busy()
+    }
+
+    /// PB-10: whether the network output override is on.
+    pub fn network_output_disabled(&self) -> bool {
+        self.net.disabled()
+    }
+
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
@@ -1780,6 +1909,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::LogTail { .. } => "log_tail",
+        Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
     }
 }

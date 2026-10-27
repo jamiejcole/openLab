@@ -27,12 +27,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::changes::Footprint;
 use crate::cue::{Cue, CueKind, MediaRef};
 use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
-use crate::model::{CueId, NetworkPatchId, PatchId, Workspace};
+use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, Workspace};
+use crate::network::{HostKind, check_endpoint, check_message};
 use crate::settings::PatchResolution;
 use crate::validate::can_target;
 
 use super::run::Slot;
-use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
+use super::types::{Action, BrokenReason, CueProblem, MediaStatus, NetworkReachability};
 use super::{Ctx, CueEngine};
 
 /// Shown for a cue whose problems were fixed while the run it was started broken with is still
@@ -46,8 +47,19 @@ struct Facts {
     target: Option<CueProblem>,
     /// Audio cues: the media reference and patch, and whether the patch exists.
     audio: Option<AudioFacts>,
-    /// Network cues: a missing destination.
-    network: Option<NetworkPatchId>,
+    /// Network cues: what is wrong with the destination and the message, and whether the
+    /// destination's host name has to resolve.
+    network: Option<NetworkFacts>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NetworkFacts {
+    destination: NetworkPatchId,
+    /// Problems the model alone shows: a missing patch, an address that cannot be used, a
+    /// malformed message.
+    fixed: Vec<CueProblem>,
+    /// The destination is a host name: the binary's lookup (`NetworkAvailability`) decides.
+    lookup: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +78,8 @@ struct ModelFacts {
     facts: BTreeMap<CueId, Facts>,
     by_media: HashMap<String, BTreeSet<CueId>>,
     by_patch: HashMap<PatchId, BTreeSet<CueId>>,
+    /// Network cues by the network patch they send to, for the ones whose host is looked up.
+    by_network: HashMap<NetworkPatchId, BTreeSet<CueId>>,
     /// The cues that name a cue as their target, by that cue; and the reverse. Empty sets are
     /// removed, so a rebuilt model equals an incrementally kept one.
     by_target: HashMap<CueId, BTreeSet<CueId>>,
@@ -100,6 +114,8 @@ pub(super) struct Problems {
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
+    /// Failed host lookups; a network patch that is not here is taken to be reachable.
+    network: BTreeMap<NetworkPatchId, String>,
     /// Every cue that has problems, with them.
     current: BTreeMap<CueId, Vec<CueProblem>>,
     /// Cues shown with [`CueProblem::StartedBroken`].
@@ -124,6 +140,7 @@ impl Default for Problems {
             model: ModelFacts::default(),
             media: BTreeMap::new(),
             patches: BTreeMap::new(),
+            network: BTreeMap::new(),
             current: BTreeMap::new(),
             started_broken: BTreeSet::new(),
             below: BTreeMap::new(),
@@ -287,10 +304,17 @@ impl CueEngine {
                     c,
                     |t| ws.find_cue(t).map(|t| &t.kind),
                     |p| ws.patches.iter().any(|x| x.id == p),
-                    |n| ws.network_patches.iter().any(|x| x.id == n),
+                    |n| ws.network_patches.iter().find(|x| x.id == n),
                 )
             })
-            .map(|f| combine(&f, &self.problems.media, &self.problems.patches))
+            .map(|f| {
+                combine(
+                    &f,
+                    &self.problems.media,
+                    &self.problems.patches,
+                    &self.problems.network,
+                )
+            })
             .unwrap_or_default();
         if self.problems.current.get(&cue) != Some(&fresh) {
             self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
@@ -396,7 +420,7 @@ impl CueEngine {
                 cue,
                 |t| model.tree.locate(ws, t).map(|t| &t.kind),
                 |p| ws.patches.iter().any(|x| x.id == p),
-                |n| ws.network_patches.iter().any(|x| x.id == n),
+                |n| ws.network_patches.iter().find(|x| x.id == n),
             );
             computed.push((*id, facts, own_target(cue)));
         }
@@ -589,6 +613,7 @@ impl CueEngine {
             ("facts", fresh.facts == m.facts),
             ("by_media", fresh.by_media == m.by_media),
             ("by_patch", fresh.by_patch == m.by_patch),
+            ("by_network", fresh.by_network == m.by_network),
             ("by_target", fresh.by_target == m.by_target),
             ("target_of", fresh.target_of == m.target_of),
             ("patch_ids", fresh.patch_ids == m.patch_ids),
@@ -602,7 +627,7 @@ impl CueEngine {
         let current: BTreeMap<CueId, Vec<CueProblem>> = fresh
             .facts
             .iter()
-            .map(|(id, f)| (*id, combine(f, &p.media, &p.patches)))
+            .map(|(id, f)| (*id, combine(f, &p.media, &p.patches, &p.network)))
             .filter(|(_, v)| !v.is_empty())
             .collect();
         if current != p.current {
@@ -627,6 +652,7 @@ impl CueEngine {
         &mut self,
         media: Vec<(MediaRef, MediaStatus)>,
         patches: Vec<(PatchId, PatchResolution)>,
+        network: Vec<(NetworkPatchId, NetworkReachability)>,
         cx: &mut Ctx,
     ) {
         let mut cues = BTreeSet::new();
@@ -645,6 +671,19 @@ impl CueEngine {
             if p.patches.insert(patch, resolution.clone()) != Some(resolution)
                 && let Some(on) = p.model.by_patch.get(&patch)
             {
+                cues.extend(on.iter().copied());
+            }
+        }
+        for (patch, reachability) in network {
+            let changed = match reachability {
+                NetworkReachability::Unresolved { reason } => {
+                    p.network.insert(patch, reason.clone()) != Some(reason)
+                }
+                NetworkReachability::Resolved | NetworkReachability::Unknown => {
+                    p.network.remove(&patch).is_some()
+                }
+            };
+            if changed && let Some(on) = p.model.by_network.get(&patch) {
                 cues.extend(on.iter().copied());
             }
         }
@@ -672,7 +711,7 @@ impl CueEngine {
                 .model
                 .facts
                 .get(&cue)
-                .map(|f| combine(f, &p.media, &p.patches))
+                .map(|f| combine(f, &p.media, &p.patches, &p.network))
                 .unwrap_or_default();
             let started_broken = new.is_empty()
                 && matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.static_broken);
@@ -736,6 +775,7 @@ fn combine(
     f: &Facts,
     media: &BTreeMap<String, MediaStatus>,
     patches: &BTreeMap<PatchId, PatchResolution>,
+    network: &BTreeMap<NetworkPatchId, String>,
 ) -> Vec<CueProblem> {
     let mut found: Vec<CueProblem> = f.target.iter().cloned().collect();
     if let Some(a) = &f.audio {
@@ -767,8 +807,16 @@ fn combine(
             });
         }
     }
-    if let Some(patch) = f.network {
-        found.push(CueProblem::NetworkPatchMissing { patch });
+    if let Some(n) = &f.network {
+        found.extend(n.fixed.iter().cloned());
+        if n.lookup
+            && let Some(reason) = network.get(&n.destination)
+        {
+            found.push(CueProblem::NetworkHostUnresolved {
+                patch: n.destination,
+                reason: reason.clone(),
+            });
+        }
     }
     found
 }
@@ -780,7 +828,8 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     let tree = CueIndex::build_visiting(ws, |c| order.push(c));
     let by_id: HashMap<CueId, &Cue> = order.iter().map(|c| (c.id, *c)).collect();
     let patches: HashSet<PatchId> = ws.patches.iter().map(|p| p.id).collect();
-    let network: HashSet<NetworkPatchId> = ws.network_patches.iter().map(|p| p.id).collect();
+    let network: HashMap<NetworkPatchId, &NetworkPatch> =
+        ws.network_patches.iter().map(|p| (p.id, p)).collect();
     let mut out = ModelFacts {
         tree,
         patch_ids: ws.patches.iter().map(|p| p.id).collect(),
@@ -792,7 +841,7 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
             cue,
             |t| by_id.get(&t).map(|c| &c.kind),
             |p| patches.contains(&p),
-            |n| network.contains(&n),
+            |n| network.get(&n).copied(),
         );
         out.set(cue.id, facts, own_target(cue));
     }
@@ -814,6 +863,15 @@ impl ModelFacts {
             }
             self.by_patch.entry(audio.patch).or_default().insert(id);
         }
+        if let Some(facts) = &facts
+            && let Some(network) = &facts.network
+            && network.lookup
+        {
+            self.by_network
+                .entry(network.destination)
+                .or_default()
+                .insert(id);
+        }
         if let Some(facts) = facts {
             self.facts.insert(id, facts);
         }
@@ -827,7 +885,16 @@ impl ModelFacts {
     /// What other cues say about `id` as their target stays (they are recomputed when it
     /// matters).
     fn forget(&mut self, id: CueId) {
-        if let Some(audio) = self.facts.remove(&id).and_then(|f| f.audio) {
+        let removed = self.facts.remove(&id);
+        if let Some(network) = removed.as_ref().and_then(|f| f.network.as_ref())
+            && let Some(on) = self.by_network.get_mut(&network.destination)
+        {
+            on.remove(&id);
+            if on.is_empty() {
+                self.by_network.remove(&network.destination);
+            }
+        }
+        if let Some(audio) = removed.and_then(|f| f.audio) {
             if let Some(file) = &audio.media
                 && let Some(on) = self.by_media.get_mut(file.as_str())
             {
@@ -869,7 +936,7 @@ fn facts_of<'w>(
     cue: &Cue,
     kind_of: impl Fn(CueId) -> Option<&'w CueKind>,
     patch_exists: impl Fn(PatchId) -> bool,
-    network_exists: impl Fn(NetworkPatchId) -> bool,
+    network_patch: impl Fn(NetworkPatchId) -> Option<&'w NetworkPatch>,
 ) -> Option<Facts> {
     let target = if cue.kind.has_target() {
         match cue.kind.target() {
@@ -895,7 +962,36 @@ fn facts_of<'w>(
         _ => None,
     };
     let network = match &cue.kind {
-        CueKind::Network { destination, .. } if !network_exists(*destination) => Some(*destination),
+        CueKind::Network {
+            destination,
+            address,
+            args,
+        } => {
+            let patch = *destination;
+            let mut fixed = Vec::new();
+            let mut lookup = false;
+            match network_patch(patch) {
+                None => fixed.push(CueProblem::NetworkPatchMissing { patch }),
+                Some(p) => match check_endpoint(&p.host, p.port) {
+                    Ok(HostKind::Name) => lookup = true,
+                    Ok(HostKind::Ip) => {}
+                    Err(issue) => fixed.push(CueProblem::NetworkHostInvalid {
+                        patch,
+                        reason: issue.to_string(),
+                    }),
+                },
+            }
+            if let Err(issue) = check_message(address, args) {
+                fixed.push(CueProblem::NetworkMessageInvalid {
+                    reason: issue.to_string(),
+                });
+            }
+            (!fixed.is_empty() || lookup).then_some(NetworkFacts {
+                destination: patch,
+                fixed,
+                lookup,
+            })
+        }
         _ => None,
     };
     (target.is_some() || audio.is_some() || network.is_some()).then_some(Facts {

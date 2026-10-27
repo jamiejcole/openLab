@@ -206,6 +206,10 @@ pub struct SystemStatus {
     pub device: DeviceStatus,
     /// Show-log records lost since start because the disk could not keep up.
     pub log_dropped: u64,
+    /// The OSC/network output override is on (PB-10): Network cues send nothing. The UI must
+    /// show this plainly while it is true.
+    #[serde(default)]
+    pub network_output_disabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -29,6 +29,9 @@ pub enum Inbox {
     Probe(ProbeAnswer),
     /// The device thread's answer (internal feedback, docs/control.md "Devices").
     Device(super::devices::DeviceAnswer),
+    /// A network worker's answer: a message that could not be sent, a host look-up done
+    /// (internal feedback, docs/control.md "Network output").
+    Net(super::netout::NetAnswer),
     /// The document worker's answer to an open, revert or scan (internal feedback,
     /// docs/control.md "Documents").
     Doc(super::docs::DocAnswer),

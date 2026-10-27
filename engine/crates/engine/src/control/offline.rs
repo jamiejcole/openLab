@@ -136,6 +136,28 @@ impl OfflineShow {
         }
     }
 
+    /// Waits until every host look-up and queued network message has been handled by its worker
+    /// and the answers are applied. Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
+    pub fn settle_net(&mut self) {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            self.pump_inbox();
+            if self.control.net_busy() == 0 {
+                // A worker reports before it counts itself off, so everything is in by now.
+                self.pump_inbox();
+                self.control.tick();
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.stalls += 1;
+                break;
+            }
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
+    }
+
     /// A transport action with a fresh request id.
     pub fn transport(&mut self, action: TransportAction) -> Vec<ServerMessage> {
         let id = self.request_id();

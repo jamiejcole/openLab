@@ -128,6 +128,8 @@ enum Request: Hashable, Sendable, Codable {
     case relink(folder: String)
     case listDevices
     case logTail(max: UInt32? = nil)
+    /// PB-10: Network cues still run but send nothing. Engine-wide, in memory only.
+    case setOutputOverrides(networkDisabled: Bool)
     case snapshot
 
     /// Replies with a `snapshot`, so the engine holds this connection's broadcasts until the
@@ -169,6 +171,7 @@ enum Request: Hashable, Sendable, Codable {
         case .logTail(let max):
             opt(&f, "max", max)
             return ("log_tail", f)
+        case .setOutputOverrides(let disabled): return ("set_output_overrides", [("network_disabled", disabled)])
         case .snapshot: return ("snapshot", [])
         }
     }
@@ -196,6 +199,8 @@ enum Request: Hashable, Sendable, Codable {
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
+        case "set_output_overrides":
+            self = .setOutputOverrides(networkDisabled: try c.decode(Bool.self, forKey: "network_disabled"))
         case "snapshot": self = .snapshot
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
