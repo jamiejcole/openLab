@@ -123,6 +123,22 @@ New, open, open-recovery, save, save-as, revert, and autosave (`control/docs.rs`
 - **Recent files are the app's (WS-08)**: the engine keeps no list (M5 decision; the macOS app uses its document controller and records paths from the broadcast `document`). Old `settings.json` files that still have a `recent_files` key load fine (unknown keys are ignored).
 - **Not done here**: a final autosave when the engine shuts down with unsaved changes (M4.4d); a default mapping for the new workspace's patch (M4.4c); a stall timeout for the writer thread (a save to a stalled volume holds later saves and autosaves).
 
+## Media watch (M2.25, M2.29; ARCHITECTURE §3.1)
+
+`control/watch.rs` (`MediaWatch`) sends the watch thread `Watch`/`Unwatch` jobs for the keys the media catalog gains and loses (drained from the catalog each tick) and a reset when the catalog resets (a generation number; a batch of an older generation is dropped). The worker answers with `Inbox::Watch(WatchBatch { gen, events })`. Events, handled in the tick after the probe answers:
+
+| Event | Control does |
+|---|---|
+| `Gone { key, trashed }` | `MediaCatalog::mark_missing` (as a NotFound probe: probe failed, preload dropped, budget returned, an in-flight probe answer ignored); `Missing` in the tick's single `Availability`, so the cue is broken within the tick |
+| `Back` / `Changed` / `Unreadable` | re-probe (high-priority queue if the cue is primed); the answer becomes `Availability` as for any probe |
+| `Moved { key, new_path }` | follow ([persistence.md](persistence.md) "Media watch and follow"): relink as a model edit outside undo, `History::rewrite_media`, `MediaCatalog::rekey`, `model_changed`, document dirty |
+
+A playing cue keeps playing when its file goes (the voice holds an open file).
+
+**Watchdog**: the worker publishes what it is statting (since when, which volume). If one stat takes longer than `WATCH_STALL` (10 s, on the injected clock), control abandons that worker, starts a fresh one that skips the stalled volume (its keys keep their last status) and warns `media_volume_not_responding` (naming the volume). The abandoned thread tells control when its stat returns, which lifts the skip. After `MAX_ABANDONED_WATCHERS` (4) it warns `media_watch_stopped` and logs an error. A worker whose channel closes unexpectedly is logged and respawned once.
+
+Tests use an injected `WatchFs` (`FakeFs`) and `OfflineShow::watch_pass()`; no threads or sleeps.
+
 ## Reconciliation of lost events
 
 The mixer drops events when its queue (1024) is full and counts them (`dropped_events`). A lost `VoiceFinished` would leave a cue running for ever. The voice-meter read (every meters period, ~30 Hz) lists every voice the mixer holds, paused ones included. A started voice whose start sample was rendered before the previous read and that is missing from **two reads in a row**, while `dropped_events > 0`, is taken as ended: `ActionEnded` on the read's sample (or `ActionFailed { stream_failed }` if its stream failed). A voice that no meter read ever listed was never taken by the mixer: its lost report was a rejection, so it fails (`StartFailed { voice_rejected }`: it never played, so the cue is skipped) instead. (A rejected voice of known length whose rejection is lost completes on its planned end if that comes before the two reads.) The first loss is logged (`warn`). Tested by overflowing the queue with loop events while the control thread is held off (`control_feedback.rs`).
@@ -134,6 +150,7 @@ The mixer drops events when its queue (1024) is full and counts them (`dropped_e
 - `progress`: show cues with a playing voice (elapsed and remaining in the action, remaining `null` while it loops for ever), at most 30 Hz of sample time, only while one plays.
 - `meters`: per mapped patch the device outputs it is routed to, per cue its voices' peaks per cue output (`read_output_meters_into` / `read_voice_meters_into` into preallocated buffers), at most 30 Hz, while audio plays plus one message after.
 - `log`: engine faults (`error`), audio-thread allocations (`error`, M3.21), lost mixer events (`warn`), unsignalled model changes (`error`), device loss, with the number of cues it stopped (`error`), failed reopen attempts and host errors that need no reopen (`warn`), a device back (`info`).
+- `status` (when `ControlConfig::status` is set): system health about once a second of wall-clock time, and early on a change; lossy like `meters`. Also every `log` above, and the cue starts, stops, failures, GOs, triggers and document events, go to the show log (`control/observe.rs`, [logging.md](logging.md)); `log_tail` answers from its ring. A network layer sends `Inbox::Trigger { source, detail }` just before each client or OSC transport action (not edits or requests); the loop logs at most 5 per source per 10 s and summarises the rest.
 - The outbound channel is bounded (`OUTBOUND_CAPACITY`). Meters and progress are dropped first, as soon as it is half full (the next ones replace them). A sequenced message (`runtime`, `model_changed`) or log that does not fit is dropped; clients recover from the `seq`/`revision` gap with a snapshot. A `document` or `warnings` message that does not fit is sent again, newest, once there is room. Drops are logged (`warn`) once there is room.
 
 ## Devices (M4.2b, NFR-08)
