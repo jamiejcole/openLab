@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Combine
 
 /// One open workspace's window and its QLab-style layout: masthead, cue-type row, cue list over
 /// inspector, optional right sidebar, footer. Built in code; it holds only its own store. Close
@@ -14,18 +15,33 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// These address this window's own store: a click can land on a window that is not key.
     var onGo: (() -> Void)?
     var onPauseAll: (() -> Void)?
+    var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
+    /// Pause, resume or panic of one cue, from the Active Cues panel.
+    var onCueAction: ((TransportAction) -> Void)? {
+        didSet { sidebar.onCueAction = onCueAction }
+    }
+    /// Relink missing media was asked for (Warnings row or File menu).
+    var onRelink: (() -> Void)? {
+        didSet { sidebar.onRelink = onRelink }
+    }
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
-    let cueList = CueListViewController()
-    let inspector = InspectorViewController()
-    let sidebar = SidebarViewController()
+    let cueList: CueListViewController
+    let inspector: InspectorViewController
+    let sidebar: SidebarViewController
+    private var sub: AnyCancellable?
+    private var statusSub: AnyCancellable?
+    private(set) lazy var logWindow = LogWindowController(store: store)
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
 
     init(store: WorkspaceStore) {
         self.store = store
+        cueList = CueListViewController(store: store)
+        sidebar = SidebarViewController(store: store)
+        inspector = InspectorViewController(store: store)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -36,13 +52,54 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 800, height: 500)
         super.init(window: window)
         window.delegate = self
+        cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
         window.contentView = buildContent()
+        window.initialFirstResponder = cueList.outlineView
         window.center()
+        // The cue list's own subscription is older, so it has switched lists by the time this runs.
+        sub = store.changes.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncSidebarList() }
+        }
+        sidebar.shownProvider = { [weak self] in self?.cueList.listID }
+        sidebar.onSelectList = { [weak self] id in
+            self?.cueList.showList(id)
+            self?.syncSidebarList()
+        }
+        sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
+        // Both publish before they change: use the delivered values.
+        statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
+            MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
+        }
+        syncSidebarList()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
+        wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+    }
+
+    /// Shows `id` in its list and selects it (a Warnings row was chosen). The selection is made
+    /// like a restored one, so the playhead does not move: a click in a list of warnings must
+    /// never change what GO fires next.
+    func reveal(cue id: ModelID) {
+        guard let list = store.model?.cueLists.first(where: { Self.contains(id, in: $0.cues) }) else { return }
+        if cueList.listID != list.id { cueList.showList(list.id) }
+        syncSidebarList()
+        cueList.reveal(id)
+    }
+
+    private static func contains(_ id: ModelID, in cues: [Cue]) -> Bool {
+        cues.contains { $0.id == id || contains(id, in: $0.children) }
+    }
+
+    func showLog() {
+        logWindow.showWindow(nil)
+        Task { await logWindow.refresh() }
+    }
+
+    private func syncSidebarList() {
+        sidebar.syncSelection()
     }
 
     private func wire(_ button: NSButton?, _ action: Selector) {
@@ -52,7 +109,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func goClicked() { onGo?() }
     @objc private func pauseAllClicked() { onPauseAll?() }
+    @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
+
+    /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
+    /// (Save, Close, Quit) must stop.
+    func commitPendingEdits() async -> Bool { await inspector.commitPendingEdits() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()

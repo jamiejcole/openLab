@@ -133,6 +133,89 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(s.receive(try change(8, upserts: [#"{"type":"future_kind"}"#])), .gap)
     }
 
+    func testEditInPlaceKeepsPositionAndIsAllOrNothing() async throws {
+        let rig = try await connectedRig()
+        let s = rig.store
+        let group =
+            #"{"type":"group","mode":{"type":"timeline"},"children":[{"id":"k1","name":"kid","kind":{"type":"stop","target":null}},{"id":"k2","name":"kid2","kind":{"type":"stop","target":null}}]}"#
+        s.receive(
+            try change(8, upserts: [cueUpsert("c1"), cueUpsert("c2", index: 1), cueUpsert("g", kind: group, index: 2)]))
+        let top = { s.model?.cueLists[0].cues.map(\.id.raw) ?? [] }
+        let before = s.model?.cueLists
+        // Same id at the same index: replaced where it stands, children too.
+        let renamed =
+            #"{"type":"cue","list":"\#(list)","parent":null,"index":1,"cue":{"id":"c2","name":"renamed","kind":{"type":"stop","target":null}}}"#
+        let kid =
+            #"{"type":"cue","list":"\#(list)","parent":"g","index":1,"cue":{"id":"k2","name":"kid two","kind":{"type":"stop","target":null}}}"#
+        s.receive(try change(9, upserts: [renamed, kid]))
+        XCTAssertEqual(Array(top().prefix(3)), ["c1", "c2", "g"])
+        XCTAssertEqual(s.model?.cue("c2")?.name, "renamed")
+        XCTAssertEqual(s.model?.cue("g")?.children.map(\.name), ["kid", "kid two"])
+        XCTAssertEqual(top().filter { $0 == "c2" }.count, 1)
+        // A good in-place edit followed by one that does not fit: nothing applies.
+        let after = s.model?.cueLists
+        XCTAssertNotEqual(before, after)
+        let renamedAgain = renamed.replacingOccurrences(of: "renamed", with: "again")
+        let orphan = cueUpsert("z", parent: "missing")
+        XCTAssertEqual(s.receive(try change(10, upserts: [renamedAgain, orphan])), .gap)
+        XCTAssertEqual(s.model?.cueLists, after)
+        XCTAssertEqual(s.revision, 9)
+    }
+
+    func testEditAtAnotherIndexMovesTheCue() async throws {
+        let rig = try await connectedRig()
+        let s = rig.store
+        s.receive(try change(8, upserts: [cueUpsert("c1"), cueUpsert("c2", index: 1), cueUpsert("c3", index: 2)]))
+        s.receive(try change(9, upserts: [cueUpsert("c1", index: 2)]))
+        XCTAssertEqual(Array((s.model?.cueLists[0].cues.map(\.id.raw) ?? []).prefix(3)), ["c2", "c3", "c1"])
+    }
+
+    func testChangesAreSentOnlyForWhatApplied() async throws {
+        let rig = try await connectedRig()
+        let s = rig.store
+        var seen: [StoreChange] = []
+        let sub = s.changes.sink { seen.append($0) }
+        defer { sub.cancel() }
+        XCTAssertEqual(s.receive(try change(7)), .ignored)
+        XCTAssertEqual(s.receive(try change(20)), .gap)
+        XCTAssertEqual(s.receive(try change(8, upserts: [cueUpsert("bad", parent: "missing")])), .gap)
+        XCTAssertTrue(seen.isEmpty)
+        s.receive(try change(8, upserts: [cueUpsert("c1")], deletes: [#"{"type":"cue","id":"never-held"}"#]))
+        guard case .model(let ups, let dels)? = seen.first, seen.count == 1 else { return XCTFail("\(seen)") }
+        XCTAssertEqual(ups.count, 1)
+        XCTAssertEqual(dels.count, 1)
+    }
+
+    func testRuntimeChangesNameTheCuesTheyTouch() async throws {
+        let rig = try await connectedRig()
+        let s = rig.store
+        var seen: [StoreChange] = []
+        let sub = s.changes.sink { seen.append($0) }
+        defer { sub.cancel() }
+        s.receive(
+            try msg(
+                #"""
+                {"type":"runtime","seq":43,"changes":[
+                 {"type":"cue_state","cue":"a","state":"running"},
+                 {"type":"problems","cue":"b","problems":[]},
+                 {"type":"playhead","list":"\#(list)","cue":"new"}]}
+                """#))
+        guard case .runtime(let cues, let heads)? = seen.first else { return XCTFail("\(seen)") }
+        XCTAssertEqual(cues, ["a", "b"])
+        // The playhead was on cue ...0b; both the cue it left and the one it reached are named.
+        XCTAssertEqual(heads, ["00000000-0000-0000-0000-00000000000b", "new"])
+        seen = []
+        s.receive(try msg(#"{"type":"progress","items":[{"cue":"a","elapsed":1.0,"remaining":null}]}"#))
+        guard case .progress(let ids)? = seen.first else { return XCTFail("\(seen)") }
+        XCTAssertEqual(ids, ["a"])
+        // A cue that stops running reports its progress ending.
+        seen = []
+        s.receive(try msg(#"{"type":"runtime","seq":44,"changes":[{"type":"cue_state","cue":"a","state":"idle"}]}"#))
+        XCTAssertEqual(seen.count, 2)
+        guard case .progress(let ended)? = seen.last else { return XCTFail("\(seen)") }
+        XCTAssertEqual(ended, ["a"])
+    }
+
     func testRuntimeFixtureIsApplied() async throws {
         let rig = try await connectedRig()
         let s = rig.store
@@ -264,6 +347,21 @@ final class WorkspaceStoreTests: XCTestCase {
             }
         }
         XCTAssertEqual(kinds, ["go \(list)", "command true", "save", "panic"])
+    }
+
+    func testOscApiTransportIntentsSendTheirActions() async throws {
+        let rig = try await connectedRig()
+        for result in [
+            await rig.store.goFrom(list: list, cue: cueA), await rig.store.stopAll(),
+            await rig.store.hardStopAll(), await rig.store.panicCue(cueA),
+        ] {
+            guard case .success = result else { return XCTFail("\(result)") }
+        }
+        let actions = rig.engine.received.compactMap { m -> TransportAction? in
+            if case .transport(_, let a) = m { return a }
+            return nil
+        }
+        XCTAssertEqual(actions, [.goFrom(list: list, cue: cueA), .stopAll, .hardStopAll, .panicCue(cue: cueA)])
     }
 
     func testEngineRefusalComesBackAsATypedError() async throws {
