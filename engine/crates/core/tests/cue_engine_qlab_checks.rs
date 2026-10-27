@@ -376,27 +376,32 @@ fn slices_of(ws: &Workspace) -> Vec<f64> {
 fn d6_a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
     assert_eq!(MIN_SLICE_SECONDS, 0.051);
 
-    // 50 ms: the show file is repaired (the marker that ends it is removed), and an edit that
-    // would make one is refused, as QLab's editor refuses it.
+    // 50 ms: the show file is repaired (the marker that ends it moves to make it 51 ms long),
+    // and an edit that would make one is refused, as QLab's editor refuses it.
     let short = sliced(0.0, 2.0, &[(1.0, 1), (1.05, 0)]);
     let mut ws = workspace(vec![cue(1, short.clone())]);
     let issues = repair(&mut ws);
     assert!(
-        issues
-            .iter()
-            .any(|i| i.kind == IssueKind::SliceTooShort { time: 1.05 }),
+        issues.iter().any(|i| i.kind
+            == IssueKind::SliceMoved {
+                from: 1.05,
+                to: 1.0 + MIN_SLICE_SECONDS
+            }),
         "{issues:?}"
     );
-    assert_eq!(slices_of(&ws), vec![1.0]);
+    assert_eq!(slices_of(&ws), vec![1.0, 1.0 + MIN_SLICE_SECONDS]);
     // Also against the trim points: a marker 50 ms after the start or before the end.
-    for marks in [[(0.55, 1)], [(1.95, 1)]] {
+    for (marks, to) in [
+        ([(0.55, 1)], 0.5 + MIN_SLICE_SECONDS),
+        ([(1.95, 1)], 2.0 - MIN_SLICE_SECONDS),
+    ] {
         let mut ws = workspace(vec![cue(1, sliced(0.5, 2.0, &marks))]);
         assert!(
             repair(&mut ws)
                 .iter()
-                .any(|i| matches!(i.kind, IssueKind::SliceTooShort { .. }))
+                .any(|i| matches!(i.kind, IssueKind::SliceMoved { .. }))
         );
-        assert!(slices_of(&ws).is_empty());
+        assert_eq!(slices_of(&ws), vec![to]);
     }
     let mut ws = workspace(vec![sound(1)]);
     let refused = ws.apply(Command::SetCueProperty {
@@ -405,7 +410,7 @@ fn d6_a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
     });
     assert!(
         matches!(&refused, Err(CommandError::InvalidCue(issues))
-            if issues.iter().any(|i| matches!(i.kind, IssueKind::SliceTooShort { .. }))),
+            if issues.iter().any(|i| matches!(i.kind, IssueKind::SliceMoved { .. }))),
         "{refused:?}"
     );
 
@@ -611,32 +616,40 @@ fn m1_d6_repair_keeps_a_short_trim_and_the_loops_it_merges() {
     );
     assert_eq!(audio_of(&ws).0, None);
 
-    // A short vamp merged into the next slice keeps the vamp; a loop keeps the larger count.
-    // (marks, markers kept, last slice's play count)
-    let cases: [(&[Mark], Vec<Mark>, u32); 3] = [
-        (&[(1.0, 1), (1.03, 0)], vec![(1.0, 1)], 0),
-        (
-            &[(0.5, 1), (0.52, 3), (1.0, 1)],
-            vec![(0.5, 1), (1.0, 3)],
-            1,
-        ),
-        // Too close to the end: the last slice joins the vamp before it.
-        (&[(1.0, 1), (1.98, 0)], vec![(1.0, 1)], 0),
+    // A short slice is lengthened to 51 ms where there is room, keeping its loop or vamp, so
+    // the cue's length barely changes; where there is none, it merges and the merged slice
+    // plays as the longer part did. Each repaired show saves and loads back unchanged.
+    let m = MIN_SLICE_SECONDS;
+    let cases: [(&[Mark], Vec<Mark>, u32); 6] = [
+        // A 30 ms stutter (x3) before a long rest of the song: still a 51 ms stutter.
+        (&[(1.0, 1), (1.03, 3)], vec![(1.0, 1), (1.0 + m, 3)], 1),
+        // A 30 ms vamp: still a vamp, 51 ms long.
+        (&[(1.0, 1), (1.03, 0)], vec![(1.0, 1), (1.0 + m, 0)], 1),
+        // Consecutive short slices: the first two merge (no room), then that slice is
+        // lengthened; the long slice after keeps its single play.
+        (&[(0.02, 2), (0.04, 3), (0.5, 1)], vec![(m, 3), (0.5, 1)], 1),
+        // Too close to the end: the last marker moves earlier, the vamp before keeps its count.
+        (&[(1.0, 1), (1.98, 0)], vec![(1.0, 1), (2.0 - m, 0)], 1),
+        // No room at the end either: merged, and the longer part (the vamp) gives the count.
+        (&[(1.93, 1), (1.98, 0)], vec![(1.93, 1)], 0),
+        // A short loop next to a longer single play with no room: the single play wins, the
+        // loop is not spread over it.
+        (&[(1.9, 1), (1.92, 4), (1.96, 1)], vec![(1.9, 1)], 1),
     ];
     for (marks, kept, last) in cases {
         let mut ws = workspace(vec![cue(1, sliced(0.0, 2.0, marks))]);
         let issues = repair(&mut ws);
         assert!(
-            issues
-                .iter()
-                .all(|i| matches!(i.kind, IssueKind::SliceTooShort { .. })),
+            issues.iter().all(|i| matches!(
+                i.kind,
+                IssueKind::SliceTooShort { .. } | IssueKind::SliceMoved { .. }
+            )),
             "{issues:?}"
         );
         assert_eq!(audio_of(&ws), (Some(2.0), kept, last), "{marks:?}");
-        // The repaired show saves and loads back unchanged, with nothing left to repair.
         let text = save_show(&ws).unwrap();
         assert_eq!(load_show(&text).unwrap().workspace, ws);
-        assert!(validate(&ws).is_empty());
+        assert!(validate(&ws).is_empty(), "{marks:?}: {:?}", validate(&ws));
     }
 }
 
@@ -695,4 +708,103 @@ fn m2_a_playlist_skips_a_child_whose_stream_fails_before_playing_and_still_auto_
     assert_eq!(starts(&failed), vec![(id(11), 50)]);
     let end = rig.tick(550);
     assert_eq!(starts(&end), vec![(id(2), 550)]);
+}
+
+// ----- fix round 2 (re-review of M2.24) -----
+
+#[test]
+fn h1_a_group_that_ran_earlier_does_not_hide_its_continue_from_a_later_go_on_a_child() {
+    let p = timed(
+        grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2), memo(3)]);
+    rig.go(0);
+    rig.tick(1000);
+    // The playlist completes and its auto-follow starts 2.
+    assert!(starts(&rig.tick(2000)).contains(&(id(2), 2000)));
+    // Later (a re-run): the playhead is put on 11 and GOed. The group does not run now, so
+    // its continue does not fire: the playhead stands on 2, which is not lost.
+    rig.at(
+        3000,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(11)),
+        },
+    );
+    rig.go(3000);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    assert!(starts(&rig.tick(4000)).is_empty());
+    assert_eq!(starts(&rig.go(4100)), vec![(id(2), 4100)]);
+}
+
+#[test]
+fn h1_leaving_a_group_whose_own_run_fired_its_continue_does_not_play_it_twice() {
+    let g = timed(
+        grp(
+            1,
+            GroupMode::StartFirstAndEnter,
+            vec![wait(10, 1.0), wait(11, 1.0)],
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(11)));
+    // The group's run completes with its first child and fires its auto-follow.
+    assert!(starts(&rig.tick(1000)).contains(&(id(2), 1000)));
+    let go = rig.go(1500);
+    assert_eq!(starts(&go), vec![(id(11), 1500)]);
+    // 2 has played: the playhead passes over it.
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+#[test]
+fn m2_a_paused_cue_whose_stream_fails_before_playing_follows_only_on_resume() {
+    let list_of = || vec![timed(sound(1), 0.0, 0.0, AF), wait(2, 1.0), memo(3)];
+    // Pause, then Resume.
+    let mut rig = Rig::new(list_of());
+    rig.go(0);
+    rig.at(10, Input::Pause { cue: id(1) });
+    let failed = failed_before_playing(&mut rig, 20, 1);
+    assert!(starts(&failed).is_empty());
+    assert_eq!(rig.state(1), CueState::Broken);
+    assert!(rig.engine.is_paused(id(1)));
+    assert!(starts(&rig.tick(500)).is_empty());
+    let resume = rig.at(1000, Input::Resume { cue: id(1) });
+    assert_eq!(starts(&resume), vec![(id(2), 1000)]);
+    assert_eq!(rig.state(1), CueState::Broken);
+    // Pause All, then Resume All.
+    let mut rig = Rig::new(list_of());
+    rig.go(0);
+    rig.at(10, Input::PauseAll);
+    assert!(starts(&failed_before_playing(&mut rig, 20, 1)).is_empty());
+    assert_eq!(starts(&rig.at(700, Input::ResumeAll)), vec![(id(2), 700)]);
+    // Paused, then stopped: the held follow is cancelled.
+    let mut rig = Rig::new(list_of());
+    rig.go(0);
+    rig.at(10, Input::Pause { cue: id(1) });
+    failed_before_playing(&mut rig, 20, 1);
+    rig.at(
+        30,
+        Input::Stop {
+            cue: id(1),
+            fade_out: None,
+        },
+    );
+    assert!(starts(&rig.at(40, Input::Resume { cue: id(1) })).is_empty());
+    assert!(starts(&rig.tick(5000)).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
+    // Paused, then a panic: cancelled too.
+    let mut rig = Rig::new(list_of());
+    rig.go(0);
+    rig.at(10, Input::Pause { cue: id(1) });
+    failed_before_playing(&mut rig, 20, 1);
+    rig.at(30, Input::Panic);
+    assert!(starts(&rig.at(40, Input::Resume { cue: id(1) })).is_empty());
+    assert!(starts(&rig.tick(10_000)).is_empty());
 }

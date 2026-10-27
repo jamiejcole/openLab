@@ -177,7 +177,7 @@ impl CueEngine {
             |c| self.has_problems(c.id),
             |c| self.busy(c.id) || self.continued.contains(&c.id),
         );
-        self.move_playhead(list, next, cx);
+        self.move_playhead_after(list, next, Some(cue.id), cx);
         Ok(())
     }
 
@@ -186,12 +186,12 @@ impl CueEngine {
         let Some(playhead) = self.playheads.get_mut(&list) else {
             return false;
         };
+        let old = playhead.cue;
         let (edited, moved) = playhead.sync(cues);
         if moved {
-            cx.out.push(Action::PlayheadChanged {
-                list,
-                cue: playhead.cue,
-            });
+            let new = playhead.cue;
+            cx.out.push(Action::PlayheadChanged { list, cue: new });
+            self.forget_continues(cx.ws, list, old, new, None);
         }
         if edited {
             self.note_unsignalled();

@@ -111,14 +111,7 @@ pub(super) fn position_cues(cues: &[Cue]) -> Vec<&Cue> {
 /// among its siblings and then leaves the group, as GO from a child does). Iterative.
 fn stepping_order(cues: &[Cue], from: Option<CueId>) -> Vec<CueId> {
     let around: HashSet<CueId> = from
-        .and_then(|id| locate(cues, id))
-        .map(|path| {
-            let outer = path.len().saturating_sub(1);
-            path.iter()
-                .take(outer)
-                .filter_map(|&(level, i)| level.get(i).map(|g| g.id))
-                .collect()
-        })
+        .map(|id| groups_around(cues, id).into_iter().collect())
         .unwrap_or_default();
     let mut out = Vec::new();
     let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
@@ -140,6 +133,19 @@ fn stepping_order(cues: &[Cue], from: Option<CueId>) -> Vec<CueId> {
         }
     }
     out
+}
+
+/// The groups around the cue `id` in a list, outermost first (none if it is not in the list).
+pub(super) fn groups_around(cues: &[Cue], id: CueId) -> Vec<CueId> {
+    locate(cues, id)
+        .map(|path| {
+            let outer = path.len().saturating_sub(1);
+            path.iter()
+                .take(outer)
+                .filter_map(|&(level, i)| level.get(i).map(|g| g.id))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn positions(cues: &[Cue]) -> Vec<CueId> {
@@ -187,8 +193,8 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 ///   as a unit like any disarmed cue.
 ///
 /// Leaving a group, the playhead goes to the cue after the group's own continue chain only if
-/// the group's continue fires or has fired (`continues`: it has a run, or its last run fired
-/// its continue); a group with no run fires none, so the playhead stands on the cue right
+/// the group's continue fires or has fired (`continues`: it has a run, or its run fired its
+/// continue during the playhead's current visit); a group with no run fires none, so the playhead stands on the cue right
 /// after it and its continue targets are not lost.
 ///
 /// `broken` says which cues have static problems: a broken Devamp cue starts no next cue (its

@@ -1154,6 +1154,12 @@ struct Run {
     shown: Vec<Action>,
     /// The last `GroupWarningChanged` of each group (absent: none reported, so no warning).
     group_warnings: BTreeMap<CueId, bool>,
+    /// The playhead of `list` as the reports tell it.
+    ph: Option<CueId>,
+    /// Groups that have been active (or were when the playhead entered them) since the playhead
+    /// last entered them other than by the GO on the group itself: only such a group can have
+    /// fired a continue the playhead may skip when it leaves the group.
+    since_entry: BTreeSet<CueId>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1194,6 +1200,8 @@ impl Run {
             raw: Vec::new(),
             shown: Vec::new(),
             group_warnings: BTreeMap::new(),
+            ph: None,
+            since_entry: BTreeSet::new(),
         }
     }
 
@@ -1247,8 +1255,31 @@ impl Run {
 
         let mut starts = 0usize;
         let mut arm = Vec::new();
+        let ph_before = self.ph;
+        let mut moves = 0usize;
         for action in &actions {
             match action {
+                Action::PlayheadChanged { list, cue } if *list == self.list => {
+                    moves += 1;
+                    let cues = &self.ws.cue_lists[0].cues;
+                    let old = self.ph.map(|o| groups_around(cues, o)).unwrap_or_default();
+                    let new = cue.map(|n| groups_around(cues, n)).unwrap_or_default();
+                    for g in new.into_iter().filter(|g| !old.contains(g)) {
+                        // (Entered by its own GO: what its run fires belongs to this entry.)
+                        if self.ph == Some(g) && matches!(self.input, Input::Go { .. }) {
+                            continue;
+                        }
+                        let active = self.reported.get(&g).is_some_and(|s| {
+                            !matches!(s, CueState::Idle | CueState::Broken | CueState::Loaded)
+                        });
+                        if active {
+                            self.since_entry.insert(g);
+                        } else {
+                            self.since_entry.remove(&g);
+                        }
+                    }
+                    self.ph = *cue;
+                }
                 Action::GroupWarningChanged { group, warning } => {
                     let previous = self.group_warnings.insert(*group, *warning);
                     prop_assert_ne!(
@@ -1289,6 +1320,9 @@ impl Run {
                     prop_assert!(*at <= horizon, "state change dated {at} after {horizon}");
                     self.reported.insert(*cue, *state);
                     self.seen.insert(*cue);
+                    if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
+                        self.since_entry.insert(*cue);
+                    }
                 }
                 Action::StartVoice { at, .. }
                 | Action::StopVoice { at, .. }
@@ -1335,6 +1369,46 @@ impl Run {
                     at
                 );
                 self.last_at.insert(after, at);
+            }
+        }
+        // No cue is passed over when a GO leaves a group that fires no continue (Playhead; M2.24
+        // fix rounds 1–2): the group has not been active since the playhead entered it and is
+        // not running now, so its continue targets never fire, and the playhead must stand on
+        // the cue right after the outermost group it leaves.
+        if self.unique_ids()
+            && matches!(self.input, Input::Go { .. })
+            && moves == 1
+            && !actions
+                .iter()
+                .any(|a| matches!(a, Action::GoIgnored { .. }))
+        {
+            let cues = &self.ws.cue_lists[0].cues;
+            let old = ph_before
+                .map(|o| groups_around(cues, o))
+                .unwrap_or_default();
+            let new = self.ph.map(|n| groups_around(cues, n)).unwrap_or_default();
+            let left: Vec<CueId> = old.into_iter().filter(|g| !new.contains(g)).collect();
+            let idle = left.iter().all(|g| {
+                !self.since_entry.contains(g)
+                    && matches!(self.engine.state(*g), CueState::Idle | CueState::Broken)
+            });
+            if let Some(&outer) = left.first()
+                && idle
+            {
+                let positions = CueEngine::playhead_positions(&self.ws, self.list);
+                let mut inside = Vec::new();
+                if let Some(g) = self.ws.find_cue(outer) {
+                    flatten(g.children(), &mut inside);
+                }
+                let at = positions.iter().position(|p| *p == outer).unwrap();
+                let expected = positions.get(at + 1 + inside.len()).copied();
+                prop_assert_eq!(
+                    self.ph,
+                    expected,
+                    "GO left group {} for {:?}, passing over cues",
+                    outer,
+                    self.ph
+                );
             }
         }
         // Chain bound: across every call at one `now` (against the largest limit the workspace
