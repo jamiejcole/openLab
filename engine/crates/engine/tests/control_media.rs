@@ -295,8 +295,6 @@ fn a_stuck_probe_worker_is_replaced() {
     let mut c = config(&ws);
     c.probe = gated_probe;
     c.probe_clock = time.clock();
-    // No priming: it would queue the stuck files again ahead of the third for the fresh workers.
-    c.prime_cues = 0;
     let timeout = c.probe_timeout;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(&stuck, 2);
@@ -304,13 +302,14 @@ fn a_stuck_probe_worker_is_replaced() {
     time.advance(timeout - std::time::Duration::from_secs(1));
     s.tick();
     assert_eq!(s.control().abandoned_probe_workers(), 0);
-    // The watchdog gives up on both stuck workers; the third file is probed by a fresh one,
-    // which has been on its file for no time at all, so it is not given up on.
+    // The watchdog gives up on both stuck workers and the volume stalls. All three files are in
+    // the temp folder, so the third waits with the volume (a stalled volume takes no new
+    // probe, M2.25b); the other-volume case is the next test.
     time.advance(std::time::Duration::from_secs(2));
     s.settle_media();
     assert_eq!(s.control().abandoned_probe_workers(), 2);
-    assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
-    for n in 1..=2 {
+    assert_eq!(probe_order(std::slice::from_ref(&fine)).len(), 0);
+    for n in 1..=3 {
         assert!(matches!(
             s.control().engine().problems(id(n)),
             [CueProblem::MediaUnsupported { .. }]
@@ -321,13 +320,81 @@ fn a_stuck_probe_worker_is_replaced() {
         release(p);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while s.control().engine().state(id(1)) == CueState::Broken
-        || s.control().engine().state(id(2)) == CueState::Broken
-    {
+    while (1..=3).any(|n| s.control().engine().state(id(n)) == CueState::Broken) {
         assert!(std::time::Instant::now() < deadline);
         s.settle_media();
         std::thread::yield_now();
     }
+}
+
+/// A volume that never answers (the path's mount prefix is what the catalog goes by) with more
+/// files than workers, and priming on: its files must not use up the workers, queue ahead of
+/// the healthy file, or be probed again while the first probes are stuck.
+#[cfg(unix)]
+#[test]
+fn a_dead_volume_does_not_starve_a_healthy_one_with_priming_on() {
+    let dead: Vec<std::path::PathBuf> = (1..=5)
+        .map(|n| std::path::PathBuf::from(format!("/mnt/openlab-dead-volume/{n}.wav")))
+        .collect();
+    let fine = wav(&dc(200, 0.5));
+    for p in &dead {
+        gate(p);
+    }
+    let mut cues: Vec<_> = dead
+        .iter()
+        .zip(1u128..)
+        .map(|(p, n)| audio(n, p, 0))
+        .collect();
+    cues.push(audio(6, &fine, 0));
+    let ws = workspace(cues);
+    let time = ProbeTime::new();
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = time.clock();
+    // Priming stays on (the default): it asks for every dead file again, urgently.
+    assert!(c.prime_cues > 0);
+    let timeout = c.probe_timeout;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(&dead, 2);
+    time.advance(timeout + std::time::Duration::from_secs(1));
+    // One watchdog round later the healthy file is probed and the waiting files read as
+    // unplayable; no other worker was stuck or replaced.
+    s.settle_media();
+    assert_eq!(s.control().engine().state(id(6)), CueState::Idle);
+    assert!(s.control().engine().problems(id(6)).is_empty());
+    assert_eq!(s.control().abandoned_probe_workers(), 2);
+    assert_eq!(
+        probe_order(&dead).len(),
+        2,
+        "no further probe of the dead volume"
+    );
+    for n in 1..=5 {
+        assert!(matches!(
+            s.control().engine().problems(id(n)),
+            [CueProblem::MediaUnsupported { .. }]
+        ));
+    }
+    // Time passing does not start probes on it or lose workers.
+    time.advance(std::time::Duration::from_secs(600));
+    s.settle_media();
+    assert_eq!(s.control().abandoned_probe_workers(), 2);
+    assert_eq!(probe_order(&dead).len(), 2);
+    // The volume answers (its files are not there): every file is probed in the end.
+    for p in &dead {
+        release(p);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while (1..=5).any(|n| {
+        !matches!(
+            s.control().engine().problems(id(n)),
+            [CueProblem::MediaMissing { .. }]
+        )
+    }) {
+        assert!(std::time::Instant::now() < deadline);
+        s.settle_media();
+        std::thread::yield_now();
+    }
+    assert_eq!(s.control().abandoned_probe_workers(), 2);
 }
 
 /// A cue whose stream stalls underruns for its whole planned length, so the engine completes
