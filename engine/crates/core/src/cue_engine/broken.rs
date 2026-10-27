@@ -5,21 +5,35 @@
 //! binary as inputs; target and reference problems come from the model. Rules:
 //! `docs/cue-engine.md`, "Broken cues".
 //!
-//! Incremental, so a show of thousands of cues costs nothing per tick: the model's part (targets,
-//! patches, media references) is rebuilt only when the binary signals a model change
-//! ([`CueEngine::model_changed`]); a status input recomputes only the cues on that media file or
-//! patch (indexes below).
+//! Incremental, so a show of thousands of cues costs nothing per tick and an edit costs what the
+//! edit touched: the model's part (targets, patches, media references) is brought up to date
+//! only when the binary signals a model change. [`CueEngine::model_changed_cues`] names the
+//! cues the edit touched (its [`Footprint`]) and only those, plus the cues whose problems
+//! depend on them, are recomputed; [`CueEngine::model_changed`] rebuilds everything (a newly
+//! opened workspace, a change with no footprint) and is the reference the incremental path must
+//! equal. A status input recomputes only the cues on that media file or patch (indexes below).
+//!
+//! Dependencies between cues (docs/cue-engine.md, "Broken cues"): a cue's problems come from its
+//! own content, from the existence and kind of its target (a fade, stop, devamp, ... names
+//! another cue; `can_target` reads the target's kind and a group's mode), and from the patch
+//! and network patch id sets. So an edit refreshes, besides the cues it touched and the cues it
+//! added (with a group's descendants), every cue that targets a touched, added or removed cue
+//! (`by_target`); patch changes are not in a footprint and rebuild everything. Group warnings
+//! (`below`) are recounted for the groups around every cue that was added, removed, moved or
+//! changed whether it is shown with problems.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::changes::Footprint;
 use crate::cue::{Cue, CueKind, MediaRef};
+use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
 use crate::model::{CueId, NetworkPatchId, PatchId, Workspace};
 use crate::settings::PatchResolution;
 use crate::validate::can_target;
 
 use super::run::Slot;
 use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
-use super::{Ctx, CueEngine, each_cue};
+use super::{Ctx, CueEngine};
 
 /// Shown for a cue whose problems were fixed while the run it was started broken with is still
 /// pending: it reports `broken` until that run ends, and the UI needs a reason.
@@ -44,23 +58,43 @@ struct AudioFacts {
 }
 
 /// The model's part of every cue's problems, with the indexes a status input needs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct ModelFacts {
+    /// Every cue's place: its group (for the groups' warnings), its rank (the pre-show list's
+    /// order) and whether it is in the workspace.
+    tree: CueIndex,
     facts: BTreeMap<CueId, Facts>,
-    by_media: HashMap<String, Vec<CueId>>,
-    by_patch: HashMap<PatchId, Vec<CueId>>,
-    /// Every cue's place in the workspace (lists in order, cues depth-first): the pre-show
-    /// list's order.
-    rank: HashMap<CueId, usize>,
-    /// The group each cue is in (absent at the top level), for the groups' warnings.
-    parent: HashMap<CueId, CueId>,
+    by_media: HashMap<String, BTreeSet<CueId>>,
+    by_patch: HashMap<PatchId, BTreeSet<CueId>>,
+    /// The cues that name a cue as their target, by that cue; and the reverse. Empty sets are
+    /// removed, so a rebuilt model equals an incrementally kept one.
+    by_target: HashMap<CueId, BTreeSet<CueId>>,
+    target_of: HashMap<CueId, CueId>,
+    /// The patch ids `facts` were computed against (a change rebuilds everything).
+    patch_ids: Vec<PatchId>,
+    network_ids: Vec<NetworkPatchId>,
+}
+
+/// What the model changed since the problems were last brought up to date.
+#[derive(Clone, Debug, Default)]
+enum Pending {
+    /// Nothing.
+    Clean,
+    /// Everything (the engine is new, or a change had no footprint).
+    #[default]
+    All,
+    /// These cues; `structural` is the part of `touched` that was added, removed or moved.
+    Cues {
+        touched: BTreeSet<CueId>,
+        structural: BTreeSet<CueId>,
+    },
 }
 
 /// Static problems of the workspace's cues and what they are computed from.
 #[derive(Clone, Debug)]
 pub(super) struct Problems {
-    /// The model changed (or the engine is new): rebuild the model's part on the next call.
-    dirty: bool,
+    /// What changed in the model since the problems were last brought up to date.
+    pending: Pending,
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
@@ -71,8 +105,10 @@ pub(super) struct Problems {
     /// Groups with a descendant shown with problems, and how many (QLab 5: a broken child puts
     /// a warning on its group). Kept up to date cue by cue; recounted when the model is rebuilt.
     below: BTreeMap<CueId, usize>,
-    /// `below` is being recounted: changes cue by cue are not applied meanwhile.
+    /// `below` is being recounted: changes cue by cue are not applied meanwhile, but the cues
+    /// that started or stopped being shown are noted in `flips`.
     recounting: bool,
+    flips: Vec<CueId>,
     /// Cues whose problems were computed, since the engine was made (a cost measure).
     checks: u64,
     /// Debug builds: calls that found the model changed without `model_changed`.
@@ -82,7 +118,7 @@ pub(super) struct Problems {
 impl Default for Problems {
     fn default() -> Self {
         Self {
-            dirty: true,
+            pending: Pending::All,
             model: ModelFacts::default(),
             media: BTreeMap::new(),
             patches: BTreeMap::new(),
@@ -90,6 +126,7 @@ impl Default for Problems {
             started_broken: BTreeSet::new(),
             below: BTreeMap::new(),
             recounting: false,
+            flips: Vec::new(),
             checks: 0,
             unsignalled: 0,
         }
@@ -113,7 +150,43 @@ impl CueEngine {
 
     /// The model's part of the problems is out of date: rebuild it on the next call.
     pub(super) fn mark_problems_dirty(&mut self) {
-        self.problems.dirty = true;
+        self.problems.pending = Pending::All;
+    }
+
+    /// The model changed in the cues of `footprint` only: bring the problems up to date for
+    /// those (and what depends on them) on the next call. Added to what is already pending; a
+    /// pending full rebuild stays one.
+    pub(super) fn mark_problems_changed(&mut self, footprint: &Footprint) {
+        let pending = &mut self.problems.pending;
+        let (touched, structural) = match pending {
+            Pending::All => return,
+            Pending::Clean => {
+                *pending = Pending::Cues {
+                    touched: BTreeSet::new(),
+                    structural: BTreeSet::new(),
+                };
+                let Pending::Cues {
+                    touched,
+                    structural,
+                } = pending
+                else {
+                    return;
+                };
+                (touched, structural)
+            }
+            Pending::Cues {
+                touched,
+                structural,
+            } => (touched, structural),
+        };
+        let moved = footprint
+            .added
+            .iter()
+            .chain(&footprint.removed)
+            .chain(&footprint.moved);
+        structural.extend(moved.copied());
+        touched.extend(structural.iter().copied());
+        touched.extend(footprint.edited.iter().copied());
     }
 
     /// Counts a model change that was not signalled (see `unsignalled_model_changes`).
@@ -141,7 +214,7 @@ impl CueEngine {
             .chain(&self.problems.started_broken)
             .map(|id| (*id, self.problems(*id)))
             .collect();
-        let rank = &self.problems.model.rank;
+        let rank = self.problems.model.tree.ranks();
         out.sort_by_key(|(id, _)| (rank.get(id).copied().unwrap_or(usize::MAX), *id));
         out
     }
@@ -201,20 +274,35 @@ impl CueEngine {
             .unwrap_or_default();
         if self.problems.current.get(&cue) != Some(&fresh) {
             self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
-            self.problems.dirty = true;
+            self.problems.pending = Pending::All;
             self.sync_problems(cx);
         }
         self.has_problems(cue)
     }
 
-    /// Start of a call: rebuild the model's part if the model changed.
+    /// Start of a call: bring the model's part up to date if the model changed.
     pub(super) fn sync_problems(&mut self, cx: &mut Ctx) {
-        if !self.problems.dirty {
-            #[cfg(debug_assertions)]
-            self.check_signalled(cx);
-            return;
+        match std::mem::replace(&mut self.problems.pending, Pending::Clean) {
+            Pending::Clean => {
+                #[cfg(debug_assertions)]
+                self.check_signalled(cx);
+            }
+            Pending::All => self.rebuild_problems(cx),
+            Pending::Cues {
+                touched,
+                structural,
+            } => {
+                if !self.update_problems(&touched, &structural, cx) {
+                    self.rebuild_problems(cx);
+                }
+            }
         }
-        self.problems.dirty = false;
+    }
+
+    /// The reference: the model's part and every cue's problems from scratch, then the groups'
+    /// warnings recounted.
+    fn rebuild_problems(&mut self, cx: &mut Ctx) {
+        self.problems.pending = Pending::Clean;
         self.problems.model = model_facts(cx.ws);
         self.problems.recounting = true;
         let cues: BTreeSet<CueId> = self
@@ -229,14 +317,150 @@ impl CueEngine {
         self.recount_below(cx);
     }
 
+    /// Brings the model's part and the problems up to date for the edit that touched `touched`
+    /// (`structural`: added, removed or moved), recomputing only those cues, the cues that
+    /// target them and the groups around them. Returns false if the model cannot be followed
+    /// from the footprint (the cue lists or patches changed, or the footprint did not name a
+    /// cue that changed): the caller then rebuilds everything.
+    fn update_problems(
+        &mut self,
+        touched: &BTreeSet<CueId>,
+        structural: &BTreeSet<CueId>,
+        cx: &mut Ctx,
+    ) -> bool {
+        let ws = cx.ws;
+        let model = &mut self.problems.model;
+        let same_patches = ws
+            .patches
+            .iter()
+            .map(|p| p.id)
+            .eq(model.patch_ids.iter().copied())
+            && ws
+                .network_patches
+                .iter()
+                .map(|p| p.id)
+                .eq(model.network_ids.iter().copied());
+        if !same_patches {
+            return false;
+        }
+        let delta = match model.tree.reconcile(ws, touched, structural) {
+            IndexChange::Delta(delta) => delta,
+            IndexChange::Rebuilt => return false,
+        };
+        // Cues whose own facts are recomputed: those touched or new, then the cues that target
+        // any of them or a cue that is gone.
+        let mut recompute: BTreeSet<CueId> = touched.iter().chain(&delta.fresh).copied().collect();
+        for id in touched.iter().chain(&delta.fresh).chain(&delta.gone) {
+            if let Some(dependents) = model.by_target.get(id) {
+                recompute.extend(dependents.iter().copied());
+            }
+        }
+        // What is gone has no facts to compute.
+        recompute.retain(|id| model.tree.contains(*id));
+        for id in &delta.gone {
+            model.forget(*id);
+        }
+        let mut computed = Vec::with_capacity(recompute.len());
+        for id in &recompute {
+            let Some(cue) = model.tree.locate(ws, *id) else {
+                return false;
+            };
+            let facts = facts_of(
+                cue,
+                |t| model.tree.locate(ws, t).map(|t| &t.kind),
+                |p| ws.patches.iter().any(|x| x.id == p),
+                |n| ws.network_patches.iter().any(|x| x.id == n),
+            );
+            computed.push((*id, facts, own_target(cue)));
+        }
+        for (id, facts, target) in computed {
+            model.set(id, facts, target);
+        }
+
+        // What a cue shows also depends on its runtime (a break by a lost device clears once
+        // its patch maps; a run started broken shows `started_broken` once its problems are
+        // fixed), but each of those changes only on an event that already refreshes the cue: a
+        // patch or media status, or an edit that touches the cue or what it targets. A removed
+        // cue is refreshed once more so it stops being shown.
+        let mut refresh = recompute;
+        refresh.extend(delta.gone.iter().copied());
+        self.problems.recounting = true;
+        self.problems.flips.clear();
+        self.refresh(refresh, cx);
+        self.recount_changed(&delta, cx);
+        true
+    }
+
+    /// Recounts the groups whose descendants changed: those around a cue that was added,
+    /// removed, moved or started or stopped being shown with problems (`flips`), by what each of
+    /// their cues holds, deepest first. Reports the groups whose warning changed.
+    fn recount_changed(&mut self, delta: &IndexDelta, cx: &mut Ctx) {
+        let p = &mut self.problems;
+        p.recounting = false;
+        let flips = std::mem::take(&mut p.flips);
+        let tree = &p.model.tree;
+        let mut groups: BTreeSet<CueId> = BTreeSet::new();
+        for cue in flips.iter().chain(&delta.fresh).chain(&delta.moved) {
+            groups.extend(tree.ancestors(*cue));
+        }
+        // A new group has no count yet.
+        groups.extend(
+            delta
+                .fresh
+                .iter()
+                .copied()
+                .filter(|id| !tree.kids(CueContainer::Group(*id)).is_empty()),
+        );
+        for former in &delta.former_parents {
+            groups.insert(*former);
+            groups.extend(tree.ancestors(*former));
+        }
+        let mut was: BTreeMap<CueId, bool> = groups
+            .iter()
+            .map(|g| (*g, p.below.contains_key(g)))
+            .collect();
+        for gone in &delta.gone {
+            if p.below.remove(gone).is_some() {
+                was.insert(*gone, true);
+            }
+        }
+        let mut by_depth: Vec<(usize, CueId)> = groups
+            .into_iter()
+            .map(|g| (tree.ancestors(g).count(), g))
+            .collect();
+        by_depth.sort_by(|a, b| b.cmp(a));
+        for (_, group) in by_depth {
+            let held: usize = tree
+                .kids(CueContainer::Group(group))
+                .iter()
+                .map(|k| {
+                    usize::from(p.current.contains_key(k) || p.started_broken.contains(k))
+                        .saturating_add(p.below.get(k).copied().unwrap_or(0))
+                })
+                .fold(0, usize::saturating_add);
+            if held == 0 {
+                p.below.remove(&group);
+            } else {
+                p.below.insert(group, held);
+            }
+        }
+        for (group, before) in was {
+            let warning = p.below.contains_key(&group);
+            if warning != before {
+                cx.out.push(Action::GroupWarningChanged { group, warning });
+            }
+        }
+    }
+
     /// Recounts every group's broken descendants from the rebuilt model and reports the groups
     /// whose warning changed (a deleted group that had one reports it gone, once).
     fn recount_below(&mut self, cx: &mut Ctx) {
         let p = &mut self.problems;
         p.recounting = false;
+        p.flips.clear();
         let mut below: BTreeMap<CueId, usize> = BTreeMap::new();
         for cue in p.current.keys().chain(&p.started_broken) {
-            for group in up_from(&p.model, *cue) {
+            for group in p.model.tree.ancestors(*cue) {
                 let n = below.entry(group).or_default();
                 *n = n.saturating_add(1);
             }
@@ -261,9 +485,10 @@ impl CueEngine {
     fn note_shown(&mut self, cue: CueId, shown: bool, cx: &mut Ctx) {
         let p = &mut self.problems;
         if p.recounting {
+            p.flips.push(cue);
             return;
         }
-        for group in up_from(&p.model, cue) {
+        for group in p.model.tree.ancestors(cue) {
             let warning = if shown {
                 let n = p.below.entry(group).or_default();
                 *n = n.saturating_add(1);
@@ -293,23 +518,57 @@ impl CueEngine {
     /// Debug builds: a model change the binary did not signal is caught (and counted) here.
     #[cfg(debug_assertions)]
     fn check_signalled(&mut self, cx: &mut Ctx) {
-        let model = model_facts(cx.ws);
+        if self.verify_problem_cache(cx.ws).is_err() {
+            self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
+            self.problems.pending = Pending::All;
+            self.sync_problems(cx);
+        }
+    }
+
+    /// Checks the problem bookkeeping against a from-scratch rebuild for `ws`: the model's part
+    /// (places, facts, the indexes), every cue's problems and the groups' warning counts. Call
+    /// it with nothing pending (after a `handle`); `Err` says what differs. It rebuilds the
+    /// whole model, so it is for tests and debug builds, where it is how a missed
+    /// `model_changed` is caught and how the incremental path is held to the full rebuild.
+    pub fn verify_problem_cache(&self, ws: &Workspace) -> Result<(), String> {
         let p = &self.problems;
-        let fresh: BTreeMap<CueId, Vec<CueProblem>> = model
+        let fresh = model_facts(ws);
+        let m = &p.model;
+        let differs = [
+            ("tree", fresh.tree == m.tree),
+            ("facts", fresh.facts == m.facts),
+            ("by_media", fresh.by_media == m.by_media),
+            ("by_patch", fresh.by_patch == m.by_patch),
+            ("by_target", fresh.by_target == m.by_target),
+            ("target_of", fresh.target_of == m.target_of),
+            ("patch_ids", fresh.patch_ids == m.patch_ids),
+            ("network_ids", fresh.network_ids == m.network_ids),
+        ]
+        .into_iter()
+        .find(|(_, same)| !same);
+        if let Some((what, _)) = differs {
+            return Err(format!("the model's {what} differ from a rebuild"));
+        }
+        let current: BTreeMap<CueId, Vec<CueProblem>> = fresh
             .facts
             .iter()
             .map(|(id, f)| (*id, combine(f, &p.media, &p.patches)))
             .filter(|(_, v)| !v.is_empty())
             .collect();
-        if model.facts != p.model.facts
-            || model.rank != p.model.rank
-            || model.parent != p.model.parent
-            || fresh != p.current
-        {
-            self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
-            self.problems.dirty = true;
-            self.sync_problems(cx);
+        if current != p.current {
+            return Err("the cues' problems differ from a rebuild".to_owned());
         }
+        let mut below: BTreeMap<CueId, usize> = BTreeMap::new();
+        for cue in p.current.keys().chain(&p.started_broken) {
+            for group in fresh.tree.ancestors(*cue) {
+                let n = below.entry(group).or_default();
+                *n = n.saturating_add(1);
+            }
+        }
+        if below != p.below {
+            return Err("the groups' warning counts differ from a recount".to_owned());
+        }
+        Ok(())
     }
 
     /// Records what the binary reported about media files and patches, and recomputes the
@@ -390,7 +649,7 @@ impl CueEngine {
                 p.started_broken.remove(&cue);
             }
             let shown = self.problems(cue).to_vec();
-            if self.problems.model.rank.contains_key(&cue) {
+            if self.problems.model.tree.contains(cue) {
                 cx.out.push(Action::ProblemsChanged {
                     cue,
                     problems: shown.clone(),
@@ -420,15 +679,6 @@ impl CueEngine {
             self.note_shown(cue, false, cx);
         }
     }
-}
-
-/// The groups around `cue`, nearest first. Each step goes to a cue placed earlier in the
-/// workspace (a parent comes before its first child), so the walk ends; it is bounded anyway.
-fn up_from(model: &ModelFacts, cue: CueId) -> impl Iterator<Item = CueId> + '_ {
-    std::iter::successors(model.parent.get(&cue).copied(), |g| {
-        model.parent.get(g).copied()
-    })
-    .take(model.rank.len())
 }
 
 /// A cue's problems in their order: target, media, patch or device, network destination.
@@ -473,59 +723,94 @@ fn combine(
     found
 }
 
-/// The model's part of every cue's problems. With duplicate ids the first cue with the id
-/// counts, as for `Workspace::find_cue`.
+/// The model's part of every cue's problems, from scratch (the reference the incremental
+/// updates must equal). With duplicate ids the first cue with the id counts (`CueIndex`).
 fn model_facts(ws: &Workspace) -> ModelFacts {
-    let mut by_id: HashMap<CueId, &Cue> = HashMap::new();
     let mut order: Vec<&Cue> = Vec::new();
-    let mut parent: HashMap<CueId, CueId> = HashMap::new();
-    for list in &ws.cue_lists {
-        each_cue(&list.cues, |c| {
-            if let std::collections::hash_map::Entry::Vacant(e) = by_id.entry(c.id) {
-                e.insert(c);
-                order.push(c);
-            }
-        });
-        // Each child's group, from the first place the child occurs (as for its rank).
-        each_cue(&list.cues, |g| {
-            for child in g.children() {
-                if by_id
-                    .get(&child.id)
-                    .is_some_and(|c| std::ptr::eq(*c, child))
-                {
-                    parent.insert(child.id, g.id);
-                }
-            }
-        });
-    }
+    let tree = CueIndex::build_visiting(ws, |c| order.push(c));
+    let by_id: HashMap<CueId, &Cue> = order.iter().map(|c| (c.id, *c)).collect();
     let patches: HashSet<PatchId> = ws.patches.iter().map(|p| p.id).collect();
     let network: HashSet<NetworkPatchId> = ws.network_patches.iter().map(|p| p.id).collect();
     let mut out = ModelFacts {
-        parent,
+        tree,
+        patch_ids: ws.patches.iter().map(|p| p.id).collect(),
+        network_ids: ws.network_patches.iter().map(|p| p.id).collect(),
         ..ModelFacts::default()
     };
-    for (i, cue) in order.iter().enumerate() {
-        out.rank.insert(cue.id, i);
-        if let CueKind::Audio { media, patch, .. } = &cue.kind {
-            if let Some(file) = media {
-                out.by_media
-                    .entry(file.as_str().to_owned())
-                    .or_default()
-                    .push(cue.id);
-            }
-            out.by_patch.entry(*patch).or_default().push(cue.id);
-        }
+    for cue in order {
         let facts = facts_of(
             cue,
             |t| by_id.get(&t).map(|c| &c.kind),
             |p| patches.contains(&p),
             |n| network.contains(&n),
         );
-        if let Some(facts) = facts {
-            out.facts.insert(cue.id, facts);
-        }
+        out.set(cue.id, facts, own_target(cue));
     }
     out
+}
+
+impl ModelFacts {
+    /// Replaces what the model says about `id`, keeping the indexes in step.
+    fn set(&mut self, id: CueId, facts: Option<Facts>, target: Option<CueId>) {
+        self.forget(id);
+        if let Some(facts) = &facts
+            && let Some(audio) = &facts.audio
+        {
+            if let Some(file) = &audio.media {
+                self.by_media
+                    .entry(file.as_str().to_owned())
+                    .or_default()
+                    .insert(id);
+            }
+            self.by_patch.entry(audio.patch).or_default().insert(id);
+        }
+        if let Some(facts) = facts {
+            self.facts.insert(id, facts);
+        }
+        if let Some(target) = target {
+            self.by_target.entry(target).or_default().insert(id);
+            self.target_of.insert(id, target);
+        }
+    }
+
+    /// Drops everything the model says about `id`: its facts and its entries in the indexes.
+    /// What other cues say about `id` as their target stays (they are recomputed when it
+    /// matters).
+    fn forget(&mut self, id: CueId) {
+        if let Some(audio) = self.facts.remove(&id).and_then(|f| f.audio) {
+            if let Some(file) = &audio.media
+                && let Some(on) = self.by_media.get_mut(file.as_str())
+            {
+                on.remove(&id);
+                if on.is_empty() {
+                    self.by_media.remove(file.as_str());
+                }
+            }
+            if let Some(on) = self.by_patch.get_mut(&audio.patch) {
+                on.remove(&id);
+                if on.is_empty() {
+                    self.by_patch.remove(&audio.patch);
+                }
+            }
+        }
+        if let Some(target) = self.target_of.remove(&id)
+            && let Some(on) = self.by_target.get_mut(&target)
+        {
+            on.remove(&id);
+            if on.is_empty() {
+                self.by_target.remove(&target);
+            }
+        }
+    }
+}
+
+/// The cue `cue` names as its target, if it is a targeting kind with one set.
+fn own_target(cue: &Cue) -> Option<CueId> {
+    if cue.kind.has_target() {
+        cue.kind.target()
+    } else {
+        None
+    }
 }
 
 /// What the model says about `cue`, or `None` for a kind that cannot have problems. `kind_of`
