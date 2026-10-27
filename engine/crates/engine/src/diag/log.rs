@@ -21,8 +21,16 @@ pub const MAX_MESSAGE_BYTES: usize = 2048;
 /// State the crash hook reads. Only `try_lock`ed there: the thread that panicked may hold it.
 #[derive(Debug, Default)]
 pub struct Shared {
-    ring: Mutex<VecDeque<LogEntry>>,
+    ring: Mutex<Ring>,
     workspace: Mutex<Option<String>>,
+}
+
+/// The newest records and the sequence number of the newest (records made, from 1), kept
+/// under one lock so a tail and its `seq` agree.
+#[derive(Debug, Default)]
+struct Ring {
+    entries: VecDeque<LogEntry>,
+    seq: u64,
 }
 
 impl Shared {
@@ -33,8 +41,8 @@ impl Shared {
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
             Err(TryLockError::WouldBlock) => return None,
         };
-        let skip = ring.len().saturating_sub(max);
-        Some(ring.iter().skip(skip).cloned().collect())
+        let skip = ring.entries.len().saturating_sub(max);
+        Some(ring.entries.iter().skip(skip).cloned().collect())
     }
 
     /// The open workspace's path, without waiting: `None` if unknown or the lock is held.
@@ -68,12 +76,20 @@ impl ShowLog {
         Arc::clone(&self.shared)
     }
 
-    /// Adds one record. A non-finite `show_time` is left out (it cannot be encoded) and long
-    /// text is cut.
-    pub fn record(&self, mut entry: LogEntry) {
-        entry.show_time = entry.show_time.filter(|t| t.is_finite());
-        entry.message = cut(entry.message);
-        entry.source = entry.source.map(cut);
+    /// Adds one record and returns its sequence number. A non-finite `show_time` is left out
+    /// (it cannot be encoded) and long text is cut.
+    pub fn record(&self, entry: LogEntry) -> u64 {
+        self.add(clean(entry))
+    }
+
+    /// [`ShowLog::record`], also returning the record as stored (for the live push).
+    pub fn record_copy(&self, entry: LogEntry) -> (u64, LogEntry) {
+        let entry = clean(entry);
+        let copy = entry.clone();
+        (self.add(entry), copy)
+    }
+
+    fn add(&self, entry: LogEntry) -> u64 {
         if let Some(sink) = &self.sink {
             sink.offer(&entry);
         }
@@ -82,21 +98,38 @@ impl ShowLog {
             .ring
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if ring.len() >= RING_CAPACITY {
-            ring.pop_front();
+        if ring.entries.len() >= RING_CAPACITY {
+            ring.entries.pop_front();
         }
-        ring.push_back(entry);
+        ring.entries.push_back(entry);
+        ring.seq = ring.seq.saturating_add(1);
+        ring.seq
     }
 
     /// The newest `max` entries, oldest first.
     pub fn tail(&self, max: usize) -> Vec<LogEntry> {
+        self.tail_seq(max).0
+    }
+
+    /// [`ShowLog::tail`] and the sequence number of the newest record (0: none yet), read
+    /// together.
+    pub fn tail_seq(&self, max: usize) -> (Vec<LogEntry>, u64) {
         let ring = self
             .shared
             .ring
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let skip = ring.len().saturating_sub(max);
-        ring.iter().skip(skip).cloned().collect()
+        let skip = ring.entries.len().saturating_sub(max);
+        (ring.entries.iter().skip(skip).cloned().collect(), ring.seq)
+    }
+
+    /// The sequence number of the newest record (0: none yet), for `status`.
+    pub fn seq(&self) -> u64 {
+        self.shared
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .seq
     }
 
     /// Records the disk writer had no room for (or could not write) so far.
@@ -112,6 +145,13 @@ impl ShowLog {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = path;
     }
+}
+
+fn clean(mut entry: LogEntry) -> LogEntry {
+    entry.show_time = entry.show_time.filter(|t| t.is_finite());
+    entry.message = cut(entry.message);
+    entry.source = entry.source.map(cut);
+    entry
 }
 
 fn cut(mut text: String) -> String {
@@ -186,6 +226,34 @@ mod tests {
         assert_eq!(last.len(), 2);
         assert_eq!(last[1].time_ms, RING_CAPACITY as i64 + 4);
         assert!(log.tail(0).is_empty());
+    }
+
+    #[test]
+    fn records_are_numbered_and_the_tail_says_where_it_ends() {
+        let log = ShowLog::new(None);
+        assert_eq!(log.tail_seq(10), (vec![], 0));
+        assert_eq!(log.seq(), 0);
+        for n in 0..(RING_CAPACITY as i64 + 2) {
+            rec(&log, n, "x");
+        }
+        let (tail, seq) = log.tail_seq(3);
+        assert_eq!(seq, RING_CAPACITY as u64 + 2);
+        assert_eq!(tail.len(), 3);
+        let long = "y".repeat(MAX_MESSAGE_BYTES * 2);
+        let (seq, copy) = log.record_copy(LogEntry {
+            time_ms: 0,
+            show_time: Some(f64::INFINITY),
+            level: LogLevel::Info,
+            kind: LogKind::Engine,
+            message: long,
+            cue: None,
+            source: None,
+        });
+        assert_eq!(seq, RING_CAPACITY as u64 + 3);
+        assert_eq!(log.seq(), seq);
+        // The copy is the record as stored: cut, and without the bad time.
+        assert_eq!(log.tail(1), std::slice::from_ref(&copy));
+        assert!(copy.message.ends_with("...") && copy.show_time.is_none());
     }
 
     #[test]

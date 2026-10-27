@@ -316,7 +316,7 @@ Only a cue that is armed and has no problems emits `SendOsc`. A disarmed cue ski
 
 ## Broken cues (CUE-06, NFR-07)
 
-Problems that keep a cue from running are found **before it is triggered** (NFR-07), so the operator sees them in the list, the inspector and the pre-show check. Core does no I/O: the binary reports what it learns about media and devices as inputs; target and reference problems come from the model. A cue can have several problems (`CueProblem`, in this order: target, media, patch/device):
+Problems that keep a cue from running are found **before it is triggered** (NFR-07), so the operator sees them in the list, the inspector and the pre-show check. Core does no I/O: the binary reports what it learns about media and devices as inputs; target and reference problems come from the model. A cue can have several problems (`CueProblem`, in this order: target, nothing to fade, media, patch/device):
 
 | Problem | Cue kinds | From |
 |---|---|---|
@@ -324,6 +324,7 @@ Problems that keep a cue from running are found **before it is triggered** (NFR-
 | `target_missing { target }` | targeting cues | the model: target not in the workspace |
 | `target_self` | targeting cues | the model: the cue targets itself |
 | `target_wrong_kind { target }` | Fade (needs Audio or Group), Devamp (needs Audio or a playlist group) | the model (the same rule as load-time validation) |
+| `nothing_to_fade` | Fade | the model: the fade sets no level (`master_db` unset, every `output_db` entry unset, no crosspoints); QLab: "No parameters set to fade" (M2.26, check F4) |
 | `no_media` | Audio | the model: no file assigned |
 | `media_missing { media }`, `media_unsupported { media, reason }` | Audio | `Input::MediaStatus` for the cue's media reference |
 | `patch_missing { patch }` | Audio | the model: patch not in the workspace |
@@ -362,7 +363,7 @@ Problems that keep a cue from running are found **before it is triggered** (NFR-
 
 ### Stop All and a cue's own panic
 
-`Input::StopAll` (OSC `/stop` and `/hardStop`): every cue of every list, at every depth, and every preview stops at once, children before their groups, exactly as `Stop` with no fade does for one cue (pending pre-waits, continues and devamp next cues fire nothing). It ends any panic window (`panic_end()` is `None` after it), so a Panic right after is a new panic with its fade, not a second press. `Input::PanicCue { cue }` (OSC `/cue/{n}/panic`) is the cue's own panic of its `panic` second trigger (see `panic_tree`): the cue and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched. Both ignore an unknown cue or nothing running (`PanicCue` warns `UnknownCue` for an id not in the workspace).
+`Input::StopAll` (OSC `/stop` and `/hardStop`): every cue of every list, at every depth, and every preview stops at once, children before their groups, exactly as `Stop` with no fade does for one cue (pending pre-waits, continues and devamp next cues fire nothing). It ends any panic window (`panic_end()` is `None` after it), so a Panic right after is a new panic with its fade, not a second press. `Input::PanicCue { cue }` (OSC `/cue/{n}/panic`) is the cue's own panic of its `panic` second trigger (see `panic_tree`): the cue and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched. **Second press** (QLab check Q7, M4.1d): `PanicCue` on a cue that, or whose descendant, is already fading out in a panic (its own or a workspace Panic) stops it and what is in it at once (`StopVoice` with no fade); other cues keep playing. The `panic` second-trigger option does not do this (a trigger on a cue fading out in a panic restarts it, see Second trigger). Both ignore an unknown cue or nothing running (`PanicCue` warns `UnknownCue` for an id not in the workspace).
 
 ## Pause All and Resume All (PB-04)
 
@@ -417,7 +418,8 @@ The passes compare the workspace with what the engine knows:
 
 - **Groups**: playlist crossfades and per-group options beyond loop/shuffle.
 - **Open QLab questions on halted playlists** (M2.27, from QLab check Q2; decided here as the most defensible reading, not measured): a remaining child whose length is not known or endless (a looping or unprobed audio cue, a nested looping playlist, a nested random or "start first" group) cancels the group's auto-follow, as the group could never say when it would have ended; a looping playlist that halts never follows; the group shows `post-waiting` while its follow is pending (QLab shows it finished); a nested group that ends with a child broken at run time still counts as a broken child of the playlist around it (that playlist moves on and does not follow), it does not halt it; a broken child that was paused on its own when it failed has its nominal end counted from its frozen deadline. QLab showed the measured case only (a plain list of 10 s audio cues).
-- **Fade with nothing to fade** (M2.24, QLab check F4): QLab shows a Fade cue with no level set as broken ("no parameters set to fade") and GO skips it, even with "stop target when done". That needs a new static problem, which is a protocol change (`WireProblem`), so it waits; until then such a Fade runs its duration and, with "stop target when done", stops its target.
+- **Fade with nothing to fade** (M2.26, QLab check F4): a Fade that sets no level has the static problem `nothing_to_fade` (QLab: "No parameters set to fade"), so it is broken like any cue with problems: GO and Start skip it (`CueBroken`) and its "stop target when done" does not stop the target; its timing and continue run as for any broken cue. The target need not be playing or even set for the problem to show (a Fade with no target has `no_target` as well, listed first). Setting any one level (master, one output, one crosspoint) fixes it, incrementally like other model problems.
+- **Network** cues (M4.6): their action completes at once with an `Unsupported` warning and does nothing; pre-wait, post-wait and continue mode apply.
 - **Target** cues (CT-18) are not in v0.0.1; video fades (CT-10 video part) are v0.0.2.
 - **Network cues** send OSC only. Raw UDP/TCP string messages and OSC parameter fades are later (REQUIREMENTS §21).
 - **Priming**: `Loaded` means "loaded by an operation"; keeping cues near the playhead primed (ARCHITECTURE §3.5) is the binary's job (M4.2).
