@@ -128,6 +128,129 @@ fn a_preview_plays_on_the_cue_patch_outside_the_show() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
+/// The `preview` runtime changes for `cue`, in order.
+fn preview_changes(msgs: &[ServerMessage], cue: openlab_core::CueId) -> Vec<bool> {
+    changes(msgs)
+        .into_iter()
+        .filter_map(|c| match c {
+            RuntimeChange::Preview { cue: c, active } if c == cue => Some(active),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_preview_that_ends_by_itself_reports_inactive_and_leaves_no_voice() {
+    // M4.13: the voice's end comes back as `ActionEnded` with the preview's run.
+    let path = wav(&dc(300, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.take_outbound();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 12);
+    assert_eq!(
+        preview_changes(&s.take_outbound(), id(1)),
+        vec![true, false]
+    );
+    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 299));
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+    // And the cue can be previewed again.
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK);
+    assert!(s.control().engine().is_previewing(id(1)));
+}
+
+#[test]
+fn stopping_a_preview_fades_it_out_over_the_stop_fade() {
+    let path = wav(&dc(8000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 4);
+    let at = s.now() as usize;
+    s.transport(TransportAction::StopPreview { cue: None });
+    s.run(BLOCK * 8);
+    let tail = s.channel(0);
+    // Silent within the 50 ms fade (400 frames at 8 kHz) plus the lookahead blocks, but not
+    // cut dead on the first sample.
+    let last = last_nonzero(&tail).unwrap();
+    assert!(
+        last > at + 40 && last < at + 400 + BLOCK as usize * 3,
+        "{last} vs {at}"
+    );
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_preview_that_cannot_open_its_stream_fails_without_breaking_the_show_cue() {
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut config = config(&ws);
+    // No prime, and a preview never uses one: the stream is opened at the Preview.
+    config.prime_cues = 0;
+    let mut s = show_with(ws, config);
+    s.take_outbound();
+    // The file changes after its probe: the disk worker refuses it (`Changed`).
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 8);
+    let msgs = s.take_outbound();
+    assert_eq!(preview_changes(&msgs, id(1)), vec![true, false]);
+    assert!(
+        warnings(&msgs).contains(&WireWarning::PreviewFailed {
+            cue: id(1),
+            reason: WireBrokenReason::StreamFailed,
+        }),
+        "{:?}",
+        warnings(&msgs)
+    );
+    // The show is untouched: the cue is not broken and has no state.
+    assert!(states(&msgs, id(1)).is_empty());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_preview_of_a_cue_with_a_missing_file_warns_and_plays_nothing() {
+    let gone = fresh_path("wav");
+    let ok = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![audio(1, &gone, 0), audio(2, &ok, 1)]));
+    s.take_outbound();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(preview_changes(&msgs, id(1)).is_empty());
+    assert!(warnings(&msgs).contains(&WireWarning::CueBroken { cue: id(1) }));
+    assert_eq!(s.control().live_voices(), 0);
+    // Another cue previews and plays as usual.
+    s.transport(TransportAction::Preview { cue: id(2) });
+    s.run(BLOCK * 4);
+    assert!(s.control().engine().is_previewing(id(2)));
+}
+
+#[test]
+fn a_preview_plays_beside_the_same_cue_in_the_show_and_panic_stops_it_at_once() {
+    let path = wav(&dc(40_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    go(&mut s);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    // Stopping the preview leaves the show's cue playing.
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(BLOCK * 12);
+    assert_eq!(s.control().live_voices(), 1);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    // Panic stops a preview at once (cue-engine.md "Preview"; M2.28 V4/V6 changes this).
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 2);
+    s.take_outbound();
+    s.transport(TransportAction::Panic);
+    s.run(BLOCK * 2);
+    assert_eq!(preview_changes(&s.take_outbound(), id(1)), vec![false]);
+}
+
 /// The probe of a named pipe blocks until a writer opens it: the control loop must keep running
 /// (the probe is on a worker) and a GO in the meantime must not block either.
 #[cfg(unix)]
