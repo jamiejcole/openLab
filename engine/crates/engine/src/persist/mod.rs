@@ -36,7 +36,7 @@ pub use relink::{
 };
 pub use save::{SaveReport, save_workspace, save_workspace_with};
 pub use settings::{load_machine_settings, save_machine_settings};
-pub use writer::{JobKind, MAX_PENDING_TARGETS, SaveWriter};
+pub use writer::{JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, SaveWriter};
 
 /// `<app-support>/openLab`.
 #[derive(Clone, Debug)]
