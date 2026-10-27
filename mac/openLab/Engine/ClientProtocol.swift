@@ -43,6 +43,10 @@ enum TransportAction: Hashable, Sendable, Codable {
     case triggerReleased(cue: ModelID)
     case preview(cue: ModelID)
     case stopPreview(cue: ModelID?)
+    case goFrom(list: ModelID, cue: ModelID)
+    case stopAll
+    case hardStopAll
+    case panicCue(cue: ModelID)
 
     private var wire: (String, Fields) {
         switch self {
@@ -64,6 +68,10 @@ enum TransportAction: Hashable, Sendable, Codable {
         case .triggerReleased(let c): return ("trigger_released", [("cue", c)])
         case .preview(let c): return ("preview", [("cue", c)])
         case .stopPreview(let c): return ("stop_preview", [("cue", c)])
+        case .goFrom(let l, let c): return ("go_from", [("list", l), ("cue", c)])
+        case .stopAll: return ("stop_all", [])
+        case .hardStopAll: return ("hard_stop_all", [])
+        case .panicCue(let c): return ("panic_cue", [("cue", c)])
         }
     }
 
@@ -94,6 +102,10 @@ enum TransportAction: Hashable, Sendable, Codable {
         case "trigger_released": self = .triggerReleased(cue: try cue())
         case "preview": self = .preview(cue: try cue())
         case "stop_preview": self = .stopPreview(cue: try c.decodeIfPresent(ModelID.self, forKey: "cue"))
+        case "go_from": self = .goFrom(list: try list(), cue: try cue())
+        case "stop_all": self = .stopAll
+        case "hard_stop_all": self = .hardStopAll
+        case "panic_cue": self = .panicCue(cue: try cue())
         case let other:
             throw DecodingError.dataCorrupted(
                 .init(codingPath: c.codingPath, debugDescription: "transport action \(other)"))

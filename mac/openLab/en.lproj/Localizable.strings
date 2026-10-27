@@ -22,6 +22,20 @@
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
 
+"menu.transport" = "Transport";
+"menu.transport.go" = "GO";
+"menu.transport.stopAll" = "Stop All";
+"menu.transport.pauseAll" = "Pause All";
+"menu.transport.resumeAll" = "Resume All";
+"menu.transport.panic" = "Panic";
+"menu.transport.playheadPrevious" = "Previous Cue";
+"menu.transport.playheadNext" = "Next Cue";
+"menu.transport.loadSelected" = "Load Selected";
+"menu.transport.startSelected" = "Start Selected";
+"menu.transport.pauseResumeSelected" = "Pause or Resume Selected";
+"menu.transport.stopSelected" = "Stop Selected";
+"menu.transport.resetSelected" = "Reset Selected";
+
 "menu.window" = "Window";
 "menu.window.minimize" = "Minimize";
 "menu.window.zoom" = "Zoom";
@@ -50,6 +64,7 @@
 "error.detail.generic" = "An unexpected error occurred.";
 "error.openFailed" = "Could not open the workspace: %@";
 "error.saveFailed" = "Could not save the workspace: %@";
+"error.transportFailed" = "Transport command failed: %@";
 "error.closeFailed" = "Could not close the workspace: %@";
 "menu.window.bringAllToFront" = "Bring All to Front";
 
@@ -73,6 +88,7 @@
 "cue.type.target" = "Target";
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
+"cue.type.network" = "Network";
 
 "cuelist.label" = "Cue list";
 "cuelist.col.number" = "Number";
@@ -82,7 +98,69 @@
 "cuelist.col.duration" = "Duration";
 "cuelist.col.postWait" = "Post-Wait";
 
+"cuelist.col.status" = "Status";
+"cue.target.missing" = "Missing target";
+"cue.playhead" = "Playhead";
+"cue.playhead.inside" = "Playhead is inside this group";
+"cue.flagged" = "Flagged";
+
+"cue.state.idle" = "Idle";
+"cue.state.loaded" = "Loaded";
+"cue.state.preWaiting" = "Pre-waiting";
+"cue.state.running" = "Running";
+"cue.state.paused" = "Paused";
+"cue.state.postWaiting" = "Post-waiting";
+"cue.state.fading" = "Fading";
+"cue.state.stopping" = "Stopping";
+"cue.state.broken" = "Broken";
+"cue.broken.voiceRejected" = "The audio engine rejected the cue";
+"cue.broken.streamFailed" = "The audio file could not be read while playing";
+"cue.broken.deviceLost" = "The audio device was lost";
+"cue.broken.group" = "A cue inside this group is broken";
+
+"problem.no_target" = "No target";
+"problem.target_missing" = "The target cue is missing";
+"problem.target_self" = "The cue targets itself";
+"problem.target_wrong_kind" = "The target is the wrong kind of cue";
+"problem.no_media" = "No media file";
+"problem.media_missing" = "The media file is missing";
+"problem.media_unsupported" = "The media file is not supported";
+"problem.patch_missing" = "The output patch is missing";
+"problem.device_unavailable" = "The output device is unavailable";
+"problem.network_patch_missing" = "The network patch is missing";
+"problem.started_broken" = "The cue started while broken";
+
+"cue.colour.none" = "None";
+"cue.colour.red" = "Red";
+"cue.colour.orange" = "Orange";
+"cue.colour.green" = "Green";
+"cue.colour.blue" = "Blue";
+"cue.colour.purple" = "Purple";
+
+"cue.continue.autoContinue" = "Auto-continue";
+"cue.continue.autoFollow" = "Auto-follow";
+
 "inspector.empty" = "No cue selected";
+"inspector.multiple" = "Multiple cues selected";
+"inspector.tab.basics" = "Basics";
+"inspector.notes" = "Notes";
+"inspector.colour" = "Color";
+"inspector.continue" = "Continue";
+"inspector.continue.do_not_continue" = "Do not continue";
+"inspector.continue.auto_continue" = "Auto-continue";
+"inspector.continue.auto_follow" = "Auto-follow";
+"inspector.flagged" = "Flagged";
+"inspector.armed" = "Armed";
+"inspector.target.missing" = "(missing cue)";
+"inspector.target.notApplicable" = "(not applicable)";
+"inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
+"inspector.invalid.decimalComma" = "Use a full stop for decimals, as in 1.5.";
+"inspector.invalid.duplicateNumber" = "Another cue already has that number.";
+"inspector.invalid.unknownTarget" = "No cue has that number.";
+"inspector.invalid.selfTarget" = "A cue cannot target itself.";
+"inspector.invalid.notApplicable" = "This cue has no target.";
+"inspector.refused" = "The change was refused: %@";
+"inspector.failed" = "The change could not be sent.";
 
 "transport.reset" = "Reset all";
 "transport.pause" = "Pause all";
@@ -92,6 +170,11 @@
 "sidebar.tab.cueLists" = "Cue Lists";
 "sidebar.tab.activeCues" = "Active Cues";
 "sidebar.list.label" = "Cue lists";
+"sidebar.active.label" = "Active cues";
+"activeCue.pause" = "Pause";
+"activeCue.resume" = "Resume";
+"activeCue.panic" = "Panic this cue";
+"footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
 "sidebar.newCart" = "New Cart";
 
@@ -103,7 +186,132 @@
 "footer.toggle.inspector" = "Show or hide the inspector";
 "footer.toggle.sidebar" = "Show or hide the sidebar";
 "footer.settings" = "Settings";
-"footer.status.empty" = "0 cues in 1 list";
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";
+
+/* Sidebar: Warnings tab (DX-01). {name} is replaced by the engine's field of that name. */
+"sidebar.tab.warnings" = "Warnings";
+"sidebar.warnings.label" = "Warnings";
+"warnings.none" = "No warnings";
+"warnings.one" = "1 warning";
+"warnings.many" = "%d warnings";
+"warnings.marker" = "Warning";
+"warnings.relink" = "Relink Media…";
+
+"broken.voice_rejected" = "The audio engine refused to play it.";
+"broken.stream_failed" = "Its audio stream failed while it was playing.";
+"broken.device_lost" = "The audio device was lost while it was playing.";
+
+"problem.unknown" = "Unrecognised problem: {type}";
+"problem.no_target" = "No target is set.";
+"problem.target_missing" = "Its target, {target}, does not exist.";
+"problem.target_self" = "It targets itself.";
+"problem.target_wrong_kind" = "Its target, {target}, is the wrong kind of cue.";
+"problem.no_media" = "No media file is chosen.";
+"problem.media_missing" = "Media file not found: {media}";
+"problem.media_unsupported" = "Media file cannot be played: {media}";
+"problem.patch_missing" = "Its audio patch, {patch}, does not exist.";
+"problem.device_unavailable" = "The audio device for patch {patch} is not available.";
+"problem.device_unavailable.mapped" = "Patch {patch} is available on {device}.";
+"problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
+"problem.device_unavailable.device_missing" = "Audio device {device} (patch {patch}) is not connected.";
+"problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
+"problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
+"problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
+"problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
+
+"warning.unknown" = "Unrecognised warning: {type}";
+"warning.unknown_list" = "A cue list that does not exist was addressed.";
+"warning.unknown_cue" = "A cue that does not exist was addressed: {cue}";
+"warning.not_in_list" = "{cue} is not in list {list}, so nothing was started.";
+"warning.number_not_found" = "No cue numbered {number} in {list}.";
+"warning.cue_broken" = "{cue} is broken and was not started.";
+"warning.trigger_ignored" = "{cue} ignored a trigger because it is {state}.";
+"warning.load_ignored" = "{cue} could not be loaded.";
+"warning.unsupported" = "{cue} is a kind of cue this version cannot run.";
+"warning.late_start" = "{cue} started {late_ms} ms late.";
+"warning.chain_limit" = "{cue} stopped a chain of cues after {limit} steps.";
+"warning.cue_removed" = "{cue} was removed while a trigger for it was pending.";
+"warning.no_target" = "{cue} has no target.";
+"warning.target_missing" = "{cue}: its target {target} does not exist.";
+"warning.target_wrong_kind" = "{cue}: its target {target} is the wrong kind of cue.";
+"warning.target_not_running" = "{cue}: its target {target} is not running.";
+"warning.preview_ignored" = "Preview of {cue} was ignored.";
+"warning.preview_ignored.already_previewing" = "{cue} is already being previewed.";
+"warning.preview_ignored.not_audio" = "{cue} is not an audio cue, so it cannot be previewed.";
+"warning.preview_failed" = "Preview of {cue} failed.";
+"warning.preview_failed.device_lost" = "Preview of {cue} failed: the audio device was lost.";
+"warning.preview_failed.stream_failed" = "Preview of {cue} failed: its audio stream failed.";
+"warning.preview_failed.voice_rejected" = "Preview of {cue} failed: the audio engine refused to play it.";
+"warning.devamp_ignored" = "{cue} ignored a Devamp that did not apply to it.";
+"warning.go_ignored" = "GO on {list} was ignored.";
+"warning.go_ignored.chain_limit" = "GO on {list} was ignored: a chain of cues was too long.";
+"warning.go_ignored.double_go" = "GO on {list} was ignored: it came too soon after the last GO.";
+"warning.go_ignored.no_cue" = "GO on {list} was ignored: there is no cue to start.";
+"warning.go_ignored.unknown_list" = "GO was ignored: the cue list does not exist.";
+
+/* Footer status (DX-03) */
+"status.waiting" = "Waiting for engine status";
+"status.ok" = "Audio OK";
+"status.cpu" = "CPU %.0f%%";
+"status.alarm" = "ALARM:";
+"status.warning" = "Warning:";
+"status.tooltip" = "Engine status. Click for details.";
+"status.device.lost" = "Audio device lost";
+"status.device.failed" = "Audio device failed";
+"status.device.absent" = "No audio device";
+"status.device.other" = "Audio device state: %@";
+"status.disk.unhealthy" = "Disk reads are falling behind";
+"status.disk.healthy" = "healthy";
+"status.load.high" = "Audio engine load is high";
+"status.xruns" = "%d audio dropout(s)";
+"status.state.ok" = "OK";
+"status.state.lost" = "lost";
+"status.state.failed" = "failed";
+"status.state.absent" = "none";
+"status.detail.none" = "none";
+"status.detail.device" = "Output device: %@ (%@)";
+"status.detail.format" = "%d Hz, %d channels";
+"status.detail.block" = "block %d frames";
+"status.detail.latency" = "latency %.1f ms";
+"status.detail.disk" = "Disk: %d streams, %d frames late, %@";
+"status.detail.cpu" = "CPU: %@";
+"status.detail.load" = "Audio engine load: %@";
+"status.detail.xruns" = "Dropouts since start: %d";
+"status.detail.logDropped" = "Log records dropped: %d";
+
+/* Log window (DX-02) */
+"menu.window.log" = "Show Log";
+"log.title" = "Show Log";
+"log.refresh" = "Refresh";
+"log.filter.label" = "Show";
+"log.filter.all" = "All records";
+"log.filter.info" = "Info and above";
+"log.filter.warn" = "Warnings and errors";
+"log.filter.error" = "Errors only";
+"log.level.error" = "ERROR";
+"log.level.warn" = "WARN";
+"log.level.info" = "INFO";
+"log.level.debug" = "DEBUG";
+"log.column.time" = "Time";
+"log.column.level" = "Level";
+"log.column.kind" = "Kind";
+"log.column.message" = "Message";
+"log.tailFailed" = "The engine's log history could not be loaded.";
+"log.dropped" = "%d records were dropped by the engine.";
+
+/* Relink missing media (WS-03) */
+"menu.file.relink" = "Relink Missing Media…";
+"relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
+"relink.panel.prompt" = "Relink";
+"relink.relinked" = "Relinked %d cue(s).";
+"relink.ambiguous" = "%d had more than one match and were left alone.";
+"relink.unmatched" = "%d could not be found.";
+"relink.failed" = "Relinking media failed: %@";
+
+"status.offline" = "Engine offline";
+"status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
+"status.dropouts" = "Dropouts %d";
+"relink.log.ambiguous" = "More than one match for %@; left alone. Candidates: %@";
+"relink.log.unmatched" = "No match found for %@.";
