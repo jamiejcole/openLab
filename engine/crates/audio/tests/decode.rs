@@ -445,6 +445,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `id3-wav-extensible-mask-shift.wav`: an ID3 tag hid a 64-channel extensible WAV from the header
 /// check, and symphonia 0.6.1 overflowed a shift fixing its channel mask; the embedded header is
 /// now found and rejected first.
+/// `non-wave-riff-start-wav-mask-shift.wav`: a RIFF whose form type is not `WAVE` came first, so
+/// the scan for embedded headers was skipped, yet the probe went on to the 64-channel extensible
+/// WAV behind it.
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -691,4 +694,37 @@ fn pcm_header_checks_find_a_wav_after_a_leading_id3_tag() {
     // A tag in front of a good file changes nothing.
     let good = [id3_tag(40), wav(&tone(10, RATE), 2, RATE, Pcm::I16)].concat();
     assert!(probe_media(reader(good)).is_ok());
+}
+
+/// The crash input of `fuzz-findings/non-wave-riff-start-wav-mask-shift.wav`, rebuilt: a start
+/// that fails the probe's scoring (so it scans on), junk, then an extensible WAV with 64
+/// channels and a short mask.
+fn bad_start_then_wav(start: &[u8; 12]) -> Vec<u8> {
+    use common::wide::{self, Fmt, Header};
+    let samples = vec![0.0; 64 * 4];
+    let w = wide::wav(&samples, 64, RATE, Fmt::I16, Header::Extensible(0x3));
+    let junk = [0xFF, 0xFB, 0x90, 0x00, 0, 0, 0, 0, 7, 7, 7, 7, 7, 7];
+    [&start[..], &junk[..], &w[..]].concat()
+}
+
+/// The scan for embedded headers is skipped only when the start is itself a complete header the
+/// probe takes; a RIFF/FORM with another form type, or no `fmt `/`COMM` chunk, is scanned past.
+#[test]
+fn a_non_wave_container_start_does_not_hide_an_overflowing_wav_header() {
+    for start in [
+        b"RIFF\x24\x01\0\0WAV\t",
+        b"RIFF\x24\x01\0\0AVI ",
+        b"FORM\0\0\x01\x24AIFX",
+    ] {
+        let r = probe_media(reader(bad_start_then_wav(start)));
+        assert!(
+            matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header: channel mask")),
+            "{start:?}: {r:?}"
+        );
+    }
+    // A RIFF/WAVE start with no `fmt ` chunk is not taken by the probe either.
+    let mut no_fmt = b"RIFF\x24\x01\0\0WAVEjunk\0\0\0\0".to_vec();
+    no_fmt.extend_from_slice(&bad_start_then_wav(b"RIFF\0\0\0\0WAV\t"));
+    let r = probe_media(reader(no_fmt));
+    assert!(matches!(r, Err(MediaError::Corrupt(_))), "{r:?}");
 }
