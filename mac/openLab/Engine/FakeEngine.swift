@@ -253,6 +253,11 @@ final class FakeEngine: EngineTransport {
                         "unmatched": .array([]),
                     ])
                 ]))
+        case .logTail:
+            result(
+                c, id,
+                ok: .object(["data": .object(["type": .string("log_tail"), "entries": .array([]), "dropped": .int(0)])])
+            )
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))

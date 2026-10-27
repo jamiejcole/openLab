@@ -185,6 +185,36 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(s.logEntries.last?.message, "line \(WorkspaceStore.maxLogEntries + 19)")
     }
 
+    func testStatusKeepsTheLatestOne() async throws {
+        let rig = try await connectedRig()
+        let s = rig.store
+        XCTAssertNil(s.status)
+        s.receive(try msg(try Fixtures.text("server", "status")))
+        XCTAssertEqual(s.status?.cpuPercent, 7.5)
+        XCTAssertEqual(s.status?.device.state, .ok)
+        s.receive(try msg(try Fixtures.text("server", "status_device_lost")))
+        XCTAssertEqual(s.status?.device.state, .lost)
+        XCTAssertNil(s.status?.device.name)
+        XCTAssertEqual(s.status?.disk.healthy, false)
+    }
+
+    func testLogTailIntentSendsMaxAndReturnsEntries() async throws {
+        let rig = try await connectedRig()
+        let result = await rig.store.logTail(max: 50)
+        guard case .success(let tail) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(tail.entries, [])
+        XCTAssertEqual(tail.dropped, 0)
+        XCTAssertTrue(rig.engine.received.contains { $0.isLogTail(max: 50) })
+        // The fixture's result decodes to entries.
+        guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_log_tail")),
+            case .logTail(let entries, let dropped)? = ok.data
+        else { return XCTFail("fixture") }
+        XCTAssertEqual(entries.count, 9)
+        XCTAssertEqual(entries.first?.kind, .go)
+        XCTAssertNil(entries[7].showTime)
+        XCTAssertEqual(dropped, 2)
+    }
+
     func testProgressDocumentAndWarnings() async throws {
         let rig = try await connectedRig()
         let s = rig.store
@@ -247,5 +277,12 @@ final class WorkspaceStoreTests: XCTestCase {
         let result = await task.value
         guard case .failure(.engine(let code, _)) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(code, .commandRefused)
+    }
+}
+
+extension ClientMessage {
+    fileprivate func isLogTail(max: UInt32?) -> Bool {
+        if case .request(_, .logTail(let m)) = self { return m == max }
+        return false
     }
 }

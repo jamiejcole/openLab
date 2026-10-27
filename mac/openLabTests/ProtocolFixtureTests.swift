@@ -17,6 +17,7 @@ final class ProtocolFixtureTests: XCTestCase {
         case .progress: return "progress"
         case .meters: return "meters"
         case .log: return "log"
+        case .status: return "status"
         case .warnings: return "warnings"
         case .result: return "result"
         case .error: return "error"
@@ -93,7 +94,7 @@ final class ProtocolFixtureTests: XCTestCase {
     }
 
     func testUnknownServerTypeDecodesToUnknownNotAnError() throws {
-        for type in ["status", "log_tail", "something_new"] {
+        for type in ["stats_v2", "log_tail", "something_new"] {
             let m = try ServerMessage.decode(#"{"type":"\#(type)","anything":[1,2]}"#)
             guard case .unknown(let t) = m else { return XCTFail("\(type)") }
             XCTAssertEqual(t, type)

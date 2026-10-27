@@ -168,6 +168,90 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
     }
 }
 
+/// What a show-log record is about. A string so a kind added later still decodes.
+struct LogKind: Hashable, Sendable, Decodable, ExpressibleByStringLiteral {
+    let raw: String
+    init(stringLiteral value: String) { raw = value }
+    init(from decoder: Decoder) throws { raw = try decoder.singleValueContainer().decode(String.self) }
+    static let go: LogKind = "go"
+    static let transport: LogKind = "transport"
+    static let trigger: LogKind = "trigger"
+    static let cueStart: LogKind = "cue_start"
+    static let cueStop: LogKind = "cue_stop"
+    static let cueFail: LogKind = "cue_fail"
+    static let device: LogKind = "device"
+    static let document: LogKind = "document"
+    static let engine: LogKind = "engine"
+}
+
+/// One show-log record (DX-02), as in `log_tail` and the engine's log file.
+struct ShowLogEntry: Hashable, Sendable, Decodable {
+    let timeMs: Int64
+    let showTime: Double?
+    let level: LogLevel
+    let kind: LogKind
+    let message: String
+    let cue: ModelID?
+    let source: String?
+    enum CodingKeys: String, CodingKey {
+        case level, kind, message, cue, source
+        case timeMs = "time_ms"
+        case showTime = "show_time"
+    }
+}
+
+/// The output device's state. A string so a state added later still decodes.
+struct DeviceState: Hashable, Sendable, Decodable, ExpressibleByStringLiteral {
+    let raw: String
+    init(stringLiteral value: String) { raw = value }
+    init(from decoder: Decoder) throws { raw = try decoder.singleValueContainer().decode(String.self) }
+    static let ok: DeviceState = "ok"
+    static let lost: DeviceState = "lost"
+    static let failed: DeviceState = "failed"
+    static let absent: DeviceState = "absent"
+}
+
+struct DiskStatus: Hashable, Sendable, Decodable {
+    let streams: UInt32
+    let underrunFrames: UInt64
+    let healthy: Bool
+    enum CodingKeys: String, CodingKey {
+        case streams, healthy
+        case underrunFrames = "underrun_frames"
+    }
+}
+
+struct DeviceStatus: Hashable, Sendable, Decodable {
+    let name: String?
+    let state: DeviceState
+    let sampleRate: UInt32
+    let blockFrames: UInt32?
+    let channels: UInt32
+    let latencyMs: Double?
+    enum CodingKeys: String, CodingKey {
+        case name, state, channels
+        case sampleRate = "sample_rate"
+        case blockFrames = "block_frames"
+        case latencyMs = "latency_ms"
+    }
+}
+
+/// The `status` message body (DX-03).
+struct SystemStatus: Hashable, Sendable, Decodable {
+    let cpuPercent: Double?
+    let engineLoad: Double?
+    let xruns: UInt64
+    let disk: DiskStatus
+    let device: DeviceStatus
+    let logDropped: UInt64
+    enum CodingKeys: String, CodingKey {
+        case xruns, disk, device
+        case cpuPercent = "cpu_percent"
+        case engineLoad = "engine_load"
+        case logDropped = "log_dropped"
+    }
+}
+
 struct AmbiguousMatch: Hashable, Sendable, Decodable {
     let cue: ModelID
     let candidates: [String]
@@ -193,6 +277,7 @@ enum ResultData: Sendable, Equatable, Decodable {
     case relink(relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID])
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
+    case logTail(entries: [ShowLogEntry], dropped: UInt64)
     /// A data type this client does not know; the raw object is kept (see ProvisionalProtocol).
     case other(type: String, json: JSONValue)
 
@@ -212,6 +297,10 @@ enum ResultData: Sendable, Equatable, Decodable {
                 workspaceName: try c.decode(String.self, forKey: "workspace_name"),
                 modifiedMs: try c.decode(Int64.self, forKey: "modified_ms"))
         case "recovery_entries": self = .recoveryEntries(try c.decode([RecoveryEntryInfo].self, forKey: "entries"))
+        case "log_tail":
+            self = .logTail(
+                entries: try c.decode([ShowLogEntry].self, forKey: "entries"),
+                dropped: try c.decode(UInt64.self, forKey: "dropped"))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }
@@ -236,6 +325,7 @@ enum ServerMessage: Sendable, Decodable {
     case progress([ProgressItem])
     case meters(outputs: [OutputMeter], cues: [CueMeter])
     case log(LogLevel, String)
+    case status(SystemStatus)
     case warnings([WireWarning])
     case result(id: UInt64, Outcome)
     case error(code: ErrorCode, message: String, protocolVersion: UInt32)
@@ -265,6 +355,7 @@ enum ServerMessage: Sendable, Decodable {
         case "progress": self = .progress(try d("items"))
         case "meters": self = .meters(outputs: try d("outputs"), cues: try d("cues"))
         case "log": self = .log(try d("level"), try d("message"))
+        case "status": self = .status(try d("status"))
         case "warnings": self = .warnings(try d("warnings"))
         case "result":
             let id: UInt64 = try d("id")
