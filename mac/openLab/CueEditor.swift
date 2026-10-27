@@ -18,7 +18,7 @@ import AppKit
 /// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;
 /// one file dropped on an idle audio cue replaces its file; a cue dropped on a cue only reorders (targets
 /// are set in the inspector). Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
-/// type; paste goes where a new cue would, with fresh ids (targets inside the copy follow). Cmd-D clears
+/// type (versioned); paste goes where a new cue would, as core's `paste` with the cues prepared like `prepare_paste`. Cmd-D clears
 /// the selected cues' numbers (undoable, no prompt).
 @MainActor
 final class CueEditor {
