@@ -101,7 +101,7 @@ pub(super) struct Run {
     /// window are committed, so a later command for the voice is never dated before it.
     pub committed: SampleTime,
     /// The run failed. It owns no voice and never follows, but its auto-continue still fires on
-    /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
+    /// schedule (not after `device_lost`, which cancels it); once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
     /// Started (or reached its action) while the cue had static problems (`CueProblem`): its
     /// action is skipped and it never follows, as for a broken run, but its auto-continue keeps

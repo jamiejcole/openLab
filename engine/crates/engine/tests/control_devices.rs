@@ -2,8 +2,8 @@
 
 //! The control loop and its output device (M4.2b, M4.2g; NFR-08, AUD-01, AUD-03, WS-07): the
 //! device list, hot-plug, loss and reopen, the device-loss policy (cues on a lost device stop
-//! at once and do not come back, as in QLab 5), output delays and dropped outputs. A stand-in device layer (`show::device`) replaces cpal; a test-driven wall clock
-//! replaces time.
+//! at once and do not come back, as in QLab 5), output delays and dropped outputs. A stand-in
+//! device layer (`show::device`) replaces cpal; a test-driven wall clock replaces time.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -15,7 +15,9 @@ use openlab_core::protocol::{
     ClientMessage, DeviceEntry, LogLevel, Outcome, Request, ResultData, RuntimeChange,
     ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem, WireWarning,
 };
-use openlab_core::{ContinueMode, CueState, MachineSettings, PatchMapping, Workspace};
+use openlab_core::{
+    ContinueMode, CueKind, CueState, GroupMode, MachineSettings, PatchMapping, Workspace,
+};
 use openlab_engine::control::ControlConfig;
 use std::sync::Arc;
 
@@ -599,7 +601,6 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     start(&mut s, 1);
     start(&mut s, 2);
     s.run(BLOCK * 4);
-    let pre_wait_from = s.now();
     start(&mut s, 3);
     s.run(BLOCK);
     s.take_outbound();
@@ -608,15 +609,12 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     let msgs = s.take_outbound();
     assert!(broken_device_lost(&msgs, 1));
     assert!(broken_device_lost(&msgs, 2));
-    assert!(
-        states(&msgs, id(3)).is_empty(),
-        "the pre-waiting cue has no voice"
-    );
+    // The pre-waiting cue is routed to the device too: it ends with the others (no voice yet).
+    assert!(broken_device_lost(&msgs, 3));
     // The idle cue routed to the device has no run: it shows broken for the missing device (a
     // static problem, no reason).
     assert_eq!(states(&msgs, id(4)), vec![(WireCueState::Broken, None)]);
-    assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
-    for n in [1, 2] {
+    for n in [1, 2, 3] {
         assert_eq!(
             s.control().engine().broken_reason(id(n)),
             Some(openlab_core::BrokenReason::DeviceLost)
@@ -625,7 +623,7 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     assert!(
         logs(&msgs, LogLevel::Error)
             .iter()
-            .any(|m| m.contains("2 cue(s)"))
+            .any(|m| m.contains("3 cue(s)"))
     );
     assert_eq!(
         workspace_warnings(&msgs),
@@ -639,7 +637,7 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     replug(&mut s);
     let msgs = s.take_outbound();
     // Back: the cues un-break (idle); nothing they played resumes.
-    for n in [1, 2, 4] {
+    for n in [1, 2, 3, 4] {
         assert_eq!(
             states(&msgs, id(n)).last(),
             Some(&(WireCueState::Idle, None)),
@@ -652,13 +650,11 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     let after = (cut + BLOCK * 2) as usize;
     assert!(s.channel(0)[cut as usize..after].iter().all(|&v| v == 0.0));
     assert!(s.channel(1)[cut as usize..after].iter().all(|&v| v == 0.0));
-    // The pre-wait went on from where it stood (sample time stood still): cue 3 had no voice
-    // on the device yet, so it starts on its sample.
-    s.run(1200);
-    assert_eq!(
-        first_nonzero(&s.channel(0)[cut as usize..]).map(|i| i + cut as usize),
-        Some(pre_wait_from as usize + 1000)
-    );
+    // Nothing scheduled before the outage starts by itself after it: the pre-wait of cue 3 was
+    // cancelled with its run, however long sample time stood still.
+    s.run(3000);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
+    assert!(s.channel(0)[cut as usize..].iter().all(|&v| v == 0.0));
     // And the stopped cue plays again, from its start.
     let at = start(&mut s, 1);
     s.run(BLOCK * 3);
@@ -854,4 +850,62 @@ fn a_device_that_keeps_dropping_out_leaks_no_voices_or_streams() {
         s.run(BLOCK * 2);
         assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     }
+}
+
+#[test]
+fn a_post_wait_armed_before_the_loss_does_not_fire_after_it() {
+    let a = wav(&ramp(6000));
+    let b = wav(&dc(500, 0.5));
+    let mut c1 = audio(1, &a, 0);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    c1.post_wait = secs(2000);
+    let mut s = device_show(workspace(vec![c1, audio(2, &b, 1)]));
+    s.run(BLOCK * 2);
+    start(&mut s, 1);
+    s.run(640);
+    lose(&mut s);
+    s.wait_wall(Duration::from_secs(20), 8);
+    replug(&mut s);
+    // Sample time resumes: the post-wait (2000 frames from the start) would have fallen here.
+    s.run(6000);
+    assert_eq!(first_nonzero(&s.channel(1)), None, "cue 2 never started");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    // GO on cue 1 again auto-continues once, from its own post-wait.
+    let at = start(&mut s, 1);
+    s.run(3000);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at as usize + 2000));
+}
+
+#[test]
+fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut c2 = audio(2, &b, 1);
+    c2.pre_wait = secs(1500);
+    let group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &a, 0), c2],
+        },
+    );
+    let mut s = device_show(workspace(vec![group]));
+    s.run(BLOCK * 2);
+    go(&mut s);
+    s.run(640);
+    assert_eq!(s.control().engine().state(id(2)), CueState::PreWaiting);
+    let cut = s.rendered() as usize;
+    lose(&mut s);
+    assert!(broken_device_lost(&s.take_outbound(), 2));
+    s.wait_wall(Duration::from_secs(3), 4);
+    replug(&mut s);
+    s.run(4000);
+    for n in [1, 2, 10] {
+        assert_eq!(s.control().engine().state(id(n)), CueState::Idle, "cue {n}");
+    }
+    assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
+    assert!(s.channel(1)[cut..].iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control_mut().mixer_voice_count(), 0);
 }

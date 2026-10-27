@@ -1052,13 +1052,19 @@ impl CueEngine {
         match old {
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
             // schedule. Auto-follow waits for a successful completion, so it never fires.
+            // A lost device (M4.2g, as QLab) ends the run for good: its pre-wait and post-wait
+            // are cancelled too, so nothing it scheduled starts by itself after the device
+            // returns.
             Slot::Active(mut run) => {
                 run.broken = Some(reason);
                 run.voice = Voice::None;
                 run.stop_end = None;
                 run.follow = false;
                 run.devamp = None;
-                if matches!(run.phase, Phase::Action { .. }) {
+                if reason == BrokenReason::DeviceLost {
+                    run.post_wait = None;
+                    run.phase = Phase::Done;
+                } else if matches!(run.phase, Phase::Action { .. }) {
                     run.phase = Phase::Done;
                 }
                 let seq = run.seq;
