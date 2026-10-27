@@ -76,6 +76,12 @@ final class StatusLogTests: XCTestCase {
         XCTAssertTrue(StatusPresentation.make(s).summary.contains(loc("status.load.high")))
     }
 
+    func testLogSeqIsDecodedAndDefaultsToZeroWhenAbsent() throws {
+        XCTAssertEqual(try status("status").logSeq, 42)
+        // `healthy()` is a status from before the field.
+        XCTAssertEqual(try healthy().logSeq, 0)
+    }
+
     func testAnUnknownDeviceStateIsAWarningNamingIt() throws {
         var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
         json.set("xruns", .int(0))
