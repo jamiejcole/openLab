@@ -29,6 +29,11 @@ final class FakeEngine: EngineTransport {
     var garbleResults = false
     /// Answers every `command` with `command_refused` and changes nothing.
     var refuseCommands = false
+    /// The records `log_tail` answers with (show-log JSON objects), and the `relink` result data.
+    var logTailEntries: [JSONValue] = []
+    var relinkData: JSONValue = .object([
+        "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+    ])
     enum WelcomeFault { case none, silent, garbled }
     /// `silent`: the `welcome` is never sent; `garbled`: it is sent but does not decode.
     var welcomeFault = WelcomeFault.none
@@ -357,17 +362,15 @@ final class FakeEngine: EngineTransport {
         case .relink:
             result(
                 c, id,
-                ok: .object([
-                    "data": .object([
-                        "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]),
-                        "unmatched": .array([]),
-                    ])
-                ]))
+                ok: .object(["data": relinkData]))
         case .logTail:
             result(
                 c, id,
-                ok: .object(["data": .object(["type": .string("log_tail"), "entries": .array([]), "dropped": .int(0)])])
-            )
+                ok: .object([
+                    "data": .object([
+                        "type": .string("log_tail"), "entries": .array(logTailEntries), "dropped": .int(0),
+                    ])
+                ]))
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))

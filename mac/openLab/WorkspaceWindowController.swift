@@ -21,12 +21,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onCueAction: ((TransportAction) -> Void)? {
         didSet { sidebar.onCueAction = onCueAction }
     }
+    /// Relink missing media was asked for (Warnings row or File menu).
+    var onRelink: (() -> Void)? {
+        didSet { sidebar.onRelink = onRelink }
+    }
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let cueList: CueListViewController
     let inspector: InspectorViewController
     let sidebar: SidebarViewController
     private var sub: AnyCancellable?
+    private var statusSub: AnyCancellable?
+    private(set) lazy var logWindow = LogWindowController(store: store)
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
@@ -59,6 +65,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self?.cueList.showList(id)
             self?.syncSidebarList()
         }
+        sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
+        statusSub = store.$status.sink { [weak self] status in
+            MainActor.assumeIsolated { self?.footer.show(status: status) }
+        }
         syncSidebarList()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
@@ -66,6 +76,25 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+    }
+
+    /// Shows `id` in its list and selects it (a Warnings row was chosen). The selection is made
+    /// like a restored one, so the playhead does not move: a click in a list of warnings must
+    /// never change what GO fires next.
+    func reveal(cue id: ModelID) {
+        guard let list = store.model?.cueLists.first(where: { Self.contains(id, in: $0.cues) }) else { return }
+        if cueList.listID != list.id { cueList.showList(list.id) }
+        syncSidebarList()
+        cueList.reveal(id)
+    }
+
+    private static func contains(_ id: ModelID, in cues: [Cue]) -> Bool {
+        cues.contains { $0.id == id || contains(id, in: $0.children) }
+    }
+
+    func showLog() {
+        logWindow.showWindow(nil)
+        Task { await logWindow.refresh() }
     }
 
     private func syncSidebarList() {

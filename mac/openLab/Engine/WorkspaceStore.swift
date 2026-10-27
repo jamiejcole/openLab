@@ -24,6 +24,8 @@ enum StoreChange: Sendable {
     case runtime(cues: Set<ModelID>, playheads: Set<ModelID>)
     /// Cues whose progress changed (running cues, and cues that stopped running).
     case progress(Set<ModelID>)
+    /// The workspace warnings were replaced, or a runtime warning arrived.
+    case notices
 }
 
 /// The UI's mirror of one open workspace: the model plus the engine's runtime state, applied from
@@ -148,6 +150,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if !touched.isEmpty { changes.send(.progress(touched)) }
         case .warnings(let w):
             warnings = w
+            changes.send(.notices)
         case .log(let level, let text):
             logEntries.append(LogEntry(level: level, message: text))
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
@@ -283,6 +286,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         var cues = Set<ModelID>()
         var heads = Set<ModelID>()
         var progressEnded = Set<ModelID>()
+        var noticed = false
         for change in changes {
             switch change {
             case .cueState(let cue, let state, let reason):
@@ -307,6 +311,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 cues.insert(cue)
             case .warning(let w):
                 runtimeWarnings.append(w)
+                noticed = true
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {
                     runtimeWarnings.removeFirst(runtimeWarnings.count - Self.maxRuntimeWarnings)
                 }
@@ -316,6 +321,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
         if !cues.isEmpty || !heads.isEmpty { self.changes.send(.runtime(cues: cues, playheads: heads)) }
         if !progressEnded.isEmpty { self.changes.send(.progress(progressEnded)) }
+        if noticed { self.changes.send(.notices) }
         return .applied
     }
 }

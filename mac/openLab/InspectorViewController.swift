@@ -186,7 +186,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         subscription = store.changes.sink { [weak self] change in
             switch change {
             case .reset, .model: MainActor.assumeIsolated { self?.render() }
-            case .runtime, .progress: break
+            case .runtime, .progress, .notices: break
             }
         }
         render()
