@@ -14,7 +14,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// These address this window's own store: a click can land on a window that is not key.
     var onGo: (() -> Void)?
     var onPauseAll: (() -> Void)?
-    /// Esc anywhere in the window: the app-scope panic.
     var onPanic: (() -> Void)?
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
@@ -54,8 +53,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc private func goClicked() { onGo?() }
     @objc private func pauseAllClicked() { onPauseAll?() }
     @objc private func panicClicked() { onPanic?() }
-
-    override func cancelOperation(_ sender: Any?) { onPanic?() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()

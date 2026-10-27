@@ -23,6 +23,8 @@ final class FakeEngine: EngineTransport {
     /// When set, `hello` is answered with this `error` and the connection closes.
     var refuseAuth: ErrorCode?
     var holdResults = false
+    /// `sendAndFlush` never returns (a stalled socket), in tests of the quit path.
+    var holdFlush = false
     /// Answers every request with an `ok` that does not decode (a changed server, in tests).
     var garbleResults = false
     enum WelcomeFault { case none, silent, garbled }
@@ -343,6 +345,11 @@ final class FakeConnection: EngineConnection {
     func send(_ text: String) {
         guard !isClosed else { return }
         engine?.handle(text, from: self)
+    }
+
+    func sendAndFlush(_ text: String) async {
+        send(text)
+        if engine?.holdFlush == true { await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in } }
     }
 
     func receive() async throws -> String {

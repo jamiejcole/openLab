@@ -42,6 +42,12 @@
 "alert.save" = "Save";
 "alert.dontSave" = "Don’t Save";
 "alert.ok" = "OK";
+"alert.quitAnyway" = "Quit Anyway";
+"alert.quitDisconnected.title" = "The engine is not responding.";
+"alert.quitDisconnected.message" = "Quitting now leaves it running and it may reopen openLab.";
+"error.detail.notConnected" = "The engine is not connected.";
+"error.detail.timeout" = "The engine did not answer in time.";
+"error.detail.generic" = "An unexpected error occurred.";
 "error.openFailed" = "Could not open the workspace: %@";
 "error.saveFailed" = "Could not save the workspace: %@";
 "error.closeFailed" = "Could not close the workspace: %@";

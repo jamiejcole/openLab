@@ -23,9 +23,17 @@ final class AppController {
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
 
     private var subs: [AnyCancellable] = []
+    private var keyMonitor: Any?
+    /// Bounds the waits on the quit and save paths (injected so tests never wait in real time).
+    private let scheduler: Scheduler
+    private let timeout: Double
+    private var closing: Set<ModelID> = []
+    private(set) var quitting = false
 
-    init(session: EngineSession) {
+    init(session: EngineSession, scheduler: Scheduler = SystemScheduler(), timeout: Double = 5) {
         self.session = session
+        self.scheduler = scheduler
+        self.timeout = timeout
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
         launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
@@ -97,6 +105,31 @@ final class AppController {
         launcher.window?.close()
     }
 
+    // MARK: Esc
+
+    /// Esc panics every workspace whichever window is key (launcher, alert, a field editor
+    /// mid-edit), then the event carries on so the editor or alert still handles it.
+    func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if Self.isPanicKey(event) { MainActor.assumeIsolated { self?.firePanic() } }
+            return event
+        }
+    }
+
+    /// The monitor's body, callable from tests. Always returns the event.
+    func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        if Self.isPanicKey(event) { firePanic() }
+        return event
+    }
+
+    private func firePanic() { Task { _ = await panicAll() } }
+
+    private nonisolated static func isPanicKey(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .function])
+        return event.keyCode == 53 && mods.isEmpty && !event.isARepeat
+    }
+
     // MARK: Front-window routing
 
     var frontController: WorkspaceWindowController? {
@@ -161,7 +194,7 @@ final class AppController {
         switch result {
         case .success(let doc): show(doc)
         case .failure(.engine(.alreadyOpen, _)): break
-        case .failure(let e): alerts.showError(String(format: loc("error.openFailed"), "\(e)"))
+        case .failure(let e): alerts.showError(String(format: loc("error.openFailed"), describe(e)))
         }
         return result
     }
@@ -171,17 +204,21 @@ final class AppController {
     /// The user asked to close a workspace window. False: it stays open.
     @discardableResult
     func closeWorkspace(_ doc: ModelID) async -> Bool {
-        guard let store = session.stores[doc] else { return false }
+        guard let store = session.stores[doc], !quitting, closing.insert(doc).inserted else { return false }
+        defer { closing.remove(doc) }
+        // A one-workspace engine cannot close a doc (until M4.15f): closing would only hide a show
+        // that keeps playing, so Close Window does nothing there.
+        guard session.mode != .single else {
+            NSSound.beep()
+            return false
+        }
         if isPlaying(store), !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
         guard let discard = await resolveUnsaved(doc) else { return false }
         switch await session.close(doc: doc, discardChanges: discard) {
         case .success:
             windows.removeValue(forKey: doc)?.window?.close()
-        case .failure(.unsupported):
-            // A one-workspace engine cannot close it: hide the window; New / Open bring it back.
-            windows[doc]?.window?.close()
         case .failure(let e):
-            alerts.showError(String(format: loc("error.closeFailed"), "\(e)"))
+            alerts.showError(String(format: loc("error.closeFailed"), describe(e)))
             return false
         }
         showLauncherIfNoWindows()
@@ -193,16 +230,61 @@ final class AppController {
     /// True when the app may quit: the playing confirmation and every dirty workspace's save
     /// prompt were answered without Cancel, and `goodbye { shutdown }` went out.
     func prepareToQuit() async -> Bool {
+        guard !quitting, closing.isEmpty else { return false }
+        quitting = true
+        defer { quitting = false }
+        if engineUnreachable { return alerts.confirmQuitDisconnected() }
         if session.stores.values.contains(where: isPlaying), !alerts.confirmQuitWhilePlaying() { return false }
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
             if await resolveUnsaved(info.doc) == nil { return false }
         }
-        await session.shutdown()
+        // A stalled flush must not trap the app; the engine still sees the socket drop.
+        _ = await bounded { await self.session.shutdown() }
         return true
     }
 
     // MARK: Helpers
+
+    /// Not connected although an engine may be running (so quitting would orphan it). No engine
+    /// file / never connected is a normal state and quits freely.
+    private var engineUnreachable: Bool {
+        switch session.connectionState {
+        case .connected, .idle, .retrying(.engineNotAvailable): return false
+        default: return true
+        }
+    }
+
+    /// `op`'s result, or nil if it has not finished within `timeout`.
+    private func bounded<T: Sendable>(_ op: @escaping @MainActor () async -> T) async -> T? {
+        let gate = Gate<T>()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            gate.cont = cont
+            Task { @MainActor in gate.finish(await op()) }
+            Task { @MainActor in
+                try? await scheduler.sleep(seconds: timeout)
+                gate.finish(nil)
+            }
+        }
+    }
+
+    @MainActor private final class Gate<T: Sendable> {
+        var cont: CheckedContinuation<T?, Never>?
+        func finish(_ value: T?) {
+            cont?.resume(returning: value)
+            cont = nil
+        }
+    }
+
+    private func describe(_ e: EngineError) -> String {
+        switch e {
+        case .notConnected, .disconnected: return loc("error.detail.notConnected")
+        case .engine(_, let message) where !message.isEmpty: return message
+        default:
+            engineLog.error("engine call failed: \(String(describing: e), privacy: .public)")
+            return loc("error.detail.generic")
+        }
+    }
 
     private func isPlaying(_ store: WorkspaceStore) -> Bool {
         store.cueStates.values.contains { $0.state == .running || $0.state == .fading }
@@ -224,23 +306,25 @@ final class AppController {
     }
 
     private func save(_ store: WorkspaceStore, name: String) async -> Bool {
-        let result: Result<OkBody, EngineError>
         var saveAsURL: URL?
+        let reply: Result<OkBody, EngineError>?
         if store.document?.path == nil {
             guard let url = pickSaveURL(name) else { return false }
             saveAsURL = url
-            result = await store.saveAs(path: url.path)
+            reply = await bounded { await store.saveAs(path: url.path) }
         } else {
-            result = await store.save()
+            reply = await bounded { await store.save() }
         }
-        switch result {
-        case .success:
+        switch reply {
+        case .success?:
             if let saveAsURL { noteRecent(saveAsURL) }
             return true
-        case .failure(let e):
-            alerts.showError(String(format: loc("error.saveFailed"), "\(e)"))
-            return false
+        case .failure(let e)?:
+            alerts.showError(String(format: loc("error.saveFailed"), describe(e)))
+        case nil:
+            alerts.showError(String(format: loc("error.saveFailed"), loc("error.detail.timeout")))
         }
+        return false
     }
 
     private static func openPanel() -> URL? {

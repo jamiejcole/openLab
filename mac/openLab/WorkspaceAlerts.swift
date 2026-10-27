@@ -12,6 +12,8 @@ protocol WorkspaceAlerts {
     func confirmCloseWhilePlaying(workspace: String) -> Bool
     /// Quit while cues play anywhere. True: go on to the save prompts and quit.
     func confirmQuitWhilePlaying() -> Bool
+    /// The engine is not answering at quit. True: quit anyway.
+    func confirmQuitDisconnected() -> Bool
     func unsavedChanges(workspace: String) -> SaveChoice
     func showError(_ message: String)
 }
@@ -26,6 +28,10 @@ struct AppKitAlerts: WorkspaceAlerts {
 
     func confirmQuitWhilePlaying() -> Bool {
         run("alert.quitPlaying.title", "alert.quitPlaying.message", ["alert.cancel", "alert.quit"]) == 1
+    }
+
+    func confirmQuitDisconnected() -> Bool {
+        run("alert.quitDisconnected.title", "alert.quitDisconnected.message", ["alert.cancel", "alert.quitAnyway"]) == 1
     }
 
     func unsavedChanges(workspace: String) -> SaveChoice {
