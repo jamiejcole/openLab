@@ -6,7 +6,7 @@
 //! plans give each cue's nominal length, which the cue engine is told when it changes
 //! (`Input::CueLengths`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -51,6 +51,8 @@ pub struct PlanChecks {
     builds: u64,
     /// The lengths the cue engine was last told (`length_changes`).
     told: BTreeMap<CueId, SampleTime>,
+    /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
+    stale: BTreeSet<CueId>,
 }
 
 impl PlanChecks {
@@ -67,7 +69,14 @@ impl PlanChecks {
             self.walk(&list.cues, media, rate, &mut out);
         }
         let pass = self.pass;
-        self.cache.retain(|_, e| e.pass == pass);
+        let stale = &mut self.stale;
+        self.cache.retain(|id, e| {
+            let seen = e.pass == pass;
+            if !seen {
+                stale.insert(*id);
+            }
+            seen
+        });
         out
     }
 
@@ -109,6 +118,7 @@ impl PlanChecks {
                 }
                 _ => {
                     self.builds += 1;
+                    self.stale.insert(c.id);
                     let (error, length) = match cue_slices(&spec, &ready.probed.info, rate, 0) {
                         Ok(table) => (None, total_frames(&table)),
                         Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None),
@@ -138,26 +148,20 @@ impl PlanChecks {
     /// The nominal lengths that changed since the last call, as of the last `check`: a cue with
     /// a finite plan now gets its length, one that had a length and has none now (gone, its file
     /// not probed or not playable, a plan that loops forever or cannot be built) gets `None`.
-    /// In id order.
+    /// In id order. Looks only at the cues whose plan was rebuilt or dropped since the last call.
     pub fn length_changes(&mut self) -> Vec<(CueId, Option<SampleTime>)> {
-        let now: BTreeMap<CueId, SampleTime> = self
-            .cache
-            .iter()
-            .filter_map(|(id, e)| e.length.map(|l| (*id, l)))
-            .collect();
-        let mut out: Vec<(CueId, Option<SampleTime>)> = self
-            .told
-            .keys()
-            .filter(|id| !now.contains_key(id))
-            .map(|id| (*id, None))
-            .collect();
-        out.extend(
-            now.iter()
-                .filter(|(id, l)| self.told.get(id) != Some(l))
-                .map(|(id, l)| (*id, Some(*l))),
-        );
-        out.sort_by_key(|(id, _)| *id);
-        self.told = now;
+        let mut out = Vec::new();
+        for id in std::mem::take(&mut self.stale) {
+            let now = self.cache.get(&id).and_then(|e| e.length);
+            if self.told.get(&id).copied() == now {
+                continue;
+            }
+            match now {
+                Some(l) => self.told.insert(id, l),
+                None => self.told.remove(&id),
+            };
+            out.push((id, now));
+        }
         out
     }
 

@@ -514,27 +514,45 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
     // A plan that loops forever, or a file that is not there, has no end.
     assert_eq!(length(&s, 2), None);
     assert_eq!(length(&s, 3), None);
+    let set_kind = |s: &mut OfflineShow, edit: &dyn Fn(&mut CueKind)| {
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        edit(&mut kind);
+        let request = s.request_id();
+        s.send(ClientMessage::Command {
+            id: request,
+            command: Box::new(Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            }),
+        });
+        s.run(BLOCK);
+    };
     // A trim changes it.
-    let mut kind = s
-        .control()
-        .workspace()
-        .find_cue(id(1))
-        .unwrap()
-        .kind
-        .clone();
-    if let CueKind::Audio { end_time, .. } = &mut kind {
-        *end_time = Some(secs(500));
-    }
-    let edit = s.request_id();
-    s.send(ClientMessage::Command {
-        id: edit,
-        command: Box::new(Command::SetCueProperty {
-            id: id(1),
-            property: CueProperty::Kind { value: kind },
-        }),
+    set_kind(&mut s, &|k| {
+        if let CueKind::Audio { end_time, .. } = k {
+            *end_time = Some(secs(500));
+        }
     });
-    s.run(BLOCK);
     assert_eq!(length(&s, 1), Some(500));
+    // Looping for ever withdraws it; finite again tells it again.
+    for (count, expected) in [(0, None), (1, Some(500))] {
+        set_kind(&mut s, &|k| {
+            if let CueKind::Audio {
+                last_slice_play_count,
+                ..
+            } = k
+            {
+                *last_slice_play_count = count;
+            }
+        });
+        assert_eq!(length(&s, 1), expected, "play count {count}");
+    }
     // A removed cue's length is withdrawn.
     let remove = s.request_id();
     s.send(ClientMessage::Command {
