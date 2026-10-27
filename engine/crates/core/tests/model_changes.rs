@@ -27,7 +27,21 @@ fn step(
 ) -> (Vec<Upsert>, Vec<Delete>) {
     let footprint = command.footprint();
     history.execute(ws, command).unwrap();
-    let (upserts, deletes) = model_changes(ws, &footprint);
+    changes(ws, mirror, &footprint)
+}
+
+/// The changes for `footprint`, applied to `mirror`; read through a cue index (M4.12c) they are
+/// the same as the walk's.
+fn changes(
+    ws: &Workspace,
+    mirror: &mut Workspace,
+    footprint: &Footprint,
+) -> (Vec<Upsert>, Vec<Delete>) {
+    let (upserts, deletes) = model_changes(ws, footprint);
+    assert_eq!(
+        model_changes_indexed(ws, footprint, &CueIndex::build(ws)),
+        Some((upserts.clone(), deletes.clone()))
+    );
     mirror.apply_changes(&upserts, &deletes).unwrap();
     assert_eq!(mirror, ws);
     (upserts, deletes)
@@ -51,10 +65,7 @@ fn undo_redo(
     } else {
         history.redo(ws).unwrap()
     });
-    let (upserts, deletes) = model_changes(ws, &footprint);
-    mirror.apply_changes(&upserts, &deletes).unwrap();
-    assert_eq!(mirror, ws);
-    (upserts, deletes)
+    changes(ws, mirror, &footprint)
 }
 
 fn memos(range: std::ops::RangeInclusive<u128>) -> Vec<Cue> {
@@ -245,6 +256,37 @@ fn an_edit_in_a_2000_cue_show_emits_o_changed_entities() {
     assert_eq!(counts(&u, &d), 2);
     let (u, d) = undo_redo(&mut ws, &mut mirror, &mut history, true);
     assert_eq!(counts(&u, &d), 2);
+}
+
+#[test]
+fn read_through_an_index_an_edit_costs_its_cues_not_the_show() {
+    // The walk visited all 2,000 cues for a rename; through the index it is one lookup of one
+    // step (the cue's level), plus finding its position and list.
+    let mut ws = workspace(memos(1..=2000));
+    let rename = rename(1990, "x");
+    let footprint = rename.footprint();
+    ws.apply(rename).unwrap();
+    let index = CueIndex::build(&ws);
+    let before = index.lookup_steps();
+    let (upserts, deletes) = model_changes_indexed(&ws, &footprint, &index).unwrap();
+    assert_eq!(index.lookup_steps() - before, 1);
+    assert!(deletes.is_empty());
+    assert!(matches!(&upserts[..], [Upsert::Cue { index: 1989, .. }]));
+}
+
+#[test]
+fn an_index_with_duplicate_ids_or_out_of_date_is_not_used() {
+    let ws = workspace(vec![cue(1, CueKind::Memo), cue(1, CueKind::Memo)]);
+    let fp = Footprint::edited([cue_id(1)]);
+    assert_eq!(model_changes_indexed(&ws, &fp, &CueIndex::build(&ws)), None);
+    // The index has cue 2 inside group 3, the workspace no longer does.
+    let old = workspace(vec![cue(3, group(vec![cue(2, CueKind::Memo)]))]);
+    let ws = workspace(vec![cue(3, group(vec![])), cue(2, CueKind::Memo)]);
+    let fp = Footprint::edited([cue_id(2)]);
+    assert_eq!(
+        model_changes_indexed(&ws, &fp, &CueIndex::build(&old)),
+        None
+    );
 }
 
 #[test]

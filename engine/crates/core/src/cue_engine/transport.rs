@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace-wide transport: Panic (PB-03), Pause All and Resume All (PB-04). They reach every
+//! Workspace-wide transport: Panic (PB-03), Stop All, Pause All and Resume All (PB-04). They reach every
 //! cue of every list at every depth through the per-cue operations, so every rule of those
 //! holds. Rules: `docs/cue-engine.md`, "Panic" and "Pause All and Resume All".
 
@@ -60,6 +60,20 @@ impl CueEngine {
                     self.stop_one(cue, None, cx);
                 } else {
                     self.panic_one(cue, end, cx);
+                }
+            }
+        }
+    }
+
+    /// Stop All: everything stops at once, children before their groups (as in Stop), and so do
+    /// the previews. No fade, no panic window (an earlier panic's is over).
+    pub(super) fn stop_all(&mut self, cx: &mut Ctx) {
+        self.stop_previews(None, true, cx);
+        self.panic = None;
+        for tree in Self::trees(cx) {
+            for cue in tree.into_iter().rev() {
+                if self.slots.contains_key(&cue) {
+                    self.stop_one(cue, None, cx);
                 }
             }
         }

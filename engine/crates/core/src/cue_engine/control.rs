@@ -181,12 +181,19 @@ impl CueEngine {
         Ok(())
     }
 
-    /// Brings the list's playhead up to date with `cues`; returns whether it moved.
+    /// Brings the list's playhead up to date with `cues`; returns whether it moved. Only after
+    /// an edit nobody signalled, so the cue index still holds what the playhead last saw, if
+    /// it holds its positions at all; the playhead keeps the new positions itself (the index
+    /// does not know them).
     fn resync_playhead(&mut self, list: CueListId, cues: &[Cue], cx: &mut Ctx) -> bool {
+        let tree = self.problems.tree();
         let Some(playhead) = self.playheads.get_mut(&list) else {
             return false;
         };
-        let (edited, moved) = playhead.sync(cues);
+        let old = playhead
+            .take_order()
+            .unwrap_or_else(|| tree.list_order(list));
+        let (edited, moved) = playhead.follow(&old, playhead::positions(cues));
         if moved {
             cx.out.push(Action::PlayheadChanged {
                 list,

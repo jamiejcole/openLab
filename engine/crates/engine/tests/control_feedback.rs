@@ -366,3 +366,37 @@ fn a_start_refused_while_a_pause_and_resume_were_on_their_way_is_still_skipped()
     assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
     assert_eq!(s.control().engine().state(id(3)), CueState::Running);
 }
+
+#[test]
+fn a_stop_all_and_a_cues_own_panic_end_playback_through_the_control_loop() {
+    // OSC `/cue/{n}/panic`, `/stop` and `/hardStop` arrive as these transport actions.
+    let long = wav(&dc(40_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &long, 0), audio(2, &long, 1)]));
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(BLOCK * 4);
+    // One cue's own panic fades that cue out and leaves the other playing.
+    s.transport(TransportAction::PanicCue { cue: id(1) });
+    s.run(8000);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(s.control().live_voices(), 1);
+    // Stop All silences everything at once: no sound after the next few blocks.
+    let at = s.now() as usize;
+    s.transport(TransportAction::StopAll);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert!(
+        s.channel(0)[at + BLOCK as usize * 2..]
+            .iter()
+            .all(|&v| v == 0.0)
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    // The same for the hard form.
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::HardStopAll);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().live_voices(), 0);
+}
