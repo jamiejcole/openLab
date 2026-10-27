@@ -57,3 +57,7 @@ Show Mode (SM-01) is UI-only state, kept per window in memory and lost on relaun
 SM-07 (no system sleep while a workspace is open in Show Mode, engine M4.9) needs it: wanted is a per-doc
 `set_show_mode { on }` command (or a flag on `document`) so the engine can hold the sleep assertion and a
 second client can show the same mode. Until then the app does not tell the engine.
+
+## Undo and redo of an active cue (M5.10a)
+
+Wanted: an `undo` / `redo` that would remove an active cue (running, paused, waiting, fading) should be refused, or need a flag, like the app's own delete guard. Today the engine stops the cue's voice and warns `CueRemoved` (docs/cue-engine.md), and the client cannot predict what an undo does, so Cmd-Z can cut a sound the audience hears.
