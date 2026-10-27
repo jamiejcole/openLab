@@ -186,13 +186,15 @@ impl CueEngine {
         let Some(playhead) = self.playheads.get_mut(&list) else {
             return false;
         };
-        let old = playhead.cue;
         let (edited, moved) = playhead.sync(cues);
         if moved {
-            let new = playhead.cue;
-            cx.out.push(Action::PlayheadChanged { list, cue: new });
-            self.forget_continues(cx.ws, list, old, new, None);
+            cx.out.push(Action::PlayheadChanged {
+                list,
+                cue: playhead.cue,
+            });
         }
+        // (Also when the order is the same: a cue moved into the group just before it.)
+        self.forget_continues(cx.ws, list, None);
         if edited {
             self.note_unsignalled();
         }
