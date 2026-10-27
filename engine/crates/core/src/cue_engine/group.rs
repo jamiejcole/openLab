@@ -9,7 +9,7 @@ use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, GroupMode};
 use crate::model::{CueId, Workspace};
 use crate::tree;
 
-use super::run::{Exit, GroupRun, Phase, PlaylistRun, Run, Slot};
+use super::run::{Exit, GroupRun, Halt, Phase, PlaylistRun, Run, Slot};
 use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
@@ -215,7 +215,7 @@ impl CueEngine {
                 paused_at: None,
                 phase: Phase::Action { .. },
                 ..
-            })) if !g.stopping && g.devamp.is_none() => g.playlist.take(),
+            })) if !g.stopping && g.devamp.is_none() && g.halt.is_none() => g.playlist.take(),
             _ => return,
         };
         // A pass began in this call: ending it again means a whole pass in which nothing started.
@@ -367,8 +367,20 @@ impl CueEngine {
             })
             .map(|c| c.id)
             .collect();
-        if let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group) {
+        if let Some(Slot::Active(Run {
+            group: Some(g),
+            phase,
+            ..
+        })) = self.slots.get_mut(&group)
+        {
             g.skipped = Some(at);
+            // The operator moves a halted playlist on: it plays on from here, and its action
+            // lasts while its children do again.
+            if g.halt.take().is_some()
+                && let Phase::Action { start, .. } = *phase
+            {
+                *phase = Phase::Action { start, end: None };
+            }
         }
         self.as_of(at, cx, |e, cx| {
             if back {
@@ -487,17 +499,159 @@ impl CueEngine {
         self.playlist_next(parent, at, cx);
     }
 
+    /// `cue` (run `seq`), the current child of a running playlist, broke while playing (QLab
+    /// check Q2): the playlist halts. It starts no further child, its action ends on `end` (the
+    /// child's nominal end; `None`: unknown, so it ends now), and its auto-follow is kept, timed
+    /// by the nominal pre-wait and length of every child it would still have played, in its
+    /// order (a shuffled pass's order); none if one of them has no known end or the playlist
+    /// loops. A devamped or stopping playlist is left alone (it was ending anyway).
+    pub(super) fn halt_playlist(
+        &mut self,
+        cue: CueId,
+        seq: u64,
+        end: Option<SampleTime>,
+        cx: &mut Ctx,
+    ) {
+        let Some(&parent) = ancestors(cx.ws, cue).first() else {
+            return;
+        };
+        let ws = cx.ws;
+        let Some(CueKind::Group {
+            mode: GroupMode::Playlist { loop_, .. },
+            children,
+        }) = ws.find_cue(parent).map(|g| &g.kind)
+        else {
+            return;
+        };
+        let Some(Slot::Active(Run {
+            group: Some(g),
+            phase: Phase::Action { .. },
+            ..
+        })) = self.slots.get(&parent)
+        else {
+            return;
+        };
+        let Some(p) = g.playlist.as_ref() else {
+            return;
+        };
+        if g.stopping || g.devamp.is_some() || g.halt.is_some() || p.current != Some((cue, seq)) {
+            return;
+        }
+        let remaining: Vec<&Cue> = if p.order.is_empty() {
+            // After the broken child as the group stands now (where it stood, if it has left).
+            let after = children
+                .iter()
+                .position(|c| c.id == cue)
+                .map_or(p.index, |i| i.saturating_add(1));
+            children.iter().skip(after).collect()
+        } else {
+            p.order
+                .iter()
+                .skip(p.pos.saturating_add(1))
+                .filter_map(|id| children.iter().find(|c| c.id == *id))
+                .collect()
+        };
+        let rest = if *loop_ || end.is_none() {
+            None
+        } else {
+            remaining.iter().try_fold(0, |acc: SampleTime, c| {
+                Some(acc.saturating_add(self.nominal_span(c, 1, cx)?))
+            })
+        };
+        if let Some(Slot::Active(run)) = self.slots.get_mut(&parent)
+            && let Some(g) = run.group.as_mut()
+            && let Phase::Action { start, .. } = run.phase
+        {
+            g.halt = Some(Halt { rest });
+            run.phase = Phase::Action {
+                start,
+                end: end.map(|e| e.max(start)),
+            };
+        }
+    }
+
+    /// The nominal end of `run`, the runtime of the Audio cue `cue`: its known end, else its
+    /// nominal length (`Input::CueLengths`) from its action start; `None` if neither is known.
+    pub(super) fn nominal_end(&self, cue: CueId, run: &Run) -> Option<SampleTime> {
+        let length = || {
+            self.lengths
+                .get(&cue)
+                .map(|l| l.saturating_sub(run.action_offset))
+        };
+        match run.phase {
+            Phase::Action { end: Some(end), .. } => Some(end),
+            Phase::Action { start, end: None } => length().map(|l| start.saturating_add(l)),
+            Phase::PreWait { until } => length().map(|l| until.saturating_add(l)),
+            Phase::Done => None,
+        }
+    }
+
+    /// How long `cue` would take, pre-wait and action, if a playlist started it now with its
+    /// nominal timing; `None` if that is unknown or endless. A cue a start would pass over at
+    /// once (broken at run time) takes nothing; a disarmed one or one with static problems
+    /// takes its pre-wait only. `depth` bounds the walk into nested groups.
+    fn nominal_span(&self, cue: &Cue, depth: usize, cx: &Ctx) -> Option<SampleTime> {
+        if matches!(self.slots.get(&cue.id), Some(Slot::Broken(_))) {
+            return Some(0);
+        }
+        let pre = cx.secs(cue.pre_wait, &self.config);
+        let action = if !self.is_armed(cue) || self.has_problems(cue.id) {
+            0
+        } else {
+            match &cue.kind {
+                CueKind::Audio { .. } => self.lengths.get(&cue.id).copied()?,
+                CueKind::Wait { duration } | CueKind::Fade { duration, .. } => {
+                    cx.secs(*duration, &self.config)
+                }
+                CueKind::Group { mode, children } => {
+                    if depth > crate::validate::MAX_GROUP_DEPTH {
+                        return None;
+                    }
+                    let span = |c: &Cue| self.nominal_span(c, depth.saturating_add(1), cx);
+                    match mode {
+                        GroupMode::Timeline => children
+                            .iter()
+                            .try_fold(0, |acc: SampleTime, c| Some(acc.max(span(c)?)))?,
+                        GroupMode::Playlist { loop_, .. } if !*loop_ || children.is_empty() => {
+                            children.iter().try_fold(0, |acc: SampleTime, c| {
+                                Some(acc.saturating_add(span(c)?))
+                            })?
+                        }
+                        // Looping, or children chaining by their own continues: no known end.
+                        GroupMode::Playlist { .. }
+                        | GroupMode::StartFirstAndEnter
+                        | GroupMode::StartFirstAndGoToNext
+                        | GroupMode::StartRandom => return None,
+                    }
+                }
+                CueKind::Memo
+                | CueKind::Start { .. }
+                | CueKind::Stop { .. }
+                | CueKind::Pause { .. }
+                | CueKind::Load { .. }
+                | CueKind::Reset { .. }
+                | CueKind::Devamp { .. }
+                | CueKind::GoTo { .. }
+                | CueKind::Arm { .. }
+                | CueKind::Disarm { .. }
+                | CueKind::Network { .. } => 0,
+            }
+        };
+        Some(pre.saturating_add(action))
+    }
+
     /// `cue`, a child of `group`, completed (or broke) on `at` while its group has no run (it
     /// was started on its own): if the group is a playlist, the next child that can start starts
     /// on `at`, as QLab 5 plays on through the rest of a stopped playlist from a child GOed on its
-    /// own. The children are taken in list order (shuffle aside), the last one does not wrap
-    /// (loop aside), and the group itself does not run, so it fires no continue of its own.
-    /// Children a start refuses (broken at run time and not reset) are passed over; each start
-    /// is charged to the chain budget like any continue.
+    /// own. The children are taken in list order (shuffle aside, QLab check Q4); after the last
+    /// one a looping playlist wraps to its first child and keeps going until stopped (Q4), a
+    /// non-looping one ends. The group itself does not run, so it fires no continue of its own.
+    /// Children a start refuses (broken at run time and not reset) are passed over, at most one
+    /// round of them per call; each start is charged to the chain budget like any continue.
     fn follow_through(&mut self, group: CueId, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(CueKind::Group {
-            mode: GroupMode::Playlist { .. },
+            mode: GroupMode::Playlist { loop_, .. },
             children,
         }) = ws.find_cue(group).map(|g| &g.kind)
         else {
@@ -506,7 +660,11 @@ impl CueEngine {
         let Some(index) = children.iter().position(|c| c.id == cue) else {
             return;
         };
-        for next in children.iter().skip(index.saturating_add(1)) {
+        let after = index.saturating_add(1);
+        // With loop: round to the start and on up to the child that just ended (which plays
+        // again if nothing else can).
+        let wrapped = children.iter().take(if *loop_ { after } else { 0 });
+        for next in children.iter().skip(after).chain(wrapped) {
             if next.id == group {
                 continue;
             }
@@ -569,11 +727,30 @@ impl CueEngine {
             self.remove_slot(group, at, Exit::Stopped, cx);
             return self.report(group, before, at, cx);
         }
-        let follow = run.follow && !g.failed;
+        // A halted playlist's action lasts until its broken child's nominal end.
+        if g.halt.is_some()
+            && let Phase::Action { end: Some(end), .. } = run.phase
+            && at < end
+        {
+            return;
+        }
+        // Samples from now to the group's auto-follow. A halted playlist keeps its auto-follow,
+        // timed as if its remaining children had played (QLab check Q2); any other group whose
+        // child broke while playing does not follow (rule 2).
+        let follow = match g.halt {
+            Some(halt) => halt.rest.filter(|_| run.follow),
+            None => (run.follow && !g.failed).then_some(0),
+        };
         // A devamped playlist that asked for it starts the cue after the Devamp cue now.
         let devamp_next = g.devamp.take().filter(|(_, next)| *next).map(|(by, _)| by);
         run.phase = Phase::Done;
         run.follow = false;
+        // A later follow waits as an auto-continue's post-wait does (the group shows
+        // post-waiting), so Stop, Pause, Reset and Panic act on it as on any post-wait.
+        if let Some(rest) = follow.filter(|r| *r > 0) {
+            run.post_wait = Some(at.saturating_add(rest));
+        }
+        let follow = follow == Some(0);
         let seq = run.seq;
         self.settle(group, at, cx);
         self.report(group, before, at, cx);
@@ -594,9 +771,11 @@ impl CueEngine {
             .slots
             .iter()
             .filter_map(|(id, slot)| match slot {
+                // A halted playlist waiting for its broken child's nominal end has an end of its
+                // own and no busy child: it is not stranded.
                 Slot::Active(Run {
                     group: Some(_),
-                    phase: Phase::Action { .. },
+                    phase: Phase::Action { end: None, .. },
                     paused_at: None,
                     ..
                 }) if !self.any_busy_child(cx.ws, *id) => Some(*id),
