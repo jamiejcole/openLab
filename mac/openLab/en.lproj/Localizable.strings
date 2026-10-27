@@ -21,6 +21,23 @@
 "menu.edit.copy" = "Copy";
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
+"menu.edit.delete" = "Delete";
+"menu.cues" = "Cues";
+"menu.cues.new" = "New %@ Cue";
+"menu.cues.renumber" = "Renumber Selected Cues...";
+"menu.cues.moveUp" = "Move Selected Cues Up";
+"menu.cues.moveDown" = "Move Selected Cues Down";
+"edit.ok" = "OK";
+"edit.cancel" = "Cancel";
+"edit.renumber.title" = "Renumber Selected Cues";
+"edit.renumber.start" = "First number:";
+"edit.renumber.increment" = "Increment:";
+"edit.renumber.ok" = "Renumber";
+"edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
+"edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
+"edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
+"edit.error.refused" = "The engine refused the edit: %@";
+"edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
 "menu.transport" = "Transport";
 "menu.transport.go" = "GO";
@@ -33,6 +50,10 @@
 "menu.transport.loadSelected" = "Load Selected";
 "menu.transport.startSelected" = "Start Selected";
 "menu.transport.pauseResumeSelected" = "Pause or Resume Selected";
+"menu.transport.previewSelected" = "Preview or Stop Preview Selected";
+"inspector.preview" = "Preview";
+"inspector.stopPreview" = "Stop Preview";
+"cue.previewing" = "Previewing";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 
@@ -339,3 +360,13 @@
 "status.dropouts" = "Dropouts %d";
 "relink.log.ambiguous" = "More than one match for %@; left alone. Candidates: %@";
 "relink.log.unmatched" = "No match found for %@.";
+
+"window.main.title.showMode" = "%@ (Show Mode)";
+"footer.showMode.indicator" = "SHOW MODE";
+"alert.closeShowMode.title" = "Close this workspace?";
+"alert.closeShowMode.message" = "The workspace is in Show Mode.";
+"alert.quitShowMode.title" = "Quit openLab?";
+"alert.quitShowMode.message" = "At least one workspace is in Show Mode.";
+"menu.view" = "View";
+"menu.view.editMode" = "Enter Edit Mode";
+"menu.view.showMode" = "Enter Show Mode";

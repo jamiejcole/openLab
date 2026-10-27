@@ -24,7 +24,7 @@ struct Pick {
 
 fn pick() -> impl Strategy<Value = Pick> {
     (
-        0u8..11,
+        0u8..OPS,
         any::<u32>(),
         any::<u32>(),
         any::<u32>(),
@@ -36,6 +36,18 @@ fn pick() -> impl Strategy<Value = Pick> {
 fn picks(max: usize) -> impl Strategy<Value = Vec<Pick>> {
     proptest::collection::vec(pick(), 0..max)
 }
+
+/// Case count of a property: `default`, or `OPENLAB_PROP_CASES` for a long sweep, e.g.
+/// `OPENLAB_PROP_CASES=5000 cargo test --release -p openlab-core --test commands_prop`.
+fn cases(default: u32) -> u32 {
+    std::env::var("OPENLAB_PROP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Operations 0-10 edit the cue tree; 11 and up edit settings, patches and cue lists.
+const OPS: u8 = 25;
 
 struct Gen {
     next: u128,
@@ -410,7 +422,200 @@ fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
     Some(vec![remove, add])
 }
 
-/// Operations 0–10 are the commands; 100 + n is `SetCueProperty` with property variant n.
+fn setting_value(p: &Pick) -> WorkspaceSetting {
+    let key = [
+        TransportKey::Go,
+        TransportKey::StopAll,
+        TransportKey::PauseAll,
+        TransportKey::ResumeAll,
+        TransportKey::PlayheadNext,
+        TransportKey::PlayheadPrevious,
+    ][p.c as usize % 6];
+    match p.b % 9 {
+        0 => WorkspaceSetting::MinGoInterval {
+            value: time(p.c) / 10.0,
+        },
+        1 => WorkspaceSetting::PanicDuration { value: time(p.c) },
+        2 => WorkspaceSetting::AutosaveInterval {
+            value: time(p.c) * 10.0,
+        },
+        3 => WorkspaceSetting::OscPasscode {
+            value: [
+                None,
+                Some("pw".to_owned()),
+                Some(String::new()),
+                Some("x".repeat(300)),
+            ][p.c as usize % 4]
+                .clone(),
+        },
+        4 => WorkspaceSetting::MasterDb { value: level(p.c) },
+        5 | 6 => WorkspaceSetting::Hotkey {
+            key,
+            value: ["a", "f5", "Bad Key", ""]
+                .get(p.d as usize % 5)
+                .map(|k| Hotkey {
+                    key: (*k).into(),
+                    modifiers: Modifiers::default(),
+                }),
+        },
+        7 => WorkspaceSetting::AutoNumberStart { value: time(p.c) },
+        _ => WorkspaceSetting::AutoNumberIncrement { value: time(p.c) },
+    }
+}
+
+fn patch_output_from(p: &Pick) -> PatchOutput {
+    PatchOutput {
+        level_db: level(p.c),
+        mute: p.d.is_multiple_of(2),
+        delay_ms: time(p.d) * 10.0,
+        polarity_inverted: p.b.is_multiple_of(2),
+    }
+}
+
+fn patch_property(p: &Pick) -> PatchProperty {
+    let output = p.c as usize % 4;
+    match p.b % 8 {
+        0 => PatchProperty::Name {
+            value: format!("patch {}", p.d),
+        },
+        1 => PatchProperty::MasterDb { value: level(p.d) },
+        2 => PatchProperty::OutputLevel {
+            output,
+            value: level(p.d),
+        },
+        3 => PatchProperty::OutputMute {
+            output,
+            value: p.d.is_multiple_of(2),
+        },
+        4 => PatchProperty::OutputDelay {
+            output,
+            value: time(p.d) * 10.0,
+        },
+        5 => PatchProperty::OutputPolarity {
+            output,
+            value: p.d.is_multiple_of(2),
+        },
+        6 => PatchProperty::ChannelCount {
+            value: [1, 2, 3, 8, 0, 65, usize::MAX][p.d as usize % 7],
+        },
+        _ => PatchProperty::Outputs {
+            value: vec![patch_output_from(p); [1, 2, 0, 65][p.d as usize % 4]],
+        },
+    }
+}
+
+fn network_property(p: &Pick) -> NetworkPatchProperty {
+    match p.b % 4 {
+        0 => NetworkPatchProperty::Name {
+            value: format!("net {}", p.d),
+        },
+        1 => NetworkPatchProperty::Host {
+            value: format!("10.0.0.{}", p.d % 255),
+        },
+        2 => NetworkPatchProperty::Port {
+            value: (p.d % 65536) as u16,
+        },
+        _ => NetworkPatchProperty::Protocol {
+            value: if p.d.is_multiple_of(2) {
+                NetworkProtocol::Udp
+            } else {
+                NetworkProtocol::Tcp
+            },
+        },
+    }
+}
+
+/// Settings, patches, network patches and cue lists: operations 11 to 23. Ids are drawn from a
+/// small pool, so they collide with existing ones (refused) and re-use removed ones.
+fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
+    let patch_ids: Vec<PatchId> = ws.patches.iter().map(|x| x.id).collect();
+    let net_ids: Vec<NetworkPatchId> = ws.network_patches.iter().map(|x| x.id).collect();
+    let list_ids: Vec<CueListId> = ws.cue_lists.iter().map(|x| x.id).collect();
+    // An existing id most of the time, a made-up one now and then.
+    let some_patch = || {
+        choose(&patch_ids, p.a)
+            .filter(|_| p.a % 9 != 8)
+            .unwrap_or(patch_id(9))
+    };
+    let some_net = || {
+        choose(&net_ids, p.a)
+            .filter(|_| p.a % 9 != 8)
+            .unwrap_or(net_id(9))
+    };
+    let some_list = || {
+        choose(&list_ids, p.a)
+            .filter(|_| p.a % 9 != 8)
+            .unwrap_or(list_id(9))
+    };
+    Some(match op {
+        11 => Command::SetWorkspaceSetting {
+            setting: setting_value(p),
+        },
+        12 => {
+            let mut new = common::patch(
+                1 + u128::from(p.c % 5),
+                [1, 2, 4, 8, 0, 65][p.d as usize % 6],
+            );
+            new.master_db = level(p.a / 16);
+            Command::AddPatch {
+                index: p.b as usize % (ws.patches.len() + 2),
+                patch: new,
+            }
+        }
+        13 => Command::RemovePatch {
+            id: some_patch(),
+            even_if_used: p.c.is_multiple_of(5),
+        },
+        14 => Command::MovePatch {
+            id: some_patch(),
+            index: p.b as usize % (ws.patches.len() + 1),
+        },
+        15 => Command::SetPatchProperty {
+            id: some_patch(),
+            property: patch_property(p),
+        },
+        16 => Command::AddNetworkPatch {
+            index: p.b as usize % (ws.network_patches.len() + 2),
+            patch: NetworkPatch {
+                id: net_id(1 + u128::from(p.c % 4)),
+                name: format!("n{}", p.d),
+                host: "h".into(),
+                port: 1,
+                protocol: NetworkProtocol::Udp,
+            },
+        },
+        17 => Command::RemoveNetworkPatch {
+            id: some_net(),
+            even_if_used: p.c.is_multiple_of(5),
+        },
+        18 => Command::MoveNetworkPatch {
+            id: some_net(),
+            index: p.b as usize % (ws.network_patches.len() + 1),
+        },
+        19 => Command::SetNetworkPatchProperty {
+            id: some_net(),
+            property: network_property(p),
+        },
+        20 => Command::AddCueList {
+            index: p.b as usize % (ws.cue_lists.len() + 2),
+            id: list_id(1 + u128::from(p.c % 4)),
+            name: format!("list {}", p.d),
+        },
+        21 => Command::RemoveCueList { id: some_list() },
+        22 => Command::MoveCueList {
+            id: some_list(),
+            index: p.b as usize % (ws.cue_lists.len() + 1),
+        },
+        23 => Command::RenameCueList {
+            id: some_list(),
+            name: format!("list {}", p.d % 4),
+        },
+        _ => return None,
+    })
+}
+
+/// Operations 0–10 are the cue commands, 11–23 the model commands (`build_model`); 100 + n is
+/// `SetCueProperty` with property variant n.
 fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     let ids = all_ids(ws);
     let id = choose(&ids, p.a);
@@ -527,7 +732,68 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             id: id?,
             property: property(ws, op - 100, p),
         },
-        _ => return None,
+        24 => {
+            // The multi-select gesture: several moves, or a Target and a Kind of one cue, in one
+            // command. Each is built against what the earlier ones leave.
+            let mut evolving = ws.clone();
+            let mut commands = Vec::new();
+            for n in 0..2 + p.c % 2 {
+                let pick = p.a.wrapping_add(n * 17);
+                let candidate = match p.b % 4 {
+                    // A ganged drag: two outputs of a patch, or two settings, at once.
+                    3 => Some(if p.c.is_multiple_of(2) {
+                        Command::SetPatchProperty {
+                            id: patch_id(1 + u128::from(p.a % 2)),
+                            property: PatchProperty::OutputLevel {
+                                output: (n % 2) as usize,
+                                value: level(p.d.wrapping_add(n)),
+                            },
+                        }
+                    } else {
+                        Command::SetWorkspaceSetting {
+                            setting: if n % 2 == 0 {
+                                WorkspaceSetting::MasterDb { value: level(p.d) }
+                            } else {
+                                WorkspaceSetting::PanicDuration { value: time(p.d) }
+                            },
+                        }
+                    }),
+                    0 | 1 => {
+                        let id = choose(&all_ids(&evolving), pick);
+                        id.and_then(|id| {
+                            Some(Command::MoveCue {
+                                id,
+                                index: (p.d.wrapping_add(n) as usize)
+                                    % (siblings_of(&evolving, id)? + 1),
+                            })
+                        })
+                    }
+                    _ => {
+                        let id = choose(&all_ids(&evolving), p.a)?;
+                        Some(if n % 2 == 0 {
+                            Command::SetCueProperty {
+                                id,
+                                property: property(&evolving, 9, p),
+                            }
+                        } else {
+                            Command::SetCueProperty {
+                                id,
+                                property: CueProperty::Kind {
+                                    value: kind(&evolving, p),
+                                },
+                            }
+                        })
+                    }
+                };
+                if let Some(command) = candidate
+                    && evolving.apply(command.clone()).is_ok()
+                {
+                    commands.push(command);
+                }
+            }
+            Command::Transaction { commands }
+        }
+        _ => return build_model(ws, op, p),
     })
 }
 
@@ -577,6 +843,12 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     // Kept and inert, like a wrong-kind target (a group-mode change makes it
                     // apply again).
                     | IssueKind::SecondTriggerNeedsPlaylist
+                    // A cue may name a patch the workspace lacks (it was removed with
+                    // `even_if_used`, or the cue was added after): the broken-cue state.
+                    | IssueKind::PatchMissing { .. }
+                    | IssueKind::NetworkPatchMissing { .. }
+                    // A transport key name is kept as given, like load does (it only warns).
+                    | IssueKind::InvalidHotkey { .. }
             ) && issue.severity == Severity::Warning,
             "command introduced {issue}"
         );
@@ -620,7 +892,7 @@ fn round_trip(prefix: &[Pick], op: u8, p: &Pick) -> Result<(), TestCaseError> {
 macro_rules! round_trip_tests {
     ($($name:ident: $op:expr,)*) => {
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(64))]
+            #![proptest_config(ProptestConfig::with_cases(cases(64)))]
             $(
                 #[test]
                 fn $name(prefix in picks(30), p in pick()) {
@@ -660,7 +932,7 @@ round_trip_tests! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(ProptestConfig::with_cases(cases(128)))]
 
     /// Whatever happens, every step keeps the invariants; undoing everything gives back the
     /// empty workspace step by step, and redoing everything the final one.
@@ -696,6 +968,37 @@ proptest! {
         prop_assert_eq!(&ws, &last);
     }
 
+    /// Edits grouped by random coalesce keys undo to the start in however many steps the keys
+    /// allow, and redo to the end, exactly; fewer steps than edits when keys repeat.
+    #[test]
+    fn coalesced_sequences_undo_and_redo_exactly(sequence in picks(60)) {
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let start = ws.clone();
+        let mut history = History::new();
+        let mut applied = 0usize;
+        for p in &sequence {
+            let Some(command) = build(&ws, &mut g, p.op, p) else { continue };
+            let key = [None, Some("a"), Some("a"), Some("b")][p.d as usize % 4];
+            let before = ws.clone();
+            match history.execute_coalescing(&mut ws, command, key) {
+                Ok(changed) => {
+                    check_invariants(&ws)?;
+                    applied += usize::from(changed);
+                    // An edit that is recorded may still cancel itself out (remove and re-add).
+                    prop_assert!(changed || ws == before, "an edit was dropped as a no-op");
+                }
+                Err(_) => prop_assert_eq!(&ws, &before),
+            }
+        }
+        prop_assert!(history.undo_len() <= applied);
+        let last = ws.clone();
+        while history.undo(&mut ws).unwrap() {}
+        prop_assert_eq!(&ws, &start);
+        prop_assert_eq!(bytes(&ws), bytes(&start));
+        while history.redo(&mut ws).unwrap() {}
+        prop_assert_eq!(&ws, &last);
+    }
+
     /// A new edit after undo drops everything that could have been redone.
     #[test]
     fn a_new_edit_clears_redo_whatever_came_before(sequence in picks(40), undos in 1usize..6) {
@@ -711,7 +1014,7 @@ proptest! {
         }
         let redoable = history.can_redo();
         let fresh = Command::AddCue {
-            at: Position { list: list_id(1), parent: None, index: 0 },
+            at: Position { list: ws.cue_lists[0].id, parent: None, index: 0 },
             cue: common::cue(999_999, CueKind::Memo),
             auto_number: false,
         };
@@ -773,7 +1076,12 @@ proptest! {
                 _ => {
                     let Some(command) = build(&ws, &mut g, p.op, p) else { continue };
                     let fp = command.footprint();
-                    history.execute(&mut ws, command).is_ok().then_some(fp)
+                    // Random gesture keys, so undo and redo of merged steps are mirrored too.
+                    let key = [None, Some("a"), Some("a"), Some("b")][(p.a / 3) as usize % 4];
+                    history
+                        .execute_coalescing(&mut ws, command, key)
+                        .is_ok_and(|changed| changed)
+                        .then_some(fp)
                 }
             };
             let Some(fp) = changed else { continue };
@@ -785,8 +1093,33 @@ proptest! {
             // O(changed): never more than a delete and an upsert per named cue, plus the
             // subtrees of groups that were named.
             let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
-            prop_assert!(upserts.len() <= named);
-            prop_assert!(deletes.len() <= named);
+            // Plus what it names of settings, lists and patches (all of a collection that was
+            // reordered: the client sorts it by their indices).
+            let part = |touched_len: usize, reordered: bool, all: usize| {
+                if reordered || touched_len > 1 {
+                    all + touched_len
+                } else {
+                    touched_len
+                }
+            };
+            let extra = usize::from(fp.settings)
+                + part(
+                    fp.lists.changed.len() + fp.lists.removed.len(),
+                    fp.lists.reordered,
+                    ws.cue_lists.len(),
+                )
+                + part(
+                    fp.patches.changed.len() + fp.patches.removed.len(),
+                    fp.patches.reordered,
+                    ws.patches.len(),
+                )
+                + part(
+                    fp.network_patches.changed.len() + fp.network_patches.removed.len(),
+                    fp.network_patches.reordered,
+                    ws.network_patches.len(),
+                );
+            prop_assert!(upserts.len() <= named + extra);
+            prop_assert!(deletes.len() <= named + extra);
             mirror.apply_changes(&upserts, &deletes).unwrap();
             prop_assert_eq!(&mirror, &ws);
         }
@@ -813,7 +1146,10 @@ fn random_edit(
         _ => {
             let command = build(ws, g, p.op, p)?;
             let fp = command.footprint();
-            history.execute(ws, command).is_ok().then_some(fp)
+            history
+                .execute(ws, command)
+                .is_ok_and(|changed| changed)
+                .then_some(fp)
         }
     }
 }
@@ -833,7 +1169,8 @@ proptest! {
             let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) else { continue };
             let (touched, structural) = reconcile_sets(&fp);
             let change = index.reconcile(&ws, &touched, &structural, &fp.added);
-            prop_assert!(matches!(change, IndexChange::Delta(_)));
+            // Only an edit of the cue lists themselves may make the index start over.
+            prop_assert!(matches!(change, IndexChange::Delta(_)) || !fp.lists.is_empty());
             prop_assert!(index.matches(&ws), "index differs from a rebuild");
             for list in &ws.cue_lists {
                 let order = list_positions(&list.cues);
@@ -944,9 +1281,18 @@ proptest! {
         full.model_changed();
         call(&mut inc, &mut full, &ws, Input::Tick)?;
         let passes = inc.whole_show_passes();
+        // An edit of settings, patches or lists is told with the full `model_changed`, which
+        // walks the show by design: the no-extra-passes property is for cue edits.
+        let mut wide = false;
         for p in &sequence {
             if let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) {
-                inc.model_changed_cues(&fp);
+                // As the control thread does: the cue-scoped shortcut only for cue edits.
+                if fp.is_model_wide() {
+                    wide = true;
+                    inc.model_changed();
+                } else {
+                    inc.model_changed_cues(&fp);
+                }
                 full.model_changed();
                 if p.b.is_multiple_of(4) {
                     // The next edit comes before the engine is called.
@@ -957,7 +1303,9 @@ proptest! {
             call(&mut inc, &mut full, &ws, status_input(&ws, p))?;
         }
         call(&mut inc, &mut full, &ws, Input::Tick)?;
-        prop_assert_eq!(inc.whole_show_passes(), passes);
+        if !wide {
+            prop_assert_eq!(inc.whole_show_passes(), passes);
+        }
     }
 }
 
@@ -1073,8 +1421,15 @@ proptest! {
         full.model_changed();
         call(&mut inc, &mut full, &ws, Input::Tick, 1)?;
         let passes = inc.whole_show_passes();
+        // An edit of settings, patches or lists is told with the full `model_changed`, which
+        // walks the show by design: the no-extra-passes property is for cue edits.
+        let mut wide = false;
         for p in &sequence {
-            let list = ws.cue_lists[p.a as usize % 2].id;
+            // A random edit can remove a list; address whichever lists remain.
+            let Some(target) = ws.cue_lists.get(p.a as usize % ws.cue_lists.len().max(1)) else {
+                break;
+            };
+            let list = target.id;
             let ids = all_ids(&ws);
             let dt = u64::from(p.d % 25);
             match p.c % 6 {
@@ -1087,7 +1442,12 @@ proptest! {
                 _ => {
                     let head = inc.playhead(list);
                     if let Some(fp) = edit_near_playhead(&mut ws, &mut g, &mut history, p, head) {
-                        inc.model_changed_cues(&fp);
+                        if fp.is_model_wide() {
+                            wide = true;
+                            inc.model_changed();
+                        } else {
+                            inc.model_changed_cues(&fp);
+                        }
                         full.model_changed();
                         if !p.b.is_multiple_of(5) {
                             call(&mut inc, &mut full, &ws, Input::Tick, dt)?;
@@ -1097,7 +1457,9 @@ proptest! {
             }
         }
         call(&mut inc, &mut full, &ws, Input::Tick, 1)?;
-        prop_assert_eq!(inc.whole_show_passes(), passes);
+        if !wide {
+            prop_assert_eq!(inc.whole_show_passes(), passes);
+        }
     }
 }
 
@@ -1118,11 +1480,11 @@ fn the_generator_exercises_every_command() {
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
     let mut readded = 0;
-    for _ in 0..20 {
+    for _ in 0..90 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
             let p = Pick {
-                op: (next() % 11) as u8,
+                op: (next() % u32::from(OPS)) as u8,
                 a: next(),
                 b: next(),
                 c: next(),
@@ -1163,7 +1525,7 @@ fn the_generator_exercises_every_command() {
             *tally.entry(p.op).or_default() += 1;
         }
     }
-    for op in 0..11u8 {
+    for op in 0..OPS {
         assert!(
             applied.get(&op).copied().unwrap_or(0) >= 20,
             "op {op}: applied {applied:?}, refused {refused:?}"
@@ -1179,7 +1541,9 @@ fn the_generator_exercises_every_command() {
     );
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)
-    for op in [0u8, 2, 4, 5, 6, 7, 8, 9] {
+    for op in [
+        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22,
+    ] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,
             "op {op} never refused"
