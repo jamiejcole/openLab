@@ -233,12 +233,13 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | serde, serde_json | serialisation | MIT/Apache-2.0 |
 | uuid | cue/workspace ids | MIT/Apache-2.0 |
 | thiserror | error types | MIT/Apache-2.0 |
-| tracing (+ appender) | logging (never on audio thread) | MIT |
 | dirs | per-platform app-support paths | MIT/Apache-2.0 |
 | unicode-normalization | NFC normalisation of media paths (core; pure) | MIT/Apache-2.0 |
 | tempfile (dev) | temp dirs in persistence tests | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
+
+The show log (DX-02) does not use `tracing`: its records are structured protocol values (`LogEntry`) that clients read back with `log_tail`, so a small writer thread in `diag/` (bounded channel, size rotation, drop-and-count) replaces the crate and its dependency tree. Details: `docs/logging.md`.
 
 ## 13. Windows readiness (NFR-31)
 

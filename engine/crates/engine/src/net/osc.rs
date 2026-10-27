@@ -89,6 +89,10 @@ pub struct OscConfig {
     pub max_inflight: usize,
     /// One write to a TCP peer that takes longer than this closes the connection.
     pub write_timeout: Duration,
+    /// Test seam: the first this many UDP sends are failed without touching the socket, as an
+    /// operating system does for a datagram it cannot send (no portable destination makes the
+    /// real call fail on every system). They are counted like any other failed send.
+    pub fail_udp_sends: u32,
     /// A TCP connection that has sent nothing for this long, and has not asked for updates, may
     /// be closed to make room when the table is full (a peer that vanished without a FIN or
     /// RST would otherwise hold its slot for good). Connections that are subscribed to
@@ -116,6 +120,7 @@ impl Default for OscConfig {
             max_tcp_connections: 256,
             max_inflight: 2048,
             write_timeout: Duration::from_secs(10),
+            fail_udp_sends: 0,
             tcp_idle_evict: Duration::from_secs(60),
             max_input_age: Duration::from_secs(2),
             duplicate_window: crate::osc::DUPLICATE_WINDOW,
@@ -278,6 +283,7 @@ pub fn start(
         counter: 0,
         snapshot_waits: HashSet::new(),
         inflight: HashSet::new(),
+        fail_udp_sends: config.fail_udp_sends,
         start: Instant::now(),
         listener: OscListenerStats::default(),
         reported: Problems::default(),
@@ -664,6 +670,8 @@ struct Actor {
     /// before it, and one made before is dropped as stale once it is in.
     snapshot_waits: HashSet<RequestId>,
     inflight: HashSet<RequestId>,
+    /// UDP sends still to be failed on purpose (see [`OscConfig::fail_udp_sends`]).
+    fail_udp_sends: u32,
     start: Instant,
     listener: OscListenerStats,
     reported: Problems,
@@ -991,7 +999,7 @@ impl Actor {
                 self.listener.inputs_dropped += 1;
             } else {
                 self.note_active_list(&input);
-                self.forward(input);
+                self.forward(peer, input);
             }
         }
         match peer {
@@ -1036,15 +1044,28 @@ impl Actor {
         }
     }
 
-    fn forward(&mut self, input: OscInput) {
+    fn forward(&mut self, peer: Peer, input: OscInput) {
         if self.inflight.len() >= self.config.max_inflight {
             self.listener.inputs_dropped += 1;
             return;
         }
         let id = self.next_id();
         self.inflight.insert(id);
+        let message = input.into_client_message(id);
+        let ip = match peer {
+            Peer::Udp(ip) | Peer::Tcp { ip, .. } => ip,
+        };
+        // Just before the input, so the show log says where a GO came from (DX-02). Only
+        // transport actions are triggers: a command is an edit, and a chatty controller
+        // sending those must not double the inbox traffic.
+        if matches!(message, ClientMessage::Transport { .. }) {
+            let _ = self.inbox.send(Inbox::Trigger {
+                source: format!("osc {ip}"),
+                detail: super::describe(&message),
+            });
+        }
         let sent = self.inbox.send(Inbox::Client {
-            message: input.into_client_message(id),
+            message,
             reply: self.reply_tx.clone(),
         });
         if sent.is_err() {
@@ -1062,9 +1083,14 @@ impl Actor {
                     .osc
                     .reply_port(peer, self.now())
                     .unwrap_or(self.config.reply_port);
-                self.udp
-                    .try_send_to(&bytes, SocketAddr::new(ip, port))
-                    .is_ok()
+                if self.fail_udp_sends > 0 {
+                    self.fail_udp_sends -= 1;
+                    false
+                } else {
+                    self.udp
+                        .try_send_to(&bytes, SocketAddr::new(ip, port))
+                        .is_ok()
+                }
             }
             Peer::Tcp { conn, .. } => return self.queue_tcp(conn, slip_encode(&bytes)),
         };
