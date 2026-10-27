@@ -451,8 +451,9 @@ impl OutputHost {
         // (ARCHITECTURE §3.4). `Instant::now` neither allocates nor locks, and it does not enter
         // the kernel on the platforms we ship: `clock_gettime(CLOCK_UPTIME_RAW)` on macOS reads
         // the commpage (`mach_absolute_time`), `QueryPerformanceCounter` on Windows reads the
-        // TSC, and Linux's `clock_gettime` is served by the vDSO. Two reads per callback, about
-        // 20-50 ns each, against a block of at least 1.3 ms (64 frames at 48 kHz).
+        // TSC, and Linux's `clock_gettime` is served by the vDSO. Two reads per callback, tens of
+        // ns for the pair (the CPU budget gate reports it), against a block of at least 1.3 ms
+        // (64 frames at 48 kHz).
         let started = Instant::now();
         #[cfg(debug_assertions)]
         let before = assert_no_alloc::violation_count();
