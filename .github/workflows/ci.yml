@@ -21,7 +21,7 @@ env:
 
 jobs:
   # Decides which jobs a change needs. Skipped jobs count as passed for the required
-  # "CI result" check; anything but a pull request or a push with a known base runs everything.
+  # "CI Result" check; anything but a pull request or a push with a known base runs everything.
   changes:
     runs-on: ubuntu-24.04
     outputs:
@@ -173,7 +173,7 @@ jobs:
 
   # The one check branch protection requires: green when every job that ran passed.
   result:
-    name: CI result
+    name: CI Result
     if: always()
     needs: [changes, rust, cargo-deny, fuzz, mac]
     runs-on: ubuntu-24.04
