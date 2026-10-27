@@ -87,6 +87,7 @@ cue, and the cue shows as broken where it cannot run.
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
+| A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (docs/osc.md, "Sending") | Kept; the cue shows as broken until it is edited |
 | An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
 | An Audio cue's `end_time` less than 51 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 51 ms (QLab 5's shortest trim) |
 | Slice markers out of order | Warning; sorted |
@@ -168,9 +169,9 @@ A destination for Network cues.
 |---|---|---|
 | `id` | UUID | |
 | `name` | string | |
-| `host` | string | Host name or IP address. |
-| `port` | integer 0–65535 | |
-| `protocol` | `"udp"` \| `"tcp"` | TCP messages are SLIP-framed. |
+| `host` | string | Host name or IP address (IPv6 may be in brackets). Not checked when the file loads; a cue that sends to a patch whose host is empty or malformed, or whose port is 0, loads as it is and shows as broken. A host name is looked up when the workspace opens (not stored). |
+| `port` | integer 0–65535 | 1–65535 can be sent to. |
+| `protocol` | `"udp"` \| `"tcp"` | TCP messages are SLIP-framed (OSC 1.1), one connection per message. |
 
 ### 4.6 Cue lists
 
@@ -274,7 +275,7 @@ Option on macOS).
 | Field | Type | Meaning |
 |---|---|---|
 | `destination` | network patch id | |
-| `address` | string | OSC address, e.g. `"/lx/go"`. (v0.0.1 sends OSC only; raw UDP/TCP strings come later.) |
+| `address` | string | OSC address, e.g. `"/lx/go"`: starts with `/`, printable ASCII, no spaces, at most 512 bytes. (v0.0.1 sends OSC only; raw UDP/TCP strings come later.) |
 | `args` | array | Typed arguments: `{"type": "int", "value": i32}`, `{"type": "float", "value": f32}`, `{"type": "string", "value": string}`, `{"type": "bool", "value": bool}`. |
 
 ## 6. Annotated example
