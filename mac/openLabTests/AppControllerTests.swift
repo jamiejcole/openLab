@@ -56,7 +56,8 @@ final class AppControllerTests: XCTestCase {
         engine = FakeEngine(mode: mode, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         let info = engine.info
         let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
-        app = AppController(session: session, scheduler: quitScheduler)
+        app = AppController(
+            session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -71,6 +72,25 @@ final class AppControllerTests: XCTestCase {
     override func tearDown() async throws {
         app.closeAllWindows()
         app = nil
+    }
+
+    static func hotkey(_ key: String, _ mods: [String] = []) -> String {
+        let flags = ["shift", "control", "alt", "command"].map { "\"\($0)\":\(mods.contains($0))" }.joined(
+            separator: ",")
+        return #"{"key":"\#(key)","modifiers":{\#(flags)}}"#
+    }
+
+    /// Replaces the workspace's `settings.hotkeys` as the engine would (a `settings` upsert).
+    private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        var settings = try XCTUnwrap(store.model?.settings)
+        settings.set("hotkeys", try XCTUnwrap(JSONValue.parse(hotkeys)))
+        let name = store.model?.name ?? ""
+        let upsert = #"{"type":"settings","name":"\#(name)","settings":\#(try settings.text())}"#
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#, doc: doc
+        )
+        await assertEventually { store.model?.settings == settings }
     }
 
     /// A second, clean workspace.
@@ -145,10 +165,13 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testNoRevertInTheMenus() {
-        let titles = MainMenu.make().bar.items.flatMap { $0.submenu?.items.map(\.title) ?? [] }
+        let titles = MainMenu.make().bar.items.flatMap {
+            $0.submenu?.items.map(\.title) ?? []
+        }
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
-            MainMenu.make().bar.items[1].submenu?.items.map(\.keyEquivalent), ["n", "o", "", "w"])
+            MainMenu.make().bar.items[1].submenu?.items.map(
+                \.keyEquivalent), ["n", "o", "", "", "", "w"])
     }
 
     // MARK: Front-window routing
@@ -227,6 +250,285 @@ final class AppControllerTests: XCTestCase {
         _ = app.handleKeyDown(try escEvent(keyCode: 0))
         await settle()
         XCTAssertTrue(transports(.panic).isEmpty)
+    }
+
+    // MARK: Transport commands
+
+    func testEveryCommandSendsItsMessageToTheKeyWindowsWorkspace() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        for (command, action) in [
+            (TransportCommand.go, TransportAction.go(list: list)), (.pauseAll, .pauseAll), (.resumeAll, .resumeAll),
+            (.playheadNext, .playheadNext(list: list)), (.playheadPrevious, .playheadPrevious(list: list)),
+        ] {
+            await app.perform(command)
+            XCTAssertEqual(transports(action), [second], "\(command)")
+        }
+        keyDoc = "doc-1"
+        await app.perform(.pauseAll)
+        XCTAssertEqual(transports(.pauseAll), [second, "doc-1"])
+    }
+
+    func testResumeAllButtonAddressesItsOwnStore() async throws {
+        let second = try await addWorkspace()
+        keyDoc = "doc-1"
+        app.windows[second]?.sidebar.transportButtons[AX.transportResume]?.performClick(nil)
+        await assertEventually { !transports(.resumeAll).isEmpty }
+        XCTAssertEqual(transports(.resumeAll), [second])
+    }
+
+    func testPanicCommandIsAppScopeAndNeedsNoWorkspaceWindow() async throws {
+        keyDoc = nil
+        XCTAssertTrue(app.canPerform(.panic))
+        XCTAssertFalse(app.canPerform(.go))
+        await app.perform(.panic)
+        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+    }
+
+    func testStopAllSendsStopAllToTheKeyWindowsWorkspaceOnly() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        XCTAssertTrue(app.canPerform(.stopAll))
+        await app.perform(.stopAll)
+        XCTAssertEqual(transports(.stopAll), [second])
+        XCTAssertTrue(transports(.hardStop(cue: "00000000-0000-0000-0000-00000000000a")).isEmpty, "no per-cue loop")
+    }
+
+    func testStopAllKeyFromTheShowsHotkeysDispatches() async throws {
+        keyDoc = "doc-1"
+        try await setHotkeys("doc-1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually { !transports(.stopAll).isEmpty }
+        XCTAssertEqual(transports(.stopAll), ["doc-1"])
+    }
+
+    func testEscStaysPanicNotStopAll() async throws {
+        keyDoc = "doc-1"
+        _ = app.handleKeyDown(try escEvent())
+        await assertEventually { transports(.panic).count == 1 }
+        XCTAssertTrue(transports(.stopAll).isEmpty)
+    }
+
+    func testFailedTransportBeepsAndLogsInsteadOfBeingDropped() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        engine.dropConnections()
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 1)
+        let errors = store.logEntries.filter { $0.level == .error }.map(\.message)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.hasPrefix("Transport command failed") == true, "\(errors)")
+    }
+
+    func testSuccessfulTransportDoesNotBeep() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 0)
+    }
+
+    func testPlayheadSendsTheFinalSelectionEvenBeforeTheEchoArrives() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let a: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let b: ModelID = "00000000-0000-0000-0000-00000000000b"  // the playhead already
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        func click(_ id: ModelID) {
+            let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(id))
+            wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        click(a)
+        click(b)  // back on the cue the (not yet moved) playhead is on
+        await assertEventually { !transports(.setPlayhead(list: list, cue: b)).isEmpty }
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: a)).count, 1)
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: b)).count, 1)
+    }
+
+    func testKeyCacheIsEvictedWhenAWorkspaceCloses() async throws {
+        let second = try await addWorkspace()
+        let before = app.keyCacheCount
+        XCTAssertGreaterThanOrEqual(before, 2)
+        _ = await app.session.close(doc: second, discardChanges: true)
+        await assertEventually { app.windows[second] == nil }
+        XCTAssertEqual(app.keyCacheCount, before - 1)
+    }
+
+    func testHotkeyWarningsAreLoggedWhenTheSettingsArriveNotAtTheFirstKeyPress() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        await assertEventually { store.logEntries.contains { $0.level == .warn } }
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
+    }
+
+    func testSelectedCueCommandsUseTheSelection() async throws {
+        keyDoc = "doc-1"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+        wc.cueList.select([running])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [running])
+        await app.perform(.pauseResumeSelected)  // running -> pause
+        await app.perform(.startSelected)
+        await app.perform(.stopSelected)
+        await app.perform(.resetSelected)
+        await app.perform(.loadSelected)
+        XCTAssertEqual(transports(.pause(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.start(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.reset(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.load(cue: running, at: 0)), ["doc-1"])
+        wc.cueList.select([])  // nothing selected: nothing sent
+        await app.perform(.startSelected)
+        XCTAssertEqual(transports(.start(cue: running)).count, 1)
+    }
+
+    func testSelectingByHandMovesThePlayheadButRestoringDoesNot() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let target: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let action = TransportAction.setPlayhead(list: "00000000-0000-0000-0000-000000000001", cue: target)
+        wc.cueList.select([target])  // programmatic: no message
+        await settle()
+        XCTAssertTrue(transports(action).isEmpty)
+        wc.cueList.outlineView.deselectAll(nil)
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(target))
+        wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)  // as a click does
+        await assertEventually { !transports(action).isEmpty }
+    }
+
+    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        XCTAssertFalse(wc.masthead.notesView.acceptsFirstResponder)
+        XCTAssertTrue(wc.window?.initialFirstResponder === wc.cueList.outlineView)
+    }
+
+    private func keyEvent(_ chars: String, _ flags: NSEvent.ModifierFlags = [], repeats: Bool = false) throws -> NSEvent
+    {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: repeats, keyCode: 49))
+    }
+
+    func testSpaceKeyDownSendsGoForTheKeyWorkspaceAndIsConsumed() async throws {
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        keyDoc = "doc-1"
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { !transports(go).isEmpty }
+        XCTAssertEqual(transports(go), ["doc-1"])
+        // Held down: the repeat is consumed but sends nothing.
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)))
+        await settle()
+        XCTAssertEqual(transports(go).count, 1)
+    }
+
+    func testSpaceWhileTypingStaysWithTheTextField() async throws {
+        keyDoc = "doc-1"
+        app.isTextEditing = { true }
+        let event = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(event) === event)
+        await settle()
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testKeysComeFromTheWorkspaceSettingsAndFallBackToDefaults() async throws {
+        let list = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        keyDoc = "doc-1"
+        try await setHotkeys("doc-1", #"{"go":\#(Self.hotkey("g")),"pause_all":null}"#)
+        let old = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(old) === old, "Space is no longer GO in this show")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { !transports(list).isEmpty }
+        let none = try keyEvent("[")
+        XCTAssertTrue(app.handleKeyDown(none) === none, "null: no key")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("]")), "absent resume_all: QLab default")
+    }
+
+    func testEachWindowUsesItsOwnWorkspacesKeys() async throws {
+        let second = try await addWorkspace()
+        try await setHotkeys(second, #"{"go":\#(Self.hotkey("g"))}"#)
+        keyDoc = second
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord("g"))
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        await assertEventually { !transports(go).isEmpty }
+        keyDoc = "doc-1"
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "))
+        let g = try keyEvent("g")
+        XCTAssertTrue(app.handleKeyDown(g) === g)
+        await settle()
+        XCTAssertEqual(transports(go), [second])
+    }
+
+    func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        keyDoc = "doc-1"
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f5","modifiers":{}}}"#)
+        let keys = app.frontKeys
+        XCTAssertEqual(keys.chord(for: .go), KeyChord("x"))
+        XCTAssertNil(keys.chord(for: .pauseAll), "the later field loses")
+        XCTAssertNil(keys.chord(for: .resumeAll))
+        let warnings = store.logEntries.filter { $0.level == .warn }.map(\.message)
+        XCTAssertEqual(warnings.count, 2, "\(warnings)")
+        _ = app.frontKeys  // read again: not logged twice
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 2)
+    }
+
+    func testAHeldKeyFiresOnce() async throws {
+        keyDoc = "doc-1"
+        await app.perform(.go, isRepeat: true)
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testTypingKeepsCharacterKeysButNotCommandChords() async throws {
+        keyDoc = "doc-1"
+        var typing = true
+        app.isTextEditing = { typing }
+        XCTAssertFalse(app.canPerform(.go), "Space types a space")
+        XCTAssertFalse(app.canPerform(.pauseAll))
+        XCTAssertFalse(app.canPerform(.pauseResumeSelected), "P types a p")
+        XCTAssertTrue(app.canPerform(.playheadNext), "Shift-Cmd-Down is not a typing key")
+        XCTAssertTrue(app.canPerform(.panic))
+        typing = false
+        XCTAssertTrue(app.canPerform(.go))
+    }
+
+    func testMenuKeyEquivalentsFollowTheKeyWindowsKeys() async throws {
+        keyDoc = "doc-1"
+        let menus = MainMenu.make()
+        func item(_ c: TransportCommand) -> NSMenuItem? {
+            menus.transport.items.first { $0.representedObject as? String == c.rawValue }
+        }
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item(.go)?.keyEquivalent, " ")
+        XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
+        XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
+        XCTAssertEqual(
+            item(.playheadNext)?.keyEquivalent, "", "the model's bare Down: the selection moves the playhead")
+        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "the model's Esc is the app-wide panic")
+        XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
+        XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
+        let commands = menus.transport.items.compactMap { $0.representedObject as? String }
+        XCTAssertEqual(commands.count, TransportCommand.allCases.count)
+
+        try await setHotkeys(
+            "doc-1",
+            #"{"go":\#(Self.hotkey("g", ["command"])),"playhead_next":\#(Self.hotkey("down", ["command", "shift"]))}"#)
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item(.go)?.keyEquivalent, "g")
+        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+    }
+
+    func testTransportMenuTitlesAreLocalised() {
+        let menus = MainMenu.make()
+        for entry in menus.transport.items where !entry.isSeparatorItem {
+            XCTAssertFalse(entry.title.hasPrefix("menu."), entry.title)
+        }
     }
 
     // MARK: Close
@@ -347,6 +649,75 @@ final class AppControllerTests: XCTestCase {
     }
 
     // MARK: Quit
+
+    // MARK: Pending inspector edits
+
+    /// Types a name in the inspector of "doc-1" without committing it.
+    private func typePendingName(_ text: String = "Typed") throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.intro])
+        wc.inspector.nameField.stringValue = text
+        wc.inspector.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.nameField))
+        return wc
+    }
+
+    private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.received.firstIndex(where: match) }
+    private func isCommand(_ m: ClientMessage) -> Bool {
+        if case .command = m { return true } else { return false }
+    }
+
+    func testCloseSendsThePendingEditFirst() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertTrue(closed)
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let close = try XCTUnwrap(index { if case .provisional(.close) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, close)
+    }
+
+    func testSaveFromThePromptSendsThePendingEditBeforeTheSave() async throws {
+        _ = try typePendingName()
+        await makeDirty("doc-1")
+        alerts.saveChoices = [.save]
+        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        _ = await app.closeWorkspace("doc-1")
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let save = try XCTUnwrap(index { if case .request(_, .saveAs) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, save)
+    }
+
+    func testQuitSendsThePendingEditBeforeGoodbye() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]  // the edit made the workspace dirty
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "\(alerts.log) \(alerts.errors)")
+        await assertEventually { self.index { if case .goodbye = $0 { return true } else { return false } } != nil }
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let bye = try XCTUnwrap(index { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, bye)
+    }
+
+    func testInvalidPendingEditStopsCloseAndQuit() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.fade])
+        func typeBadTime() {
+            wc.inspector.preWaitField.stringValue = "abc"
+            wc.inspector.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
+        }
+        typeBadTime()
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(app.windows["doc-1"])
+        typeBadTime()
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, loc("inspector.invalid.time"))
+    }
 
     func testQuitWalksEveryDirtyWorkspaceThenSaysGoodbye() async throws {
         let b = try await addWorkspace()
@@ -557,11 +928,140 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(app.launcher.window?.isVisible ?? true)
     }
 
+    // MARK: Sidebar
+
+    /// Adds a second list "Second" to `doc` as the engine would.
+    private func addSecondList(_ doc: ModelID) async throws -> ModelID {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        let id: ModelID = "00000000-0000-0000-0000-000000000002"
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue_list","id":"\#(id)","name":"Second","index":1}],"deletes":[]}"#,
+            doc: doc)
+        await assertEventually { store.model?.cueLists.count == 2 }
+        return id
+    }
+
+    func testGoAndPlayheadKeysAddressTheListPickedInTheSidebar() async throws {
+        let second = try await addSecondList("doc-1")
+        keyDoc = "doc-1"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        XCTAssertEqual(wc.cueList.listID, second)
+        _ = await app.goFront()
+        await app.perform(.playheadNext)
+        XCTAssertEqual(transports(.go(list: second)), ["doc-1"])
+        XCTAssertEqual(transports(.playheadNext(list: second)), ["doc-1"])
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+        wc.masthead.goButton.performClick(nil)  // the GO button follows the same list
+        await assertEventually { transports(.go(list: second)).count == 2 }
+    }
+
+    func testActiveCuePanicGoesToTheWindowsOwnWorkspace() async throws {
+        let other = try await addWorkspace()
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+        await assertEventually { wc.sidebar.activeCues.contains(intro) }
+        let row = try XCTUnwrap(wc.sidebar.activeCues.firstIndex(of: intro))
+        let cell = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? ActiveCueCell)
+        cell.panicButton.performClick(nil)
+        await assertEventually { !transports(.panicCue(cue: intro)).isEmpty }
+        XCTAssertEqual(transports(.panicCue(cue: intro)), ["doc-1"])
+        XCTAssertNotEqual(other, "doc-1")
+        cell.pauseButton.performClick(nil)
+        await assertEventually { !transports(.pause(cue: intro)).isEmpty }
+        XCTAssertEqual(transports(.pause(cue: intro)), ["doc-1"])
+    }
+
     // MARK: Helpers
 
     private func find(_ root: NSView, _ id: String) -> NSView? {
         if root.accessibilityIdentifier() == id { return root }
         for sub in root.subviews { if let hit = find(sub, id) { return hit } }
         return nil
+    }
+
+    // MARK: Relink missing media (WS-03)
+
+    private func relinkRequests() -> [String] {
+        engine.received.compactMap {
+            if case .request(_, .relink(let folder)) = $0 { return folder }
+            return nil
+        }
+    }
+
+    func testRelinkSendsTheFolderRequestAndReportsTheResult() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(3), "ambiguous": .array([]), "unmatched": .array([]),
+        ])
+        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        await app.relinkMedia(on: store)
+        XCTAssertEqual(relinkRequests(), ["/Volumes/Audio/Hamlet"])
+        // The frame is the documented one (client fixture request_relink.json), apart from the id.
+        let sent = try XCTUnwrap(
+            engine.received.first { if case .request(_, .relink) = $0 { return true } else { return false } })
+        var frame = try XCTUnwrap(JSONValue.parse(try sent.text()))
+        var golden = try Fixtures.json("client", "request_relink")
+        frame.set("id", .int(0))
+        golden.set("id", .int(0))
+        XCTAssertEqual(frame, golden)
+        XCTAssertTrue(alerts.errors.isEmpty, "a clean relink does not interrupt the show")
+        XCTAssertEqual(
+            app.windows[doc]?.footer.noticeLabel.stringValue,
+            AppController.relinkSummary(relinked: 3, ambiguous: 0, unmatched: 0))
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(store.logEntries.last?.level, .info)
+        XCTAssertEqual(store.logEntries.last?.message, "Relinked 3 cue(s).")
+    }
+
+    func testRelinkWithAmbiguousOrUnmatchedCuesIsAWarningNotSuccess() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(1),
+            "ambiguous": .array([
+                .object([
+                    "cue": .string("00000000-0000-0000-0000-00000000000a"), "candidates": .array([.string("a/x.wav")]),
+                ])
+            ]),
+            "unmatched": .array([.string("00000000-0000-0000-0000-00000000000b")]),
+        ])
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: store)
+        let expected = AppController.relinkSummary(relinked: 1, ambiguous: 1, unmatched: 1)
+        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
+        let messages = store.logEntries.map(\.message)
+        XCTAssertTrue(messages.contains(expected))
+        XCTAssertTrue(messages.contains { $0.contains("a/x.wav") && $0.contains("Candidates") }, "\(messages)")
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 3, "summary and one per cue")
+        XCTAssertEqual(app.windows[doc]?.footer.noticeLabel.stringValue, expected)
+    }
+
+    func testCancellingTheFolderPanelSendsNothing() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        app.pickFolderURL = { nil }
+        await app.relinkMedia(on: store)
+        XCTAssertTrue(relinkRequests().isEmpty)
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testFailedRelinkIsShownAndLoggedAsAnError() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.garbleResults = true
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: store)
+        XCTAssertEqual(alerts.errors.count, 1)
+        XCTAssertEqual(store.logEntries.last?.level, .error)
+    }
+
+    func testRelinkButtonInTheWarningsTabRunsTheRelink() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        try XCTUnwrap(app.windows[doc]).onRelink?()
+        await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
     }
 }
