@@ -125,8 +125,10 @@ pub enum ResultData {
     /// `open` found an autosave newer than the show file and nothing was opened. Send `open`
     /// again with a `recovery` choice.
     RecoveryOffer {
+        /// The `path` of the `open` this answers, so a client can match the offer to its request.
+        path: String,
         workspace_name: String,
-        /// When the autosave was written, milliseconds since the Unix epoch.
+        /// When the autosave was written: milliseconds since the Unix epoch (wall clock, UTC).
         modified_ms: i64,
     },
     /// Answer to `scan_recovery`, newest first.
@@ -145,7 +147,7 @@ pub struct RecoveryEntryInfo {
     /// The workspace's name, when the file could be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_name: Option<String>,
-    /// Milliseconds since the Unix epoch, when known.
+    /// Milliseconds since the Unix epoch (wall clock, UTC), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_ms: Option<i64>,
     /// Moved aside as not newer than its show file; it may still hold the newest work.

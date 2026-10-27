@@ -41,7 +41,7 @@ use openlab_core::{
     MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
 };
 
-pub use docs::{DocAnswer, EpochClock, Loaded, ManualClock, SaveHook};
+pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
 pub use inbox::{
     Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, ProbeAnswer, ReplyRx, ReplyTx,
     outbound_channel, reply_channel,
@@ -68,6 +68,8 @@ pub const MAX_PRIMES: usize = 64;
 /// A start held up by its file's probe fails after this long (sample time), so the cue goes
 /// broken instead of showing as running with no sound (docs/control.md).
 pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
+/// A document read stuck this long fails with `io` and its worker is replaced.
+pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
 /// A probe worker stuck on one file this long is replaced.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Feedback rounds one input may cause before the loop stops following them (a safety net; the
@@ -133,6 +135,11 @@ pub struct ControlConfig {
     pub clock: EpochClock,
     /// Called on the writer thread before each save (tests only).
     pub save_hook: Option<SaveHook>,
+    /// Called on the document worker before each read (tests only).
+    pub doc_hook: Option<DocHook>,
+    /// A document read that has not answered after this long fails with `io` and its worker is
+    /// replaced (a stalled network volume), like [`Self::probe_timeout`].
+    pub doc_timeout: Duration,
     /// How files are probed (tests inject a stand-in).
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
@@ -154,6 +161,8 @@ impl ControlConfig {
             app_dirs: None,
             clock: EpochClock::system(),
             save_hook: None,
+            doc_hook: None,
+            doc_timeout: DOC_TIMEOUT,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,

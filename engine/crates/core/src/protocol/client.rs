@@ -10,6 +10,7 @@ use super::{
 };
 use crate::command::Command;
 use crate::cue::FadeSpec;
+use crate::media_path::{PathStyle, is_absolute, to_portable};
 use crate::model::{CueId, CueListId, WorkspaceId};
 
 /// Every `type` a client may send.
@@ -227,6 +228,14 @@ impl ClientMessage {
             } if path.is_empty() => Err(ProtocolError::OutOfRange {
                 field: "request.path",
             }),
+            Self::Request {
+                request: Request::Open { path, .. } | Request::SaveAs { path },
+                ..
+            } if !is_absolute(&to_portable(path, PathStyle::host())) => {
+                Err(ProtocolError::NotAbsolute {
+                    field: "request.path",
+                })
+            }
             _ => Ok(()),
         }
     }

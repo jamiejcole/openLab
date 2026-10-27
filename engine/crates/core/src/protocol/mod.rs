@@ -59,6 +59,10 @@ pub enum ProtocolError {
     NonFinite { field: &'static str },
     #[error("{field} is out of range")]
     OutOfRange { field: &'static str },
+    /// A file path the engine is to open or write must be absolute: a relative one would
+    /// resolve against the engine's own working directory.
+    #[error("{field} must be an absolute path")]
+    NotAbsolute { field: &'static str },
     #[error("could not encode: {0}")]
     Encode(String),
 }
