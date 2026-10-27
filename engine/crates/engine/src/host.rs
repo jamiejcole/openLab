@@ -25,7 +25,7 @@ use crate::control::{
 use crate::diag::crash::{self, CrashConfig};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
 use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
-use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
+use crate::persist::{AppDirs, PersistError, load_machine_settings_checked, read_text};
 
 /// Frames per device callback asked for: about 5 ms at 48 kHz.
 const BUFFER_FRAMES: u32 = 256;
@@ -139,7 +139,9 @@ fn run_show_with(path: &Path, show_log: ShowLog) -> Result<(), HostError> {
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     if let Some(dirs) = AppDirs::system() {
-        config.machine = load_machine_settings(&dirs).settings;
+        let (loaded, writable) = load_machine_settings_checked(&dirs);
+        config.machine = loaded.settings;
+        config.machine_writable = writable;
         config.app_dirs = Some(dirs);
     }
     let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
