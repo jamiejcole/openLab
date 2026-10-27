@@ -213,7 +213,7 @@ fn a_show_with_no_mapping_on_this_machine_is_mapped() {
 }
 
 #[test]
-fn a_device_with_one_output_gets_a_partial_mapping_and_a_silent_patch() {
+fn a_device_with_too_few_outputs_leaves_the_patch_unmapped_with_one_warning() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
@@ -224,24 +224,48 @@ fn a_device_with_one_output_gets_a_partial_mapping_and_a_silent_patch() {
     let w = warns(&msgs);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(
-        w[0].contains("needs 2 outputs") && w[0].contains("Mono has 1"),
+        w[0].contains("device Mono has 1 outputs") && w[0].contains("needs 2"),
         "{w:?}"
     );
-    let m = mapping(&ws, s.control().machine()).unwrap();
-    assert_eq!((m.device.as_str(), m.channels), ("Mono", vec![0]));
-    // Resolution is OutputCountMismatch: the cue is broken and nothing plays.
+    assert_eq!(mapping(&ws, s.control().machine()), None);
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-    s.transport(TransportAction::Start { cue: id(1) });
-    s.run(500);
-    assert!(s.audio().iter().all(|&x| x == 0.0));
-    // Not retried (and not logged again) on later syncs.
+    // Not logged again on later syncs of the same workspace.
     s.take_outbound();
-    let snap = new_workspace(&mut s);
-    assert_eq!(snap.workspace.patches.len(), 1);
+    let _ = new_workspace(&mut s);
+    let again = warns(&s.take_outbound());
+    assert_eq!(again.len(), 1, "one warning, for the new workspace's patch");
+    drop(s);
+    assert!(!env.dirs.settings_path().exists());
+}
+
+#[test]
+fn only_the_unmapped_patch_of_a_partly_mapped_workspace_is_mapped() {
+    let env = env();
+    let mut ws = workspace(vec![]);
+    let mut second = ws.patches[0].clone();
+    second.id = openlab_core::PatchId(uuid::Uuid::from_u128(0x77));
+    second.name = "Foldback".into();
+    ws.patches.push(second.clone());
+    let mut c = bare(&env, vec![device("Offline", 4)]);
+    let mut machine = MachineSettings::default();
+    let kept = PatchMapping {
+        device: "Offline".into(),
+        channels: vec![3, 2],
+    };
+    machine
+        .set_patch_mapping(ws.id, patch_id(), kept.clone())
+        .unwrap();
+    c.machine = machine;
+    let mut s = show_with(ws.clone(), c);
     assert_eq!(
-        warns(&s.take_outbound()).len(),
-        1,
-        "one warning, for the new workspace"
+        infos(&s.take_outbound()),
+        vec!["mapped patch 'Foldback' to Offline outputs 1\u{2013}2".to_owned()]
+    );
+    let machine = s.control().machine();
+    assert_eq!(machine.patch_mapping(ws.id, patch_id()), Some(&kept));
+    assert_eq!(
+        machine.patch_mapping(ws.id, second.id).unwrap().channels,
+        vec![0, 1]
     );
 }
 

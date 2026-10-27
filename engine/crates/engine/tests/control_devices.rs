@@ -1056,3 +1056,23 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
             .any(|l| l.contains("mapped patch 'Main Outputs' to Fake 1 outputs 1\u{2013}2"))
     );
 }
+
+#[test]
+fn a_patch_left_unmapped_by_a_small_device_is_mapped_when_a_bigger_one_is_back() {
+    let ws = workspace(vec![]);
+    let mut c = device_config(&ws);
+    c.machine = MachineSettings::default();
+    let mut s = DeviceShow::new(ws.clone(), vec![listed(DEV, DEV_NAME, 1)], c);
+    let msgs = s.take_outbound();
+    assert_eq!(logs(&msgs, LogLevel::Warn).len(), 1);
+    assert_eq!(s.control().machine().patch_mapping(ws.id, patch_id()), None);
+    lose(&mut s);
+    replug(&mut s);
+    let m = s
+        .control()
+        .machine()
+        .patch_mapping(ws.id, patch_id())
+        .cloned()
+        .expect("mapped on the bigger device");
+    assert_eq!((m.device.as_str(), m.channels), (DEV_NAME, vec![0, 1]));
+}

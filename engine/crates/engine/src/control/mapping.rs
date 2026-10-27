@@ -11,36 +11,43 @@ use openlab_core::protocol::LogLevel;
 use super::Control;
 
 impl Control {
-    /// Maps every patch of the open workspace to the first outputs of the playable device when
-    /// the workspace has no patch mapping in the machine settings. Nothing happens while no
-    /// device is playable (an outage, or none): the patches stay unmapped, and the next sync
-    /// with a device maps them.
+    /// Maps each patch of the open workspace that has no mapping entry on this machine to the
+    /// first outputs of the playable device. Nothing happens while no device is playable (an
+    /// outage, or none): the patch stays unmapped and the next sync with a device maps it. A
+    /// device with fewer outputs than the patch needs leaves it unmapped (one warning per
+    /// patch and device); a different device is tried again.
     pub(super) fn map_unmapped_patches(&mut self) {
         let Some(device) = self.playable.first().cloned() else {
             return;
         };
-        let machine = &self.config.machine;
-        if machine
-            .workspaces
-            .get(&self.ws.id.to_string())
-            .is_some_and(|w| !w.patches.is_empty())
-        {
-            return;
-        }
-        // One attempt per workspace and device: a patch that cannot be mapped is not retried
-        // (and logged again) on every edit.
-        let key = (self.ws.id, device.name.clone());
-        if self.mapping_tried.as_ref() == Some(&key) {
-            return;
-        }
-        self.mapping_tried = Some(key);
+        let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
         let mut notes = Vec::new();
+        let mut changed = false;
         for patch in &self.ws.patches {
+            if self
+                .config
+                .machine
+                .patch_mapping(self.ws.id, patch.id)
+                .is_some()
+            {
+                continue;
+            }
             let wanted = patch.outputs.len();
-            let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
-            let used = wanted.min(have);
-            // Device channels are 0-based; `used` is below MAX_CHANNELS, so this cannot wrap.
-            let channels: Vec<u32> = (0..used).filter_map(|c| u32::try_from(c).ok()).collect();
+            if wanted > have {
+                if self.mapping_warned.insert((patch.id, device.name.clone())) {
+                    notes.push((
+                        LogLevel::Warn,
+                        format!(
+                            "device {} has {have} outputs, patch '{}' needs {wanted}: left \
+                             unmapped",
+                            device.name, patch.name
+                        ),
+                    ));
+                }
+                continue;
+            }
+            // Device channels are 0-based; `wanted` is at most MAX_CHANNELS, so no wrap.
+            let channels: Vec<u32> = (0..wanted).filter_map(|c| u32::try_from(c).ok()).collect();
             let mapping = PatchMapping {
                 device: device.name.clone(),
                 channels,
@@ -50,40 +57,32 @@ impl Control {
                 .machine
                 .set_patch_mapping(self.ws.id, patch.id, mapping)
             {
-                Ok(()) if used == wanted => notes.push((
-                    LogLevel::Info,
-                    format!(
-                        "mapped patch '{}' to {} {}",
-                        patch.name,
-                        device.name,
-                        outputs_text(used)
-                    ),
-                )),
-                Ok(()) => notes.push((
-                    LogLevel::Warn,
-                    format!(
-                        "patch '{}' needs {wanted} outputs but {} has {have}: mapped {}, the \
-                         patch stays silent until it is mapped to enough outputs",
-                        patch.name,
-                        device.name,
-                        if used == 0 {
-                            "none".to_owned()
-                        } else {
-                            outputs_text(used)
-                        }
-                    ),
-                )),
-                Err(why) => notes.push((
-                    LogLevel::Warn,
-                    format!("patch '{}' could not be mapped: {why}", patch.name),
-                )),
+                Ok(()) => {
+                    changed = true;
+                    notes.push((
+                        LogLevel::Info,
+                        format!(
+                            "mapped patch '{}' to {} {}",
+                            patch.name,
+                            device.name,
+                            outputs_text(wanted)
+                        ),
+                    ));
+                }
+                Err(why) => {
+                    if self.mapping_warned.insert((patch.id, device.name.clone())) {
+                        notes.push((
+                            LogLevel::Warn,
+                            format!("patch '{}' could not be mapped: {why}", patch.name),
+                        ));
+                    }
+                }
             }
         }
-        let notes_made = !notes.is_empty();
         for (level, message) in notes {
             self.log(level, message);
         }
-        if notes_made && let Some(writer) = &self.settings_writer {
+        if changed && let Some(writer) = &self.settings_writer {
             writer.save(self.config.machine.clone());
         }
     }
