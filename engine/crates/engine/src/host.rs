@@ -54,19 +54,43 @@ pub enum HostError {
     Net(#[from] NetError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
+    /// A crash, not a controlled end: the run marker stays for the next start to report.
+    #[error("the control thread panicked; the show stopped")]
+    ControlPanicked,
 }
 
 /// How long shutdown waits for the log writer to write what is queued.
 const LOG_FLUSH_WAIT: Duration = Duration::from_secs(3);
 
+/// Whether [`supervise`] installs the process-wide panic hook (tests do not).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CrashHook {
+    Install,
+    #[cfg(test)]
+    Skip,
+}
+
 /// Loads the show at `path` and plays it until stdin is closed.
 pub fn run_show(path: &Path) -> Result<(), HostError> {
+    supervise(AppDirs::system(), CrashHook::Install, |show_log| {
+        run_show_with(path, show_log)
+    })
+}
+
+/// The diagnostics around a run (`run`): the show log and its writer, the panic hook and the
+/// run marker. A controlled end, with or without an error, removes the marker; a panic on the
+/// control thread ([`HostError::ControlPanicked`]) is a crash and leaves it.
+fn supervise(
+    dirs: Option<AppDirs>,
+    hook: CrashHook,
+    run: impl FnOnce(ShowLog) -> Result<(), HostError>,
+) -> Result<(), HostError> {
     // First, so a crash while starting is captured too. Without an app-support folder the log
     // keeps its in-memory ring only and there are no crash files (docs/logging.md).
     let mut show_log = ShowLog::default();
     let mut log_writer = None;
     let mut run_marker = None;
-    if let Some(dirs) = AppDirs::system() {
+    if let Some(dirs) = dirs {
         let clock = EpochClock::system();
         // An unwritable log folder must not stop the show: the ring still works.
         if let Ok((sink, writer)) =
@@ -76,12 +100,14 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
             log_writer = Some(writer);
         }
         let now = clock.now_ms();
-        crash::install(CrashConfig {
-            dir: dirs.crash_dir(),
-            version: env!("CARGO_PKG_VERSION"),
-            shared: show_log.shared(),
-            clock,
-        });
+        if hook == CrashHook::Install {
+            crash::install(CrashConfig {
+                dir: dirs.crash_dir(),
+                version: env!("CARGO_PKG_VERSION"),
+                shared: show_log.shared(),
+                clock,
+            });
+        }
         // After the log is up, so a leftover from an unclean exit reaches the file too.
         let me = RunInfo {
             pid: std::process::id(),
@@ -105,18 +131,28 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
         }
         run_marker = marker;
     }
-    let result = run_show_with(path, show_log);
+    let result = run(show_log);
     // The control loop is gone, so its sink is: the writer writes what is queued and ends. A
     // disk that hangs must not hold the process up, so the wait is bounded.
     if let Some(writer) = log_writer {
         writer.finish(LOG_FLUSH_WAIT);
     }
-    // A controlled end, with or without an error: not an unclean exit. A marker that cannot
+    // A controlled end, with or without an error, is not an unclean exit. A marker that cannot
     // be removed is reported (wrongly) at the next start; nothing better to do with it here.
-    if let Some(marker) = run_marker {
+    // After a control-thread panic the marker is dropped instead: closed and unlocked, but
+    // left in place, so the next start reports the crash (docs/handoff/decisions/m4-7b.md).
+    if let Some(marker) = run_marker
+        && !matches!(result, Err(HostError::ControlPanicked))
+    {
         let _ = marker.finish();
     }
     result
+}
+
+/// Waits for the control thread. A panic there stopped the show: it is reported as
+/// [`HostError::ControlPanicked`] (non-zero exit, marker kept), not as a clean end.
+fn join_control(worker: thread::JoinHandle<()>) -> Result<(), HostError> {
+    worker.join().map_err(|_| HostError::ControlPanicked)
 }
 
 fn run_show_with(path: &Path, show_log: ShowLog) -> Result<(), HostError> {
@@ -208,7 +244,84 @@ fn run_show_with(path: &Path, show_log: ShowLog) -> Result<(), HostError> {
         .map_err(HostError::Thread)?;
     // The control loop stops the show; dropping it ends the device thread, which drops the
     // stream (and the mixer) there.
-    let _ = worker.join();
+    let joined = join_control(worker);
     server.stop();
-    Ok(())
+    joined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::fs;
+
+    fn markers(dirs: &AppDirs) -> Vec<String> {
+        fs::read_dir(dirs.run_markers_dir())
+            .map(|r| {
+                r.filter_map(Result::ok)
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn mine() -> Vec<String> {
+        vec![format!("running-{}.json", std::process::id())]
+    }
+
+    #[test]
+    fn a_graceful_end_removes_the_run_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let result = supervise(Some(dirs.clone()), CrashHook::Skip, |_| {
+            assert_eq!(markers(&dirs), mine(), "held while the show runs");
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(markers(&dirs).is_empty());
+    }
+
+    #[test]
+    fn a_start_that_fails_with_an_error_removes_the_run_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let missing = root.path().join("no such show.openlab");
+        let result = supervise(Some(dirs.clone()), CrashHook::Skip, |log| {
+            run_show_with(&missing, log)
+        });
+        assert!(matches!(result, Err(HostError::Read(_))), "{result:?}");
+        assert!(markers(&dirs).is_empty());
+    }
+
+    #[test]
+    fn a_panicking_control_thread_is_an_unclean_exit_that_keeps_the_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let result = supervise(Some(dirs.clone()), CrashHook::Skip, |_| {
+            let worker = thread::spawn(|| panic!("injected control-thread panic"));
+            join_control(worker)
+        });
+        assert!(
+            matches!(result, Err(HostError::ControlPanicked)),
+            "{result:?}"
+        );
+        assert_eq!(markers(&dirs), mine());
+        // The next start reports it (a crash, not a clean shutdown) and removes it.
+        let me = RunInfo {
+            pid: std::process::id(),
+            started_ms: 0,
+            version: "test".into(),
+        };
+        let (_next, previous) =
+            run_marker::RunMarker::start(&dirs.run_markers_dir(), &dirs.crash_dir(), &me);
+        let [run] = previous.as_slice() else {
+            panic!("{previous:?}")
+        };
+        assert_eq!(run.info.as_ref().map(|i| i.pid), Some(std::process::id()));
+    }
+
+    #[test]
+    fn a_clean_control_thread_joins_ok() {
+        assert!(join_control(thread::spawn(|| {})).is_ok());
+    }
 }
