@@ -1062,6 +1062,121 @@ fn go_on_a_broken_auto_follow_cue_starts_the_cue_it_follows_into_and_moves_past_
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
 }
 
+/// A Fade of cue 1 whose levels are `levels`.
+fn fade_with(n: u128, levels: FadeLevels, stop: bool) -> Cue {
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+            levels,
+            stop_target_when_done: stop,
+        },
+    )
+}
+
+fn no_levels() -> FadeLevels {
+    FadeLevels {
+        master_db: None,
+        output_db: vec![None, None],
+        crosspoints: vec![],
+    }
+}
+
+#[test]
+fn a_fade_that_sets_no_level_is_broken_and_go_skips_it_even_with_stop_target() {
+    // M2.26 (QLab check F4): "No parameters set to fade". An all-`None` output list and no
+    // crosspoints count as nothing too.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(fade_with(2, no_levels(), true), 0.5, 0.25, AC),
+        sound_of(3, "media/b.wav", 1),
+    ]);
+    assert_eq!(rig.problems(2), vec![CueProblem::NothingToFade]);
+    assert_eq!(rig.state(2), CueState::Broken);
+    assert_eq!(
+        CueProblem::NothingToFade.to_string(),
+        "no levels set to fade"
+    );
+    // Cue 1 plays; GO on the broken Fade does not stop it, even with "stop target when done".
+    rig.go(0);
+    assert_eq!(rig.state(1), CueState::Running);
+    let go = rig.go(100);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(2) }]);
+    assert!(
+        !go.iter().any(|a| matches!(a, Action::StopVoice { .. })),
+        "{go:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Running);
+    // Its timing runs as for any broken cue: pre-wait 0.5 s, then post-wait 0.25 s from the
+    // skipped action, then the auto-continue starts the next cue.
+    assert!(starts(&rig.tick(849)).is_empty());
+    assert_eq!(starts(&rig.tick(850)), vec![(id(3), 850)]);
+    assert_eq!(rig.state(2), CueState::Broken);
+}
+
+#[test]
+fn a_fade_is_not_broken_once_it_sets_any_one_level() {
+    let one_output = FadeLevels {
+        output_db: vec![None, Some(-6.0)],
+        ..no_levels()
+    };
+    let one_crosspoint = FadeLevels {
+        crosspoints: vec![FadeCrosspoint {
+            input: 0,
+            output: 0,
+            db: -3.0,
+        }],
+        ..no_levels()
+    };
+    let master = FadeLevels {
+        master_db: Some(-9.0),
+        ..no_levels()
+    };
+    for levels in [one_output, one_crosspoint, master] {
+        let rig = Rig::new(vec![sound(1), fade_with(2, levels, false)]);
+        assert_eq!(rig.problems(2), vec![], "{:?}", rig.problems(2));
+        assert_eq!(rig.state(2), CueState::Idle);
+    }
+}
+
+#[test]
+fn editing_a_fades_levels_breaks_and_repairs_it() {
+    let mut rig = Rig::new(vec![sound(1), fade_with(2, no_levels(), false)]);
+    assert_eq!(rig.problems(2), vec![CueProblem::NothingToFade]);
+    let CueKind::Fade { levels, .. } = &mut rig.find_mut(2).kind else {
+        panic!("a fade")
+    };
+    levels.master_db = Some(-12.0);
+    let fixed = rig.tick(100);
+    assert_eq!(problem_reports(&fixed), vec![(id(2), vec![])]);
+    assert_eq!(rig.state(2), CueState::Idle);
+    let CueKind::Fade { levels, .. } = &mut rig.find_mut(2).kind else {
+        panic!("a fade")
+    };
+    levels.master_db = None;
+    let broken = rig.tick(200);
+    assert_eq!(
+        problem_reports(&broken),
+        vec![(id(2), vec![CueProblem::NothingToFade])]
+    );
+    assert_eq!(changes(&broken, 2), vec![(CueState::Broken, 200)]);
+}
+
+#[test]
+fn a_fade_with_no_target_and_no_levels_has_both_problems_target_first() {
+    let mut fade = fade_with(2, no_levels(), false);
+    if let CueKind::Fade { target, .. } = &mut fade.kind {
+        *target = None;
+    }
+    let rig = Rig::new(vec![sound(1), fade]);
+    assert_eq!(
+        rig.problems(2),
+        vec![CueProblem::NoTarget, CueProblem::NothingToFade]
+    );
+}
+
 fn mapped() -> PatchResolution {
     PatchResolution::Mapped {
         device: "Interface".into(),

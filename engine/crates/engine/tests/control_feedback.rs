@@ -6,8 +6,8 @@
 
 mod show;
 
-use openlab_core::protocol::{TransportAction, WireCueState};
-use openlab_core::{ContinueMode, CueKind, CueState, GroupMode};
+use openlab_core::protocol::{TransportAction, WireCueState, WireProblem, WireWarning};
+use openlab_core::{ContinueMode, CueKind, CueState, FadeCurve, FadeLevels, GroupMode};
 use show::*;
 
 #[test]
@@ -399,4 +399,73 @@ fn a_stop_all_and_a_cues_own_panic_end_playback_through_the_control_loop() {
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().cue_states().count(), 0);
     assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_second_panic_on_a_fading_cue_stops_it_within_the_next_blocks() {
+    // M4.1d (QLab check Q7), through the control loop: the first panic fades the cue over the
+    // panic time, the second hard-stops it at once; the other cue plays on.
+    let long = wav(&dc(80_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &long, 0), audio(2, &long, 1)]));
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::PanicCue { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Stopping);
+    s.transport(TransportAction::PanicCue { cue: id(1) });
+    let at = s.now() as usize;
+    s.run(BLOCK * 6);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(s.control().live_voices(), 1);
+    assert!(
+        s.channel(0)[at + BLOCK as usize * 3..]
+            .iter()
+            .all(|&v| v == 0.0),
+        "cue 1 is silent soon after the second press"
+    );
+}
+
+#[test]
+fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
+    // M2.26 (QLab check F4): the problem reaches the clients, GO skips the Fade, and its
+    // "stop target when done" does not stop the target.
+    let long = wav(&dc(80_000, 0.5));
+    let nothing = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: None,
+                output_db: vec![None],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: true,
+        },
+    );
+    let mut s = show(workspace(vec![audio(1, &long, 0), nothing]));
+    s.run(BLOCK);
+    let found = s
+        .control()
+        .snapshot()
+        .problems
+        .into_iter()
+        .find(|p| p.cue == id(2))
+        .map(|p| p.problems);
+    assert_eq!(found, Some(vec![WireProblem::NothingToFade]));
+    go(&mut s);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    s.transport(TransportAction::Go { list: list_id() });
+    s.run(BLOCK * 8);
+    let sent = warnings(&s.take_outbound());
+    assert!(
+        sent.contains(&WireWarning::CueBroken { cue: id(2) }),
+        "{sent:?}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
 }
