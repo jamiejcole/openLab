@@ -490,7 +490,13 @@ async fn tcp_connection(
                         // Waits when the actor is behind: this connection stops reading and
                         // TCP holds the peer back.
                         let data = Event::TcpData { conn, bytes, at: Instant::now() };
-                        if events.send(data).await.is_err() {
+                        // A connection the writer gave up on must not wait in line behind a
+                        // flood to hear it.
+                        let sent = tokio::select! {
+                            sent = events.send(data) => sent.is_ok(),
+                            () = dead.notified() => false,
+                        };
+                        if !sent {
                             break;
                         }
                     }

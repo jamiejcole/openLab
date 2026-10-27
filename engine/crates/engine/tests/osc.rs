@@ -2628,6 +2628,135 @@ fn a_class_costs_by_its_ranges() {
     assert!(MATCH_BUDGET - few > 2 * (MATCH_BUDGET - plain_budget));
 }
 
+// ---- fix round 3
+
+#[test]
+fn cycling_many_forged_addresses_does_not_reset_a_victims_reply_budget() {
+    // The attack: the victim's budget is spent, then 1024 other forged sources each draw a small
+    // reply, so the table of budgets is full and the victim's (the oldest) used to be evicted,
+    // which gave it a fresh 256 KiB burst every round. Time moves on a little with every datagram.
+    let mut show = Show::open();
+    show.props
+        .insert((CUE_1, "notes"), json!("n".repeat(60_000)));
+    let mut osc = quiet_osc();
+    let victim = Peer::Udp(ip_n(5));
+    let big = msg("/cue/1/notes", vec![]);
+    let small = msg("/cue/2.5/name", vec![]);
+    let mut clock = T0;
+    let mut tick = || {
+        clock += Duration::from_micros(1);
+        clock
+    };
+    let mut victim_replies = 0;
+    for _round in 0..10 {
+        for _ in 0..4 {
+            let now = tick();
+            victim_replies += send(&mut osc, &show, victim, now, &big).replies.len();
+        }
+        for i in 0..1024 {
+            let now = tick();
+            send(&mut osc, &show, Peer::Udp(ip_n(100 + i)), now, &small);
+        }
+    }
+    // One burst's worth (four 60 KB replies), however many rounds: the refill in 10 ms of virtual
+    // time is a few hundred bytes.
+    assert_eq!(victim_replies, 4);
+    assert!(osc.stats().replies_throttled > 0);
+}
+
+#[test]
+fn cycling_many_forged_subscribers_does_not_reset_their_update_budgets() {
+    let mut osc = quiet_osc();
+    let mut clock = T0;
+    let mut allowed = vec![0u32; 1025];
+    for _round in 0..2000 {
+        for (i, count) in allowed.iter_mut().enumerate() {
+            clock += Duration::from_nanos(1);
+            if osc.update_allowed(Peer::Udp(ip_n(i)), clock, 120, false) {
+                *count += 1;
+            }
+        }
+    }
+    // Each tracked address got its burst (256 KiB of 148-byte datagrams, about 1771) and a
+    // little refill; the 1025th address found the table full of depleted buckets and got nothing.
+    let tracked = &allowed[..1024];
+    assert!(
+        tracked.iter().all(|&n| n <= 1800),
+        "{:?}",
+        tracked.iter().max()
+    );
+    assert_eq!(allowed[1024], 0);
+    assert!(osc.stats().updates_dropped > 0);
+    // A bucket that has refilled makes room: a second later the new address is served.
+    let later = clock + Duration::from_secs(10);
+    assert!(osc.update_allowed(Peer::Udp(ip_n(1024)), later, 120, false));
+    // And the same with a passcode (the strict budget).
+    let mut osc = quiet_osc();
+    let show = Show::with_passcode("s3cret");
+    let mut denied = 0usize;
+    let mut clock = T0;
+    for _round in 0..10 {
+        for i in 0..1100 {
+            clock += Duration::from_micros(1);
+            denied += send(
+                &mut osc,
+                &show,
+                Peer::Udp(ip_n(i)),
+                clock,
+                &msg("/go", vec![]),
+            )
+            .replies
+            .len();
+        }
+    }
+    // 1024 tracked addresses at about 85 `denied` replies each; the rest get none.
+    assert!(denied <= 1024 * 90, "{denied}");
+}
+
+#[test]
+fn a_tracked_console_keeps_its_budget_while_the_table_is_full() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    let console = Peer::Udp(ip_n(7));
+    let ask = msg("/cue/2.5/name", vec![]);
+    assert_eq!(send(&mut osc, &show, console, T0, &ask).replies.len(), 1);
+    let mut clock = T0;
+    for i in 0..1100 {
+        clock += Duration::from_micros(1);
+        send(&mut osc, &show, Peer::Udp(ip_n(100 + i)), clock, &ask);
+    }
+    // The console is tracked and has barely used its burst: it is still served.
+    clock += Duration::from_millis(1);
+    assert_eq!(send(&mut osc, &show, console, clock, &ask).replies.len(), 1);
+}
+
+#[test]
+fn compiling_a_pattern_is_charged_to_the_budget() {
+    let hostile = format!("{}{}Z", "{*,**}".repeat(6), "*?".repeat(100));
+    let mut budget = MATCH_BUDGET;
+    let before = budget;
+    let _ = CuePattern::compile_within(&hostile, &mut budget);
+    assert!(before - budget > 10_000, "{}", before - budget);
+    // Spent: a pattern cannot be compiled at all.
+    let mut none = 10;
+    assert_eq!(
+        CuePattern::compile_within(&hostile, &mut none),
+        Err(openlab_engine::osc::PatternError::Budget)
+    );
+    // Many hostile messages in one read run the shared budget dry during compilation, so the
+    // later ones are cut short (counted) and the read stays quick.
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    let elements: Vec<Vec<u8>> = (0..120)
+        .map(|i| bytes(&msg(&format!("/cue/{hostile}{i}/name"), vec![])))
+        .collect();
+    let started = std::time::Instant::now();
+    let out = osc.handle_datagram(udp(), T0, &bundle(&elements), &show);
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    assert_eq!(out.replies.len(), 120);
+    assert!(osc.stats().matches_capped >= 1);
+}
+
 // ---- pattern language
 
 fn matches(pattern: &str, text: &str) -> bool {
