@@ -156,7 +156,9 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M4.10 Integration tests over real sockets; fuzz targets for OSC + protocol [QA-04]
 - [ ] M4.11 Accelerated 24 h soak test [NFR-09, QA-05]
 - [ ] M4.13 Wire previews (CUE-05) — the voice side and the transport actions were carried out in M4.2a (`PreviewStart`/`PreviewStop` on the cue's patch, feedback with the preview's run, `preview` runtime changes; test `a_preview_plays_on_the_cue_patch_outside_the_show`); left: review and tick, or anything the orchestrator wants beyond it: protocol commands for `Input::Preview` / `StopPreview` (+ `preview_changed` runtime events from `Action::PreviewChanged`), open a stream and start a voice for `PreviewStart` (id = the preview's `run`, ≥ `PREVIEW_RUN_BASE`), `PreviewStop` → mixer `StopVoice` with the fade, voice end/failure → `Input::ActionEnded`/`ActionFailed` with the preview's `run`; play on the cue's own patch until M2.21 gives an audition output — found in M2.10
-- [ ] M4.12 Performance: 2,000-cue workspace load < 3 s; idle CPU budget [NFR-24, NFR-25]
+- [x] M4.12 Performance: 2,000-cue workspace load < 3 s; idle CPU budget [NFR-24, NFR-25] — `engine/tests/perf.rs`: deterministic idle wake count on virtual time, edit/probe cost counters, `#[ignore]` release gate (CI "Performance budget gate"); fixed a quadratic preload scan per probe answer. NFR-24/25 stay unticked until minimum-spec hardware is measured; docs/control.md "Performance budgets"
+- [ ] M4.12b Switching `preload` to true on an already-probed file does not trigger a preload (`MediaCatalog::sync` only requests new keys); the cue preloads only on the next open — found in M4.12 review
+- [ ] M4.12a Make the cue engine's per-edit problem rebuild and `MediaCatalog::sync` incremental (today every edit costs ~1 us per cue, 2-3 ms at 2,000 cues, linear; the 12 ms CI edit gate has about 3x headroom) — found in M4.12; re-run the M4.4 open path (`Request::Open`) through the perf gate when it lands
 
 ## M5 — macOS app (Swift + AppKit)
 - [ ] M5.1 `EngineClient` (connect, reconnect, codec) + `WorkspaceStore`; fixture contract tests [NFR-01]
