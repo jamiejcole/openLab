@@ -131,7 +131,13 @@ impl OfflineShow {
     /// answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
     pub fn settle_media(&mut self) {
         let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
-        while self.control.probes_pending() > 0 {
+        // `probes_pending` scans every probe entry: ask once per batch of answers, not once
+        // per answer (a show of thousands of files would make the wait quadratic).
+        loop {
+            self.pump_inbox();
+            if self.control.probes_pending() == 0 {
+                break;
+            }
             if std::time::Instant::now() >= deadline {
                 self.stalls += 1;
                 break;
