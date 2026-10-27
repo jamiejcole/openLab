@@ -10,7 +10,9 @@
 "menu.app.quit" = "Quit openLab";
 
 "menu.file" = "File";
-"menu.file.close" = "Close";
+"menu.file.close" = "Close Window";
+"menu.file.new" = "New Workspace";
+"menu.file.open" = "Open…";
 
 "menu.edit" = "Edit";
 "menu.edit.undo" = "Undo";
@@ -23,7 +25,26 @@
 "menu.window" = "Window";
 "menu.window.minimize" = "Minimize";
 "menu.window.zoom" = "Zoom";
-"menu.window.main" = "Main Window";
+"launcher.title" = "openLab";
+"launcher.new" = "New Workspace";
+"launcher.open" = "Open…";
+"launcher.recent" = "Recent Workspaces";
+"launcher.recent.none" = "No recent workspaces";
+"alert.closePlaying.title" = "Close this workspace?";
+"alert.closePlaying.message" = "Cues are currently playing.";
+"alert.quitPlaying.title" = "Quit openLab?";
+"alert.quitPlaying.message" = "Cues are currently playing in at least one workspace.";
+"alert.unsaved.title" = "Do you want to save changes to “%@”?";
+"alert.unsaved.message" = "Your changes will be lost if you don’t save them.";
+"alert.cancel" = "Cancel";
+"alert.close" = "Close";
+"alert.quit" = "Quit";
+"alert.save" = "Save";
+"alert.dontSave" = "Don’t Save";
+"alert.ok" = "OK";
+"error.openFailed" = "Could not open the workspace: %@";
+"error.saveFailed" = "Could not save the workspace: %@";
+"error.closeFailed" = "Could not close the workspace: %@";
 "menu.window.bringAllToFront" = "Bring All to Front";
 
 "masthead.go" = "GO";

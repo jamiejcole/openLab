@@ -127,6 +127,13 @@ final class EngineClient: ObservableObject {
         }
     }
 
+    /// `goodbye`, flushed to the socket. No reply exists; a no-op when not connected.
+    func goodbye(shutdown: Bool) async {
+        guard state == .connected, let connection, let text = try? ClientMessage.goodbye(shutdown: shutdown).text()
+        else { return }
+        await connection.sendAndFlush(text)
+    }
+
     /// Asks for a snapshot unless one is already out. Fire and forget.
     func requestSnapshot() {
         submit({ .request(id: $0, .snapshot) }, completion: { _ in })
