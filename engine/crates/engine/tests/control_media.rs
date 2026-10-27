@@ -415,6 +415,7 @@ fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
             id: id(cue),
             property: CueProperty::Kind { value: kind },
         }),
+        coalesce: None,
     });
     assert!(replies.iter().any(|m| matches!(
         m,
@@ -551,6 +552,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
                 id: id(1),
                 property: CueProperty::Kind { value: kind },
             }),
+            coalesce: None,
         });
         s.run(BLOCK);
     };
@@ -579,6 +581,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
     s.send(ClientMessage::Command {
         id: remove,
         command: Box::new(Command::RemoveCue { id: id(1) }),
+        coalesce: None,
     });
     s.run(BLOCK);
     assert_eq!(length(&s, 1), None);
