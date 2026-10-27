@@ -37,7 +37,7 @@ final class StatusLogTests: XCTestCase {
     func testHealthyStatusIsNormalWithCPU() throws {
         let p = StatusPresentation.make(try healthy())
         XCTAssertEqual(p.level, .normal)
-        XCTAssertEqual(p.summary, "Audio OK  CPU 8%")
+        XCTAssertEqual(p.summary, "Audio OK  CPU 8%  Dropouts 0")
         XCTAssertEqual(p.symbol, "checkmark.circle")
         XCTAssertTrue(p.details.contains("Output device: Built-in (OK)"))
     }
@@ -86,20 +86,61 @@ final class StatusLogTests: XCTestCase {
         XCTAssertTrue(p.summary.contains("sleeping"))
     }
 
+    private func send(_ rig: Rig, xruns: Int) throws {
+        var json = try Fixtures.json("server", "status")
+        json["status"]?.set("xruns", .int(Int64(xruns)))
+        rig.store.receive(try ServerMessage.decode(try json.text()))
+    }
+
     func testFooterFollowsTheStoresStatus() async throws {
         let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
         let wc = WorkspaceWindowController(store: rig.store)
         XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
-        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status")))
-        XCTAssertEqual(wc.footer.presentation.level, .warning)
+        try send(rig, xruns: 1)
+        XCTAssertEqual(wc.footer.presentation.level, .normal, "the first status is the baseline")
+        XCTAssertTrue(wc.footer.statusButton.title.contains("Dropouts 1"), "the count is always shown")
+        try send(rig, xruns: 2)
+        XCTAssertEqual(wc.footer.presentation.level, .warning, "a new dropout warns")
+        try send(rig, xruns: 2)
+        XCTAssertEqual(wc.footer.presentation.level, .normal, "no new dropouts since the last status")
         rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
         let button = wc.footer.statusButton
         XCTAssertEqual(wc.footer.presentation.level, .alarm)
         XCTAssertTrue(button.title.hasPrefix(loc("status.alarm")))
         XCTAssertEqual(button.accessibilityLabel(), button.title)
         XCTAssertNotNil(button.image)
-        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status")))
-        XCTAssertEqual(wc.footer.presentation.level, .warning, "recovers when the device is back")
+        try send(rig, xruns: 1)
+        XCTAssertEqual(wc.footer.presentation.level, .normal, "recovers when the device is back")
+    }
+
+    func testOfflineEngineShowsAnAlarmAndNoStaleStatus() async throws {
+        let rig = try Rig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        XCTAssertEqual(wc.footer.presentation, StatusPresentation.offline(), "not connected yet")
+        XCTAssertTrue(wc.footer.statusButton.title.hasPrefix(loc("status.alarm")))
+        XCTAssertTrue(wc.footer.statusButton.title.contains(loc("status.offline")))
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
+        try send(rig, xruns: 0)
+        XCTAssertEqual(wc.footer.presentation.level, .normal)
+        rig.client.stop()
+        await assertEventually { wc.footer.presentation == StatusPresentation.offline() }
+        XCTAssertNotEqual(wc.footer.presentation.symbol, "checkmark.circle")
+    }
+
+    func testNewSnapshotClearsTheStatusUntilTheNextPush() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let wc = WorkspaceWindowController(store: rig.store)
+        try send(rig, xruns: 0)
+        XCTAssertNotNil(rig.store.status)
+        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "welcome")))
+        XCTAssertNil(rig.store.status)
+        XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
     }
 
     // MARK: Log window
@@ -162,6 +203,24 @@ final class StatusLogTests: XCTestCase {
         log.filterChanged()
         XCTAssertEqual(log.visible.map(\.level), [.error])
         XCTAssertEqual(log.visible.first?.level.title, "ERROR", "the level is a word, not just a colour")
+    }
+
+    func testIdenticalEntriesAreNotMergedAway() async throws {
+        let rig = try Rig()
+        let log = LogWindowController(store: rig.store)
+        rig.store.receive(.log(.warn, "device lost"))
+        rig.store.receive(.log(.warn, "device lost"))
+        log.apply(tail: [], dropped: 0)
+        XCTAssertEqual(log.rows.map(\.message), ["device lost", "device lost"])
+        // The tail holds one of them: it cancels one, the other still shows.
+        let held = try entry(1)
+        rig.store.receive(.log(held.level, held.message))
+        rig.store.receive(.log(held.level, held.message))
+        log.apply(tail: [held], dropped: 0)
+        XCTAssertEqual(log.rows.filter { $0.message == held.message }.count, 2)
+        // The same text again, after the fetch, is a new event.
+        rig.store.receive(.log(held.level, held.message))
+        XCTAssertEqual(log.rows.filter { $0.message == held.message }.count, 3)
     }
 
     func testLogIsBoundedKeepingTheNewest() async throws {

@@ -34,8 +34,6 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     func showError(_ message: String) { errors.append(message) }
-    private(set) var infos: [String] = []
-    func showInfo(_ message: String) { infos.append(message) }
 }
 
 @MainActor
@@ -1009,7 +1007,10 @@ final class AppControllerTests: XCTestCase {
         frame.set("id", .int(0))
         golden.set("id", .int(0))
         XCTAssertEqual(frame, golden)
-        XCTAssertEqual(alerts.infos, [AppController.relinkSummary(relinked: 3, ambiguous: 0, unmatched: 0)])
+        XCTAssertTrue(alerts.errors.isEmpty, "a clean relink does not interrupt the show")
+        XCTAssertEqual(
+            app.windows[doc]?.footer.noticeLabel.stringValue,
+            AppController.relinkSummary(relinked: 3, ambiguous: 0, unmatched: 0))
         XCTAssertTrue(alerts.errors.isEmpty)
         XCTAssertEqual(store.logEntries.last?.level, .info)
         XCTAssertEqual(store.logEntries.last?.message, "Relinked 3 cue(s).")
@@ -1030,10 +1031,12 @@ final class AppControllerTests: XCTestCase {
         app.pickFolderURL = { URL(fileURLWithPath: "/m") }
         await app.relinkMedia(on: store)
         let expected = AppController.relinkSummary(relinked: 1, ambiguous: 1, unmatched: 1)
-        XCTAssertEqual(alerts.errors, [expected])
-        XCTAssertTrue(alerts.infos.isEmpty)
-        XCTAssertEqual(store.logEntries.last?.level, .warn)
-        XCTAssertEqual(store.logEntries.last?.message, expected)
+        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
+        let messages = store.logEntries.map(\.message)
+        XCTAssertTrue(messages.contains(expected))
+        XCTAssertTrue(messages.contains { $0.contains("a/x.wav") && $0.contains("Candidates") }, "\(messages)")
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 3, "summary and one per cue")
+        XCTAssertEqual(app.windows[doc]?.footer.noticeLabel.stringValue, expected)
     }
 
     func testCancellingTheFolderPanelSendsNothing() async throws {
@@ -1042,7 +1045,7 @@ final class AppControllerTests: XCTestCase {
         app.pickFolderURL = { nil }
         await app.relinkMedia(on: store)
         XCTAssertTrue(relinkRequests().isEmpty)
-        XCTAssertTrue(alerts.infos.isEmpty && alerts.errors.isEmpty)
+        XCTAssertTrue(alerts.errors.isEmpty)
     }
 
     func testFailedRelinkIsShownAndLoggedAsAnError() async throws {

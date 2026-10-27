@@ -17,7 +17,16 @@ struct StatusPresentation: Equatable {
     let symbol: String
     let details: [String]
 
-    static func make(_ status: SystemStatus?) -> StatusPresentation {
+    /// No engine to ask: the last status is stale, so none is shown.
+    static func offline() -> StatusPresentation {
+        StatusPresentation(
+            level: .alarm, summary: loc("status.alarm") + " " + loc("status.offline"),
+            symbol: "exclamationmark.octagon.fill", details: [loc("status.offline.detail")])
+    }
+
+    /// `xrunsIncreased`: dropouts happened since the previous status. Only new ones raise a
+    /// warning; the total is always shown.
+    static func make(_ status: SystemStatus?, xrunsIncreased: Bool = true) -> StatusPresentation {
         guard let s = status else {
             return StatusPresentation(
                 level: .normal, summary: loc("status.waiting"), symbol: "circle.dashed", details: [])
@@ -33,7 +42,9 @@ struct StatusPresentation: Equatable {
         }
         if !s.disk.healthy { problems.append((.alarm, loc("status.disk.unhealthy"))) }
         if let load = s.engineLoad, load >= highLoad { problems.append((.warning, loc("status.load.high"))) }
-        if s.xruns > 0 { problems.append((.warning, String(format: loc("status.xruns"), Int(s.xruns)))) }
+        if s.xruns > 0, xrunsIncreased {
+            problems.append((.warning, String(format: loc("status.xruns"), Int(s.xruns))))
+        }
 
         let level = problems.map(\.0).max() ?? .normal
         let summary: String
@@ -55,6 +66,7 @@ struct StatusPresentation: Equatable {
     private static func normalSummary(_ s: SystemStatus) -> String {
         var parts = [loc("status.ok")]
         if let cpu = s.cpuPercent { parts.append(String(format: loc("status.cpu"), cpu)) }
+        parts.append(String(format: loc("status.dropouts"), Int(s.xruns)))
         return parts.joined(separator: "  ")
     }
 

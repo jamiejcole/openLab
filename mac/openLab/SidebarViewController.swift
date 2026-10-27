@@ -173,6 +173,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     private(set) var updatedWarningRows: [String] = []
     private var warnedCues: Set<ModelID> = []
     private var settingSelection = false
+    /// The store is changing the rows: any selection change is the table's, not the user's.
+    private var updatingWarnings = false
+    /// The row whose selection change already revealed its cue (its click action must not again).
+    private var revealedRow: Int?
     private var sub: AnyCancellable?
     private let listScroll = NSScrollView()
     private let activeScroll = NSScrollView()
@@ -298,7 +302,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         guard isViewLoaded else { return }
         settingSelection = true
         defer { settingSelection = false }
-        if let row = lists.firstIndex(where: { $0.id == shownList }) {
+        // The cue list falls back to the first list when the shown one is gone; so does the highlight.
+        if let row = lists.firstIndex(where: { $0.id == shownList }) ?? (lists.isEmpty ? nil : 0) {
             listTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else {
             listTable.deselectAll(nil)
@@ -322,7 +327,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             activeCues = Self.ordered(store: store)
             if isViewLoaded { activeTable.reloadData() }
             setWarnings(WarningRows.make(store: store))
-            if isViewLoaded { warningsTable.reloadData() }
+            if isViewLoaded { reloadWarningTable() }
         case .model(let upserts, let deletes):
             var listsChanged = false
             var touched = Set<ModelID>()
@@ -439,9 +444,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         let kept = warningRows.filter { newIDs.contains($0.id) }
         guard kept.map(\.id) == new.filter({ oldIDs.contains($0.id) }).map(\.id) else {
             setWarnings(new)
-            if isViewLoaded { warningsTable.reloadData() }
+            if isViewLoaded { reloadWarningTable() }
             return
         }
+        updatingWarnings = true
+        defer { updatingWarnings = false }
         let removed = IndexSet(warningRows.indices.filter { !newIDs.contains(warningRows[$0].id) })
         warningRows = kept
         if isViewLoaded, !removed.isEmpty { warningsTable.removeRows(at: removed, withAnimation: []) }
@@ -460,6 +467,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         setWarnings(warningRows)
     }
 
+    private func reloadWarningTable() {
+        updatingWarnings = true
+        defer { updatingWarnings = false }
+        warningsTable.reloadData()
+    }
+
     func clearWarningUpdateLog() { updatedWarningRows = [] }
 
     private func chooseWarning(row: Int) {
@@ -467,7 +480,15 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         onSelectCue?(cue)
     }
 
-    @objc private func warningClicked() { chooseWarning(row: warningsTable.clickedRow) }
+    /// A click on the row that is already selected (no selection change to follow).
+    @objc private func warningClicked() {
+        let row = warningsTable.clickedRow
+        if revealedRow == row {
+            revealedRow = nil
+            return
+        }
+        chooseWarning(row: row)
+    }
 
     @objc private func relinkClicked() { onRelink?() }
 
@@ -497,7 +518,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         if (notification.object as? NSTableView) === warningsTable {
-            chooseWarning(row: warningsTable.selectedRow)
+            guard !updatingWarnings else { return }
+            revealedRow = warningsTable.selectedRow
+            chooseWarning(row: revealedRow ?? -1)
             return
         }
         guard !settingSelection, (notification.object as? NSTableView) === listTable else { return }

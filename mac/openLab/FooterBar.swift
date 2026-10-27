@@ -72,6 +72,9 @@ final class FooterBar: NSView {
     /// The engine's health in one line (DX-03); clicking it opens the details.
     let statusButton = NSButton()
     private(set) var presentation = StatusPresentation.make(nil)
+    /// A result the operator asked for that needs no answer (a relink); stays until replaced.
+    let noticeLabel = NSTextField(labelWithString: "")
+    private var lastXruns: UInt64?
     private var popover: NSPopover?
     let clock = WallClockLabel()
     let settingsButton = NSButton()
@@ -96,7 +99,11 @@ final class FooterBar: NSView {
         statusButton.setAX(AX.statusLabel)
         statusButton.target = self
         statusButton.action = #selector(showStatusDetails)
-        show(status: nil)
+        noticeLabel.setAX(AX.footerNotice)
+        noticeLabel.textColor = .secondaryLabelColor
+        noticeLabel.lineBreakMode = .byTruncatingTail
+        noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        show(status: nil, connected: true)
 
         for spec in Self.specs {
             let name = loc(spec.key)
@@ -119,7 +126,7 @@ final class FooterBar: NSView {
 
         let left = NSStackView(views: [modeSwitch] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let bar = NSStackView(views: [left, statusButton, right])
+        let bar = NSStackView(views: [left, NSStackView(views: [statusButton, noticeLabel]), right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
@@ -132,8 +139,19 @@ final class FooterBar: NSView {
     }
 
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
-    func show(status: SystemStatus?) {
-        let p = StatusPresentation.make(status)
+    func showNotice(_ text: String) { noticeLabel.stringValue = text }
+
+    /// Without a connection the last status is stale: the line says the engine is offline.
+    func show(status: SystemStatus?, connected: Bool) {
+        let p: StatusPresentation
+        if !connected {
+            lastXruns = nil
+            p = StatusPresentation.offline()
+        } else {
+            let increased = status.map { s in lastXruns.map { s.xruns > $0 } ?? false } ?? false
+            lastXruns = status?.xruns
+            p = StatusPresentation.make(status, xrunsIncreased: increased)
+        }
         presentation = p
         statusButton.title = p.summary
         statusButton.image = symbolImage(p.symbol, p.summary)
