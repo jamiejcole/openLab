@@ -23,6 +23,11 @@ final class FakeEngine: EngineTransport {
     /// When set, `hello` is answered with this `error` and the connection closes.
     var refuseAuth: ErrorCode?
     var holdResults = false
+    /// Answers every request with an `ok` that does not decode (a changed server, in tests).
+    var garbleResults = false
+    enum WelcomeFault { case none, silent, garbled }
+    /// `silent`: the `welcome` is never sent; `garbled`: it is sent but does not decode.
+    var welcomeFault = WelcomeFault.none
 
     // Observation.
     private(set) var received: [ClientMessage] = []
@@ -140,6 +145,7 @@ final class FakeEngine: EngineTransport {
         } else {
             v.set("ok", ok)
         }
+        if garbleResults { v.set("ok", .string("garbled")) }
         if holdResults { held.append((c, v)) } else { c.deliver(text(v)) }
     }
 
@@ -180,6 +186,11 @@ final class FakeEngine: EngineTransport {
         if h.protocolVersion != protocolVersion { return fail(c, .protocolVersionMismatch, "version", close: true) }
         if h.token != token { return fail(c, .badToken, "token", close: true) }
         c.welcomed = true
+        switch welcomeFault {
+        case .none: break
+        case .silent: return
+        case .garbled: return c.deliver(#"{"type":"welcome","protocol_version":"x","snapshot":7}"#)
+        }
         if mode == .multi, h.workspace == nil {
             c.deliver(
                 text(

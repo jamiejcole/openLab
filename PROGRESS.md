@@ -222,6 +222,7 @@ If the session was cut off, resume with the `orchestrate` skill (up to 3 agents 
 - [ ] M5.2 Engine lifecycle in app: spawn/attach, reconnect after restart, engine-crash alarm + restore [NFR-01, NFR-05]
 - [x] M5.3 Main window shell: QLab-style layout (toolbar, GO/standby area, sidebar, cue list, inspector), dark appearance [UI-07, UI-08, SM-04, CL-06]
 - [ ] M5.4 Cue list `NSOutlineView`: columns, groups, colours, flags, state icons (not colour-only), 2,000-cue performance [CL-02, CL-03, ED-13, UI-04, NFR-24]
+  - [ ] Measure `WorkspaceStore` apply cost (per-upsert full-model copy and list scan; 32 MiB snapshot decode on the main actor) with 2,000 cues; from M5.1 review L3
 - [ ] M5.5 Sidebar: cue lists, Active Cues panel with per-cue controls, wall clock [CL-01, CL-05, PB-07, PB-12]
 - [ ] M5.6 Inspector: basics (number, name, notes, colour, timings, continue mode, target) [ED-01, CUE-01..CUE-03]
 - [ ] M5.7 Inspector: triggers (hotkey, OSC) [CUE-09, TRG-01, TRG-03] — define hotkey conflict precedence (cue trigger vs. transport key vs. another cue) and warn on conflicts (M1-A review 2 L2) — M2.24 (QLab check K1): two cues with the same hotkey both start, with no warning (`Workspace::cues_with_hotkey`); only the transport-key conflict is left to define

@@ -81,6 +81,7 @@ final class Rig {
 
     let engine: FakeEngine
     let scheduler = ManualScheduler()
+    let handshakeScheduler = ManualScheduler()
     let box = InfoBox()
     let client: EngineClient
     let store: WorkspaceStore
@@ -96,12 +97,57 @@ final class Rig {
                 box.reads += 1
                 return .success(EngineConnectionInfo(port: box.port, token: box.token, pid: 1))
             },
-            scheduler: scheduler, workspace: workspace)
+            scheduler: scheduler, handshakeScheduler: handshakeScheduler, workspace: workspace)
         store = WorkspaceStore(client: client)
     }
 
     func connect() async -> Bool {
         client.start()
         return await eventually { self.client.state == .connected }
+    }
+}
+
+/// A transport whose first connection reports its close late (as `URLSessionWebSocketTask` does:
+/// cancellation reaches `receive` asynchronously). `releaseLate()` lets the old receive throw.
+@MainActor
+final class LateCloseTransport: EngineTransport {
+    let engine: FakeEngine
+    private var gates: [CheckedContinuation<Void, Never>] = []
+    private var made = 0
+
+    init(engine: FakeEngine) { self.engine = engine }
+
+    func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
+        let inner = try await engine.connect(info: info)
+        made += 1
+        return LateConnection(inner: inner, late: made == 1, transport: self)
+    }
+
+    fileprivate func wait() async { await withCheckedContinuation { gates.append($0) } }
+
+    func releaseLate() {
+        let all = gates
+        gates = []
+        for g in all { g.resume() }
+    }
+}
+
+@MainActor
+private final class LateConnection: EngineConnection {
+    let inner: any EngineConnection
+    let late: Bool
+    unowned let transport: LateCloseTransport
+    init(inner: any EngineConnection, late: Bool, transport: LateCloseTransport) {
+        self.inner = inner
+        self.late = late
+        self.transport = transport
+    }
+    func send(_ text: String) { inner.send(text) }
+    func close() { inner.close() }
+    func receive() async throws -> String {
+        do { return try await inner.receive() } catch {
+            if late { await transport.wait() }
+            throw error
+        }
     }
 }

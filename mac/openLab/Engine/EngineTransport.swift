@@ -70,11 +70,17 @@ struct SystemScheduler: Scheduler {
 final class WebSocketTransport: EngineTransport {
     private let session = URLSession(configuration: .ephemeral)
 
-    func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
+    /// The configured, not yet resumed task (a seam for the max-size test).
+    func makeTask(info: EngineConnectionInfo) throws -> URLSessionWebSocketTask {
         guard let url = URL(string: "ws://127.0.0.1:\(info.port)") else { throw URLError(.badURL) }
         let task = session.webSocketTask(with: url)
         // The default is 1 MiB; a large snapshot or group upsert is up to MAX_SERVER_FRAME_BYTES.
         task.maximumMessageSize = maxServerFrameBytes
+        return task
+    }
+
+    func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
+        let task = try makeTask(info: info)
         task.resume()
         return WebSocketConnection(task: task)
     }

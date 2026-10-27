@@ -41,6 +41,8 @@ enum ConnectionState: Equatable, Sendable {
 struct ReconnectPolicy: Equatable, Sendable {
     var initial = 0.25
     var cap = 5.0
+    /// How long a connection may take to deliver its `welcome` before the attempt is abandoned.
+    var handshakeTimeout = 10.0
     func delay(attempt: Int) -> Double { min(cap, initial * pow(2, Double(min(attempt, 30)))) }
 }
 
@@ -71,6 +73,8 @@ final class EngineClient: ObservableObject {
     private let transport: EngineTransport
     private let infoProvider: @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>
     private let scheduler: Scheduler
+    private let handshakeScheduler: Scheduler
+    private var handshakeTimedOut = false
     private let policy: ReconnectPolicy
     private let clientName: String
     private let workspace: ModelID?
@@ -87,9 +91,11 @@ final class EngineClient: ObservableObject {
     init(
         transport: EngineTransport,
         infoProvider: @escaping @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>,
-        scheduler: Scheduler = SystemScheduler(), policy: ReconnectPolicy = ReconnectPolicy(),
+        scheduler: Scheduler = SystemScheduler(), handshakeScheduler: Scheduler = SystemScheduler(),
+        policy: ReconnectPolicy = ReconnectPolicy(),
         clientName: String = "openLab for macOS", workspace: ModelID? = nil
     ) {
+        self.handshakeScheduler = handshakeScheduler
         self.transport = transport
         self.infoProvider = infoProvider
         self.scheduler = scheduler
@@ -164,9 +170,12 @@ final class EngineClient: ObservableObject {
             let result = await connectOnce()
             if Task.isCancelled { return }
             if result.reachedWelcome { attempt = 0 }
-            if case .versionMismatch = result.failure {
+            switch result.failure {
+            case .versionMismatch, .engine(.noWorkspace, _):
+                // Retrying cannot help: a version mismatch, or a workspace the engine closed.
                 state = .failed(result.failure)
                 return
+            default: break
             }
             state = .retrying(result.failure)
             let delay = policy.delay(attempt: attempt)
@@ -185,12 +194,28 @@ final class EngineClient: ObservableObject {
         do { conn = try await transport.connect(info: info) } catch {
             return (.transport(error.localizedDescription), false)
         }
+        if Task.isCancelled {  // stopped while connecting
+            conn.close()
+            return (.lost, false)
+        }
         connection = conn
         nextRequestID = 1
+        handshakeTimedOut = false
+        let timer = Task { [handshakeScheduler, timeout = policy.handshakeTimeout] in
+            do { try await handshakeScheduler.sleep(seconds: timeout) } catch { return }
+            if !Task.isCancelled {
+                handshakeTimedOut = true
+                conn.close()
+            }
+        }
         defer {
+            timer.cancel()
             conn.close()
-            connection = nil
-            failPending(.disconnected)
+            // A stop() + start() may already have installed the next run's connection.
+            if connection === conn {
+                connection = nil
+                failPending(.disconnected)
+            }
         }
         let hello = Hello(
             protocolVersion: protocolVersion, token: info.token, clientName: clientName, workspace: workspace)
@@ -204,13 +229,17 @@ final class EngineClient: ObservableObject {
                 if Task.isCancelled { return (.lost, welcomed) }
                 let message: ServerMessage
                 do { message = try ServerMessage.decode(text) } catch {
-                    engineLog.error("dropped undecodable frame: \(error.localizedDescription, privacy: .public)")
+                    engineLog.error("undecodable frame: \(error.localizedDescription, privacy: .public)")
+                    // Before the welcome the attempt has failed; after it, a `result` must not hang.
+                    if !welcomed { return (.transport("undecodable frame before welcome"), false) }
+                    failUndecodableResult(text)
                     continue
                 }
                 if !welcomed {
                     switch message {
                     case .welcome, .provisional(.appWelcome):
                         welcomed = true
+                        timer.cancel()
                         _ = delegate?.engineClient(self, didReceive: message)
                         state = .connected
                     case .error(let code, let detail, let engineVersion):
@@ -228,8 +257,21 @@ final class EngineClient: ObservableObject {
                 }
             }
         } catch {
-            return (.lost, welcomed)
+            return (handshakeTimedOut && !welcomed ? .transport("no welcome") : .lost, welcomed)
         }
+    }
+
+    private struct ResultStub: Decodable {
+        var type: String
+        var id: UInt64
+    }
+
+    /// A `result` whose body does not decode still ends its request (and frees the snapshot gate).
+    private func failUndecodableResult(_ text: String) {
+        guard let stub = try? JSONDecoder().decode(ResultStub.self, from: Data(text.utf8)), stub.type == "result"
+        else { return }
+        if snapshotRequest == stub.id { snapshotRequest = nil }
+        pending.removeValue(forKey: stub.id)?(.failure(.encoding("undecodable result")))
     }
 
     // MARK: Inbound
