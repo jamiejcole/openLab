@@ -42,6 +42,8 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 |---|---|---|
 | `go` | `list` | `Go` |
 | `panic` | - | `Panic` |
+| `stop_all`, `hard_stop_all` | - | `StopAll`: every cue and preview stops at once (no fade, nothing pending fires, no panic window). The two are the same today, as `stop` and `hard_stop` are for one cue (no stop fade-outs yet); they are kept apart so a client can say which it means (the OSC API's `/stop` and `/hardStop`) |
+| `panic_cue` | `cue` | `PanicCue`: the cue's own panic (as its `panic` second trigger): it and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched |
 | `pause_all`, `resume_all` | - | `PauseAll`, `ResumeAll` |
 | `set_playhead` | `list`, `cue` (null: past the end) | `SetPlayhead` |
 | `set_playhead_by_number` | `list`, `number` | `SetPlayheadByNumber` |
@@ -55,6 +57,8 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 | `trigger_released` | `cue` | `TriggerReleased` (second trigger on release) |
 | `preview` | `cue` | `Preview` (M4.13) |
 | `stop_preview` | `cue` (optional; absent or null: every preview) | `StopPreview` |
+
+`stop_all`, `hard_stop_all` and `panic_cue` were added with the OSC API (M4.5b). The Swift `Codable` types do not exist yet: **M5 must implement all three** (fixtures `transport_stop_all.json`, `transport_hard_stop_all.json`, `transport_panic_cue.json`).
 
 The `result` of a transport action means "accepted and handed to the cue engine"; what happened shows in `runtime` (states, playhead, warnings such as `go_ignored` or `trigger_ignored`).
 

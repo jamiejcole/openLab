@@ -1691,6 +1691,8 @@ pub fn transport_input(action: TransportAction) -> Input {
     match action {
         TransportAction::Go { list } => Input::Go { list },
         TransportAction::Panic => Input::Panic,
+        TransportAction::StopAll | TransportAction::HardStopAll => Input::StopAll,
+        TransportAction::PanicCue { cue } => Input::PanicCue { cue },
         TransportAction::PauseAll => Input::PauseAll,
         TransportAction::ResumeAll => Input::ResumeAll,
         TransportAction::SetPlayhead { list, cue } => Input::SetPlayhead { list, cue },
@@ -1724,7 +1726,9 @@ enum Scope {
 
 fn orphan_scope(action: &TransportAction) -> Option<Scope> {
     match action {
-        TransportAction::Panic => Some(Scope::All),
+        TransportAction::Panic | TransportAction::StopAll | TransportAction::HardStopAll => {
+            Some(Scope::All)
+        }
         TransportAction::HardStop { cue }
         | TransportAction::Reset { cue }
         | TransportAction::Stop {

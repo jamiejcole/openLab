@@ -959,3 +959,106 @@ fn a_clock_restart_ends_the_panic_window() {
     assert_eq!(voice_stops(&panic), vec![(id(1), 60, panic_fade(1000))]);
     assert_eq!(rig.engine.panic_end(), Some(1060));
 }
+
+// ----- Stop All and a cue's own panic (OSC `/stop`, `/hardStop`, `/cue/{n}/panic`) -----
+
+#[test]
+fn stop_all_stops_every_cue_of_every_list_and_depth_at_once() {
+    let mut rig = Rig::lists(
+        vec![
+            vec![
+                sound(1),
+                grp(2, GroupMode::Timeline, vec![sound(3)]),
+                timed(memo(7), 1.0, 0.0, DNC),
+            ],
+            vec![sound(6)],
+        ],
+        0,
+    );
+    for n in [1, 2, 6, 7] {
+        rig.start(0, n);
+    }
+    let stop = rig.at(100, Input::StopAll);
+    // No fade, children before their groups, on the sample of the input.
+    assert_eq!(
+        voice_stops(&stop),
+        vec![(id(1), 100, None), (id(3), 100, None), (id(6), 100, None)]
+    );
+    for n in [1, 2, 3, 6, 7] {
+        assert_eq!(rig.state(n), CueState::Idle, "cue {n}");
+    }
+    // The pending pre-wait of cue 7 fires nothing, and no panic window was opened.
+    assert!(starts(&rig.tick(5000)).is_empty());
+    rig.assert_quiet();
+}
+
+#[test]
+fn stop_all_ends_a_panic_fade_and_leaves_no_panic_window() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    rig.start(0, 1);
+    rig.panic(0);
+    assert!(rig.engine.panic_end().is_some());
+    let stop = rig.at(200, Input::StopAll);
+    assert_eq!(voice_stops(&stop), vec![(id(1), 200, None)]);
+    assert_eq!(rig.engine.panic_end(), None);
+    // A Panic right after is a new one with its fade, not the "second press" hard stop.
+    rig.start(300, 2);
+    assert_eq!(
+        voice_stops(&rig.panic(400)),
+        vec![(id(2), 400, panic_fade(1000))]
+    );
+}
+
+#[test]
+fn stop_all_stops_paused_cues_and_does_nothing_when_idle() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    assert!(rig.at(0, Input::StopAll).is_empty());
+    rig.start(0, 1);
+    rig.at(50, Input::PauseAll);
+    rig.at(100, Input::StopAll);
+    assert_eq!(rig.state(1), CueState::Idle);
+    rig.assert_quiet();
+}
+
+#[test]
+fn a_cues_own_panic_fades_it_and_what_is_in_it_and_leaves_the_rest() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        grp(2, GroupMode::Timeline, vec![sound(3)]),
+        sound(4),
+    ]);
+    for n in [1, 2, 4] {
+        rig.start(0, n);
+    }
+    let panic = rig.at(100, Input::PanicCue { cue: id(2) });
+    assert_eq!(voice_stops(&panic), vec![(id(3), 100, panic_fade(1000))]);
+    assert_eq!(rig.state(3), CueState::Stopping);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.state(4), CueState::Running);
+    // Not a workspace panic: there is no panic window, so a Panic is a first one.
+    assert_eq!(rig.engine.panic_end(), None);
+    let end = rig.tick(1100);
+    assert_eq!(changes(&end, 3), vec![(CueState::Idle, 1100)]);
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+#[test]
+fn a_cues_own_panic_with_no_panic_duration_stops_it_at_once() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    rig.ws.settings.panic_duration = 0.0;
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let panic = rig.at(100, Input::PanicCue { cue: id(1) });
+    assert_eq!(voice_stops(&panic), vec![(id(1), 100, None)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Running);
+}
+
+#[test]
+fn a_cues_own_panic_on_an_unknown_or_idle_cue_changes_nothing() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    let unknown = rig.at(0, Input::PanicCue { cue: id(99) });
+    assert!(voice_stops(&unknown).is_empty());
+    assert!(rig.at(0, Input::PanicCue { cue: id(1) }).is_empty());
+    rig.assert_quiet();
+}
