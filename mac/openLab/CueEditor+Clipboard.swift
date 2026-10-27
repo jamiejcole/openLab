@@ -71,7 +71,7 @@ extension CueEditor {
     /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
     @discardableResult
     func addFiles(_ urls: [URL], parent: ModelID?, index: Int) async -> [ModelID] {
-        guard await begin(), let list = cueList.listID else { return [] }
+        guard await begin(), let list = cueList?.listID else { return [] }
         guard let files = Self.audioFiles(urls) else {
             notify(loc("edit.error.dropNotAudio"))
             return []
@@ -95,7 +95,7 @@ extension CueEditor {
         guard let command = Command.transaction(commands), report(await store.send(command: command)) else {
             return []
         }
-        cueList.selectAsUser(ids)
+        cueList?.selectAsUser(ids)
         return ids
     }
 
@@ -103,7 +103,7 @@ extension CueEditor {
     func replaceFile(of id: ModelID, with url: URL) async {
         guard await begin() else { return }
         guard let files = Self.audioFiles([url]) else { return notify(loc("edit.error.dropNotAudio")) }
-        guard let node = cueList.node(id), node.cue.kindType == "audio", var kind = node.cue.raw["kind"] else {
+        guard let node = cueList?.node(id), node.cue.kindType == "audio", var kind = node.cue.raw["kind"] else {
             return
         }
         if isBusy(node) { return notify(loc("edit.error.replaceBusy")) }
@@ -141,11 +141,11 @@ extension CueEditor {
 
     /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
     func paste() async {
-        guard await begin(), let list = cueList.listID else { return }
+        guard await begin(), let list = cueList?.listID else { return }
         guard let text = pasteboard.string(forType: Self.pasteType),
             let cues = JSONValue.parse(text)?["cues"]?.arrayValue, !cues.isEmpty
         else { return NSSound.beep() }
-        let place = Self.insertion(selected: selectedNodes(), roots: cueList.roots)
+        let place = Self.insertion(selected: selectedNodes(), roots: (cueList?.roots ?? []))
         var ids: [ModelID] = []
         var commands: [Command] = []
         for (n, cue) in cues.enumerated() {
@@ -155,7 +155,7 @@ extension CueEditor {
             commands.append(.addCue(fresh, list: list, parent: place.parent, index: place.index + n))
         }
         guard let command = Command.transaction(commands), report(await store.send(command: command)) else { return }
-        cueList.selectAsUser(ids)
+        cueList?.selectAsUser(ids)
     }
 
     // MARK: Delete numbers
@@ -163,7 +163,7 @@ extension CueEditor {
     /// Clears the number of every selected cue (QLab: Tools > Delete Numbers of Selected Cues, Cmd-D).
     func deleteNumbers() async {
         guard await begin() else { return }
-        let ids = cueList.selectedIDs().filter { cueList.node($0)?.cue.number != nil }
+        let ids = (cueList?.selectedIDs() ?? []).filter { cueList?.node($0)?.cue.number != nil }
         guard !ids.isEmpty else { return }
         _ = report(await store.send(command: .clearNumbers(ids)))
     }

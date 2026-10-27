@@ -86,7 +86,8 @@ final class CueClipboardTests: XCTestCase {
     }
 
     func testReplaceFileSendsTheWholeKindAndSkipsBusyCues() async throws {
-        let (_, editor, log) = try await harness()
+        let (h, editor, log) = try await harness()
+        _ = h  // the window owns the cue list for as long as the editor lives
         let wav = try tempFiles(["new.wav"])[0]
         await editor.replaceFile(of: H.door, with: wav)
         let sent = try XCTUnwrap(log.commands.first)
@@ -219,6 +220,31 @@ final class CueClipboardTests: XCTestCase {
         await assertEventually { h.vc.node(H.door) == nil }
         await editor.paste()
         XCTAssertEqual(log.commands.last?["cue"]?["name"]?.stringValue, "Door slam")
+    }
+
+    /// An editor whose cue list is released before this returns (its window is gone).
+    private func orphanEditor(_ store: WorkspaceStore) -> CueEditor {
+        CueEditor(store: store, cueList: CueListViewController(store: store))
+    }
+
+    /// The editor must not trap when its window is gone while an edit is queued (it held the cue list unowned).
+    func testEditsAfterTheCueListIsGoneDoNothing() async throws {
+        let rig = try Rig()
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let editor = orphanEditor(rig.store)
+        let log = CueEditingTests.SendLog(rig.engine)
+        editor.pasteboard = NSPasteboard.withUniqueName()
+        XCTAssertNil(editor.cueList, "the test must really release the cue list")
+        let wav = try tempFiles(["a.wav"])[0]
+        await editor.replaceFile(of: H.door, with: wav)
+        _ = await editor.addFiles([wav], parent: nil, index: 0)
+        await editor.paste()
+        await editor.deleteSelection()
+        await editor.deleteNumbers()
+        _ = await editor.copySelection()
+        await editor.move([H.door], to: nil, at: 0)
+        XCTAssertTrue(log.commands.isEmpty)
     }
 
     // MARK: Delete numbers
