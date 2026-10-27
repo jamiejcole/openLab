@@ -195,8 +195,12 @@ pub fn run(data: &[u8]) -> Result<(), String> {
         if osc.known_ips() > MAX_KNOWN_IPS || osc.update_subscribers(now).len() > MAX_PEERS {
             return Err("a table grew past its bound".into());
         }
+        // `/updates` works at any access level, but a subscriber that may not view is sent nothing.
         if locked_out_for_good
-            && (!osc.update_subscribers(now).is_empty()
+            && (osc
+                .update_subscribers(now)
+                .into_iter()
+                .any(|p| osc.may_receive_updates(p, &show.access))
                 || (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))))
         {
             return Err("a peer got a session without the passcode".into());
