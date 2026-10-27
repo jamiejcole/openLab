@@ -261,8 +261,9 @@ final class InspectorTests: XCTestCase {
     func testExternalChangeUpdatesFieldsButNotTheOneBeingEdited() async throws {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))
-        XCTAssertTrue(vc.isEditing(.name))
         vc.nameField.currentEditor()?.string = "half typed"
+        typed(.name, "half typed")
+        XCTAssertTrue(vc.isEditing(.name))
         var cue = try XCTUnwrap(rig.store.model?.cue(Self.intro)).raw
         cue.set("name", .string("Renamed elsewhere"))
         cue.set("notes", .string("from another client"))
@@ -299,7 +300,139 @@ final class InspectorTests: XCTestCase {
         list.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         var seen: [[ModelID]] = []
         list.onSelectionChange = { seen.append($0) }
-        list.select([Self.fade])
+        list.select([Self.intro])
+        XCTAssertTrue(seen.isEmpty, "a programmatic restore is not the user's choice")
+        let row = list.outlineView.row(forItem: list.node(Self.fade))
+        list.outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         XCTAssertEqual(seen.last, [Self.fade])
+    }
+
+    private func typed(_ f: InspectorField, _ text: String) {
+        if f == .notes {
+            vc.notesView.string = text
+            vc.textDidChange(Notification(name: NSText.didChangeNotification, object: vc.notesView))
+        } else if let tf = vc.field(f) {
+            tf.stringValue = text
+            vc.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: tf))
+        }
+    }
+
+    private func upsertName(_ name: String, id: ModelID = intro) throws {
+        var cue = try XCTUnwrap(rig.store.model?.cue(id)).raw
+        cue.set("name", .string(name))
+        let upsert =
+            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":0,"cue":\#(try cue.text())}"#
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
+                )), .applied)
+    }
+
+    func testUnchangedSelectionMidEditKeepsTextAndMessage() {
+        vc.setSelection([Self.intro])
+        typed(.name, "half")
+        vc.messageLabel.stringValue = "keep me"
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(vc.nameField.stringValue, "half")
+        XCTAssertEqual(vc.messageLabel.stringValue, "keep me")
+        XCTAssertTrue(vc.isEditing(.name))
+    }
+
+    func testFocusedButUntouchedFieldTakesExternalChange() async throws {
+        vc.setSelection([Self.intro])
+        XCTAssertTrue(window.makeFirstResponder(vc.nameField))
+        typed(.name, "A")
+        vc.commit(.name)  // Return: sent, field stays focused
+        await assertEventually { self.commands.count == 1 }
+        await assertEventually { self.rig.store.model?.cue(Self.intro)?.name == "A" }
+        try upsertName("B")
+        XCTAssertEqual(vc.nameField.stringValue, "B")
+        window.makeFirstResponder(nil)  // clicking away
+        await settle()
+        XCTAssertEqual(commands.count, 1, "nothing is re-sent for a field the user did not touch")
+    }
+
+    func testCueDeletedMidEditDropsTheEdit() async throws {
+        vc.setSelection([Self.intro])
+        typed(.name, "doomed")
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(Self.intro)"}]}"#
+                )), .applied)
+        XCTAssertFalse(vc.emptyLabel.isHidden)
+        vc.commit(.name)
+        await settle()
+        XCTAssertTrue(commands.isEmpty)
+        let ok = await vc.commitPendingEdits()
+        XCTAssertTrue(ok)
+    }
+
+    func testRefusalDoesNotWipeANewerEditOfTheSameField() async {
+        rig.engine.holdResults = true
+        rig.engine.refuseCommands = true
+        vc.setSelection([Self.intro])
+        edit(.name, "first")
+        await assertEventually { self.commands.count == 1 }
+        typed(.name, "second, still typing")
+        rig.engine.releaseResults()
+        await assertEventually { self.vc.messageLabel.stringValue.contains("refused") }
+        XCTAssertEqual(vc.nameField.stringValue, "second, still typing", "a dirty field is not reverted")
+    }
+
+    func testStaleRefusalDoesNotRevertWhileANewerEditIsInFlight() async {
+        rig.engine.holdResults = true
+        rig.engine.refuseCommands = true
+        vc.setSelection([Self.intro])
+        edit(.name, "first")
+        await assertEventually { self.commands.count == 1 }
+        rig.engine.refuseCommands = false  // the newer edit is accepted
+        edit(.name, "second")
+        await assertEventually { self.commands.count == 2 }
+        rig.engine.releaseResults()
+        await assertEventually { self.vc.messageLabel.stringValue.contains("refused") }
+        await settle()
+        XCTAssertEqual(vc.nameField.stringValue, "second", "the newest edit decides what shows")
+    }
+
+    func testSecondEditBeforeTheFirstResultSendsBoth() async {
+        rig.engine.holdResults = true
+        vc.setSelection([Self.intro])
+        edit(.name, "one")
+        edit(.name, "two")
+        await assertEventually { self.commands.count == 2 }
+        XCTAssertEqual(commands[0], property("name", #""one""#))
+        XCTAssertEqual(commands[1], property("name", #""two""#))
+        rig.engine.holdResults = false
+        rig.engine.releaseResults()
+        let ok = await vc.commitPendingEdits()
+        XCTAssertTrue(ok)
+    }
+
+    func testPendingEditsAreCommittedAndAwaited() async {
+        vc.setSelection([Self.intro])
+        typed(.name, "Storm")
+        typed(.notes, "n")
+        let ok = await vc.commitPendingEdits()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertTrue(vc.dirty.isEmpty)
+    }
+
+    func testRefusedPendingEditReportsFailure() async {
+        rig.engine.refuseCommands = true
+        vc.setSelection([Self.intro])
+        typed(.name, "Storm")
+        let ok = await vc.commitPendingEdits()
+        XCTAssertFalse(ok)
+    }
+
+    func testDecimalCommaHasItsOwnMessage() {
+        vc.setSelection([Self.intro])
+        edit(.preWait, "1,5")
+        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.decimalComma"))
+        edit(.preWait, "1,x")
+        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"))
     }
 }
