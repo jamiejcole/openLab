@@ -22,8 +22,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use openlab_audio::{CommandKind, Fade};
 use openlab_core::protocol::{
-    ErrorBody, ErrorCode, LogLevel, OkBody, Outcome, RecoveryChoice, RecoveryEntryInfo, Request,
-    RequestId, ResultData, ServerMessage, WireWarning,
+    ErrorBody, ErrorCode, LogKind, LogLevel, OkBody, Outcome, RecoveryChoice, RecoveryEntryInfo,
+    Request, RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
     CueListId, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES, MediaRef, PatchId, PathStyle,
@@ -733,7 +733,10 @@ impl Control {
                 let ticket = self.next_ticket(id, to, discard_changes);
                 self.send_job(DocJob::Revert { ticket, path }, id, to);
             }
-            Request::Snapshot | Request::ListDevices | Request::Relink { .. } => {}
+            Request::Snapshot
+            | Request::ListDevices
+            | Request::LogTail { .. }
+            | Request::Relink { .. } => {}
         }
     }
 
@@ -924,6 +927,15 @@ impl Control {
         self.history = History::new();
         self.checks = super::checks::PlanChecks::default();
         self.config.show_path = path;
+        self.observe.reset();
+        self.log_kind(
+            LogKind::Document,
+            LogLevel::Info,
+            match &self.config.show_path {
+                Some(p) => format!("workspace opened: {}", p.display()),
+                None => "workspace opened: untitled".to_owned(),
+            },
+        );
         self.media.reset(self.show_dir(), &self.ws);
         self.docs.notices = notices;
         self.revision += 1;
@@ -1109,7 +1121,11 @@ impl Control {
                 }
             }
             Err(e) => {
-                self.log(LogLevel::Error, format!("save failed: {e}"));
+                self.log_kind(
+                    LogKind::Document,
+                    LogLevel::Error,
+                    format!("save failed: {e}"),
+                );
                 for (id, to) in &save.waiters {
                     fail(to, *id, persist_code(&e), e.to_string());
                 }
@@ -1121,6 +1137,13 @@ impl Control {
     fn saved(&mut self, save: &PendingSave) {
         let clean_before = self.revision == save.revision;
         self.saved_revision = save.revision;
+        self.record(
+            LogKind::Document,
+            LogLevel::Info,
+            format!("saved {}", save.path.display()),
+            None,
+            None,
+        );
         if self.config.show_path.as_deref() != Some(save.path.as_path()) {
             let old_dir = self.show_dir();
             self.config.show_path = Some(save.path.clone());
