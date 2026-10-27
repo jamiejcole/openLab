@@ -225,12 +225,18 @@ impl CueEngine {
         out
     }
 
-    /// Whether a cue inside the group, at any depth, is shown with static problems (CUE-06):
-    /// the group is not broken and runs (its broken children are skipped as usual), but, as in
-    /// QLab 5, it shows a warning. `Action::GroupWarningChanged` reports each change. False for
-    /// a cue that is not a group.
+    /// Whether a cue inside the group, at any depth, is shown with static problems (CUE-06). As
+    /// in QLab 5 the group then shows as broken too (its state is `broken` while it has no
+    /// runtime), but it has no problem of its own: it still starts, and its broken children are
+    /// skipped as usual. `Action::GroupWarningChanged` reports each change. False for a cue that
+    /// is not a group.
     pub fn has_broken_descendant(&self, cue: CueId) -> bool {
         self.problems.below.contains_key(&cue)
+    }
+
+    /// Every group with a descendant shown with problems.
+    pub(super) fn problems_below(&self) -> Vec<CueId> {
+        self.problems.below.keys().copied().collect()
     }
 
     /// Whether the patch of an audio cue exists and was last reported `Mapped`: a `device_lost`
@@ -452,11 +458,14 @@ impl CueEngine {
                 p.below.insert(group, held);
             }
         }
-        for (group, before) in was {
-            let warning = p.below.contains_key(&group);
-            if warning != before {
-                cx.out.push(Action::GroupWarningChanged { group, warning });
-            }
+        let changed: Vec<(CueId, bool)> = was
+            .into_iter()
+            .map(|(group, before)| (group, before, p.below.contains_key(&group)))
+            .filter(|(_, before, warning)| warning != before)
+            .map(|(group, _, warning)| (group, warning))
+            .collect();
+        for (group, warning) in changed {
+            self.report_group_warning(group, warning, cx);
         }
     }
 
@@ -480,11 +489,12 @@ impl CueEngine {
             .chain(p.below.keys().filter(|g| !old.contains_key(g)))
             .copied()
             .collect();
-        for group in flipped {
-            cx.out.push(Action::GroupWarningChanged {
-                group,
-                warning: p.below.contains_key(&group),
-            });
+        let changed: Vec<(CueId, bool)> = flipped
+            .into_iter()
+            .map(|group| (group, p.below.contains_key(&group)))
+            .collect();
+        for (group, warning) in changed {
+            self.report_group_warning(group, warning, cx);
         }
     }
 
@@ -496,6 +506,7 @@ impl CueEngine {
             p.flips.push(cue);
             return;
         }
+        let mut changed = Vec::new();
         for group in p.model.tree.ancestors(cue) {
             let warning = if shown {
                 let n = p.below.entry(group).or_default();
@@ -515,11 +526,29 @@ impl CueEngine {
                 }
             };
             if warning {
-                cx.out.push(Action::GroupWarningChanged {
-                    group,
-                    warning: shown,
-                });
+                changed.push(group);
             }
+        }
+        for group in changed {
+            self.report_group_warning(group, shown, cx);
+        }
+    }
+
+    /// A group's warning changed: reports it and, for a group with no runtime, the state it now
+    /// shows (QLab 5: a group shows as broken while a descendant does; G6).
+    fn report_group_warning(&mut self, group: CueId, warning: bool, cx: &mut Ctx) {
+        cx.out.push(Action::GroupWarningChanged { group, warning });
+        if !self.slots.contains_key(&group) && !self.has_problems(group) {
+            let state = if warning {
+                super::CueState::Broken
+            } else {
+                super::CueState::Idle
+            };
+            cx.out.push(Action::StateChanged {
+                cue: group,
+                state,
+                at: cx.now,
+            });
         }
     }
 
