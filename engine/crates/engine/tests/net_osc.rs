@@ -1173,7 +1173,11 @@ async fn tcp_flooders_cannot_starve_udp() {
     )
     .await;
     assert!(all.is_ok(), "{:?}", f.stats());
-    // None dropped at the queue and none aged out waiting behind the flood.
+    // None dropped at the queue and none aged out waiting behind the flood. The second half
+    // depends on `max_input_age` (2 s): a datagram that waits that long behind the flood is
+    // dropped as stale and counted in `inputs_dropped`. If this fails in CI, the machine was
+    // too slow to serve a datagram within 2 s (or datagrams are taken after the TCP events
+    // again: see `next_input`), not a lost datagram in the kernel.
     let stats = f.stats();
     assert_eq!(
         (stats.udp_dropped, stats.inputs_dropped),
@@ -1416,4 +1420,95 @@ async fn a_passcode_changed_by_an_edit_ends_every_session() {
     .await;
     t.send(&msg("/connect", vec![text("hunter2")])).await;
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+}
+
+#[tokio::test]
+async fn with_a_passcode_an_authenticated_console_is_never_closed_for_room() {
+    let f = fixture_with(with_passcode("sesame"), |c| {
+        c.max_tcp_connections = 3;
+        c.tcp_idle_evict = Duration::ZERO;
+    })
+    .await;
+    // The console connected first, so it has been silent longest.
+    let mut console = f.tcp().await;
+    console.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&console.recv().await.unwrap())["status"], "ok");
+    let mut strangers = Vec::new();
+    for _ in 0..2 {
+        let mut t = f.tcp().await;
+        t.send(&msg("/go", vec![])).await;
+        assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+        strangers.push(t);
+    }
+    // Full: a newcomer takes the place of the stranger silent longest, never the console.
+    let mut newcomer = f.tcp().await;
+    newcomer.send(&msg("/go", vec![])).await;
+    assert_eq!(body(&newcomer.recv().await.unwrap())["status"], "denied");
+    assert!(strangers[0].recv().await.is_none());
+    console.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&console.recv().await.unwrap())["data"], "Opening");
+    assert_eq!(f.stats().tcp_refused, 0);
+}
+
+#[tokio::test]
+async fn with_a_passcode_and_only_authenticated_connections_the_newcomer_is_refused() {
+    let f = fixture_with(with_passcode("sesame"), |c| {
+        c.max_tcp_connections = 2;
+        c.tcp_idle_evict = Duration::ZERO;
+    })
+    .await;
+    let mut consoles = Vec::new();
+    for _ in 0..2 {
+        let mut t = f.tcp().await;
+        t.send(&msg("/connect", vec![text("sesame")])).await;
+        assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+        consoles.push(t);
+    }
+    let mut newcomer = f.tcp().await;
+    assert!(newcomer.recv().await.is_none());
+    assert_eq!(f.stats().tcp_refused, 1);
+    for t in &mut consoles {
+        t.send(&msg("/cue/1/name", vec![])).await;
+        assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    }
+}
+
+#[tokio::test]
+async fn a_passcode_edit_that_fails_to_apply_still_ends_every_session() {
+    let f = fixture(with_passcode("sesame")).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    let mut settings = with_passcode("hunter2").settings;
+    settings.osc_passcode = Some("hunter2".into());
+    // The settings apply, then the cue upsert into a list that is not there fails.
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![
+                Upsert::Settings {
+                    name: "test".into(),
+                    settings: Box::new(settings),
+                },
+                Upsert::Cue {
+                    list: openlab_core::CueListId(uuid::Uuid::from_u128(4242)),
+                    parent: None,
+                    index: 0,
+                    cue: Box::new(test_workspace().cue_lists[0].cues[0].clone()),
+                },
+            ],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    guard("the session to end", async {
+        loop {
+            t.send(&msg("/cue/1/name", vec![])).await;
+            if body(&t.recv().await.unwrap())["status"] == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
 }

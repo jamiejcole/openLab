@@ -189,6 +189,7 @@ pub fn start(
     let shared = Arc::new(Shared::default());
     let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE);
     let (udp_tx, udp_rx) = mpsc::channel(UDP_QUEUE);
+    let (evict_tx, evict_rx) = mpsc::channel(1);
     let (tap_tx, tap_rx) = mpsc::channel(TAP_QUEUE);
     let lagged = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
@@ -234,9 +235,26 @@ pub fn start(
         listener: OscListenerStats::default(),
         reported: Problems::default(),
     };
-    runtime.spawn(actor.run(events_rx, udp_rx, tap_rx, reply_rx, lagged, wake));
+    runtime.spawn(actor.run(
+        Queues {
+            events: events_rx,
+            udp: udp_rx,
+            evict: evict_rx,
+            tap: tap_rx,
+            replies: reply_rx,
+        },
+        lagged,
+        wake,
+    ));
     runtime.spawn(udp_loop(udp, udp_tx, shared.clone()));
-    runtime.spawn(accept_loop(tcp, events_tx, config, inbox, shared.clone()));
+    runtime.spawn(accept_loop(
+        tcp,
+        events_tx,
+        evict_tx,
+        config,
+        inbox,
+        shared.clone(),
+    ));
     Some((
         Running {
             ports,
@@ -267,8 +285,6 @@ enum Event {
     TcpClosed {
         conn: u64,
     },
-    /// The table is full and a connection is waiting: close an idle one if there is one.
-    Evict,
 }
 
 /// Datagrams taken in a row before a TCP event gets a turn.
@@ -329,6 +345,7 @@ async fn udp_loop(socket: Arc<UdpSocket>, events: mpsc::Sender<Event>, shared: A
 async fn accept_loop(
     listener: TcpListener,
     events: mpsc::Sender<Event>,
+    evict: mpsc::Sender<()>,
     config: Arc<OscConfig>,
     inbox: Sender<Inbox>,
     shared: Arc<Shared>,
@@ -358,9 +375,10 @@ async fn accept_loop(
             Err(_) => {
                 // Full: the actor may close an idle connection (a vanished peer); wait a
                 // moment for the slot.
-                if events.send(Event::Evict).await.is_err() {
-                    return;
-                }
+                // Its own signal, not the event queue: that one may be full (a flood) or
+                // unread (a snapshot is out), and this loop must not wait on it. One pending
+                // request is enough.
+                let _ = evict.try_send(());
                 match timeout(EVICT_WAIT, slots.clone().acquire_owned()).await {
                     Ok(Ok(slot)) => Some(slot),
                     _ => None,
@@ -435,7 +453,11 @@ async fn tcp_connection(
             }
         }
     }
-    let _ = events.send(Event::TcpClosed { conn }).await;
+    // Told in a task of its own: the queue may be full, and this connection's slot must not
+    // be held until there is room.
+    tokio::spawn(async move {
+        let _ = events.send(Event::TcpClosed { conn }).await;
+    });
     // The actor drops the queue's sender on `TcpClosed`, which ends the writer once what it
     // was given is written.
     let _ = timeout(write_timeout, writer).await;
@@ -524,6 +546,15 @@ struct TcpConn {
     last_rx: Instant,
 }
 
+/// What the actor waits on.
+struct Queues {
+    events: mpsc::Receiver<Event>,
+    udp: mpsc::Receiver<Event>,
+    evict: mpsc::Receiver<()>,
+    tap: mpsc::Receiver<ServerMessage>,
+    replies: ReplyRx,
+}
+
 struct Actor {
     osc: Osc,
     /// `None` until the first snapshot: input waits in the queues until then.
@@ -546,15 +577,14 @@ struct Actor {
 }
 
 impl Actor {
-    async fn run(
-        mut self,
-        mut events: mpsc::Receiver<Event>,
-        mut udp: mpsc::Receiver<Event>,
-        mut tap: mpsc::Receiver<ServerMessage>,
-        mut replies: ReplyRx,
-        lagged: Arc<AtomicBool>,
-        wake: Arc<Notify>,
-    ) {
+    async fn run(mut self, queues: Queues, lagged: Arc<AtomicBool>, wake: Arc<Notify>) {
+        let Queues {
+            mut events,
+            mut udp,
+            mut evict,
+            mut tap,
+            mut replies,
+        } = queues;
         // `interval_at` panics on a zero period.
         let period = self.config.stats_log_interval.max(Duration::from_millis(1));
         let mut ticker = interval_at(Instant::now() + period, period);
@@ -584,6 +614,11 @@ impl Actor {
                 },
                 // Only wakes the loop; the lag is handled at the top of the next turn.
                 () = wake.notified() => {}
+                // Needs neither the copy nor the event queues.
+                Some(()) = evict.recv() => {
+                    self.evict();
+                    self.publish();
+                }
                 message = tap.recv(), if ready && !waiting => match message {
                     Some(message) => {
                         if !self.broadcast(message) {
@@ -701,14 +736,15 @@ impl Actor {
             ServerMessage::Document { document } => mirror.document(document),
             _ => return true,
         };
+        // A settings edit that changed the passcode ends every session, as a snapshot with
+        // another passcode does. Checked whatever the outcome: an edit that failed part-way
+        // may have applied its settings first.
+        if mirror.passcode() != passcode.as_deref() {
+            self.osc.reset_sessions();
+        }
         match applied {
             Applied::Stale => true,
             Applied::Updates(updates) => {
-                // A settings edit that changed the passcode ends every session, as a snapshot
-                // with another passcode does.
-                if mirror.passcode() != passcode.as_deref() {
-                    self.osc.reset_sessions();
-                }
                 self.fan_out(&updates);
                 true
             }
@@ -766,7 +802,6 @@ impl Actor {
                 );
                 self.carry_out(peer, outcome, stale);
             }
-            Event::Evict => self.evict(),
             Event::TcpClosed { conn } => {
                 if let Some(connection) = self.tcp.remove(&conn) {
                     self.osc.disconnect(Peer::Tcp {
@@ -780,9 +815,18 @@ impl Actor {
     }
 
     /// Closes the connection that has been silent longest, if it has been silent for
-    /// `tcp_idle_evict` and is not subscribed to updates, to make room for a new one.
+    /// `tcp_idle_evict` and is not subscribed to updates, to make room for a new one. With a
+    /// passcode set a connection that completed `/connect` is never closed this way: it is a
+    /// console that was let in, and a stranger's connections must not be able to push it out
+    /// (the cost: a console that vanished without closing holds its slot until a write to it
+    /// fails).
     fn evict(&mut self) {
         let idle = self.config.tcp_idle_evict;
+        let locked = self
+            .mirror
+            .as_ref()
+            .and_then(Mirror::passcode)
+            .is_some_and(|p| !p.is_empty());
         let subscribed: HashSet<u64> = self
             .osc
             .update_subscribers()
@@ -795,7 +839,15 @@ impl Actor {
         let victim = self
             .tcp
             .iter()
-            .filter(|(conn, c)| !subscribed.contains(conn) && c.last_rx.elapsed() >= idle)
+            .filter(|(conn, c)| {
+                let peer = Peer::Tcp {
+                    conn: **conn,
+                    ip: c.ip,
+                };
+                !subscribed.contains(conn)
+                    && c.last_rx.elapsed() >= idle
+                    && !(locked && self.osc.is_connected(peer))
+            })
             .min_by_key(|(_, c)| c.last_rx)
             .map(|(conn, _)| *conn);
         let Some(conn) = victim else { return };

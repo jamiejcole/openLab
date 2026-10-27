@@ -210,7 +210,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 11. Network, Remote & Integration
 - [ ] **NET-01** `v0.0.1` OSC API for full control and query (GO, stop, playhead, cue properties, state), documented. Address space compatible with QLab 5's OSC dictionary so existing remotes, Stream Deck/Companion setups and scripts work unchanged where the feature exists.
-- [x] **NET-02** `v0.0.1` OSC passcode / access control for the API.
+- [ ] **NET-02** `v0.0.1` OSC passcode / access control for the API.
 - [ ] **NET-03** Web-based remote (phone/tablet browser) served by openLab: GO, Stop, playhead, active cues, notes. No app install required.
 - [ ] **NET-04** `low` Bitfocus Companion module.
 - [ ] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
