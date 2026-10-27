@@ -269,6 +269,7 @@ pub fn build() -> Built {
                 target: Some(id(12)),
                 start_next_cue: false,
                 stop_target_when_slice_ends: false,
+                devamp_mode: openlab_core::DevampMode::CurrentSlice,
             },
         ),
         looped(14, &loop_b, 1),
@@ -278,6 +279,7 @@ pub fn build() -> Built {
                 target: Some(id(14)),
                 start_next_cue: true,
                 stop_target_when_slice_ends: true,
+                devamp_mode: openlab_core::DevampMode::CurrentSlice,
             },
         ),
         cue(

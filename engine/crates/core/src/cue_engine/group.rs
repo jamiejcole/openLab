@@ -344,9 +344,10 @@ impl CueEngine {
     /// (in its action, not stopping or devamped; a paused one too): the child playing
     /// is hard-stopped and the one after (before) it starts on `at`, wrapping when the playlist
     /// loops. Without loop, "next" after the last child completes the group (as if that child
-    /// had ended) and "previous" on the first child plays it again from the top. Shuffled, the
+    /// had ended) and "previous" on the first child stops the group (QLab check S4). Shuffled, the
     /// pass's order is followed (a new pass after its end, as usual; "previous" from its first
-    /// child wraps to its last). A paused playlist resumes on the new child. The new child's
+    /// child wraps to its last with loop, and stops the group without). A paused playlist
+    /// resumes on the new child. The new child's
     /// start is charged to the chain budget like any playlist move.
     pub(super) fn playlist_skip(&mut self, group: CueId, back: bool, at: SampleTime, cx: &mut Ctx) {
         let state = self.state(group);
@@ -409,8 +410,10 @@ impl CueEngine {
             }
         }
         self.as_of(at, cx, |e, cx| {
-            if back {
-                e.playlist_rewind(group, &ids, &playable, loop_);
+            // "Previous" with no child before the current one (and no loop to wrap round) stops
+            // the playlist (QLab check S4, M2.28).
+            if back && !e.playlist_rewind(group, &ids, &playable, loop_) {
+                return e.stop_tree(group, None, cx);
             }
             if let Some((child, _)) = current
                 && matches!(e.slots.get(&child), Some(Slot::Active(_)))
@@ -433,13 +436,20 @@ impl CueEngine {
     }
 
     /// Sets a playlist's position so that its next move starts the child before the current one
-    /// (see `playlist_skip`).
-    fn playlist_rewind(&mut self, group: CueId, ids: &[CueId], playable: &[CueId], loop_: bool) {
+    /// (see `playlist_skip`). Returns `false`, changing nothing, when there is none: no playable
+    /// child before the current one and no loop to wrap round.
+    fn playlist_rewind(
+        &mut self,
+        group: CueId,
+        ids: &[CueId],
+        playable: &[CueId],
+        loop_: bool,
+    ) -> bool {
         let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group) else {
-            return;
+            return true;
         };
         let Some(p) = g.playlist.as_mut() else {
-            return;
+            return true;
         };
         if p.order.is_empty() {
             // A current child removed from the group: `index` is where it stood.
@@ -449,26 +459,29 @@ impl CueEngine {
                 .unwrap_or(p.index);
             let valid = |i: &usize| ids.get(*i).is_some_and(|id| playable.contains(id));
             let len = ids.len();
-            // The playable child before; with loop, wrapping to the last; else the first
-            // playable one (so the first child plays again); none playable: where it was.
-            p.index = (0..here)
-                .rev()
-                .find(valid)
-                .or_else(|| loop_.then(|| (0..len).rev().find(valid)).flatten())
-                .or_else(|| (0..len).find(valid))
+            // The playable child before; with loop, wrapping to the last; else none (the
+            // playlist stops). With loop and none playable: where it was.
+            let before = (0..here).rev().find(valid);
+            if before.is_none() && !loop_ {
+                return false;
+            }
+            p.index = before
+                .or_else(|| (0..len).rev().find(valid))
                 .unwrap_or(here.min(len.saturating_sub(1)));
         } else {
             let order = &p.order;
             let valid = |pos: &usize| order.get(*pos).is_some_and(|id| playable.contains(id));
             let len = order.len();
-            p.pos = (0..p.pos)
-                .rev()
-                .find(valid)
-                .or_else(|| loop_.then(|| (0..len).rev().find(valid)).flatten())
-                .or_else(|| (0..len).find(valid))
+            let before = (0..p.pos).rev().find(valid);
+            if before.is_none() && !loop_ {
+                return false;
+            }
+            p.pos = before
+                .or_else(|| (0..len).rev().find(valid))
                 .unwrap_or(p.pos);
         }
         p.current = None;
+        true
     }
 
     /// A restarted cue (run `seq` before) that was its playlist's current child stays the current

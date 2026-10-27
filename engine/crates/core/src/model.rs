@@ -105,10 +105,15 @@ impl Workspace {
 
     /// Every cue whose hotkey is `hotkey` (same key and modifiers), in workspace order (lists in
     /// order, cues depth-first). A press starts all of them: as in QLab 5, cues may share a
-    /// hotkey and that is not a problem (M2.24, QLab check K1). Iterative, so nesting depth
-    /// cannot overflow the stack.
+    /// hotkey and that is not a problem (M2.24, QLab check K1). None when a workspace transport
+    /// key is `hotkey`: the workspace action wins and no cue is started by that key (QLab check
+    /// K1b, M2.28; validation warns `HotkeyUsedByWorkspace`). Iterative, so nesting depth cannot
+    /// overflow the stack.
     pub fn cues_with_hotkey(&self, hotkey: &Hotkey) -> Vec<CueId> {
         let mut out = Vec::new();
+        if self.settings.hotkeys.action_of(hotkey).is_some() {
+            return out;
+        }
         for list in &self.cue_lists {
             let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
             while let Some(level) = stack.last_mut() {
@@ -213,6 +218,23 @@ pub struct TransportHotkeys {
     pub resume_all: Option<Hotkey>,
     pub playhead_next: Option<Hotkey>,
     pub playhead_previous: Option<Hotkey>,
+}
+
+impl TransportHotkeys {
+    /// The transport action whose key is `hotkey` (same key and modifiers), by its field name
+    /// (`"go"`, `"stop_all"`, ...), or `None`.
+    pub fn action_of(&self, hotkey: &Hotkey) -> Option<&'static str> {
+        [
+            ("go", &self.go),
+            ("stop_all", &self.stop_all),
+            ("pause_all", &self.pause_all),
+            ("resume_all", &self.resume_all),
+            ("playhead_next", &self.playhead_next),
+            ("playhead_previous", &self.playhead_previous),
+        ]
+        .into_iter()
+        .find_map(|(name, key)| (key.as_ref() == Some(hotkey)).then_some(name))
+    }
 }
 
 impl Default for TransportHotkeys {

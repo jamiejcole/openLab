@@ -107,6 +107,7 @@ fn devamp_cue(n: u128, target: u128, start_next: bool, stop: bool) -> Cue {
             target: t(target),
             start_next_cue: start_next,
             stop_target_when_slice_ends: stop,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     )
 }

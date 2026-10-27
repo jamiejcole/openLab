@@ -295,7 +295,9 @@
 "warning.target_not_running" = "{cue}: its target {target} is not running.";
 "warning.preview_ignored" = "Preview of {cue} was ignored.";
 "warning.preview_ignored.already_previewing" = "{cue} is already being previewed.";
-"warning.preview_ignored.not_audio" = "{cue} is not an audio cue, so it cannot be previewed.";
+"warning.preview_ignored.not_audio" = "{cue} is not an audio cue or a group, so it cannot be previewed.";
+"warning.preview_ignored.disarmed" = "{cue} is disarmed, so it cannot be previewed.";
+"warning.preview_ignored.nothing_to_preview" = "{cue} has no armed audio cue to preview.";
 "warning.preview_failed" = "Preview of {cue} failed.";
 "warning.preview_failed.device_lost" = "Preview of {cue} failed: the audio device was lost.";
 "warning.preview_failed.stream_failed" = "Preview of {cue} failed: its audio stream failed.";

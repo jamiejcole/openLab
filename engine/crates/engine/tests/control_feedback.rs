@@ -75,6 +75,7 @@ fn devamp_leaves_the_loop_and_the_cue_ends() {
             target: Some(id(1)),
             start_next_cue: false,
             stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
         },
     );
     let mut s = show(workspace(vec![looped, devamp]));
@@ -108,6 +109,7 @@ fn devamp_with_stop_ends_at_the_loop_boundary() {
             target: Some(id(1)),
             start_next_cue: false,
             stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
         },
     );
     let mut s = show(workspace(vec![looped, devamp]));
@@ -163,6 +165,7 @@ fn a_lost_voice_end_is_reconciled() {
             target: Some(id(2)),
             start_next_cue: false,
             stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
         },
     );
     let mut s = show(workspace(vec![c1, c2, devamp]));
