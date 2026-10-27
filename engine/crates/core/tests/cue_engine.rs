@@ -449,8 +449,7 @@ fn disarmed_cue_skips_its_action_but_keeps_timing_and_continue() {
 }
 
 #[test]
-fn unsupported_kind_warns_completes_at_once_and_continues() {
-    // Network cues come with M4.6.
+fn network_cue_sends_completes_at_once_and_continues() {
     let send = timed(
         cue(
             1,
@@ -466,10 +465,11 @@ fn unsupported_kind_warns_completes_at_once_and_continues() {
     );
     let mut rig = Rig::new(vec![send, memo(2), sound(10)]);
     let go = rig.go(0);
-    assert_eq!(
-        warnings(&go),
-        vec![EngineWarning::Unsupported { cue: id(1) }]
-    );
+    assert!(warnings(&go).is_empty());
+    assert!(go.iter().any(|a| matches!(
+        a,
+        Action::SendOsc { cue, address, .. } if *cue == id(1) && address == "/go"
+    )));
     assert_eq!(rig.state(10), CueState::Idle);
     assert_eq!(running_at(&go, 2), Some(0));
     assert!(go.iter().all(|a| !is_voice_action(a)));
@@ -1100,6 +1100,167 @@ fn load_to_time_shortens_known_durations_and_post_waits() {
         changes(&rig.tick(11_500), 1),
         vec![(CueState::Idle, 11_500)]
     );
+}
+
+// ----- load past the end (M4.11b; QLab 5 loads it to its end) -----
+//
+// `t` is a position on the cue's own timeline. The action is over once `t` is past its length
+// (the action is clamped, at its start); the post-wait is not clamped and counts from `t`.
+
+#[test]
+fn load_past_the_end_sits_loaded_at_the_end() {
+    // Pre-wait 1 s + a 3 s wait = a 4 s length; loading to 100 s leaves the cue loaded: it does
+    // not complete, nothing follows, and no deadline is held.
+    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    assert_eq!(
+        load,
+        vec![Action::StateChanged {
+            cue: id(1),
+            state: CueState::Loaded,
+            at: 0
+        }]
+    );
+    assert_eq!(rig.engine.next_deadline(), None);
+    assert!(rig.tick(50_000).is_empty());
+    assert_eq!(rig.state(1), CueState::Loaded);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn started_after_a_load_past_the_end_the_action_is_over_and_the_post_wait_counts_from_the_time() {
+    // Pre-wait 1 s, a 3 s wait, a 5 s post-wait. Loaded to 4.5 s (3.5 s into the action, past
+    // its 3 s): the action ends at once and the post-wait has 5 - 3.5 = 1.5 s left.
+    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 4.5,
+        },
+    );
+    let start = rig.start(10_000, 1);
+    assert_eq!(
+        changes(&start, 1).last(),
+        Some(&(CueState::PostWaiting, 10_000))
+    );
+    assert_eq!(rig.engine.next_deadline(), Some(11_500));
+    assert!(!changes(&rig.tick(11_500), 2).is_empty());
+    // Loaded to 100 s: no post-wait left either, so the next cue starts at the GO.
+    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let start = rig.start(10_000, 1);
+    assert!(!changes(&start, 2).is_empty());
+}
+
+#[test]
+fn load_past_the_end_of_a_memo_counts_the_post_wait_from_the_time() {
+    // Pre-wait 1 s, a memo (no action), a 10 s post-wait; loaded to 5 s: 4 s past the pre-wait,
+    // so 6 s of post-wait are left.
+    let mut rig = Rig::new(vec![timed(memo(1), 1.0, 10.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 5.0,
+        },
+    );
+    rig.start(5000, 1);
+    assert_eq!(rig.engine.next_deadline(), Some(11_000));
+}
+
+#[test]
+fn load_past_the_end_of_a_group_counts_the_post_wait_from_the_time() {
+    let group_cue = || {
+        let mut g = cue(1, group(vec![wait(2, 2.0)]));
+        g.post_wait = 5.0;
+        g.continue_mode = AC;
+        g
+    };
+    // Loaded 2 s in (the child's whole 2 s wait): 3 s of post-wait left.
+    let mut rig = Rig::new(vec![group_cue(), memo(3)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 2.0,
+        },
+    );
+    rig.start(1000, 1);
+    assert_eq!(rig.engine.next_deadline(), Some(4000));
+    // Loaded far past it: no post-wait left, the next cue starts at the GO.
+    let mut rig = Rig::new(vec![group_cue(), memo(3)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let start = rig.start(1000, 1);
+    assert!(!changes(&start, 3).is_empty());
+}
+
+#[test]
+fn a_cue_disarmed_at_load_and_armed_before_the_start_keeps_its_load_time() {
+    // Regression (review of M4.11b): the load time must not depend on whether the cue was armed
+    // when it was loaded.
+    let mut a = sound(1);
+    a.armed = false;
+    let mut w = wait(2, 3.0);
+    w.armed = false;
+    let mut rig = Rig::new(vec![a, w]);
+    for (n, time) in [(1, 5.0), (2, 2.0)] {
+        rig.at(0, Input::Load { cue: id(n), time });
+    }
+    for c in &mut rig.ws.cue_lists[0].cues {
+        c.armed = true;
+    }
+    let start = rig.start(1000, 1);
+    assert!(start.iter().any(|x| matches!(
+        x,
+        Action::StartVoice {
+            at: 1000,
+            offset: 5000,
+            ..
+        }
+    )));
+    rig.start(1000, 2);
+    // 1 s of the 3 s wait is left.
+    assert_eq!(rig.engine.next_deadline(), Some(2000));
+}
+
+#[test]
+fn load_past_the_end_of_an_audio_cue_is_the_binarys_to_clamp() {
+    // The offset goes to the mixer as asked; the binary loads it to the end of the plan (an
+    // infinite loop wraps within its loop).
+    let mut rig = Rig::new(vec![sound(1)]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let run = rig.engine.run_of(id(1)).unwrap();
+    assert!(load.contains(&Action::LoadVoice {
+        cue: id(1),
+        run,
+        offset: 100_000
+    }));
+    assert_eq!(rig.state(1), CueState::Loaded);
 }
 
 #[test]
