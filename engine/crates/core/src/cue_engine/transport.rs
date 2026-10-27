@@ -144,6 +144,13 @@ impl CueEngine {
         }
     }
 
+    /// The cue, or something in it, is fading out in a panic (a workspace Panic or its own).
+    pub(super) fn fading_in_panic(&self, cue: CueId, cx: &Ctx) -> bool {
+        std::iter::once(cue)
+            .chain(self.inside(cue, cx))
+            .any(|id| matches!(self.slots.get(&id), Some(Slot::Active(run)) if run.panicked))
+    }
+
     /// One cue's own panic (its second-trigger option): the cue and everything in it as in a
     /// Panic, ending `panic_duration` from now (0: at once). Not a workspace panic: other cues and
     /// `panic_end` are untouched. Its cues count as fading out in a panic, so a further trigger
