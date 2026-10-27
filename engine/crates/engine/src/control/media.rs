@@ -110,8 +110,19 @@ impl Job {
     }
 }
 
-/// The volume of everything not on a mount of its own.
+/// The volume of everything not on a mount of its own (Unix); a probe-side verdict on it is
+/// meaningless, see [`Gate::exempt`].
 const SYSTEM_VOLUME: &str = "/";
+
+/// The system drive's name as the media watch spells it (`C:`): `SystemDrive` from the
+/// environment (`env`), else `C:`. Only Windows reads it; the rule is tested on any host.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn system_drive(env: impl Fn(&str) -> Option<String>) -> String {
+    env("SystemDrive")
+        .map(|d| d.trim_end_matches(['\\', '/']).to_owned())
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "C:".to_owned())
+}
 
 /// Different files with a stuck probe that make a volume stalled on the probes' word alone.
 const CORROBORATION: usize = 2;
@@ -165,6 +176,10 @@ struct Gate {
     watch_stalled: HashSet<String>,
     /// Which volume a path is on (the media watch's `bucket_of` unless a test injects one).
     volume: Option<fn(&Path) -> String>,
+    /// The system drive on Windows (`C:`); the Unix system volume `/` is always exempt.
+    system_drive: Option<String>,
+    /// The folder of the open show file.
+    show_dir: Option<PathBuf>,
     epoch: u64,
     next_trial: u64,
 }
@@ -174,9 +189,24 @@ impl Gate {
         self.volume.map_or_else(|| bucket_of(path), |f| f(path))
     }
 
+    /// Volumes never held back: the system volume (`/`, or the system drive) mixes the local
+    /// disk with automounts and cloud folders, and the volume holding the open show file is
+    /// the one an operator cannot do without. Only other volumes (removable drives, network
+    /// shares, other mounts) can be stalled for probe scheduling.
+    fn exempt(&self, bucket: &str) -> bool {
+        bucket == SYSTEM_VOLUME
+            || self
+                .system_drive
+                .as_ref()
+                .is_some_and(|d| d.eq_ignore_ascii_case(bucket))
+            || self
+                .show_dir
+                .as_ref()
+                .is_some_and(|d| self.bucket(d).eq_ignore_ascii_case(bucket))
+    }
+
     fn stalled(&self, bucket: &str) -> bool {
-        // The system disk is never held back (see the module docs).
-        bucket != SYSTEM_VOLUME
+        !self.exempt(bucket)
             && (self.watch_stalled.contains(bucket)
                 || self
                     .volumes
@@ -301,7 +331,7 @@ impl Gate {
         trial: Option<u64>,
         now: Instant,
     ) {
-        if epoch != self.epoch || bucket == SYSTEM_VOLUME {
+        if epoch != self.epoch || self.exempt(bucket) {
             return;
         }
         let watch = self.watch_stalled.contains(bucket);
@@ -551,6 +581,14 @@ impl MediaCatalog {
             #[cfg(test)]
             jobs: 0,
         };
+        {
+            let mut gate = lock(&catalog.gate);
+            gate.show_dir = catalog.show_dir.clone();
+            #[cfg(windows)]
+            {
+                gate.system_drive = Some(system_drive(|k| std::env::var(k).ok()));
+            }
+        }
         for _ in 0..PROBE_WORKERS {
             catalog.spawn()?;
         }
@@ -589,7 +627,11 @@ impl MediaCatalog {
     /// find no entry (or a newer ticket) and are ignored.
     pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
         self.entries.clear();
-        lock(&self.gate).reset();
+        {
+            let mut gate = lock(&self.gate);
+            gate.reset();
+            gate.show_dir = show_dir.clone();
+        }
         self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
         self.reserved = 0;
@@ -2484,6 +2526,51 @@ mod tests {
         assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
         assert_eq!(gate.deferred.len(), 1);
         assert!(gate.deferred[0].1);
+    }
+
+    #[test]
+    fn the_system_drive_and_the_show_files_volume_are_never_held_back() {
+        // The system drive comes from the environment, `C:` if it is not there.
+        assert_eq!(system_drive(|_| Some("D:".to_owned())), "D:");
+        assert_eq!(system_drive(|_| Some("D:\\".to_owned())), "D:");
+        assert_eq!(system_drive(|_| Some(String::new())), "C:");
+        assert_eq!(system_drive(|_| None), "C:");
+        let t0 = Instant::now();
+        let mut gate = Gate {
+            system_drive: Some(system_drive(|_| None)),
+            show_dir: Some(PathBuf::from("/Volumes/Shows/Hamlet")),
+            ..Gate::default()
+        };
+        // Stuck probes on the system drive (any case), the show file's volume and a
+        // watch-reported stall of either gate nothing.
+        for v in ["C:", "c:", "/Volumes/Shows"] {
+            gate.watch_stalled.insert(v.to_owned());
+            for n in 0..3 {
+                gate.timed_out(gate.epoch, v, &format!("{v}/{n}.wav"), true, None, t0);
+            }
+            assert!(!gate.stalled(v), "{v}");
+        }
+        assert!(gate.events.is_empty());
+        // Another volume still can be.
+        for n in 0..2 {
+            gate.timed_out(
+                gate.epoch,
+                "/Volumes/Other",
+                &format!("{n}.wav"),
+                true,
+                None,
+                t0,
+            );
+        }
+        assert!(gate.stalled("/Volumes/Other"));
+        let taken = gate.admit(job("/Volumes/Shows/Hamlet/media/a.wav", 1), true, t0);
+        assert!(taken.is_some_and(|t| t.trial.is_none()));
+        // Another show is opened from elsewhere: the old show's volume is open to the verdict.
+        gate.show_dir = Some(PathBuf::from("/Users/me/Show"));
+        gate.watch_stalled.clear();
+        gate.timed_out(gate.epoch, "/Volumes/Shows", "x.wav", true, None, t0);
+        gate.timed_out(gate.epoch, "/Volumes/Shows", "y.wav", true, None, t0);
+        assert!(gate.stalled("/Volumes/Shows"));
     }
 
     #[test]
