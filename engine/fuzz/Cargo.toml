@@ -14,6 +14,11 @@ libfuzzer-sys = "0.4"
 openlab-audio = { path = "../crates/audio", default-features = false }
 openlab-core = { path = "../crates/core" }
 openlab-engine = { path = "../crates/engine" }
+# The osc_session target implements the engine's `OscShow`, whose types come from these (same
+# versions as the engine crate).
+rosc = { version = "0.11.4", default-features = false }
+serde_json = "1.0.154"
+uuid = { version = "1.29.0", default-features = false }
 
 # Kept out of the engine workspace: it needs nightly and sanitizer flags.
 [workspace]
@@ -35,6 +40,20 @@ bench = false
 [[bin]]
 name = "osc"
 path = "fuzz_targets/osc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol"
+path = "fuzz_targets/protocol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc_session"
+path = "fuzz_targets/osc_session.rs"
 test = false
 doc = false
 bench = false
