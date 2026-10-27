@@ -1323,8 +1323,36 @@ fn the_stall_limits_follow_the_buffer_period() {
     assert!(loss > ms(4640) && loss < ms(4650), "{loss:?}");
 }
 
+/// Like [`idle_ms`], but stops at the tick that loses the device. The reopen starts 250 ms of
+/// the injected clock later, and the device thread answers it in real time: a loop that only
+/// looked after the whole span could find the device already back (a race that showed on
+/// Windows runners). With `settle`, the device thread's answers are awaited after every tick,
+/// the fastest it can be.
+fn idle_ms_until_down(s: &mut DeviceShow, ms: u64, settle: bool) -> bool {
+    for _ in 0..ms / STALL_STEP_MS {
+        s.advance(Duration::from_millis(STALL_STEP_MS));
+        s.tick();
+        if settle {
+            s.wait_devices();
+        }
+        if s.control().device_down() {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 fn a_device_that_stutters_is_lost_as_intermittent_with_bounded_logs() {
+    stutter_until_lost(false);
+}
+
+#[test]
+fn the_stutter_loss_does_not_depend_on_how_fast_the_device_thread_answers() {
+    stutter_until_lost(true);
+}
+
+fn stutter_until_lost(settle: bool) {
     // A callback every 525 ms: never a 3 s silence, but silent almost all the time.
     let mut s = running_cue_show();
     s.take_outbound();
@@ -1332,8 +1360,7 @@ fn a_device_that_stutters_is_lost_as_intermittent_with_bounded_logs() {
     let mut rounds = 0;
     while !s.control().device_down() && rounds < 60 {
         s.fake.stall();
-        idle_ms(&mut s, 525);
-        if s.control().device_down() {
+        if idle_ms_until_down(&mut s, 525, settle) {
             break;
         }
         s.fake.unstall();
