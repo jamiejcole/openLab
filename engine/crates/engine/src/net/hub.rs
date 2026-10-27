@@ -111,6 +111,7 @@ impl Hub {
             },
             ServerMessage::Progress { .. }
             | ServerMessage::Meters { .. }
+            | ServerMessage::LogEntry { .. }
             | ServerMessage::Status { .. } => Kind::Lossy,
             _ => Kind::State,
         };
@@ -240,6 +241,34 @@ mod tests {
         assert_eq!(kinds.len(), CLIENT_QUEUE / 2 + 1);
         assert!(kinds.iter().all(|k| *k == Kind::State));
         assert!(!r.lagged.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn log_entries_are_lossy_like_meters() {
+        use openlab_core::protocol::{LogEntry, LogKind};
+        let hub = Hub::default();
+        let mut r = hub.register();
+        for n in 0..CLIENT_QUEUE / 2 {
+            hub.deliver(&log(n));
+        }
+        hub.deliver(&ServerMessage::LogEntry {
+            seq: 1,
+            entry: LogEntry {
+                time_ms: 0,
+                show_time: None,
+                level: LogLevel::Info,
+                kind: LogKind::Engine,
+                message: "x".into(),
+                cue: None,
+                source: None,
+            },
+        });
+        let kinds = drain(&mut r.rx);
+        assert_eq!(kinds.len(), CLIENT_QUEUE / 2, "dropped at half full");
+        assert!(
+            !r.lagged.load(Ordering::Acquire),
+            "a lost push is not a lag"
+        );
     }
 
     #[test]

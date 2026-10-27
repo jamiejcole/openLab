@@ -1,0 +1,12 @@
+{
+  "type": "log_entry",
+  "seq": 41,
+  "entry": {
+    "time_ms": 1700000000123,
+    "show_time": 12.5,
+    "level": "info",
+    "kind": "trigger",
+    "message": "message",
+    "source": "osc 192.0.2.7"
+  }
+}

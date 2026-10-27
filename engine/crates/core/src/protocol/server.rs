@@ -28,6 +28,7 @@ pub const SERVER_TYPES: &[&str] = &[
     "progress",
     "meters",
     "log",
+    "log_entry",
     "status",
     "warnings",
     "result",
@@ -74,6 +75,13 @@ pub enum ServerMessage {
     Log {
         level: LogLevel,
         message: String,
+    },
+    /// One new show-log record, as it is made (DX-02, M4.7c): for a live log view. Lossy like
+    /// `meters`, and rate-limited: `seq` rises by one per record the engine makes, pushed or
+    /// not, so a gap means records to fetch with `log_tail` (whose `seq` says where it ends).
+    LogEntry {
+        seq: u64,
+        entry: LogEntry,
     },
     /// System health, about once a second and when something changes (DX-03). Lossy like
     /// `meters`: the next one replaces it.
@@ -149,6 +157,11 @@ pub enum ResultData {
         /// Entries the engine could not write to the log file so far (the disk fell behind).
         /// They are still in `entries` while they are in the engine's memory.
         dropped: u64,
+        /// The `seq` of the newest record the engine has made (0: none yet), the last of
+        /// `entries` unless `max` cut them short. A `log_entry` with a `seq` up to this one is
+        /// already covered by this answer.
+        #[serde(default)]
+        seq: u64,
     },
     /// Answer to `preshow_check` (SM-06).
     /// Boxed: the report is large and a `ServerMessage` is passed around by value.
@@ -325,7 +338,8 @@ pub struct SystemStatus {
     /// exceed 100 on several cores); `null` where the platform gives no figure.
     pub cpu_percent: Option<f64>,
     /// Audio engine load: time the audio callback takes over the time of its block, worst case
-    /// since the previous status (1.0 = no headroom); `null` until the audio thread measures it.
+    /// since the previous status (1.0 = no headroom); `null` when no callback ran since then
+    /// (device lost) and for offline rendering.
     pub engine_load: Option<f64>,
     /// Output underruns and overruns the device layer reported, since start.
     pub xruns: u64,
@@ -333,6 +347,11 @@ pub struct SystemStatus {
     pub device: DeviceStatus,
     /// Show-log records lost since start because the disk could not keep up.
     pub log_dropped: u64,
+    /// Sequence number of the newest show-log record (as in `log_entry` and `log_tail`; 0:
+    /// none yet). A client following `log_entry` that sees a higher number than the last it
+    /// received missed a push and reads the gap with `log_tail`. Absent from older engines: 0.
+    #[serde(default)]
+    pub log_seq: u64,
     /// The OSC/network output override is on (PB-10): Network cues send nothing. The UI must
     /// show this plainly while it is true.
     #[serde(default)]
@@ -616,6 +635,9 @@ impl ServerMessage {
                     *peak = clean(f64::from(*peak)) as f32;
                 }
             }
+            Self::LogEntry { entry, .. } => {
+                entry.show_time = entry.show_time.filter(|t| t.is_finite());
+            }
             Self::Status { status } => {
                 status.cpu_percent = status.cpu_percent.map(clean);
                 status.engine_load = status.engine_load.map(clean);
@@ -636,6 +658,7 @@ impl ServerMessage {
             Self::Progress { .. } => "progress",
             Self::Meters { .. } => "meters",
             Self::Log { .. } => "log",
+            Self::LogEntry { .. } => "log_entry",
             Self::Status { .. } => "status",
             Self::Warnings { .. } => "warnings",
             Self::Result { .. } => "result",
@@ -656,6 +679,7 @@ pub fn encode_server(message: &ServerMessage) -> Result<String, ProtocolError> {
     match message {
         ServerMessage::Progress { .. }
         | ServerMessage::Meters { .. }
+        | ServerMessage::LogEntry { .. }
         | ServerMessage::Status { .. } => {
             let mut clean = message.clone();
             clean.sanitise();
