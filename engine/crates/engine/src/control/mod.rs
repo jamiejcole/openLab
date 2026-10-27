@@ -123,6 +123,9 @@ pub struct ControlConfig {
     /// The show file, if saved: relative media references resolve against its folder.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
+    /// False when `machine` is defaults standing in for a settings file that could not be read:
+    /// the engine then keeps default mappings in memory and never writes the file (M4.4c).
+    pub machine_writable: bool,
     /// Devices present, for the offline backend (a device backend plays on its open stream's
     /// device and lists what the host lists).
     pub devices: Vec<DeviceInfo>,
@@ -168,6 +171,7 @@ impl ControlConfig {
             seed: entropy_seed(),
             show_path: None,
             machine: MachineSettings::default(),
+            machine_writable: true,
             devices: Vec::new(),
             mixer_patches: 1,
             streamer: StreamerConfig::new(sample_rate),
@@ -231,7 +235,10 @@ pub struct Control {
     /// Saves the machine settings when the engine changes them (default patch mappings).
     settings_writer: Option<crate::persist::SettingsWriter>,
     /// Patches and devices the default mapping already warned about.
-    mapping_warned: std::collections::HashSet<(openlab_core::PatchId, String)>,
+    mapping_warned:
+        std::collections::HashSet<(openlab_core::WorkspaceId, openlab_core::PatchId, String)>,
+    /// The unwritable-settings warning went out.
+    unwritable_warned: bool,
     out: Outbound,
     docs: Docs,
     backend: Backend,
@@ -322,9 +329,13 @@ impl Control {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
         };
-        let settings_writer = match &config.app_dirs {
-            Some(dirs) => Some(crate::persist::SettingsWriter::spawn(dirs.clone())?),
-            None => None,
+        // Not essential: without the thread default mappings stay in memory (warned below).
+        let (settings_writer, writer_error) = match &config.app_dirs {
+            Some(dirs) => match crate::persist::SettingsWriter::spawn(dirs.clone()) {
+                Ok(w) => (Some(w), None),
+                Err(e) => (None, Some(e.to_string())),
+            },
+            None => (None, None),
         };
         let observe = Observe::new(&config);
         let mut control = Self {
@@ -340,6 +351,7 @@ impl Control {
             playable,
             settings_writer,
             mapping_warned: std::collections::HashSet::new(),
+            unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
             backend,
@@ -370,6 +382,17 @@ impl Control {
             meter_peaks: Vec::new(),
             observe,
         };
+        if let Some(e) = writer_error {
+            control.record(
+                LogKind::Engine,
+                LogLevel::Warn,
+                format!(
+                    "could not start the settings writer ({e}); this machine's settings will not be saved"
+                ),
+                None,
+                None,
+            );
+        }
         control.record(
             LogKind::Engine,
             LogLevel::Info,

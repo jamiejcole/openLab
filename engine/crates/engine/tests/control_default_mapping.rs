@@ -18,7 +18,7 @@ use openlab_core::{
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
-use openlab_engine::persist::load_machine_settings;
+use openlab_engine::persist::{load_machine_settings, load_machine_settings_checked};
 use show::*;
 
 fn device(name: &str, outputs: u32) -> DeviceInfo {
@@ -280,4 +280,58 @@ fn no_device_leaves_the_patch_unmapped_and_writes_nothing() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
     drop(s);
     assert!(!env.dirs.settings_path().exists());
+}
+
+/// A config whose machine settings come from the file in `env`, as the host loads them.
+fn from_disk(env: &Env, devices: Vec<DeviceInfo>) -> ControlConfig {
+    let mut c = bare(env, devices);
+    let (loaded, writable) = load_machine_settings_checked(&env.dirs);
+    c.machine = loaded.settings;
+    c.machine_writable = writable;
+    c
+}
+
+#[test]
+fn unreadable_settings_are_never_overwritten_by_a_default_mapping() {
+    let env = env();
+    // Not a regular file: reading fails with something other than "not found".
+    let path = env.dirs.settings_path();
+    std::fs::create_dir_all(&path).unwrap();
+    let c = from_disk(&env, vec![device("Offline", 2)]);
+    assert!(!c.machine_writable);
+    let ws = workspace(vec![]);
+    let mut s = show_with(ws.clone(), c);
+    // Mapped in memory, so the show plays...
+    let msgs = s.take_outbound();
+    assert_eq!(infos(&msgs).len(), 1);
+    assert!(mapping(&ws, s.control().machine()).is_some());
+    // ...with one warning that the file is left alone, however many patches map later.
+    let w = warns(&msgs);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("left as it is"), "{w:?}");
+    let _ = new_workspace(&mut s);
+    assert!(warns(&s.take_outbound()).is_empty());
+    drop(s);
+    assert!(path.is_dir(), "the settings path was replaced");
+}
+
+#[test]
+fn keys_this_version_does_not_know_survive_a_default_mapping() {
+    let env = env();
+    let path = env.dirs.settings_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"settings_version":1,"future_thing":{"a":[1,2]},"workspaces":{}}"#,
+    )
+    .unwrap();
+    let c = from_disk(&env, vec![device("Offline", 2)]);
+    assert!(c.machine_writable);
+    let ws = workspace(vec![]);
+    let s = show_with(ws.clone(), c);
+    drop(s);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["future_thing"]["a"][1], 2, "{text}");
+    assert!(mapping(&ws, &load_machine_settings(&env.dirs).settings).is_some());
 }
