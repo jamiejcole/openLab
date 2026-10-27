@@ -341,3 +341,13 @@
 "status.dropouts" = "Dropouts %d";
 "relink.log.ambiguous" = "More than one match for %@; left alone. Candidates: %@";
 "relink.log.unmatched" = "No match found for %@.";
+
+"window.main.title.showMode" = "%@ (Show Mode)";
+"footer.showMode.indicator" = "SHOW MODE";
+"alert.closeShowMode.title" = "Close this workspace?";
+"alert.closeShowMode.message" = "The workspace is in Show Mode.";
+"alert.quitShowMode.title" = "Quit openLab?";
+"alert.quitShowMode.message" = "At least one workspace is in Show Mode.";
+"menu.view" = "View";
+"menu.view.editMode" = "Enter Edit Mode";
+"menu.view.showMode" = "Enter Show Mode";
