@@ -28,6 +28,11 @@ const FORMAT_BYTES: usize = 40;
 const GUID_TAIL: [u8; 14] = [
     0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
 ];
+/// The same for the ambisonic B-format sub-formats (`{0000000N-0721-11d3-8644-c8c1ca000000}`):
+/// laid out like plain PCM / float, routed by index like every other file.
+const AMBISONIC_TAIL: [u8; 14] = [
+    0x00, 0x00, 0x21, 0x07, 0xd3, 0x11, 0x86, 0x44, 0xc8, 0xc1, 0xca, 0x00, 0x00, 0x00,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -281,10 +286,12 @@ fn parse_wav(r: &mut dyn MediaRead, file_len: u64) -> Result<Header, MediaError>
                     if size < 40 || body.len() < 40 || le16(body, 16).unwrap_or(0) < 22 {
                         return Err(corrupt("extensible fmt chunk too short"));
                     }
-                    if usize::from(le16(body, 18).unwrap_or(0)) > bits
-                        || body.get(26..40) != Some(&GUID_TAIL[..])
-                    {
+                    if usize::from(le16(body, 18).unwrap_or(0)) > bits {
                         return Err(corrupt("extensible fmt chunk"));
+                    }
+                    let guid = body.get(26..40);
+                    if guid != Some(&GUID_TAIL[..]) && guid != Some(&AMBISONIC_TAIL[..]) {
+                        return Err(MediaError::Unsupported("WAV extensible sub-format".into()));
                     }
                     tag = le16(body, 24).unwrap_or(0);
                 }
@@ -363,6 +370,7 @@ fn parse_aiff(r: &mut dyn MediaRead, file_len: u64, aifc: bool) -> Result<Header
             let layout = match comp {
                 Some(b"NONE" | b"in24" | b"in32") => int(true)?,
                 Some(b"sowt") => int(false)?,
+                Some(b"twos") => int(true)?,
                 Some(b"fl32" | b"FL32") => Layout::float(4, true),
                 Some(b"fl64" | b"FL64") => Layout::float(8, true),
                 _ => {

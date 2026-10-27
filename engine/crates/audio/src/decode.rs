@@ -579,8 +579,11 @@ fn is_wide_pcm<R: Read + Seek + ?Sized>(r: &mut R) -> Result<bool, MediaError> {
     r.seek(SeekFrom::Start(0))
         .map_err(|e| MediaError::Io(e.to_string()))?;
     // Sample sizes above 64 bits are `check_pcm_header`'s to reject, on symphonia's path.
-    Ok(matches!(found, Some((ch, bits))
-        if (NATIVE_MAX_CHANNELS + 1..=MAX_VOICE_CHANNELS).contains(&usize::from(ch)) && bits <= 64))
+    Ok(matches!(found, Some((ch, bits, tag))
+        if (NATIVE_MAX_CHANNELS + 1..=MAX_VOICE_CHANNELS).contains(&usize::from(ch))
+            && bits <= 64
+            // A-law, mu-law, ADPCM and the like stay symphonia's to read or refuse.
+            && matches!(tag, 0 | 1 | 3 | 0xFFFE)))
 }
 
 /// [`decode_all`] for a [`PcmSource`]: its length is known, so the budget is checked up front.
@@ -672,7 +675,7 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
     r.seek(SeekFrom::Start(0))
         .map_err(|e| MediaError::Io(e.to_string()))?;
     match found {
-        Some((channels, bits))
+        Some((channels, bits, _))
             if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 =>
         {
             Err(MediaError::Corrupt(format!(
@@ -684,8 +687,8 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
 }
 
 /// Channel count and bits per sample from a RIFF/WAVE `fmt ` or AIFF/AIFC `COMM` chunk, if the
-/// stream starts with one of those containers. Read errors count as "not found".
-fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16)> {
+/// and the WAV format tag (0 for AIFF), if the stream starts with one of those containers. Read errors count as "not found".
+fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16, u16)> {
     let mut head = [0u8; 12];
     r.read_exact(&mut head).ok()?;
     let (big_endian, want): (bool, &[u8; 4]) = match (head.get(0..4)?, head.get(8..12)?) {
@@ -717,9 +720,9 @@ fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16)> {
             // WAV fmt: tag, channels, rate(4), byte rate(4), block align, bits.
             // AIFF COMM: channels, frames(4), bits.
             return if big_endian {
-                Some((u16_at(0)?, u16_at(6)?))
+                Some((u16_at(0)?, u16_at(6)?, 0))
             } else {
-                Some((u16_at(2)?, u16_at(14).unwrap_or(0)))
+                Some((u16_at(2)?, u16_at(14).unwrap_or(0), u16_at(0)?))
             };
         }
         // Chunks are padded to an even length.
