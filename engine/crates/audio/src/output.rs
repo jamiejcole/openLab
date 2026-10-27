@@ -9,6 +9,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -143,6 +144,46 @@ struct DeviceShared {
     callback_faults: AtomicU64,
     alloc_violations: AtomicU64,
     leaked_mixers: AtomicU64,
+    /// Worst callback load since the last [`DeviceMonitor::take_engine_load`], encoded by
+    /// [`LoadMeter`].
+    worst_load: LoadMeter,
+}
+
+/// The worst callback load (render time over the block's duration) since it was last taken,
+/// in one atomic: parts per million plus one, so 0 means "no callback measured". Integers so
+/// `fetch_max` keeps the worst without a compare-exchange loop and without floats on the audio
+/// thread.
+struct LoadMeter(AtomicU64);
+
+impl LoadMeter {
+    const NONE: u64 = 0;
+
+    fn new() -> Self {
+        LoadMeter(AtomicU64::new(Self::NONE))
+    }
+
+    /// Records one callback that took `elapsed_ns` to fill `frames` at `rate`. Real-time safe:
+    /// integer arithmetic and one atomic `fetch_max`. A block of no frames, or no rate, has no
+    /// duration to compare with and is not recorded.
+    fn record(&self, elapsed_ns: u64, frames: u64, rate: u32) {
+        if frames == 0 || rate == 0 {
+            return;
+        }
+        // load = elapsed / (frames / rate); in ppm: elapsed_ns * rate / (frames * 1000).
+        // u128 cannot overflow for any u64 inputs.
+        let ppm = u128::from(elapsed_ns) * u128::from(rate) / (u128::from(frames) * 1000);
+        let encoded = u64::try_from(ppm).unwrap_or(u64::MAX - 1).saturating_add(1);
+        self.0.fetch_max(encoded, Ordering::Relaxed);
+    }
+
+    /// The worst load since the previous call, as a fraction (1.0: the callback took as long
+    /// as the block lasts); `None` when no callback was measured in between. Resets.
+    fn take(&self) -> Option<f64> {
+        match self.0.swap(Self::NONE, Ordering::Relaxed) {
+            Self::NONE => None,
+            v => Some((v - 1) as f64 / 1e6),
+        }
+    }
 }
 
 impl DeviceShared {
@@ -158,6 +199,7 @@ impl DeviceShared {
             callback_faults: AtomicU64::new(0),
             alloc_violations: AtomicU64::new(0),
             leaked_mixers: AtomicU64::new(0),
+            worst_load: LoadMeter::new(),
         }
     }
 
@@ -272,6 +314,15 @@ impl DeviceMonitor {
     pub fn leaked_mixers(&self) -> u64 {
         self.shared.leaked_mixers.load(Ordering::Relaxed)
     }
+
+    /// The audio engine load (DX-03): the worst time a callback took over the duration of the
+    /// block it filled, since the previous call (read-and-reset). 1.0 means a callback used its
+    /// whole block, so above about 0.7 dropouts are near. `None` when no callback ran since the
+    /// previous call (the stream stopped or was lost). Single consumer, like
+    /// [`DeviceMonitor::take_errors`]: the engine's status reporter owns it.
+    pub fn take_engine_load(&self) -> Option<f64> {
+        self.shared.worst_load.take()
+    }
 }
 
 /// What goes back to the control thread: everything the host owns that would deallocate.
@@ -356,6 +407,10 @@ pub struct OutputHost {
     slot: Producer<Parts>,
     #[cfg(test)]
     panic_next: bool,
+    #[cfg(test)]
+    alloc_while_timing: bool,
+    #[cfg(test)]
+    panic_while_timing: bool,
 }
 
 impl OutputHost {
@@ -379,6 +434,10 @@ impl OutputHost {
             slot,
             #[cfg(test)]
             panic_next: false,
+            #[cfg(test)]
+            alloc_while_timing: false,
+            #[cfg(test)]
+            panic_while_timing: false,
         };
         let link = HostLink {
             returned,
@@ -396,11 +455,32 @@ impl OutputHost {
     /// debug builds it runs under `assert_no_alloc` (M3.12). Never panics: a panic outside the
     /// mixer's own guard leaves the buffer silent and counts a callback fault.
     pub fn render<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
+        let frames = (out.len() / self.device_channels) as u64;
         #[cfg(debug_assertions)]
         let before = assert_no_alloc::violation_count();
-        let result =
-            no_alloc_in_debug(|| catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time))));
-        if result.is_err() {
+        // The timing runs inside the no-allocation guard, so debug builds count an allocation
+        // in it, and inside its own catch_unwind (std's `Instant::now` panics if the clock
+        // fails), so a panic never reaches the host's thread.
+        let result = no_alloc_in_debug(|| {
+            catch_unwind(AssertUnwindSafe(|| {
+                // RT: reading the monotonic clock is the one exception to "no syscalls" in the
+                // callback (ARCHITECTURE §3.4). `Instant::now` neither allocates nor locks, and
+                // normally does not enter the kernel: `clock_gettime(CLOCK_UPTIME_RAW)` on macOS
+                // reads the commpage (`mach_absolute_time`), `QueryPerformanceCounter` on
+                // Windows normally reads the TSC (a kernel-mediated timer on hardware without an
+                // invariant TSC and on some VMs), and Linux's `clock_gettime` is served by the
+                // vDSO. Two reads per callback, tens of ns for the pair (the CPU budget gate
+                // reports it), against a block of at least 1.3 ms (64 frames at 48 kHz).
+                let started = Instant::now();
+                let rendered = catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time)));
+                #[cfg(test)]
+                self.test_fault_while_timing();
+                let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                self.shared.worst_load.record(elapsed_ns, frames, self.rate);
+                rendered
+            }))
+        });
+        if !matches!(result, Ok(Ok(()))) {
             out.fill(S::SILENCE);
             self.shared.callback_faults.fetch_add(1, Ordering::Relaxed);
         }
@@ -419,6 +499,16 @@ impl OutputHost {
     /// buffer is left as the host gave it (cpal pre-fills silence).
     pub fn reject_buffer(&self) {
         self.shared.count(HostError::BadBuffer);
+    }
+
+    #[cfg(test)]
+    fn test_fault_while_timing(&mut self) {
+        if std::mem::take(&mut self.alloc_while_timing) {
+            std::hint::black_box(Vec::<u8>::with_capacity(16));
+        }
+        if std::mem::take(&mut self.panic_while_timing) {
+            panic!("injected timing fault");
+        }
     }
 
     fn render_inner<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
@@ -618,6 +708,86 @@ mod tests {
         host.render(&mut buf, None);
         assert_eq!(m.callback_faults(), 1);
         assert_eq!(ctl.samples_rendered(), 10);
+        drop(host);
+        assert!(link.take_mixer().is_some());
+    }
+
+    #[test]
+    fn the_load_meter_keeps_the_worst_until_taken() {
+        let m = LoadMeter::new();
+        assert_eq!(m.take(), None, "nothing measured yet");
+        // 480 frames at 48 kHz last 10 ms.
+        m.record(2_000_000, 480, 48_000);
+        m.record(5_000_000, 480, 48_000);
+        m.record(1_000_000, 480, 48_000);
+        assert_eq!(m.take(), Some(0.5));
+        assert_eq!(m.take(), None, "taking resets");
+        // A measured zero is a load of 0, not "nothing measured".
+        m.record(0, 480, 48_000);
+        assert_eq!(m.take(), Some(0.0));
+        // An overrun shows above 1, and different block sizes compare by their own duration.
+        m.record(15_000_000, 480, 48_000);
+        m.record(1_000_000, 64, 48_000);
+        assert_eq!(m.take(), Some(1.5));
+        // No frames or no rate: no duration to compare with, so nothing recorded.
+        m.record(1_000, 0, 48_000);
+        m.record(1_000, 480, 0);
+        assert_eq!(m.take(), None);
+        // Extreme inputs saturate instead of wrapping to a small load.
+        m.record(u64::MAX, 1, u32::MAX);
+        let worst = m.take().unwrap();
+        assert!(worst.is_finite() && worst > 1e12, "{worst}");
+        m.record(1, u64::MAX, 1);
+        assert_eq!(m.take(), Some(0.0));
+    }
+
+    #[test]
+    fn each_callback_is_timed_against_its_block() {
+        let (_ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut host, link) = OutputHost::new(mixer, 2);
+        let m = link.monitor();
+        assert_eq!(m.take_engine_load(), None);
+        let mut buf = vec![0.0f32; 2 * 256];
+        host.render(&mut buf, None);
+        host.render(&mut buf, None);
+        let load = m.take_engine_load().expect("measured");
+        assert!(load.is_finite() && load >= 0.0, "{load}");
+        assert_eq!(m.take_engine_load(), None, "no callback since");
+        // An empty buffer has no duration: not a measurement.
+        host.render::<f32>(&mut [], None);
+        assert_eq!(m.take_engine_load(), None);
+    }
+
+    #[test]
+    fn an_allocation_in_the_timing_is_counted_in_debug() {
+        let (_ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut host, link) = OutputHost::new(mixer, 2);
+        host.alloc_while_timing = true;
+        let mut buf = vec![0.0f32; 2 * 64];
+        host.render(&mut buf, None);
+        let m = link.monitor();
+        if cfg!(debug_assertions) {
+            assert!(m.alloc_violations() > 0, "the guard covers the timing");
+        }
+        assert_eq!(m.callback_faults(), 0);
+        assert!(m.take_engine_load().is_some());
+    }
+
+    #[test]
+    fn a_panic_in_the_timing_is_caught_and_counts_a_fault() {
+        let (ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut host, mut link) = OutputHost::new(mixer, 2);
+        host.panic_while_timing = true;
+        let mut buf = [0.5f32; 20];
+        host.render(&mut buf, None);
+        assert!(buf.iter().all(|x| *x == 0.0));
+        let m = link.monitor();
+        assert_eq!(m.callback_faults(), 1);
+        // The next callback renders and is timed normally.
+        host.render(&mut buf, None);
+        assert_eq!(m.callback_faults(), 1);
+        assert_eq!(ctl.samples_rendered(), 20);
+        assert!(m.take_engine_load().is_some());
         drop(host);
         assert!(link.take_mixer().is_some());
     }

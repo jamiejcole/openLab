@@ -1,0 +1,10 @@
+{
+  "type": "log_entry",
+  "seq": 42,
+  "entry": {
+    "time_ms": 1700000000123,
+    "level": "info",
+    "kind": "document",
+    "message": "message"
+  }
+}
