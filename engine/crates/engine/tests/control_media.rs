@@ -12,7 +12,7 @@ use openlab_core::protocol::{
     RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
     WireWarning,
 };
-use openlab_core::{Command, ContinueMode, CueKind, CueProblem, CueProperty, CueState};
+use openlab_core::{Command, ContinueMode, CueKind, CueProblem, CueProperty, CueState, GroupMode};
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
 
@@ -229,8 +229,12 @@ fn files_near_the_playhead_are_probed_first() {
 #[test]
 fn a_start_held_by_its_probe_fails_after_five_seconds() {
     let path = wav(&dc(200, 0.5));
+    let next = wav(&dc(200, 0.5));
     gate(&path);
-    let ws = workspace(vec![audio(1, &path, 0)]);
+    // The held start never played, so it is skipped: its auto-follow still fires (M4.14).
+    let mut held = audio(1, &path, 0);
+    held.continue_mode = ContinueMode::AutoFollow;
+    let ws = workspace(vec![held, audio(2, &next, 1)]);
     let mut c = config(&ws);
     c.probe = gated_probe;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
@@ -254,6 +258,9 @@ fn a_start_held_by_its_probe_fails_after_five_seconds() {
         w,
         WireWarning::Notice { code, .. } if code == "probe_timeout"
     )));
+    s.run(BLOCK * 4);
+    assert!(first_nonzero(&s.channel(1)).is_some(), "the follow played");
+    s.run(400);
     assert_eq!(s.control().live_voices(), 0);
     release(&path);
 }
@@ -494,4 +501,147 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
     let hits = s.control().prime_hits();
     go(&mut s);
     assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+}
+
+#[test]
+fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
+    // From the plans the loop builds for `bad_plan` (QLab check Q2: a playlist halted by a
+    // broken child times its auto-follow by them).
+    let path = wav(&dc(800, 0.5));
+    let gone = fresh_path("wav");
+    let looping = with_slices(audio(2, &path, 0), &[(secs(400), 1)], 0);
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        looping,
+        audio(3, &gone, 0),
+    ]));
+    s.run(BLOCK);
+    let length = |s: &OfflineShow, n: u128| s.control().engine().nominal_length(id(n));
+    assert_eq!(length(&s, 1), Some(800));
+    // A plan that loops forever, or a file that is not there, has no end.
+    assert_eq!(length(&s, 2), None);
+    assert_eq!(length(&s, 3), None);
+    let set_kind = |s: &mut OfflineShow, edit: &dyn Fn(&mut CueKind)| {
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        edit(&mut kind);
+        let request = s.request_id();
+        s.send(ClientMessage::Command {
+            id: request,
+            command: Box::new(Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            }),
+        });
+        s.run(BLOCK);
+    };
+    // A trim changes it.
+    set_kind(&mut s, &|k| {
+        if let CueKind::Audio { end_time, .. } = k {
+            *end_time = Some(secs(500));
+        }
+    });
+    assert_eq!(length(&s, 1), Some(500));
+    // Looping for ever withdraws it; finite again tells it again.
+    for (count, expected) in [(0, None), (1, Some(500))] {
+        set_kind(&mut s, &|k| {
+            if let CueKind::Audio {
+                last_slice_play_count,
+                ..
+            } = k
+            {
+                *last_slice_play_count = count;
+            }
+        });
+        assert_eq!(length(&s, 1), expected, "play count {count}");
+    }
+    // A removed cue's length is withdrawn.
+    let remove = s.request_id();
+    s.send(ClientMessage::Command {
+        id: remove,
+        command: Box::new(Command::RemoveCue { id: id(1) }),
+    });
+    s.run(BLOCK);
+    assert_eq!(length(&s, 1), None);
+}
+
+#[test]
+fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
+    // M4.14 (QLab P5/G2): c2's file changes after its probe, so its stream fails before it
+    // produced any audio: c2 is skipped (StartFailed), the playlist does not halt and c3 plays.
+    let one = wav(&dc(300, 0.5));
+    let two = wav(&dc(300, 0.5));
+    let three = wav(&dc(300, 0.25));
+    let playlist = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &one, 0), audio(2, &two, 0), audio(3, &three, 1)],
+        },
+    );
+    let ws = workspace(vec![playlist]);
+    let mut config = config(&ws);
+    // No prime, so c2's stream is opened when it starts, after the file changed.
+    config.prime_cues = 0;
+    let mut s = show_with(ws, config);
+    std::fs::write(&two, std::fs::read(wav(&dc(200, 0.5))).unwrap()).unwrap();
+    let at = go(&mut s) as usize;
+    s.run(3000);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    assert!(!s.control().engine().is_halted(id(10)));
+    let first = first_nonzero(&s.channel(1)).expect("c3 played");
+    assert!(first > at + 299, "c3 starts after c1: {first}");
+    assert_eq!(
+        states(&s.take_outbound(), id(2)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+}
+
+#[test]
+fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
+    // The other side of M4.14 (QLab check Q2): c1 has played audio when its file is cut short
+    // under it, so its stream fails mid-play (`Changed`): the binary reports `ActionFailed`,
+    // the playlist halts and c2 never plays.
+    let long = wav(&dc(40_000, 0.5));
+    let next = wav(&dc(300, 0.25));
+    let playlist = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &long, 0), audio(2, &next, 1)],
+        },
+    );
+    let mut s = show(workspace(vec![playlist]));
+    let at = go(&mut s) as usize;
+    s.run(1000);
+    assert!(
+        first_nonzero(&s.channel(0)).is_some_and(|f| f >= at),
+        "c1 played"
+    );
+    // Only the header is left: the stream's next read comes up short.
+    std::fs::write(&long, &std::fs::read(&long).unwrap()[..44]).unwrap();
+    let mut waited = 0;
+    while s.control().engine().state(id(1)) != CueState::Broken {
+        assert!(waited < 30_000, "c1's stream never failed");
+        s.step();
+        waited += BLOCK;
+    }
+    assert_eq!(
+        states(&s.take_outbound(), id(1)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert!(s.control().engine().is_halted(id(10)));
+    s.run(4000);
+    assert!(s.channel(1).iter().all(|&v| v == 0.0), "c2 never plays");
 }

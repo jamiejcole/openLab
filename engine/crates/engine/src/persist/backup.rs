@@ -6,8 +6,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use openlab_core::{WorkspaceId, backup_file_name, select_backups_to_delete};
+use openlab_core::{WorkspaceId, backup_file_name, parse_backup_name, select_backups_to_delete};
 
+use super::atomic::split_tmp_name;
 use super::{AppDirs, PersistError, write_atomic};
 
 #[derive(Debug, Default)]
@@ -52,8 +53,12 @@ pub fn backup_existing(
     Ok(Some(path))
 }
 
-/// Deletes all but the `keep` newest backups of `workspace`. Files in the folder that are not
-/// backups are left alone. Never fails: what could not be removed is reported.
+/// Deletes all but the `keep` newest backups of `workspace`, and the temp files a crash left
+/// behind. "Newest" is the time in the file name, never the file's modification time, which a
+/// clock step backwards would turn upside down. A temp file goes when its backup name is not
+/// newer than the newest finished backup: one for a later time may be another instance's write
+/// in progress. Files in the folder that are neither are left alone. Never fails: what could not
+/// be removed is reported.
 pub(crate) fn rotate(
     dirs: &AppDirs,
     workspace: WorkspaceId,
@@ -69,7 +74,21 @@ pub(crate) fn rotate(
     let names: Vec<String> = entries
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
         .collect();
-    for name in select_backups_to_delete(&names, keep as usize) {
+    let newest = names.iter().filter_map(|n| parse_backup_name(n)).max();
+    let mut doomed = select_backups_to_delete(&names, keep as usize);
+    if let Some(newest) = newest {
+        doomed.extend(
+            names
+                .iter()
+                .filter(|name| {
+                    split_tmp_name(name)
+                        .and_then(|(base, _)| parse_backup_name(base))
+                        .is_some_and(|ms| ms <= newest)
+                })
+                .cloned(),
+        );
+    }
+    for name in doomed {
         match fs::remove_file(dir.join(&name)) {
             Ok(()) => outcome.deleted += 1,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}

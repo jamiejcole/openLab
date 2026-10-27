@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 
 pub mod media;
+pub mod wide;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc, violation_count};
 use openlab_audio::{
