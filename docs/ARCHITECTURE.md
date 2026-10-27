@@ -69,8 +69,9 @@ Keep the crate count at three. Add a module before adding a crate.
 | **Disk** (small pool, default 2) | decoders, resamplers | Yes | per-voice SPSC ring buffers to audio; request channel from control |
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
+| **Watch** (`openlab-watch`, M2.25) | the media files' stat state (metadata only, no decoding) | Yes (a hung network volume can block a stat) | job channel from control (watch, unwatch, reset); one batched `Inbox::Watch` per pass, only when something changed; a control-side watchdog abandons a stalled worker |
 
-Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. Reading a show (open, revert, recovery check and scan) runs on a document worker that answers through the inbox too, and saves and autosaves go to the writer thread; the control thread only clones the workspace and polls for the result. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+The watch thread (`openlab-watch`) polls every cataloged media file's metadata for missing, back, changed and moved files (details: [`docs/persistence.md`](persistence.md) "Media watch and follow", [`docs/control.md`](control.md) "Media watch"). Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. Reading a show (open, revert, recovery check and scan) runs on a document worker that answers through the inbox too, and saves and autosaves go to the writer thread; the control thread only clones the workspace and polls for the result. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
 
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
@@ -140,6 +141,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 - A workspace is a single JSON file, extension **`.openlab`**, pretty-printed, stable key order, `"format_version": N` at the top. Spec in `docs/file-format.md`.
 - Media paths: relative (forward slashes) when under the show file's folder, absolute otherwise. Portable across macOS/Windows (NFR-32).
+- **Media identity is path first** (M2.29): while the stored path exists, the cue stays on it. When the path is gone, on macOS local volumes the engine follows the file by (device, inode) to its new place, and rewrites the cue's `MediaRef` as a model edit outside undo. Network and FAT volumes, and Windows (file IDs are M2.29f), are path-only. Show-file v3 will add advisory `media_hints` (M2.29d) so files moved while the show was closed are found. The cue's display name follows its file when `name` is empty (`display_name`, M2.29c).
 - **Load**: parse → migrate (`vN → vN+1` chain, each step a pure function with fixture tests) → validate (unique ids, valid targets, sane ranges). Invalid content produces load warnings or a clean refusal with a reason — never a panic. Fuzzed (QA-04).
 - **Save** is atomic: write `name.openlab.tmp` in the same directory, `fsync`, rename over the original.
 - **Autosave/recovery**: every N seconds (default 30) when dirty, to `<app-support>/openLab/Recovery/<workspace-id>-<path-hash>.openlab` (bound to the show file's path, so a duplicated show is never offered the original's work; `<workspace-id>.openlab` before the first save). On launch, a recovery file newer than the show file triggers a restore prompt. A recovery file is never deleted on a timestamp comparison: older ones are moved aside and deleted only after a successful save.
@@ -207,10 +209,10 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 | macOS UI | XCTest (view logic vs. mock `EngineClient`), XCUITest (real headless engine) | editing flows, show mode, reconnect after engine/UI restart |
 | Sanitizers | ASan/TSan (nightly Rust job; Xcode scheme options for Swift) | memory/thread errors |
 
-**CI (GitHub Actions)**, every push and PR:
+**CI (GitHub Actions)**, on every PR (once, via `pull_request`), every push to `main`, nightly, and on demand. A `changes` job skips what a change cannot affect: Rust jobs, `cargo deny` and fuzz only when `engine/` changes, the app job when `mac/` or `engine/` changes, everything when CI or the Makefile changes; a docs-only PR runs nothing heavy. Branch protection requires the single `CI Result` job, which passes when every job that ran passed:
 - Rust: `fmt --check`, `clippy -D warnings`, `test` on macOS arm64, macOS Intel (x86_64, while GitHub offers an Intel runner) and Windows x64; `cargo deny check` (licences must be GPLv3-compatible, advisories).
 - macOS app: `xcodegen` + `xcodebuild test` (unit + UI tests).
-- Perf budget test and the 24 h virtual soak (release, about a minute) on the Intel runner; a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
+- CPU budget, perf budget and the 24 h virtual soak (release) on the Intel runner, on `main` pushes and the nightly run only (not on PRs, to keep PR feedback fast); a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
 - Pin the Xcode version in CI. Xcode 27.1's minimum macOS deployment target is exactly 12.0 — **a future Xcode that drops 12.0 must not be adopted** without a plan for Monterey.
 
 ## 12. Dependencies
@@ -234,6 +236,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | thiserror | error types | MIT/Apache-2.0 |
 | dirs | per-platform app-support paths | MIT/Apache-2.0 |
 | unicode-normalization | NFC normalisation of media paths (core; pure) | MIT/Apache-2.0 |
+| libc (macOS only, direct) | `statfs`, `getfsstat`, `getattrlist` for the media follow (M2.29b/d); `fsgetpath` is declared by hand. Already in the lock file | MIT/Apache-2.0 |
 | tempfile (dev) | temp dirs in persistence tests | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
