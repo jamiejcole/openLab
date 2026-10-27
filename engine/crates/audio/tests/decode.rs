@@ -442,6 +442,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// of millions of frames per channel (out of memory); rates below 8 kHz are now unplayable.
 /// `flac-damaged-no-checkpoints.flac`: damage in a file too short for a seek checkpoint asked
 /// for checkpoint 0 and underflowed (only with `cfg(fuzzing)`, where symphonia skips FLAC CRCs).
+/// `id3-wav-extensible-mask-shift.wav`: an ID3 tag hid a 64-channel extensible WAV from the header
+/// check, and symphonia 0.6.1 overflowed a shift fixing its channel mask; the embedded header is
+/// now found and rejected first.
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -615,4 +618,77 @@ fn pre_checked_mp4_stts_finding_is_rejected() {
         matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header: mp4")),
         "{r:?}"
     );
+}
+
+/// An ID3v2 tag header (no frames) of `size` padding bytes, as MP3 taggers write before audio.
+fn id3_tag(size: usize) -> Vec<u8> {
+    let mut v = b"ID3\x04\x00\x00".to_vec();
+    v.extend_from_slice(&[0, 0, (size >> 7) as u8 & 0x7f, size as u8 & 0x7f]);
+    v.resize(10 + size, 0);
+    v
+}
+
+/// `fuzz-findings/id3-wav-extensible-mask-shift.wav`: symphonia 0.6.1's `fix_wave_channel_mask`
+/// shifts by the number of channels missing from the mask (`1 << 62` for 64 channels) or by the
+/// mask's bit length (32 when bit 31 is set), a panic with overflow checks on. The probe skips a
+/// leading ID3 tag by scanning for the RIFF marker, so the check finds the header past it too.
+#[test]
+fn extensible_channel_masks_symphonia_would_shift_out_of_range_are_rejected_first() {
+    use common::wide::{self, Fmt, Header};
+    let mask_error = |b: Vec<u8>| {
+        let r = probe_media(reader(b));
+        let ok =
+            matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header: channel mask"));
+        if !ok {
+            eprintln!("{r:?}");
+        }
+        ok
+    };
+    let ext = |channels: u16, mask: u32| {
+        let samples = vec![0.0; usize::from(channels) * 4];
+        wide::wav(&samples, channels, RATE, Fmt::I16, Header::Extensible(mask))
+    };
+    let after_id3 = |w: Vec<u8>| [id3_tag(20), w].concat();
+
+    // The crash shape: an ID3 tag, then 64 channels with a short mask (a shift by 62).
+    assert!(mask_error(after_id3(ext(64, 0x3))));
+    // Also a 33-channel file (the smallest shift by 32), and a 2-channel file whose mask has
+    // bit 31 set (a shift by the mask's bit length).
+    assert!(mask_error(after_id3(ext(33, 0))));
+    assert!(mask_error(after_id3(ext(2, 0x8000_0000))));
+    // The same headers with no tag in front.
+    assert!(mask_error(ext(2, 0x8000_0000)));
+    assert!(mask_error(ext(8, 0x8000_00F0)));
+    // The finding itself, as committed.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fuzz-findings/id3-wav-extensible-mask-shift.wav");
+    assert!(mask_error(std::fs::read(path).unwrap()));
+
+    // Masks symphonia handles stay playable, with or without a tag.
+    for w in [ext(2, 0x3), ext(2, 0), ext(2, 0x7), ext(4, 0x8000_000F)] {
+        assert!(probe_media(reader(w.clone())).is_ok(), "{w:?}");
+        assert!(probe_media(reader(after_id3(w))).is_ok());
+    }
+    // A mask with too many ones is trimmed from the top without a shift.
+    assert!(probe_media(reader(ext(2, 0xFFFF_FFFF))).is_ok());
+    // Ambisonic sub-formats never look at the mask.
+    let mut amb = ext(4, 0x8000_0000);
+    amb[48..50].copy_from_slice(&0x0721u16.to_le_bytes());
+    assert!(!mask_error(amb));
+}
+
+/// A leading ID3 tag hid the header from the old check, which only looked at byte 0, so the
+/// `u16` channel overflow it guards against was reachable again.
+#[test]
+fn pcm_header_checks_find_a_wav_after_a_leading_id3_tag() {
+    let mut w = wav(&tone(10, RATE), 2, RATE, Pcm::I16);
+    w[22..24].copy_from_slice(&u16::MAX.to_le_bytes());
+    let r = probe_media(reader([id3_tag(40), w].concat()));
+    assert!(
+        matches!(r, Err(MediaError::Corrupt(ref m)) if m.starts_with("header:")),
+        "{r:?}"
+    );
+    // A tag in front of a good file changes nothing.
+    let good = [id3_tag(40), wav(&tone(10, RATE), 2, RATE, Pcm::I16)].concat();
+    assert!(probe_media(reader(good)).is_ok());
 }

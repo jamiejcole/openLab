@@ -9,6 +9,8 @@ use openlab_audio::RAMP_TOLERANCE;
 use openlab_core::protocol::WireWarning;
 use openlab_core::protocol::{TransportAction, WireCueState};
 use openlab_core::{ContinueMode, CueKind, FadeCurve, FadeLevels, FadeSpec, GroupMode};
+use openlab_engine::control::MAX_WAIT;
+use openlab_engine::control::MIN_STALL_WAIT;
 use show::*;
 
 #[test]
@@ -356,4 +358,82 @@ fn load_to_time_starts_part_way_in() {
     assert_eq!(first_nonzero(&ch0), Some(at));
     assert_eq!(ch0[at..at + 3000], ramp[1000..]);
     assert_eq!(last_nonzero(&ch0), Some(at + 2999));
+}
+
+/// The `wait_hint` the loop would sleep for before each of `ticks` ticks while the device renders
+/// nothing (a stall, before the watchdog declares a loss). Sleeping is virtual: only counted.
+fn hints_while_frozen(
+    s: &mut openlab_engine::control::offline::OfflineShow,
+    ticks: usize,
+) -> Vec<std::time::Duration> {
+    (0..ticks)
+        .map(|_| {
+            let hint = s.control().wait_hint();
+            s.tick();
+            hint
+        })
+        .collect()
+}
+
+/// M4.2j: a deadline one frame outside the window gives a one-frame `wait_hint`. With sample
+/// time frozen it never comes into the window, so the loop used to wake every frame (125 us at
+/// 8 kHz, 21 us at 48 kHz), ticking at full cost for as long as the stall lasts (up to 3 s).
+#[test]
+fn a_frozen_sample_clock_does_not_spin_the_loop() {
+    let path = wav(&dc(200, 0.5));
+    let mut c = audio(1, &path, 0);
+    c.pre_wait = secs(BLOCK);
+    let mut s = show(workspace(vec![c]));
+    s.run(BLOCK * 3);
+    go(&mut s);
+    let frame = std::time::Duration::from_secs(1) / RATE;
+    // Time advances: the hint is the exact distance (no added latency on the normal path).
+    assert_eq!(s.control().wait_hint(), frame);
+    let hints = hints_while_frozen(&mut s, 3000);
+    // The first wake after a tick that saw progress may be short; every later one waits at
+    // least the floor, so 3000 ticks of a stall cost at least 3000 ms of waiting.
+    let waited: std::time::Duration = hints.iter().sum();
+    assert!(
+        hints[1..].iter().all(|h| *h >= MIN_STALL_WAIT),
+        "a hint under the floor"
+    );
+    assert!(
+        waited >= std::time::Duration::from_millis(2999),
+        "{waited:?}"
+    );
+    // Rendering resumes: the tick sees progress again.
+    let before = s.rendered();
+    s.step();
+    assert!(s.rendered() > before);
+}
+
+/// A stall with nothing due waits the full bound.
+#[test]
+fn an_idle_stalled_loop_waits_the_full_bound() {
+    let mut s = show(workspace(vec![]));
+    s.run(BLOCK);
+    let hints = hints_while_frozen(&mut s, 5);
+    assert!(hints.iter().all(|h| *h == MAX_WAIT));
+}
+
+/// The floor is a quarter block at most: a small device block (here 16 frames = 2 ms) gets a
+/// floor under 1 ms, and a deadline entering the window is still started on its sample.
+#[test]
+fn a_small_block_keeps_its_floor_below_the_window() {
+    use openlab_engine::control::stall_floor;
+    assert_eq!(stall_floor(64, 8000), std::time::Duration::from_millis(1));
+    assert_eq!(
+        stall_floor(64, 48000),
+        std::time::Duration::from_secs_f64(64.0 / 48000.0 / 4.0)
+    );
+    let path = wav(&dc(200, 0.5));
+    let mut c = audio(1, &path, 0);
+    c.pre_wait = secs(1000);
+    let ws = workspace(vec![c]);
+    let mut cfg = config(&ws);
+    cfg.block_frames = 16;
+    let mut s = show_with(ws, cfg);
+    let at = go(&mut s) as usize;
+    s.run(2000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at + 1000));
 }

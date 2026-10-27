@@ -294,6 +294,7 @@ fn rename(n: u128) -> ClientMessage {
             id: id(1),
             property: CueProperty::Name { value: "x".into() },
         }),
+        coalesce: None,
     }
 }
 

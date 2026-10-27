@@ -159,6 +159,7 @@ async fn a_second_client_gets_the_new_snapshot_and_keeps_receiving_changes() {
                             value: format!("name {n}"),
                         },
                     }),
+                    coalesce: None,
                 },
             )
             .await;
@@ -215,6 +216,7 @@ async fn a_second_client_gets_the_new_snapshot_and_keeps_receiving_changes() {
                     cue: cue(77, CueKind::Memo),
                     auto_number: false,
                 }),
+                coalesce: None,
             },
         )
         .await;
@@ -302,6 +304,7 @@ fn rename_command(id: u64, name: &str) -> ClientMessage {
             id: self::id(1),
             property: CueProperty::Name { value: name.into() },
         }),
+        coalesce: None,
     }
 }
 
