@@ -909,3 +909,113 @@ fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return
     assert_eq!(s.control().live_voices(), 0);
     assert_eq!(s.control_mut().mixer_voice_count(), 0);
 }
+
+// ---- Nothing scheduled before a loss fires after it (M4.2g, orchestrator decision) ----
+
+/// Lets `s` (640 frames after a start) lose its device for 20 s, bring it back, and run on past
+/// every deadline set before the loss. Nothing may sound or run by itself.
+fn nothing_starts_after_the_return(mut s: DeviceShow, cues: &[u128]) {
+    let cut = s.rendered() as usize;
+    lose(&mut s);
+    s.wait_wall(Duration::from_secs(20), 8);
+    replug(&mut s);
+    s.run(6000);
+    for ch in 0..2 {
+        assert!(
+            s.channel(ch)[cut..].iter().all(|&v| v == 0.0),
+            "channel {ch}"
+        );
+    }
+    for &n in cues {
+        let state = s.control().engine().state(id(n));
+        assert!(
+            matches!(state, CueState::Idle),
+            "cue {n} is {state:?} after the return"
+        );
+    }
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control_mut().mixer_voice_count(), 0);
+}
+
+#[test]
+fn a_start_cues_pre_wait_does_not_fire_after_the_return() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut start_cue = cue(
+        5,
+        CueKind::Start {
+            target: Some(id(2)),
+        },
+    );
+    start_cue.pre_wait = secs(2000);
+    let mut s = device_show(workspace(vec![audio(2, &b, 1), start_cue]));
+    s.run(BLOCK * 2);
+    start(&mut s, 5);
+    s.run(640);
+    nothing_starts_after_the_return(s, &[2, 5]);
+}
+
+#[test]
+fn a_memos_auto_continue_does_not_fire_after_the_return() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut memo = cue(5, CueKind::Memo);
+    memo.continue_mode = ContinueMode::AutoContinue;
+    memo.post_wait = secs(2000);
+    let mut s = device_show(workspace(vec![memo, audio(2, &b, 1)]));
+    s.run(BLOCK * 2);
+    start(&mut s, 5);
+    s.run(640);
+    nothing_starts_after_the_return(s, &[2, 5]);
+}
+
+#[test]
+fn a_groups_own_auto_continue_does_not_fire_after_its_children_were_lost() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &a, 0)],
+        },
+    );
+    group.continue_mode = ContinueMode::AutoContinue;
+    group.post_wait = secs(2000);
+    let mut s = device_show(workspace(vec![group, audio(2, &b, 1)]));
+    s.run(BLOCK * 2);
+    start(&mut s, 10);
+    s.run(640);
+    nothing_starts_after_the_return(s, &[1, 2, 10]);
+}
+
+#[test]
+fn a_groups_pre_wait_does_not_fire_after_the_return() {
+    let a = wav(&dc(20_000, 0.25));
+    let mut group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &a, 0)],
+        },
+    );
+    group.pre_wait = secs(2000);
+    let mut s = device_show(workspace(vec![group]));
+    s.run(BLOCK * 2);
+    start(&mut s, 10);
+    s.run(640);
+    nothing_starts_after_the_return(s, &[1, 10]);
+}
+
+#[test]
+fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
+    let b = wav(&dc(20_000, 0.5));
+    // A missing file: the cue is broken as it starts, its timing kept (an auto-continue).
+    let mut c1 = audio(1, &fresh_path("wav"), 0);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    c1.post_wait = secs(2000);
+    let mut s = device_show(workspace(vec![c1, audio(2, &b, 1)]));
+    s.run(BLOCK * 2);
+    start(&mut s, 1);
+    s.run(640);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    nothing_starts_after_the_return(s, &[2]);
+}

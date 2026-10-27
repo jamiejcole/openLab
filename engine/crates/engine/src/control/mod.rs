@@ -748,8 +748,7 @@ impl Control {
         let mut runs = self.voices.on_device();
         // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
         // the device too: nothing scheduled before the outage may start by itself after it.
-        // Control, Fade and group cues are not routed to it and keep their schedule (a group
-        // follows its children through their `ActionFailed`).
+        // They end as device_lost breaks; `Input::DeviceLost` below stops all the others.
         for (cue, state) in self.engine.cue_states() {
             if matches!(
                 state,
@@ -781,6 +780,9 @@ impl Control {
                 now,
             );
         }
+        // Nothing else scheduled before the loss may fire after the return: every other active
+        // run (memo, Wait, control, Fade, group; broken runs with a pending continue) stops.
+        self.feed(Input::DeviceLost, now);
         // Orphaned tails and anything the engine no longer owns. Dated on the first sample the
         // mixer renders after the outage (`stop_floor`), so a voice plays nothing more.
         let floor = self.stop_floor();
