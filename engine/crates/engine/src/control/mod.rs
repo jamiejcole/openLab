@@ -17,6 +17,7 @@ mod observe;
 pub mod offline;
 mod patches;
 pub mod plan;
+mod preshow;
 pub mod runner;
 mod voices;
 
@@ -621,6 +622,19 @@ impl Control {
                         }),
                     },
                 ),
+                Request::PreshowCheck => {
+                    let report = self.preshow_report();
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::PreshowCheck(Box::new(report))),
+                            }),
+                        },
+                    );
+                }
                 Request::LogTail { max } => {
                     let (entries, dropped) = self.log_tail(max);
                     reply(
@@ -1880,6 +1894,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Revert { .. } => "revert",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
+        Request::PreshowCheck => "preshow_check",
         Request::LogTail { .. } => "log_tail",
         Request::Snapshot => "snapshot",
     }
