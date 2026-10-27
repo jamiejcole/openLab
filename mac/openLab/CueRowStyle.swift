@@ -87,17 +87,12 @@ enum CueKindStyle {
 
 /// Cell text for the time columns.
 enum CueTimeFormat {
-    /// Zero is blank: a list of 2,000 mostly-zero waits is noise.
-    static func wait(_ seconds: Double) -> String {
-        seconds > 0 ? clock(seconds) : ""
-    }
-
-    /// `m:ss.cc`, `h:mm:ss.cc` from an hour.
+    /// `mm:ss.cc` as QLab's cue list shows it; `h:mm:ss.cc` from an hour.
     static func clock(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "" }
         let cs = Int(min(seconds, 1e9) * 100 + 0.5)
         let (h, m, s, c) = (cs / 360_000, cs / 6000 % 60, cs / 100 % 60, cs % 100)
-        return h > 0 ? String(format: "%d:%02d:%02d.%02d", h, m, s, c) : String(format: "%d:%02d.%02d", m, s, c)
+        return h > 0 ? String(format: "%d:%02d:%02d.%02d", h, m, s, c) : String(format: "%02d:%02d.%02d", m, s, c)
     }
 
     /// A running cue: `elapsed / total` when the end is known, else `elapsed`.

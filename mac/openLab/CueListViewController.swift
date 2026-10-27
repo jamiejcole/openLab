@@ -127,6 +127,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// The playhead's cue and every group around it: those groups show that it is inside.
     private var playheadAncestors: Set<ModelID> = []
     private var sub: AnyCancellable?
+    /// While `applyModel` runs: every cue it touched (their targeters refresh), the groups it created
+    /// (shown expanded, like QLab) and the existing groups that were collapsed (they stay so).
+    private var batching = false
+    private var batchTouched = Set<ModelID>()
+    private var batchNewGroups = Set<ModelID>()
+    private var batchCollapsed = Set<ModelID>()
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
     init(store: WorkspaceStore, outlineView: NSOutlineView = NSOutlineView()) {
@@ -164,6 +170,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         scroll.hasHorizontalScroller = true
         view = scroll
         outlineView.reloadData()
+        // The tree was built before the table had a data source, so nothing is open yet.
+        func open(_ nodes: [CueNode]) {
+            for node in nodes where node.isGroup {
+                outlineView.expandItem(node)
+                open(node.children)
+            }
+        }
+        open(roots)
     }
 
     // MARK: Reading the tree (tests and later features)
@@ -197,6 +211,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Replaces the tree from the store and reloads the table, keeping selection and expansion.
     func rebuild() {
         let selected = selectedIDs()
+        let known = Set(nodes.keys)
         let expanded = Set(nodes.values.filter { $0.isGroup && outlineView.isItemExpanded($0) }.map(\.id))
         nodes = [:]
         targeters = [:]
@@ -206,7 +221,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         updatePlayheadAncestors()
         outlineView.reloadData()
         func expand(_ node: CueNode) {
-            if expanded.contains(node.id) { outlineView.expandItem(node) }
+            // Groups the list has not shown before open expanded.
+            if node.isGroup && (expanded.contains(node.id) || !known.contains(node.id)) {
+                outlineView.expandItem(node)
+            }
             node.children.forEach(expand)
         }
         roots.forEach(expand)
@@ -217,6 +235,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let node = CueNode(cue: cue, parent: parent)
         node.children = cue.children.map { makeNode($0, parent: node) }
         nodes[cue.id] = node
+        if batching {
+            batchTouched.insert(cue.id)
+            if node.isGroup { batchNewGroups.insert(cue.id) }
+        }
         track(node)
         return node
     }
@@ -239,14 +261,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard store.model?.cueLists.first?.id == listID else { return rebuild() }
         guard let listID else { return }
         let selected = selectedIDs()
+        let oldAncestors = playheadAncestors
         var expanded = Set<ModelID>()
-        var touched = Set<ModelID>()
+        batching = true
+        batchTouched = []
+        batchNewGroups = []
+        batchCollapsed = []
+        defer { batching = false }
         for case .cue(let id) in deletes {
-            touched.insert(id)
+            batchTouched.insert(id)
             remove(id, expanded: &expanded)
         }
         for case .cue(let list, let parent, let index, let cue) in upserts {
-            touched.insert(cue.id)
+            batchTouched.insert(cue.id)
             if list != listID {
                 remove(cue.id, expanded: &expanded)  // moved to another list
             } else if !upsert(cue, parent: parent, index: index, expanded: &expanded) {
@@ -254,16 +281,22 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         }
         updatePlayheadAncestors()
-        for id in expanded { if let n = nodes[id] { outlineView.expandItem(n) } }
+        for id in expanded.union(batchNewGroups.subtracting(batchCollapsed)) {
+            if let n = nodes[id] { outlineView.expandItem(n) }
+        }
         if selectedIDs() != selected { select(selected) }
-        // Cues that point at a changed cue show its name and number.
-        let pointing = touched.flatMap { targeters[$0] ?? [] }
+        // Cues that point at a changed cue (or anything in a changed group) show its name and number.
+        let pointing = batchTouched.flatMap { targeters[$0] ?? [] }
         if !pointing.isEmpty { refresh(Set(pointing), columns: ["target"]) }
+        // Groups that gained or lost the playhead show or clear their "inside" marker.
+        let flipped = oldAncestors.symmetricDifference(playheadAncestors)
+        if !flipped.isEmpty { refresh(flipped, columns: ["status"]) }
     }
 
     private func remove(_ id: ModelID, expanded: inout Set<ModelID>) {
         guard let node = nodes[id], let index = siblings(of: node).firstIndex(where: { $0 === node }) else { return }
         collectExpanded(node, into: &expanded)
+        collectSubtree(node)
         let parent = node.parent
         if let parent { parent.children.remove(at: index) } else { roots.remove(at: index) }
         forget(node)
@@ -274,8 +307,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private func collectExpanded(_ node: CueNode, into set: inout Set<ModelID>) {
         guard node.isGroup else { return }
-        if outlineView.isItemExpanded(node) { set.insert(node.id) }
+        if outlineView.isItemExpanded(node) { set.insert(node.id) } else { batchCollapsed.insert(node.id) }
         for child in node.children { collectExpanded(child, into: &set) }
+    }
+
+    private func collectSubtree(_ node: CueNode) {
+        batchTouched.insert(node.id)
+        node.children.forEach(collectSubtree)
     }
 
     /// Puts the cue where the engine says, like the store does: it leaves its old place and goes to
@@ -325,6 +363,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         track(node)
         if node.isGroup {
             collectExpanded(node, into: &expanded)
+            collectSubtree(node)
             node.children = reconcile(node, with: cue.children)
             outlineView.reloadItem(node, reloadChildren: true)
         } else {
@@ -490,8 +529,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.setImage(2, symbol: "flag.fill", label: loc("cue.flagged"), tint: .systemOrange)
             }
         case "target": text(targetText(cue))
-        case "preWait": text(CueTimeFormat.wait(cue.raw["pre_wait"]?.doubleValue ?? 0))
-        case "postWait": text(CueTimeFormat.wait(cue.raw["post_wait"]?.doubleValue ?? 0))
+        case "preWait", "postWait":
+            let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
+            text(CueTimeFormat.clock(seconds))
+            if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
         case "duration": text(durationText(node))
         case "continue":
             if let mode = cue.raw["continue_mode"]?.stringValue.flatMap({ CueKindStyle.continueModes[$0] }) {
@@ -516,7 +557,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func durationText(_ node: CueNode) -> String {
         if let p = store.progress[node.id] { return CueTimeFormat.progress(elapsed: p.elapsed, remaining: p.remaining) }
         switch node.cue.kindType {
-        case "fade", "wait": return CueTimeFormat.wait(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+        case "fade", "wait": return CueTimeFormat.clock(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         default: return ""
         }
     }

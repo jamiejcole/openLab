@@ -18,7 +18,7 @@ final class CueListPerformanceTests: XCTestCase {
     }
 
     private func bigHarness(_ n: Int) async throws -> CueListHarness {
-        try await H(snapshot: FakeEngine.bigSnapshot(cues: n))
+        try await H(snapshot: FakeEngine.bigSnapshot(cues: n), collapsed: false)
     }
 
     /// `count` renames spread across the list, as decoded messages (revision filled in on send).
@@ -39,7 +39,7 @@ final class CueListPerformanceTests: XCTestCase {
     func testWorkspaceOf2000CuesBuilds() async throws {
         let h = try await bigHarness(2000)
         XCTAssertEqual(h.vc.nodeCount, 2000)
-        XCTAssertEqual(h.spy.numberOfRows, h.vc.roots.count)  // groups start collapsed
+        XCTAssertEqual(h.spy.numberOfRows, 2000)  // groups open expanded
     }
 
     func testSnapshotDecodeAndApplyOf2000CuesAreFast() async throws {
@@ -68,22 +68,20 @@ final class CueListPerformanceTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
-    /// Per-upsert cost must not grow with the cue count. Linear growth would be 10x for 10x the cues;
-    /// the bound allows the fixed cost of decoding a message and the table's own bookkeeping.
-    func testPerUpsertCostDoesNotScaleWithCueCount() async throws {
-        func perUpsert(_ n: Int) async throws -> Double {
-            var best = Double.infinity
-            for _ in 0..<5 {
-                let h = try await bigHarness(n)
-                let upserts = try renames(h, count: 100)
-                best = min(best, try seconds { try send(h, upserts) } / 100)
-            }
-            return best
+    /// An edit in place looks at the same number of cues however long the list is. Counted, not
+    /// timed, so it holds on any machine.
+    func testEditInPlaceVisitsTheSameNumberOfCuesAtAnyListLength() async throws {
+        func visits(_ n: Int) async throws -> Int {
+            let h = try await bigHarness(n)
+            let upserts = try renames(h, count: 50)
+            WorkspaceStore.cueVisits = 0
+            try send(h, upserts)
+            return WorkspaceStore.cueVisits
         }
-        let small = try await perUpsert(200)
-        let large = try await perUpsert(2000)
-        print("perf: per upsert 200 cues \(small * 1e6) us, 2000 cues \(large * 1e6) us, ratio \(large / small)")
-        XCTAssertLessThan(large / small, 1.75)
+        let small = try await visits(200)
+        let large = try await visits(2000)
+        XCTAssertEqual(large, small)
+        XCTAssertLessThanOrEqual(large, 50 * 2)
     }
 
     func testRuntimeAndProgressTicksAt2000CuesTouchOnlyTheirRows() async throws {
