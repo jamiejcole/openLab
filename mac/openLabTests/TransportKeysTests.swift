@@ -49,14 +49,13 @@ final class TransportKeysTests: XCTestCase {
 
     func testDuplicateReservedAndCueHotkeyAreRefusedWithWarnings() throws {
         let keys = TransportKeys(
-            settings: try settings(#"{"go":\#(hk("a")),"stop_all":\#(hk("a")),"pause_all":\#(hk("p"))}"#),
-            isCueHotkey: { $0 == KeyChord("]") })
+            settings: try settings(#"{"go":\#(hk("a")),"stop_all":\#(hk("a")),"pause_all":\#(hk("p"))}"#))
         XCTAssertEqual(keys.chord(for: .go), KeyChord("a"))
         XCTAssertNil(keys.chord(for: .stopAll))
         XCTAssertEqual(keys.chord(for: .pauseAll), KeyChord("p"))
         XCTAssertNil(keys.chord(for: .pauseResumeSelected), "the fixed P key yields to the show's key")
-        XCTAssertNil(keys.chord(for: .resumeAll), "a cue hotkey owns ]")
-        XCTAssertEqual(keys.warnings.count, 3, "\(keys.warnings)")
+        XCTAssertEqual(keys.chord(for: .resumeAll), KeyChord("]"), "cue hotkeys do not take transport keys")
+        XCTAssertEqual(keys.warnings.count, 2, "\(keys.warnings)")
     }
 
     func testUnsupportedAndMalformedHotkeysWarnNotCrash() throws {

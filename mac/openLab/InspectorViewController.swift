@@ -423,6 +423,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if let sentTriggers { pendingTriggers[cue] = sentTriggers }
         inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
+            // Cleared on success and on refusal alike. On success the model already holds the change:
+            // a `result` with `ok.revision` is held until its `model_changed` is written
+            // (docs/network.md), so the next edit reads the new triggers. On refusal nothing
+            // changed, so a refused field must not be sent again with the next edit.
             defer {
                 inFlight[taskID] = nil
                 if let sentTriggers, pendingTriggers[cue] == sentTriggers { pendingTriggers[cue] = nil }

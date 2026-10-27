@@ -89,7 +89,9 @@ enum KeyBindError: Error, Equatable {
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
 /// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
-/// show the first field in the order above wins and the later one is dropped with a warning;
+/// show the first transport field wins and the later one is dropped with a warning, and a cue
+/// hotkey on a transport chord is the one that yields (`AppController.keys(for:)`: transport keys
+/// must keep working in a live show);
 /// (3) while a text field is edited, chords that type characters (no Cmd/Ctrl) do not fire.
 struct TransportKeys: Equatable {
     private(set) var chords: [TransportCommand: KeyChord] = [:]
@@ -107,7 +109,7 @@ struct TransportKeys: Equatable {
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    init(settings: JSONValue?, isCueHotkey: (KeyChord) -> Bool = { _ in false }) {
+    init(settings: JSONValue?) {
         let hotkeys = settings?["hotkeys"]
         for (field, command, fallback) in Self.fields {
             var chord = fallback
@@ -122,14 +124,14 @@ struct TransportKeys: Equatable {
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
             if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
-            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+            if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append("hotkeys.\(field): \(Self.describe(error)), no key bound")
                 continue
             }
             chords[command] = chord
         }
         for (command, chord) in Self.fixed {
-            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+            if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append("\(command.rawValue) key: \(Self.describe(error)), no key bound")
             } else {
                 chords[command] = chord

@@ -198,6 +198,18 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertEqual(properties.last?["value"]?["osc"], .null)
     }
 
+    func testRefusedTriggersAreNotSentAgainWithTheNextEdit() async {
+        rig.engine.refuseCommands = true
+        vc.oscField.stringValue = "/refused"
+        vc.commit(.osc)
+        await assertEventually { properties.count == 1 && vc.oscField.stringValue == "" }
+        rig.engine.refuseCommands = false
+        XCTAssertTrue(vc.record(KeyChord("a")))
+        await assertEventually { properties.count == 2 }
+        XCTAssertEqual(properties.last?["value"]?["osc"], .null, "the refused address is gone")
+        XCTAssertEqual(properties.last?["value"]?["hotkey"]?["key"]?.stringValue, "a")
+    }
+
     func testBadOSCAddressRevertsWithoutSending() async {
         vc.oscField.stringValue = "no slash"
         XCTAssertFalse(vc.commit(.osc))
@@ -369,17 +381,65 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
     }
 
-    func testShowWithACueHotkeyOnATransportKeyWarnsAndFollowsTheRule() async throws {
+    func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {
         keyDoc = "doc-1"
         let first = try XCTUnwrap(app.session.stores["doc-1"])
         _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(" ").hotkeyJSON, osc: nil)))
         await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord(" ") } == true }
-        // The rule (TransportKeys): the cue hotkey wins, GO loses its key, one warning is logged.
-        XCTAssertNil(app.frontKeys.chord(for: .go))
-        await assertEventually { first.logEntries.contains { $0.level == .warn && $0.message.contains("cue hotkey") } }
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "), "GO keeps its key")
+        await assertEventually {
+            first.logEntries.contains { $0.level == .warn && $0.message.contains("transport key") }
+        }
+        XCTAssertEqual(first.logEntries.filter { $0.level == .warn }.count, 1)
+        _ = app.frontKeys
+        XCTAssertEqual(first.logEntries.filter { $0.level == .warn }.count, 1, "once")
         XCTAssertNil(app.handleKeyDown(try event(" ", code: 49)))
+        await assertEventually { !sent(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty }
+        XCTAssertTrue(sent(.start(cue: intro)).isEmpty, "the cue does not fire")
+        // With no front controller the transport chord still must not start the cue.
+        keyDoc = nil
+        let e = try event(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(e) === e)
+        await settle()
+        XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
+    }
+
+    func testResignActiveForgetsHeldKeysSoAReleaseIsSentOnce() async throws {
+        _ = app.handleKeyDown(try event("x"))
+        await assertEventually { !sent(.start(cue: second)).isEmpty }
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil)
+        _ = app.handleKeyDown(try event("x"))
+        await assertEventually { sent(.start(cue: second)).count == 2 }
+        app.handleKeyUp(try event("x", type: .keyUp))
+        await assertEventually { !sent(.triggerReleased(cue: second)).isEmpty }
+        await settle()
+        XCTAssertEqual(sent(.triggerReleased(cue: second)).count, 1)
+    }
+
+    func testClosingAWorkspaceDropsItsHeldKeys() async throws {
+        _ = app.handleKeyDown(try event("x"))
+        await assertEventually { !sent(.start(cue: second)).isEmpty }
+        _ = await app.session.close(doc: secondDoc, discardChanges: true)
+        await assertEventually { app.windows[secondDoc] == nil }
+        app.handleKeyUp(try event("x", type: .keyUp))
+        await settle()
+        XCTAssertTrue(sent(.triggerReleased(cue: second)).isEmpty)
+    }
+
+    func testCueHotkeysStayOutOfModalsAndNonWorkspaceWindows() async throws {
+        app.isModalUp = { true }
+        let e = try event("x")
+        XCTAssertTrue(app.handleKeyDown(e) === e, "alert or panel running")
+        app.isModalUp = { false }
+        let other = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        app.keyWindow = { other }  // the launcher, a file panel
+        XCTAssertTrue(app.handleKeyDown(e) === e)
+        await settle()
+        XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
+        app.keyWindow = { nil }  // app active, no key window: still fires
+        XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { !sent(.start(cue: intro)).isEmpty }
-        XCTAssertTrue(sent(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
     }
 
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
