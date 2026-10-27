@@ -16,8 +16,6 @@ protocol WorkspaceAlerts {
     func confirmQuitDisconnected() -> Bool
     func unsavedChanges(workspace: String) -> SaveChoice
     func showError(_ message: String)
-    /// A result the operator asked for (such as a relink) that is not an error.
-    func showInfo(_ message: String)
 }
 
 /// The real thing. Cancel is the default (Return) button on the destructive prompts: a stray
@@ -51,14 +49,6 @@ struct AppKitAlerts: WorkspaceAlerts {
     func showError(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = message
-        alert.addButton(withTitle: loc("alert.ok"))
-        alert.runModal()
-    }
-
-    func showInfo(_ message: String) {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
         alert.messageText = message
         alert.addButton(withTitle: loc("alert.ok"))
         alert.runModal()

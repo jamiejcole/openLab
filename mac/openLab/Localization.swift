@@ -54,6 +54,7 @@ enum AX {
     static let modeSwitch = "mode-switch"
     static let statusLabel = "status-label"
     static let statusDetails = "status-details"
+    static let footerNotice = "footer-notice"
     static let sidebarWarnings = "sidebar-warnings"
     static let warningsCount = "warnings-count"
     static let warningRelink = "warning-relink"

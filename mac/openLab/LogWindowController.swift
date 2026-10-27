@@ -49,6 +49,7 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private var tail: [Row] = []
     private var dropped: UInt64 = 0
     private var tailFailed = false
+    private var tailMark = 0
     private var sub: AnyCancellable?
     private var storeEntries: [LogEntry]
     private let timeFormatter: DateFormatter = {
@@ -91,15 +92,20 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     /// Fetches the engine's records again. A failure leaves the store's own entries on screen
     /// with a note: a log window that goes blank is no use in a fault.
     func refresh() async {
+        // Entries that arrive while the request is out may or may not be in the answer: only
+        // those from before it can be.
+        let mark = store.logCount
         switch await store.logTail(max: UInt32(Self.maxRows)) {
-        case .success(let result): apply(tail: result.entries, dropped: result.dropped)
+        case .success(let result): apply(tail: result.entries, dropped: result.dropped, mark: mark)
         case .failure:
             tailFailed = true
             rebuild()
         }
     }
 
-    func apply(tail entries: [ShowLogEntry], dropped: UInt64) {
+    /// `mark`: the store's `logCount` when the tail was asked for.
+    func apply(tail entries: [ShowLogEntry], dropped: UInt64, mark: Int? = nil) {
+        tailMark = mark ?? store.logCount
         tail = entries.map { e in
             Row(
                 time: timeFormatter.string(from: Date(timeIntervalSince1970: Double(e.timeMs) / 1000)),
@@ -110,11 +116,21 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         rebuild()
     }
 
-    /// Engine records, then the store's entries the tail does not already hold (the engine
-    /// both pushes `log` and keeps the record, so an entry in both is shown once).
+    /// Engine records, then the store's entries. The engine both pushes `log` and keeps the
+    /// record, so an entry from before the fetch that the tail holds is shown once: each tail
+    /// record cancels one such entry, so two identical entries still show twice. Entries from
+    /// after the fetch are always shown.
     private func rebuild() {
-        let known = Set(tail.map { "\($0.level.rawValue)\u{0}\($0.message)" })
-        let extra = storeEntries.filter { !known.contains("\($0.level.rawValue)\u{0}\($0.message)") }
+        var held: [String: Int] = [:]
+        for r in tail { held["\(r.level.rawValue)\u{0}\(r.message)", default: 0] += 1 }
+        let first = store.logCount - storeEntries.count
+        let extra = storeEntries.enumerated().filter { i, e in
+            guard first + i < tailMark else { return true }
+            let key = "\(e.level.rawValue)\u{0}\(e.message)"
+            guard let n = held[key], n > 0 else { return true }
+            held[key] = n - 1
+            return false
+        }.map(\.element)
         rows = Array(
             (tail + extra.map { Row(time: "", level: $0.level, kind: "", message: $0.message) }).suffix(Self.maxRows))
         let wasAtBottom = isAtBottom

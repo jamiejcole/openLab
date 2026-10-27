@@ -309,3 +309,9 @@
 "relink.ambiguous" = "%d had more than one match and were left alone.";
 "relink.unmatched" = "%d could not be found.";
 "relink.failed" = "Relinking media failed: %@";
+
+"status.offline" = "Engine offline";
+"status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
+"status.dropouts" = "Dropouts %d";
+"relink.log.ambiguous" = "More than one match for %@; left alone. Candidates: %@";
+"relink.log.unmatched" = "No match found for %@.";

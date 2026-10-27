@@ -66,8 +66,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self?.syncSidebarList()
         }
         sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
-        statusSub = store.$status.sink { [weak self] status in
-            MainActor.assumeIsolated { self?.footer.show(status: status) }
+        // Both publish before they change: use the delivered values.
+        statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
+            MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }

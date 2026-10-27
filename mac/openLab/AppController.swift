@@ -283,9 +283,20 @@ final class AppController {
                 return
             }
             let message = Self.relinkSummary(relinked: relinked, ambiguous: ambiguous.count, unmatched: unmatched.count)
+            // Not modal: a relink is done while the show goes on. The summary is in the footer and
+            // the log, with one log record for every cue that still needs attention.
             let clean = ambiguous.isEmpty && unmatched.isEmpty
             _ = store.receive(.log(clean ? .info : .warn, message))
-            if clean { alerts.showInfo(message) } else { alerts.showError(message) }
+            func name(_ id: ModelID) -> String { store.model?.cue(id).map(WarningRows.cueTitle) ?? id.raw }
+            for a in ambiguous {
+                let text = String(
+                    format: loc("relink.log.ambiguous"), name(a.cue), a.candidates.joined(separator: ", "))
+                _ = store.receive(.log(.warn, text))
+            }
+            for id in unmatched {
+                _ = store.receive(.log(.warn, String(format: loc("relink.log.unmatched"), name(id))))
+            }
+            windows.values.first { $0.store === store }?.footer.showNotice(message)
         case .failure(let e):
             let message = String(format: loc("relink.failed"), describe(e))
             _ = store.receive(.log(.error, message))

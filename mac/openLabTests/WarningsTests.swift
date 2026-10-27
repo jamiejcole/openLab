@@ -242,6 +242,21 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(sent.isEmpty, "selecting a warning must not change what GO fires")
     }
 
+    func testRowChangesFromTheStoreNeverRevealACue() async throws {
+        try await make()
+        var reveals: [ModelID] = []
+        wc.sidebar.onSelectCue = { reveals.append($0) }
+        try chooseRow(of: radio)
+        XCTAssertEqual(reveals, [radio], "once per click")
+        wc.cueList.select([CueListHarness.door])
+        // A row inserted above the selected one moves the table's selection; an edit redraws a row.
+        try missingMedia(rain)
+        try missingMedia(rain, "media/other.wav")
+        try receive(#"{"type":"warnings","warnings":[]}"#)
+        XCTAssertEqual(reveals, [radio])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.door])
+    }
+
     func testRowWithoutACueCannotBeSelected() async throws {
         try await make()
         try receive(#"{"type":"warnings","warnings":[{"type":"unknown_list","list":"\#(Self.second)"}]}"#)

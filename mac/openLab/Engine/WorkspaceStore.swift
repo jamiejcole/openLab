@@ -48,6 +48,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// The latest `status` (system health, DX-03); nil until the first one arrives.
     @Published private(set) var status: SystemStatus?
     @Published private(set) var logEntries: [LogEntry] = []
+    /// How many `log` messages and notes have been added in all (the entries are bounded, this is
+    /// not): entry `i` of `logEntries` is number `logCount - logEntries.count + i`.
+    private(set) var logCount = 0
     @Published private(set) var connectionState: ConnectionState = .idle
 
     let changes = PassthroughSubject<StoreChange, Never>()
@@ -152,6 +155,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             warnings = w
             changes.send(.notices)
         case .log(let level, let text):
+            logCount += 1
             logEntries.append(LogEntry(level: level, message: text))
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
@@ -176,6 +180,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         warnings = s.warnings
         progress = [:]
         runtimeWarnings = []
+        // A new connection's health is unknown until its first `status`.
+        status = nil
         changes.send(.reset)
     }
 
