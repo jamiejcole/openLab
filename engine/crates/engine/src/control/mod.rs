@@ -230,8 +230,8 @@ pub struct Control {
     playable: Vec<DeviceInfo>,
     /// Saves the machine settings when the engine changes them (default patch mappings).
     settings_writer: Option<crate::persist::SettingsWriter>,
-    /// The workspace and device the default mapping was last tried for.
-    mapping_tried: Option<(openlab_core::WorkspaceId, String)>,
+    /// Patches and devices the default mapping already warned about.
+    mapping_warned: std::collections::HashSet<(openlab_core::PatchId, String)>,
     out: Outbound,
     docs: Docs,
     backend: Backend,
@@ -339,7 +339,7 @@ impl Control {
             patches,
             playable,
             settings_writer,
-            mapping_tried: None,
+            mapping_warned: std::collections::HashSet::new(),
             out: Outbound::new(outbound),
             docs,
             backend,
