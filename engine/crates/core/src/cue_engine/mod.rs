@@ -24,7 +24,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
 pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
@@ -64,6 +64,11 @@ pub struct CueEngine {
     rng: SplitMix64,
     /// Each random group's round-robin cycle (QLab 5: memory lasts while the engine does).
     random_cycles: BTreeMap<CueId, group::RandomCycle>,
+    /// Groups whose last run has fired its continue (until they start again or are reset): the
+    /// playhead leaving such a group from a child skips its continue targets, which have
+    /// played; leaving a group that has no run and fired none, it stands on the cue right after
+    /// it, so those targets are not lost (see `playhead::after_go`).
+    continued: BTreeSet<CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
     /// Static problems (CUE-06) and what they are computed from.
@@ -127,6 +132,7 @@ impl CueEngine {
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
             random_cycles: BTreeMap::new(),
+            continued: BTreeSet::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
             panic: None,
@@ -413,7 +419,12 @@ impl CueEngine {
             }
             Input::ActionEnded { cue, run, at } => self.action_ended(cue, run, at, cx),
             Input::ActionLength { cue, run, frames } => self.action_length(cue, run, frames),
-            Input::ActionFailed { cue, run, reason } => self.action_failed(cue, run, reason, cx),
+            Input::ActionFailed { cue, run, reason } => {
+                self.action_failed(cue, run, reason, false, cx);
+            }
+            Input::StartFailed { cue, run, reason } => {
+                self.action_failed(cue, run, reason, true, cx);
+            }
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
             Input::Preview { cue } => self.preview(cue, cx),
@@ -454,6 +465,7 @@ impl CueEngine {
         }
         self.random_cycles
             .retain(|group, _| present.contains(group));
+        self.continued.retain(|group| present.contains(group));
         // Gone, or now a cue of the other sort (group or not) than the one running: a runtime
         // only fits the kind it was started as.
         let ws = cx.ws;
@@ -716,6 +728,7 @@ impl CueEngine {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let group = matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default);
+        self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
         new.voice = voice;
@@ -949,6 +962,7 @@ impl CueEngine {
 
     fn reset_one(&mut self, cue: CueId, cx: &mut Ctx) {
         let before = self.state(cue);
+        self.continued.remove(&cue);
         if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
             release(cue, &slot, cx);
         }
@@ -1028,7 +1042,17 @@ impl CueEngine {
         };
     }
 
-    fn action_failed(&mut self, cue: CueId, run_id: RunId, reason: BrokenReason, cx: &mut Ctx) {
+    /// The run's voice or stream failed; `unplayed`: before it produced any audio, so the cue
+    /// is skipped as a cue with static problems is (its auto-follow fires, its group is not
+    /// failed) instead of breaking at run time (rule 2).
+    fn action_failed(
+        &mut self,
+        cue: CueId,
+        run_id: RunId,
+        reason: BrokenReason,
+        unplayed: bool,
+        cx: &mut Ctx,
+    ) {
         if self.preview_failed(cue, run_id, reason, cx) {
             return;
         }
@@ -1060,7 +1084,11 @@ impl CueEngine {
             // schedule. Auto-follow waits for a successful completion, so it never fires.
             Slot::Active(mut run) => {
                 run.broken = Some(reason);
+                run.unplayed = unplayed;
                 run.voice = Voice::None;
+                // Skipped before it played: it follows as of now (as a cue skipped for static
+                // problems does at its action start); one that broke while playing never does.
+                let follow = run.follow && unplayed && run.stop_end.is_none();
                 run.stop_end = None;
                 run.follow = false;
                 run.devamp = None;
@@ -1071,6 +1099,9 @@ impl CueEngine {
                 self.slots.insert(cue, Slot::Active(run));
                 self.settle(cue, cx.now, cx);
                 self.report(cue, before, cx.now, cx);
+                if follow {
+                    self.continue_after(cue, cx.now, cx);
+                }
                 // A playlist moves on past a child that broke.
                 self.child_action_done(cue, seq, cx.now, cx);
             }
@@ -1197,8 +1228,10 @@ impl CueEngine {
         // A run that broke during its pre-wait, or a cue that has static problems now, skips its
         // action but keeps its timing.
         let problems = self.refuses(cue, cx);
-        // Broke at run time (feedback during its pre-wait): it never auto-follows (rule 2).
-        let failed = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
+        // Broke at run time (feedback during its pre-wait): it never auto-follows (rule 2),
+        // unless it failed before playing anything (skipped, as for static problems).
+        let failed = matches!(self.slots.get(&cue),
+            Some(Slot::Active(r)) if r.broken.is_some() && !r.unplayed);
         let broken =
             problems || matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.is_broken());
         let act = match &model.kind {
@@ -1296,6 +1329,13 @@ impl CueEngine {
         if !group::chains_siblings(cx.ws, cue) {
             return;
         }
+        if cx
+            .ws
+            .find_cue(cue)
+            .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }))
+        {
+            self.continued.insert(cue);
+        }
         if let Some(next) = next_sibling(cx.ws, cue) {
             self.start(next, at, cx);
         }
@@ -1309,7 +1349,7 @@ impl CueEngine {
             // A run skipped for static problems completed as far as its group is concerned (it
             // is passed over, as a disarmed cue is); one that broke at run time did not.
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
-            let exit = if run.broken.is_some() || failed {
+            let exit = if (run.broken.is_some() && !run.unplayed) || failed {
                 Exit::Broken
             } else {
                 Exit::Completed

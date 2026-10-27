@@ -509,13 +509,14 @@ fn pick(ws: &Workspace, a: u8) -> CueId {
 // ----- simulated mixer -----
 
 /// What a voice does, from its cue's id: a loop that plays until devamped or stopped, voices
-/// of fixed lengths (some shorter than a Wait, some outliving most scenarios), and one that
-/// fails part-way.
+/// of fixed lengths (some shorter than a Wait, some outliving most scenarios), one that fails
+/// part-way, and one whose stream fails to open (before it plays anything: `StartFailed`).
 #[derive(Clone, Copy, Debug)]
 enum Flavor {
     Loop,
     Finite(u64),
     FailsAfter { len: u64, after: u64 },
+    FailsAtOpen,
 }
 
 fn flavor(cue: CueId) -> Flavor {
@@ -523,6 +524,7 @@ fn flavor(cue: CueId) -> Flavor {
         0 | 2 | 4 => Flavor::Loop,
         1 => Flavor::Finite(300),
         3 => Flavor::Finite(2500),
+        _ if cue.0.as_u128() % 12 == 11 => Flavor::FailsAtOpen,
         _ => Flavor::FailsAfter {
             len: 1400,
             after: 500,
@@ -749,6 +751,18 @@ impl Voice {
                         self.end_pos = Some(len);
                         self.fail_pos = Some(after);
                     }
+                    Flavor::FailsAtOpen => {
+                        events.push((
+                            at,
+                            Input::StartFailed {
+                                cue: self.cue,
+                                run: self.run,
+                                reason: BrokenReason::StreamFailed,
+                            },
+                        ));
+                        self.dead = true;
+                        return;
+                    }
                 }
                 // Half the voices tell the engine their length ahead (`ActionLength`, as the
                 // binary does for a finite table), half leave the end to the voice's report.
@@ -856,6 +870,20 @@ impl Voice {
                         cue: self.cue,
                         run: self.run,
                         at,
+                    },
+                ));
+                self.dead = true;
+            }
+            Cmd::ForceFail(reason) if !self.started => {
+                // It fails before it played anything (its stream could not open, the mixer
+                // refused its first start): the binary reports that apart (`StartFailed`),
+                // and the voice never existed.
+                events.push((
+                    at,
+                    Input::StartFailed {
+                        cue: self.cue,
+                        run: self.run,
+                        reason,
                     },
                 ));
                 self.dead = true;
@@ -1357,10 +1385,11 @@ impl Run {
         // does not come from a GO is the previous cue's auto-follow, so that cue must have run to
         // its end or been skipped for static problems (QLab check P5).
         if self.follow_rule {
-            for (id, _) in self.engine.cue_states() {
-                if self.engine.broken_reason(id).is_some() {
-                    self.tainted.insert(id);
-                }
+            // (A failure before the voice played, `StartFailed`, is a skip: no taint.)
+            if let Input::ActionFailed { cue, .. } = self.input
+                && self.engine.broken_reason(cue).is_some()
+            {
+                self.tainted.insert(cue);
             }
             if !matches!(self.input, Input::Go { .. }) {
                 let cues = &self.ws.cue_lists[0].cues;
@@ -1481,9 +1510,9 @@ impl Run {
             }
             for event in events {
                 let preview = match &event {
-                    Input::ActionEnded { run, .. } | Input::ActionFailed { run, .. } => {
-                        run.0 >= PREVIEW_RUN_BASE
-                    }
+                    Input::ActionEnded { run, .. }
+                    | Input::ActionFailed { run, .. }
+                    | Input::StartFailed { run, .. } => run.0 >= PREVIEW_RUN_BASE,
                     _ => false,
                 };
                 if preview {

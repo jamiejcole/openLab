@@ -700,8 +700,9 @@ fn go_on_a_timeline_child_starts_only_that_child_and_moves_to_its_sibling() {
     assert_eq!(rig.playhead(), Some(id(11)));
     rig.go(100);
     rig.go(200);
-    // Past the last child: out of the group, past its continue chain (2 is its auto-follow).
-    assert_eq!(rig.playhead(), Some(id(3)));
+    // Past the last child: out of the group. It never ran, so its auto-follow (2) never fires:
+    // the playhead stands on 2 rather than passing over it (M2.24 fix round 1, review H1).
+    assert_eq!(rig.playhead(), Some(id(2)));
     let tick = rig.tick(1200);
     // It never ran, so it does not auto-follow.
     assert!(changes(&tick, 1).is_empty());

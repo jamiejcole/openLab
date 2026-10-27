@@ -40,6 +40,12 @@ fn slice_too_short(seconds: f64) -> bool {
     seconds < MIN_SLICE_SECONDS - 1e-9
 }
 
+/// The play count of a slice made of two slices with counts `a` and `b`: a vamp (0, loop until
+/// devamped) wins, then the larger count, so a loop survives the merge.
+fn merged_plays(a: u32, b: u32) -> u32 {
+    if a == 0 || b == 0 { 0 } else { a.max(b) }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     /// Repaired or left for the cue to show as broken; the workspace still loads.
@@ -91,15 +97,18 @@ pub enum IssueKind {
     InvalidLevel { field: &'static str },
     /// Some other number was out of range or not finite; it was clamped or reset.
     InvalidValue { field: &'static str },
-    /// An Audio cue's end time was not at least [`MIN_SLICE_SECONDS`] after its start time; it
-    /// was cleared (play to end).
+    /// An Audio cue's end time was not after its start time; it was cleared (play to end).
     InvalidEndTime,
+    /// An Audio cue's end time was less than [`MIN_SLICE_SECONDS`] after its start time; it was
+    /// moved to exactly that (`end`), the shortest trim QLab 5 allows.
+    EndTimeTooShort { end: f64 },
     /// A slice marker at `time` was at or outside the trim points; it was removed.
     SliceOutsideTrim { time: f64 },
     /// A second slice marker at `time` was removed.
     DuplicateSlice { time: f64 },
     /// The slice marker at `time` made a slice shorter than [`MIN_SLICE_SECONDS`] (counted from
-    /// the start time or the marker before it, or up to the end time); it was removed.
+    /// the start time or the marker before it, or up to the end time); it was removed, and the
+    /// two slices it separated became one that keeps a vamp (play count 0) or the larger count.
     SliceTooShort { time: f64 },
     /// Slice markers were out of order; they were sorted.
     SlicesUnsorted,
@@ -154,9 +163,10 @@ impl fmt::Display for ValidationIssue {
             IssueKind::InvalidTime { field } => write!(f, "{field} out of range; clamped"),
             IssueKind::InvalidLevel { field } => write!(f, "invalid {field}; clamped"),
             IssueKind::InvalidValue { field } => write!(f, "invalid {field}; corrected"),
-            IssueKind::InvalidEndTime => write!(
+            IssueKind::InvalidEndTime => write!(f, "end time not after start time; cleared"),
+            IssueKind::EndTimeTooShort { end } => write!(
                 f,
-                "end time less than {} ms after start time; cleared",
+                "end time less than {} ms after start time; moved to {end} s",
                 MIN_SLICE_SECONDS * 1000.0
             ),
             IssueKind::SliceOutsideTrim { time } => {
@@ -499,6 +509,7 @@ impl Checker {
                 fade_in,
                 fade_out,
                 slices,
+                last_slice_play_count,
                 levels,
                 ..
             } => {
@@ -508,15 +519,23 @@ impl Checker {
                         end = MAX_TIME;
                         self.warn(id, IssueKind::InvalidTime { field: "end_time" });
                     }
-                    *end_time =
-                        (end.is_finite() && !slice_too_short(end - *start_time)).then_some(end);
+                    *end_time = (end.is_finite() && end > *start_time).then_some(end);
                     if end_time.is_none() {
                         self.warn(id, IssueKind::InvalidEndTime);
+                    } else if slice_too_short(end - *start_time) {
+                        // Kept as close as allowed: a trim shorter than QLab's floor becomes the
+                        // floor, rather than the whole file (beyond the longest time: cleared).
+                        let floor = *start_time + MIN_SLICE_SECONDS;
+                        *end_time = (floor <= MAX_TIME).then_some(floor);
+                        match *end_time {
+                            Some(end) => self.warn(id, IssueKind::EndTimeTooShort { end }),
+                            None => self.warn(id, IssueKind::InvalidEndTime),
+                        }
                     }
                 }
                 self.time(id, "fade_in.duration", &mut fade_in.duration);
                 self.time(id, "fade_out.duration", &mut fade_out.duration);
-                self.slices(id, slices, *start_time, *end_time);
+                self.slices(id, slices, last_slice_play_count, *start_time, *end_time);
                 let outputs = self
                     .patch_outputs
                     .get(patch)
@@ -567,6 +586,7 @@ impl Checker {
         &mut self,
         id: Option<CueId>,
         slices: &mut Vec<SliceMarker>,
+        last_play_count: &mut u32,
         start: f64,
         end: Option<f64>,
     ) {
@@ -601,27 +621,39 @@ impl Checker {
             self.warn(id, IssueKind::DuplicateSlice { time });
         }
         // Every slice at least `MIN_SLICE_SECONDS`: a marker too close to the boundary before it
-        // goes (its slice joins the next one), then markers too close to the end time (unknown
-        // without one: the file's length is not in the model).
+        // goes and its slice joins the next one, then markers too close to the end time (unknown
+        // without one: the file's length is not in the model) go and the last slice joins the
+        // one before. A merged slice keeps a vamp or a loop of either part (`merged_plays`), so a
+        // Devamp cue aimed at it still has a loop to release.
         let mut short = Vec::new();
         let mut prev = start;
-        slices.retain(|s| {
-            let keep = !slice_too_short(s.time - prev);
-            if keep {
-                prev = s.time;
-            } else {
+        let mut carried: Option<u32> = None;
+        let mut kept = Vec::with_capacity(slices.len());
+        for mut s in slices.drain(..) {
+            if slice_too_short(s.time - prev) {
                 short.push(s.time);
+                carried = Some(carried.map_or(s.play_count, |c| merged_plays(c, s.play_count)));
+            } else {
+                if let Some(c) = carried.take() {
+                    s.play_count = merged_plays(c, s.play_count);
+                }
+                prev = s.time;
+                kept.push(s);
             }
-            keep
-        });
+        }
+        if let Some(c) = carried {
+            *last_play_count = merged_plays(c, *last_play_count);
+        }
         if let Some(end) = end {
-            while let Some(last) = slices.last()
+            while let Some(last) = kept.last()
                 && slice_too_short(end - last.time)
             {
                 short.push(last.time);
-                slices.pop();
+                *last_play_count = merged_plays(last.play_count, *last_play_count);
+                kept.pop();
             }
         }
+        *slices = kept;
         for time in short {
             self.warn(id, IssueKind::SliceTooShort { time });
         }
