@@ -144,11 +144,19 @@ impl CueEngine {
         }
     }
 
-    /// The cue, or something in it, is fading out in a panic (a workspace Panic or its own).
+    /// A press of `PanicCue` is a second one when the cue itself is fading out in a panic (a
+    /// workspace Panic or its own), or it has active descendants and every one of them is. A group
+    /// with only some children already fading is on its first press: the rest fade.
     pub(super) fn fading_in_panic(&self, cue: CueId, cx: &Ctx) -> bool {
-        std::iter::once(cue)
-            .chain(self.inside(cue, cx))
-            .any(|id| matches!(self.slots.get(&id), Some(Slot::Active(run)) if run.panicked))
+        let panicked = |id: &CueId| match self.slots.get(id) {
+            Some(Slot::Active(run)) => Some(run.panicked),
+            _ => None,
+        };
+        if panicked(&cue) == Some(true) {
+            return true;
+        }
+        let below: Vec<bool> = self.inside(cue, cx).iter().filter_map(panicked).collect();
+        !below.is_empty() && below.iter().all(|p| *p)
     }
 
     /// One cue's own panic (its second-trigger option): the cue and everything in it as in a
