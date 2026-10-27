@@ -13,6 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 openlab-audio = { path = "../crates/audio", default-features = false }
 openlab-core = { path = "../crates/core" }
+openlab-engine = { path = "../crates/engine" }
 
 # Kept out of the engine workspace: it needs nightly and sanitizer flags.
 [workspace]
@@ -27,6 +28,13 @@ bench = false
 [[bin]]
 name = "decode"
 path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc"
+path = "fuzz_targets/osc.rs"
 test = false
 doc = false
 bench = false

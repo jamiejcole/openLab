@@ -21,9 +21,14 @@ crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
 openlab-audio = { version = "0.0.1", path = "../audio" }
 openlab-core = { version = "0.0.1", path = "../core" }
+# Default features off: `time` is only for printing OSC time tags, which nothing here does.
+rosc = { version = "0.11.4", default-features = false }
+serde_json = "1.0.154"
 thiserror = "2.0.21"
+# Parses `/cue_id/{id}` addresses (the id types wrap a Uuid).
+uuid = { version = "1.29.0", default-features = false }
 
 [dev-dependencies]
+proptest = "1.12.0"
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"
-uuid = { version = "1.29.0", default-features = false }
