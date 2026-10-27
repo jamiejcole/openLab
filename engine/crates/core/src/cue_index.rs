@@ -6,11 +6,13 @@
 //!
 //! An edit names the cues it touched ([`crate::Footprint`]); [`CueIndex::reconcile`] reads only
 //! those cues (and the sibling lists they moved between) out of the new workspace, so it reads
-//! the edit's cues and their sibling lists, not the whole show (a lookup still scans the
-//! sibling list at each level of the path, so a flat list of n cues costs O(n); M4.12c). A cue is found by walking its recorded ancestors and checking
-//! each step against the workspace (so a stale record can never give a wrong answer); only a
-//! cue the index cannot place that way (it moved, or is gone) costs one allocation-free scan of
-//! the cue ids. [`CueIndex::build`] is the reference: after any edit the reconciled index equals
+//! the edit's cues and their sibling lists, not the whole show. A cue is found by walking its
+//! recorded ancestors and checking each step against the workspace (so a stale record can never
+//! give a wrong answer). Each cue's position in its container is recorded too, so a step costs
+//! one id comparison, not a scan of the siblings (M4.12c: a flat list of 2,000 cues used to cost
+//! up to 2,000 per lookup); a cue an edit shifted along its level is found by scanning that
+//! level, and only a cue the index cannot place that way (it moved, or is gone) costs one
+//! allocation-free scan of the cue ids. [`CueIndex::build`] is the reference: after any edit the reconciled index equals
 //! a freshly built one ([`CueIndex::matches`]).
 //!
 //! Cue ids are unique in a valid workspace (commands refuse duplicates, opening repairs them).
@@ -19,6 +21,7 @@
 //! reconciled, because a footprint cannot say which of two cues with one id it means.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cue::{Cue, CueKind};
 use crate::model::{CueId, CueListId, Workspace};
@@ -39,9 +42,43 @@ pub struct CueIndex {
     place: HashMap<CueId, CueContainer>,
     /// The cues of every non-empty container, in order.
     kids: HashMap<CueContainer, Vec<CueId>>,
+    /// Every cue's position in its container's `kids`.
+    pos: HashMap<CueId, usize>,
     /// Two cues had one id when it was built.
     duplicates: bool,
+    /// Cue ids compared by lookups (a cost measure; not part of what the index says).
+    steps: Steps,
 }
+
+/// A cost counter two indexes never differ by: equality, and so [`CueIndex::matches`], is about
+/// what the index says, not what finding it cost. Atomic so the index stays `Sync`.
+#[derive(Debug, Default)]
+struct Steps(AtomicU64);
+
+impl Steps {
+    fn add(&self, n: usize) {
+        self.0
+            .fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl Clone for Steps {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.get()))
+    }
+}
+
+impl PartialEq for Steps {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Steps {}
 
 /// What a [`CueIndex::reconcile`] changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,7 +130,9 @@ impl CueIndex {
                 };
                 if let std::collections::hash_map::Entry::Vacant(e) = index.place.entry(cue.id) {
                     e.insert(container);
-                    index.kids.entry(container).or_default().push(cue.id);
+                    let kids = index.kids.entry(container).or_default();
+                    index.pos.insert(cue.id, kids.len());
+                    kids.push(cue.id);
                     visit(cue);
                 } else {
                     index.duplicates = true;
@@ -184,7 +223,7 @@ impl CueIndex {
         let mut at = id;
         for _ in 0..=self.place.len() {
             let container = *self.place.get(&at)?;
-            path.push(self.kids(container).iter().position(|k| *k == at)?);
+            path.push(self.position(at)?);
             match container {
                 CueContainer::Group(g) => at = g,
                 CueContainer::List(list) => {
@@ -195,6 +234,80 @@ impl CueIndex {
             }
         }
         None
+    }
+
+    /// `id`'s position among the cues of its container.
+    pub fn position(&self, id: CueId) -> Option<usize> {
+        let kids = self.kids(*self.place.get(&id)?);
+        match self.pos.get(&id) {
+            Some(&at) if kids.get(at) == Some(&id) => Some(at),
+            // Kept in step with `kids`; looking along is the safety net.
+            _ => kids.iter().position(|k| *k == id),
+        }
+    }
+
+    /// The list `id` is in.
+    pub fn list_of(&self, id: CueId) -> Option<CueListId> {
+        let mut container = *self.place.get(&id)?;
+        for _ in 0..=self.place.len() {
+            match container {
+                CueContainer::List(list) => return Some(list),
+                CueContainer::Group(g) => container = *self.place.get(&g)?,
+            }
+        }
+        None
+    }
+
+    /// The cue after `id` in its list's order (depth first): its first cue if it holds any, else
+    /// the next cue at its level or, past the last, at the nearest level above. `None` at the
+    /// end of the list.
+    pub fn next_in_list(&self, id: CueId) -> Option<CueId> {
+        if let Some(first) = self.kids(CueContainer::Group(id)).first() {
+            return Some(*first);
+        }
+        let mut at = id;
+        for _ in 0..=self.place.len() {
+            let container = *self.place.get(&at)?;
+            let next = self.position(at)?.saturating_add(1);
+            if let Some(next) = self.kids(container).get(next) {
+                return Some(*next);
+            }
+            match container {
+                CueContainer::Group(g) => at = g,
+                CueContainer::List(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// A list's cues in order, depth first (the positions a playhead can stand on).
+    pub fn list_order(&self, list: CueListId) -> Vec<CueId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<std::slice::Iter<'_, CueId>> =
+            vec![self.kids(CueContainer::List(list)).iter()];
+        while let Some(level) = stack.last_mut() {
+            // A damaged index (a cue under itself) ends at the cue count.
+            if out.len() > self.place.len() {
+                break;
+            }
+            match level.next() {
+                Some(id) => {
+                    out.push(*id);
+                    stack.push(self.kids(CueContainer::Group(*id)).iter());
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+        }
+        out
+    }
+
+    /// Cue ids compared by lookups (`locate`, and finding the cues an edit touched) since the
+    /// index was made: one per level for a cue the index has where the workspace has it. A
+    /// cost measure for tests.
+    pub fn lookup_steps(&self) -> u64 {
+        self.steps.get()
     }
 
     /// The cue `id` in `ws`, if the index places it correctly there: each step down from its
@@ -223,11 +336,26 @@ impl CueIndex {
         let mut cues: &[Cue] = &ws.cue_lists.iter().find(|l| l.id == list)?.cues;
         let mut found = None;
         for step in chain.iter().rev() {
-            let cue = cues.iter().find(|c| c.id == *step)?;
+            let cue = self.child(cues, *step)?;
             cues = cue.children();
             found = Some(cue);
         }
         found.map(|cue| (first, cue))
+    }
+
+    /// The cue `id` among `cues`: at its recorded position, else (an edit shifted it along its
+    /// level, or the record is stale) the first with the id.
+    fn child<'w>(&self, cues: &'w [Cue], id: CueId) -> Option<&'w Cue> {
+        if let Some(cue) = self.pos.get(&id).and_then(|&at| cues.get(at))
+            && cue.id == id
+        {
+            self.steps.add(1);
+            return Some(cue);
+        }
+        let at = cues.iter().position(|c| c.id == id);
+        self.steps
+            .add(1 + at.map_or(cues.len(), |at| at.saturating_add(1)));
+        at.and_then(|at| cues.get(at))
     }
 
     /// Whether the index equals the one built from `ws` (the reference).
@@ -260,7 +388,9 @@ impl CueIndex {
                 .map(|l| l.id)
                 .eq(self.lists.iter().copied())
         {
+            let steps = std::mem::take(&mut self.steps);
             *self = Self::build(ws);
+            self.steps = steps;
             return IndexChange::Rebuilt;
         }
         let mut located: HashMap<CueId, (CueContainer, &Cue)> = HashMap::new();
@@ -302,6 +432,7 @@ impl CueIndex {
                 if new_ids.contains(&id)
                     && let Some(old) = self.place.remove(&id)
                 {
+                    self.pos.remove(&id);
                     if let CueContainer::Group(g) = old {
                         delta.former_parents.insert(g);
                     }
@@ -379,18 +510,21 @@ impl CueIndex {
                     }
                 }
             };
-            let new: Vec<CueId> = cues.iter().map(|c| c.id).collect();
-            let old = self.kids.get(&container);
-            if old.is_some_and(|o| *o == new) && cues.iter().all(|c| self.place.contains_key(&c.id))
-            {
+            let same = self
+                .kids
+                .get(&container)
+                .is_some_and(|o| o.iter().eq(cues.iter().map(|c| &c.id)));
+            if same && cues.iter().all(|c| self.place.contains_key(&c.id)) {
                 continue;
             }
+            let new: Vec<CueId> = cues.iter().map(|c| c.id).collect();
             let old = if new.is_empty() {
                 self.kids.remove(&container)
             } else {
                 self.kids.insert(container, new.clone())
             };
-            for cue in cues {
+            for (at, cue) in cues.iter().enumerate() {
+                self.pos.insert(cue.id, at);
                 match self.place.insert(cue.id, container) {
                     None => {
                         delta.fresh.push(cue.id);
@@ -440,6 +574,7 @@ impl CueIndex {
                 if self.place.remove(&id).is_none() {
                     continue;
                 }
+                self.pos.remove(&id);
                 delta.gone.push(id);
                 for kid in self
                     .kids

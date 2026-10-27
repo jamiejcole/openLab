@@ -136,6 +136,62 @@ pub fn model_changes(workspace: &Workspace, footprint: &Footprint) -> (Vec<Upser
     (upserts, deletes)
 }
 
+/// [`model_changes`] read through `index`, an index of `workspace` brought up to date with the
+/// edit (M4.12c): it finds each named cue where the index has it instead of walking the cue
+/// lists, so it costs the footprint, not the show. `None` when the index cannot serve (it has
+/// duplicate ids, or it disagrees with the workspace): the caller then uses [`model_changes`],
+/// which is the reference this must equal (property-tested).
+pub fn model_changes_indexed(
+    workspace: &Workspace,
+    footprint: &Footprint,
+    index: &crate::cue_index::CueIndex,
+) -> Option<(Vec<Upsert>, Vec<Delete>)> {
+    use crate::cue_index::CueContainer;
+    if index.has_duplicates() {
+        return None;
+    }
+    let deletes = footprint
+        .removed
+        .union(&footprint.moved)
+        .map(|&id| Delete::Cue { id })
+        .collect();
+    let wanted: BTreeSet<CueId> = footprint
+        .added
+        .iter()
+        .chain(&footprint.moved)
+        .chain(&footprint.edited)
+        .chain(&footprint.removed)
+        .copied()
+        .collect();
+    let mut found: Vec<(Vec<usize>, Upsert)> = Vec::new();
+    for &id in &wanted {
+        // Not in the workspace (removed): nothing to put back.
+        let Some(container) = index.container(id) else {
+            continue;
+        };
+        // A touched group above carries it.
+        if index.ancestors(id).any(|g| wanted.contains(&g)) {
+            continue;
+        }
+        let cue = index.locate(workspace, id)?;
+        let parent = match container {
+            CueContainer::Group(g) => Some(g),
+            CueContainer::List(_) => None,
+        };
+        let upsert = Upsert::Cue {
+            list: index.list_of(id)?,
+            parent,
+            index: u64::try_from(index.position(id)?).ok()?,
+            cue: Box::new(cue.clone()),
+        };
+        found.push((index.path(id)?, upsert));
+    }
+    // Workspace order, as the walk emits them: parents before children, ascending within one
+    // container.
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Some((found.into_iter().map(|(_, u)| u).collect(), deletes))
+}
+
 /// Why a `model_changed` could not be applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ApplyChangesError {

@@ -720,17 +720,46 @@ proptest! {
     }
 }
 
+/// Cases for the properties that hold incremental bookkeeping to its full rebuild: 256 for CI;
+/// `OPENLAB_PROP_CASES=20000 cargo test --release -p openlab-core --test commands_prop` sweeps.
+fn incremental_cases() -> u32 {
+    std::env::var("OPENLAB_PROP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256)
+}
+
+/// The footprint's touched and structural cues, as `CueIndex::reconcile` takes them.
+fn reconcile_sets(
+    fp: &Footprint,
+) -> (
+    std::collections::BTreeSet<CueId>,
+    std::collections::BTreeSet<CueId>,
+) {
+    let structural: std::collections::BTreeSet<CueId> = fp
+        .added
+        .iter()
+        .chain(&fp.removed)
+        .chain(&fp.moved)
+        .copied()
+        .collect();
+    let touched = structural.iter().chain(&fp.edited).copied().collect();
+    (touched, structural)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
     /// A client that starts from the workspace and applies each edit's `model_changed` ends
     /// every step with exactly the engine's workspace: commands (groups moved and deleted with
-    /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01).
+    /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01). Read through a
+    /// cue index that follows the footprints (M4.12c), the changes are the same as the walk's.
     #[test]
     fn model_changes_keep_a_mirror_identical(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         let mut mirror = ws.clone();
         let mut history = History::new();
+        let mut index = CueIndex::build(&ws);
         for p in &sequence {
             let footprint = match p.d % 9 {
                 0 => history.peek_undo().map(Command::footprint),
@@ -749,6 +778,10 @@ proptest! {
             };
             let Some(fp) = changed else { continue };
             let (upserts, deletes) = model_changes(&ws, &fp);
+            let (touched, structural) = reconcile_sets(&fp);
+            index.reconcile(&ws, &touched, &structural, &fp.added);
+            let indexed = model_changes_indexed(&ws, &fp, &index);
+            prop_assert_eq!(indexed, Some((upserts.clone(), deletes.clone())));
             // O(changed): never more than a delete and an upsert per named cue, plus the
             // subtrees of groups that were named.
             let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
@@ -786,10 +819,11 @@ fn random_edit(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
     /// The cue index follows every edit from its footprint alone and equals one built from
-    /// scratch after each (commands, undo, redo, transactions that add, move and remove).
+    /// scratch after each (commands, undo, redo, transactions that add, move and remove), its
+    /// positions included (M4.12c); what it answers about order and lists is the workspace's.
     #[test]
     fn the_cue_index_follows_footprints(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
@@ -797,19 +831,31 @@ proptest! {
         let mut index = CueIndex::build(&ws);
         for p in &sequence {
             let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) else { continue };
-            let structural: std::collections::BTreeSet<CueId> = fp
-                .added
-                .iter()
-                .chain(&fp.removed)
-                .chain(&fp.moved)
-                .copied()
-                .collect();
-            let touched = structural.iter().chain(&fp.edited).copied().collect();
+            let (touched, structural) = reconcile_sets(&fp);
             let change = index.reconcile(&ws, &touched, &structural, &fp.added);
             prop_assert!(matches!(change, IndexChange::Delta(_)));
             prop_assert!(index.matches(&ws), "index differs from a rebuild");
+            for list in &ws.cue_lists {
+                let order = list_positions(&list.cues);
+                prop_assert_eq!(&index.list_order(list.id), &order);
+                for (i, id) in order.iter().enumerate() {
+                    prop_assert_eq!(index.list_of(*id), Some(list.id));
+                    prop_assert_eq!(index.next_in_list(*id), order.get(i + 1).copied());
+                    prop_assert_eq!(index.locate(&ws, *id).map(|c| c.id), Some(*id));
+                }
+            }
         }
     }
+}
+
+/// Every cue of a list, depth first.
+fn list_positions(cues: &[Cue]) -> Vec<CueId> {
+    let mut out = Vec::new();
+    for cue in cues {
+        out.push(cue.id);
+        out.extend(list_positions(cue.children()));
+    }
+    out
 }
 
 fn status_input(ws: &Workspace, p: &Pick) -> Input {

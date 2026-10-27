@@ -324,3 +324,120 @@ fn a_changed_set_of_cue_lists_rebuilds() {
     assert!(index.matches(&ws));
     assert_eq!(index.path(id(10)), Some(vec![1, 0]));
 }
+
+// ----- positions (M4.12c) -----
+
+/// A flat list of `n` memos, ids 1..=n, then a group 100_000 { group 100_001 { 100_002 } }.
+fn flat(n: u128) -> Workspace {
+    let mut cues: Vec<Cue> = (1..=n).map(memo).collect();
+    cues.push(cue(
+        100_000,
+        group(vec![cue(100_001, group(vec![memo(100_002)]))]),
+    ));
+    workspace(cues)
+}
+
+#[test]
+fn a_lookup_costs_one_step_per_level_however_many_siblings() {
+    // Before positions were kept, finding the last of 5,000 cues compared 5,000 ids.
+    let mut ws = flat(5_000);
+    let mut index = CueIndex::build(&ws);
+    let cost = |index: &CueIndex, ws: &Workspace, n: u128| {
+        let before = index.lookup_steps();
+        assert_eq!(index.locate(ws, id(n)).map(|c| c.id), Some(id(n)));
+        index.lookup_steps() - before
+    };
+    assert_eq!(cost(&index, &ws, 5_000), 1);
+    assert_eq!(cost(&index, &ws, 1), 1);
+    assert_eq!(cost(&index, &ws, 100_002), 3);
+    assert_eq!(index.path(id(5_000)), Some(vec![0, 4_999]));
+    assert_eq!(index.position(id(100_001)), Some(0));
+
+    // A rename is followed by finding the one cue: one step.
+    let rename = Command::SetCueProperty {
+        id: id(4_000),
+        property: CueProperty::Name { value: "x".into() },
+    };
+    ws.apply(rename.clone()).unwrap();
+    let before = index.lookup_steps();
+    follow(&mut index, &ws, &rename);
+    assert_eq!(index.lookup_steps() - before, 1);
+
+    // A cue added at the front shifts every position: the index follows, and lookups stay one
+    // step per level.
+    let add = Command::AddCue {
+        at: pos(None, 0),
+        cue: memo(9_999),
+        auto_number: false,
+    };
+    ws.apply(add.clone()).unwrap();
+    follow(&mut index, &ws, &add);
+    assert_eq!(index.position(id(5_000)), Some(5_000));
+    assert_eq!(cost(&index, &ws, 5_000), 1);
+    assert_eq!(cost(&index, &ws, 100_002), 3);
+}
+
+#[test]
+fn a_stale_position_finds_the_cue_by_looking_along_never_another_cue() {
+    let mut ws = flat(10);
+    let index = CueIndex::build(&ws);
+    // Two cues added at the front behind the index's back: every recorded position is off by
+    // two, so the cue recorded at a position is another cue.
+    ws.cue_lists[0].cues.insert(0, memo(500));
+    ws.cue_lists[0].cues.insert(0, memo(501));
+    for n in 1..=10 {
+        assert_eq!(index.locate(&ws, id(n)).map(|c| c.id), Some(id(n)));
+    }
+    assert_eq!(
+        index.locate(&ws, id(100_002)).map(|c| c.id),
+        Some(id(100_002))
+    );
+    // Gone behind its back: not found, nothing else returned.
+    ws.cue_lists[0].cues.retain(|c| c.id != id(7));
+    assert!(index.locate(&ws, id(7)).is_none());
+}
+
+#[test]
+fn a_cue_removed_and_added_again_elsewhere_in_its_list_gets_its_new_position() {
+    let mut ws = flat(5);
+    let mut index = CueIndex::build(&ws);
+    replace(&mut ws, &mut index, pos(None, 4), memo(1));
+    assert_eq!(index.position(id(1)), Some(4));
+    assert_eq!(index.position(id(2)), Some(0));
+    assert_eq!(index.next_in_list(id(1)), Some(id(100_000)));
+    // Into a nested group, as a group.
+    replace(
+        &mut ws,
+        &mut index,
+        pos(Some(100_001), 0),
+        cue(3, group(vec![memo(30)])),
+    );
+    assert_eq!(index.position(id(3)), Some(0));
+    assert_eq!(index.position(id(100_002)), Some(1));
+    assert_eq!(index.path(id(30)), Some(vec![0, 4, 0, 0, 0]));
+    assert_eq!(index.next_in_list(id(30)), Some(id(100_002)));
+    assert_eq!(index.next_in_list(id(100_002)), None);
+}
+
+#[test]
+fn list_order_and_next_follow_depth_first_order() {
+    let ws = sample();
+    let index = CueIndex::build(&ws);
+    let order = index.list_order(list_id(1));
+    assert_eq!(order, [id(1), id(2), id(3), id(4), id(5), id(6)]);
+    let nexts: Vec<Option<CueId>> = order.iter().map(|c| index.next_in_list(*c)).collect();
+    assert_eq!(
+        nexts,
+        [
+            Some(id(2)),
+            Some(id(3)),
+            Some(id(4)),
+            Some(id(5)),
+            Some(id(6)),
+            None
+        ]
+    );
+    assert_eq!(index.list_of(id(5)), Some(list_id(1)));
+    assert_eq!(index.list_of(id(99)), None);
+    assert!(index.list_order(list_id(9)).is_empty());
+}
