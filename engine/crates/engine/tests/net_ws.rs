@@ -48,6 +48,8 @@ struct Control {
     seen: Mutex<Vec<ClientMessage>>,
     /// `Inbox::Log` messages from the server.
     logs: Mutex<Vec<String>>,
+    /// `Inbox::Trigger` (source, detail) pairs, in arrival order.
+    triggers: Mutex<Vec<(String, String)>>,
     /// While set, the client's own snapshot requests are answered (at the revision of the
     /// moment they arrive) only when the test calls [`Control::release_replies`].
     hold_snapshots: AtomicBool,
@@ -102,6 +104,10 @@ fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
             Inbox::Client { message, reply } => (message, reply),
             Inbox::Log { message, .. } => {
                 c.logs.lock().unwrap().push(message);
+                continue;
+            }
+            Inbox::Trigger { source, detail } => {
+                c.triggers.lock().unwrap().push((source, detail));
                 continue;
             }
             _ => break,
@@ -349,6 +355,32 @@ async fn a_valid_hello_is_welcomed_with_a_snapshot() {
     send(&mut c, &go(1)).await;
     let seen = wait_result(&mut c, 1).await;
     assert_eq!(seen.len(), 1);
+}
+
+#[tokio::test]
+async fn a_transport_is_announced_to_control_as_a_ui_trigger_and_a_request_is_not() {
+    let f = fixture();
+    let mut c = f.raw().await;
+    hello(&mut c, f.server.token(), PROTOCOL_VERSION).await;
+    assert!(matches!(
+        next(&mut c).await,
+        Some(ServerMessage::Welcome { .. })
+    ));
+    send(&mut c, &go(1)).await;
+    wait_result(&mut c, 1).await;
+    send(
+        &mut c,
+        &ClientMessage::Request {
+            id: RequestId(2),
+            request: Request::Snapshot,
+        },
+    )
+    .await;
+    wait_result(&mut c, 2).await;
+    assert_eq!(
+        *f.control.triggers.lock().unwrap(),
+        vec![("ui".to_owned(), "transport go".to_owned())]
+    );
 }
 
 #[tokio::test]
