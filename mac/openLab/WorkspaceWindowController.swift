@@ -71,7 +71,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
-        footer.onModeChange = { [weak self] show in self?.setShowMode(show) }
+        footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
@@ -104,14 +104,35 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// hotkeys, the sidebar and the layout toggles keep working, as in QLab.
     private(set) var isShowMode = false
 
+    /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
+    /// in the inspector, like Save and Close; if that is invalid or refused the window stays in
+    /// Edit Mode with the field's message showing, so it never locks over unsaved text.
+    func requestShowMode(_ on: Bool) async {
+        if on, !isShowMode, await !commitPendingEdits() {
+            NSSound.beep()
+            footer.setShowMode(false)
+            return
+        }
+        setShowMode(on)
+    }
+
     func setShowMode(_ on: Bool) {
         guard on != isShowMode else { return }
         isShowMode = on
         inspector.isLocked = on
         cueToolbar.isLocked = on
+        sidebar.relinkLocked = on
         footer.setShowMode(on)
-        let title = loc("window.main.title")
-        window?.title = on ? String(format: loc("window.main.title.showMode"), title) : title
+        refreshTitle()
+    }
+
+    /// The workspace's name (set by the app as the engine reports it); Show Mode adds a suffix.
+    var workspaceName = loc("window.main.title") {
+        didSet { refreshTitle() }
+    }
+
+    private func refreshTitle() {
+        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
     }
 
     private func syncSidebarList() {

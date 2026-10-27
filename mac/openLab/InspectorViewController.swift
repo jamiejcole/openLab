@@ -391,12 +391,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     private func applyLock() {
         _ = view
+        // Callers commit first (`WorkspaceWindowController.requestShowMode`); text still dirty here
+        // is dropped and the model's text put back, never left on screen as if saved.
+        let stale = dirty
         if isLocked {
             dirty = []
             view.window?.makeFirstResponder(nil)
         }
         for c in lockedControls { c.isEnabled = !isLocked }
         notesView.isEditable = !isLocked
+        if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
     // MARK: Committing edits

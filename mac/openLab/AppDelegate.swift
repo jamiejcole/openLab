@@ -54,8 +54,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
 
-    @MainActor @objc func enterShowMode(_ sender: Any?) { appController.frontController?.setShowMode(true) }
-    @MainActor @objc func enterEditMode(_ sender: Any?) { appController.frontController?.setShowMode(false) }
+    @MainActor @objc func enterShowMode(_ sender: Any?) {
+        Task { await appController.frontController?.requestShowMode(true) }
+    }
+    @MainActor @objc func enterEditMode(_ sender: Any?) {
+        Task { await appController.frontController?.requestShowMode(false) }
+    }
 
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
 
@@ -79,7 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard let front = appController.frontController else { return false }
             return front.isShowMode == (item.action == #selector(enterEditMode(_:)))
         }
-        if item.action == #selector(relinkMedia(_:)) || item.action == #selector(showLog(_:)) {
+        if item.action == #selector(relinkMedia(_:)) {
+            return appController.frontController.map { !$0.isShowMode } ?? false
+        }
+        if item.action == #selector(showLog(_:)) {
             return appController.frontController != nil
         }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
