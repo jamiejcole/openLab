@@ -17,6 +17,7 @@
       "channels": 2,
       "latency_ms": 11.5
     },
-    "log_dropped": 0
+    "log_dropped": 0,
+    "log_seq": 42
   }
 }

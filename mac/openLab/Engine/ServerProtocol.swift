@@ -244,11 +244,26 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let disk: DiskStatus
     let device: DeviceStatus
     let logDropped: UInt64
+    /// The newest show-log record's `seq`; above the last `log_entry` received means a push was
+    /// lost. 0 when absent (an engine from before the field).
+    let logSeq: UInt64
     enum CodingKeys: String, CodingKey {
         case xruns, disk, device
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
+        case logSeq = "log_seq"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cpuPercent = try c.decodeIfPresent(Double.self, forKey: .cpuPercent)
+        engineLoad = try c.decodeIfPresent(Double.self, forKey: .engineLoad)
+        xruns = try c.decode(UInt64.self, forKey: .xruns)
+        disk = try c.decode(DiskStatus.self, forKey: .disk)
+        device = try c.decode(DeviceStatus.self, forKey: .device)
+        logDropped = try c.decode(UInt64.self, forKey: .logDropped)
+        logSeq = try c.decodeIfPresent(UInt64.self, forKey: .logSeq) ?? 0
     }
 }
 

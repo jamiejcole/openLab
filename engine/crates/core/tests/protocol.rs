@@ -1220,6 +1220,21 @@ fn a_log_tail_result_without_seq_still_decodes() {
 }
 
 #[test]
+fn a_status_without_log_seq_still_decodes() {
+    // Additive field: a status from before it reads as seq 0.
+    let mut json = serde_json::to_value(ServerMessage::Status {
+        status: Box::new(status_sample()),
+    })
+    .unwrap();
+    json["status"].as_object_mut().unwrap().remove("log_seq");
+    let ServerMessage::Status { status } = decode_server(&json.to_string()).unwrap() else {
+        panic!("not a status");
+    };
+    assert_eq!(status.log_seq, 0);
+    assert_eq!(status.log_dropped, status_sample().log_dropped);
+}
+
+#[test]
 fn progress_and_meters_are_sanitised_not_refused() {
     let progress = |elapsed: f64, remaining: Option<f64>| ServerMessage::Progress {
         items: vec![ProgressItem {
@@ -2003,6 +2018,7 @@ fn status_sample() -> SystemStatus {
             latency_ms: Some(11.5),
         },
         log_dropped: 0,
+        log_seq: 42,
     }
 }
 
