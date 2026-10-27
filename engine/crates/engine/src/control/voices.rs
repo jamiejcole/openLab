@@ -147,6 +147,9 @@ struct Prime {
 struct Sig {
     media: String,
     probe: usize,
+    /// Built from the preloaded samples: a stream primed from disk before a preload landed is
+    /// replaced, and one primed from memory is when the preload is released.
+    preloaded: bool,
     start: u64,
     end: Option<u64>,
     marks: Vec<(u64, u32)>,
@@ -160,6 +163,8 @@ pub struct Voices {
     /// Old id of a re-keyed voice → (current id, the run it had).
     aliases: HashMap<VoiceId, (VoiceId, RunId)>,
     primes: HashMap<CueId, Prime>,
+    /// Starts that used a primed stream (a cold start prepares one on the spot).
+    prime_hits: u64,
     next_voice: u64,
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more (docs/audio.md, Meters).
@@ -215,6 +220,16 @@ impl Voices {
 
     pub fn primed(&self) -> impl Iterator<Item = CueId> + '_ {
         self.primes.keys().copied()
+    }
+
+    /// Starts that used a primed stream.
+    pub fn prime_hits(&self) -> u64 {
+        self.prime_hits
+    }
+
+    /// Whether `cue`'s primed stream reads preloaded samples (not the file).
+    pub fn primed_from_memory(&self, cue: CueId) -> bool {
+        self.primes.get(&cue).is_some_and(|p| p.sig.preloaded)
     }
 
     /// Carries out one engine action; non-voice actions are ignored.
@@ -766,6 +781,9 @@ impl Voices {
                 .get(&cue)
                 .is_some_and(|p| sig_of(env, cue).as_ref() == Some(&p.sig));
         let prime = self.primes.remove(&cue)?;
+        if usable {
+            self.prime_hits = self.prime_hits.saturating_add(1);
+        }
         usable.then_some((prime.prepared, prime.total))
     }
 
@@ -1315,6 +1333,7 @@ fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
     Some(Sig {
         media: media.as_str().to_owned(),
         probe: Arc::as_ptr(ready) as usize,
+        preloaded: env.media.is_preloaded(media.as_str()),
         start: start_time.to_bits(),
         end: end_time.map(f64::to_bits),
         marks: slices
