@@ -102,6 +102,12 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     config.mixer_patches = MAX_PATCHES;
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
+        // Shows deleted since the last run drop out of the recent files now, and again on
+        // every read.
+        config
+            .machine
+            .prune_recent_files(|p| Path::new(p).is_file());
+        config.app_dirs = Some(dirs);
     }
     let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     // Port and token are what M4.9 writes to `engine.json`.

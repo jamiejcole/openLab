@@ -79,9 +79,9 @@ off and leaves existing ones alone.
 
 `check_recovery` also returns `other_copies`: recovery files with the same workspace id but another show
 path (a duplicated show, or work from before the first save). They are never offered to this file and
-never touched; M4.4 can show them as "recovery from another copy".
+never touched; the engine reports them as a `recovery_other_copies` notice when the show is opened.
 
-The restore prompt itself is the UI's (M4.4).
+The restore prompt is the protocol's (M4.4): `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore` ([protocol.md](protocol.md) "Replacing the workspace"). Restoring opens the autosave, bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing. `ignore` opens the saved file and leaves the autosave in place (it is offered again next time). `revert`, and `new`/`open` with `discard_changes` over unsaved edits, delete the autosave of the dropped edits. `other_copies` of a recovery check are summed in a `recovery_other_copies` notice in the workspace warnings; an unusable autosave is a `recovery_unusable` notice. Load repairs of the opened show are `load_repair` notices (at most 50, then a summary).
 
 ### When the show file cannot be loaded
 
@@ -99,7 +99,7 @@ id of a `Backups/<id>-<hash>` folder name). Anything else is skipped with a warn
 newest first by file mtime among the first 5000 directory entries (a folder with more is `truncated`, and
 which of the excess are seen depends on the file system); no recursion (`Recovery/` is flat); a file over
 `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed. Names are read by parsing
-files, so call it off the control thread. The prompt and protocol wiring is M4.4.
+files, so call it off the control thread: the `scan_recovery` request runs it on the document worker and `open_recovery` opens one entry as an untitled, dirty workspace (a save has to choose a path; the entry's autosave stays until then, and a save-as clears the never-saved autosave of the workspace id).
 
 ## Per-machine settings (WS-06, WS-07)
 
@@ -109,6 +109,7 @@ files, so call it off the control thread. The prompt and protocol wiring is M4.4
 {
   "settings_version": 1,
   "backup_keep": 20,
+  "recent_files": ["/Users/sam/Shows/Hamlet.openlab"],
   "workspaces": {
     "<workspace-id>": {
       "patches": { "<patch-id>": { "device": "Scarlett 18i20", "channels": [4, 5] } }
@@ -125,6 +126,8 @@ warning; `backup_keep` is clamped. The engine keeps a copy of a file that produc
 `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator
 once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch
 silent and its cues broken, never a crash.
+
+`recent_files` (WS-08) holds native paths, newest first. Loading drops empty, over-long (4096 bytes), NUL-containing and duplicate entries (duplicates compared like media paths) and keeps the first 10, with a warning; a file without the key loads as empty. Writing keeps the other settings. The engine records a show after a successful open or save-as and prunes missing files on read (`Control::recent_files`, and at start); it does not touch the list otherwise. Listing them to the UI is not on the protocol yet (PROGRESS M4.4b).
 
 Settings that travel with the show (hotkeys, autosave interval, passcode, …) stay in the show file
 (WS-06); per-cue-type defaults are deferred (REQUIREMENTS §21).

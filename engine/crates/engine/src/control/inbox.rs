@@ -29,6 +29,9 @@ pub enum Inbox {
     Probe(ProbeAnswer),
     /// The device thread's answer (internal feedback, docs/control.md "Devices").
     Device(super::devices::DeviceAnswer),
+    /// The document worker's answer to an open, revert or scan (internal feedback,
+    /// docs/control.md "Documents").
+    Doc(super::docs::DocAnswer),
     /// A log entry from another thread (the network layer), sent out like the loop's own.
     Log { level: LogLevel, message: String },
     /// Stop the control loop.

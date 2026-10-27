@@ -185,6 +185,16 @@ impl MediaCatalog {
         Ok(())
     }
 
+    /// Forgets everything known about the files and resolves relative references against
+    /// `show_dir` from now on (another workspace was opened, or the show was saved elsewhere).
+    /// Tickets keep rising, so answers to probes asked before the reset find no entry (or a newer
+    /// ticket) and are ignored. The next [`Self::sync`] probes every file again.
+    pub fn reset(&mut self, show_dir: Option<PathBuf>) {
+        self.entries.clear();
+        self.reserved = 0;
+        self.show_dir = show_dir;
+    }
+
     /// Follows the workspace: probes media references it has not seen and forgets the ones no
     /// cue uses any more (releasing their preload). Probes go out in workspace order; files
     /// near a playhead are moved ahead with [`Self::prioritize`].
