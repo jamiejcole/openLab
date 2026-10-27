@@ -466,8 +466,12 @@ mod tests {
         assert!(previous.is_empty(), "{previous:?}");
         let marker = marker.unwrap();
         assert_eq!(markers(&dir), ["running-3.json"]);
-        let text = fs::read_to_string(marker.path()).unwrap();
-        assert_eq!(RunInfo::from_json(&text), Some(info(3, T0)));
+        // Windows locks are mandatory, so only Unix can read the marker while it is held; the
+        // contents are checked on unlocked leftovers elsewhere.
+        if cfg!(unix) {
+            let text = fs::read_to_string(marker.path()).unwrap();
+            assert_eq!(RunInfo::from_json(&text), Some(info(3, T0)));
+        }
         // Still locked after the rename: another start leaves it alone.
         let (other, previous) = RunMarker::start(&dir, &crashes, &info(4, T0 + 1));
         assert!(previous.is_empty(), "{previous:?}");
