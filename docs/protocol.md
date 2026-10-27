@@ -12,7 +12,7 @@ Types: `openlab-core::protocol` (`engine/crates/core/src/protocol/`). They are t
 - **Frame limits** (checked on the byte length before any parsing): the first frame of a connection, `hello`, at most `MAX_HELLO_FRAME_BYTES` (4 KiB; the server reads it with `decode_hello`, before the token is checked); later client frames at most `MAX_CLIENT_FRAME_BYTES` (1 MiB); engine frames at most `MAX_SERVER_FRAME_BYTES` (32 MiB, for snapshots). Over the limit: `ProtocolError::TooLarge`.
 - **Errors**: an envelope whose `type` is missing is `MissingType`, one that is not a message type of the direction is `UnknownType`; everything else wrong (bad JSON, wrong field types, missing fields, an unknown variant *inside* a known message such as a transport action or request kind) is `Malformed`. All are rejections; the engine answers `error` with `bad_request` or `unknown_message`.
 - **Compatibility**: unknown **fields** are ignored (no `deny_unknown_fields`), so a newer peer can add optional fields without a version bump; the receiver must treat absent optional fields as documented. Unknown message **types** and unknown variants of nested enums are errors. Removing, renaming or re-typing a field, or changing its meaning, bumps `PROTOCOL_VERSION` (now **1**). Any change to a message updates the fixtures, the Swift `Codable` types and this page in the same commit.
-- **Fixtures**: `UPDATE_PROTOCOL_FIXTURES=1 cargo test -p openlab-core --test protocol` rewrites them (pretty-printed, keys in declaration order, trailing newline); without it the test compares byte for byte and fails on drift. Files are named after the message type (`client/transport.json`); further variants add `_<variant>` (`client/transport_stop.json`, `server/result_error.json`). Every variant of the nested enums the client must decode has its own file: `server/warnings_<warning>`, `server/runtime_problem_<problem>`, `server/runtime_problem_device_unavailable_<resolution>`, `server/runtime_state_<state>`, `server/runtime_state_broken_<reason>`, `server/error_<code>`, `server/log_<level>`; tests fail if a variant has no sample.
+- **Fixtures**: `UPDATE_PROTOCOL_FIXTURES=1 cargo test -p openlab-core --test protocol` rewrites them (pretty-printed, keys in declaration order, trailing newline); without it the test compares byte for byte and fails on drift. Files are named after the message type (`client/transport.json`); further variants add `_<variant>` (`client/transport_stop.json`, `server/result_error.json`). Every variant of the nested enums the client must decode has its own file (the pre-show report is `server/result_preshow_check` with every status and shape, and `result_preshow_check_ok`): `server/warnings_<warning>`, `server/runtime_problem_<problem>`, `server/runtime_problem_device_unavailable_<resolution>`, `server/runtime_state_<state>`, `server/runtime_state_broken_<reason>`, `server/error_<code>`, `server/log_<level>`; tests fail if a variant has no sample.
 
 ## 2. Connection
 
@@ -28,7 +28,7 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 | `type` | Fields | Notes |
 |---|---|---|
 | `hello` | `protocol_version: u32`, `token`, `client_name` | first frame |
-| `command` | `id`, `command` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused` |
+| `command` | `id`, `command`, `coalesce?` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused`. A command that changes nothing (a value set to what it already is) replies `ok` with the current revision, sends no `model_changed` and is no undo step. `coalesce`: a string of at most 128 bytes (longer: `bad_request`, nothing applied); consecutive commands with the same key are one undo step, each still sent as its own `model_changed` ([commands.md](commands.md) "Coalescing"). Absent = no coalescing |
 | `transport` | `id`, `action` | see below |
 | `undo`, `redo` | `id` | like a command; `ok.revision` after, `ok` without a revision if there was nothing to undo or redo |
 | `request` | `id`, `request` | see below |
@@ -76,6 +76,7 @@ The `result` of a transport action means "accepted and handed to the cue engine"
 | `revert` | `discard_changes?` | reload the saved file, dropping edits (clears undo); `snapshot`, `result`; `no_workspace` if never saved, `not_found` / `io` / `bad_show_file` if the saved file cannot be read, `unsaved_changes` while dirty without `discard_changes`, `command_refused` |
 | `relink` | `folder` | relink missing media (WS-03) as one undo step; `result { ok: { revision, data: { type: "relink", relinked, ambiguous: [{cue, candidates}], unmatched } } }`; nothing is guessed between duplicates |
 | `list_devices` | - | `result { ok: { data: { type: "devices", devices: [{name, output_channels}] } } }` |
+| `preshow_check` | - | the pre-show check (SM-06, NFR-07): one report of every broken cue, missing or unsupported media file, patch with no device, network destination and system problem: `result { ok: { data: { type: "preshow_check", ok, summary, broken_cues, media, patches, network, system } } }`; shape below. Answered at once from the engine's current state |
 | `log_tail` | `max?` | the newest show-log entries the engine holds in memory (at most 1000), oldest first, for a log window opened after the fact (DX-02): `result { ok: { data: { type: "log_tail", entries: [log_entry], dropped } } }`; `max` absent: all. `dropped` counts records the disk writer lost (they are still in `entries` while in memory). Entry fields below |
 | `snapshot` | - | `snapshot`, then `result` |
 
@@ -111,9 +112,23 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 | `meters` | `outputs [{patch, peaks}]`, `cues [{cue, peaks}]` | linear peak per channel since the previous message; at most 30 Hz, only while audio plays |
 | `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | engine notices as they happen, with no time stamp; the timed, structured record of everything (GO, cue starts and stops, triggers, document events) is the show log, fetched with `log_tail` (below) |
 | `status` | `status {cpu_percent, engine_load, xruns, disk, device, log_dropped}` | system health (DX-03), about once a second and early (not faster than every 250 ms) when `xruns`, the disk's health or the device's state change; droppable like `meters`. Below |
-| `warnings` | `warnings [warning]` | workspace-level notices in force (load repairs, damaged media); **replaces** the previous list; empty clears it |
+| `warnings` | `warnings [warning]` | the warnings feed (DX-01): workspace-level notices in force (load repairs, damaged media, device problems, ...); broken cues are not here: their rows, with the cue id for click-through, come from `problems` in the snapshot and `runtime`; **replaces** the previous list; empty clears it |
 | `result` | `id`, then `ok {revision?, data?}` or `error {code, message}` | exactly one of `ok` / `error` |
 | `error` | `code`, `message`, `protocol_version` | not tied to a request (see section 2) |
+
+### Pre-show check (M4.8)
+
+`result.ok.data` of `preshow_check` (`type: "preshow_check"`):
+
+- `ok`: true when nothing is a problem: `summary.total` is 0 and no cause below is listed as a problem. Not problems: `not_checked` destinations, patches no cue uses, the `preload_over_budget` warning.
+- `summary`: `broken_cues`; `media` (files missing or unsupported); `patches` (patches that cues use and that have no device; unused ones are not counted); `network` (destinations with status `missing` only); `network_unchecked`; `system` (entries that are problems, so not `preload_over_budget`); and `total` = `broken_cues + system`, the problem rows a list shows. Media, patches and destinations are the causes of broken cues and are not added again.
+- `broken_cues`: `[{cue, list, number?, name, problems}]` in workspace order (lists in order, cues depth-first). `problems` are the same `problem` objects as in `runtime` and `snapshot`. A disarmed cue is listed only if it has problems of its own; a group is not listed for a broken child. `name` is the name the cue list shows.
+- `media`: `[{path, status, reason?, cues}]` by path; `status` is `missing` or `unsupported` (`reason` is the probe's message); `cues` use the file.
+- `patches`: output patches with no device to play on: `[{patch, name?, device?, mapped, resolution?, cues}]`, workspace order, then patches cues name that the workspace lacks (`name` and `resolution` absent). `resolution` is the `resolution` object of `device_unavailable` (`unmapped`, `device_missing`, `channels_missing`, `output_count_mismatch`); `mapped` says whether this machine has a mapping for the patch (WS-07); `device` is the mapped device when it is missing; `cues` are the audio cues on the patch (empty for a patch no cue uses: listed all the same, as it cannot play on this machine, but not counted and not a failure).
+- `network`: destinations Network cues use: `[{patch, name?, host?, port?, protocol?, status, cues}]`, workspace order, then missing ones by id. `status` is `missing` (the workspace has no such destination: a problem) or `not_checked` (it exists; **reachability is not probed in v0.0.1**, M4.6: this is neither a problem nor a pass, and does not make `ok` false).
+- `system`: the `warnings` list (device lost or stalled, damaged media, preload problems, cues whose slices cannot play, ...), sorted by `code`, cue, message. Any entry makes `ok` false except `preload_over_budget` (the file is streamed and plays; listed, not counted).
+
+Media status is what the media probes and the media watch last reported (docs/control.md, Pre-show check); the request does no file access.
 
 ### Show log entries and status (M4.7)
 
@@ -138,7 +153,9 @@ These are additions: `PROTOCOL_VERSION` stays 1 (no released client). The Swift 
 | `patch`, `network_patch` | `index`, `patch` | place among the patches |
 | `settings` | `name`, `settings` | the workspace name and settings |
 
-Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`.
+Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`. Deleting a cue list deletes its cues with it; the engine only removes empty lists, so the cues were deleted or moved out in the same or an earlier message.
+
+Edits to settings, patches and cue lists: one `settings` upsert (name and all settings), a `patch` / `network_patch` / `cue_list` upsert per item added or changed and a delete per item removed, and for a move (or an undo of one), or when two or more items of a collection changed in one message, an upsert of every item in that collection at its final index, ascending. A `cue_list` upsert for a list the client holds keeps its cues. They come before the cue upserts of the same message.
 
 What the engine sends for a cue edit: a `delete` for each cue removed or moved, then an `upsert` for each cue added, moved or changed (its final place; in tree order, parents first, ascending index within a parent), so a move is a delete and an upsert in the same message and several moves in one undo step cannot collide. A cue inside a group that is also upserted is not sent separately. Only the cues the edit names are sent (an undo or redo names what the step changed), and exactly one `model_changed` goes out per edit, undo, redo or runtime model change (`SetArmed`); a client that sees a revision gap requests `snapshot`. Edits to a group itself send its whole subtree. See [control.md](control.md) "Model changes".
 

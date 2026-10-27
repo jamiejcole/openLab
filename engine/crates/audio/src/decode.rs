@@ -666,29 +666,145 @@ impl FrameSource for MemorySource {
 /// decides what the file is).
 pub(crate) const HEADER_CHUNKS: usize = 64;
 
-/// Rejects WAV and AIFF headers whose channel count or sample size is outside what openLab plays,
-/// before symphonia sees them: symphonia 0.6.1 computes `(bits / 8) * channels` in `u16`, which
-/// overflows on such headers (a panic with overflow checks on). Other data is left to symphonia.
-/// Leaves `r` at the start.
+/// Bytes symphonia's probe scans for a container marker before giving up
+/// (`ProbeOptions::max_probe_depth`, 1 MiB by default).
+const PROBE_SCAN: u64 = 1 << 20;
+
+/// Most `RIFF....WAVE` markers [`check_pcm_header`] examines in the scanned bytes; more is junk.
+const MAX_WAVE_MARKERS: usize = 64;
+
+/// Rejects WAV and AIFF headers symphonia 0.6.1 would overflow on, before it sees them (a panic
+/// with overflow checks on, as in cargo-fuzz): a channel count outside what openLab plays or a
+/// sample size above 64 bits (`(bits / 8) * channels` is computed in `u16`), and a
+/// WAVE_FORMAT_EXTENSIBLE channel mask that `fix_wave_channel_mask` shifts out of range. The
+/// probe skips leading junk such as an ID3 tag by scanning for a marker, so a RIFF/WAVE header
+/// anywhere in the scanned bytes is checked. Other data is left to symphonia. Leaves `r` at the
+/// start.
 fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
-    let found = find_pcm_format(r);
+    let result = check_pcm_header_at(r);
     r.seek(SeekFrom::Start(0))
         .map_err(|e| MediaError::Io(e.to_string()))?;
-    match found {
-        Some((channels, bits, _))
-            if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 =>
-        {
-            Err(MediaError::Corrupt(format!(
-                "header: {channels} channels of {bits} bits"
-            )))
+    result
+}
+
+fn check_pcm_header_at<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
+    let io = |e: io::Error| MediaError::Io(e.to_string());
+    // A container that starts at byte 0 is what symphonia's probe finds first: check it as-is.
+    reject_bad_header(find_chunk_body(r, 0))?;
+    r.seek(SeekFrom::Start(0)).map_err(io)?;
+    let mut start = [0u8; 12];
+    if r.read_exact(&mut start).is_err()
+        || matches!(&start[..4], b"RIFF" | b"FORM" | b"fLaC" | b"OggS")
+        || &start[4..8] == b"ftyp"
+    {
+        return Ok(());
+    }
+    // Anything else (an ID3 tag, junk) is scanned past by the probe for a marker: so scan too,
+    // without reading at all for the usual files above.
+    let mut head = Vec::new();
+    r.seek(SeekFrom::Start(0)).map_err(io)?;
+    (&mut *r)
+        .take(PROBE_SCAN + 12)
+        .read_to_end(&mut head)
+        .map_err(io)?;
+    let markers: Vec<usize> = head
+        .windows(12)
+        .enumerate()
+        .filter(|(_, w)| w.get(..4) == Some(b"RIFF") && w.get(8..) == Some(b"WAVE"))
+        .map(|(i, _)| i)
+        .take(MAX_WAVE_MARKERS + 1)
+        .collect();
+    if markers.len() > MAX_WAVE_MARKERS {
+        return Err(MediaError::Corrupt("header: too many RIFF markers".into()));
+    }
+    for at in markers {
+        reject_bad_header(find_chunk_body(r, at as u64))?;
+    }
+    Ok(())
+}
+
+fn reject_bad_header(found: Option<ChunkBody>) -> Result<(), MediaError> {
+    let Some(c) = found else { return Ok(()) };
+    let (channels, bits, _) = c.format();
+    if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 {
+        return Err(MediaError::Corrupt(format!(
+            "header: {channels} channels of {bits} bits"
+        )));
+    }
+    if c.extensible_mask_overflows() {
+        return Err(MediaError::Corrupt(format!(
+            "header: channel mask 0x{:08x} for {channels} channels",
+            c.u32_at(20)
+        )));
+    }
+    Ok(())
+}
+
+/// The start of a WAV `fmt ` or AIFF `COMM` chunk (zero-padded where the chunk is shorter).
+struct ChunkBody {
+    big_endian: bool,
+    body: [u8; 40],
+    len: usize,
+}
+
+impl ChunkBody {
+    fn u16_at(&self, i: usize) -> u16 {
+        let b = [
+            self.body.get(i).copied().unwrap_or(0),
+            self.body.get(i + 1).copied().unwrap_or(0),
+        ];
+        if self.big_endian {
+            u16::from_be_bytes(b)
+        } else {
+            u16::from_le_bytes(b)
         }
-        _ => Ok(()),
+    }
+
+    /// Little-endian: only WAV fields are read this way.
+    fn u32_at(&self, i: usize) -> u32 {
+        let b = |k| self.body.get(i + k).copied().unwrap_or(0);
+        u32::from_le_bytes([b(0), b(1), b(2), b(3)])
+    }
+
+    /// Channels, bits per sample and the WAV format tag (0 for AIFF).
+    fn format(&self) -> (u16, u16, u16) {
+        // WAV fmt: tag, channels, rate(4), byte rate(4), block align, bits.
+        // AIFF COMM: channels, frames(4), bits.
+        if self.big_endian {
+            (self.u16_at(0), self.u16_at(6), 0)
+        } else {
+            (self.u16_at(2), self.u16_at(14), self.u16_at(0))
+        }
+    }
+
+    /// Would symphonia's `fix_wave_channel_mask` shift out of range? It adds `channels - ones`
+    /// ones above the mask's highest one, as `((1 << diff) - 1) << bit_length`: the shift amounts
+    /// `diff` (32 or more) and `bit_length` (32, when bit 31 is set) overflow. Ambisonic
+    /// sub-formats (second GUID field 0x0721) take another path and ignore the mask.
+    fn extensible_mask_overflows(&self) -> bool {
+        let (channels, _, tag) = self.format();
+        if self.big_endian || tag != 0xFFFE || self.len < 40 || self.u16_at(16) != 22 {
+            return false;
+        }
+        if self.u16_at(28) == 0x0721 {
+            return false;
+        }
+        let mask = self.u32_at(20);
+        let diff = i64::from(channels) - i64::from(mask.count_ones());
+        diff > 0 && (diff >= 32 || mask >> 31 == 1)
     }
 }
 
-/// Channel count and bits per sample from a RIFF/WAVE `fmt ` or AIFF/AIFC `COMM` chunk, if the
-/// and the WAV format tag (0 for AIFF), if the stream starts with one of those containers. Read errors count as "not found".
+/// Channel count and bits per sample, and the WAV format tag (0 for AIFF), from the RIFF/WAVE
+/// `fmt ` or AIFF/AIFC `COMM` chunk of a stream that starts with one of those containers. Read
+/// errors count as "not found".
 fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16, u16)> {
+    find_chunk_body(r, 0).map(|c| c.format())
+}
+
+/// Finds the `fmt ` / `COMM` chunk of the RIFF/WAVE or AIFF container starting at byte `start`.
+fn find_chunk_body<R: Read + Seek + ?Sized>(r: &mut R, start: u64) -> Option<ChunkBody> {
+    r.seek(SeekFrom::Start(start)).ok()?;
     let mut head = [0u8; 12];
     r.read_exact(&mut head).ok()?;
     let (big_endian, want): (bool, &[u8; 4]) = match (head.get(0..4)?, head.get(8..12)?) {
@@ -706,24 +822,14 @@ fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16, u16)
             u32::from_le_bytes(size)
         };
         if &ch[..4] == want {
-            let mut body = [0u8; 16];
-            let n = usize::try_from(size).unwrap_or(usize::MAX).min(16);
-            r.read_exact(body.get_mut(..n)?).ok()?;
-            let u16_at = |i: usize| {
-                let b = [*body.get(i)?, *body.get(i + 1)?];
-                Some(if big_endian {
-                    u16::from_be_bytes(b)
-                } else {
-                    u16::from_le_bytes(b)
-                })
-            };
-            // WAV fmt: tag, channels, rate(4), byte rate(4), block align, bits.
-            // AIFF COMM: channels, frames(4), bits.
-            return if big_endian {
-                Some((u16_at(0)?, u16_at(6)?, 0))
-            } else {
-                Some((u16_at(2)?, u16_at(14).unwrap_or(0), u16_at(0)?))
-            };
+            let mut body = [0u8; 40];
+            let len = usize::try_from(size).unwrap_or(usize::MAX).min(40);
+            r.read_exact(body.get_mut(..len)?).ok()?;
+            return Some(ChunkBody {
+                big_endian,
+                body,
+                len,
+            });
         }
         // Chunks are padded to an even length.
         let skip = i64::from(size) + i64::from(size & 1);
