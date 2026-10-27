@@ -36,7 +36,7 @@ Each client has its own bounded queue (`CLIENT_QUEUE`, 1024 messages). The fan-o
 
 `ServerConfig::osc: Option<OscConfig>` (default `None`; `host::run_show` sets `Some(OscConfig::default())`) starts the OSC sockets on the same two-thread runtime. They are bound before the tasks start; a bind failure (port in use) sends a warning through `Inbox::Log` and leaves OSC off while the WebSocket server starts normally (`WsServer::osc_ports()` is `None`). Tests set `port: 0`, `bind: 127.0.0.1` and `reply_port`.
 
-The fan-out task also offers every `model_changed`, `runtime` and `document` broadcast to the OSC task through a bounded **tap** (`hub::Tap`): a full tap marks the OSC task lagged, which then rebuilds its workspace copy from a snapshot, exactly as a lagged WebSocket client does. The OSC task asks the control loop for snapshots with its own reply channel and ids from 2^63 up. Everything else (queues, caps, counters, TCP limit) is in [osc.md](osc.md) "Listeners".
+The fan-out task also offers every `model_changed`, `runtime` and `document` broadcast to the OSC task through a bounded **tap** (`hub::Tap`): a full tap marks the OSC task lagged, which then rebuilds its workspace copy from a snapshot, exactly as a lagged WebSocket client does. The OSC task asks the control loop for snapshots with its own reply channel and ids from 2^63 up. Everything else (queues, caps, counters, TCP limit and idle eviction) is in [osc.md](osc.md) "Listeners". `net/hub.rs` has unit tests for the tap; `osc_mirror.rs` for the workspace copy.
 
 ## Tests
 

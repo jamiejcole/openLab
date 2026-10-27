@@ -201,7 +201,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ## 10. Triggers & Inputs
 - [ ] **TRG-01** `v0.0.1` Keyboard hotkeys for GO, Stop All, Pause/Resume All, playhead navigation, and per-cue triggers; fully remappable; work regardless of which panel has focus (in Show Mode).
 - [ ] **TRG-02** MIDI input triggers: note, CC, program change, MSC; per-cue and global (GO/Stop via MIDI).
-- [x] **TRG-03** `v0.0.1` OSC input triggers: per-cue and global.
+- [ ] **TRG-03** `v0.0.1` OSC input triggers: per-cue and global.
 - [ ] **TRG-04** Timecode input (LTC via audio, MTC via MIDI) triggering cues at specific timecode values; chase/freewheel handling for dropouts.
 - [ ] **TRG-05** Wall-clock triggers (time of day, with day-of-week).
 - [ ] **TRG-06** Generic USB/HID controllers (foot pedals, Stream Deck via Companion) through MIDI/OSC/hotkey mapping.
@@ -213,7 +213,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [x] **NET-02** `v0.0.1` OSC passcode / access control for the API.
 - [ ] **NET-03** Web-based remote (phone/tablet browser) served by openLab: GO, Stop, playhead, active cues, notes. No app install required.
 - [ ] **NET-04** `low` Bitfocus Companion module.
-- [x] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
+- [ ] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
 
 ---
 
