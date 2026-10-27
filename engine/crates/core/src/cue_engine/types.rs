@@ -200,6 +200,14 @@ pub enum Input {
     /// Panic (PB-03): every cue fades out over the workspace's `panic_duration` and stops; a
     /// second Panic during that fade stops everything at once.
     Panic,
+    /// Stop All: every cue of every list, at every depth, and every preview, stops at once (no
+    /// fades, nothing pending fires). Unlike Panic it starts no fade and leaves no panic window.
+    StopAll,
+    /// One cue's own panic, as its `panic` second trigger: the cue and everything in it fade out
+    /// over `panic_duration` (0: stop at once). Other cues and the workspace panic are untouched.
+    PanicCue {
+        cue: CueId,
+    },
     /// Pause every active cue (PB-04).
     PauseAll,
     /// Resume every paused cue (PB-04).

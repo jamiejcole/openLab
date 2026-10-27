@@ -413,6 +413,12 @@ impl CueEngine {
             Input::Preview { cue } => self.preview(cue, cx),
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
+            Input::StopAll => self.stop_all(cx),
+            Input::PanicCue { cue } => {
+                if self.known(cue, cx) {
+                    self.panic_tree(cue, cx);
+                }
+            }
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
             Input::MediaStatus { media, status } => {
