@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The launcher shows until the engine reports a workspace (fake engine: at once).
         appController.showLauncher()
+        appController.installKeyMonitor()
         engineSession.start()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -40,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// One save prompt per dirty workspace, then `goodbye { shutdown }`; Cancel aborts the quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if appController.quitting { return .terminateCancel }
         Task { @MainActor in
             let ok = await appController.prepareToQuit()
             NSApp.reply(toApplicationShouldTerminate: ok)

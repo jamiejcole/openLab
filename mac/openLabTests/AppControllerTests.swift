@@ -8,6 +8,7 @@ import XCTest
 final class ScriptedAlerts: WorkspaceAlerts {
     var closePlaying = true
     var quitPlaying = true
+    var quitDisconnected = false
     var saveChoices: [SaveChoice] = []
     private(set) var log: [String] = []
     private(set) var errors: [String] = []
@@ -20,6 +21,11 @@ final class ScriptedAlerts: WorkspaceAlerts {
     func confirmQuitWhilePlaying() -> Bool {
         log.append("quitPlaying")
         return quitPlaying
+    }
+
+    func confirmQuitDisconnected() -> Bool {
+        log.append("quitDisconnected")
+        return quitDisconnected
     }
 
     func unsavedChanges(workspace: String) -> SaveChoice {
@@ -40,11 +46,17 @@ final class AppControllerTests: XCTestCase {
     private var saveURL: URL?
     private var openURL: URL?
 
-    override func setUp() async throws {
-        engine = FakeEngine(mode: .multi, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
+    private let sessionScheduler = ManualScheduler()
+    private let quitScheduler = ManualScheduler()
+
+    override func setUp() async throws { try await build(.multi) }
+
+    private func build(_ mode: FakeEngine.Mode) async throws {
+        app?.closeAllWindows()
+        engine = FakeEngine(mode: mode, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         let info = engine.info
-        let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: ManualScheduler())
-        app = AppController(session: session)
+        let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
+        app = AppController(session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -172,14 +184,49 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.pauseAll), [second])
     }
 
-    func testPanicIsAppScopeFromTheEscKeyAndTheButton() async throws {
-        let second = try await addWorkspace()
-        app.windows[second]?.cancelOperation(nil)
-        await assertEventually { transports(.panic).count == 1 }
+    func testPanicButtonIsAppScope() async throws {
+        _ = try await addWorkspace()
         app.windows["doc-1"]?.sidebar.transportButtons[AX.transportPanic]?.performClick(nil)
-        await assertEventually { transports(.panic).count == 2 }
+        await assertEventually { transports(.panic).count == 1 }
         // Sent on the unbound app connection, not a workspace's.
+        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+    }
+
+    private func escEvent(flags: NSEvent.ModifierFlags = [], keyCode: UInt16 = 53) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: keyCode))
+    }
+
+    func testEscPanicsOnceWithLauncherKeyAndWithATextFieldEditing() async throws {
+        app.showLauncher()
+        let event = try escEvent()
+        XCTAssertTrue(app.handleKeyDown(event) === event)  // passed on: editors and alerts still see it
+        await assertEventually { transports(.panic).count == 1 }
+        await settle()
+        XCTAssertEqual(transports(.panic).count, 1)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 50), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        let field = NSTextField(string: "x")
+        window.contentView = field
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertNotNil(field.currentEditor())
+        _ = app.handleKeyDown(try escEvent())
+        await assertEventually { transports(.panic).count == 2 }
+        window.close()
         XCTAssertEqual(transports(.panic).map { $0 == nil }, [true, true])
+    }
+
+    func testOnlyPlainEscPanics() async throws {
+        _ = app.handleKeyDown(try escEvent(flags: .command))
+        _ = app.handleKeyDown(try escEvent(keyCode: 0))
+        await settle()
+        XCTAssertTrue(transports(.panic).isEmpty)
     }
 
     // MARK: Close
@@ -331,6 +378,156 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
         XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+    }
+
+    func testSaveFailureDuringQuitAbortsWithALocalisedAlertAndNoGoodbye() async throws {
+        alerts.saveChoices = [.save]
+        engine.garbleResults = true
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.errors.count, 1)
+        XCTAssertFalse(alerts.errors[0].contains("encoding("))
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+    }
+
+    func testHungSaveTimesOutAndAbortsQuit() async throws {
+        alerts.saveChoices = [.save]
+        engine.holdResults = true
+        let task = Task { await app.prepareToQuit() }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let quit = await task.value
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.errors.count, 1)
+        XCTAssertFalse(app.quitting)
+        engine.releaseResults()
+    }
+
+    func testHungGoodbyeFlushStillQuits() async throws {
+        alerts.saveChoices = [.dontSave]
+        engine.holdFlush = true
+        let task = Task { await app.prepareToQuit() }
+        await assertEventually {
+            self.engine.received.contains { if case .goodbye = $0 { return true } else { return false } }
+        }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let quit = await task.value
+        XCTAssertTrue(quit)
+    }
+
+    private func disconnect() async {
+        engine.dropConnections()
+        await assertEventually { app.session.connectionState != .connected }
+    }
+
+    func testQuitWhileDisconnectedCancelKeepsRunning() async throws {
+        await disconnect()
+        alerts.quitDisconnected = false
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.log, ["quitDisconnected"])
+    }
+
+    func testQuitWhileDisconnectedQuitAnywayQuitsWithoutPrompts() async throws {
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertEqual(alerts.log, ["quitDisconnected"])
+    }
+
+    // MARK: Re-entrancy, single-workspace engine, reconnect
+
+    func testDoubleCloseRequestIsIgnored() async throws {
+        let second = try await addWorkspace()
+        let firstTask = Task { await app.closeWorkspace(second) }
+        let againTask = Task { await app.closeWorkspace(second) }
+        let results = [await firstTask.value, await againTask.value]
+        XCTAssertEqual(results.filter { $0 }.count, 1)
+        XCTAssertEqual(closeMessages().count, 1)
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testQuitDuringACloseFlowIsIgnoredAndCloseDuringQuitIsIgnored() async throws {
+        let second = try await addWorkspace()
+        engine.holdResults = true
+        let closeTask = Task { await app.closeWorkspace(second) }
+        await assertEventually { closeMessages().count == 1 }
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertTrue(alerts.log.isEmpty)
+        engine.holdResults = false
+        engine.releaseResults()
+        _ = await closeTask.value
+    }
+
+    func testReconnectDoesNotDuplicateWindows() async throws {
+        let before = try XCTUnwrap(app.windows["doc-1"])
+        await disconnect()
+        await assertEventually {
+            await self.sessionScheduler.fire()
+            return self.app.session.connectionState == .connected && self.app.session.stores["doc-1"]?.connectionState == .connected
+        }
+        await settle()
+        XCTAssertEqual(app.windows.count, 1)
+        XCTAssertTrue(app.windows["doc-1"] === before)
+    }
+
+    func testSingleWorkspaceEngineCloseDoesNothing() async throws {
+        try await build(.single)
+        await assertEventually { app.windows.count == 1 }
+        let closed = await app.closeWorkspace(EngineSession.singleDoc)
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.log.isEmpty)
+        XCTAssertEqual(app.windows.first?.value.window?.isVisible, true)
+        XCTAssertFalse(app.launcher.window?.isVisible ?? true)
+        XCTAssertTrue(closeMessages().isEmpty)
+    }
+
+    private func newRequests() -> Int { engine.requestCount { if case .new = $0 { return true } else { return false } } }
+
+    func testDirtySingleWorkspaceNewDontSaveRetriesWithDiscard() async throws {
+        try await build(.single)
+        await assertEventually { app.windows.count == 1 }
+        alerts.saveChoices = [.dontSave]
+        await app.newWorkspace()
+        XCTAssertEqual(newRequests(), 2)
+        XCTAssertEqual(alerts.log, ["unsaved:Test"])
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testDirtySingleWorkspaceNewCancelDoesNotRetry() async throws {
+        try await build(.single)
+        await assertEventually { app.windows.count == 1 }
+        alerts.saveChoices = [.cancel]
+        await app.newWorkspace()
+        XCTAssertEqual(newRequests(), 1)
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testDirtySingleWorkspaceOpenSaveSavesThenRetries() async throws {
+        try await build(.single)
+        await assertEventually { app.windows.count == 1 }
+        alerts.saveChoices = [.save]
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/B.openlab"))
+        XCTAssertEqual(engine.requestCount { if case .save = $0 { return true } else { return false } }, 1)
+        XCTAssertEqual(engine.requestCount { if case .open = $0 { return true } else { return false } }, 2)
+        XCTAssertEqual(recents, [URL(fileURLWithPath: "/Shows/B.openlab")])
+    }
+
+    func testAlreadyOpenFromTheLauncherFrontsTheExistingWindowWithoutAnError() async throws {
+        let url = URL(fileURLWithPath: "/Shows/A.openlab")
+        await app.openWorkspace(url: url)
+        await assertEventually { app.windows.count == 2 }
+        recents = [url]
+        app.showLauncher()
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
+        await settle()
+        XCTAssertEqual(app.windows.count, 2)
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertFalse(app.launcher.window?.isVisible ?? true)
     }
 
     // MARK: Helpers
