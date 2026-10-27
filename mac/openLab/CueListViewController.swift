@@ -192,6 +192,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Selecting a cue by hand moves the playhead to it (QLab's default); rebuilds that restore the
     /// selection must not, so they raise this flag.
     private var restoringSelection = false
+    private var sentPlayhead: ModelID?
 
     func select(_ ids: [ModelID]) {
         restoringSelection = true
@@ -201,9 +202,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        // Compared with what was last sent, not only what the engine echoed: A, B, A within one
+        // round trip must still end on A.
         guard !restoringSelection, !batching, let list = listID, let id = selectedIDs().first,
-            store.playheads[list] != id
+            (sentPlayhead ?? store.playheads[list]) != id
         else { return }
+        sentPlayhead = id
         Task { await store.transport(.setPlayhead(list: list, cue: id)) }
     }
 
@@ -216,7 +220,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch change {
         case .reset: rebuild()
         case .model(let upserts, let deletes): applyModel(upserts: upserts, deletes: deletes)
-        case .runtime(let cues, let heads): refresh(cues, playheads: heads)
+        case .runtime(let cues, let heads):
+            if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
+            refresh(cues, playheads: heads)
         case .progress(let ids): refresh(ids, columns: ["duration"])
         }
     }
