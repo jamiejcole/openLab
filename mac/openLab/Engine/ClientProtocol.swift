@@ -127,6 +127,7 @@ enum Request: Hashable, Sendable, Codable {
     case revert(discardChanges: Bool = false)
     case relink(folder: String)
     case listDevices
+    case preshowCheck
     case logTail(max: UInt32? = nil)
     case snapshot
 
@@ -166,6 +167,7 @@ enum Request: Hashable, Sendable, Codable {
             return ("revert", f)
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
+        case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
             opt(&f, "max", max)
             return ("log_tail", f)
@@ -195,6 +197,7 @@ enum Request: Hashable, Sendable, Codable {
         case "revert": self = .revert(discardChanges: discard)
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
+        case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
         case "snapshot": self = .snapshot
         case let other:

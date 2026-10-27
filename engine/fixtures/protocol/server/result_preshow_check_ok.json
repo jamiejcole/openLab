@@ -1,0 +1,24 @@
+{
+  "type": "result",
+  "id": 50,
+  "ok": {
+    "data": {
+      "type": "preshow_check",
+      "ok": true,
+      "summary": {
+        "broken_cues": 0,
+        "media": 0,
+        "patches": 0,
+        "network": 0,
+        "network_unchecked": 0,
+        "system": 0,
+        "total": 0
+      },
+      "broken_cues": [],
+      "media": [],
+      "patches": [],
+      "network": [],
+      "system": []
+    }
+  }
+}
