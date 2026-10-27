@@ -179,11 +179,26 @@ final class FakeEngine: EngineTransport {
         }
         switch message {
         case .hello: fail(c, .badRequest, "second hello", close: false)
-        case .command(let id, _), .transport(let id, _), .undo(let id), .redo(let id): result(c, id)
+        case .transport(let id, let action):
+            result(c, id)
+            if case .go = action, let doc = c.doc { fakeGo(doc) }
+        case .command(let id, _), .undo(let id), .redo(let id): result(c, id)
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
         case .provisional(.close(let id, let doc, let discard)): handleClose(id, doc: doc, discard: discard, from: c)
         }
+    }
+
+    /// The one transport effect the fake performs, so UI tests can see a GO land: the demo show's
+    /// loaded cue (...21) starts running. Documents without that cue are left alone.
+    private func fakeGo(_ doc: ModelID) {
+        let cue = "00000000-0000-0000-0000-000000000021"
+        guard var s = docs[doc], case .int(let q)? = s["runtime_seq"], "\(s)".contains(cue) else { return }
+        s.set("runtime_seq", .int(q + 1))
+        docs[doc] = s
+        push(
+            #"{"type":"runtime","seq":\#(q + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"running"}]}"#,
+            doc: doc)
     }
 
     private func handleHello(_ h: Hello, from c: FakeConnection) {

@@ -56,7 +56,8 @@ final class AppControllerTests: XCTestCase {
         engine = FakeEngine(mode: mode, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         let info = engine.info
         let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
-        app = AppController(session: session, scheduler: quitScheduler)
+        app = AppController(
+            session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -71,6 +72,25 @@ final class AppControllerTests: XCTestCase {
     override func tearDown() async throws {
         app.closeAllWindows()
         app = nil
+    }
+
+    static func hotkey(_ key: String, _ mods: [String] = []) -> String {
+        let flags = ["shift", "control", "alt", "command"].map { "\"\($0)\":\(mods.contains($0))" }.joined(
+            separator: ",")
+        return #"{"key":"\#(key)","modifiers":{\#(flags)}}"#
+    }
+
+    /// Replaces the workspace's `settings.hotkeys` as the engine would (a `settings` upsert).
+    private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        var settings = try XCTUnwrap(store.model?.settings)
+        settings.set("hotkeys", try XCTUnwrap(JSONValue.parse(hotkeys)))
+        let name = store.model?.name ?? ""
+        let upsert = #"{"type":"settings","name":"\#(name)","settings":\#(try settings.text())}"#
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#, doc: doc
+        )
+        await assertEventually { store.model?.settings == settings }
     }
 
     /// A second, clean workspace.
@@ -145,10 +165,13 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testNoRevertInTheMenus() {
-        let titles = MainMenu.make().bar.items.flatMap { $0.submenu?.items.map(\.title) ?? [] }
+        let titles = MainMenu.make().bar.items.flatMap {
+            $0.submenu?.items.map(\.title) ?? []
+        }
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
-            MainMenu.make().bar.items[1].submenu?.items.map(\.keyEquivalent), ["n", "o", "", "w"])
+            MainMenu.make().bar.items[1].submenu?.items.map(
+                \.keyEquivalent), ["n", "o", "", "w"])
     }
 
     // MARK: Front-window routing
@@ -227,6 +250,285 @@ final class AppControllerTests: XCTestCase {
         _ = app.handleKeyDown(try escEvent(keyCode: 0))
         await settle()
         XCTAssertTrue(transports(.panic).isEmpty)
+    }
+
+    // MARK: Transport commands
+
+    func testEveryCommandSendsItsMessageToTheKeyWindowsWorkspace() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        for (command, action) in [
+            (TransportCommand.go, TransportAction.go(list: list)), (.pauseAll, .pauseAll), (.resumeAll, .resumeAll),
+            (.playheadNext, .playheadNext(list: list)), (.playheadPrevious, .playheadPrevious(list: list)),
+        ] {
+            await app.perform(command)
+            XCTAssertEqual(transports(action), [second], "\(command)")
+        }
+        keyDoc = "doc-1"
+        await app.perform(.pauseAll)
+        XCTAssertEqual(transports(.pauseAll), [second, "doc-1"])
+    }
+
+    func testResumeAllButtonAddressesItsOwnStore() async throws {
+        let second = try await addWorkspace()
+        keyDoc = "doc-1"
+        app.windows[second]?.sidebar.transportButtons[AX.transportResume]?.performClick(nil)
+        await assertEventually { !transports(.resumeAll).isEmpty }
+        XCTAssertEqual(transports(.resumeAll), [second])
+    }
+
+    func testPanicCommandIsAppScopeAndNeedsNoWorkspaceWindow() async throws {
+        keyDoc = nil
+        XCTAssertTrue(app.canPerform(.panic))
+        XCTAssertFalse(app.canPerform(.go))
+        await app.perform(.panic)
+        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+    }
+
+    func testStopAllSendsStopAllToTheKeyWindowsWorkspaceOnly() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        XCTAssertTrue(app.canPerform(.stopAll))
+        await app.perform(.stopAll)
+        XCTAssertEqual(transports(.stopAll), [second])
+        XCTAssertTrue(transports(.hardStop(cue: "00000000-0000-0000-0000-00000000000a")).isEmpty, "no per-cue loop")
+    }
+
+    func testStopAllKeyFromTheShowsHotkeysDispatches() async throws {
+        keyDoc = "doc-1"
+        try await setHotkeys("doc-1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually { !transports(.stopAll).isEmpty }
+        XCTAssertEqual(transports(.stopAll), ["doc-1"])
+    }
+
+    func testEscStaysPanicNotStopAll() async throws {
+        keyDoc = "doc-1"
+        _ = app.handleKeyDown(try escEvent())
+        await assertEventually { transports(.panic).count == 1 }
+        XCTAssertTrue(transports(.stopAll).isEmpty)
+    }
+
+    func testFailedTransportBeepsAndLogsInsteadOfBeingDropped() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        engine.dropConnections()
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 1)
+        let errors = store.logEntries.filter { $0.level == .error }.map(\.message)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.hasPrefix("Transport command failed") == true, "\(errors)")
+    }
+
+    func testSuccessfulTransportDoesNotBeep() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 0)
+    }
+
+    func testPlayheadSendsTheFinalSelectionEvenBeforeTheEchoArrives() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let a: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let b: ModelID = "00000000-0000-0000-0000-00000000000b"  // the playhead already
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        func click(_ id: ModelID) {
+            let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(id))
+            wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        click(a)
+        click(b)  // back on the cue the (not yet moved) playhead is on
+        await assertEventually { !transports(.setPlayhead(list: list, cue: b)).isEmpty }
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: a)).count, 1)
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: b)).count, 1)
+    }
+
+    func testKeyCacheIsEvictedWhenAWorkspaceCloses() async throws {
+        let second = try await addWorkspace()
+        let before = app.keyCacheCount
+        XCTAssertGreaterThanOrEqual(before, 2)
+        _ = await app.session.close(doc: second, discardChanges: true)
+        await assertEventually { app.windows[second] == nil }
+        XCTAssertEqual(app.keyCacheCount, before - 1)
+    }
+
+    func testHotkeyWarningsAreLoggedWhenTheSettingsArriveNotAtTheFirstKeyPress() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        await assertEventually { store.logEntries.contains { $0.level == .warn } }
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
+    }
+
+    func testSelectedCueCommandsUseTheSelection() async throws {
+        keyDoc = "doc-1"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+        wc.cueList.select([running])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [running])
+        await app.perform(.pauseResumeSelected)  // running -> pause
+        await app.perform(.startSelected)
+        await app.perform(.stopSelected)
+        await app.perform(.resetSelected)
+        await app.perform(.loadSelected)
+        XCTAssertEqual(transports(.pause(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.start(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.reset(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.load(cue: running, at: 0)), ["doc-1"])
+        wc.cueList.select([])  // nothing selected: nothing sent
+        await app.perform(.startSelected)
+        XCTAssertEqual(transports(.start(cue: running)).count, 1)
+    }
+
+    func testSelectingByHandMovesThePlayheadButRestoringDoesNot() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let target: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let action = TransportAction.setPlayhead(list: "00000000-0000-0000-0000-000000000001", cue: target)
+        wc.cueList.select([target])  // programmatic: no message
+        await settle()
+        XCTAssertTrue(transports(action).isEmpty)
+        wc.cueList.outlineView.deselectAll(nil)
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(target))
+        wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)  // as a click does
+        await assertEventually { !transports(action).isEmpty }
+    }
+
+    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        XCTAssertFalse(wc.masthead.notesView.acceptsFirstResponder)
+        XCTAssertTrue(wc.window?.initialFirstResponder === wc.cueList.outlineView)
+    }
+
+    private func keyEvent(_ chars: String, _ flags: NSEvent.ModifierFlags = [], repeats: Bool = false) throws -> NSEvent
+    {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: repeats, keyCode: 49))
+    }
+
+    func testSpaceKeyDownSendsGoForTheKeyWorkspaceAndIsConsumed() async throws {
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        keyDoc = "doc-1"
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { !transports(go).isEmpty }
+        XCTAssertEqual(transports(go), ["doc-1"])
+        // Held down: the repeat is consumed but sends nothing.
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)))
+        await settle()
+        XCTAssertEqual(transports(go).count, 1)
+    }
+
+    func testSpaceWhileTypingStaysWithTheTextField() async throws {
+        keyDoc = "doc-1"
+        app.isTextEditing = { true }
+        let event = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(event) === event)
+        await settle()
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testKeysComeFromTheWorkspaceSettingsAndFallBackToDefaults() async throws {
+        let list = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        keyDoc = "doc-1"
+        try await setHotkeys("doc-1", #"{"go":\#(Self.hotkey("g")),"pause_all":null}"#)
+        let old = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(old) === old, "Space is no longer GO in this show")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { !transports(list).isEmpty }
+        let none = try keyEvent("[")
+        XCTAssertTrue(app.handleKeyDown(none) === none, "null: no key")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("]")), "absent resume_all: QLab default")
+    }
+
+    func testEachWindowUsesItsOwnWorkspacesKeys() async throws {
+        let second = try await addWorkspace()
+        try await setHotkeys(second, #"{"go":\#(Self.hotkey("g"))}"#)
+        keyDoc = second
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord("g"))
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        await assertEventually { !transports(go).isEmpty }
+        keyDoc = "doc-1"
+        XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "))
+        let g = try keyEvent("g")
+        XCTAssertTrue(app.handleKeyDown(g) === g)
+        await settle()
+        XCTAssertEqual(transports(go), [second])
+    }
+
+    func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        keyDoc = "doc-1"
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f5","modifiers":{}}}"#)
+        let keys = app.frontKeys
+        XCTAssertEqual(keys.chord(for: .go), KeyChord("x"))
+        XCTAssertNil(keys.chord(for: .pauseAll), "the later field loses")
+        XCTAssertNil(keys.chord(for: .resumeAll))
+        let warnings = store.logEntries.filter { $0.level == .warn }.map(\.message)
+        XCTAssertEqual(warnings.count, 2, "\(warnings)")
+        _ = app.frontKeys  // read again: not logged twice
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 2)
+    }
+
+    func testAHeldKeyFiresOnce() async throws {
+        keyDoc = "doc-1"
+        await app.perform(.go, isRepeat: true)
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testTypingKeepsCharacterKeysButNotCommandChords() async throws {
+        keyDoc = "doc-1"
+        var typing = true
+        app.isTextEditing = { typing }
+        XCTAssertFalse(app.canPerform(.go), "Space types a space")
+        XCTAssertFalse(app.canPerform(.pauseAll))
+        XCTAssertFalse(app.canPerform(.pauseResumeSelected), "P types a p")
+        XCTAssertTrue(app.canPerform(.playheadNext), "Shift-Cmd-Down is not a typing key")
+        XCTAssertTrue(app.canPerform(.panic))
+        typing = false
+        XCTAssertTrue(app.canPerform(.go))
+    }
+
+    func testMenuKeyEquivalentsFollowTheKeyWindowsKeys() async throws {
+        keyDoc = "doc-1"
+        let menus = MainMenu.make()
+        func item(_ c: TransportCommand) -> NSMenuItem? {
+            menus.transport.items.first { $0.representedObject as? String == c.rawValue }
+        }
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item(.go)?.keyEquivalent, " ")
+        XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
+        XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
+        XCTAssertEqual(
+            item(.playheadNext)?.keyEquivalent, "", "the model's bare Down: the selection moves the playhead")
+        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "the model's Esc is the app-wide panic")
+        XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
+        XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
+        let commands = menus.transport.items.compactMap { $0.representedObject as? String }
+        XCTAssertEqual(commands.count, TransportCommand.allCases.count)
+
+        try await setHotkeys(
+            "doc-1",
+            #"{"go":\#(Self.hotkey("g", ["command"])),"playhead_next":\#(Self.hotkey("down", ["command", "shift"]))}"#)
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item(.go)?.keyEquivalent, "g")
+        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+    }
+
+    func testTransportMenuTitlesAreLocalised() {
+        let menus = MainMenu.make()
+        for entry in menus.transport.items where !entry.isSeparatorItem {
+            XCTAssertFalse(entry.title.hasPrefix("menu."), entry.title)
+        }
     }
 
     // MARK: Close
