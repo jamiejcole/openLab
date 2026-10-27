@@ -14,7 +14,9 @@
 //!
 //! Probe scheduling per volume (M2.25b). A volume is the mount a path is on (`bucket_of`, as the
 //! media watch names them: `/Volumes/<name>`, `/mnt/<name>`, a drive or share; everything else,
-//! the system disk included, is `/`). One slow probe is not a verdict on a mount, so a volume
+//! the system disk included, is `/`, which is never gated: it mixes the local disk with
+//! automounts and cloud folders, so probes there run as ever, a stuck worker simply replaced).
+//! One slow probe is not a verdict on a mount, so a volume
 //! counts as stalled only when the media watch reports it stalled, or when two different files'
 //! probes are stuck on it (preloads never count). A stalled volume gets one trial job at a time
 //! (the rest wait, still pending, no worker taken; files keep any last answer) and the next
@@ -108,6 +110,9 @@ impl Job {
     }
 }
 
+/// The volume of everything not on a mount of its own.
+const SYSTEM_VOLUME: &str = "/";
+
 /// Different files with a stuck probe that make a volume stalled on the probes' word alone.
 const CORROBORATION: usize = 2;
 
@@ -142,6 +147,7 @@ struct Taken {
     /// The gate's epoch then: a job taken before a reset does not touch the new state.
     epoch: u64,
     trial: Option<u64>,
+    bucket: String,
 }
 
 /// What the workers and the control thread share about the volumes (never held across I/O).
@@ -157,17 +163,25 @@ struct Gate {
     events: Vec<(String, bool)>,
     /// Volumes the media watch reports stalled (its notice is the only one).
     watch_stalled: HashSet<String>,
+    /// Which volume a path is on (the media watch's `bucket_of` unless a test injects one).
+    volume: Option<fn(&Path) -> String>,
     epoch: u64,
     next_trial: u64,
 }
 
 impl Gate {
+    fn bucket(&self, path: &Path) -> String {
+        self.volume.map_or_else(|| bucket_of(path), |f| f(path))
+    }
+
     fn stalled(&self, bucket: &str) -> bool {
-        self.watch_stalled.contains(bucket)
-            || self
-                .volumes
-                .get(bucket)
-                .is_some_and(|v| v.stuck.len() >= CORROBORATION)
+        // The system disk is never held back (see the module docs).
+        bucket != SYSTEM_VOLUME
+            && (self.watch_stalled.contains(bucket)
+                || self
+                    .volumes
+                    .get(bucket)
+                    .is_some_and(|v| v.stuck.len() >= CORROBORATION))
     }
 
     /// May a job start on `bucket` now: it works, or it is stalled and a trial is due.
@@ -183,7 +197,7 @@ impl Gate {
         if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
             return None;
         }
-        let bucket = bucket_of(job.path());
+        let bucket = self.bucket(job.path());
         if !self.may_start(&bucket, now) {
             self.defer(job, high);
             return None;
@@ -193,13 +207,14 @@ impl Gate {
             self.next_trial
         });
         self.claimed.insert(claim, ticket);
-        let v = self.volumes.entry(bucket).or_default();
+        let v = self.volumes.entry(bucket.clone()).or_default();
         v.in_flight += 1;
         v.trial = trial.or(v.trial);
         Some(Taken {
             job,
             epoch: self.epoch,
             trial,
+            bucket,
         })
     }
 
@@ -286,7 +301,7 @@ impl Gate {
         trial: Option<u64>,
         now: Instant,
     ) {
-        if epoch != self.epoch {
+        if epoch != self.epoch || bucket == SYSTEM_VOLUME {
             return;
         }
         let watch = self.watch_stalled.contains(bucket);
@@ -306,14 +321,14 @@ impl Gate {
     }
 
     /// The deferred jobs that may run now: all on a volume that works, one trial on a stalled
-    /// volume that is due (`trials`: workers can be spared for one).
-    fn release_due(&mut self, now: Instant, trials: bool) -> Vec<(Job, bool)> {
+    /// volume that is due.
+    fn release_due(&mut self, now: Instant) -> Vec<(Job, bool)> {
         let mut tried: HashSet<String> = HashSet::new();
         let mut out = Vec::new();
         for (job, high) in std::mem::take(&mut self.deferred) {
-            let bucket = bucket_of(job.path());
+            let bucket = self.bucket(job.path());
             let go = if self.stalled(&bucket) {
-                trials && self.may_start(&bucket, now) && tried.insert(bucket)
+                self.may_start(&bucket, now) && tried.insert(bucket)
             } else {
                 true
             };
@@ -998,9 +1013,9 @@ impl MediaCatalog {
             self.give_up(&key, ticket, &mut out);
         }
         // Jobs that waited for a stalled volume run when it works again, or one at a time as
-        // trials while workers can be spared (half the replacement budget is kept for others).
-        let released =
-            lock(&self.gate).release_due(now, self.abandoned < MAX_ABANDONED_WORKERS / 2);
+        // trials: a trial that answers (or a stalled volume the watch sees healthy again) ends
+        // the wait for all of them.
+        let released = lock(&self.gate).release_due(now);
         for (job, high) in released {
             let queue = if high { &self.high } else { &self.low };
             let _ = queue.send(job);
@@ -1009,12 +1024,22 @@ impl MediaCatalog {
     }
 
     /// The volumes the media watch reports stalled: the probes defer to them too.
-    pub fn set_watch_stalled<'a>(&mut self, volumes: impl IntoIterator<Item = &'a str>) {
-        let set: HashSet<String> = volumes.into_iter().map(str::to_owned).collect();
+    pub fn set_watch_stalled<'a>(&mut self, volumes: impl IntoIterator<Item = &'a str> + Clone) {
         let mut gate = lock(&self.gate);
-        if gate.watch_stalled != set {
-            gate.watch_stalled = set;
+        // Nothing is built on the (usual) tick where nothing changed.
+        let mut count = 0;
+        let same = volumes.clone().into_iter().all(|v| {
+            count += 1;
+            gate.watch_stalled.contains(v)
+        });
+        if !same || count != gate.watch_stalled.len() {
+            gate.watch_stalled = volumes.into_iter().map(str::to_owned).collect();
         }
+    }
+
+    /// Tests inject which volume a path is on.
+    pub fn set_volume_of(&mut self, volume: fn(&Path) -> String) {
+        lock(&self.gate).volume = Some(volume);
     }
 
     /// Reports `key`'s probe `ticket` unplayable, if it is still the one asked and not answered.
@@ -1304,11 +1329,15 @@ fn worker(
         };
         // A job for a stalled volume waits for the control thread to release it; a copy of a
         // job already taken is dropped.
-        let Some(Taken { job, epoch, trial }) = lock(gate).admit(job, from_high, clock.now())
+        let Some(Taken {
+            job,
+            epoch,
+            trial,
+            bucket,
+        }) = lock(gate).admit(job, from_high, clock.now())
         else {
             continue;
         };
-        let bucket = bucket_of(job.path());
         let probe_job = job.is_probe();
         let key = job.key().0.to_owned();
         *lock(&state.busy) = Some(Busy {
@@ -2312,7 +2341,7 @@ mod tests {
         assert!(trial.trial.is_some());
         assert!(gate.admit(job("/mnt/dead/d.wav", 5), true, t0).is_none());
         assert!(gate.admit(job("/mnt/dead/e.wav", 6), false, t0).is_none());
-        assert!(gate.release_due(t0, true).is_empty());
+        assert!(gate.release_due(t0).is_empty());
         // The trial gets stuck too: an abandoned job does not block the next one, after 30 s,
         // then 60 s, doubling to 300 s.
         let mut now = t0;
@@ -2321,19 +2350,15 @@ mod tests {
         for wait in [30, 60, 120, 240, 300, 300] {
             gate.timed_out(trial.epoch, DEAD, trial.job.key().0, true, trial.trial, now);
             let early = now + Duration::from_secs(wait - 1);
-            assert!(gate.release_due(early, true).is_empty(), "{wait}");
+            assert!(gate.release_due(early).is_empty(), "{wait}");
             now += Duration::from_secs(wait);
-            assert!(
-                gate.release_due(now, false).is_empty(),
-                "no worker to spare"
-            );
-            let mut out = gate.release_due(now, true);
+            let mut out = gate.release_due(now);
             assert_eq!(out.len(), 1, "one trial per stalled volume");
             ticket += 1;
             trial = gate.admit(out.remove(0).0, false, now).unwrap();
             assert!(trial.trial.is_some());
             // Others still wait while it runs.
-            assert!(gate.release_due(now, true).is_empty());
+            assert!(gate.release_due(now).is_empty());
             ticket += 1;
             assert!(
                 gate.admit(job("/mnt/dead/y.wav", ticket), false, now)
@@ -2352,7 +2377,7 @@ mod tests {
         );
         assert_eq!(gate.events.last(), Some(&(DEAD.to_owned(), false)));
         assert!(!gate.stalled(DEAD));
-        assert!(!gate.release_due(now, false).is_empty());
+        assert!(!gate.release_due(now).is_empty());
         assert!(gate.deferred.is_empty());
     }
 
@@ -2445,7 +2470,7 @@ mod tests {
             true,
             t0,
         );
-        assert_eq!(gate.release_due(t0, true).len(), 1);
+        assert_eq!(gate.release_due(t0).len(), 1);
     }
 
     #[test]
@@ -2459,6 +2484,25 @@ mod tests {
         assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
         assert_eq!(gate.deferred.len(), 1);
         assert!(gate.deferred[0].1);
+    }
+
+    #[test]
+    fn the_system_disk_is_never_held_back() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        gate.watch_stalled.insert("/".to_owned());
+        // Any number of stuck probes and trials on `/`: the next job still runs at once.
+        for n in 0..5 {
+            let key = format!("/Users/me/Show/long{n}.mp3");
+            stuck(&mut gate, &key, n + 1, t0);
+        }
+        assert!(!gate.stalled("/"));
+        let t = gate
+            .admit(job("/Users/me/Show/short.wav", 9), true, t0)
+            .unwrap();
+        assert!(t.trial.is_none());
+        assert!(gate.events.is_empty() && gate.deferred.is_empty());
+        assert!(gate.volumes["/"].stuck.is_empty());
     }
 
     #[cfg(unix)]
@@ -2686,5 +2730,52 @@ mod tests {
             next_answer(&rx);
         }
         assert!(!lock(&cat.gate).stalled("/mnt/fifo"));
+    }
+
+    #[cfg(unix)]
+    static WEDGED_SHARE: Hang = Hang::new();
+
+    /// The first two probes of the share never return until it is opened, the rest do.
+    #[cfg(unix)]
+    fn wedged_probe(path: &Path) -> Result<Probed, MediaError> {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if path.starts_with("/Volumes/wedged") && CALLS.fetch_add(1, Ordering::AcqRel) < 2 {
+            WEDGED_SHARE.block();
+        }
+        fake(path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_waiting_on_a_share_that_recovers_are_all_probed_though_stuck_jobs_never_return() {
+        let (mut cat, rx, ms) = timed_catalog(wedged_probe);
+        let share = "/Volumes/wedged";
+        cat.request(format!("{share}/a.wav"));
+        cat.request(format!("{share}/b.wav"));
+        WEDGED_SHARE.wait_entered(2);
+        advance(&ms, 31);
+        assert_eq!(cat.watchdog().len(), 2);
+        assert!(lock(&cat.gate).stalled(share));
+        // Cues keep asking for files on it (the share is back, but the two reads never return).
+        let rest: Vec<String> = (0..4).map(|i| format!("{share}/c{i}.wav")).collect();
+        for k in &rest {
+            cat.request(k.clone());
+        }
+        cat.prioritize(rest.iter().map(String::as_str));
+        let mut answered = 0;
+        while answered < rest.len() {
+            cat.answer(next_answer(&rx));
+            answered += 1;
+            cat.watchdog();
+        }
+        for k in &rest {
+            assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
+        }
+        assert!(!lock(&cat.gate).stalled(share), "an answer ends the stall");
+        assert_eq!(
+            cat.take_volume_events(),
+            vec![(share.to_owned(), true), (share.to_owned(), false)]
+        );
+        WEDGED_SHARE.open();
     }
 }

@@ -165,6 +165,9 @@ pub struct ControlConfig {
     pub probe_timeout: Duration,
     /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
     pub probe_clock: media::ProbeClock,
+    /// Which volume a media path is on, for probe scheduling (tests inject one; the media
+    /// watch's `bucket_of` by default).
+    pub probe_volume: Option<fn(&std::path::Path) -> String>,
     /// The show log: its ring always, and the disk writer's sink when the host started one
     /// (docs/logging.md).
     pub show_log: crate::diag::ShowLog,
@@ -202,6 +205,7 @@ impl ControlConfig {
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
             probe_clock: media::ProbeClock::system(),
+            probe_volume: None,
             show_log: crate::diag::ShowLog::default(),
             status: None,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
@@ -351,6 +355,10 @@ impl Control {
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;
+        let mut media = media;
+        if let Some(volume) = config.probe_volume {
+            media.set_volume_of(volume);
+        }
         let cue_outputs = mixer.cue_outputs();
         let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
         let playable = match backend.device() {
@@ -512,20 +520,16 @@ impl Control {
             self.pending_media.extend(stuck);
         }
         for (volume, stalled) in self.media.take_volume_events() {
-            if stalled {
-                self.log(
-                    LogLevel::Warn,
-                    format!(
-                        "volume \"{volume}\" does not answer; its media files are probed again \
-                         after a wait"
-                    ),
-                );
+            // Not a "does not answer" warning: that notice is the media watch's alone.
+            let message = if stalled {
+                format!(
+                    "probes of volume \"{volume}\" are held back: two files did not answer in \
+                     time; one is tried at a time"
+                )
             } else {
-                self.log(
-                    LogLevel::Info,
-                    format!("volume \"{volume}\" answers again; its media files are probed"),
-                );
-            }
+                format!("probes of volume \"{volume}\" run again: it answered")
+            };
+            self.log(LogLevel::Info, message);
         }
         if self.media.take_limit_reached() {
             self.log(
