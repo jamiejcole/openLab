@@ -838,6 +838,7 @@ dependencies = [
  "getrandom 0.4.3",
  "openlab-audio",
  "openlab-core",
+ "openlab-engine",
  "proptest",
  "rosc",
  "serde_json",

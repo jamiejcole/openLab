@@ -399,6 +399,11 @@ fn threaded(volumes: usize) -> (Threaded, Vec<PathBuf>) {
         fs: Arc::new(fs.clone()),
         period: Duration::from_millis(1),
         mode: WatchMode::Thread,
+        clock: clock.clock(),
+        // Retries in milliseconds: the clock never jumps far while a stat is under way (a jump
+        // past the stall limit would make any stat in flight look stalled).
+        retry_first: Duration::from_millis(4),
+        retry_max: Duration::from_millis(32),
         ..WatchConfig::default()
     };
     let s = show_with(ws, c);
@@ -410,6 +415,8 @@ impl Threaded {
     /// on the clock and ticks.
     fn stall(&mut self, path: &Path) {
         assert!(self.fs.wait_hanging(path, WAIT), "never statted {path:?}");
+        // The watchdog sees it busy, then sees it still busy the limit later.
+        self.s.tick();
         self.clock.advance(10_000);
         self.s.tick();
     }
@@ -426,6 +433,27 @@ impl Threaded {
     }
 }
 
+/// The workspace notices in force now.
+fn listed(s: &OfflineShow) -> Vec<(String, String)> {
+    s.control()
+        .snapshot()
+        .warnings
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, message, .. } => Some((code, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn names(s: &OfflineShow, code: &str) -> Vec<String> {
+    listed(s)
+        .into_iter()
+        .filter(|(c, _)| c == code)
+        .map(|(_, m)| m)
+        .collect()
+}
+
 #[test]
 fn a_volume_that_stops_answering_is_skipped_with_a_notice_and_the_others_are_watched() {
     let (mut t, paths) = threaded(2);
@@ -433,30 +461,83 @@ fn a_volume_that_stops_answering_is_skipped_with_a_notice_and_the_others_are_wat
     let hang = t.fs.hang(&paths[0]);
     t.stall(&paths[0]);
     assert_eq!(t.s.control().abandoned_watchers(), 1);
-    let listed = notices(&t.s.take_outbound()).unwrap();
+    let listed_now = notices(&t.s.take_outbound()).unwrap();
     assert!(
-        listed
+        listed_now
             .iter()
             .any(|(code, m)| code == "media_volume_not_responding" && m.contains("/Volumes/V0")),
-        "{listed:?}"
+        "{listed_now:?}"
     );
     // The fresh watcher still sees the other volume.
     t.fs.remove(&paths[1]);
     t.wait_until(|s| s.control().engine().state(id(2)) == CueState::Broken);
     // The stalled volume's file keeps its last state.
     assert_eq!(t.s.control().engine().state(id(1)), CueState::Idle);
-    // It answers again: the notice goes, and its files are watched again.
+    // It answers again (no file is an answer): the notice goes, the abandoned thread has ended
+    // and is counted no more, and its files are watched again.
     t.fs.remove(&paths[0]);
     hang.release();
     t.wait_until(|s| s.control().engine().state(id(1)) == CueState::Broken);
-    let listed = notices(&t.s.take_outbound()).unwrap();
-    assert!(listed.is_empty(), "{listed:?}");
-    assert_eq!(t.s.control().abandoned_watchers(), 1);
+    assert_eq!(listed(&t.s), vec![]);
+    assert_eq!(t.s.control().abandoned_watchers(), 0);
+    assert_eq!(t.s.stalls(), 0);
+}
+
+/// A share that hangs on every stat and then fails (a dead SMB mount): each stall costs one
+/// watcher, counted back when its stat returns; the volume stays skipped and is retried after
+/// a doubling wait (here 4 ms up to 32 ms; 30 s up to 5 min in the engine); its notice stands
+/// throughout; the other volumes are watched all along; the watch never stops.
+#[test]
+fn a_volume_that_stalls_then_fails_again_and_again_never_stops_the_watch() {
+    let (mut t, paths) = threaded(2);
+    let (bad, good) = (&paths[0], &paths[1]);
+    t.fs.deny(bad);
+    let mut backoff = 4;
+    for round in 0..7 {
+        let hang = t.fs.hang(bad);
+        if round > 0 {
+            // Not before its retry is due.
+            t.clock.advance(backoff - 1);
+            t.s.tick();
+            let stats = t.fs.stats();
+            assert!(t.fs.wait_stats(stats, 3, WAIT));
+            assert!(!t.fs.wait_hanging(bad, Duration::ZERO), "round {round}");
+            // Due: its next stat is a trial.
+            t.clock.advance(1);
+            backoff = (backoff * 2).min(32);
+            t.s.tick();
+        }
+        t.stall(bad);
+        assert_eq!(t.s.control().abandoned_watchers(), 1, "round {round}");
+        assert_eq!(names(&t.s, "media_volume_not_responding").len(), 1);
+        hang.release();
+        // The stat returned with an error: the thread has ended, the volume stays skipped.
+        t.wait_until(|s| s.control().abandoned_watchers() == 0);
+        let not_responding = names(&t.s, "media_volume_not_responding");
+        assert_eq!(not_responding.len(), 1, "round {round}");
+        assert!(not_responding[0].contains("/Volumes/V0"));
+        assert!(
+            names(&t.s, "media_watch_stopped").is_empty(),
+            "round {round}"
+        );
+        if round == 3 {
+            // The good volume is watched meanwhile.
+            t.fs.remove(good);
+            t.wait_until(|s| s.control().engine().state(id(2)) == CueState::Broken);
+        }
+    }
+    assert_eq!(backoff, 32, "the wait stops doubling at its maximum");
+    // It comes back: the next trial answers and the notice goes.
+    t.fs.allow(bad);
+    t.clock.advance(backoff);
+    t.s.tick();
+    t.wait_until(|s| names(s, "media_volume_not_responding").is_empty());
+    assert_eq!(listed(&t.s), vec![]);
     assert_eq!(t.s.stalls(), 0);
 }
 
 #[test]
-fn after_four_stuck_watchers_the_watch_stops_with_a_notice_until_the_volume_answers() {
+fn with_four_watchers_stuck_a_fifth_stall_stops_the_watch_until_the_volume_answers() {
     let (mut t, paths) = threaded(5);
     let mut held = Vec::new();
     for (n, p) in paths.iter().take(4).enumerate() {
@@ -470,15 +551,15 @@ fn after_four_stuck_watchers_the_watch_stops_with_a_notice_until_the_volume_answ
     // Not abandoned: no fifth thread is left behind.
     assert_eq!(t.s.control().abandoned_watchers(), 4);
     let msgs = t.s.take_outbound();
-    let listed = notices(&msgs).unwrap();
+    let listed_now = notices(&msgs).unwrap();
     assert!(
-        listed
+        listed_now
             .iter()
             .any(|(code, m)| code == "media_watch_stopped" && m.contains("/Volumes/V4")),
-        "{listed:?}"
+        "{listed_now:?}"
     );
     assert_eq!(
-        listed
+        listed_now
             .iter()
             .filter(|(code, _)| code == "media_volume_not_responding")
             .count(),
@@ -489,15 +570,52 @@ fn after_four_stuck_watchers_the_watch_stops_with_a_notice_until_the_volume_answ
         ServerMessage::Log { level: openlab_core::protocol::LogLevel::Error, message }
             if message.contains("media watch stops")
     )));
-    // The volume answers: the watch goes on.
+    // Its stat returns: the watch goes on, with that volume skipped too (it cannot hold the
+    // only watcher again) until a retry finds it answering.
     let stats = t.fs.stats();
     fifth.release();
     assert!(t.fs.wait_stats(stats, 1, WAIT));
     t.s.tick();
-    let listed = notices(&t.s.take_outbound()).unwrap();
-    assert!(
-        !listed.iter().any(|(code, _)| code == "media_watch_stopped"),
-        "{listed:?}"
-    );
+    assert!(names(&t.s, "media_watch_stopped").is_empty());
+    assert_eq!(names(&t.s, "media_volume_not_responding").len(), 5);
+    t.clock.advance(4);
+    t.s.tick();
+    t.wait_until(|s| names(s, "media_volume_not_responding").len() == 4);
+    // The stuck threads return: counted back, their volumes watched again.
     drop(held);
+    t.wait_until(|s| s.control().abandoned_watchers() == 0);
+    t.wait_until(|s| names(s, "media_volume_not_responding").is_empty());
+    assert_eq!(t.s.stalls(), 0);
+}
+
+/// A show opened before its drive is mounted: the probe finds no file, and the file appears
+/// before or after the watch first looks. Either way it is reported back and the cue
+/// un-breaks (review M1: it used to be taken silently on the first pass).
+#[test]
+fn a_file_that_appears_after_its_probe_failed_unbreaks_its_cue() {
+    for appears_before_first_pass in [true, false] {
+        let real = wav(&dc(400, 0.5));
+        let path = fresh_path("wav");
+        let fs = FakeFs::new();
+        let ws = workspace(vec![audio(1, &path, 0)]);
+        let c = manual(&ws, &fs);
+        let mut s = show_with(ws, c);
+        assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+        if !appears_before_first_pass {
+            // The watch already knows from the probe: nothing to say.
+            assert!(!s.watch_pass());
+        }
+        std::fs::rename(&real, &path).unwrap();
+        fs.put(&path, 1);
+        assert!(!s.watch_pass(), "seen once");
+        assert!(s.watch_pass(), "seen twice: back");
+        s.settle_media();
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            CueState::Idle,
+            "appears before the first pass: {appears_before_first_pass}"
+        );
+        assert!(s.control().engine().problems(id(1)).is_empty());
+        assert!(!s.watch_pass());
+    }
 }

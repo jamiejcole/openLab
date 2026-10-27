@@ -188,6 +188,13 @@ pub enum KeyChange {
     Unwatch {
         key: String,
     },
+    /// The file's probe failed (`missing`: no file), so the watch reports it back once it is
+    /// there, even if it appeared before the watch first looked.
+    ProbeFailed {
+        key: String,
+        id: u64,
+        missing: bool,
+    },
 }
 
 /// One cue's use of a media file.
@@ -703,7 +710,14 @@ impl MediaCatalog {
                         Probe::Ready(Arc::new(Ready { path, probed })),
                         MediaStatus::Available,
                     ),
-                    Err(e) => (Probe::Failed, status_of(&e)),
+                    Err(e) => {
+                        self.key_changes.push(KeyChange::ProbeFailed {
+                            key: key.clone(),
+                            id: entry.watch,
+                            missing: matches!(e, MediaError::NotFound(_)),
+                        });
+                        (Probe::Failed, status_of(&e))
+                    }
                 };
                 let ready = matches!(probe, Probe::Ready(_));
                 entry.probe = probe;
@@ -1084,6 +1098,13 @@ mod tests {
                 }
                 KeyChange::Unwatch { key } => {
                     assert!(watched.remove(&key).is_some(), "unwatched unknown");
+                }
+                KeyChange::ProbeFailed { key, id, .. } => {
+                    assert_eq!(
+                        watched.get(&key),
+                        Some(&id),
+                        "a failed probe of a watched file"
+                    );
                 }
             }
         }
