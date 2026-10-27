@@ -47,6 +47,10 @@ pub struct MachineSettings {
     /// Keyed by workspace id (lower-case hyphenated UUID).
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceMachineSettings>,
+    /// Keys this version does not know, kept so a rewrite (the engine adds default mappings)
+    /// does not drop what a newer or older build wrote.
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 fn default_backup_keep() -> u32 {
@@ -59,6 +63,7 @@ impl Default for MachineSettings {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
             workspaces: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -105,6 +110,8 @@ pub fn load_settings(text: &str) -> LoadedSettings {
 
 fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
     settings.settings_version = SETTINGS_VERSION;
+    // Written by an earlier build; recent files are app-side now (WS-08).
+    settings.extra.remove("recent_files");
     if settings.backup_keep > MAX_BACKUP_KEEP {
         warnings.push(format!(
             "backup count {} is too large; using {MAX_BACKUP_KEEP}",
@@ -311,6 +318,16 @@ mod tests {
             name: name.into(),
             output_channels: channels,
         }
+    }
+
+    #[test]
+    fn unknown_keys_round_trip_but_recent_files_is_dropped() {
+        let text = r#"{"settings_version":1,"future":{"x":1},"recent_files":["a"]}"#;
+        let loaded = load_settings(text);
+        assert!(loaded.warnings.is_empty());
+        let out = save_settings(&loaded.settings).unwrap();
+        assert!(out.contains("\"future\""), "{out}");
+        assert!(!out.contains("recent_files"), "{out}");
     }
 
     #[test]

@@ -29,6 +29,18 @@ fn spare_patch() -> PatchId {
     PatchId(Uuid::from_u128(902))
 }
 
+/// A patch the device cannot take (four outputs on a two-output device): the default mapping
+/// (M4.4c) leaves it unmapped, which is what these tests need an unmapped patch for.
+fn wide_spare(main: &OutputPatch) -> OutputPatch {
+    let mut spare = OutputPatch {
+        id: spare_patch(),
+        name: "Spare".into(),
+        ..main.clone()
+    };
+    spare.outputs = vec![main.outputs[0]; 4];
+    spare
+}
+
 fn net(n: u128) -> NetworkPatchId {
     NetworkPatchId(Uuid::from_u128(n))
 }
@@ -75,7 +87,8 @@ fn config_for(ws: &Workspace) -> ControlConfig {
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
     let mut machine = MachineSettings::default();
-    // Only the main patch is mapped on this machine; the spare one is not.
+    // Only the main patch is mapped on this machine; the spare one is not (and, being wider
+    // than the device, is not mapped by default either).
     machine
         .set_patch_mapping(
             ws.id,
@@ -154,11 +167,8 @@ fn show_with_every_kind_of_problem() -> DeviceShow {
         network_cue(6, net(51)),
         on_spare,
     ]);
-    ws.patches.push(OutputPatch {
-        id: spare_patch(),
-        name: "Spare".into(),
-        ..ws.patches[0].clone()
-    });
+    let spare = wide_spare(&ws.patches[0]);
+    ws.patches.push(spare);
     ws.network_patches.push(lighting(NetworkProtocol::Udp));
     device_show(ws)
 }
@@ -337,6 +347,22 @@ fn a_network_destination_that_exists_is_reported_unchecked_and_does_not_fail_the
 fn a_spare_patch_no_cue_uses_is_listed_but_is_not_a_problem() {
     let good = wav(&dc(100, 0.5));
     let mut ws = workspace(vec![audio(1, &good, 0)]);
+    let spare = wide_spare(&ws.patches[0]);
+    ws.patches.push(spare);
+    let mut s = device_show(ws);
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    // Listed (no mapping on this machine) with no cues, but not counted.
+    assert_eq!(r.patches.len(), 1);
+    assert_eq!(r.patches[0].patch, spare_patch());
+    assert!(r.patches[0].cues.is_empty());
+    assert_eq!(r.summary, PreshowSummary::default());
+}
+
+#[test]
+fn a_fresh_patch_the_device_can_take_is_mapped_by_default_and_not_reported() {
+    let good = wav(&dc(100, 0.5));
+    let mut ws = workspace(vec![audio(1, &good, 0)]);
     ws.patches.push(OutputPatch {
         id: spare_patch(),
         name: "Spare".into(),
@@ -345,10 +371,8 @@ fn a_spare_patch_no_cue_uses_is_listed_but_is_not_a_problem() {
     let mut s = device_show(ws);
     let r = preshow(&mut s);
     assert!(r.ok, "{r:?}");
-    // Listed (no mapping on this machine) with no cues, but not counted.
-    assert_eq!(r.patches.len(), 1);
-    assert_eq!(r.patches[0].patch, spare_patch());
-    assert!(r.patches[0].cues.is_empty());
+    // Mapped patches are not listed; an unmapped one would be (see the test above).
+    assert!(r.patches.is_empty(), "{r:?}");
     assert_eq!(r.summary, PreshowSummary::default());
 }
 

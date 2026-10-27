@@ -12,6 +12,7 @@ mod checks;
 pub mod devices;
 mod docs;
 mod inbox;
+mod mapping;
 mod media;
 mod netout;
 mod observe;
@@ -133,6 +134,9 @@ pub struct ControlConfig {
     /// The show file, if saved: relative media references resolve against its folder.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
+    /// False when `machine` is defaults standing in for a settings file that could not be read:
+    /// the engine then keeps default mappings in memory and never writes the file (M4.4c).
+    pub machine_writable: bool,
     /// Devices present, for the offline backend (a device backend plays on its open stream's
     /// device and lists what the host lists).
     pub devices: Vec<DeviceInfo>,
@@ -183,6 +187,7 @@ impl ControlConfig {
             seed: entropy_seed(),
             show_path: None,
             machine: MachineSettings::default(),
+            machine_writable: true,
             devices: Vec::new(),
             mixer_patches: 1,
             streamer: StreamerConfig::new(sample_rate),
@@ -250,6 +255,13 @@ pub struct Control {
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
     playable: Vec<DeviceInfo>,
+    /// Saves the machine settings when the engine changes them (default patch mappings).
+    settings_writer: Option<crate::persist::SettingsWriter>,
+    /// Patches and devices the default mapping already warned about.
+    mapping_warned:
+        std::collections::HashSet<(openlab_core::WorkspaceId, openlab_core::PatchId, String)>,
+    /// The unwritable-settings warning went out.
+    unwritable_warned: bool,
     out: Outbound,
     docs: Docs,
     backend: Backend,
@@ -345,6 +357,14 @@ impl Control {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
         };
+        // Not essential: without the thread default mappings stay in memory (warned below).
+        let (settings_writer, writer_error) = match &config.app_dirs {
+            Some(dirs) => match crate::persist::SettingsWriter::spawn(dirs.clone()) {
+                Ok(w) => (Some(w), None),
+                Err(e) => (None, Some(e.to_string())),
+            },
+            None => (None, None),
+        };
         let observe = Observe::new(&config);
         let mut control = Self {
             ws,
@@ -360,6 +380,9 @@ impl Control {
             checks: PlanChecks::default(),
             patches,
             playable,
+            settings_writer,
+            mapping_warned: std::collections::HashSet::new(),
+            unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
             backend,
@@ -392,6 +415,17 @@ impl Control {
             meter_peaks: Vec::new(),
             observe,
         };
+        if let Some(e) = writer_error {
+            control.record(
+                LogKind::Engine,
+                LogLevel::Warn,
+                format!(
+                    "could not start the settings writer ({e}); this machine's settings will not be saved"
+                ),
+                None,
+                None,
+            );
+        }
         control.record(
             LogKind::Engine,
             LogLevel::Info,
@@ -505,6 +539,7 @@ impl Control {
             self.refresh_warnings();
         }
         self.docs_tick();
+        self.settings_tick();
         self.health();
         self.observe_tick();
         self.mixer.pump();
@@ -845,6 +880,7 @@ impl Control {
     /// output delays and master level up to date. Returns the `Availability` for the patches
     /// whose resolution changed (`all`: every patch).
     fn sync_patches(&mut self, all: bool) -> Vec<Input> {
+        self.map_unmapped_patches();
         let (cmds, changed) = self
             .patches
             .sync(&self.ws, &self.config.machine, &self.playable);
@@ -1933,6 +1969,11 @@ impl Control {
 
     pub fn engine(&self) -> &CueEngine {
         &self.engine
+    }
+
+    /// The machine settings in force, including mappings the engine added (M4.4c).
+    pub fn machine(&self) -> &MachineSettings {
+        &self.config.machine
     }
 
     pub fn mixer(&self) -> &MixerController {
