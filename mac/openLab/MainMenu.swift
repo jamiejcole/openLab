@@ -7,12 +7,14 @@ import AppKit
 enum MainMenu {
     struct Menus {
         let bar: NSMenu
+        let edit: NSMenu
         let transport: NSMenu
         let windows: NSMenu
         let help: NSMenu
     }
 
     static func make(keys: TransportKeys = TransportKeys(settings: nil)) -> Menus {
+        let edit = editMenu()
         let windows = menu(
             "menu.window",
             [
@@ -27,12 +29,12 @@ enum MainMenu {
         let help = menu("menu.help", [item("menu.help.openLabHelp", #selector(NSApplication.showHelp(_:)), "?")])
         let transport = transportMenu(keys)
         let bar = NSMenu()
-        for submenu in [appMenu(), fileMenu(), editMenu(), transport, windows, help] {
+        for submenu in [appMenu(), fileMenu(), edit, viewMenu(), transport, windows, help] {
             let holder = NSMenuItem()
             holder.submenu = submenu
             bar.addItem(holder)
         }
-        return Menus(bar: bar, transport: transport, windows: windows, help: help)
+        return Menus(bar: bar, edit: edit, transport: transport, windows: windows, help: help)
     }
 
     private static func appMenu() -> NSMenu {
@@ -80,6 +82,26 @@ enum MainMenu {
                 item("menu.edit.selectAll", #selector(NSText.selectAll(_:)), "a"),
             ]
         )
+    }
+
+    /// QLab's View menu has Enter Edit Mode (shift-cmd-[) and Enter Show Mode (shift-cmd-]).
+    private static func viewMenu() -> NSMenu {
+        let edit = item("menu.view.editMode", #selector(AppDelegate.enterEditMode(_:)), "[")
+        let show = item("menu.view.showMode", #selector(AppDelegate.enterShowMode(_:)), "]")
+        for e in [edit, show] { e.keyEquivalentModifierMask = [.command, .shift] }
+        return menu("menu.view", [edit, show])
+    }
+
+    /// Show Mode (SM-01) turns the editing items off by hand; Copy and Select All change nothing.
+    static func lockEditItems(in edit: NSMenu, locked: Bool) {
+        edit.autoenablesItems = !locked
+        let editing = [
+            Selector(("undo:")), Selector(("redo:")), #selector(NSText.cut(_:)), #selector(NSText.paste(_:)),
+        ]
+        for entry in edit.items {
+            guard let action = entry.action else { continue }
+            entry.isEnabled = !(locked && editing.contains(action))
+        }
     }
 
     /// Items carry their command in `representedObject`; keys come from the key map, so they follow
