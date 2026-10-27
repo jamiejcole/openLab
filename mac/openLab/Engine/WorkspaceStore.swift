@@ -73,7 +73,18 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         self.client = client
         if ownsDelegate { client.delegate = self }
         connectionState = client.state
-        stateSub = client.$state.sink { [weak self] in self?.connectionState = $0 }
+        stateSub = client.$state.sink { [weak self] state in
+            self?.connectionState = state
+            if state != .connected { self?.clearPreviewing() }
+        }
+    }
+
+    /// A dropped connection leaves nothing known to be previewing (the next snapshot says what is).
+    private func clearPreviewing() {
+        guard !previewing.isEmpty else { return }
+        let old = previewing
+        previewing = []
+        changes.send(.runtime(cues: old, playheads: []))
     }
 
     // MARK: Intents (all go through the client)
@@ -120,6 +131,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .success(let ok):
             if case .logTail(let entries, let dropped)? = ok.data { return .success((entries, dropped)) }
             return .failure(.encoding("log_tail result has no log_tail data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
+    /// The pre-show check (SM-06): one report of what would keep the show from running.
+    func preshowCheck() async -> Result<PreshowReport, EngineError> {
+        switch await client.send({ .request(id: $0, .preshowCheck) }) {
+        case .success(let ok):
+            if case .preshowCheck(let report)? = ok.data { return .success(report) }
+            return .failure(.encoding("preshow_check result has no preshow_check data"))
         case .failure(let e): return .failure(e)
         }
     }

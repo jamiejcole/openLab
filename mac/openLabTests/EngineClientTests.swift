@@ -12,7 +12,7 @@ final class EngineClientTests: XCTestCase {
     private func ids(_ rig: Rig) -> [UInt64] {
         rig.engine.received.compactMap {
             switch $0 {
-            case .command(let id, _), .transport(let id, _), .undo(let id), .redo(let id), .request(let id, _):
+            case .command(let id, _, _), .transport(let id, _), .undo(let id), .redo(let id), .request(let id, _):
                 return id
             default: return nil
             }
