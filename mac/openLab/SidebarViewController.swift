@@ -19,6 +19,8 @@ final class SidebarViewController: NSViewController {
     let newListButton = NSButton(title: loc("sidebar.newList"), target: nil, action: nil)
     let newCartButton = NSButton(title: loc("sidebar.newCart"), target: nil, action: nil)
 
+    private(set) var transportButtons: [String: NSButton] = [:]
+
     override func loadView() {
         let root = NSView()
         root.setAX(AX.sidebar)
@@ -36,6 +38,7 @@ final class SidebarViewController: NSViewController {
             button.imageScaling = .scaleProportionallyDown
             button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            transportButtons[entry.id] = button
             strip.addArrangedSubview(button)
         }
 

@@ -103,6 +103,12 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         await appClient.send { .transport(id: $0, .panic) }
     }
 
+    /// Quit: tells the engine to exit (it writes recovery for every dirty doc), then drops the connections.
+    func shutdown() async {
+        await appClient.goodbye(shutdown: true)
+        stop()
+    }
+
     /// A `new` / `open` result: the new doc on a multi-workspace engine, the one doc otherwise.
     private func opened(_ result: Result<OkBody, EngineError>) -> Result<ModelID, EngineError> {
         result.map { ok in
