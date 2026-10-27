@@ -119,7 +119,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 - **Fades** are per-voice gain ramps evaluated per sample on the audio thread from a curve id + start/end gain + start/end sample (no per-sample allocation, no table rebuilds). Curves: linear, equal-power, S-curve, log, exp.
 - **Loops/slices/devamp** are resolved on the audio thread from a preloaded slice table; the disk thread is told to seek ahead of loop points so the ring never starves.
 - **Meters**: per output channel peak written to atomics; the control thread samples them at ≤30 Hz for clients.
-- **Device loss** (NFR-08): cpal error callback (or the device gone from the list) → control thread marks the device offline and attempts reopen on a backoff; every cue playing on the device stops at once (hard stop; QLab 5 behaviour, M4.2g) and shows "broken" (`device_lost`) until the device is back, then idle; no automatic resume, whatever the outage length; cues routed to it are broken meanwhile; nothing panics. Policy: `docs/control.md`, Devices.
+- **Device loss** (NFR-08): cpal error callback (or the device gone from the list) → control thread marks the device offline and attempts reopen on a backoff; every cue playing on the device stops at once (hard stop; QLab 5 behaviour, M4.2g) and shows "broken" (`device_lost`) until the device is back, then idle; no automatic resume, whatever the outage length (sample time stands still while no stream runs: nothing that was scheduled on an audio cue before the outage starts after it); cues routed to it are broken meanwhile; nothing panics. Policy: `docs/control.md`, Devices.
 
 ### 3.6 Offline render driver (QA-03, QA-05, NFR-23 proxy)
 
