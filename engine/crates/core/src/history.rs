@@ -15,6 +15,8 @@ use crate::model::Workspace;
 pub struct History {
     undo: Vec<Inverse>,
     redo: Vec<Inverse>,
+    /// The coalesce key of the gesture whose step is on top of `undo`, while it is open.
+    open: Option<String>,
 }
 
 impl History {
@@ -23,28 +25,57 @@ impl History {
     }
 
     /// Applies `command` as one undo step and clears redo. A refused command changes nothing,
-    /// neither workspace nor history. An empty transaction is not an edit and is ignored.
+    /// neither workspace nor history. Returns whether the command changed anything: a change
+    /// to the value a field already has (and an empty transaction) is not an edit and is not
+    /// recorded.
     pub fn execute(
         &mut self,
         workspace: &mut Workspace,
         command: Command,
-    ) -> Result<(), CommandError> {
+    ) -> Result<bool, CommandError> {
+        self.execute_coalescing(workspace, command, None)
+    }
+
+    /// As [`execute`](Self::execute). With a `key`, an edit that follows another edit with the
+    /// same key (nothing else, no undo or redo in between) joins that edit's undo step: one
+    /// fader drag is one step however many values it sent. A client uses a fresh key for each
+    /// gesture. Steps that set the same single value collapse to the oldest (so a long drag
+    /// stays one command); others are chained, newest undone first.
+    pub fn execute_coalescing(
+        &mut self,
+        workspace: &mut Workspace,
+        command: Command,
+        key: Option<&str>,
+    ) -> Result<bool, CommandError> {
         let inverse = workspace.apply(command)?;
-        if !is_empty_transaction(&inverse) {
-            self.undo.push(inverse);
-            self.redo.clear();
+        if is_empty_transaction(&inverse) {
+            // Not an edit: an open gesture stays open.
+            return Ok(false);
         }
-        Ok(())
+        self.redo.clear();
+        let joins = key.is_some() && self.open.as_deref() == key;
+        match self.undo.pop() {
+            Some(older) if joins => self.undo.push(merge(older, inverse)),
+            Some(older) => {
+                self.undo.push(older);
+                self.undo.push(inverse);
+            }
+            None => self.undo.push(inverse),
+        }
+        self.open = key.map(str::to_owned);
+        Ok(true)
     }
 
     /// Undoes the latest step. `Ok(false)` if there is nothing to undo. If the step is refused
     /// it stays on the stack and the workspace is unchanged.
     pub fn undo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
+        self.open = None;
         step(&mut self.undo, &mut self.redo, workspace)
     }
 
     /// Redoes the latest undone step. `Ok(false)` if there is nothing to redo.
     pub fn redo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
+        self.open = None;
         step(&mut self.redo, &mut self.undo, workspace)
     }
 
@@ -78,7 +109,25 @@ impl History {
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.open = None;
     }
+}
+
+/// One step that undoes `older` and `newer` (the step of the edit after it). Two steps that set
+/// the same single value are undone by the older alone; otherwise `newer` is undone first.
+/// Chains stay flat, as in a transaction.
+fn merge(older: Inverse, newer: Inverse) -> Inverse {
+    if older.same_slot(&newer) {
+        return older;
+    }
+    let mut commands = Vec::new();
+    for step in [newer, older] {
+        match step {
+            Command::Transaction { commands: inner } => commands.extend(inner),
+            other => commands.push(other),
+        }
+    }
+    Command::Transaction { commands }
 }
 
 fn is_empty_transaction(command: &Command) -> bool {

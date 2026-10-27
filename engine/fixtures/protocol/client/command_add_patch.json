@@ -1,0 +1,39 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_patch",
+    "index": 1,
+    "patch": {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "name": "Main",
+      "master_db": 0.0,
+      "outputs": [
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        },
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        },
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        },
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        }
+      ]
+    }
+  }
+}

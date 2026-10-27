@@ -295,6 +295,17 @@ fn fixtures() -> Vec<(String, Sample)> {
                     value: "Storm".into(),
                 },
             }),
+            coalesce: None,
+        }),
+    );
+    add(
+        "command_coalesce",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::MasterDb { value: -6.0 },
+            }),
+            coalesce: Some("master:1".into()),
         }),
     );
     add(
@@ -315,8 +326,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                     Command::RemoveCue { id: cue_id(11) },
                 ],
             }),
+            coalesce: None,
         }),
     );
+    for (name, command) in model_commands() {
+        add(
+            &format!("command_{name}"),
+            client(ClientMessage::Command {
+                id: rid(4),
+                command: Box::new(command),
+                coalesce: None,
+            }),
+        );
+    }
     for (i, (name, action)) in all_actions().into_iter().enumerate() {
         let file = if i == 0 {
             "transport".to_owned()
@@ -2058,6 +2080,230 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
     }
 }
 
+/// One sample of every command that edits more than the cue tree (M1.12), named for its
+/// fixture.
+fn model_commands() -> Vec<(&'static str, Command)> {
+    let hotkey = Hotkey {
+        key: "f1".into(),
+        modifiers: Modifiers::default(),
+    };
+    let net = NetworkPatch {
+        id: net_id(4),
+        name: "Lights".into(),
+        host: "10.0.0.7".into(),
+        port: 8000,
+        protocol: NetworkProtocol::Udp,
+    };
+    vec![
+        (
+            "set_workspace_setting",
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::OscPasscode {
+                    value: Some("1234".into()),
+                },
+            },
+        ),
+        (
+            "set_workspace_setting_hotkey",
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::Hotkey {
+                    key: TransportKey::StopAll,
+                    value: Some(hotkey),
+                },
+            },
+        ),
+        (
+            "add_patch",
+            Command::AddPatch {
+                index: 1,
+                patch: patch(2, 4),
+            },
+        ),
+        (
+            "remove_patch",
+            Command::RemovePatch {
+                id: patch_id(2),
+                even_if_used: false,
+            },
+        ),
+        (
+            "remove_patch_even_if_used",
+            Command::RemovePatch {
+                id: patch_id(2),
+                even_if_used: true,
+            },
+        ),
+        (
+            "move_patch",
+            Command::MovePatch {
+                id: patch_id(2),
+                index: 0,
+            },
+        ),
+        (
+            "set_patch_property",
+            Command::SetPatchProperty {
+                id: patch_id(2),
+                property: PatchProperty::OutputLevel {
+                    output: 1,
+                    value: -3.0,
+                },
+            },
+        ),
+        (
+            "set_patch_property_outputs",
+            Command::SetPatchProperty {
+                id: patch_id(2),
+                property: PatchProperty::Outputs {
+                    value: vec![patch_output(); 2],
+                },
+            },
+        ),
+        (
+            "set_patch_property_channel_count",
+            Command::SetPatchProperty {
+                id: patch_id(2),
+                property: PatchProperty::ChannelCount { value: 6 },
+            },
+        ),
+        (
+            "add_network_patch",
+            Command::AddNetworkPatch {
+                index: 0,
+                patch: net,
+            },
+        ),
+        (
+            "remove_network_patch",
+            Command::RemoveNetworkPatch {
+                id: net_id(4),
+                even_if_used: false,
+            },
+        ),
+        (
+            "move_network_patch",
+            Command::MoveNetworkPatch {
+                id: net_id(4),
+                index: 0,
+            },
+        ),
+        (
+            "set_network_patch_property",
+            Command::SetNetworkPatchProperty {
+                id: net_id(4),
+                property: NetworkPatchProperty::Protocol {
+                    value: NetworkProtocol::Tcp,
+                },
+            },
+        ),
+        (
+            "add_cue_list",
+            Command::AddCueList {
+                index: 1,
+                id: list_id(5),
+                name: "Understudy".into(),
+            },
+        ),
+        ("remove_cue_list", Command::RemoveCueList { id: list_id(5) }),
+        (
+            "move_cue_list",
+            Command::MoveCueList {
+                id: list_id(5),
+                index: 0,
+            },
+        ),
+        (
+            "rename_cue_list",
+            Command::RenameCueList {
+                id: list_id(5),
+                name: "Act 2".into(),
+            },
+        ),
+    ]
+}
+
+const MODEL_COMMAND_COUNT: usize = 13;
+/// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
+/// stops compiling here until it has an index and a sample in [`model_commands`].
+fn model_command_idx(c: &Command) -> Option<usize> {
+    Some(match c {
+        Command::AddCue { .. }
+        | Command::Paste { .. }
+        | Command::RemoveCue { .. }
+        | Command::MoveCue { .. }
+        | Command::ReparentCue { .. }
+        | Command::SetCueProperty { .. }
+        | Command::BatchSet { .. }
+        | Command::SetCueNumbers { .. }
+        | Command::Renumber { .. }
+        | Command::Transaction { .. } => return None,
+        Command::SetWorkspaceSetting { .. } => 0,
+        Command::AddPatch { .. } => 1,
+        Command::RemovePatch { .. } => 2,
+        Command::MovePatch { .. } => 3,
+        Command::SetPatchProperty { .. } => 4,
+        Command::AddNetworkPatch { .. } => 5,
+        Command::RemoveNetworkPatch { .. } => 6,
+        Command::MoveNetworkPatch { .. } => 7,
+        Command::SetNetworkPatchProperty { .. } => 8,
+        Command::AddCueList { .. } => 9,
+        Command::RemoveCueList { .. } => 10,
+        Command::MoveCueList { .. } => 11,
+        Command::RenameCueList { .. } => 12,
+    })
+}
+
+#[test]
+fn every_model_command_and_nested_shape_has_a_fixture_sample() {
+    assert_covered(
+        "model commands",
+        model_commands()
+            .iter()
+            .filter_map(|(_, c)| model_command_idx(c)),
+        MODEL_COMMAND_COUNT,
+    );
+    let tags: BTreeSet<String> = model_commands().iter().map(|(_, c)| tag(c)).collect();
+    assert_eq!(tags.len(), MODEL_COMMAND_COUNT);
+}
+
+#[test]
+fn the_default_even_if_used_is_left_out_and_read_back() {
+    let json = serde_json::to_value(Command::RemovePatch {
+        id: patch_id(2),
+        even_if_used: false,
+    })
+    .unwrap();
+    assert!(json.get("even_if_used").is_none());
+    let back: Command = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        back,
+        Command::RemovePatch {
+            id: patch_id(2),
+            even_if_used: false
+        }
+    );
+}
+
+#[test]
+fn a_coalesce_key_round_trips_and_is_optional() {
+    let msg = ClientMessage::Command {
+        id: rid(9),
+        command: Box::new(Command::RenameCueList {
+            id: list_id(5),
+            name: "x".into(),
+        }),
+        coalesce: Some("rename:1".into()),
+    };
+    let text = encode_client(&msg).unwrap();
+    assert_eq!(decode_client(&text).unwrap(), msg);
+    let no_key = text.replace(r#","coalesce":"rename:1""#, "");
+    assert!(!no_key.contains("coalesce"));
+    match decode_client(&no_key).unwrap() {
+        ClientMessage::Command { coalesce, .. } => assert_eq!(coalesce, None),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn every_nested_enum_variant_has_a_fixture_sample() {
     assert_covered(
@@ -2378,6 +2624,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
 
 fn arb_command() -> impl Strategy<Value = Command> {
     prop_oneof![
+        arb_text().prop_map(|value| Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OscPasscode { value: Some(value) }
+        }),
+        (arb_text(), 0usize..9).prop_map(|(name, index)| Command::AddCueList {
+            index,
+            id: list_id(7),
+            name
+        }),
+        (0usize..70, arb_time()).prop_map(|(output, value)| Command::SetPatchProperty {
+            id: patch_id(1),
+            property: PatchProperty::OutputLevel { output, value }
+        }),
         arb_cue().prop_map(|id| Command::RemoveCue { id }),
         (arb_cue(), arb_text()).prop_map(|(id, value)| Command::SetCueProperty {
             id,
@@ -2408,10 +2666,16 @@ fn arb_client() -> impl Strategy<Value = ClientMessage> {
                 }
             }
         ),
-        (any::<u64>(), arb_command()).prop_map(|(id, command)| ClientMessage::Command {
-            id: rid(id),
-            command: Box::new(command)
-        }),
+        (
+            any::<u64>(),
+            arb_command(),
+            proptest::option::of(arb_text())
+        )
+            .prop_map(|(id, command, coalesce)| ClientMessage::Command {
+                id: rid(id),
+                command: Box::new(command),
+                coalesce
+            }),
         (any::<u64>(), arb_action()).prop_map(|(id, action)| transport(id, action)),
         any::<u64>().prop_map(|id| ClientMessage::Undo { id: rid(id) }),
         any::<u64>().prop_map(|id| ClientMessage::Redo { id: rid(id) }),
