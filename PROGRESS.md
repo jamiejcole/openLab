@@ -169,7 +169,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M5.1 `EngineClient` (connect, reconnect, codec) + `WorkspaceStore`; fixture contract tests [NFR-01]
   - [ ] M5.1a `EngineClient` constraints from the server (docs/network.md): never generate `RequestId` `u64::MAX` (reserved for the server's own snapshot requests; a client using it gets an `error` without an id, so that request would never resolve); raise `URLSessionWebSocketTask.maximumMessageSize` from its 1 MiB default to `MAX_SERVER_FRAME_BYTES` (32 MiB), or large snapshots / group upserts fail to arrive; never pipeline `snapshot` requests (at most one outstanding: while one is out the server forwards no broadcasts to that connection, so a client that always has one outstanding never receives any) — from M4.3 review L6 and re-review L2
 - [ ] M5.2 Engine lifecycle in app: spawn/attach, reconnect after restart, engine-crash alarm + restore [NFR-01, NFR-05]
-- [ ] M5.3 Main window shell: QLab-style layout (toolbar, GO/standby area, sidebar, cue list, inspector), dark appearance [UI-07, UI-08, SM-04, CL-06]
+- [x] M5.3 Main window shell: QLab-style layout (toolbar, GO/standby area, sidebar, cue list, inspector), dark appearance [UI-07, UI-08, SM-04, CL-06]
 - [ ] M5.4 Cue list `NSOutlineView`: columns, groups, colours, flags, state icons (not colour-only), 2,000-cue performance [CL-02, CL-03, ED-13, UI-04, NFR-24]
 - [ ] M5.5 Sidebar: cue lists, Active Cues panel with per-cue controls, wall clock [CL-01, CL-05, PB-07, PB-12]
 - [ ] M5.6 Inspector: basics (number, name, notes, colour, timings, continue mode, target) [ED-01, CUE-01..CUE-03]
@@ -184,7 +184,7 @@ If the session was cut off, resume with the `orchestrate` skill (see its Token b
 - [ ] M5.15 UI scaling, `Localizable.strings`, VoiceOver basics on list + transport [UI-03, UI-06]
 - [ ] M5.16 XCUITest end-to-end flows against a real headless engine [QA-01]
 - [ ] M5.18 Preview/audition button and key (inspector, Time & Loops tab and cue menu): toggles on `is_previewing`, shown from `preview_changed`; only audio cues (CUE-05) — found in M2.10
-- [ ] M5.17 Reopen main window after close (Dock click / Window menu) [NFR-01 operator safety] — from M0 review (L6)
+- [x] M5.17 Reopen main window after close (Dock click / Window menu) [NFR-01 operator safety] — from M0 review (L6)
 
 ## M6 — Release v0.0.1
 - [ ] M6.1 Universal `.app` with embedded engine, ad-hoc signed, `.dmg` script, version stamping [DST-01, DST-03, NFR-30] — app icon: build the `AppIcon` asset catalog from `mac/Branding/openlab-logo-1024.png` (logo supplied by the user, 2026-10-26)
