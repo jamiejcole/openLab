@@ -2579,8 +2579,9 @@ proptest! {
                 target: Some(cue_id(2)),
                 duration: action,
                 curve: FadeCurve::Linear,
+                // A level to fade: one with none is broken (`nothing_to_fade`, M2.26).
                 levels: FadeLevels {
-                    master_db: None,
+                    master_db: Some(-6.0),
                     output_db: vec![],
                     crosspoints: vec![],
                 },
