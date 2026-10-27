@@ -431,7 +431,11 @@ impl Control {
                 let footprint = command.footprint();
                 match self.history.execute(&mut self.ws, *command) {
                     Ok(()) => {
-                        self.edited(now, &footprint);
+                        // An empty transaction (or one naming no cue) changed nothing and
+                        // is no undo step: no revision, no `model_changed`, not dirty.
+                        if !footprint.is_empty() {
+                            self.edited(now, &footprint);
+                        }
                         reply(to, ok(id, Some(self.revision)));
                     }
                     Err(e) => reply(to, refused(id, &e)),
