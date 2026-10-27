@@ -9,7 +9,9 @@ use std::path::Path;
 
 use common::*;
 use openlab_core::{History, MediaRef, Relink, audio_media, relink_command};
-use openlab_engine::persist::{ScanLimits, find_in_folder, media_path, missing_media, scan_folder};
+use openlab_engine::persist::{
+    ScanLimits, find_in_folder, media_path, missing_media, scan_folder, scan_folder_with,
+};
 
 fn media_strings(ws: &openlab_core::Workspace) -> Vec<String> {
     audio_media(ws)
@@ -98,6 +100,7 @@ fn scan_respects_depth_and_count_limits() {
         ScanLimits {
             max_depth: 1,
             max_files: 100,
+            ..ScanLimits::default()
         },
     );
     assert_eq!(shallow.files.len(), 2);
@@ -107,6 +110,7 @@ fn scan_respects_depth_and_count_limits() {
         ScanLimits {
             max_depth: 0,
             max_files: 100,
+            ..ScanLimits::default()
         },
     );
     assert_eq!(flat.files.len(), 1);
@@ -116,6 +120,7 @@ fn scan_respects_depth_and_count_limits() {
         ScanLimits {
             max_depth: 16,
             max_files: 3,
+            ..ScanLimits::default()
         },
     );
     assert_eq!(capped.files.len(), 3);
@@ -125,6 +130,7 @@ fn scan_respects_depth_and_count_limits() {
         ScanLimits {
             max_depth: 16,
             max_files: 4,
+            ..ScanLimits::default()
         },
     );
     assert_eq!(exact.files.len(), 4);
@@ -282,4 +288,58 @@ fn existing_media_is_left_out_of_the_plan() {
     assert!(found.plan.matches.iter().all(|m| m.cue != cue));
     assert!(found.plan.ambiguous.iter().all(|m| m.cue != cue));
     assert!(!found.plan.unmatched.contains(&cue));
+}
+
+#[test]
+fn scan_stops_at_the_directory_count_bound() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for d in ["a", "b", "c", "d"] {
+        touch(&root.join(d).join("f.wav"));
+    }
+    let scan = scan_folder(
+        root,
+        ScanLimits {
+            max_dirs: 3,
+            ..ScanLimits::default()
+        },
+    );
+    // The root plus two sub-folders were read; the rest were not.
+    assert_eq!(scan.files.len(), 2);
+    assert!(scan.truncated);
+    let all = scan_folder(
+        root,
+        ScanLimits {
+            max_dirs: 5,
+            ..ScanLimits::default()
+        },
+    );
+    assert_eq!(all.files.len(), 4);
+    assert!(!all.truncated);
+}
+
+#[test]
+fn scan_stops_at_the_deadline_using_the_injected_clock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for d in ["a", "b", "c", "d"] {
+        touch(&root.join(d).join("f.wav"));
+    }
+    let limits = ScanLimits {
+        max_duration: std::time::Duration::from_secs(3),
+        ..ScanLimits::default()
+    };
+    // Each look at the clock is one second later: root, a, b are read, then time is up.
+    let mut now = std::time::Duration::ZERO;
+    let scan = scan_folder_with(root, limits, &mut || {
+        let t = now;
+        now += std::time::Duration::from_secs(1);
+        t
+    });
+    assert_eq!(scan.files.len(), 2);
+    assert!(scan.truncated);
+    // A clock that never advances never stops the scan.
+    let scan = scan_folder_with(root, limits, &mut || std::time::Duration::ZERO);
+    assert_eq!(scan.files.len(), 4);
+    assert!(!scan.truncated);
 }

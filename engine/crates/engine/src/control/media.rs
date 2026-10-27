@@ -36,6 +36,31 @@ pub const PROBE_WORKERS: usize = 2;
 /// are not replaced any more, so a dead volume cannot make the engine start threads without end.
 pub const MAX_ABANDONED_WORKERS: usize = 16;
 
+/// The monotonic clock the probe watchdog reads. Tests inject one that moves only when told to,
+/// so whether a worker counts as stuck never depends on how fast the machine runs.
+#[derive(Clone)]
+pub struct ProbeClock(Arc<dyn Fn() -> Instant + Send + Sync>);
+
+impl ProbeClock {
+    pub fn system() -> Self {
+        Self(Arc::new(Instant::now))
+    }
+
+    pub fn new(now: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
+        Self(Arc::new(now))
+    }
+
+    fn now(&self) -> Instant {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for ProbeClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProbeClock")
+    }
+}
+
 /// How a file is probed: [`openlab_audio::probe`] in the engine; tests inject a stand-in.
 pub type ProbeFn = fn(&Path) -> Result<Probed, MediaError>;
 
@@ -134,6 +159,7 @@ pub struct MediaCatalog {
     limit_reported: bool,
     limit_unread: bool,
     timeout: Duration,
+    clock: ProbeClock,
     entries: HashMap<String, Entry>,
     next_ticket: u64,
     show_dir: Option<PathBuf>,
@@ -212,6 +238,7 @@ impl MediaCatalog {
         preload_budget: u64,
         probe: ProbeFn,
         timeout: Duration,
+        clock: ProbeClock,
     ) -> std::io::Result<Self> {
         let (high, high_rx) = crossbeam_channel::unbounded::<Job>();
         let (low, low_rx) = crossbeam_channel::unbounded::<Job>();
@@ -227,6 +254,7 @@ impl MediaCatalog {
             limit_reported: false,
             limit_unread: false,
             timeout,
+            clock,
             entries: HashMap::new(),
             next_ticket: 0,
             show_dir,
@@ -258,12 +286,13 @@ impl MediaCatalog {
             self.probe,
         );
         let st = Arc::clone(&state);
+        let clock = self.clock.clone();
         let n = self.workers.len() + self.abandoned;
         // Never joined: a worker stuck in a read on a stalled disk must not hang shutdown. It
         // ends once the catalog (the job senders) is gone and its current job is done.
         thread::Builder::new()
             .name(format!("openlab-probe-{n}"))
-            .spawn(move || worker(&high, &low, &inbox, probe, &st))?;
+            .spawn(move || worker(&high, &low, &inbox, probe, &st, &clock))?;
         self.workers.push(state);
         Ok(())
     }
@@ -653,7 +682,7 @@ impl MediaCatalog {
         for (i, w) in self.workers.iter().enumerate() {
             let busy = w.busy.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some((since, key, ticket)) = busy.as_ref()
-                && since.elapsed() >= self.timeout
+                && self.clock.now().saturating_duration_since(*since) >= self.timeout
             {
                 stuck.push((i, key.clone(), *ticket));
             }
@@ -938,6 +967,7 @@ fn worker(
     inbox: &Sender<Inbox>,
     probe: ProbeFn,
     state: &WorkerState,
+    clock: &ProbeClock,
 ) {
     loop {
         // The high-priority queue first, whenever it has something.
@@ -951,7 +981,7 @@ fn worker(
         {
             let (key, ticket) = job.key();
             let mut busy = state.busy.lock().unwrap_or_else(PoisonError::into_inner);
-            *busy = Some((Instant::now(), key.to_owned(), ticket));
+            *busy = Some((clock.now(), key.to_owned(), ticket));
         }
         let answer = match job {
             Job::Probe { key, ticket, path } => ProbeAnswer::Probed {
@@ -1005,7 +1035,15 @@ mod tests {
     #[test]
     fn a_reprobe_keeps_the_last_answer_until_the_new_one() {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let mut cat = MediaCatalog::new(tx, None, 0, fake, Duration::from_secs(30)).unwrap();
+        let mut cat = MediaCatalog::new(
+            tx,
+            None,
+            0,
+            fake,
+            Duration::from_secs(30),
+            ProbeClock::system(),
+        )
+        .unwrap();
         let key = "/abs/a.wav";
         cat.request(key.to_owned());
         assert_eq!(cat.pending(), 1);
@@ -1063,7 +1101,15 @@ mod tests {
     fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let probe: ProbeFn = openlab_audio::probe;
-        let cat = MediaCatalog::new(tx, None, budget, probe, Duration::from_secs(60)).unwrap();
+        let cat = MediaCatalog::new(
+            tx,
+            None,
+            budget,
+            probe,
+            Duration::from_secs(60),
+            ProbeClock::system(),
+        )
+        .unwrap();
         (cat, rx)
     }
 

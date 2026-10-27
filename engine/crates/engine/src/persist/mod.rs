@@ -33,6 +33,7 @@ pub use recovery_scan::{
 };
 pub use relink::{
     FolderScan, FoundRelinks, ScanLimits, find_in_folder, media_path, missing_media, scan_folder,
+    scan_folder_with,
 };
 pub use save::{SaveReport, save_workspace, save_workspace_with};
 pub use settings::{load_machine_settings, save_machine_settings};

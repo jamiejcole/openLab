@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use openlab_core::{
     MediaRef, MissingMedia, PathStyle, RelinkPlan, Workspace, audio_media, file_name,
@@ -19,6 +20,11 @@ pub struct ScanLimits {
     pub max_depth: usize,
     /// Files collected before the scan stops.
     pub max_files: usize,
+    /// Folders read before the scan stops; a drive full of empty folders costs time without
+    /// ever reaching `max_files`.
+    pub max_dirs: usize,
+    /// Wall-clock budget; a slow or hung network volume ends the scan instead of the show.
+    pub max_duration: Duration,
 }
 
 impl Default for ScanLimits {
@@ -26,6 +32,8 @@ impl Default for ScanLimits {
         Self {
             max_depth: 16,
             max_files: 200_000,
+            max_dirs: 50_000,
+            max_duration: Duration::from_secs(20),
         }
     }
 }
@@ -43,10 +51,29 @@ pub struct FolderScan {
 
 /// Lists the files under `root`. Symlinked folders are not entered, so a link back up the tree
 /// cannot loop; symlinks to files count as files. Unreadable folders are skipped and counted.
+///
+/// Stops with `truncated` set when a limit in `limits` is reached, including the time budget.
 pub fn scan_folder(root: &Path, limits: ScanLimits) -> FolderScan {
+    let start = Instant::now();
+    scan_folder_with(root, limits, &mut || start.elapsed())
+}
+
+/// [`scan_folder`] with the clock injected: `elapsed` returns the time since the scan began.
+/// It is asked before each folder is read and every 1024 entries within one.
+pub fn scan_folder_with(
+    root: &Path,
+    limits: ScanLimits,
+    elapsed: &mut dyn FnMut() -> Duration,
+) -> FolderScan {
     let mut scan = FolderScan::default();
     let mut pending = vec![(root.to_path_buf(), 0usize)];
+    let mut dirs_read = 0usize;
     while let Some((dir, depth)) = pending.pop() {
+        if dirs_read >= limits.max_dirs || elapsed() >= limits.max_duration {
+            scan.truncated = true;
+            return scan;
+        }
+        dirs_read += 1;
         let Ok(read) = fs::read_dir(&dir) else {
             scan.unreadable += 1;
             continue;
@@ -54,7 +81,11 @@ pub fn scan_folder(root: &Path, limits: ScanLimits) -> FolderScan {
         let mut entries: Vec<_> = read.filter_map(Result::ok).collect();
         entries.sort_by_key(|e| e.file_name());
         let mut subdirs = Vec::new();
-        for entry in entries {
+        for (i, entry) in entries.into_iter().enumerate() {
+            if i % 1024 == 1023 && elapsed() >= limits.max_duration {
+                scan.truncated = true;
+                return scan;
+            }
             let path = entry.path();
             let Ok(kind) = entry.file_type() else {
                 scan.unreadable += 1;
