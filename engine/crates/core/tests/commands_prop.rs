@@ -1425,7 +1425,11 @@ proptest! {
         // walks the show by design: the no-extra-passes property is for cue edits.
         let mut wide = false;
         for p in &sequence {
-            let list = ws.cue_lists[p.a as usize % 2].id;
+            // A random edit can remove a list; address whichever lists remain.
+            let Some(target) = ws.cue_lists.get(p.a as usize % ws.cue_lists.len().max(1)) else {
+                break;
+            };
+            let list = target.id;
             let ids = all_ids(&ws);
             let dt = u64::from(p.d % 25);
             match p.c % 6 {
