@@ -369,13 +369,12 @@ fn an_empty_workspace_idles_at_the_same_rate() {
 #[test]
 fn probe_answers_do_not_rescan_the_workspace() {
     // Each probe answer once scanned every cue for a preload request: 2,000 files, 2,000
-    // scans (quadratic). Now one scan serves all answers of a model version.
+    // scans (quadratic). The catalog now counts the cues that ask for a preload as the
+    // workspace and its edits come in, so an answer reads a counter; no scan exists to count.
     let path = show_file(&big_workspace());
     let (mut s, _) = open(&path);
-    assert_eq!(s.control().preload_scans(), 1);
     s.run(BLOCK * 4);
-    assert_eq!(s.control().preload_scans(), 1);
-    // An edit that adds a file that wants preloading: the next answer sees the new model.
+    // An edit that adds a file that wants preloading: its answer sees the new model.
     let wav = wav(&dc(64, 0.5));
     let mut c = audio(9_000_002, &wav, 0);
     if let CueKind::Audio { preload, .. } = &mut c.kind {
@@ -394,7 +393,6 @@ fn probe_answers_do_not_rescan_the_workspace() {
         },
     );
     s.settle_media();
-    assert_eq!(s.control().preload_scans(), 2);
     assert!(
         s.control().preload_reserved() > 0,
         "the new cue is preloaded"
