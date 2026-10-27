@@ -38,8 +38,9 @@ impl Peer {
 /// subscribers must not push out a real console): a full table refuses newcomers until idle
 /// UDP peers expire or TCP connections close.
 pub const MAX_PEERS: usize = 1024;
-/// A UDP peer silent this long is forgotten (there is no disconnect on UDP).
-pub const UDP_IDLE: Duration = Duration::from_secs(10 * 60);
+/// A UDP peer silent this long is forgotten (there is no disconnect on UDP): its `/connect` and
+/// its update subscription end, as in QLab 5 (measured: gone after 60 s of silence).
+pub const UDP_IDLE: Duration = Duration::from_secs(60);
 /// Wrong passcodes from one IP, while not connected, before that IP is locked out.
 pub const MAX_BAD_PASSCODES: u32 = 5;
 /// How long a lockout lasts; attempts during it are refused without being checked.
@@ -110,9 +111,18 @@ impl Sessions {
         self.peers.is_empty()
     }
 
-    /// Notes that `peer` sent something (keeps a UDP peer from idling out).
+    /// Notes that `peer` sent something. A UDP peer that had been silent for [`UDP_IDLE`] is
+    /// forgotten first (so this packet finds it unconnected and unsubscribed); anything sent
+    /// within the window keeps it.
     pub fn touch(&mut self, peer: Peer, now: Duration) {
-        if let Some(session) = self.peers.get_mut(&peer) {
+        let idle = matches!(peer, Peer::Udp(_))
+            && self
+                .peers
+                .get(&peer)
+                .is_some_and(|s| now.saturating_sub(s.last_seen) >= UDP_IDLE);
+        if idle {
+            self.peers.remove(&peer);
+        } else if let Some(session) = self.peers.get_mut(&peer) {
             session.last_seen = now;
         }
     }
@@ -245,11 +255,15 @@ impl Sessions {
         true
     }
 
-    /// Peers that asked for updates, in no particular order.
-    pub fn update_subscribers(&self) -> Vec<Peer> {
+    /// Peers that asked for updates, in no particular order. A UDP peer silent for
+    /// [`UDP_IDLE`] is not one, even before the next sweep removes it.
+    pub fn update_subscribers(&self, now: Duration) -> Vec<Peer> {
         self.peers
             .iter()
-            .filter(|(_, s)| s.updates)
+            .filter(|(p, s)| {
+                s.updates
+                    && (matches!(p, Peer::Tcp { .. }) || now.saturating_sub(s.last_seen) < UDP_IDLE)
+            })
             .map(|(p, _)| *p)
             .collect()
     }
