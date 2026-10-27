@@ -7,11 +7,13 @@
 
 mod show;
 
+use openlab_core::protocol::{ClientMessage, Outcome};
 use openlab_core::protocol::{
     RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
     WireWarning,
 };
-use openlab_core::{ContinueMode, CueProblem, CueState};
+use openlab_core::{Command, ContinueMode, CueKind, CueProblem, CueProperty, CueState};
+use openlab_engine::control::offline::OfflineShow;
 use show::*;
 
 #[test]
@@ -369,4 +371,127 @@ fn a_reset_silences_a_stalled_tail_at_once() {
     s.run(BLOCK * 4);
     assert!(s.channel(0)[at..].iter().all(|&v| v == 0.0));
     assert_eq!(s.control().live_voices(), 0);
+}
+
+// ----- preload follows the cues' settings (M4.12b) -----
+
+#[allow(clippy::unwrap_used)]
+fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(cue))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { preload, .. } = &mut kind {
+        *preload = on;
+    }
+    let request = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id: request,
+        command: Box::new(Command::SetCueProperty {
+            id: id(cue),
+            property: CueProperty::Kind { value: kind },
+        }),
+    });
+    assert!(replies.iter().any(|m| matches!(
+        m,
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
+    // Regression (M4.12b): only a cue that was new, or a workspace opened, was preloaded; a
+    // file probed already stayed streamed after its cue's preload was switched on.
+    let path = wav(&dc(400, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    assert_eq!(s.control().probes_pending(), 0);
+    assert_eq!(
+        s.control().preload_reserved(),
+        0,
+        "no cue asks for a preload"
+    );
+
+    // On, for one cue: the file (400 frames of f32) is preloaded.
+    set_preload(&mut s, 1, true);
+    s.settle_media();
+    assert_eq!(s.control().preload_reserved(), 1600);
+    // Another cue on the same file asks too: nothing more is reserved.
+    set_preload(&mut s, 2, true);
+    s.settle_media();
+    assert_eq!(s.control().preload_reserved(), 1600);
+    // The first stops asking: the other still wants the file.
+    set_preload(&mut s, 1, false);
+    assert_eq!(s.control().preload_reserved(), 1600);
+    // The last one stops: the reservation is released.
+    set_preload(&mut s, 2, false);
+    assert_eq!(s.control().preload_reserved(), 0);
+    // And switching it on again preloads again.
+    set_preload(&mut s, 2, true);
+    s.settle_media();
+    assert_eq!(s.control().preload_reserved(), 1600);
+}
+
+#[test]
+fn a_cue_playing_from_a_preload_keeps_playing_when_the_preload_is_released() {
+    let path = wav(&dc(200_000, 0.5));
+    let mut c = audio(1, &path, 0);
+    if let CueKind::Audio { preload, .. } = &mut c.kind {
+        *preload = true;
+    }
+    let mut s = show(workspace(vec![c]));
+    assert_eq!(s.control().preload_reserved(), 800_000);
+    s.settle_media();
+    // GO starts from the prime, and the prime reads the preloaded samples.
+    s.run(BLOCK);
+    assert!(s.control().primed_from_memory(id(1)));
+    let at = go(&mut s) as usize;
+    assert_eq!(
+        s.control().prime_hits(),
+        1,
+        "a primed start, not a cold one"
+    );
+    s.run(BLOCK * 8);
+    set_preload(&mut s, 1, false);
+    assert_eq!(s.control().preload_reserved(), 0);
+    // The file is emptied behind the voice: one that streamed from it would run dry, only one
+    // holding the preloaded samples is unaffected.
+    std::fs::write(&path, b"").unwrap();
+    s.run(4000);
+    let ch = s.channel(0);
+    assert!(
+        ch[at..at + 4000].iter().all(|&v| v == 0.5),
+        "the voice kept its samples"
+    );
+}
+
+#[test]
+fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
+    // Regression: a preload answer did not dirty the primes, so a stream primed from the file
+    // before the preload landed was stale (its source differs) and GO cold-started the cue.
+    let path = wav(&dc(2_000_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.settle_media();
+    assert_eq!(s.control().primed(), vec![id(1)]);
+    assert!(!s.control().primed_from_memory(id(1)));
+    // Switching preload on starts the job. Ticking Control directly does not read the inbox, so
+    // the preload answer cannot land before this check however fast the worker is: the prime is
+    // from the file.
+    set_preload(&mut s, 1, true);
+    s.control_mut().tick();
+    assert!(!s.control().primed_from_memory(id(1)));
+    s.settle_media();
+    s.run(BLOCK);
+    assert!(
+        s.control().primed_from_memory(id(1)),
+        "re-primed from the preload before GO"
+    );
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
 }
