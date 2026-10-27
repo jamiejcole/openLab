@@ -1048,6 +1048,41 @@ fn a_cues_own_panic_fades_it_and_what_is_in_it_and_leaves_the_rest() {
 }
 
 #[test]
+fn a_second_panic_on_a_cue_fading_out_stops_it_at_once_and_leaves_the_rest() {
+    // M4.1d (QLab check Q7): only the selected cues fade, a second press on them stops them at
+    // once, other cues keep playing.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        grp(2, GroupMode::Timeline, vec![sound(3)]),
+        sound(4),
+    ]);
+    for n in [1, 2, 4] {
+        rig.start(0, n);
+    }
+    rig.at(100, Input::PanicCue { cue: id(1) });
+    rig.at(100, Input::PanicCue { cue: id(2) });
+    assert_eq!(rig.state(1), CueState::Stopping);
+    assert_eq!(rig.state(3), CueState::Stopping);
+    // Before the fades end: cue 1 and the group stop at once; cue 4 plays on.
+    let second = rig.at(500, Input::PanicCue { cue: id(1) });
+    assert_eq!(voice_stops(&second), vec![(id(1), 500, None)]);
+    assert_eq!(changes(&second, 1), vec![(CueState::Idle, 500)]);
+    assert_eq!(rig.state(3), CueState::Stopping, "the group's own press");
+    let second = rig.at(600, Input::PanicCue { cue: id(2) });
+    assert_eq!(voice_stops(&second), vec![(id(3), 600, None)]);
+    assert_eq!(rig.state(3), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(4), CueState::Running);
+    assert_eq!(rig.engine.panic_end(), None);
+    // A press on a cue that is playing again is a first press with its fade.
+    rig.start(700, 1);
+    assert_eq!(
+        voice_stops(&rig.at(800, Input::PanicCue { cue: id(1) })),
+        vec![(id(1), 800, panic_fade(1000))]
+    );
+}
+
+#[test]
 fn a_cues_own_panic_with_no_panic_duration_stops_it_at_once() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     rig.ws.settings.panic_duration = 0.0;
