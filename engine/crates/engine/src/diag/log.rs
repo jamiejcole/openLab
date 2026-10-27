@@ -123,6 +123,15 @@ impl ShowLog {
         (ring.entries.iter().skip(skip).cloned().collect(), ring.seq)
     }
 
+    /// The sequence number of the newest record (0: none yet), for `status`.
+    pub fn seq(&self) -> u64 {
+        self.shared
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .seq
+    }
+
     /// Records the disk writer had no room for (or could not write) so far.
     pub fn dropped(&self) -> u64 {
         self.sink.as_ref().map_or(0, LogSink::dropped)
@@ -223,6 +232,7 @@ mod tests {
     fn records_are_numbered_and_the_tail_says_where_it_ends() {
         let log = ShowLog::new(None);
         assert_eq!(log.tail_seq(10), (vec![], 0));
+        assert_eq!(log.seq(), 0);
         for n in 0..(RING_CAPACITY as i64 + 2) {
             rec(&log, n, "x");
         }
@@ -240,6 +250,7 @@ mod tests {
             source: None,
         });
         assert_eq!(seq, RING_CAPACITY as u64 + 3);
+        assert_eq!(log.seq(), seq);
         // The copy is the record as stored: cut, and without the bad time.
         assert_eq!(log.tail(1), std::slice::from_ref(&copy));
         assert!(copy.message.ends_with("...") && copy.show_time.is_none());

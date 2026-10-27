@@ -440,6 +440,7 @@ impl Control {
             underrun_frames: self.mixer.underrun_frames(),
             streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
             log_dropped: self.config.show_log.dropped(),
+            log_seq: self.config.show_log.seq(),
             device,
             cpu_seconds: (self.config.cpu_probe)(),
             // Worst callback since the previous status (read-and-reset; this is its only

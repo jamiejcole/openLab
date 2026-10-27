@@ -34,6 +34,8 @@ pub struct Counters {
     pub underrun_frames: u64,
     pub streams: u32,
     pub log_dropped: u64,
+    /// Sequence number of the newest show-log record.
+    pub log_seq: u64,
     pub device: DeviceStatus,
     /// Process CPU seconds so far, if the platform says.
     pub cpu_seconds: Option<f64>,
@@ -166,6 +168,7 @@ impl StatusReporter {
             },
             device: counters.device.clone(),
             log_dropped: counters.log_dropped,
+            log_seq: counters.log_seq,
         })
     }
 }
@@ -187,6 +190,7 @@ mod tests {
             underrun_frames: 0,
             streams: 2,
             log_dropped: 0,
+            log_seq: 0,
             device: DeviceStatus {
                 name: Some("Dev".into()),
                 state: DeviceState::Ok,

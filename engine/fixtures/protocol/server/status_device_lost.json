@@ -15,6 +15,7 @@
       "sample_rate": 48000,
       "channels": 2
     },
-    "log_dropped": 0
+    "log_dropped": 0,
+    "log_seq": 42
   }
 }

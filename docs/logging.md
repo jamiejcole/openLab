@@ -26,7 +26,7 @@ Every message the loop used to send as `log` is still sent, unchanged (and now a
 
 ### Live push (M4.7c)
 
-When `ControlConfig::push_log` is set (the host sets it; offline tests leave it off), `Control::record` sends each new record as a `log_entry { seq, entry }` message ([protocol.md](protocol.md)): `seq` is the record's number in this run (`ShowLog` counts them under the ring's lock, and `log_tail` answers with the newest one), so a client joins the tail and the pushes without duplicates and sees any gap. Pushes are lossy (`Outbound::try_lossy`: refused while the outbound channel is half full, like `meters`; the network hub drops them per client on the same rule without marking it lagged) and limited to 200 delivered pushes per 10 s wall-clock window, the trigger records' window (a refused push spends nothing, so a client that falls behind does not use up the budget). The newest record not delivered is kept and offered again each tick until the budget and the channel allow, so a client learns of a gap without waiting for the next record (a budget hold-back: when the window ends). Lost pushes are not counted in the "clients were not keeping up" notice: that notice is a pushed record too and would report its own loss.
+When `ControlConfig::push_log` is set (the host sets it; offline tests leave it off), `Control::record` sends each new record as a `log_entry { seq, entry }` message ([protocol.md](protocol.md)): `seq` is the record's number in this run (`ShowLog` counts them under the ring's lock, and `log_tail` answers with the newest one), so a client joins the tail and the pushes without duplicates and sees any gap. Pushes are lossy (`Outbound::try_lossy`: refused while the outbound channel is half full, like `meters`; the network hub drops them per client on the same rule without marking it lagged) and limited to 200 delivered pushes per 10 s wall-clock window, the trigger records' window (a refused push spends nothing, so a client that falls behind does not use up the budget). The newest record the control thread could not hand over is kept and offered again each tick until the budget and the channel allow (a budget hold-back: when the window ends). A push the hub drops for one client is gone for that client; `status` carries `log_seq`, the newest record's number, so the client sees the gap within a status period (about a second) without waiting for the next record, and reads it with `log_tail`. Lost pushes are not counted in the "clients were not keeping up" notice: that notice is a pushed record too and would report its own loss.
 
 ### In memory
 
@@ -53,6 +53,7 @@ The engine does not use the `tracing` crate for this: records are structured val
 | `disk.underrun_frames`, `disk.healthy` | `MixerController::underrun_frames()`; unhealthy for ten seconds after any rise |
 | `device` | the open stream's name, rate, block and channels, the host's callback latency, and its state (`ok`, `lost`, `failed`; `absent` offline) |
 | `log_dropped` | the log sink's drop count |
+| `log_seq` | `ShowLog::seq()`: the newest record's number, as in `log_entry` and `log_tail` (0: none yet) |
 
 `status` travels the lossy path like `meters`: dropped first when the outbound channel is half full, the next one replaces it.
 

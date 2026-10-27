@@ -220,6 +220,11 @@ pub struct SystemStatus {
     pub device: DeviceStatus,
     /// Show-log records lost since start because the disk could not keep up.
     pub log_dropped: u64,
+    /// Sequence number of the newest show-log record (as in `log_entry` and `log_tail`; 0:
+    /// none yet). A client following `log_entry` that sees a higher number than the last it
+    /// received missed a push and reads the gap with `log_tail`. Absent from older engines: 0.
+    #[serde(default)]
+    pub log_seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

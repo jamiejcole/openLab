@@ -655,3 +655,31 @@ fn retrying_into_a_full_queue_does_not_use_up_the_push_budget() {
     let [(_, live)] = pushed(&s.take_outbound()).try_into().unwrap();
     assert_eq!(live.message, "note 4");
 }
+
+#[test]
+fn status_carries_the_newest_seq_so_a_push_lost_on_the_way_is_noticed() {
+    let ws = workspace(vec![]);
+    let (mut c, clock) = pushing(&ws);
+    c.status = Some(openlab_engine::diag::StatusConfig::default());
+    let mut s = show_with(ws, c);
+    s.take_outbound();
+    note(&mut s, 1);
+    let [(seen, _)] = pushed(&s.take_outbound()).try_into().unwrap();
+    // The next record's push is lost between the engine and the client (the hub drops lossy
+    // messages for a slow client), and the show then stays quiet.
+    note(&mut s, 2);
+    assert_eq!(pushed(&s.take_outbound()).len(), 1);
+    clock.set(T0 + 1000);
+    s.tick();
+    let status = s
+        .take_outbound()
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Status { status } => Some(*status),
+            _ => None,
+        })
+        .expect("a status within a second");
+    let (_, _, newest) = tail_seq(&mut s, Some(0));
+    assert_eq!(status.log_seq, newest);
+    assert_eq!(status.log_seq, seen + 1, "the client learns it missed one");
+}
