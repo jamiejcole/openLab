@@ -604,3 +604,44 @@ fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
         Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
     );
 }
+
+#[test]
+fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
+    // The other side of M4.14 (QLab check Q2): c1 has played audio when its file is cut short
+    // under it, so its stream fails mid-play (`Changed`): the binary reports `ActionFailed`,
+    // the playlist halts and c2 never plays.
+    let long = wav(&dc(40_000, 0.5));
+    let next = wav(&dc(300, 0.25));
+    let playlist = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &long, 0), audio(2, &next, 1)],
+        },
+    );
+    let mut s = show(workspace(vec![playlist]));
+    let at = go(&mut s) as usize;
+    s.run(1000);
+    assert!(
+        first_nonzero(&s.channel(0)).is_some_and(|f| f >= at),
+        "c1 played"
+    );
+    // Only the header is left: the stream's next read comes up short.
+    std::fs::write(&long, &std::fs::read(&long).unwrap()[..44]).unwrap();
+    let mut waited = 0;
+    while s.control().engine().state(id(1)) != CueState::Broken {
+        assert!(waited < 30_000, "c1's stream never failed");
+        s.step();
+        waited += BLOCK;
+    }
+    assert_eq!(
+        states(&s.take_outbound(), id(1)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert!(s.control().engine().is_halted(id(10)));
+    s.run(4000);
+    assert!(s.channel(1).iter().all(|&v| v == 0.0), "c2 never plays");
+}
