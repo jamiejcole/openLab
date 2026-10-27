@@ -1,0 +1,14 @@
+{
+  "comment": "Shared by the Rust test (engine/crates/core/tests/display_name.rs) and, with M2.29c's Swift part, the Swift test. media is the stored MediaRef text or null; audio=false builds a non-Audio cue.",
+  "cases": [
+    { "label": "user name wins", "audio": true, "name": "Thunder", "media": "audio/rain.wav", "expected": "Thunder" },
+    { "label": "user name without media", "audio": true, "name": "Thunder", "media": null, "expected": "Thunder" },
+    { "label": "empty name follows the file, extension kept", "audio": true, "name": "", "media": "/Users/x/Show/Rain Loop.aiff", "expected": "Rain Loop.aiff" },
+    { "label": "NFD file name shown as stored", "audio": true, "name": "", "media": "audio/Cafe\u0301.wav", "expected": "Cafe\u0301.wav" },
+    { "label": "backslash is part of a macOS file name", "audio": true, "name": "", "media": "/Volumes/A/back\\slash.wav", "expected": "back\\slash.wav" },
+    { "label": "no media", "audio": true, "name": "", "media": null, "expected": "" },
+    { "label": "relative path in a subfolder", "audio": true, "name": "", "media": "audio/sub/Thunder.wav", "expected": "Thunder.wav" },
+    { "label": "Windows absolute path converted on load", "audio": true, "name": "", "media": "C:\\Show\\Audio\\Bell.wav", "expected": "Bell.wav" },
+    { "label": "non-audio cue with empty name", "audio": false, "name": "", "media": null, "expected": "" }
+  ]
+}
