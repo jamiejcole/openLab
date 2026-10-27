@@ -40,7 +40,10 @@ use openlab_core::{
     MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
 };
 
-pub use inbox::{Inbox, OUTBOUND_CAPACITY, ProbeAnswer};
+pub use inbox::{
+    Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, ProbeAnswer, ReplyRx, ReplyTx,
+    outbound_channel, reply_channel,
+};
 pub use media::PROBE_WORKERS;
 
 use checks::PlanChecks;
@@ -247,7 +250,7 @@ impl Control {
         backend: Backend,
         config: ControlConfig,
         inbox: Sender<Inbox>,
-        outbound: Sender<ServerMessage>,
+        outbound: OutboundTx,
     ) -> Result<Self, ControlError> {
         let block = config.block_frames.max(1);
         let engine = CueEngine::new(EngineConfig::new(config.sample_rate, block, config.seed)?);
@@ -340,6 +343,7 @@ impl Control {
             Inbox::Client { message, reply } => return self.client(message, &reply),
             Inbox::Probe(answer) => self.probe_answer(answer),
             Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Log { level, message } => self.log(level, message),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -415,7 +419,7 @@ impl Control {
         Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
     }
 
-    fn client(&mut self, message: ClientMessage, to: &Sender<ServerMessage>) -> Flow {
+    fn client(&mut self, message: ClientMessage, to: &ReplyTx) -> Flow {
         let now = self.now();
         match message {
             ClientMessage::Transport { id, action } => {

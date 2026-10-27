@@ -170,7 +170,7 @@ fn a_start_held_by_its_probe_plays_once_the_probe_answers() {
     let mut s =
         openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), config).unwrap();
     // The probe's answer waits in the inbox: the GO comes first.
-    let (reply, _) = crossbeam_channel::unbounded();
+    let (reply, _replies) = openlab_engine::control::reply_channel();
     let message = openlab_core::protocol::ClientMessage::Transport {
         id: openlab_core::protocol::RequestId(1),
         action: TransportAction::Go { list: list_id() },

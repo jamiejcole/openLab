@@ -1,0 +1,789 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The WebSocket server: accept, authenticate, then relay between one client and the control
+//! thread (docs/network.md, docs/protocol.md section 2).
+
+use std::collections::VecDeque;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdListener};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use crossbeam_channel::Sender;
+use futures_util::{SinkExt, StreamExt};
+use openlab_core::protocol::{
+    ClientMessage, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION,
+    ProtocolError, Request, RequestId, ServerMessage, decode_client, decode_hello, encode_server,
+};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
+
+use super::NetError;
+use super::hub::{self, Broadcast, Hub, Kind};
+use super::token::{constant_time_eq, generate_token};
+use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
+
+/// Bytes a connection may send before it has authenticated: the HTTP upgrade request plus the
+/// 4 KiB `hello`. The WebSocket library would buffer a whole message up to its size limit before
+/// anyone looks at it, so this caps what a stranger can make the engine hold.
+const PRE_AUTH_BYTES: usize = 16 * 1024;
+/// Requests a connection may have outstanding at the control loop; it stops reading the socket
+/// beyond that, so a flood is held back by TCP instead of piling up in the inbox.
+const MAX_INFLIGHT: usize = 64;
+/// Unreadable frames in a row before the connection is closed as abusive.
+const MAX_BAD_FRAMES: u32 = 32;
+/// Reserved `RequestId` for the server's own `snapshot` requests; a client may not use it.
+const INTERNAL_ID: RequestId = RequestId(u64::MAX);
+/// How long the control loop may take to produce the first snapshot.
+const SNAPSHOT_WAIT: Duration = Duration::from_secs(10);
+
+/// Timeouts and limits. The defaults are for production; tests shorten them.
+#[derive(Clone, Debug)]
+pub struct ServerConfig {
+    /// From accepting the TCP connection to a valid `hello` (upgrade included).
+    pub hello_timeout: Duration,
+    /// A `ping` is sent this often.
+    pub ping_interval: Duration,
+    /// A client that has sent nothing (not even a `pong`) for this long is dead.
+    pub dead_after: Duration,
+    /// One write to a client that makes no progress for this long closes the connection.
+    pub write_timeout: Duration,
+    /// How long a `result` waits for the `model_changed` that precedes it.
+    pub revision_wait: Duration,
+    /// Authenticated connections.
+    pub max_connections: usize,
+    /// Connections still upgrading or waiting to say `hello`.
+    pub max_handshaking: usize,
+    /// Refused connections are logged at most this often (with a count), so a process that
+    /// keeps knocking cannot flood the log.
+    pub refusal_log_interval: Duration,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            hello_timeout: Duration::from_secs(5),
+            ping_interval: Duration::from_secs(10),
+            dead_after: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(10),
+            revision_wait: Duration::from_secs(2),
+            max_connections: 16,
+            max_handshaking: 8,
+            refusal_log_interval: Duration::from_secs(10),
+        }
+    }
+}
+
+struct Shared {
+    token: String,
+    inbox: Sender<Inbox>,
+    hub: Arc<Hub>,
+    config: ServerConfig,
+    handshaking: Arc<Semaphore>,
+    connections: Arc<Semaphore>,
+    shutdown: watch::Receiver<bool>,
+}
+
+/// The running server. Dropping it (or [`WsServer::stop`]) closes every connection.
+pub struct WsServer {
+    port: u16,
+    token: String,
+    shutdown: watch::Sender<bool>,
+    runtime: Mutex<Option<tokio::runtime::Runtime>>,
+}
+
+impl std::fmt::Debug for WsServer {
+    // The token is a secret: never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsServer")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WsServer {
+    /// Listens on `127.0.0.1` at a random port with a fresh random token. Client messages go to
+    /// `inbox`; everything on `outbound` (the control loop's broadcast channel) is relayed to
+    /// the connected clients.
+    pub fn start(
+        inbox: Sender<Inbox>,
+        outbound: OutboundRx,
+        config: ServerConfig,
+    ) -> Result<Self, NetError> {
+        let token = generate_token()?;
+        let listener = StdListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .map_err(NetError::Bind)?;
+        listener.set_nonblocking(true).map_err(NetError::Bind)?;
+        let port = listener.local_addr().map_err(NetError::Bind)?.port();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("openlab-net")
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(NetError::Runtime)?;
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let shared = Arc::new(Shared {
+            token: token.clone(),
+            inbox,
+            hub: Arc::new(Hub::default()),
+            handshaking: Arc::new(Semaphore::new(config.max_handshaking)),
+            connections: Arc::new(Semaphore::new(config.max_connections)),
+            config,
+            shutdown: shutdown_rx,
+        });
+        runtime.spawn(hub::distribute(shared.hub.clone(), outbound));
+        let accept_shared = shared.clone();
+        runtime.spawn(async move {
+            if let Ok(listener) = TcpListener::from_std(listener) {
+                accept_loop(accept_shared, listener).await;
+            }
+        });
+        Ok(Self {
+            port,
+            token,
+            shutdown,
+            runtime: Mutex::new(Some(runtime)),
+        })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The token a client must present in `hello` (written to `engine.json` by M4.9).
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Closes every connection and stops the runtime (and with it the fan-out task).
+    pub fn stop(&self) {
+        let _ = self.shutdown.send(true);
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(runtime) = runtime {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+impl Drop for WsServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Counts refused connections and logs them at most once per `refusal_log_interval`, so a UI
+/// that cannot connect (every slot held by something else) can be diagnosed. Refusals inside
+/// the interval are logged, with their count, once it has passed.
+struct Refusals {
+    interval: Duration,
+    count: u64,
+    limit: &'static str,
+    last_log: Option<Instant>,
+}
+
+impl Refusals {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            count: 0,
+            limit: "",
+            last_log: None,
+        }
+    }
+
+    fn refused(&mut self, inbox: &Sender<Inbox>, limit: &'static str) {
+        self.count += 1;
+        self.limit = limit;
+        if self.due().is_some_and(|t| t <= Instant::now()) {
+            self.flush(inbox);
+        }
+    }
+
+    /// When the pending count may be logged; `None` if nothing is pending.
+    fn due(&self) -> Option<Instant> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(match self.last_log {
+            Some(t) => t + self.interval,
+            None => Instant::now(),
+        })
+    }
+
+    fn flush(&mut self, inbox: &Sender<Inbox>) {
+        if self.count == 0 {
+            return;
+        }
+        let _ = inbox.send(Inbox::Log {
+            level: LogLevel::Warn,
+            message: format!(
+                "UI server refused {} connection(s): {}",
+                self.count, self.limit
+            ),
+        });
+        self.count = 0;
+        self.last_log = Some(Instant::now());
+    }
+}
+
+async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
+    let mut shutdown = shared.shutdown.clone();
+    let mut refusals = Refusals::new(shared.config.refusal_log_interval);
+    loop {
+        let due = refusals.due();
+        let accepted = tokio::select! {
+            _ = shutdown.changed() => return,
+            accepted = listener.accept() => accepted,
+            // The last refusals of a burst are logged even if no connection follows.
+            () = sleep_until(due.unwrap_or_else(Instant::now)), if due.is_some() => {
+                refusals.flush(&shared.inbox);
+                continue;
+            }
+        };
+        let Ok((tcp, _)) = accepted else {
+            // A transient accept failure (descriptor exhaustion): do not spin.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        // Over the limits: refuse by closing at once, before any state is allocated.
+        let Ok(pending) = shared.handshaking.clone().try_acquire_owned() else {
+            refusals.refused(&shared.inbox, "too many connections still handshaking");
+            continue;
+        };
+        let Ok(slot) = shared.connections.clone().try_acquire_owned() else {
+            refusals.refused(&shared.inbox, "connection limit reached");
+            continue;
+        };
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            serve(shared, tcp, pending).await;
+            drop(slot);
+        });
+    }
+}
+
+/// The socket, with a cap on what an unauthenticated peer may send (see [`PRE_AUTH_BYTES`]).
+struct Gated {
+    inner: TcpStream,
+    read: usize,
+    authed: Arc<AtomicBool>,
+}
+
+impl AsyncRead for Gated {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &polled
+            && !self.authed.load(Ordering::Acquire)
+        {
+            self.read += buf.filled().len().saturating_sub(before);
+            if self.read > PRE_AUTH_BYTES {
+                return Poll::Ready(Err(io::Error::other("too much data before hello")));
+            }
+        }
+        polled
+    }
+}
+
+impl AsyncWrite for Gated {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+type Ws = WebSocketStream<Gated>;
+
+fn ws_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_CLIENT_FRAME_BYTES))
+        .max_frame_size(Some(MAX_CLIENT_FRAME_BYTES))
+}
+
+fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
+    ServerMessage::Error {
+        code,
+        message: message.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+    }
+}
+
+/// Checks the first frame. `Err` is the refusal to send before closing.
+fn authenticate(shared: &Shared, text: &str) -> Result<(), ServerMessage> {
+    match decode_hello(text) {
+        Ok(ClientMessage::Hello {
+            protocol_version,
+            token,
+            ..
+        }) => {
+            if !constant_time_eq(token.as_bytes(), shared.token.as_bytes()) {
+                Err(error_message(ErrorCode::BadToken, "wrong token"))
+            } else if protocol_version != PROTOCOL_VERSION {
+                Err(error_message(
+                    ErrorCode::ProtocolVersionMismatch,
+                    &format!("the engine speaks protocol {PROTOCOL_VERSION}"),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        // Any other message first (docs/protocol.md section 2).
+        Ok(_) | Err(ProtocolError::UnknownType(_)) => Err(error_message(
+            ErrorCode::BadToken,
+            "the first message must be hello",
+        )),
+        Err(e) => Err(error_message(ErrorCode::BadRequest, &e.to_string())),
+    }
+}
+
+async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermit) {
+    let _ = tcp.set_nodelay(true);
+    let authed = Arc::new(AtomicBool::new(false));
+    let stream = Gated {
+        inner: tcp,
+        read: 0,
+        authed: authed.clone(),
+    };
+    let deadline = Instant::now() + shared.config.hello_timeout;
+    let Ok(Ok(mut ws)) = timeout_at(
+        deadline,
+        accept_async_with_config(stream, Some(ws_config())),
+    )
+    .await
+    else {
+        return;
+    };
+    let hello = match timeout_at(deadline, ws.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => text,
+        _ => return,
+    };
+    if let Err(refusal) = authenticate(&shared, hello.as_str()) {
+        if let Ok(text) = encode_server(&refusal) {
+            let _ = timeout(shared.config.write_timeout, ws.send(Message::text(text))).await;
+        }
+        let _ = timeout(shared.config.write_timeout, ws.close(None)).await;
+        return;
+    }
+    authed.store(true, Ordering::Release);
+    drop(pending);
+    run(shared, ws).await;
+}
+
+/// The connection ended (or must end).
+struct Closed;
+
+/// A `result` waiting for the `model_changed` it reports (docs/protocol.md section 4).
+struct Held {
+    revision: u64,
+    deadline: Instant,
+    message: ServerMessage,
+}
+
+struct Conn {
+    ws: Ws,
+    shared: Arc<Shared>,
+    hub_id: u64,
+    bcast: mpsc::Receiver<Broadcast>,
+    lagged: Arc<AtomicBool>,
+    wake: Arc<Notify>,
+    reply_tx: ReplyTx,
+    reply_rx: ReplyRx,
+    /// Last `model_changed` revision / `runtime` seq this client has been sent or was told by a
+    /// snapshot; older broadcasts are skipped.
+    last_rev: u64,
+    last_seq: u64,
+    /// Client requests sent to the control loop whose `result` has not been written yet.
+    inflight: usize,
+    /// Requests that answer with a `snapshot` (the server's own, id [`INTERNAL_ID`], and the
+    /// client's `snapshot`/`open`/`new`/`revert`) whose `result` has not arrived. While one is
+    /// out, broadcasts wait in the queue: one made after the control loop took the snapshot
+    /// must not reach the client before it (the snapshot would then take the client back),
+    /// and one made before is filtered against the snapshot's revision and seq.
+    snapshot_waits: Vec<RequestId>,
+    /// Results held back for their `model_changed`, in arrival order.
+    held: VecDeque<Held>,
+    bad_frames: u32,
+    last_heard: Instant,
+}
+
+async fn run(shared: Arc<Shared>, ws: Ws) {
+    let registration = shared.hub.register();
+    let (reply_tx, reply_rx) = reply_channel();
+    let mut conn = Conn {
+        ws,
+        hub_id: registration.id,
+        bcast: registration.rx,
+        lagged: registration.lagged,
+        wake: registration.wake,
+        reply_tx,
+        reply_rx,
+        last_rev: 0,
+        last_seq: 0,
+        inflight: 0,
+        snapshot_waits: Vec::new(),
+        held: VecDeque::new(),
+        bad_frames: 0,
+        last_heard: Instant::now(),
+        shared,
+    };
+    let _ = conn.session().await;
+    conn.shared.hub.unregister(conn.hub_id);
+    let _ = timeout(conn.shared.config.write_timeout, conn.ws.close(None)).await;
+}
+
+fn request_id(message: &ClientMessage) -> Option<RequestId> {
+    match message {
+        ClientMessage::Command { id, .. }
+        | ClientMessage::Transport { id, .. }
+        | ClientMessage::Undo { id }
+        | ClientMessage::Redo { id }
+        | ClientMessage::Request { id, .. } => Some(*id),
+        ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => None,
+    }
+}
+
+/// Whether the control loop answers this with a `snapshot` (docs/protocol.md section 3).
+fn answers_with_snapshot(message: &ClientMessage) -> bool {
+    matches!(
+        message,
+        ClientMessage::Request {
+            request: Request::Snapshot | Request::Open { .. } | Request::New | Request::Revert,
+            ..
+        }
+    )
+}
+
+impl Conn {
+    async fn session(&mut self) -> Result<(), Closed> {
+        // The hub is registered before the snapshot is taken, so a change in between is
+        // queued; the revision filter drops what the snapshot already contains.
+        self.ask_snapshot()?;
+        let snapshot = loop {
+            match timeout(SNAPSHOT_WAIT, self.reply_rx.recv()).await {
+                Ok(Some(ServerMessage::Snapshot { snapshot })) => break snapshot,
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    let _ = self
+                        .send(&error_message(
+                            ErrorCode::Internal,
+                            "the engine did not produce a snapshot",
+                        ))
+                        .await;
+                    return Err(Closed);
+                }
+            }
+        };
+        self.last_rev = snapshot.revision;
+        self.last_seq = snapshot.runtime_seq;
+        self.send(&ServerMessage::Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            snapshot,
+        })
+        .await?;
+
+        let mut shutdown = self.shared.shutdown.clone();
+        let wake = self.wake.clone();
+        let config = self.shared.config.clone();
+        let mut ticker = interval_at(Instant::now() + config.ping_interval, config.ping_interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        self.last_heard = Instant::now();
+        loop {
+            let waiting = !self.snapshot_waits.is_empty();
+            if !waiting && self.lagged.load(Ordering::Acquire) {
+                self.resync()?;
+                continue;
+            }
+            // While a snapshot is coming, held results wait for it (it covers their revision:
+            // the control loop answered them before taking it).
+            let deadline = self
+                .held
+                .iter()
+                .map(|h| h.deadline)
+                .min()
+                .filter(|_| !waiting);
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => return Ok(()),
+                // Only wakes the loop; `resync` runs at the top of the next turn.
+                () = wake.notified() => {}
+                // Broadcasts before replies: the `model_changed` of a command is queued here
+                // before its `result` is ready (ordering also enforced by `held`).
+                item = self.bcast.recv(), if !waiting => match item {
+                    Some(b) => self.broadcast(b).await?,
+                    None => return Ok(()),
+                },
+                reply = self.reply_rx.recv() => match reply {
+                    Some(m) => self.reply(m).await?,
+                    None => return Ok(()),
+                },
+                frame = self.ws.next(), if self.inflight < MAX_INFLIGHT => {
+                    self.last_heard = Instant::now();
+                    match frame {
+                        None | Some(Ok(Message::Close(_))) => return Ok(()),
+                        Some(Err(e)) => {
+                            if matches!(e, WsError::Capacity(_)) {
+                                let _ = self
+                                    .send(&error_message(ErrorCode::BadRequest, "frame too large"))
+                                    .await;
+                            }
+                            return Err(Closed);
+                        }
+                        Some(Ok(Message::Text(text))) => self.text(text.as_str()).await?,
+                        Some(Ok(Message::Binary(_))) => {
+                            self.bad_frame(ErrorCode::BadRequest, "binary frames are not part of the protocol")
+                                .await?;
+                        }
+                        // Ping is answered by the library; pong only counts as sign of life.
+                        Some(Ok(_)) => {}
+                    }
+                }
+                () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
+                    self.release_held().await?;
+                }
+                _ = ticker.tick() => {
+                    if self.inflight < MAX_INFLIGHT
+                        && self.last_heard.elapsed() > config.dead_after
+                    {
+                        return Err(Closed);
+                    }
+                    self.write(Message::Ping(Default::default())).await?;
+                }
+            }
+        }
+    }
+
+    fn ask_snapshot(&mut self) -> Result<(), Closed> {
+        self.snapshot_waits.push(INTERNAL_ID);
+        self.shared
+            .inbox
+            .send(Inbox::Client {
+                message: ClientMessage::Request {
+                    id: INTERNAL_ID,
+                    request: Request::Snapshot,
+                },
+                reply: self.reply_tx.clone(),
+            })
+            .map_err(|_| Closed)
+    }
+
+    /// The client's queue overflowed (or a message could not be encoded): throw the queue away
+    /// and send a fresh snapshot. The flag is cleared first, so a broadcast made after this
+    /// point is queued and filtered against the snapshot's revision.
+    fn resync(&mut self) -> Result<(), Closed> {
+        while self.bcast.try_recv().is_ok() {}
+        self.lagged.store(false, Ordering::Release);
+        self.ask_snapshot()
+    }
+
+    async fn write(&mut self, message: Message) -> Result<(), Closed> {
+        match timeout(self.shared.config.write_timeout, self.ws.send(message)).await {
+            Ok(Ok(())) => Ok(()),
+            _ => Err(Closed),
+        }
+    }
+
+    async fn send_text(&mut self, text: &str) -> Result<(), Closed> {
+        self.write(Message::text(text)).await
+    }
+
+    async fn send(&mut self, message: &ServerMessage) -> Result<(), Closed> {
+        match encode_server(message) {
+            Ok(text) => self.send_text(&text).await,
+            Err(_) => {
+                // Only a snapshot can be this big: the client cannot be served.
+                let refusal = error_message(ErrorCode::Internal, "message too large to send");
+                if let Ok(text) = encode_server(&refusal) {
+                    let _ = self.send_text(&text).await;
+                }
+                Err(Closed)
+            }
+        }
+    }
+
+    async fn broadcast(&mut self, b: Broadcast) -> Result<(), Closed> {
+        match b.kind {
+            Kind::Revision(r) => {
+                if r <= self.last_rev {
+                    return Ok(());
+                }
+                self.last_rev = r;
+            }
+            Kind::Seq(s) => {
+                if s <= self.last_seq {
+                    return Ok(());
+                }
+                self.last_seq = s;
+                return self.send_text(&b.text).await;
+            }
+            Kind::State | Kind::Lossy => return self.send_text(&b.text).await,
+        }
+        self.send_text(&b.text).await?;
+        self.release_held().await
+    }
+
+    /// Writes the held results whose `model_changed` has been written (or covered by a
+    /// snapshot), and, unless a snapshot is coming, those that waited `revision_wait`: their
+    /// `model_changed` was lost (the control loop's outbound channel was full) and the client,
+    /// seeing `result.revision` ahead of its own, asks for a snapshot.
+    async fn release_held(&mut self) -> Result<(), Closed> {
+        let now = Instant::now();
+        let timed_out_ok = self.snapshot_waits.is_empty();
+        while let Some(i) = self
+            .held
+            .iter()
+            .position(|h| h.revision <= self.last_rev || (timed_out_ok && h.deadline <= now))
+        {
+            if let Some(h) = self.held.remove(i) {
+                self.inflight = self.inflight.saturating_sub(1);
+                self.send(&h.message).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn reply(&mut self, message: ServerMessage) -> Result<(), Closed> {
+        match &message {
+            ServerMessage::Snapshot { snapshot } => {
+                if snapshot.revision < self.last_rev || snapshot.runtime_seq < self.last_seq {
+                    // Behind what the client was already sent: stale (a client reusing an id
+                    // can lift the wait early) or the numbering restarted. Either way a fresh
+                    // snapshot follows at once and settles it. Not dropped: if the numbering
+                    // restarted, the fresh one would be "behind" too and never get through.
+                    self.lagged.store(true, Ordering::Release);
+                }
+                self.last_rev = snapshot.revision;
+                self.last_seq = snapshot.runtime_seq;
+                self.send(&message).await?;
+                return self.release_held().await;
+            }
+            ServerMessage::Result { id, outcome } => {
+                if let Some(i) = self.snapshot_waits.iter().position(|w| w == id) {
+                    self.snapshot_waits.swap_remove(i);
+                    if *id == INTERNAL_ID {
+                        return self.release_held().await;
+                    }
+                }
+                if let Outcome::Ok(ok) = outcome
+                    && let Some(revision) = ok.revision
+                    && revision > self.last_rev
+                {
+                    self.held.push_back(Held {
+                        revision,
+                        deadline: Instant::now() + self.shared.config.revision_wait,
+                        message,
+                    });
+                    return Ok(());
+                }
+                self.inflight = self.inflight.saturating_sub(1);
+            }
+            _ => {}
+        }
+        self.send(&message).await
+    }
+
+    async fn bad_frame(&mut self, code: ErrorCode, text: &str) -> Result<(), Closed> {
+        self.bad_frames += 1;
+        self.send(&error_message(code, text)).await?;
+        if self.bad_frames >= MAX_BAD_FRAMES {
+            let _ = self
+                .send(&error_message(
+                    ErrorCode::BadRequest,
+                    "too many unreadable frames",
+                ))
+                .await;
+            return Err(Closed);
+        }
+        Ok(())
+    }
+
+    async fn text(&mut self, text: &str) -> Result<(), Closed> {
+        let message = match decode_client(text) {
+            Ok(message) => message,
+            Err(e) => {
+                let code = match e {
+                    ProtocolError::UnknownType(_) => ErrorCode::UnknownMessage,
+                    _ => ErrorCode::BadRequest,
+                };
+                return self.bad_frame(code, &e.to_string()).await;
+            }
+        };
+        self.bad_frames = 0;
+        match message {
+            ClientMessage::Hello { .. } => {
+                self.send(&error_message(ErrorCode::BadRequest, "already connected"))
+                    .await
+            }
+            ClientMessage::Goodbye { shutdown } => {
+                if shutdown {
+                    // The control loop stops the show and ends (docs/network.md); the process
+                    // exit is the host's.
+                    let _ = self.shared.inbox.send(Inbox::Client {
+                        message: ClientMessage::Goodbye { shutdown: true },
+                        reply: self.reply_tx.clone(),
+                    });
+                }
+                Err(Closed)
+            }
+            other => {
+                let Some(id) = request_id(&other) else {
+                    return Ok(());
+                };
+                if id == INTERNAL_ID {
+                    return self
+                        .send(&error_message(
+                            ErrorCode::BadRequest,
+                            "request id is reserved",
+                        ))
+                        .await;
+                }
+                // Before the send: the control loop may answer at once.
+                if answers_with_snapshot(&other) {
+                    self.snapshot_waits.push(id);
+                }
+                self.inflight += 1;
+                let sent = self.shared.inbox.send(Inbox::Client {
+                    message: other,
+                    reply: self.reply_tx.clone(),
+                });
+                if sent.is_err() {
+                    let _ = self
+                        .send(&error_message(
+                            ErrorCode::Internal,
+                            "the engine is shutting down",
+                        ))
+                        .await;
+                    return Err(Closed);
+                }
+                Ok(())
+            }
+        }
+    }
+}

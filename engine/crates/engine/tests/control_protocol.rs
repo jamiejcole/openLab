@@ -9,7 +9,9 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, Request, RequestId, ServerMessage, TransportAction,
 };
 use openlab_core::{Command, CueKind, CueProperty, Position};
-use openlab_engine::control::{Control, Inbox, OUTBOUND_CAPACITY, REPORT_HZ, runner};
+use openlab_engine::control::{
+    Control, Inbox, OUTBOUND_CAPACITY, REPORT_HZ, outbound_channel, reply_channel, runner,
+};
 use show::*;
 
 #[allow(clippy::panic)]
@@ -248,7 +250,7 @@ fn the_runner_answers_and_shuts_down() {
     let config = config(&ws);
     let (ctl, _mixer) = openlab_audio::Mixer::new(mixer_config()).unwrap();
     let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-    let (out_tx, out) = crossbeam_channel::bounded(OUTBOUND_CAPACITY);
+    let (out_tx, mut out) = outbound_channel(OUTBOUND_CAPACITY);
     let control = Control::new(
         ws,
         ctl,
@@ -259,7 +261,7 @@ fn the_runner_answers_and_shuts_down() {
     )
     .unwrap();
     let thread = std::thread::spawn(move || runner::run(control, &inbox));
-    let (reply, replies) = crossbeam_channel::unbounded();
+    let (reply, mut replies) = reply_channel();
     inbox_tx
         .send(Inbox::Client {
             message: ClientMessage::Transport {
@@ -269,9 +271,8 @@ fn the_runner_answers_and_shuts_down() {
             reply,
         })
         .unwrap();
-    let r = replies
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .unwrap();
+    // The loop drops the reply sender once it has answered: this cannot wait for ever.
+    let r = replies.blocking_recv().unwrap();
     assert!(matches!(
         r,
         ServerMessage::Result {
@@ -283,7 +284,7 @@ fn the_runner_answers_and_shuts_down() {
     thread.join().unwrap();
     // The playhead report of the GO went out.
     assert!(
-        out.try_iter()
+        std::iter::from_fn(|| out.try_recv().ok())
             .any(|m| matches!(m, ServerMessage::Runtime { .. }))
     );
 }
