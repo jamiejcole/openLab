@@ -86,6 +86,9 @@ pub struct CueEngine {
     next_preview: u64,
     /// `chain_limit` of the workspace as of the last such pass.
     limit: usize,
+    /// Nominal action lengths of Audio cues, from the binary (`Input::CueLengths`); a cue not
+    /// here has none known.
+    lengths: BTreeMap<CueId, SampleTime>,
     /// How many such passes have run (a cost measure, see `model_syncs`).
     model_syncs: u64,
     /// Walks of the whole workspace made to follow edits (a cost measure, see
@@ -145,6 +148,7 @@ impl CueEngine {
             previews: BTreeMap::new(),
             next_preview: 0,
             limit: 0,
+            lengths: BTreeMap::new(),
             model_syncs: 0,
             whole_show_passes: 0,
             spent: (0, 0),
@@ -339,6 +343,24 @@ impl CueEngine {
         matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some())
     }
 
+    /// The Audio cue's nominal action length as the binary last told it (`Input::CueLengths`).
+    pub fn nominal_length(&self, cue: CueId) -> Option<SampleTime> {
+        self.lengths.get(&cue).copied()
+    }
+
+    /// Whether the cue is a playlist group halted by a child that broke while playing, still in
+    /// its action (QLab check Q2: it runs on to that child's nominal end with no busy child).
+    pub fn is_halted(&self, cue: CueId) -> bool {
+        matches!(
+            self.slots.get(&cue),
+            Some(Slot::Active(Run {
+                group: Some(GroupRun { halt: Some(_), .. }),
+                phase: Phase::Action { .. },
+                ..
+            }))
+        )
+    }
+
     /// Why a cue broke while it ran, if it did (static problems: `problems`).
     pub fn broken_reason(&self, cue: CueId) -> Option<BrokenReason> {
         match self.slots.get(&cue)? {
@@ -451,6 +473,14 @@ impl CueEngine {
             }
             Input::ActionEnded { cue, run, at } => self.action_ended(cue, run, at, cx),
             Input::ActionLength { cue, run, frames } => self.action_length(cue, run, frames),
+            Input::CueLengths { lengths } => {
+                for (cue, length) in lengths {
+                    match length {
+                        Some(frames) => self.lengths.insert(cue, frames),
+                        None => self.lengths.remove(&cue),
+                    };
+                }
+            }
             Input::ActionFailed { cue, run, reason } => {
                 self.action_failed(cue, run, reason, false, cx);
             }
@@ -1323,6 +1353,13 @@ impl CueEngine {
             // are cancelled too, so nothing it scheduled starts by itself after the device
             // returns.
             Slot::Active(mut run) => {
+                // A child that broke while playing halts a running playlist around it (QLab
+                // check Q2); one being stopped or panicked was leaving anyway.
+                let halt = (!unplayed
+                    && reason != BrokenReason::DeviceLost
+                    && run.stop_end.is_none()
+                    && !run.panicked)
+                    .then(|| self.nominal_end(cue, &run));
                 run.broken = Some(reason);
                 run.unplayed = unplayed;
                 run.voice = Voice::None;
@@ -1368,7 +1405,10 @@ impl CueEngine {
                 if follow {
                     self.continue_after(cue, cx.now, cx);
                 }
-                // A playlist moves on past a child that broke.
+                if let Some(end) = halt {
+                    self.halt_playlist(cue, seq, end, cx);
+                }
+                // A playlist moves on past a child that broke (unless it halted).
                 self.child_action_done(cue, seq, cx.now, cx);
             }
             Slot::Loaded(_) | Slot::Broken(_) => {
@@ -1456,6 +1496,11 @@ impl CueEngine {
         if let Phase::Action { end: Some(end), .. } = run.phase
             && end <= at
         {
+            // A group's action has an end only while a halted playlist waits out its broken
+            // child's nominal end (`halt_playlist`).
+            if run.group.is_some() {
+                return self.resolve_group(cue, Exit::Completed, at, cx);
+            }
             run.phase = Phase::Done;
             // An audio action ended on its known length: its voice is done with, and the
             // mixer's report that follows is stale.
