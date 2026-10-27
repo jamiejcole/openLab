@@ -379,8 +379,10 @@ fn work(
         // (it has another ticket), and this thread leaves the work to the replacement.
         let gone = flags.abandoned.load(Ordering::SeqCst);
         let sent = inbox.send(Inbox::Doc(answer)).is_ok();
-        answered.fetch_add(1, Ordering::SeqCst);
+        // Not busy before the answer counts: whoever sees the count can rely on `busy` being
+        // false already (the answer itself is in the inbox from the send above).
         flags.busy.store(false, Ordering::SeqCst);
+        answered.fetch_add(1, Ordering::SeqCst);
         if gone {
             // After the send: a count of zero means the stale answer is already in the inbox.
             stuck.fetch_sub(1, Ordering::SeqCst);
@@ -1173,23 +1175,17 @@ impl Control {
         let Some(pending) = &self.docs.pending else {
             return;
         };
-        if self
-            .config
-            .clock
-            .now_ms()
-            .saturating_sub(pending.started_ms)
-            < self.docs.timeout_ms
-        {
-            return;
-        }
-        // The worker has answered and the answer is in the inbox, not yet applied: it is not
-        // stuck. Leave the request to that answer.
-        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
         let elapsed = self
             .config
             .clock
             .now_ms()
             .saturating_sub(pending.started_ms);
+        if elapsed < self.docs.timeout_ms {
+            return;
+        }
+        // The worker has answered and the answer is in the inbox, not yet applied: it is not
+        // stuck. Leave the request to that answer.
+        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
         if !self.docs.worker.busy.load(Ordering::SeqCst)
             && elapsed < self.docs.timeout_ms.saturating_mul(2)
         {
