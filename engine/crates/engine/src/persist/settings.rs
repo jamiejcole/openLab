@@ -48,3 +48,56 @@ pub fn save_machine_settings(
     }
     write_atomic(&path, text.as_bytes())
 }
+
+/// Writes machine settings off the control thread. Snapshots queue up and only the newest is
+/// written; a failed write is reported through [`SettingsWriter::take_error`]. Dropping it
+/// finishes the pending write first (the file is small and local).
+pub struct SettingsWriter {
+    tx: Option<crossbeam_channel::Sender<MachineSettings>>,
+    errors: crossbeam_channel::Receiver<String>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SettingsWriter {
+    pub fn spawn(dirs: AppDirs) -> io::Result<Self> {
+        let (tx, rx) = crossbeam_channel::unbounded::<MachineSettings>();
+        let (etx, errors) = crossbeam_channel::unbounded();
+        let thread = std::thread::Builder::new()
+            .name("openlab-settings".into())
+            .spawn(move || {
+                while let Ok(mut latest) = rx.recv() {
+                    while let Ok(newer) = rx.try_recv() {
+                        latest = newer;
+                    }
+                    if let Err(e) = save_machine_settings(&dirs, &latest) {
+                        let _ = etx.send(e.to_string());
+                    }
+                }
+            })?;
+        Ok(Self {
+            tx: Some(tx),
+            errors,
+            thread: Some(thread),
+        })
+    }
+
+    pub fn save(&self, settings: MachineSettings) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(settings);
+        }
+    }
+
+    /// The next write failure, if any.
+    pub fn take_error(&self) -> Option<String> {
+        self.errors.try_recv().ok()
+    }
+}
+
+impl Drop for SettingsWriter {
+    fn drop(&mut self) {
+        self.tx = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}

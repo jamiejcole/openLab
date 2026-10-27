@@ -12,6 +12,7 @@ mod checks;
 pub mod devices;
 mod docs;
 mod inbox;
+mod mapping;
 mod media;
 mod observe;
 pub mod offline;
@@ -227,6 +228,10 @@ pub struct Control {
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
     playable: Vec<DeviceInfo>,
+    /// Saves the machine settings when the engine changes them (default patch mappings).
+    settings_writer: Option<crate::persist::SettingsWriter>,
+    /// The workspace and device the default mapping was last tried for.
+    mapping_tried: Option<(openlab_core::WorkspaceId, String)>,
     out: Outbound,
     docs: Docs,
     backend: Backend,
@@ -317,6 +322,10 @@ impl Control {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
         };
+        let settings_writer = match &config.app_dirs {
+            Some(dirs) => Some(crate::persist::SettingsWriter::spawn(dirs.clone())?),
+            None => None,
+        };
         let observe = Observe::new(&config);
         let mut control = Self {
             ws,
@@ -329,6 +338,8 @@ impl Control {
             checks: PlanChecks::default(),
             patches,
             playable,
+            settings_writer,
+            mapping_tried: None,
             out: Outbound::new(outbound),
             docs,
             backend,
@@ -459,6 +470,7 @@ impl Control {
             self.refresh_warnings();
         }
         self.docs_tick();
+        self.settings_tick();
         self.health();
         self.observe_tick();
         self.mixer.pump();
@@ -687,6 +699,7 @@ impl Control {
     /// output delays and master level up to date. Returns the `Availability` for the patches
     /// whose resolution changed (`all`: every patch).
     fn sync_patches(&mut self, all: bool) -> Vec<Input> {
+        self.map_unmapped_patches();
         let (cmds, changed) = self
             .patches
             .sync(&self.ws, &self.config.machine, &self.playable);
@@ -1591,6 +1604,11 @@ impl Control {
 
     pub fn engine(&self) -> &CueEngine {
         &self.engine
+    }
+
+    /// The machine settings in force, including mappings the engine added (M4.4c).
+    pub fn machine(&self) -> &MachineSettings {
+        &self.config.machine
     }
 
     pub fn mixer(&self) -> &MixerController {

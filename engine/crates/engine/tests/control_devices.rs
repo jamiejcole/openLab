@@ -1019,3 +1019,40 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
     nothing_starts_after_the_return(s, &[2]);
 }
+
+#[test]
+fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
+    let mut s = device_show(workspace(vec![]));
+    lose(&mut s);
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::New {
+            discard_changes: false,
+        },
+    });
+    let new_ws = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Snapshot { snapshot } => Some(snapshot.workspace.clone()),
+            _ => None,
+        })
+        .expect("no snapshot");
+    let patch = new_ws.patches[0].id;
+    // No device to map to: the patch stays unmapped, nothing is guessed.
+    assert_eq!(s.control().machine().patch_mapping(new_ws.id, patch), None);
+    s.take_outbound();
+    replug(&mut s);
+    let m = s
+        .control()
+        .machine()
+        .patch_mapping(new_ws.id, patch)
+        .cloned()
+        .expect("mapped when the device came back");
+    assert_eq!((m.device.as_str(), m.channels), (DEV_NAME, vec![0, 1]));
+    assert!(
+        logs(&s.take_outbound(), LogLevel::Info)
+            .iter()
+            .any(|l| l.contains("mapped patch 'Main Outputs' to Fake 1 outputs 1\u{2013}2"))
+    );
+}
