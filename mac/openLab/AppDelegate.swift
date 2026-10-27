@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.appearance = NSAppearance(named: .darkAqua)
         let menu = MainMenu.make()
         menu.transport.delegate = self
+        menu.edit.delegate = self
         NSApp.mainMenu = menu.bar
         NSApp.windowsMenu = menu.windows
         NSApp.helpMenu = menu.help
@@ -53,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
 
+    @MainActor @objc func enterShowMode(_ sender: Any?) { appController.frontController?.setShowMode(true) }
+    @MainActor @objc func enterEditMode(_ sender: Any?) { appController.frontController?.setShowMode(false) }
+
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
 
     @MainActor @objc func relinkMedia(_ sender: Any?) {
@@ -71,6 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(enterShowMode(_:)) || item.action == #selector(enterEditMode(_:)) {
+            guard let front = appController.frontController else { return false }
+            return front.isShowMode == (item.action == #selector(enterEditMode(_:)))
+        }
         if item.action == #selector(relinkMedia(_:)) || item.action == #selector(showLog(_:)) {
             return appController.frontController != nil
         }
@@ -82,6 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// The Transport menu shows the key window's workspace keys.
     @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
+        // Show Mode (SM-01): the editing items go dark in the front window's Show Mode.
+        if menu.title == NSLocalizedString("menu.edit", comment: "") {
+            MainMenu.lockEditItems(in: menu, locked: appController.frontController?.isShowMode == true)
+            return
+        }
         MainMenu.applyKeys(to: menu, appController.frontKeys)
     }
 }
