@@ -154,6 +154,15 @@ Debug builds of the binary install `assert_no_alloc::AllocDisabler` as the globa
 
 `OfflineShow` builds the mixer, the control state and an `OfflineRenderer`. `step()` hands the inbox to the control state, **settles** the streams, renders one block (captured) and ticks. Rendering faster than real time would let the disk workers fall behind, which a device never allows for long, so settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; renders are exact and repeatable. `settle_media()` waits for every probe. `render_only(frames)` renders with no tick (a late control thread). `send`/`transport` hand a message in and return its replies; `take_outbound` returns the broadcasts.
 
+## Performance budgets (NFR-24, NFR-25, M4.12)
+
+`tests/perf.rs` builds a 2,110-cue show (60 groups of 10 audio cues, 1,200 audio cues with their own files, fades, memos with notes, a few slice cues; about 3.8 MB of JSON) in the test.
+
+- **Deterministic (every `cargo test`)**: the idle loop is run on virtual time as `runner::run` runs it (`wait_hint`, render, `tick`). With a workspace open and nothing running it wakes exactly once per `MAX_WAIT` (5 ms), never zero-wait (a spin), does no work on a wake (nothing sent, no plans rebuilt), and an empty workspace wakes at the same rate. An edit sends one `model_changed` and replans no slice cue. Probe answers share one preload scan per model version (`Control::preload_scans`); resetting it in `sync_workspace` is enough because every workspace change (command, undo/redo, arming) goes through `model_changed` → `sync_workspace`, and open builds a new `Control`; before, each answer scanned every cue, which was quadratic in the number of files.
+- **Timed (`#[ignore]`, release, CI "Performance budget gate" on the Intel runner)**: the CI budget is the requirement divided by 2, the headroom cpu_budget keeps for a 2014 Mac mini: open (read, parse, validate, control state, probes, snapshot built and encoded) < 1.5 s; each edit (command, `model_changed`, engine follow-up, next tick) < 12 ms (3/4 of a 60 Hz frame rather than half: edits take 3-5 ms on a dev machine, so 8 ms would leave a shared Intel runner too little room); one idle tick under 1% of a core at one wake per 5 ms (NFR-25 is 2%); four times the cues costs under 12x the time (linear is 4x, quadratic 16x; rename measures about 6x, as the per-edit rebuild is linear on top of fixed costs). Best of five runs per gate. On a dev machine: open about 50 ms, edit 3-5 ms, idle tick 0.3 us.
+- **Known cost**: every edit rebuilds the cue engine's per-cue problem facts and the media key set for the whole show (linear, about 1 us per cue, 2-3 ms at 2,000 cues). Making that incremental is the next lever if the edit gate tightens.
+- NFR-24 and NFR-25 stay unticked: minimum-spec hardware is not measured.
+
 ## Deferred
 
 - Choosing the device and its rate/buffer from the machine settings (M5.13; today the default device at start), a watchdog for a device that stops calling back while still listed (PROGRESS M4.2g).
