@@ -60,45 +60,55 @@ fn all_ids(ws: &Workspace) -> Vec<CueId> {
         }
     }
     let mut out = Vec::new();
-    walk(&ws.cue_lists[0].cues, &mut out);
+    for list in &ws.cue_lists {
+        walk(&list.cues, &mut out);
+    }
     out
 }
 
-fn group_ids(ws: &Workspace) -> Vec<CueId> {
-    all_ids(ws)
-        .into_iter()
-        .filter(|&id| matches!(ws.find_cue(id).unwrap().kind, CueKind::Group { .. }))
-        .collect()
+/// The groups of one list.
+fn group_ids(ws: &Workspace, list: usize) -> Vec<CueId> {
+    fn walk(cues: &[Cue], out: &mut Vec<CueId>) {
+        for cue in cues {
+            if matches!(cue.kind, CueKind::Group { .. }) {
+                out.push(cue.id);
+            }
+            walk(cue.children(), out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&ws.cue_lists[list].cues, &mut out);
+    out
 }
 
-fn children_len(ws: &Workspace, parent: Option<CueId>) -> usize {
+fn children_len(ws: &Workspace, list: usize, parent: Option<CueId>) -> usize {
     match parent {
-        None => ws.cue_lists[0].cues.len(),
+        None => ws.cue_lists[list].cues.len(),
         Some(id) => ws.find_cue(id).map_or(0, |c| c.children().len()),
     }
 }
 
-/// The group (or `None` for the list) holding `id`, and how many cues it holds.
-fn container_of(ws: &Workspace, id: CueId) -> Option<(Option<CueId>, usize)> {
-    fn search(cues: &[Cue], parent: Option<CueId>, id: CueId) -> Option<(Option<CueId>, usize)> {
+/// How many cues share a container with `id` (its group, or its list).
+fn siblings_of(ws: &Workspace, id: CueId) -> Option<usize> {
+    fn search(cues: &[Cue], id: CueId) -> Option<usize> {
         if cues.iter().any(|c| c.id == id) {
-            return Some((parent, cues.len()));
+            return Some(cues.len());
         }
-        cues.iter()
-            .find_map(|c| search(c.children(), Some(c.id), id))
+        cues.iter().find_map(|c| search(c.children(), id))
     }
-    search(&ws.cue_lists[0].cues, None, id)
+    ws.cue_lists.iter().find_map(|l| search(&l.cues, id))
 }
 
-/// A position that is sometimes one or two past the end, and so refused.
+/// A position in either list that is sometimes one or two past the end, and so refused.
 fn position(ws: &Workspace, a: u32, b: u32) -> Position {
+    let list = a as usize / 2 % ws.cue_lists.len();
     let mut parents = vec![None];
-    parents.extend(group_ids(ws).into_iter().map(Some));
+    parents.extend(group_ids(ws, list).into_iter().map(Some));
     let parent = choose(&parents, a).flatten();
     Position {
-        list: list_id(1),
+        list: ws.cue_lists[list].id,
         parent,
-        index: b as usize % (children_len(ws, parent) + 2),
+        index: b as usize % (children_len(ws, list, parent) + 2),
     }
 }
 
@@ -304,7 +314,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
         3 => Command::RemoveCue { id: id? },
         4 => {
             let id = id?;
-            let (_, siblings) = container_of(ws, id)?;
+            let siblings = siblings_of(ws, id)?;
             Command::MoveCue {
                 id,
                 index: p.b as usize % (siblings + 1),
@@ -348,17 +358,36 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             increment: [1.0, 5.0, 0.1, 0.0, f64::INFINITY, 0.5][p.d as usize % 6],
         },
         10 => {
-            // Built against the workspace as it is now, so later commands may well be refused.
-            let commands = (0..2 + p.d % 2)
-                .filter_map(|n| {
-                    let inner = Pick {
-                        a: p.a.wrapping_add(n * 11),
-                        b: p.b.wrapping_add(n * 13),
-                        ..p.clone()
-                    };
-                    build(ws, g, (p.c as u8).wrapping_add(n as u8) % 10, &inner)
-                })
-                .collect();
+            // Each inner command is built against the workspace the earlier ones leave, so a
+            // cue added in the transaction can be edited, moved or removed later in it. Inner
+            // commands that would be refused are left out (the whole transaction would be).
+            let mut evolving = ws.clone();
+            let mut commands = Vec::new();
+            let mut added: Option<CueId> = None;
+            for n in 0..2 + p.d % 2 {
+                let mut inner = Pick {
+                    a: p.a.wrapping_add(n * 11),
+                    b: p.b.wrapping_add(n * 13),
+                    ..p.clone()
+                };
+                let mut op = (p.c as u8).wrapping_add(n as u8) % 10;
+                // Half the time, act on the cue the transaction just added: remove, move,
+                // reparent, edit or batch-edit it.
+                if let Some(id) = added.filter(|_| (p.d / 3).is_multiple_of(2)) {
+                    let at = all_ids(&evolving).iter().position(|&i| i == id);
+                    inner.a = at.unwrap_or(0) as u32;
+                    op = [3, 4, 5, 6, 6, 7][(p.c / 7) as usize % 6];
+                }
+                let Some(command) = build(&evolving, g, op, &inner) else {
+                    continue;
+                };
+                if evolving.apply(command.clone()).is_ok() {
+                    if let Some(&id) = command.footprint().added.first() {
+                        added = Some(id);
+                    }
+                    commands.push(command);
+                }
+            }
             Command::Transaction { commands }
         }
         100..=113 => Command::SetCueProperty {
@@ -371,6 +400,12 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
 
 fn base() -> Workspace {
     let mut ws = workspace(vec![]);
+    // A second list, so positions, moves between lists and mirrors of both are exercised.
+    ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "Second".into(),
+        cues: vec![],
+    });
     ws.settings.auto_number_start = 1.0;
     ws.settings.auto_number_increment = 1.0;
     ws
@@ -604,6 +639,7 @@ fn the_generator_exercises_every_command() {
     };
     let mut applied: HashMap<u8, usize> = HashMap::new();
     let mut refused: HashMap<u8, usize> = HashMap::new();
+    let mut dependent = 0;
     for _ in 0..20 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
@@ -617,6 +653,24 @@ fn the_generator_exercises_every_command() {
             let Some(command) = build(&ws, &mut g, p.op, &p) else {
                 continue;
             };
+            if let Command::Transaction { commands } = &command {
+                // An inner command that touches a cue an earlier one added.
+                let mut added = std::collections::HashSet::new();
+                for inner in commands {
+                    let fp = inner.footprint();
+                    if fp
+                        .removed
+                        .iter()
+                        .chain(&fp.moved)
+                        .chain(&fp.edited)
+                        .any(|id| added.contains(id))
+                    {
+                        dependent += 1;
+                        break;
+                    }
+                    added.extend(fp.added);
+                }
+            }
             let tally = if ws.apply(command).is_ok() {
                 &mut applied
             } else {
@@ -631,8 +685,13 @@ fn the_generator_exercises_every_command() {
             "op {op}: applied {applied:?}, refused {refused:?}"
         );
     }
+    assert!(
+        dependent >= 5,
+        "only {dependent} transactions with dependent commands"
+    );
     // And invalid input is generated, not just valid.
-    for op in [0u8, 2, 4, 5, 6, 7, 8, 9, 10] {
+    // (A transaction is built from commands that apply, so it is never refused.)
+    for op in [0u8, 2, 4, 5, 6, 7, 8, 9] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,
             "op {op} never refused"

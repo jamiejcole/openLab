@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: The openLab orchestrator loop — pick PROGRESS.md tasks, brief implementer subagents, run adversarial review, merge, push, track CI, and report to the user. Use whenever continuing openLab development, after a context reset, or when the user says "continue", "next task", "status", or "orchestrate".
+description: The openLab orchestrator loop — pick PROGRESS.md tasks, brief implementer subagents, run adversarial review, land each batch through a PR into main, track CI, and report to the user. Use whenever continuing openLab development, after a context reset, or when the user says "continue", "next task", "status", or "orchestrate".
 ---
 
 # openLab orchestrator
@@ -9,14 +9,14 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 
 ## Token budget (the user's usage limit is the binding constraint)
 - Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work: the mixer/audio-thread code, lock-free queues, the cue-engine state machine, and reviews of those. Everything else (persistence, protocol plumbing, UI views, docs, fixes from a review) stays on Sonnet.
-- One implementer at a time unless parallel work is blocking; parallel agents burn the 5-hour limit fastest.
+- At most 3 subagents in parallel, of which at most 2 on Opus (allowed mixes: 2 Opus; 1 Opus + 2 Sonnet; 3 Sonnet). Parallel implementers must touch disjoint files and use worktrees.
 - Review once per batch. Re-review only when there was a High, and then only the fix commits. Lows don't get a fix round — batch them into a cleanup task.
 - Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
 - Orchestrator: read report files with `head`/`grep`, not in full; don't re-run checks the agent already proved unless merging.
 
 ## 0. Re-orient (every session start or after a reset)
 - Read `PROGRESS.md` (what's done/next), skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, run `git log --oneline -15` and `git status`.
-- Check the last CI run: `gh run list --limit 3`.
+- Check open PRs and the last CI on `main` with the GitHub MCP tools (`list_pull_requests`, `actions_list`); `gh` may not exist in cloud sessions.
 
 ## 1. Pick work
 - Follow the dependency order at the top of `PROGRESS.md`. Prefer finishing a milestone over starting several.
@@ -50,10 +50,15 @@ Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-ba
 - **High** → must fix. **Medium** → fix or accept a concrete justification. **Low** → implementer's discretion; batch leftovers into a cleanup task if they pile up.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context). After fixes, re-run the reviewer if there were any Highs. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
-## 5. Land it
-- Worktree branch → `git merge --no-ff <branch> -m "Merge <task IDs>: <summary>"` into `main`; delete the branch.
-- Re-run `make lint` + `make test-rust` on `main`, then `git push`.
-- Watch CI in the background (`gh run watch <id> --exit-status` with `run_in_background`), don't poll. A red CI on `main` is the top priority: fix before new work.
+## 5. Land it (PR into `main`)
+Review traffic stays local (report files + `SendMessage`); GitHub is only the merge gate. Keep it to a few calls per batch.
+- Each batch has its own branch named after the tasks (e.g. `m4-5-osc`). Merge current `main` into it first (merge commit, never rebase a pushed branch), run `make lint` + `make test-rust`, then `git push origin <worktree-branch>:<task-branch>`.
+- Open one PR into `main` (`create_pull_request`). Body: task IDs + one line each, requirement IDs, test summary line, and a review digest (e.g. "R1: 0H/3M fixed; R2: 1M fixed; Lows → M4.1c"). No full review text.
+- Check CI on the PR head **once** when you would otherwise merge (`pull_request_read` status / `actions_list`); fetch job logs only if red. Don't subscribe to PR events for routine batches.
+- Merge only when: CI green on the head, no open High/Medium, Lows fixed or filed in PROGRESS. Merge with `merge_pull_request` using merge method `merge` and title `Merge <task IDs>: <summary>`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
+- Delete the task branch after merge; `git fetch origin main` and fast-forward the local `main`.
+- Small orchestrator-only commits (handoff notes, PROGRESS edits) ride along in the next batch's PR rather than getting their own.
+- A red CI on `main` is the top priority: fix it (via a PR) before new work.
 - Commits are plain terminal `git` commands. **Never add Co-authored-by or AI-attribution trailers.**
 
 ## 6. Track
@@ -75,5 +80,5 @@ Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-ba
 - Rust engine (headless, separate process) + Swift/AppKit macOS UI, JSON show file `.openlab`, GPLv3-or-later.
 - v0.0.1 = audio-only rehearsal on macOS; video is v0.0.2; lighting deferred; Windows UI tech decided later (engine CI on Windows from day one).
 - macOS 12 minimum, 2014 Mac mini is the performance target; no hardware testing until much later — perf budgets in CI stand in.
-- Push to `origin main` freely after verified merges.
+- Everything reaches `main` through a PR merged by the orchestrator after green CI (user decision); push task branches freely, never push directly to `main`.
 - Functional/behaviour questions (what a cue does on a second trigger, after a failure, etc.): ask the user when available; if they're not responding, decide by how QLab 5 behaves (the project replicates QLab), state which QLab behaviour was followed in the next status update, and record it in the relevant doc. Still escalate when QLab's behaviour is unclear, conflicts with ARCHITECTURE.md or safety, or for architecture/scope/dependency questions.
