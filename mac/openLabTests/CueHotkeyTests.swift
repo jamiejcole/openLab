@@ -431,15 +431,23 @@ final class CueHotkeyFiringTests: XCTestCase {
         let e = try event("x")
         XCTAssertTrue(app.handleKeyDown(e) === e, "alert or panel running")
         app.isModalUp = { false }
-        let other = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
-        other.isReleasedWhenClosed = false
-        app.keyWindow = { other }  // the launcher, a file panel
+        let panel = NSPanel(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        app.keyWindow = { panel }  // a file panel
+        XCTAssertTrue(app.handleKeyDown(e) === e)
+        app.keyWindow = { [unowned self] in app.launcher.window }
         XCTAssertTrue(app.handleKeyDown(e) === e)
         await settle()
         XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
-        app.keyWindow = { nil }  // app active, no key window: still fires
+        // The Log window is a monitoring window: hotkeys fire with it key.
+        let log = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        log.isReleasedWhenClosed = false
+        app.keyWindow = { log }
         XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { !sent(.start(cue: intro)).isEmpty }
+        app.keyWindow = { nil }  // app active, no key window: still fires
+        XCTAssertNil(app.handleKeyDown(try event("x")))
+        await assertEventually { sent(.start(cue: intro)).count == 2 }
     }
 
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
