@@ -13,7 +13,7 @@ use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use super::pattern::{CuePattern, MATCH_BUDGET, has_pattern_chars};
+use super::pattern::{CuePattern, has_pattern_chars};
 
 /// Longest address accepted.
 pub const MAX_ADDRESS_BYTES: usize = 256;
@@ -495,7 +495,12 @@ pub fn app_reply(show: &dyn OscShow, info: &ServerInfo, address: &Address) -> Op
 
 /// Looks cues up and checks arguments for every address except `/connect`, `/updates`,
 /// `/version` and `/workspaces`, which the session logic owns.
-pub fn resolve(show: &dyn OscShow, parsed: &Parsed, args: &[OscType]) -> Resolved {
+pub fn resolve(
+    show: &dyn OscShow,
+    parsed: &Parsed,
+    args: &[OscType],
+    budget: &mut u64,
+) -> Resolved {
     let address = &parsed.address;
     match address {
         Address::Connect
@@ -512,7 +517,7 @@ pub fn resolve(show: &dyn OscShow, parsed: &Parsed, args: &[OscType]) -> Resolve
         Address::Go => go(show, args),
         Address::Playhead(target) | Address::Select(target) => playhead(show, target),
         Address::Query(query) => query_reply(show, *query),
-        Address::Cue { cue, verb } => cue_message(show, parsed, cue, *verb, args),
+        Address::Cue { cue, verb } => cue_message(show, parsed, cue, *verb, args, budget),
         Address::Other(path) => trigger_or_unknown(show, path),
     }
 }
@@ -529,7 +534,7 @@ fn trigger_or_unknown(show: &dyn OscShow, path: &str) -> Resolved {
 }
 
 /// `/go`: the active list's playhead cue; with a string argument, from the cue with that number
-/// (QLab: the playhead moves there first). Other argument types are ignored.
+/// (QLab: the playhead moves there first; one `go_from` input). Other argument types are ignored.
 fn go(show: &dyn OscShow, args: &[OscType]) -> Resolved {
     let Some(OscType::String(number)) = args.first() else {
         return match show.active_list() {
@@ -545,16 +550,8 @@ fn go(show: &dyn OscShow, args: &[OscType]) -> Resolved {
     let Some((cue, list)) = found else {
         return Resolved::error();
     };
-    Resolved {
-        inputs: vec![
-            OscInput::Transport(TransportAction::SetPlayhead {
-                list,
-                cue: Some(cue),
-            }),
-            OscInput::Transport(TransportAction::Go { list }),
-        ],
-        ..Resolved::default()
-    }
+    // One input: if the copy is stale and the cue is gone, the engine starts nothing.
+    Resolved::input(TransportAction::GoFrom { list, cue })
 }
 
 fn playhead(show: &dyn OscShow, target: &PlayheadTarget) -> Resolved {
@@ -630,6 +627,7 @@ fn cue_message(
     cue: &CueRef,
     verb: Verb,
     args: &[OscType],
+    budget: &mut u64,
 ) -> Resolved {
     let mut out = Resolved::default();
     // Pseudo-cues answer for a property; an action on "the selected cue" is not part of the API.
@@ -663,7 +661,7 @@ fn cue_message(
         }
         CueRef::Selected | CueRef::Playhead | CueRef::Active => Vec::new(),
         CueRef::Pattern(pattern) => match CuePattern::compile(pattern) {
-            Ok(pattern) => matching(show, &pattern, &mut out),
+            Ok(pattern) => matching(show, &pattern, budget, &mut out),
             Err(_) => Vec::new(),
         },
     };
@@ -704,11 +702,15 @@ fn pattern_trigger(show: &dyn OscShow, parsed: &Parsed, cue: &CueRef) -> Option<
 }
 
 /// The targets whose number matches, in workspace order, at most [`MAX_MATCHES`].
-fn matching(show: &dyn OscShow, pattern: &CuePattern, out: &mut Resolved) -> Vec<Target> {
+fn matching(
+    show: &dyn OscShow,
+    pattern: &CuePattern,
+    budget: &mut u64,
+    out: &mut Resolved,
+) -> Vec<Target> {
     let mut found = Vec::new();
-    let mut budget = MATCH_BUDGET;
     show.visit_targets(
-        &mut |target, number| match pattern.is_match(number, &mut budget) {
+        &mut |target, number| match pattern.is_match(number, budget) {
             Ok(true) if found.len() >= MAX_MATCHES => {
                 out.capped = true;
                 ControlFlow::Break(())

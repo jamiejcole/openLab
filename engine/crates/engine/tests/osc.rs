@@ -1409,6 +1409,8 @@ fn replies_to_one_call_stop_at_a_byte_cap() {
     show.props
         .insert((CUE_1, "notes"), json!("n".repeat(60_000)));
     let mut osc = quiet_osc();
+    // A peer that has connected: not held to a byte budget, so only the call's cap applies.
+    connect_status(&mut osc, &show, udp(), T0, "any");
     let read = bytes(&msg("/cue/1/notes", vec![]));
     let packet = bundle(&vec![read; 60]);
     let out = osc.handle_datagram(udp(), T0, &packet, &show);
@@ -1467,13 +1469,60 @@ fn only_a_peer_that_may_not_ask_has_a_reply_byte_budget_that_refills() {
         );
         assert_eq!(reply_json(&out.replies[0])["status"], "ok");
     }
-    // And with no passcode set nobody is.
-    let mut open = Show::open();
-    open.props.insert((CUE_1, "notes"), json!("n".repeat(1000)));
-    for _ in 0..300 {
-        let out = send(&mut osc, &open, other, later, &msg("/cue/1/notes", vec![]));
-        assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+}
+
+#[test]
+fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_that_has_none() {
+    use openlab_engine::osc::{OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC};
+    assert_eq!(OPEN_REPLY_BURST_BYTES, 256 * 1024);
+    assert_eq!(OPEN_REPLY_BYTES_PER_SEC, 64 * 1024);
+    let mut show = Show::open();
+    show.props
+        .insert((CUE_1, "notes"), json!("n".repeat(60_000)));
+    let mut osc = quiet_osc();
+    let victim = Peer::Udp(ip_n(40));
+    let ask = msg("/cue/1/notes", vec![]);
+    // A forged source: a 60 KB notes read works (four of them fit the burst), then the budget
+    // is spent however many datagrams come: the reflection is bounded.
+    let mut sent = 0usize;
+    for _ in 0..200 {
+        sent += send(&mut osc, &show, victim, T0, &ask).replies.len();
     }
+    assert_eq!(sent, 4, "256 KiB of 60 KB replies");
+    assert!(osc.stats().replies_throttled >= 196);
+    // 64 KiB a second refills: one more such reply after a second.
+    let later = T0 + Duration::from_secs(1);
+    assert_eq!(send(&mut osc, &show, victim, later, &ask).replies.len(), 1);
+    // Updates to a forged subscriber share the budget.
+    send(
+        &mut osc,
+        &show,
+        victim,
+        later,
+        &msg("/updates", vec![OscType::Int(1)]),
+    );
+    let mut allowed = 0;
+    for _ in 0..2000 {
+        if osc.update_allowed(victim, later, 120) {
+            allowed += 1;
+        }
+    }
+    assert!(allowed < 2000 && osc.stats().updates_dropped > 0);
+    // Another source has its own; a TCP peer none.
+    assert_eq!(
+        send(&mut osc, &show, Peer::Udp(ip_n(41)), T0, &ask)
+            .replies
+            .len(),
+        1
+    );
+    assert!(osc.update_allowed(tcp_peer(9), T0, 100_000));
+    // A source that completed /connect (the console) is not held to it.
+    let console = Peer::Udp(ip_n(42));
+    connect_status(&mut osc, &show, console, T0, "x");
+    for _ in 0..50 {
+        assert_eq!(send(&mut osc, &show, console, T0, &ask).replies.len(), 1);
+    }
+    assert!(osc.update_allowed(console, T0, 100_000));
 }
 
 #[test]
@@ -1959,25 +2008,19 @@ fn go_with_a_string_goes_from_that_cue_and_numbers_are_ignored() {
     assert!(out.replies.is_empty());
     assert_eq!(
         out.inputs,
-        vec![
-            transport(TransportAction::SetPlayhead {
-                list: LIST,
-                cue: Some(CUE_7)
-            }),
-            transport(TransportAction::Go { list: LIST }),
-        ]
+        vec![transport(TransportAction::GoFrom {
+            list: LIST,
+            cue: CUE_7
+        }),]
     );
     // A cue in the other list goes from that list's playhead.
     let out = send(&mut osc, &show, udp(), T0, &msg("/go", vec![s("20")]));
     assert_eq!(
         out.inputs,
-        vec![
-            transport(TransportAction::SetPlayhead {
-                list: LIST_B,
-                cue: Some(CUE_20)
-            }),
-            transport(TransportAction::Go { list: LIST_B }),
-        ]
+        vec![transport(TransportAction::GoFrom {
+            list: LIST_B,
+            cue: CUE_20
+        }),]
     );
     // Integer and float arguments are ignored: a plain GO.
     for arg in [OscType::Int(7), OscType::Float(7.0), OscType::Double(7.0)] {
@@ -2446,6 +2489,84 @@ fn the_wire_limits_are_the_decided_ones() {
     assert_eq!(MAX_PACKET_BYTES, 64 * 1024);
     assert_eq!(MAX_UDP_DATAGRAM_BYTES, 65_507);
     assert_eq!(MAX_REPLIES_PER_CALL, 1024);
+}
+
+// ---- fix round 1
+
+#[test]
+fn identical_messages_are_judged_by_arrival_not_by_when_they_are_handled() {
+    use openlab_engine::osc::Osc as O;
+    let show = Show::open();
+    let mut osc: O = Osc::new();
+    let go = bytes(&msg("/go", vec![]));
+    // Two GOs 250 ms apart, handled back to back (the task was busy): both fire.
+    let handled = T0 + Duration::from_secs(1);
+    let first = osc.handle_datagram_arrived(udp(), handled, T0, &go, &show);
+    let second =
+        osc.handle_datagram_arrived(udp(), handled, T0 + Duration::from_millis(250), &go, &show);
+    assert_eq!((first.inputs.len(), second.inputs.len()), (1, 1));
+    // Two that arrived 50 ms apart are a repeat, however late they are handled.
+    let third = osc.handle_datagram_arrived(
+        udp(),
+        handled + Duration::from_secs(5),
+        T0 + Duration::from_millis(300),
+        &go,
+        &show,
+    );
+    assert!(third.inputs.is_empty());
+    // And over a stream.
+    let mut decoder = SlipDecoder::default();
+    let frame = slip_encode(&go);
+    let a = osc.handle_stream_arrived(tcp_peer(1), handled, T0, &mut decoder, &frame, &show);
+    let b = osc.handle_stream_arrived(
+        tcp_peer(1),
+        handled,
+        T0 + Duration::from_millis(250),
+        &mut decoder,
+        &frame,
+        &show,
+    );
+    assert_eq!((a.inputs.len(), b.inputs.len()), (1, 1));
+}
+
+#[test]
+fn the_match_budget_is_one_per_read_and_a_go_behind_a_hostile_bundle_still_fires() {
+    let numbers: Vec<String> = (0..10_000).map(|_| "a".repeat(200)).collect();
+    let big = Numbered(numbers);
+    let mut osc = quiet_osc();
+    // 100 distinct patterns with long classes, each non-matching: unbounded they would take
+    // seconds; the one budget of the read stops them all.
+    let class: String = ('a'..='z')
+        .chain('A'..='Z')
+        .map(|c| format!("{c}-{c}"))
+        .collect();
+    let elements: Vec<Vec<u8>> = (0..100)
+        .map(|i| bytes(&msg(&format!("/cue/*a*[{class}]Z{i}/name"), vec![])))
+        .collect();
+    let packet = bundle(&elements);
+    let started = std::time::Instant::now();
+    let out = osc.handle_datagram(udp(), T0, &packet, &big);
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(1500), "{took:?}");
+    assert_eq!(out.replies.len(), 100, "each is an error reply");
+    assert!(osc.stats().matches_capped >= 1);
+    // The next read has its own budget, and a GO behind the bundle is not held up or dropped.
+    let show = Show::open();
+    let go = osc.handle_datagram(udp(), T0, &bytes(&msg("/go", vec![])), &show);
+    assert_eq!(go.inputs.len(), 1);
+    let read = osc.handle_datagram(udp(), T0, &bytes(&msg("/cue/*/armed", vec![])), &show);
+    assert!(!read.replies.is_empty());
+}
+
+#[test]
+fn a_class_costs_by_its_ranges() {
+    let compiled = CuePattern::compile("*[a-ab-bc-cd-de-e]Z").unwrap();
+    let mut few = MATCH_BUDGET;
+    let plain = CuePattern::compile("*aZ").unwrap();
+    let mut plain_budget = MATCH_BUDGET;
+    let _ = compiled.is_match("xxxxxxxxxx", &mut few);
+    let _ = plain.is_match("xxxxxxxxxx", &mut plain_budget);
+    assert!(MATCH_BUDGET - few > 2 * (MATCH_BUDGET - plain_budget));
 }
 
 // ---- pattern language

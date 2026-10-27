@@ -35,8 +35,9 @@ pub use pattern::{
     has_pattern_chars,
 };
 pub use session::{
-    ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES, MAX_KNOWN_IPS,
-    MAX_PEERS, Peer, REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
+    Budget, ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES,
+    MAX_KNOWN_IPS, MAX_PEERS, OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC, Peer,
+    REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
 };
 
 /// The UDP port QLab listens on, and so do we (UDP and TCP).
@@ -125,6 +126,8 @@ pub struct Osc {
     info: ServerInfo,
     /// Reply bytes produced so far by the call being handled.
     call_reply_bytes: usize,
+    /// Pattern-matching steps left for the call being handled (all its messages share them).
+    call_match_budget: u64,
 }
 
 impl Default for Osc {
@@ -146,6 +149,10 @@ struct Asked<'a> {
     path: &'a str,
     /// The peer may ask (no passcode is set, or it has connected).
     authed: bool,
+    /// The peer has completed `/connect`. A UDP peer that has not is held to a byte budget.
+    connected: bool,
+    /// A passcode is set.
+    passcode_set: bool,
 }
 
 impl Osc {
@@ -162,6 +169,7 @@ impl Osc {
             last_expire: Duration::ZERO,
             info,
             call_reply_bytes: 0,
+            call_match_budget: MATCH_BUDGET,
         }
     }
 
@@ -210,14 +218,28 @@ impl Osc {
         bytes: &[u8],
         show: &dyn OscShow,
     ) -> Outcome {
+        self.handle_datagram_arrived(peer, now, now, bytes, show)
+    }
+
+    /// As [`Osc::handle_datagram`], for a datagram that arrived at `arrived` (on the same clock
+    /// as `now`) and was handled later: repeats are judged by arrival, so two GOs 250 ms apart
+    /// that the task gets to back to back are both GOs.
+    pub fn handle_datagram_arrived(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        arrived: Duration,
+        bytes: &[u8],
+        show: &dyn OscShow,
+    ) -> Outcome {
         let mut out = Outcome::default();
-        self.call_reply_bytes = 0;
+        self.start_call();
         if bytes.len() > MAX_PACKET_BYTES {
             self.stats.packets += 1;
             self.stats.malformed += 1;
             return out;
         }
-        self.handle_packet(peer, now, bytes, show, &mut out);
+        self.handle_packet(peer, now, arrived, bytes, show, &mut out);
         out
     }
 
@@ -230,8 +252,21 @@ impl Osc {
         bytes: &[u8],
         show: &dyn OscShow,
     ) -> Outcome {
+        self.handle_stream_arrived(peer, now, now, decoder, bytes, show)
+    }
+
+    /// As [`Osc::handle_stream`], for bytes that were read at `arrived`.
+    pub fn handle_stream_arrived(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        arrived: Duration,
+        decoder: &mut SlipDecoder,
+        bytes: &[u8],
+        show: &dyn OscShow,
+    ) -> Outcome {
         let mut out = Outcome::default();
-        self.call_reply_bytes = 0;
+        self.start_call();
         // A peer that may not ask yet gets small frames only (it can still send `/connect`).
         let may_ask = self.may_ask(peer, show);
         decoder.set_max_frame(if may_ask {
@@ -243,12 +278,20 @@ impl Osc {
         decoder.feed(bytes, &mut events);
         for event in events {
             match event {
-                SlipEvent::Frame(frame) => self.handle_packet(peer, now, &frame, show, &mut out),
+                SlipEvent::Frame(frame) => {
+                    self.handle_packet(peer, now, arrived, &frame, show, &mut out);
+                }
                 SlipEvent::Oversize => self.stats.oversize_frames += 1,
                 SlipEvent::BadEscape => self.stats.malformed += 1,
             }
         }
         out
+    }
+
+    /// The limits that are per datagram or per read start afresh.
+    fn start_call(&mut self) {
+        self.call_reply_bytes = 0;
+        self.call_match_budget = MATCH_BUDGET;
     }
 
     fn may_ask(&self, peer: Peer, show: &dyn OscShow) -> bool {
@@ -259,6 +302,7 @@ impl Osc {
         &mut self,
         peer: Peer,
         now: Duration,
+        arrived: Duration,
         bytes: &[u8],
         show: &dyn OscShow,
         out: &mut Outcome,
@@ -273,7 +317,7 @@ impl Osc {
         match decode_packet(bytes) {
             Ok(messages) => {
                 for message in &messages {
-                    self.handle_message(peer, now, message, show, out);
+                    self.handle_message(peer, now, arrived, message, show, out);
                 }
             }
             Err(_) => self.stats.malformed += 1,
@@ -284,6 +328,7 @@ impl Osc {
         &mut self,
         peer: Peer,
         now: Duration,
+        arrived: Duration,
         message: &OscMessage,
         show: &dyn OscShow,
         out: &mut Outcome,
@@ -291,7 +336,7 @@ impl Osc {
         self.stats.messages += 1;
         // QLab ignores a message identical to the peer's previous one a moment before.
         if let Ok(encoded) = encode_message(message)
-            && self.dedupe.is_duplicate(peer, now, &encoded)
+            && self.dedupe.is_duplicate(peer, arrived, &encoded)
         {
             self.stats.duplicates_dropped += 1;
             return;
@@ -302,8 +347,11 @@ impl Osc {
         };
         let workspace = show.workspace_id();
         let passcode = show.passcode().filter(|p| !p.is_empty());
-        let authed = passcode.is_none() || self.sessions.is_connected(peer);
+        let connected = self.sessions.is_connected(peer);
+        let authed = passcode.is_none() || connected;
         let ask = Asked {
+            connected,
+            passcode_set: passcode.is_some(),
             peer,
             now,
             workspace,
@@ -347,7 +395,7 @@ impl Osc {
             self.updates(&ask, &message.args, out);
             return;
         }
-        let resolved = resolve(show, &parsed, &message.args);
+        let resolved = resolve(show, &parsed, &message.args, &mut self.call_match_budget);
         if resolved.unknown {
             self.stats.unknown_address += 1;
         }
@@ -383,14 +431,32 @@ impl Osc {
     }
 
     /// Encodes an update message for the fan-out (NET-05), or `None` if it is not encodable.
-    /// Updates are small and follow what the show does, so they are not held to the byte budget
-    /// of unauthenticated sources: a peer only gets them after `/connect` when a passcode is set.
     pub fn encode_update(&mut self, message: &OscMessage) -> Option<Vec<u8>> {
         let bytes = encode_message(message).ok();
         if bytes.is_none() {
             self.stats.updates_dropped += 1;
         }
         bytes
+    }
+
+    /// Whether an encoded update of `len` bytes may be sent to `peer` now. A TCP peer is paced by
+    /// its connection, and a UDP peer that completed `/connect` is not held to a budget; a UDP
+    /// peer that has not (a subscription needs no passcode when none is set) shares the byte
+    /// budget of its replies, so a forged `/updates 1` cannot aim more than that at a victim.
+    pub fn update_allowed(&mut self, peer: Peer, now: Duration, len: usize) -> bool {
+        if matches!(peer, Peer::Tcp { .. }) || self.sessions.is_connected(peer) {
+            return true;
+        }
+        let cost = u64::try_from(len)
+            .unwrap_or(u64::MAX)
+            .saturating_add(UDP_HEADER_BYTES);
+        let allowed = self
+            .sessions
+            .spend_reply_bytes(peer.ip(), Budget::Open, now, cost);
+        if !allowed {
+            self.stats.updates_dropped += 1;
+        }
+        allowed
     }
 
     /// Queues a reply unless a cap says no: at most [`MAX_REPLIES_PER_CALL`] per datagram or
@@ -422,7 +488,12 @@ impl Osc {
             return;
         }
         self.call_reply_bytes += size;
-        if matches!(ask.peer, Peer::Udp(_)) && !ask.authed {
+        if matches!(ask.peer, Peer::Udp(_)) && !ask.connected {
+            let kind = if ask.passcode_set {
+                Budget::Strict
+            } else {
+                Budget::Open
+            };
             let Ok(bytes) = encode_message(&message) else {
                 self.stats.replies_dropped += 1;
                 return;
@@ -432,7 +503,7 @@ impl Osc {
                 .saturating_add(UDP_HEADER_BYTES);
             if !self
                 .sessions
-                .spend_reply_bytes(ask.peer.ip(), ask.now, cost)
+                .spend_reply_bytes(ask.peer.ip(), kind, ask.now, cost)
             {
                 self.stats.replies_throttled += 1;
                 return;

@@ -59,6 +59,31 @@ pub const MAX_TRACKED_IPS: usize = 1024;
 /// traffic a forged source address can make us send to a victim.
 pub const REPLY_BURST_BYTES: u64 = 16 * 1024;
 pub const REPLY_BYTES_PER_SEC: u64 = 8 * 1024;
+/// The budget of a UDP source that has not completed `/connect` when no passcode is set (so it
+/// may ask and may be sent large replies, but has not proved the source address is its own): 256
+/// KiB at once, which is four full datagrams (65507 bytes), then 64 KiB/s, about one more full
+/// datagram a second or a few hundred updates. Sustained reflection at a forged victim is held to
+/// that rate, and a 60 KB notes read still works.
+pub const OPEN_REPLY_BURST_BYTES: u64 = 256 * 1024;
+pub const OPEN_REPLY_BYTES_PER_SEC: u64 = 64 * 1024;
+
+/// Which reply budget a UDP source is held to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Budget {
+    /// A passcode is set and the source has not connected: it is only sent small refusals.
+    Strict,
+    /// No passcode is set and the source has not connected.
+    Open,
+}
+
+impl Budget {
+    fn limits(self) -> (u64, u64) {
+        match self {
+            Self::Strict => (REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC),
+            Self::Open => (OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectResult {
@@ -97,7 +122,7 @@ pub struct Sessions {
     failures: HashMap<IpAddr, Failures>,
     global_start: Duration,
     global_count: u32,
-    budgets: HashMap<IpAddr, Bucket>,
+    budgets: HashMap<(IpAddr, Budget), Bucket>,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
 }
@@ -294,16 +319,28 @@ impl Sessions {
         self.failures.retain(|_, f| {
             f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
         });
-        self.budgets
-            .retain(|_, b| refilled(b.tokens, b.updated, now) < REPLY_BURST_BYTES);
+        self.budgets.retain(|(_, kind), b| {
+            let (burst, rate) = kind.limits();
+            refilled(b.tokens, b.updated, now, burst, rate) < burst
+        });
     }
 
     /// Takes `bytes` from the reply budget of the UDP source `ip`; false if it has less left
     /// (the reply must then not be sent).
-    pub fn spend_reply_bytes(&mut self, ip: IpAddr, now: Duration, bytes: u64) -> bool {
-        if !self.budgets.contains_key(&ip) && self.budgets.len() >= MAX_TRACKED_IPS {
-            self.budgets
-                .retain(|_, b| refilled(b.tokens, b.updated, now) < REPLY_BURST_BYTES);
+    pub fn spend_reply_bytes(
+        &mut self,
+        ip: IpAddr,
+        kind: Budget,
+        now: Duration,
+        bytes: u64,
+    ) -> bool {
+        let (burst, rate) = kind.limits();
+        let key = (ip, kind);
+        if !self.budgets.contains_key(&key) && self.budgets.len() >= MAX_TRACKED_IPS {
+            self.budgets.retain(|(_, k), b| {
+                let (burst, rate) = k.limits();
+                refilled(b.tokens, b.updated, now, burst, rate) < burst
+            });
             if self.budgets.len() >= MAX_TRACKED_IPS {
                 let oldest = self
                     .budgets
@@ -315,11 +352,11 @@ impl Sessions {
                 }
             }
         }
-        let bucket = self.budgets.entry(ip).or_insert(Bucket {
-            tokens: REPLY_BURST_BYTES,
+        let bucket = self.budgets.entry(key).or_insert(Bucket {
+            tokens: burst,
             updated: now,
         });
-        let available = refilled(bucket.tokens, bucket.updated, now);
+        let available = refilled(bucket.tokens, bucket.updated, now, burst, rate);
         bucket.updated = now;
         if available >= bytes {
             bucket.tokens = available - bytes;
@@ -350,11 +387,11 @@ impl Sessions {
 }
 
 /// Tokens after refilling for the time since `updated`, capped at the burst size.
-fn refilled(tokens: u64, updated: Duration, now: Duration) -> u64 {
+fn refilled(tokens: u64, updated: Duration, now: Duration, burst: u64, rate: u64) -> u64 {
     let elapsed_ms = u64::try_from(now.saturating_sub(updated).as_millis()).unwrap_or(u64::MAX);
     tokens
-        .saturating_add(elapsed_ms.saturating_mul(REPLY_BYTES_PER_SEC) / 1000)
-        .min(REPLY_BURST_BYTES)
+        .saturating_add(elapsed_ms.saturating_mul(rate) / 1000)
+        .min(burst)
 }
 
 /// Compares every byte of the longer string against the shorter one padded with zeros, so the

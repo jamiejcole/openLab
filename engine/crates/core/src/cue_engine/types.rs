@@ -200,6 +200,13 @@ pub enum Input {
     /// Panic (PB-03): every cue fades out over the workspace's `panic_duration` and stops; a
     /// second Panic during that fade stops everything at once.
     Panic,
+    /// GO from a given cue (OSC `/go "3"`): the list's playhead moves to `cue`, then GO. One input,
+    /// so nothing starts if the cue is not on the list's playhead positions (a stale client
+    /// cannot fire the old playhead cue): the engine warns `NotInList` and does nothing else.
+    GoFrom {
+        list: CueListId,
+        cue: CueId,
+    },
     /// Stop All: every cue of every list, at every depth, and every preview, stops at once (no
     /// fades, nothing pending fires). Unlike Panic it starts no fade and leaves no panic window.
     StopAll,

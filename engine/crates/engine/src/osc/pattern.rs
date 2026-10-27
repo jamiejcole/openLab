@@ -10,9 +10,11 @@ pub const MAX_ALTERNATIVES: usize = 64;
 /// Longest cue number a pattern is tried against, in characters. A longer one can still be
 /// addressed exactly.
 pub const MAX_MATCH_CHARS: usize = 256;
-/// Steps one message may spend matching, over all cues and alternatives. The matcher's steps are
-/// single comparisons, so this is a few milliseconds at most.
-pub const MATCH_BUDGET: u64 = 2_000_000;
+/// Steps one datagram or stream read may spend matching, over all its messages, cues and
+/// alternatives. A step is one character-against-token comparison (a `[..]` class costs one per
+/// range, plus one), roughly 5 ns, so this is about 5 ms of work however many messages the read
+/// holds.
+pub const MATCH_BUDGET: u64 = 1_000_000;
 
 /// Whether `text` has a character that makes it a pattern.
 pub fn has_pattern_chars(text: &str) -> bool {
@@ -116,6 +118,9 @@ impl CuePattern {
     /// [`MAX_MATCH_CHARS`] does not match.
     pub fn is_match(&self, text: &str, budget: &mut u64) -> Result<bool, BudgetSpent> {
         let text: Vec<char> = text.chars().take(MAX_MATCH_CHARS + 1).collect();
+        *budget = budget
+            .checked_sub(1 + u64::try_from(text.len()).unwrap_or(u64::MAX))
+            .ok_or(BudgetSpent)?;
         if text.len() > MAX_MATCH_CHARS {
             return Ok(false);
         }
@@ -175,7 +180,11 @@ fn glob(tokens: &[Tok], text: &[char], budget: &mut u64) -> Result<bool, BudgetS
     let (mut t, mut s) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
     while s < text.len() {
-        *budget = budget.checked_sub(1).ok_or(BudgetSpent)?;
+        let cost = match tokens.get(t) {
+            Some(Tok::Class { ranges, .. }) => 1 + u64::try_from(ranges.len()).unwrap_or(u64::MAX),
+            _ => 1,
+        };
+        *budget = budget.checked_sub(cost).ok_or(BudgetSpent)?;
         let c = text.get(s).copied().unwrap_or_default();
         match tokens.get(t) {
             Some(Tok::Star) => {

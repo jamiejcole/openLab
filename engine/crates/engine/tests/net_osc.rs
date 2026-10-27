@@ -1764,7 +1764,9 @@ async fn a_tcp_message_may_be_nearly_a_megabyte() {
 async fn a_peer_that_asks_and_does_not_read_cannot_make_the_server_hold_gigabytes() {
     let mut ws = test_workspace();
     ws.cue_lists[0].cues[0].notes = "m".repeat(900 * 1024);
-    let f = fixture(ws).await;
+    // The peer never reads, so the writer is blocked for the whole test: the write timeout (10 s
+    // by default, which a loaded machine can pass) must not close the connection under it.
+    let f = fixture_with(ws, |c| c.write_timeout = Duration::from_secs(3600)).await;
     let t = f.tcp().await;
     // 30 rounds of two reads of 900 KB (a read of the socket may hold both, and the server stops
     // at 2 MiB of replies per read) that the peer never reads: 54 MB offered. The writer holds
@@ -1805,4 +1807,87 @@ async fn the_tcp_connection_cap_defaults_to_256() {
         conns.push(t);
     }
     assert_eq!(f.stats().tcp_refused, 0);
+}
+
+#[tokio::test]
+async fn the_active_list_survives_a_resync_and_a_snapshot_so_go_fires_the_same_list() {
+    let mut ws = test_workspace();
+    let second = openlab_core::CueListId(uuid::Uuid::from_u128(0x22));
+    let mut c = ws.cue_lists[0].cues[0].clone();
+    c.id = id(20);
+    c.number = Some("20".into());
+    ws.cue_lists.push(openlab_core::CueList {
+        id: second,
+        name: "Second".into(),
+        cues: vec![c],
+    });
+    let f = fixture(ws).await;
+    let go_list = |f: &Fix| -> Option<openlab_core::CueListId> {
+        f.control.inputs().iter().rev().find_map(|m| match m {
+            ClientMessage::Transport {
+                action: TransportAction::Go { list },
+                ..
+            } => Some(*list),
+            _ => None,
+        })
+    };
+    // The operator works in the second list: its playhead moves.
+    f.out
+        .send(ServerMessage::Runtime {
+            seq: 1,
+            changes: vec![RuntimeChange::Playhead {
+                list: second,
+                cue: Some(id(20)),
+            }],
+        })
+        .await
+        .unwrap();
+    f.udp_sync().await;
+    f.udp_send(&msg("/playheadID", vec![])).await;
+    assert_eq!(
+        body(&f.udp_recv().await)["data"],
+        id(20).to_string().to_uppercase()
+    );
+    // A Save As (another document path) and a gap both make the copy start over from a snapshot.
+    let asked = f.control.snapshot_requests();
+    f.out
+        .send(ServerMessage::Document {
+            document: DocumentState {
+                path: Some("/shows/saved.openlab".into()),
+                dirty: false,
+                can_undo: false,
+                can_redo: false,
+            },
+        })
+        .await
+        .unwrap();
+    f.control
+        .wait_for("the resync", |c| c.snapshot_requests() > asked)
+        .await;
+    f.udp_sync().await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO", |seen| seen.iter().any(is_input))
+        .await;
+    assert_eq!(go_list(&f), Some(second), "list 2 is still the active one");
+    let asked = f.control.snapshot_requests();
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 9,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    f.control
+        .wait_for("the gap resync", |c| c.snapshot_requests() > asked)
+        .await;
+    f.udp_sync().await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the second GO", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() >= 2
+        })
+        .await;
+    assert_eq!(go_list(&f), Some(second));
 }

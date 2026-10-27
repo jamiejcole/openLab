@@ -364,6 +364,7 @@ impl CueEngine {
         match input {
             Input::Tick => {}
             Input::Go { list } => self.go(list, cx),
+            Input::GoFrom { list, cue } => self.go_from(list, cue, cx),
             Input::Start { cue } => {
                 if self.known(cue, cx) {
                     self.start(cue, cx.now, cx);
@@ -541,6 +542,24 @@ impl CueEngine {
             return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
+    }
+
+    /// GO from `cue`: only if the playhead can rest there.
+    fn go_from(&mut self, list: CueListId, cue: CueId, cx: &mut Ctx) {
+        let Some(cues) = cx
+            .ws
+            .cue_lists
+            .iter()
+            .find(|l| l.id == list)
+            .map(|l| &l.cues)
+        else {
+            return cx.warn(EngineWarning::UnknownList { list });
+        };
+        if !playhead::positions(cues).contains(&cue) {
+            return cx.warn(EngineWarning::NotInList { list, cue });
+        }
+        self.move_playhead(list, Some(cue), cx);
+        self.go(list, cx);
     }
 
     fn navigate(&mut self, list: CueListId, cx: &mut Ctx, step: fn(&mut Playhead, &[Cue]) -> bool) {

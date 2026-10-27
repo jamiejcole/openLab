@@ -1062,3 +1062,36 @@ fn a_cues_own_panic_on_an_unknown_or_idle_cue_changes_nothing() {
     assert!(rig.at(0, Input::PanicCue { cue: id(1) }).is_empty());
     rig.assert_quiet();
 }
+
+#[test]
+fn go_from_moves_the_playhead_then_goes_and_does_nothing_for_a_cue_it_cannot_rest_on() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        sound(2),
+        grp(3, GroupMode::Timeline, vec![sound(4)]),
+    ]);
+    let from = |rig: &mut Rig, n| {
+        rig.at(
+            0,
+            Input::GoFrom {
+                list: list_id(1),
+                cue: id(n),
+            },
+        )
+    };
+    let started = from(&mut rig, 2);
+    assert_eq!(voice_starts(&started), vec![(id(2), 0)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    // Not on the list: a warning and nothing started, the playhead stays.
+    {
+        let n = 99;
+        let out = from(&mut rig, n);
+        assert!(voice_starts(&out).is_empty());
+        assert!(warnings(&out).contains(&EngineWarning::NotInList {
+            list: list_id(1),
+            cue: id(n)
+        }));
+    }
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+}
