@@ -30,8 +30,17 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Hang guard for one wait on the network.
+/// Hang guard for one wait on the network. It bounds the whole wait: the server's pings must
+/// not keep a wait for a message that never comes alive (that hung CI on Windows).
 const GUARD: Duration = Duration::from_secs(20);
+
+/// Runs `f` within [`GUARD`], or fails the test naming `what`.
+async fn guard<F: std::future::Future>(what: &str, f: F) -> F::Output {
+    match tokio::time::timeout(GUARD, f).await {
+        Ok(out) => out,
+        Err(_) => panic!("hang: {what} took longer than {GUARD:?}"),
+    }
+}
 
 #[derive(Default)]
 struct Control {
@@ -236,27 +245,40 @@ async fn hello(c: &mut Client, token: &str, version: u32) {
 
 async fn send_text(c: &mut Client, text: String) {
     // A refused client may be closed by the time it writes: not an error for the test.
-    let _ = c.send(Message::text(text)).await;
+    let _ = guard("sending a frame", c.send(Message::text(text))).await;
 }
 
 async fn send(c: &mut Client, m: &ClientMessage) {
     send_text(c, encode_client(m).unwrap()).await;
 }
 
-/// The next engine message; `None` when the connection is closed.
+/// The next engine message; `None` when the connection is closed. Pings do not extend the
+/// guard.
 async fn next(c: &mut Client) -> Option<ServerMessage> {
-    loop {
-        match tokio::time::timeout(GUARD, c.next()).await.expect("hang") {
-            Some(Ok(Message::Text(t))) => return Some(decode_server(t.as_str()).unwrap()),
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
-            Some(Ok(other)) => panic!("unexpected frame {other:?}"),
+    guard("waiting for the next message", async {
+        loop {
+            match c.next().await {
+                Some(Ok(Message::Text(t))) => return Some(decode_server(t.as_str()).unwrap()),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
+                Some(Ok(other)) => panic!("unexpected frame {other:?}"),
+            }
         }
-    }
+    })
+    .await
 }
 
 async fn expect_closed(c: &mut Client) {
-    while next(c).await.is_some() {}
+    guard("waiting for the server to close", async {
+        while next(c).await.is_some() {}
+    })
+    .await;
+}
+
+async fn connect_tcp(port: u16) -> TcpStream {
+    guard("connecting", TcpStream::connect(("127.0.0.1", port)))
+        .await
+        .unwrap()
 }
 
 fn rename(n: u128) -> ClientMessage {
@@ -291,15 +313,18 @@ fn error_code(m: Option<ServerMessage>) -> ErrorCode {
 }
 
 async fn wait_result(c: &mut Client, id: u64) -> Vec<ServerMessage> {
-    let mut seen = vec![];
-    loop {
-        let m = next(c).await.expect("closed before the result");
-        let done = matches!(&m, ServerMessage::Result { id: i, .. } if i.0 == id);
-        seen.push(m);
-        if done {
-            return seen;
+    guard("waiting for a result", async {
+        let mut seen = vec![];
+        loop {
+            let m = next(c).await.expect("closed before the result");
+            let done = matches!(&m, ServerMessage::Result { id: i, .. } if i.0 == id);
+            seen.push(m);
+            if done {
+                return seen;
+            }
         }
-    }
+    })
+    .await
 }
 
 // --- authentication -----------------------------------------------------------------------
@@ -412,9 +437,7 @@ async fn silence_before_hello_times_out() {
     let mut c = f.raw().await;
     expect_closed(&mut c).await;
     // A raw TCP connection that never even upgrades is dropped too.
-    let mut tcp = TcpStream::connect(("127.0.0.1", f.server.port()))
-        .await
-        .unwrap();
+    let mut tcp = connect_tcp(f.server.port()).await;
     let mut buf = [0u8; 16];
     let n = tokio::time::timeout(GUARD, tokio::io::AsyncReadExt::read(&mut tcp, &mut buf))
         .await
@@ -429,19 +452,13 @@ async fn too_many_unauthenticated_connections_are_dropped_not_queued() {
         ..ServerConfig::default()
     });
     // Two silent raw connections use up the handshake slots.
-    let _a = TcpStream::connect(("127.0.0.1", f.server.port()))
-        .await
-        .unwrap();
-    let _b = TcpStream::connect(("127.0.0.1", f.server.port()))
-        .await
-        .unwrap();
+    let _a = connect_tcp(f.server.port()).await;
+    let _b = connect_tcp(f.server.port()).await;
     // The third is accepted by the OS but closed by the server without an upgrade; wait for
     // the slots to be taken by retrying until one is refused.
     let mut refused = false;
     for _ in 0..50 {
-        let mut c = TcpStream::connect(("127.0.0.1", f.server.port()))
-            .await
-            .unwrap();
+        let mut c = connect_tcp(f.server.port()).await;
         let mut buf = [0u8; 1];
         if let Ok(Ok(0) | Err(_)) = tokio::time::timeout(
             Duration::from_millis(200),
@@ -780,7 +797,9 @@ async fn malformed_frames_are_answered_and_the_connection_stays_up() {
     )
     .await;
     assert_eq!(error_code(next(&mut c).await), ErrorCode::BadRequest);
-    c.send(Message::binary(vec![1u8, 2, 3])).await.unwrap();
+    guard("sending a frame", c.send(Message::binary(vec![1u8, 2, 3])))
+        .await
+        .unwrap();
     assert_eq!(error_code(next(&mut c).await), ErrorCode::BadRequest);
     // A second hello is not a way to re-authenticate.
     send_text(&mut c, hello_text("x", PROTOCOL_VERSION, "again")).await;
@@ -845,13 +864,16 @@ async fn the_server_pings_and_a_reading_client_stays_connected() {
         ..ServerConfig::default()
     });
     let mut c = f.client().await;
-    let mut pings = 0;
-    while pings < 15 {
-        match tokio::time::timeout(GUARD, c.next()).await.expect("hang") {
-            Some(Ok(Message::Ping(_))) => pings += 1,
-            other => panic!("{other:?}"),
+    guard("waiting for 15 pings", async {
+        let mut pings = 0;
+        while pings < 15 {
+            match c.next().await {
+                Some(Ok(Message::Ping(_))) => pings += 1,
+                other => panic!("{other:?}"),
+            }
         }
-    }
+    })
+    .await;
     // Still alive: it answers requests.
     send(&mut c, &go(1)).await;
     wait_result(&mut c, 1).await;
@@ -870,15 +892,17 @@ async fn a_client_that_answers_nothing_is_dropped() {
     let MaybeTlsStream::Plain(tcp) = c.get_mut() else {
         panic!("not a plain socket");
     };
+    // One guard for the whole wait: the server's pings keep arriving until it gives up.
     let mut buf = [0u8; 4096];
-    loop {
-        let n = tokio::time::timeout(GUARD, tokio::io::AsyncReadExt::read(tcp, &mut buf))
-            .await
-            .expect("the server never gave up on a silent client");
-        if matches!(n, Ok(0) | Err(_)) {
-            break;
+    guard("the server giving up on a silent client", async {
+        loop {
+            let n = tokio::io::AsyncReadExt::read(tcp, &mut buf).await;
+            if matches!(n, Ok(0) | Err(_)) {
+                break;
+            }
         }
-    }
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1068,6 +1092,8 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     let mut logs = 0;
     let mut snapshots = 0;
     loop {
+        // Each read is guarded by `next`; the loop ends at the first snapshot, and at most
+        // `total` logs can come before it.
         match next(&mut stalled).await.expect("closed") {
             ServerMessage::Log { .. } => logs += 1,
             ServerMessage::Snapshot { snapshot } => {
@@ -1078,23 +1104,33 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
             other => panic!("{other:?}"),
         }
     }
-    // Later broadcasts are filtered against the snapshot: 5 is in it, 6 is new.
+    // Later broadcasts are filtered against the snapshot: 5 is in it, 6 is new. As in the real
+    // control loop, the revision moves before its model_changed goes out: if the connection
+    // lagged again and the hub skipped model_changed 6, the next snapshot (asked after that)
+    // is at revision 6 and covers it.
+    f.control.revision.store(6, Ordering::SeqCst);
     f.out.try_send(changed(5)).unwrap();
     f.out.try_send(changed(6)).unwrap();
-    loop {
-        match next(&mut stalled).await.expect("closed") {
-            ServerMessage::Log { .. } => logs += 1,
-            ServerMessage::Snapshot { snapshot } => {
-                assert_eq!(snapshot.revision, 5);
-                snapshots += 1;
+    guard("revision 6 reaching the client", async {
+        loop {
+            match next(&mut stalled).await.expect("closed") {
+                ServerMessage::Log { .. } => logs += 1,
+                ServerMessage::Snapshot { snapshot } => {
+                    assert!(snapshot.revision >= 5);
+                    snapshots += 1;
+                    if snapshot.revision == 6 {
+                        break;
+                    }
+                }
+                ServerMessage::ModelChanged { revision, .. } => {
+                    assert_eq!(revision, 6, "model_changed 5 was not filtered");
+                    break;
+                }
+                other => panic!("{other:?}"),
             }
-            ServerMessage::ModelChanged { revision, .. } => {
-                assert_eq!(revision, 6, "model_changed 5 was not filtered");
-                break;
-            }
-            other => panic!("{other:?}"),
         }
-    }
+    })
+    .await;
     assert!(
         logs < total,
         "nothing was dropped: the queue never overflowed ({snapshots} snapshots)"
@@ -1111,7 +1147,7 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
 
 /// Waits until the server closes a new connection without upgrading it.
 async fn expect_refused(port: u16) {
-    let mut tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut tcp = connect_tcp(port).await;
     let mut buf = [0u8; 1];
     let n = tokio::time::timeout(GUARD, tokio::io::AsyncReadExt::read(&mut tcp, &mut buf))
         .await
@@ -1192,9 +1228,7 @@ async fn refusals_after_the_first_log_are_logged_once_the_interval_has_passed() 
         ..ServerConfig::default()
     });
     // A silent raw connection holds the only handshake slot.
-    let _held = TcpStream::connect(("127.0.0.1", f.server.port()))
-        .await
-        .unwrap();
+    let _held = connect_tcp(f.server.port()).await;
     // Every further connection is refused: the first refusal is logged at once, the others
     // when the interval has passed, even though no connection follows them.
     for _ in 0..3 {
