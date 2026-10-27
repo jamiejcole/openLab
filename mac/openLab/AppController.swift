@@ -355,6 +355,9 @@ final class AppController {
         quitting = true
         defer { quitting = false }
         if engineUnreachable { return alerts.confirmQuitDisconnected() }
+        for doc in Array(windows.keys) {
+            if await !commitEdits(doc) { return false }
+        }
         if session.stores.values.contains(where: isPlaying), !alerts.confirmQuitWhilePlaying() { return false }
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
@@ -418,12 +421,18 @@ final class AppController {
     /// The unsaved-changes prompt. nil: cancelled (or the save failed or was cancelled). Otherwise
     /// the `discard_changes` flag to send: true after Don't Save, false when clean or saved.
     private func resolveUnsaved(_ doc: ModelID) async -> Bool? {
+        guard await commitEdits(doc) else { return nil }
         guard let store = session.stores[doc], store.document?.dirty == true else { return false }
         switch alerts.unsavedChanges(workspace: name(of: doc)) {
         case .cancel: return nil
         case .dontSave: return true
         case .save: return await save(store, name: name(of: doc)) ? false : nil
         }
+    }
+
+    /// Typed-in inspector edits go to the engine before a save, close or quit looks at the workspace.
+    private func commitEdits(_ doc: ModelID) async -> Bool {
+        await windows[doc]?.commitPendingEdits() ?? true
     }
 
     private func save(_ store: WorkspaceStore, name: String) async -> Bool {

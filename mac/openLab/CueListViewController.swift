@@ -201,7 +201,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
+    /// Told of every selection change (the inspector follows it).
+    var onSelectionChange: (([ModelID]) -> Void)?
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        // Programmatic restores (select, rebuild, batches) are not the user's choice.
+        if !restoringSelection && !batching { onSelectionChange?(selectedIDs()) }
         // Compared with what was last sent, not only what the engine echoed: A, B, A within one
         // round trip must still end on A.
         guard !restoringSelection, !batching, let list = listID, let id = selectedIDs().first,
