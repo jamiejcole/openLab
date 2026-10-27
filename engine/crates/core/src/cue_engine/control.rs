@@ -271,7 +271,7 @@ impl CueEngine {
                         broken: None,
                         ..
                     })) if !g.stopping => {
-                        if looping && !g.adopted && g.playlist.is_some() && g.devamp.is_none() {
+                        if looping && g.playlist.is_some() && g.devamp.is_none() {
                             g.devamp = Some((by, start_next));
                         } else {
                             cx.warn(EngineWarning::DevampIgnored { cue: target });

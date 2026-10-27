@@ -87,10 +87,11 @@ cue, and the cue shows as broken where it cannot run.
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
-| An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
+| An Audio cue's `end_time` less than 51 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` cleared (play to end) |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
+| A slice marker less than 51 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; removed: every slice, and so every loop, is at least 51 ms long, as QLab 5's editor allows (M2.24). Without an `end_time` the file's length is not in the show, so the last slice meets only the audio engine's 10 ms loop floor (`MIN_LOOP_MS`) when the voice is planned |
 | A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
 | A patch output delay outside 0–1000 ms | Warning; clamped |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
@@ -220,9 +221,9 @@ Option on macOS).
 | `media` | path or `null` | §4.3. `null` until a file is assigned. |
 | `patch` | patch id | Output patch the cue plays to. |
 | `start_time` | seconds | Trim in point, from the start of the file. |
-| `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be after `start_time`. |
+| `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be at least 51 ms after `start_time`. |
 | `fade_in`, `fade_out` | fade spec | Fades built into the cue. |
-| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
+| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 51 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
 | `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
 | `levels.master_db` | level | Cue master. |
 | `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 64. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |

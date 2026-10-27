@@ -71,14 +71,20 @@ fn group_mode(cue: &Cue) -> Option<GroupMode> {
     }
 }
 
-/// Whether a cue's continue mode triggers its next sibling: always at the top level and in the
-/// "start first" modes; timeline, playlist and random groups run their children themselves and
-/// ignore the children's continue modes.
+/// Whether a cue's continue mode triggers its next sibling: always at the top level, in the
+/// "start first" modes and in random groups (QLab 5: the chosen child's own continue fires);
+/// timeline and playlist groups run their children themselves and ignore the children's
+/// continue modes.
 pub(super) fn chains_siblings(ws: &Workspace, cue: CueId) -> bool {
     let parent = ancestors(ws, cue).first().and_then(|g| ws.find_cue(*g));
     match parent.and_then(group_mode) {
-        None | Some(GroupMode::StartFirstAndEnter | GroupMode::StartFirstAndGoToNext) => true,
-        Some(GroupMode::Timeline | GroupMode::Playlist { .. } | GroupMode::StartRandom) => false,
+        None
+        | Some(
+            GroupMode::StartFirstAndEnter
+            | GroupMode::StartFirstAndGoToNext
+            | GroupMode::StartRandom,
+        ) => true,
+        Some(GroupMode::Timeline | GroupMode::Playlist { .. }) => false,
     }
 }
 
@@ -110,7 +116,9 @@ impl CueEngine {
     }
 
     /// The group's action has started on `at`: start its children per its mode. If none ends up
-    /// busy (no children, all broken, chain limit), the action completes at once.
+    /// busy (no children, all broken, chain limit), the action completes at once. A child that is
+    /// broken when the group gets to it is skipped and does not keep the group from
+    /// auto-following (QLab 5); only a child that breaks while it runs does (`child_left`).
     pub(super) fn start_children(&mut self, group: CueId, at: SampleTime, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(CueKind::Group { mode, children }) = ws.find_cue(group).map(|g| &g.kind) else {
@@ -124,34 +132,23 @@ impl CueEngine {
         match mode {
             GroupMode::Timeline => {
                 for child in children {
-                    self.start_child(group, child.id, at, cx);
+                    self.start(child.id, at, cx);
                 }
             }
             GroupMode::StartFirstAndEnter | GroupMode::StartFirstAndGoToNext => {
                 if let Some(first) = children.first() {
-                    self.start_child(group, first.id, at, cx);
+                    self.start(first.id, at, cx);
                 }
             }
             GroupMode::Playlist { .. } => self.playlist_next(group, at, cx),
             GroupMode::StartRandom => {
                 if let Some(child) = self.pick_random(group, children) {
-                    self.start_child(group, child, at, cx);
+                    self.start(child, at, cx);
                 }
             }
         }
         if !self.any_busy_child(ws, group) {
             self.resolve_group(group, Exit::Completed, at, cx);
-        }
-    }
-
-    /// Starts a child for its group; a child that cannot start because it is broken marks the
-    /// group's run as failed.
-    fn start_child(&mut self, group: CueId, child: CueId, at: SampleTime, cx: &mut Ctx) {
-        self.start(child, at, cx);
-        if self.broken_reason(child).is_some()
-            && let Some(Slot::Active(Run { group: Some(g), .. })) = self.slots.get_mut(&group)
-        {
-            g.failed = true;
         }
     }
 
@@ -218,7 +215,7 @@ impl CueEngine {
                 paused_at: None,
                 phase: Phase::Action { .. },
                 ..
-            })) if !g.stopping && !g.adopted && g.devamp.is_none() => g.playlist.take(),
+            })) if !g.stopping && g.devamp.is_none() => g.playlist.take(),
             _ => return,
         };
         // A pass began in this call: ending it again means a whole pass in which nothing started.
@@ -298,7 +295,7 @@ impl CueEngine {
                 p.pos = index;
             }
             p.current = None;
-            self.start_child(group, child, at, cx);
+            self.start(child, at, cx);
             if let Some(Slot::Active(run)) = self.slots.get(&child) {
                 playing = Some((child, run.seq));
                 break;
@@ -318,7 +315,7 @@ impl CueEngine {
     }
 
     /// Second trigger "play next" / "play previous" (`back`) on a playlist group playing a child
-    /// (in its action, not stopping, adopted or devamped; a paused one too): the child playing
+    /// (in its action, not stopping or devamped; a paused one too): the child playing
     /// is hard-stopped and the one after (before) it starts on `at`, wrapping when the playlist
     /// loops. Without loop, "next" after the last child completes the group (as if that child
     /// had ended) and "previous" on the first child plays it again from the top. Shuffled, the
@@ -342,7 +339,7 @@ impl CueEngine {
                 phase: Phase::Action { .. },
                 paused_at,
                 ..
-            })) if !g.stopping && !g.adopted && g.devamp.is_none() && g.skipped != Some(at) => {
+            })) if !g.stopping && g.devamp.is_none() && g.skipped != Some(at) => {
                 match &g.playlist {
                     Some(p) => (p.current, paused_at.is_some()),
                     None => return cx.warn(EngineWarning::TriggerIgnored { cue: group, state }),
@@ -457,11 +454,15 @@ impl CueEngine {
     }
 
     /// The action of `cue` (run `seq`) completed, or it broke, on `at`: a playlist around it
-    /// moves on to its next child.
+    /// moves on to its next child; in a playlist that is not running, the child after it starts
+    /// (`follow_through`).
     pub(super) fn child_action_done(&mut self, cue: CueId, seq: u64, at: SampleTime, cx: &mut Ctx) {
         let Some(&parent) = ancestors(cx.ws, cue).first() else {
             return;
         };
+        if !matches!(self.slots.get(&parent), Some(Slot::Active(_))) {
+            return self.follow_through(parent, cue, at, cx);
+        }
         let Some(Slot::Active(Run {
             group:
                 Some(
@@ -484,6 +485,36 @@ impl CueEngine {
             return;
         }
         self.playlist_next(parent, at, cx);
+    }
+
+    /// `cue`, a child of `group`, completed (or broke) on `at` while its group has no run (it
+    /// was started on its own): if the group is a playlist, the next child that can start starts
+    /// on `at`, as QLab 5 plays on through the rest of a stopped playlist from a child GOed on its
+    /// own. The children are taken in list order (shuffle aside), the last one does not wrap
+    /// (loop aside), and the group itself does not run, so it fires no continue of its own.
+    /// Children a start refuses (broken at run time and not reset) are passed over; each start
+    /// is charged to the chain budget like any continue.
+    fn follow_through(&mut self, group: CueId, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let Some(CueKind::Group {
+            mode: GroupMode::Playlist { .. },
+            children,
+        }) = ws.find_cue(group).map(|g| &g.kind)
+        else {
+            return;
+        };
+        let Some(index) = children.iter().position(|c| c.id == cue) else {
+            return;
+        };
+        for next in children.iter().skip(index.saturating_add(1)) {
+            if next.id == group {
+                continue;
+            }
+            self.start(next.id, at, cx);
+            if matches!(self.slots.get(&next.id), Some(Slot::Active(_))) || cx.budget == 0 {
+                return;
+            }
+        }
     }
 
     /// Carries out what groups must do now that some of their children's runtimes have ended.
@@ -538,7 +569,7 @@ impl CueEngine {
             self.remove_slot(group, at, Exit::Stopped, cx);
             return self.report(group, before, at, cx);
         }
-        let follow = run.follow && !g.failed && !g.adopted;
+        let follow = run.follow && !g.failed;
         // A devamped playlist that asked for it starts the cue after the Devamp cue now.
         let devamp_next = g.devamp.take().filter(|(_, next)| *next).map(|(by, _)| by);
         run.phase = Phase::Done;
@@ -579,63 +610,24 @@ impl CueEngine {
         any
     }
 
-    /// A cue started on its own (not by its group) on `at`: every idle group around it starts
-    /// running as an adopted group, and a post-waiting one runs again, so a group reports
-    /// running while any child is.
-    pub(super) fn adopt_parents(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
+    /// A cue was started on its own (not by its group) on `at`. As in QLab 5 that does not make
+    /// the groups around it run: an idle group stays idle (a playlist's other children follow it,
+    /// see `follow_through`), and a group with a run of its own keeps it. The exception is a group
+    /// fading out in a panic, which would otherwise keep reporting `stopping` until the new child
+    /// ends: it stops waiting and ends now (its other children finish their own panic fades), and
+    /// so do the groups around it fading out in the panic.
+    pub(super) fn release_panicking_parents(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         for group in ancestors(cx.ws, cue) {
-            let before = self.state(group);
-            match self.slots.get_mut(&group) {
-                Some(Slot::Active(run)) => {
-                    let post_waiting = run.phase == Phase::Done
-                        && run.paused_at.is_none()
-                        && run.group.as_ref().is_some_and(|g| !g.stopping);
-                    // A group stopping in a panic runs on, adopted, with the new child: it no
-                    // longer waits to stop, and ends when its last child does. So do the groups
-                    // around it.
-                    if run.panicked
-                        && let Some(g) = run.group.as_mut()
-                    {
-                        run.panicked = false;
-                        g.stopping = false;
-                        g.adopted = true;
-                        run.follow = false;
-                        run.post_wait = None;
-                        self.report(group, before, at, cx);
-                        continue;
-                    }
-                    if post_waiting {
-                        run.phase = Phase::Action {
-                            start: at,
-                            end: None,
-                        };
-                        run.follow = false;
-                        self.report(group, before, at, cx);
-                    }
-                    return;
-                }
-                Some(Slot::Broken(_)) => return,
-                Some(Slot::Loaded(_)) | None => {
-                    let run = match self.slots.get(&group) {
-                        Some(Slot::Loaded(loaded)) => loaded.run,
-                        _ => self.new_run(),
-                    };
-                    let seq = self.next_seq;
-                    self.next_seq = self.next_seq.saturating_add(1);
-                    let adopted = GroupRun {
-                        adopted: true,
-                        ..GroupRun::default()
-                    };
-                    let phase = Phase::Action {
-                        start: at,
-                        end: None,
-                    };
-                    let mut new = Run::new(run, seq, phase, Some(adopted));
-                    new.started = at;
-                    self.slots.insert(group, Slot::Active(new));
-                    self.report(group, before, at, cx);
-                }
+            let panicking = matches!(
+                self.slots.get(&group),
+                Some(Slot::Active(run)) if run.panicked && run.group.is_some()
+            );
+            if !panicking {
+                return;
             }
+            let before = self.state(group);
+            self.remove_slot(group, at, Exit::Stopped, cx);
+            self.report(group, before, at, cx);
         }
     }
 

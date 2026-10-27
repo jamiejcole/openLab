@@ -55,11 +55,7 @@ impl CueEngine {
         let in_action = matches!(run.phase, Phase::Action { .. }) && run.stop_end.is_none();
         let kind = cx.ws.find_cue(cue).map(|c| &c.kind);
         let playing_playlist = run.group.as_ref().is_some_and(|g| {
-            !g.stopping
-                && !g.adopted
-                && g.devamp.is_none()
-                && g.playlist.is_some()
-                && g.skipped != Some(at)
+            !g.stopping && g.devamp.is_none() && g.playlist.is_some() && g.skipped != Some(at)
         });
         match option {
             SecondTrigger::Nothing => false,

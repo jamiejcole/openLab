@@ -71,7 +71,9 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
         next
     };
     let audio_cue = |n: u128| {
-        let path = wav(&dc(64, 0.25));
+        // Slice cues need room for slices of at least `MIN_SLICE_SECONDS` (51 ms).
+        let sliced = n.is_multiple_of(50);
+        let path = wav(&dc(if sliced { 2000 } else { 64 }, 0.25));
         let mut c = audio(n, &path, (n % 2) as u32);
         c.notes = format!("note for cue {n}: check levels against the last rehearsal");
         if let CueKind::Audio {
@@ -89,8 +91,8 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
                 curve,
             };
         }
-        if n.is_multiple_of(50) {
-            c = with_slices(c, &[(0.002, 1), (0.004, 2)], 1);
+        if sliced {
+            c = with_slices(c, &[(0.06, 1), (0.12, 2)], 1);
         }
         c
     };

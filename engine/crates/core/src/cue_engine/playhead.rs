@@ -177,17 +177,18 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 
 /// Where the playhead goes after a GO on the cue at `path` (its continue chain, as the model
 /// stands, is skipped):
-/// - an armed (as `armed` says) "start first and enter" group with children: into the group, to the cue after its
-///   first child's continue chain;
-/// - otherwise the cue after the cue's continue chain among its siblings (inside timeline,
-///   playlist and random groups the children's continue modes are ignored, so the next
-///   sibling); past the last sibling, out of the group, to the cue after the group's own
-///   continue chain (and so on up); past the end of the list, `None`. A disarmed group is skipped
-///   as a unit like any disarmed cue.
+/// - an armed (as `armed` says) "start first and enter" group with children: into the group, to
+///   the cue after its first child's continue chain;
+/// - a child of a playlist group: out of the group (QLab 5: GO on a child of a stopped playlist
+///   plays on through the rest of its children), to the cue after the group's continue chain;
+/// - otherwise the cue after the cue's continue chain among its siblings (inside timeline groups
+///   the children's continue modes are ignored, so the next sibling); past the last sibling, out
+///   of the group, to the cue after the group's own continue chain (and so on up); past the end
+///   of the list, `None`. A disarmed group is skipped as a unit like any disarmed cue.
 ///
-/// `broken` says which cues have static problems: their action is skipped, so their auto-follow
-/// never fires and does not continue the chain (their auto-continue does), and a broken Devamp
-/// cue starts no next cue.
+/// `broken` says which cues have static problems: a broken Devamp cue starts no next cue (its
+/// own continue mode applies instead). A broken cue's auto-continue and auto-follow both still
+/// fire (QLab 5: it is skipped), so they continue the chain.
 pub(super) fn after_go(
     path: &[(&[Cue], usize)],
     armed: impl Fn(&Cue) -> bool,
@@ -213,25 +214,32 @@ pub(super) fn after_go(
     (0..path.len()).rev().find_map(|depth| {
         let &(level, index) = path.get(depth)?;
         // The group holding this level decides whether its children chain.
-        let chains = match depth.checked_sub(1).and_then(|d| path.get(d)) {
-            None => true,
-            Some(&(outer, i)) => matches!(
-                outer.get(i).map(|g| &g.kind),
-                Some(CueKind::Group {
-                    mode: GroupMode::StartFirstAndEnter | GroupMode::StartFirstAndGoToNext,
-                    ..
-                })
-            ),
+        let mode = match depth.checked_sub(1).and_then(|d| path.get(d)) {
+            None => None,
+            Some(&(outer, i)) => match outer.get(i).map(|g| &g.kind) {
+                Some(CueKind::Group { mode, .. }) => Some(*mode),
+                _ => None,
+            },
         };
-        level
-            .get(chain_end(level, index, chains, &armed, &broken).saturating_add(1))
-            .map(|c| c.id)
+        let last = match mode {
+            // The rest of a playlist plays on from a child GOed on its own.
+            Some(GroupMode::Playlist { .. }) => level.len().saturating_sub(1),
+            Some(GroupMode::Timeline) => index,
+            None
+            | Some(
+                GroupMode::StartFirstAndEnter
+                | GroupMode::StartFirstAndGoToNext
+                | GroupMode::StartRandom,
+            ) => chain_end(level, index, true, &armed, &broken),
+        };
+        level.get(last.saturating_add(1)).map(|c| c.id)
     })
 }
 
 /// Index of the last cue of the continue chain that starts at `index` (just `index` when the
-/// level's continue modes do not chain). An armed Devamp cue with "start next cue" continues
-/// into its next cue (it starts it when the loop is left).
+/// level's continue modes do not chain). An armed Devamp cue with "start next cue" ends the
+/// chain: the playhead stands on the cue it will start when the loop is left (QLab 5), whatever
+/// its own continue mode, which that replaces.
 fn chain_end(
     level: &[Cue],
     index: usize,
@@ -242,9 +250,11 @@ fn chain_end(
     let mut last = index;
     while chains
         && let Some(c) = level.get(last)
-        && (c.continue_mode == ContinueMode::AutoContinue
-            || (c.continue_mode == ContinueMode::AutoFollow && !broken(c))
-            || super::starts_next_on_devamp(c, armed(c) && !broken(c)))
+        && !super::starts_next_on_devamp(c, armed(c) && !broken(c))
+        && matches!(
+            c.continue_mode,
+            ContinueMode::AutoContinue | ContinueMode::AutoFollow
+        )
         && last.saturating_add(1) < level.len()
     {
         last += 1;
