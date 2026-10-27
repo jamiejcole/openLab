@@ -352,3 +352,53 @@ fn chain_end(
     }
     last
 }
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn id(n: u128) -> CueId {
+        CueId(Uuid::from_u128(n))
+    }
+
+    fn standing_on(cue: Option<CueId>, order: &[CueId]) -> Playhead {
+        Playhead {
+            cue,
+            order: Some(order.to_vec()),
+            followed: None,
+            around: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_deleted_playhead_cue_gives_way_to_the_next_position_that_survives() {
+        let old = [id(1), id(2), id(3), id(4)];
+        let mut p = standing_on(Some(id(2)), &old);
+        assert_eq!(p.follow(&old, vec![id(1), id(4)]), (true, true));
+        assert_eq!(p.cue, Some(id(4)));
+        // Past the end when nothing after it survives.
+        let mut p = standing_on(Some(id(4)), &old);
+        assert_eq!(p.follow(&old, vec![id(1), id(2)]), (true, true));
+        assert_eq!(p.cue, None);
+    }
+
+    #[test]
+    fn a_surviving_cue_stays_and_an_unchanged_list_changes_nothing() {
+        let old = [id(1), id(2), id(3)];
+        let mut p = standing_on(Some(id(2)), &old);
+        assert_eq!(p.follow(&old, old.to_vec()), (false, false));
+        assert_eq!(p.follow(&old, vec![id(3), id(2), id(1)]), (true, false));
+        assert_eq!(p.cue, Some(id(2)));
+    }
+
+    #[test]
+    fn an_empty_list_that_gains_cues_stands_on_the_first_but_past_the_end_stays() {
+        let mut p = standing_on(None, &[]);
+        assert_eq!(p.follow(&[], vec![id(5), id(6)]), (true, true));
+        assert_eq!(p.cue, Some(id(5)));
+        let mut p = standing_on(None, &[id(1)]);
+        assert_eq!(p.follow(&[id(1)], vec![id(1), id(2)]), (true, false));
+        assert_eq!(p.cue, None);
+    }
+}
