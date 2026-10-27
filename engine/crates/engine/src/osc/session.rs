@@ -376,8 +376,8 @@ impl Sessions {
         self.peers.remove(&peer);
     }
 
-    /// Forgets every `/connect` and subscription: call when the workspace passcode changes or
-    /// a different workspace opens. Failure records and reply budgets stay.
+    /// Forgets every `/connect`, subscription and known address: call when a different
+    /// workspace opens. Failure records and reply budgets stay.
     pub fn clear(&mut self) {
         self.peers.clear();
         self.known.clear();

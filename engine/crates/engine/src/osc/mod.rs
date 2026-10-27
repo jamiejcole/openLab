@@ -205,7 +205,7 @@ impl Osc {
         self.dedupe.forget(peer);
     }
 
-    /// Drops every `/connect` and subscription (the passcode changed, or another show opened).
+    /// Drops every `/connect`, subscription and known address (another workspace opened).
     pub fn reset_sessions(&mut self) {
         self.sessions.clear();
     }
