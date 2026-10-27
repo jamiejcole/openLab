@@ -92,6 +92,7 @@ fn add_audio(s: &mut OfflineShow, snap: &Snapshot, path: &std::path::Path) {
     let id = s.request_id();
     let replies = s.send(ClientMessage::Command {
         id,
+        coalesce: None,
         command: Box::new(Command::AddCue {
             at: Position {
                 list: snap.workspace.cue_lists[0].id,
