@@ -12,8 +12,8 @@ pub const MAX_ALTERNATIVES: usize = 64;
 pub const MAX_MATCH_CHARS: usize = 256;
 /// Steps one datagram or stream read may spend matching, over all its messages, cues and
 /// alternatives. A step is one character-against-token comparison (a `[..]` class costs one per
-/// range, plus one), roughly 5 to 10 ns, so this is about 5 to 10 ms of work however many messages the read
-/// holds.
+/// range, plus one), roughly 5 to 10 ns, so this is about 5 to 10 ms of work however many
+/// messages the read holds.
 pub const MATCH_BUDGET: u64 = 1_000_000;
 
 /// Whether `text` has a character that makes it a pattern.

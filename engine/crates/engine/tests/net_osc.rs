@@ -1424,7 +1424,7 @@ async fn a_tcp_peer_that_never_reads_is_closed_and_stalls_nobody() {
     let mut ws = test_workspace();
     // Large replies, so that the kernel's buffers and our pending cap fill after a few hundred
     // reads even on a busy machine.
-    ws.cue_lists[0].cues[0].notes = "x".repeat(20_000);
+    ws.cue_lists[0].cues[0].notes = "x".repeat(60_000);
     let f = fixture_with(ws, |c| c.write_timeout = Duration::from_millis(200)).await;
     // A small receive buffer, so that a few MB of replies are more than the two sockets hold
     // (the server drops replies it cannot queue: the queue is what it can hold, not the flood).
@@ -1453,13 +1453,25 @@ async fn a_tcp_peer_that_never_reads_is_closed_and_stalls_nobody() {
     })
     .await;
     // Ask until the server's buffers and queue are full (the writer is then stuck for
-    // `write_timeout` and closes the connection). A bounded flood: each reply is built whether or
-    // not it can be queued, so an endless one would only keep the server busy.
-    for _ in 0..40 {
-        if !a.try_write_all(&burst).await {
-            break;
+    // `write_timeout` and closes the connection). Each reply is built whether or
+    // not it can be queued, so a burst is sent only once the server has handled the one before
+    // (a backlog in the kernel's buffers would only be more work for it). How many bursts fill
+    // the buffers depends on the machine, so keep going until the server has closed the
+    // connection, under the guard, instead of for a fixed count.
+    let per_burst = 100;
+    let mut sent = 0u64;
+    guard("the stalled connection to be closed", async {
+        while f.stats().tcp_connections != 0 {
+            if !a.try_write_all(&burst).await {
+                break;
+            }
+            sent += per_burst;
+            while f.stats().tcp_connections != 0 && f.stats().osc.messages < sent {
+                tokio::task::yield_now().await;
+            }
         }
-    }
+    })
+    .await;
     // Others are served meanwhile.
     f.udp_send(&msg("/cue/1/name", vec![])).await;
     assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
