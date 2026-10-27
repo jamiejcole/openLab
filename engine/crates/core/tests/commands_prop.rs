@@ -739,7 +739,25 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             let mut commands = Vec::new();
             for n in 0..2 + p.c % 2 {
                 let pick = p.a.wrapping_add(n * 17);
-                let candidate = match p.b % 3 {
+                let candidate = match p.b % 4 {
+                    // A ganged drag: two outputs of a patch, or two settings, at once.
+                    3 => Some(if p.c.is_multiple_of(2) {
+                        Command::SetPatchProperty {
+                            id: patch_id(1 + u128::from(p.a % 2)),
+                            property: PatchProperty::OutputLevel {
+                                output: (n % 2) as usize,
+                                value: level(p.d.wrapping_add(n)),
+                            },
+                        }
+                    } else {
+                        Command::SetWorkspaceSetting {
+                            setting: if n % 2 == 0 {
+                                WorkspaceSetting::MasterDb { value: level(p.d) }
+                            } else {
+                                WorkspaceSetting::PanicDuration { value: time(p.d) }
+                            },
+                        }
+                    }),
                     0 | 1 => {
                         let id = choose(&all_ids(&evolving), pick);
                         id.and_then(|id| {

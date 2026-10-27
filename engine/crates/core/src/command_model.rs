@@ -138,6 +138,17 @@ impl WorkspaceSetting {
     }
 }
 
+fn hotkey_field(key: TransportKey) -> &'static str {
+    match key {
+        TransportKey::Go => "settings.hotkeys.go",
+        TransportKey::StopAll => "settings.hotkeys.stop_all",
+        TransportKey::PauseAll => "settings.hotkeys.pause_all",
+        TransportKey::ResumeAll => "settings.hotkeys.resume_all",
+        TransportKey::PlayheadNext => "settings.hotkeys.playhead_next",
+        TransportKey::PlayheadPrevious => "settings.hotkeys.playhead_previous",
+    }
+}
+
 fn hotkey_slot(s: &WorkspaceSettings, key: TransportKey) -> &Option<Hotkey> {
     let keys = &s.hotkeys;
     match key {
@@ -184,9 +195,17 @@ fn set_setting(
     // hotkey name is kept and warned about) must not block every other setting. An undo or
     // redo puts back a state that existed, so it is not judged at all.
     let existing = settings_problems(&ws.settings);
+    // A hotkey being set is judged on its own: any invalid new name is refused.
+    let own = match setting {
+        WorkspaceSetting::Hotkey { key, .. } => Some(hotkey_field(*key)),
+        _ => None,
+    };
     let issues: Vec<_> = settings_problems(&candidate)
         .into_iter()
-        .filter(|i| !existing.contains(i))
+        .filter(|i| {
+            matches!(i.kind, crate::validate::IssueKind::InvalidHotkey { field } if Some(field) == own)
+                || !existing.contains(i)
+        })
         .collect();
     if !restoring && !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
@@ -718,6 +737,58 @@ impl Command {
             }
             _ => {}
         }
+    }
+
+    /// What value a pure value-setting command sets, as a hashable key (its kind, the item,
+    /// and which field of it); `None` for any other command, and for the patch edits that change
+    /// the layout. Two commands with equal keys set the same value.
+    pub(crate) fn value_key(&self) -> Option<(u8, uuid::Uuid, u64)> {
+        use std::hash::{Hash, Hasher};
+        let hash = |parts: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            parts(&mut h);
+            h.finish()
+        };
+        Some(match self {
+            Self::SetCueProperty { id, property } => {
+                (0, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
+            }
+            Self::SetWorkspaceSetting { setting } => (
+                1,
+                uuid::Uuid::nil(),
+                hash(&|h| {
+                    std::mem::discriminant(setting).hash(h);
+                    if let WorkspaceSetting::Hotkey { key, .. } = setting {
+                        (*key as u8).hash(h);
+                    }
+                }),
+            ),
+            Self::SetPatchProperty { id, property } => {
+                let output = match property {
+                    PatchProperty::ChannelCount { .. } | PatchProperty::Outputs { .. } => {
+                        return None;
+                    }
+                    PatchProperty::OutputLevel { output, .. }
+                    | PatchProperty::OutputMute { output, .. }
+                    | PatchProperty::OutputDelay { output, .. }
+                    | PatchProperty::OutputPolarity { output, .. } => *output,
+                    _ => usize::MAX,
+                };
+                (
+                    2,
+                    id.0,
+                    hash(&|h| {
+                        std::mem::discriminant(property).hash(h);
+                        output.hash(h);
+                    }),
+                )
+            }
+            Self::SetNetworkPatchProperty { id, property } => {
+                (3, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
+            }
+            Self::RenameCueList { id, .. } => (4, id.0, 0),
+            _ => return None,
+        })
     }
 
     /// Whether `self` and `other` each set the same single value, so that applying the older of
