@@ -207,9 +207,6 @@ final class AppController {
     /// to the text field being edited (see `KeyMap` for the precedence rule).
     func canPerform(_ command: TransportCommand) -> Bool {
         if command == .panic { return true }
-        // Stop All waits for the engine's atomic `stop_all` (PR #19, PROGRESS M5.11b): a loop of
-        // per-cue stops would miss a cue started meanwhile. Panic (Esc) is the stop-everything.
-        if command == .stopAll { return false }
         guard frontController != nil else { return false }
         if let chord = frontKeys.chord(for: command), chord.typesCharacters, isTextEditing() { return false }
         return true
@@ -231,7 +228,7 @@ final class AppController {
         case .go: _ = await go(store)
         case .pauseAll: await run(.pauseAll, on: store)
         case .resumeAll: await run(.resumeAll, on: store)
-        case .stopAll: break  // disabled until `stop_all` exists (canPerform)
+        case .stopAll: await run(.stopAll, on: store)  // atomic in the engine: every cue and preview
         case .panic: break
         case .playheadNext: if let list { await run(.playheadNext(list: list), on: store) }
         case .playheadPrevious: if let list { await run(.playheadPrevious(list: list), on: store) }
