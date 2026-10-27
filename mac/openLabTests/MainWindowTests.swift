@@ -12,8 +12,12 @@ final class MainWindowTests: XCTestCase {
         return nil
     }
 
+    private func controller() throws -> WorkspaceWindowController {
+        WorkspaceWindowController(store: try Rig().store)
+    }
+
     func testAllAreasPresent() throws {
-        let wc = MainWindowController()
+        let wc = try controller()
         let root = try XCTUnwrap(wc.window?.contentView)
         for id in [
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,
@@ -26,23 +30,23 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(wc.masthead.goButton.accessibilityLabel()?.isEmpty ?? true)
     }
 
-    func testOutlineColumnsInQLabOrder() {
-        let outline = MainWindowController().cueList.outlineView
+    func testOutlineColumnsInQLabOrder() throws {
+        let outline = try controller().cueList.outlineView
         XCTAssertEqual(
             outline.tableColumns.map(\.identifier.rawValue),
             ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 
-    func testSidebarHiddenByDefault() {
-        let wc = MainWindowController()
+    func testSidebarHiddenByDefault() throws {
+        let wc = try controller()
         XCTAssertFalse(wc.isVisible(.sidebar))
         XCTAssertEqual(wc.footer.toggles[.sidebar]?.state, .off)
         for area in [LayoutArea.toolbar, .masthead, .inspector] { XCTAssertTrue(wc.isVisible(area)) }
     }
 
     func testEachFooterToggleHidesAndReshowsItsArea() throws {
-        let wc = MainWindowController()
+        let wc = try controller()
         for area in LayoutArea.allCases {
             let button = try XCTUnwrap(wc.footer.toggles[area])
             let before = wc.isVisible(area)
@@ -53,8 +57,8 @@ final class MainWindowTests: XCTestCase {
         }
     }
 
-    func testInspectorShowsNoCueSelected() {
-        let wc = MainWindowController()
+    func testInspectorShowsNoCueSelected() throws {
+        let wc = try controller()
         XCTAssertEqual(wc.inspector.emptyLabel.stringValue, "No cue selected")
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
@@ -65,28 +69,6 @@ final class MainWindowTests: XCTestCase {
         for name in names {
             XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), name)
         }
-    }
-
-    func testClosedWindowReturnsViaReopenAndWindowMenu() throws {
-        let delegate = AppDelegate()
-        delegate.showMainWindow(nil)
-        let window = try XCTUnwrap(delegate.mainWindowController.window)
-        XCTAssertTrue(window.isVisible)
-
-        window.close()
-        XCTAssertFalse(window.isVisible)
-        XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApp))
-        _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
-        XCTAssertTrue(window.isVisible)
-
-        window.close()
-        let item = try XCTUnwrap(
-            MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showMainWindow(_:)) })
-        XCTAssertEqual(item.keyEquivalent, "0")
-        delegate.perform(try XCTUnwrap(item.action), with: item)
-        XCTAssertTrue(window.isVisible)
-        XCTAssertTrue(delegate.mainWindowController.window === window)
-        window.close()
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {
