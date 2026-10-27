@@ -140,6 +140,7 @@ fn rename(s: &mut OfflineShow, n: u128, name: &str) {
             id: show::id(n),
             property: CueProperty::Name { value: name.into() },
         }),
+        coalesce: None,
     });
     ok_result(&replies);
 }
@@ -507,6 +508,7 @@ fn revision_and_runtime_seq_keep_rising_across_replacements() {
                     id: *first,
                     property: CueProperty::Name { value: "x".into() },
                 }),
+                coalesce: None,
             });
             assert_eq!(ok_result(&replies), Some(last.0 + 1));
             last.0 += 1;
@@ -618,6 +620,7 @@ fn save_runs_on_the_writer_thread_and_the_control_loop_is_not_held_up() {
                     value: "while saving".into(),
                 },
             }),
+            coalesce: None,
         },
         reply: etx,
     });
@@ -1170,6 +1173,7 @@ fn an_edit_made_while_the_file_is_read_is_not_thrown_away() {
                     value: "edited".into(),
                 },
             }),
+            coalesce: None,
         },
         reply: etx,
     });
@@ -1437,6 +1441,7 @@ fn a_superseded_save_is_answered_with_the_save_that_replaced_it_even_when_the_fi
                     id: show::id(1),
                     property: CueProperty::Name { value: name.into() },
                 }),
+                coalesce: None,
             },
             reply: tx,
         });

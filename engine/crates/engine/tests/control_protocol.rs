@@ -45,6 +45,7 @@ fn commands_undo_and_redo_signal_the_engine() {
     let r = s.send(ClientMessage::Command {
         id: id1,
         command: Box::new(rename),
+        coalesce: None,
     });
     assert_eq!(revision(&r), Some(1));
     let id2 = s.request_id();
@@ -87,6 +88,7 @@ fn deleting_a_running_cue_stops_it_at_once() {
     let r = s.send(ClientMessage::Command {
         id: id1,
         command: Box::new(Command::RemoveCue { id: id(1) }),
+        coalesce: None,
     });
     assert_eq!(revision(&r), Some(1));
     let cut = s.now() as usize;
@@ -117,6 +119,7 @@ fn an_added_cue_is_probed_and_plays() {
             cue: audio(1, &path, 0),
             auto_number: false,
         }),
+        coalesce: None,
     });
     assert_eq!(revision(&r), Some(1));
     s.settle_media();
@@ -134,6 +137,7 @@ fn a_refused_command_changes_nothing() {
     let r = s.send(ClientMessage::Command {
         id: id1,
         command: Box::new(Command::RemoveCue { id: id(42) }),
+        coalesce: None,
     });
     assert!(matches!(result(&r), Outcome::Error(e) if e.code == ErrorCode::CommandRefused));
     assert_eq!(s.control().revision(), 0);
@@ -308,6 +312,7 @@ fn an_edit_in_a_big_show_rebuilds_only_what_it_changed() {
                 value: "renamed".into(),
             },
         }),
+        coalesce: None,
     });
     s.run(BLOCK);
     assert_eq!(s.control().plan_builds(), after_open);
@@ -329,6 +334,7 @@ fn an_edit_in_a_big_show_rebuilds_only_what_it_changed() {
             id: id(9),
             property: CueProperty::Kind { value: kind },
         }),
+        coalesce: None,
     });
     s.run(BLOCK);
     assert_eq!(s.control().plan_builds(), after_open + 1);
@@ -378,6 +384,7 @@ fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
         let replies = s.send(ClientMessage::Command {
             id,
             command: Box::new(command),
+            coalesce: None,
         });
         assert!(matches!(result(&replies), Outcome::Ok(_)), "{replies:?}");
         s.run(BLOCK);
@@ -457,6 +464,7 @@ fn a_client_that_falls_behind_loses_meters_first_and_state_never() {
                 value: "renamed".into(),
             },
         }),
+        coalesce: None,
     });
     let first = s.take_outbound();
     let meters = first

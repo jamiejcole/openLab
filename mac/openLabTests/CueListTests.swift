@@ -512,6 +512,20 @@ final class CueListTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[1].isHidden, "idle shows no icon")
     }
 
+    func testPreviewingRowHasItsOwnLabelledMark() async throws {
+        let h = try await H()
+        func mark() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.intro)).images[2] }
+        XCTAssertTrue(try mark().isHidden)
+        try h.runtime(#"{"type":"preview","cue":"\#(H.intro)","active":true}"#)
+        XCTAssertFalse(try mark().isHidden)
+        XCTAssertEqual(try mark().accessibilityLabel(), loc("cue.previewing"))
+        XCTAssertEqual(
+            try XCTUnwrap(h.cell("status", H.intro)).images[1].accessibilityLabel(), loc("cue.state.running"),
+            "the show state is still shown beside it")
+        try h.runtime(#"{"type":"preview","cue":"\#(H.intro)","active":false}"#)
+        XCTAssertTrue(try mark().isHidden)
+    }
+
     func testRuntimeStateChangeReloadsOnlyThatRow() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.group)","state":"running"}"#)
