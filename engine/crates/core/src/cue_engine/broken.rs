@@ -135,6 +135,14 @@ impl Default for Problems {
     }
 }
 
+impl Problems {
+    /// Where every cue is, as of the last time the problems were brought up to date: in step
+    /// with the workspace after the start of a call that follows edits.
+    pub(super) fn tree(&self) -> &CueIndex {
+        &self.model.tree
+    }
+}
+
 impl CueEngine {
     /// How many times a cue's problems have been computed since the engine was made. A status
     /// input costs one per cue on that media file or patch; a call with nothing new costs none.
@@ -305,6 +313,9 @@ impl CueEngine {
                 structural,
                 added,
             } => {
+                if !structural.is_empty() {
+                    self.playheads_before_edit(&structural);
+                }
                 if !self.update_problems(&touched, &structural, &added, cx) {
                     self.rebuild_problems(cx);
                 }
@@ -316,6 +327,8 @@ impl CueEngine {
     /// warnings recounted.
     fn rebuild_problems(&mut self, cx: &mut Ctx) {
         self.problems.pending = Pending::Clean;
+        // The playheads that leave their positions to the old index keep them first.
+        self.keep_playhead_orders();
         self.problems.model = model_facts(cx.ws);
         self.problems.recounting = true;
         let cues: BTreeSet<CueId> = self
