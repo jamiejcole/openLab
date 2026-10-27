@@ -1199,10 +1199,26 @@ impl CueEngine {
             release(cue, &old, cx);
         }
         let run = self.new_run();
-        let offset = cx.secs(time, &self.config);
-        let voice = self.is_armed(model) && matches!(model.kind, CueKind::Audio { .. });
+        let armed = self.is_armed(model);
+        let voice = armed && matches!(model.kind, CueKind::Audio { .. });
         // The split between pre-wait and action is fixed here, for the stream and the start.
         let pre_wait = cx.secs(model.pre_wait, &self.config);
+        // QLab 5: loading past the end of a cue loads it to its end, where it sits loaded (it
+        // does not complete). Core knows the length of the actions that are not audio or a
+        // group; the binary clamps audio (an offset past the file's end plays nothing, and
+        // an infinite loop has no end to clamp to), and a group's children clamp on their own.
+        let action_len = match &model.kind {
+            _ if !armed => Some(0),
+            CueKind::Wait { duration } | CueKind::Fade { duration, .. } => {
+                Some(cx.secs(*duration, &self.config))
+            }
+            CueKind::Audio { .. } | CueKind::Group { .. } => None,
+            _ => Some(0),
+        };
+        let mut offset = cx.secs(time, &self.config);
+        if let Some(len) = action_len {
+            offset = offset.min(pre_wait.saturating_add(len));
+        }
         let (pre_wait_left, action_offset) = if offset < pre_wait {
             (pre_wait - offset, 0)
         } else {

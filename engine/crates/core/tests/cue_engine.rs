@@ -1102,6 +1102,109 @@ fn load_to_time_shortens_known_durations_and_post_waits() {
     );
 }
 
+// ----- load past the end (M4.11b; QLab 5 loads it to its end) -----
+
+#[test]
+fn load_past_the_end_sits_loaded_at_the_end() {
+    // Pre-wait 1 s + a 3 s wait = a 4 s length; loading to 100 s loads to 4 s. The cue is loaded
+    // (it does not complete, nothing follows) and holds no deadline.
+    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    assert_eq!(
+        load,
+        vec![Action::StateChanged {
+            cue: id(1),
+            state: CueState::Loaded,
+            at: 0
+        }]
+    );
+    assert_eq!(rig.state(1), CueState::Loaded);
+    assert_eq!(rig.engine.next_deadline(), None);
+    assert!(rig.tick(50_000).is_empty());
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn started_after_a_load_past_the_end_the_action_is_over_and_the_post_wait_is_what_is_left() {
+    // Loaded to the end (4 s): the 3 s wait is done at once and the 5 s post-wait has 5 - 3 =
+    // 2 s left, as for a load exactly at the end. Unclamped it would have had none left.
+    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let start = rig.start(10_000, 1);
+    assert_eq!(running_at(&start, 1), Some(10_000));
+    assert_eq!(
+        changes(&start, 1).last(),
+        Some(&(CueState::PostWaiting, 10_000))
+    );
+    assert_eq!(rig.engine.next_deadline(), Some(12_000));
+    assert_eq!(running_at(&rig.tick(12_000), 2), Some(12_000));
+}
+
+#[test]
+fn load_past_the_end_of_a_control_cue_or_a_memo_is_the_end_of_its_pre_wait() {
+    let mut rig = Rig::new(vec![timed(memo(1), 1.0, 2.0, AC), memo(2)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 50.0,
+        },
+    );
+    // No pre-wait left, and the post-wait is whole: the action takes no time.
+    let start = rig.start(5000, 1);
+    assert_eq!(running_at(&start, 1), Some(5000));
+    assert_eq!(rig.engine.next_deadline(), Some(7000));
+}
+
+#[test]
+fn load_past_the_end_of_a_disarmed_cue_loads_no_voice_and_skips_its_action() {
+    let mut c = timed(sound(1), 0.5, 0.0, DNC);
+    c.armed = false;
+    let mut rig = Rig::new(vec![c]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 9.0,
+        },
+    );
+    assert!(voice_starts(&load).is_empty());
+    assert_eq!(rig.state(1), CueState::Loaded);
+}
+
+#[test]
+fn load_past_the_end_of_an_audio_cue_is_the_binarys_to_clamp() {
+    // Core does not know a file's length: the offset goes to the mixer as asked, and the binary
+    // loads it to the end of the plan (an infinite loop wraps within its loop).
+    let mut rig = Rig::new(vec![sound(1)]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 100.0,
+        },
+    );
+    let run = rig.engine.run_of(id(1)).unwrap();
+    assert!(load.contains(&Action::LoadVoice {
+        cue: id(1),
+        run,
+        offset: 100_000
+    }));
+    assert_eq!(rig.state(1), CueState::Loaded);
+}
+
 #[test]
 fn reset_clears_a_broken_cue() {
     let mut rig = Rig::new(vec![sound(1)]);

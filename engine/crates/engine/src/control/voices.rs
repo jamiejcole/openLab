@@ -428,12 +428,22 @@ impl Voices {
                     return;
                 }
                 Err(PrepError::Empty) => {
-                    // Nothing to play: the action ends on its start sample.
+                    // Nothing to play (a load or start at or past the cue's end, M4.11b): the
+                    // action ends on its start sample. Its length is the offset itself, so the
+                    // core dates the end, and a chained successor, on that sample instead of
+                    // on the late report below (a `late_start` warning).
                     if let Some(r) = self.remove(id) {
                         let at = match r.phase {
                             Phase::Waiting { start, .. } => start.unwrap_or(env.now),
                             _ => env.now,
                         };
+                        if !r.preview {
+                            fx.feedback.push(Input::ActionLength {
+                                cue,
+                                run,
+                                frames: offset,
+                            });
+                        }
                         fx.deferred.push((at, Input::ActionEnded { cue, run, at }));
                     }
                     return;

@@ -14,7 +14,7 @@
 //! cycles), and random input sequences: every operation, model edits (deletes, moves out of
 //! groups, reorders, mode and timing changes), Arm/Disarm changes applied to the model as the
 //! binary does, Panic, Pause All / Resume All, random media and device availability (static
-//! broken cues), previews, and faults of the simulated mixer (a voice that ends early or fails).
+//! broken cues), device loss, previews, and faults of the simulated mixer (a voice that ends early or fails).
 //!
 //! **Simulated mixer.** [`Sim`] answers the engine's voice actions like the real mixer would,
 //! on virtual time: a voice ends after its length (end reports are delivered late, at the next
@@ -166,10 +166,10 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 55] = [
+const OPS: [u8; 56] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
-    30,
+    30, 31,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -1121,6 +1121,8 @@ struct Outcome {
     raw: Vec<Action>,
     /// What the show can notice: no preview actions, no warnings of preview calls.
     shown: Vec<Action>,
+    /// What each `DeviceLost` of the run found: a running group, a paused run, a broken cue.
+    lost: Vec<&'static str>,
 }
 
 struct Run {
@@ -1153,6 +1155,7 @@ struct Run {
     held: Vec<Input>,
     raw: Vec<Action>,
     shown: Vec<Action>,
+    lost: Vec<&'static str>,
     /// The last `GroupWarningChanged` of each group (absent: none reported, so no warning).
     group_warnings: BTreeMap<CueId, bool>,
     /// The playhead of `list` as the reports tell it.
@@ -1202,6 +1205,7 @@ impl Run {
             held: Vec::new(),
             raw: Vec::new(),
             shown: Vec::new(),
+            lost: Vec::new(),
             group_warnings: BTreeMap::new(),
             ph: None,
             since_entry: BTreeSet::new(),
@@ -2068,6 +2072,25 @@ impl Run {
                 }
                 Input::Tick
             }
+            // The output device was lost: every runtime stops at once, groups, paused runs and
+            // broken runs with a continue pending included (M4.2h).
+            31 => {
+                let mut found = Vec::new();
+                for (id, st) in self.engine.cue_states() {
+                    let is_group = self
+                        .ws
+                        .find_cue(id)
+                        .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
+                    match st {
+                        CueState::Paused => found.push("paused"),
+                        CueState::Broken => found.push("broken"),
+                        st if is_group && st.is_active() => found.push("group"),
+                        _ => {}
+                    }
+                }
+                self.lost.extend(found);
+                Input::DeviceLost
+            }
             29 => {
                 // The key that triggers it is released (second trigger on release).
                 kind = Kind::Operator { trigger: true };
@@ -2366,6 +2389,7 @@ impl Run {
         Outcome {
             raw: self.raw,
             shown: self.shown,
+            lost: self.lost,
         }
     }
 }
@@ -2449,6 +2473,82 @@ fn follow_case() -> impl Strategy<Value = Case> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
+
+    /// M4.11b: for a cue whose length core knows (a Wait or Fade, a memo, a control cue, a
+    /// disarmed cue), loading at any time at or past `pre-wait + action` is the same as loading
+    /// at exactly that: the same state, the same start and the same deadlines.
+    #[test]
+    fn a_load_past_the_end_is_a_load_to_the_end(
+        kind in 0u8..4,
+        pre in 0u8..8,
+        action in 0u8..8,
+        post in 0u8..8,
+        extra in 0u16..2000,
+        armed in any::<bool>(),
+        follow in 0u8..3,
+    ) {
+        let pre = f64::from(pre) * 0.5;
+        let action = f64::from(action) * 0.5;
+        let post = f64::from(post) * 0.5;
+        let kind = match kind {
+            0 => CueKind::Wait { duration: action },
+            1 => CueKind::Memo,
+            2 => CueKind::Reset {
+                target: Some(cue_id(2)),
+            },
+            _ => CueKind::Fade {
+                target: Some(cue_id(2)),
+                duration: action,
+                curve: FadeCurve::Linear,
+                levels: FadeLevels {
+                    master_db: None,
+                    output_db: vec![],
+                    crosspoints: vec![],
+                },
+                stop_target_when_done: false,
+            },
+        };
+        let length = pre + if matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. }) { action } else { 0.0 };
+        let mut c = cue(1, kind);
+        c.pre_wait = pre;
+        c.post_wait = post;
+        c.continue_mode = mode(follow);
+        c.armed = armed;
+        let mut next = cue(2, audio());
+        next.pre_wait = 0.0;
+        let ws = workspace(vec![c, next]);
+        let play = |time: f64| {
+            let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+            let mut last = None;
+            let mut out = vec![];
+            for input in [
+                Input::Tick,
+                Input::Load { cue: cue_id(1), time },
+                Input::Start { cue: cue_id(1) },
+            ] {
+                out.push(handle_as_binary(&mut engine, &ws, &mut last, input, 10_000));
+            }
+            // Everything that happens later, up to well past any wait.
+            let mut now = 10_000;
+            while let Some(d) = engine.next_deadline().filter(|d| *d < 200_000) {
+                now = d.max(now);
+                out.push(handle_as_binary(&mut engine, &ws, &mut last, Input::Tick, now));
+            }
+            (out, engine.state(cue_id(1)))
+        };
+        // The load itself leaves the cue loaded, never completed.
+        {
+            let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+            let mut last = None;
+            handle_as_binary(&mut engine, &ws, &mut last, Input::Load { cue: cue_id(1), time: length + f64::from(extra) }, 0);
+            prop_assert_eq!(engine.state(cue_id(1)), CueState::Loaded);
+            prop_assert_eq!(engine.state(cue_id(2)), CueState::Idle);
+            prop_assert_eq!(engine.next_deadline(), None);
+        }
+        let at_end = play(length);
+        let past = play(length + f64::from(extra) + 0.001);
+        prop_assert_eq!(at_end, past);
+    }
 
     #[test]
     fn cues_broken_at_run_time_never_auto_follow(case in follow_case()) {
@@ -2672,11 +2772,13 @@ fn the_generator_reaches_what_the_rules_are_about() {
 
     let mut runner = TestRunner::deterministic();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    let mut lost: Vec<&'static str> = Vec::new();
     let strategy = case();
     // (600 cases: chain-limit cuts are rare and need a cycle in the generated show.)
     for _ in 0..600 {
         let case = strategy.new_tree(&mut runner).unwrap().current();
         let out = run(&case, true).unwrap_or_else(|e| panic!("{e}"));
+        lost.extend(out.lost.iter().copied());
         for a in &out.raw {
             let name = match a {
                 Action::StateChanged { state, .. } => format!("state {state:?}"),
@@ -2696,6 +2798,11 @@ fn the_generator_reaches_what_the_rules_are_about() {
             };
             *seen.entry(name).or_default() += 1;
         }
+    }
+    // DeviceLost reaches groups, paused runs and broken cues (M4.2h).
+    for what in ["group", "paused", "broken"] {
+        let n = lost.iter().filter(|l| **l == what).count();
+        assert!(n >= 3, "DeviceLost found {what} only {n} times");
     }
     let wanted = [
         "StartVoice",
