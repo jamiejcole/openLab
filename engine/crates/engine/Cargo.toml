@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Test doubles (the media watch's `FakeFs`) for the integration tests; never in a release build.
+test-support = []
+
 [dependencies]
 # Debug builds install its AllocDisabler as the global allocator (M3.21), so the device
 # callback's guard (M3.12) detects allocations; warn_debug counts them instead of aborting.
@@ -35,6 +39,8 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["h
 uuid = { version = "1.29.0", default-features = false }
 
 [dev-dependencies]
+# The crate itself with its test doubles, for the integration tests.
+openlab-engine = { path = ".", features = ["test-support"] }
 proptest = "1.12.0"
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"

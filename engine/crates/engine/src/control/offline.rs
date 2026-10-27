@@ -17,6 +17,7 @@ use openlab_audio::{Mixer, MixerConfig, OfflineRenderer};
 use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportAction};
 use openlab_core::{SampleTime, Workspace};
 
+use super::watch::{WatchAnswer, WatchBatch};
 use super::{
     Backend, Control, ControlConfig, ControlError, Flow, Inbox, OUTBOUND_CAPACITY, OutboundRx,
     outbound_channel, reply_channel,
@@ -314,6 +315,54 @@ impl OfflineShow {
     pub fn tick(&mut self) {
         self.pump_inbox();
         self.control.tick();
+    }
+
+    /// One media-watch pass (manual mode, `ControlConfig::watch`), its findings handled in a
+    /// tick. Whether the pass found anything.
+    pub fn watch_pass(&mut self) -> bool {
+        let found = match self.watch_pass_batch() {
+            Some(batch) => {
+                let _ = self.control.handle(Inbox::Watch(WatchAnswer::Batch(batch)));
+                true
+            }
+            None => false,
+        };
+        self.control.tick();
+        found
+    }
+
+    /// One media-watch pass whose batch is returned instead of handled (a test hands it in
+    /// later, e.g. after another workspace was opened).
+    pub fn watch_pass_batch(&mut self) -> Option<WatchBatch> {
+        self.pump_inbox();
+        // Key changes since the last tick go to the watch first.
+        self.control.tick();
+        self.control.watch_pass()
+    }
+
+    /// Thread mode: waits (bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`]) for the
+    /// next message from the watch thread, handling everything else that comes meanwhile,
+    /// then ticks. Whether one came.
+    pub fn wait_watch(&mut self) -> bool {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.inbox.recv_timeout(left) {
+                Ok(msg @ Inbox::Watch(_)) => {
+                    let _ = self.control.handle(msg);
+                    self.control.tick();
+                    return true;
+                }
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) => {
+                    self.stalls += 1;
+                    self.control.tick();
+                    return false;
+                }
+            }
+        }
     }
 
     pub fn control_mut(&mut self) -> &mut Control {
