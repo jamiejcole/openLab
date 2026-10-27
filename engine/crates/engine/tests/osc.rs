@@ -12,9 +12,9 @@ use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
 use openlab_core::{Command, CueId, CueListId, CueProperty, NumberAssignment, WorkspaceId};
 use openlab_engine::osc::{
     CueField, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_ARRAY_DEPTH,
-    MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
-    MAX_REPLIES_PER_CALL, MAX_REPLY_JSON_BYTES, Osc, OscInput, OscShow, Outcome, Peer, SlipDecoder,
-    SlipEvent, UDP_IDLE, decode_packet, encode_message, parse_address, slip_encode,
+    MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_KNOWN_IPS, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES,
+    MAX_PEERS, MAX_REPLIES_PER_CALL, MAX_REPLY_JSON_BYTES, Osc, OscInput, OscShow, Outcome, Peer,
+    SlipDecoder, SlipEvent, UDP_IDLE, decode_packet, encode_message, parse_address, slip_encode,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -996,6 +996,107 @@ fn rotating_source_addresses_hits_the_global_failure_budget() {
         &msg("/connect", vec![s("s3cret")]),
     );
     assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+}
+
+fn connect_status(osc: &mut Osc, show: &Show, peer: Peer, now: Duration, code: &str) -> String {
+    let out = send(osc, show, peer, now, &msg("/connect", vec![s(code)]));
+    reply_json(&out.replies[0])["status"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_known_address_reconnects_with_the_right_passcode_through_both_lockouts() {
+    let show = Show::with_passcode("s3cret");
+    let mut osc = Osc::new();
+    let operator = Peer::Udp(ip_n(1));
+    assert_eq!(
+        connect_status(&mut osc, &show, operator, T0, "s3cret"),
+        "ok"
+    );
+    // The operator's session expires.
+    let later = T0 + UDP_IDLE + Duration::from_secs(30);
+    send(
+        &mut osc,
+        &show,
+        Peer::Udp(ip_n(2)),
+        later,
+        &msg("/go", vec![]),
+    );
+    assert!(
+        send(&mut osc, &show, operator, later, &msg("/go", vec![]))
+            .inputs
+            .is_empty()
+    );
+    // Forged wrong passcodes from the operator's own address lock that address out...
+    for _ in 0..MAX_BAD_PASSCODES {
+        assert_eq!(
+            connect_status(&mut osc, &show, operator, later, "x"),
+            "error"
+        );
+    }
+    // ...and, spread over many addresses, exhaust the global budget.
+    for i in 0..GLOBAL_MAX_FAILURES as usize {
+        connect_status(&mut osc, &show, Peer::Udp(ip_n(i + 100)), later, "x");
+    }
+    // A wrong passcode from the known address is still refused (and not counted further).
+    assert_eq!(
+        connect_status(&mut osc, &show, operator, later, "x"),
+        "denied"
+    );
+    // The right one gets through both.
+    assert_eq!(
+        connect_status(&mut osc, &show, operator, later, "s3cret"),
+        "ok"
+    );
+    assert_eq!(
+        send(&mut osc, &show, operator, later, &msg("/go", vec![]))
+            .inputs
+            .len(),
+        1
+    );
+    // An address that never connected is still refused with the right passcode.
+    let stranger = Peer::Udp(ip_n(9));
+    assert_eq!(
+        connect_status(&mut osc, &show, stranger, later, "s3cret"),
+        "denied"
+    );
+    // Known-ness belongs to the address, so a TCP reconnect from it passes too.
+    let tcp = Peer::Tcp {
+        conn: 5,
+        ip: operator.ip(),
+    };
+    assert_eq!(connect_status(&mut osc, &show, tcp, later, "s3cret"), "ok");
+}
+
+#[test]
+fn a_reset_forgets_known_addresses() {
+    let show = Show::with_passcode("s3cret");
+    let mut osc = Osc::new();
+    let operator = Peer::Udp(ip_n(1));
+    connect_status(&mut osc, &show, operator, T0, "s3cret");
+    osc.disconnect(operator);
+    osc.reset_sessions();
+    // Forgotten by the reset: the address is a stranger again.
+    assert_eq!(osc.known_ips(), 0);
+    for _ in 0..MAX_BAD_PASSCODES {
+        connect_status(&mut osc, &show, operator, T0, "x");
+    }
+    assert_eq!(
+        connect_status(&mut osc, &show, operator, T0, "s3cret"),
+        "denied"
+    );
+}
+
+#[test]
+fn the_known_address_set_is_bounded() {
+    let show = Show::open();
+    let mut osc = Osc::new();
+    for i in 0..MAX_KNOWN_IPS + 20 {
+        connect_status(&mut osc, &show, Peer::Udp(ip_n(i)), T0, "any");
+    }
+    assert_eq!(osc.known_ips(), MAX_KNOWN_IPS);
 }
 
 #[test]

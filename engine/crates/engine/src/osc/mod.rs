@@ -26,8 +26,8 @@ pub use dispatch::{
     reply_message, resolve,
 };
 pub use session::{
-    ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES, MAX_PEERS, Peer,
-    REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
+    ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES, MAX_KNOWN_IPS,
+    MAX_PEERS, Peer, REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
 };
 
 /// The UDP port QLab listens on, and so do we (UDP and TCP).
@@ -98,6 +98,11 @@ impl Osc {
     /// Peers that asked for updates (`/updates 1`), for the fan-out.
     pub fn update_subscribers(&self) -> Vec<Peer> {
         self.sessions.update_subscribers()
+    }
+
+    /// How many addresses are remembered as having connected (at most [`MAX_KNOWN_IPS`]).
+    pub fn known_ips(&self) -> usize {
+        self.sessions.known_len()
     }
 
     /// A TCP connection closed.

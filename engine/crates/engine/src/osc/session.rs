@@ -49,6 +49,9 @@ pub const LOCKOUT: Duration = Duration::from_secs(30);
 /// unlimited guesses). Peers that are already connected are not affected.
 pub const GLOBAL_MAX_FAILURES: u32 = 50;
 pub const GLOBAL_WINDOW: Duration = Duration::from_secs(60);
+/// Addresses remembered as having connected. A correct passcode from one of them passes the
+/// lockouts above.
+pub const MAX_KNOWN_IPS: usize = 64;
 /// IPs tracked for failures / reply budgets.
 pub const MAX_TRACKED_IPS: usize = 1024;
 /// Reply bytes one UDP source may be sent at once, and per second after that. Bounds how much
@@ -94,6 +97,8 @@ pub struct Sessions {
     global_start: Duration,
     global_count: u32,
     budgets: HashMap<IpAddr, Bucket>,
+    /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
+    known: Vec<IpAddr>,
 }
 
 impl Sessions {
@@ -141,7 +146,10 @@ impl Sessions {
                 ConnectResult::BadPasscode
             };
         }
-        if self.locked_out(peer.ip(), now) {
+        // A correct passcode from an address that connected before gets through the lockouts,
+        // so an attacker's wrong guesses cannot keep the operator out after a dropped link.
+        let known_and_right = ok && self.known.contains(&peer.ip());
+        if !known_and_right && self.locked_out(peer.ip(), now) {
             return ConnectResult::LockedOut;
         }
         if !ok {
@@ -152,10 +160,20 @@ impl Sessions {
             return ConnectResult::TableFull;
         }
         self.failures.remove(&peer.ip());
+        self.remember(peer.ip());
         if let Some(session) = self.peers.get_mut(&peer) {
             session.connected = true;
         }
         ConnectResult::Accepted
+    }
+
+    /// Notes that `ip` completed a `/connect`; the oldest is forgotten past [`MAX_KNOWN_IPS`].
+    fn remember(&mut self, ip: IpAddr) {
+        self.known.retain(|k| *k != ip);
+        if self.known.len() >= MAX_KNOWN_IPS {
+            self.known.remove(0);
+        }
+        self.known.push(ip);
     }
 
     fn locked_out(&self, ip: IpAddr, now: Duration) -> bool {
@@ -245,6 +263,12 @@ impl Sessions {
     /// a different workspace opens. Failure records and reply budgets stay.
     pub fn clear(&mut self) {
         self.peers.clear();
+        self.known.clear();
+    }
+
+    /// How many addresses are remembered as having connected.
+    pub fn known_len(&self) -> usize {
+        self.known.len()
     }
 
     /// Drops UDP peers silent for [`UDP_IDLE`], and failure and budget records that no longer
