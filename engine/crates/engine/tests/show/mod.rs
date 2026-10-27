@@ -372,6 +372,35 @@ pub fn release(path: &Path) {
     GATE_CHANGED.notify_all();
 }
 
+/// The probe watchdog's clock, moved only by the test: whether a worker counts as stuck must not
+/// depend on how long the machine takes to run it.
+#[derive(Clone)]
+pub struct ProbeTime {
+    base: std::time::Instant,
+    elapsed_ms: std::sync::Arc<AtomicU64>,
+}
+
+impl ProbeTime {
+    pub fn new() -> Self {
+        Self {
+            base: std::time::Instant::now(),
+            elapsed_ms: std::sync::Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn clock(&self) -> openlab_engine::control::ProbeClock {
+        let t = self.clone();
+        openlab_engine::control::ProbeClock::new(move || {
+            t.base + std::time::Duration::from_millis(t.elapsed_ms.load(Ordering::Acquire))
+        })
+    }
+
+    pub fn advance(&self, by: std::time::Duration) {
+        let ms = u64::try_from(by.as_millis()).unwrap();
+        self.elapsed_ms.fetch_add(ms, Ordering::AcqRel);
+    }
+}
+
 /// The order `gated_probe` was asked for these files in (repeats included).
 pub fn probe_order(paths: &[PathBuf]) -> Vec<PathBuf> {
     PROBED

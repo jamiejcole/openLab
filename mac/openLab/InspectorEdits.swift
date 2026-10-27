@@ -4,7 +4,7 @@ import Foundation
 
 /// The text fields of the inspector's Basics tab.
 enum InspectorField: Hashable, CaseIterable {
-    case number, name, notes, preWait, postWait, target
+    case number, name, notes, preWait, postWait, target, osc
 }
 
 /// Turns what the user typed into a model command, or rejects it locally so nothing is sent.
@@ -17,6 +17,7 @@ enum InspectorEdit {
         case unknownTarget
         case selfTarget
         case notApplicable
+        case invalidOSC
     }
 
     /// Kinds with a cue target (core's `CueKind::has_target`).
@@ -32,6 +33,7 @@ enum InspectorEdit {
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
         case .preWait: return InspectorTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
         case .postWait: return InspectorTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
+        case .osc: return cue.raw["triggers"]?["osc"]?.stringValue ?? ""
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
             guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
@@ -63,6 +65,11 @@ enum InspectorEdit {
                 return .success(nil)
             }
             return .success(.setProperty(cue.id, field == .preWait ? .preWait(seconds) : .postWait(seconds)))
+        case .osc:
+            let a = text.trimmingCharacters(in: .whitespaces)
+            if a.isEmpty { return .success(setTriggers(cue, osc: .some(nil))) }
+            guard isValidOSCAddress(a) else { return .failure(.invalidOSC) }
+            return .success(a == display(.osc, cue: cue, model: model) ? nil : setTriggers(cue, osc: .some(a)))
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,6 +78,24 @@ enum InspectorEdit {
             if target.id == cue.id { return .failure(.selfTarget) }
             return .success(.setProperty(cue.id, .target(target.id)))
         }
+    }
+}
+
+extension InspectorEdit {
+    /// An OSC address that starts a cue: `/`, then printable ASCII with no spaces (QLab's OSC is
+    /// ASCII only) and none of the pattern characters, since the trigger is matched literally.
+    static func isValidOSCAddress(_ a: String) -> Bool {
+        let banned = "*?[]{}#,".unicodeScalars
+        return a.hasPrefix("/") && a.count > 1 && a.count <= 256
+            && a.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0x7F && !banned.contains($0) }
+    }
+
+    /// `triggers` with the hotkey and/or OSC address replaced (`.some(nil)` clears), the other kept.
+    static func setTriggers(_ cue: Cue, hotkey: JSONValue?? = nil, osc: String?? = nil) -> Command {
+        let current = cue.raw["triggers"]
+        let kept: JSONValue? = current?["hotkey"].flatMap { $0 == .null ? nil : $0 }
+        return .setProperty(
+            cue.id, .triggers(hotkey: hotkey ?? kept, osc: osc ?? current?["osc"]?.stringValue))
     }
 }
 
