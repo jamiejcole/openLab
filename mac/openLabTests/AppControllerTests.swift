@@ -640,7 +640,7 @@ final class AppControllerTests: XCTestCase {
         let edit = MainMenu.make().edit
         MainMenu.lockEditItems(in: edit, locked: true)
         let enabled = Dictionary(uniqueKeysWithValues: edit.items.map { ($0.title, $0.isEnabled) })
-        for key in ["menu.edit.undo", "menu.edit.redo", "menu.edit.cut", "menu.edit.paste"] {
+        for key in ["menu.edit.undo", "menu.edit.redo", "menu.edit.cut", "menu.edit.paste", "menu.edit.delete"] {
             XCTAssertEqual(enabled[loc(key)], false, key)
         }
         XCTAssertEqual(enabled[loc("menu.edit.copy")], true)

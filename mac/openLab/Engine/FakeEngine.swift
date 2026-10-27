@@ -191,9 +191,18 @@ final class FakeEngine: EngineTransport {
             if let doc = c.doc { fakeEffect(of: action, doc: doc) }
         case .command(let id, let command, _):
             if refuseCommands { return result(c, id, error: (.commandRefused, "refused by the fake")) }
-            if let doc = c.doc { fakeEdit(doc, command) }
+            if let doc = c.doc {
+                recordingHistory(doc, structural: Self.structural.contains(command.json["type"]?.stringValue ?? "")) {
+                    fakeEdit(doc, command)
+                }
+            }
             result(c, id)
-        case .undo(let id), .redo(let id): result(c, id)
+        case .undo(let id):
+            if let doc = c.doc { fakeHistory(doc, undo: true) }
+            result(c, id)
+        case .redo(let id):
+            if let doc = c.doc { fakeHistory(doc, undo: false) }
+            result(c, id)
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
         case .provisional(.close(let id, let doc, let discard)): handleClose(id, doc: doc, discard: discard, from: c)
@@ -242,6 +251,14 @@ final class FakeEngine: EngineTransport {
         guard var s = docs[doc], case .int(let rev)? = s["revision"],
             var lists = s["workspace"]?["cue_lists"]?.arrayValue
         else { return }
+        if Self.structural.contains(command.json["type"]?.stringValue ?? "") {
+            // Adds, removes and moves are answered with a whole `snapshot` (the fake keeps no diff).
+            guard Self.applyStructural(command.json, to: &lists) else { return }
+            s["workspace"]?.set("cue_lists", .array(lists))
+            s.set("revision", .int(rev + 1))
+            docs[doc] = s
+            return
+        }
         var edits: [(String, (inout JSONValue) -> Void)] = []
         switch command.json["type"]?.stringValue {
         case "set_cue_property":
@@ -286,6 +303,140 @@ final class FakeEngine: EngineTransport {
                     "type": .string("model_changed"), "revision": .int(rev + 1), "upserts": .array(upserts),
                     "deletes": .array([]),
                 ])), doc: doc)
+    }
+
+    // MARK: Undo and redo (the fake keeps whole cue-list states)
+
+    private var undoStacks: [ModelID: [JSONValue]] = [:]
+    private var redoStacks: [ModelID: [JSONValue]] = [:]
+
+    /// Runs an edit; if it changed the revision, keeps the state before it for undo and, for the
+    /// structural ones, sends the new state as a `snapshot`.
+    private func recordingHistory(_ doc: ModelID, structural: Bool, _ edit: () -> Void) {
+        let before = docs[doc]?["workspace"]?["cue_lists"] ?? .null
+        let rev = docs[doc]?["revision"]
+        edit()
+        guard docs[doc]?["revision"] != rev else { return }
+        undoStacks[doc, default: []].append(before)
+        redoStacks[doc] = []
+        publishHistory(doc, snapshot: structural)
+    }
+
+    private func publishHistory(_ doc: ModelID, snapshot: Bool) {
+        let old = docs[doc]?["document"]
+        docs[doc]?["document"]?.set("dirty", .bool(true))  // an edit, undo or redo leaves unsaved changes
+        docs[doc]?["document"]?.set("can_undo", .bool(!(undoStacks[doc] ?? []).isEmpty))
+        docs[doc]?["document"]?.set("can_redo", .bool(!(redoStacks[doc] ?? []).isEmpty))
+        if snapshot {
+            push(snapshotMessage(doc), doc: doc)
+        } else if let now = docs[doc]?["document"],
+            now["can_undo"] != old?["can_undo"] || now["can_redo"] != old?["can_redo"]
+        {
+            // Only a change in what can be undone is announced, as the engine does for a plain edit.
+            push(text(.object(["type": .string("document"), "document": now])), doc: doc)
+        }
+    }
+
+    private func fakeHistory(_ doc: ModelID, undo: Bool) {
+        guard var s = docs[doc], case .int(let rev)? = s["revision"],
+            let target = undo ? undoStacks[doc]?.popLast() : redoStacks[doc]?.popLast()
+        else { return }
+        let now = s["workspace"]?["cue_lists"] ?? .null
+        if undo { redoStacks[doc, default: []].append(now) } else { undoStacks[doc, default: []].append(now) }
+        s["workspace"]?.set("cue_lists", target)
+        s.set("revision", .int(rev + 1))
+        docs[doc] = s
+        publishHistory(doc, snapshot: true)
+    }
+
+    private static let structural: Set<String> = [
+        "add_cue", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
+    ]
+
+    /// Applies one structural command (or a transaction of them) to `lists`; false when it cannot.
+    private static func applyStructural(_ c: JSONValue, to lists: inout [JSONValue]) -> Bool {
+        switch c["type"]?.stringValue {
+        case "transaction":
+            var copy = lists
+            for inner in c["commands"]?.arrayValue ?? [] where !applyStructural(inner, to: &copy) { return false }
+            lists = copy
+            return true
+        case "add_cue":
+            guard let cue = c["cue"], let at = c["at"] else { return false }
+            return insert(cue, at: at, into: &lists)
+        case "remove_cue":
+            guard let id = c["id"]?.stringValue else { return false }
+            return take(id, from: &lists) != nil
+        case "move_cue", "reparent_cue":
+            guard let id = c["id"]?.stringValue, let (cue, place) = take(id, from: &lists) else { return false }
+            if c["type"]?.stringValue == "reparent_cue", let to = c["to"] { return insert(cue, at: to, into: &lists) }
+            var at = place  // move_cue stays in the cue's own parent
+            at.set("index", c["index"] ?? .int(0))
+            return insert(cue, at: at, into: &lists)
+        default: return false
+        }
+    }
+
+    private static func children(_ cue: JSONValue) -> [JSONValue] { cue["kind"]?["children"]?.arrayValue ?? [] }
+
+    /// Removes the cue; also where it was, as a position object without an index.
+    private static func take(_ id: String, from lists: inout [JSONValue]) -> (JSONValue, JSONValue)? {
+        for li in lists.indices {
+            var cues = lists[li]["cues"]?.arrayValue ?? []
+            if let found = take(id, from: &cues, parent: nil, list: lists[li]["id"] ?? .null) {
+                lists[li].set("cues", .array(cues))
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func take(
+        _ id: String, from cues: inout [JSONValue], parent: String?, list: JSONValue
+    ) -> (JSONValue, JSONValue)? {
+        if let i = cues.firstIndex(where: { $0["id"]?.stringValue == id }) {
+            return (cues.remove(at: i), .object(["list": list, "parent": parent.map { .string($0) } ?? .null]))
+        }
+        for i in cues.indices {
+            var kids = children(cues[i])
+            if kids.isEmpty { continue }
+            if let found = take(id, from: &kids, parent: cues[i]["id"]?.stringValue, list: list) {
+                cues[i]["kind"]?.set("children", .array(kids))
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func insert(_ cue: JSONValue, at: JSONValue, into lists: inout [JSONValue]) -> Bool {
+        guard let li = lists.firstIndex(where: { $0["id"] == at["list"] }), case .int(let n)? = at["index"] else {
+            return false
+        }
+        var cues = lists[li]["cues"]?.arrayValue ?? []
+        guard insert(cue, parent: at["parent"]?.stringValue, index: Int(n), into: &cues) else { return false }
+        lists[li].set("cues", .array(cues))
+        return true
+    }
+
+    private static func insert(_ cue: JSONValue, parent: String?, index: Int, into cues: inout [JSONValue]) -> Bool {
+        guard let parent else {
+            cues.insert(cue, at: min(max(index, 0), cues.count))
+            return true
+        }
+        for i in cues.indices {
+            if cues[i]["id"]?.stringValue == parent {
+                var kids = children(cues[i])
+                kids.insert(cue, at: min(max(index, 0), kids.count))
+                cues[i]["kind"]?.set("children", .array(kids))
+                return true
+            }
+            var kids = children(cues[i])
+            if !kids.isEmpty, insert(cue, parent: parent, index: index, into: &kids) {
+                cues[i]["kind"]?.set("children", .array(kids))
+                return true
+            }
+        }
+        return false
     }
 
     /// Applies `edit` to the cue `id` anywhere in `cues`; the edited cue (with its children, as the
