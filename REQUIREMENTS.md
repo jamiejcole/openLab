@@ -72,7 +72,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ## 3. Cue Lists & Carts
 - [ ] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
 - [ ] **CL-02** `v0.0.1` Cue list shows: number, name, type icon, target, pre-wait, duration, post-wait, continue mode, colour, state; columns configurable.
-- [ ] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
+- [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
 - [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
 - [ ] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
 - [ ] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
