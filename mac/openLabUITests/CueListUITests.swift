@@ -3,7 +3,7 @@
 import XCTest
 
 /// The cue list against the fake engine's demo show (the first workspace): cue 1 running, a fade
-/// cue at the playhead with a missing target, and a collapsed group "Act One" of three cues.
+/// cue at the playhead with a missing target, and a group "Act One" of three cues.
 @MainActor
 final class CueListUITests: XCTestCase {
     private func launch() -> XCUIApplication {
@@ -39,14 +39,10 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(labels.contains("Broken"), "\(labels)")
     }
 
-    func testGroupExpandsToItsChildren() {
+    func testGroupStartsExpandedAndCollapses() {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["Door slam"].exists)
-        let twisty = app.disclosureTriangles.firstMatch
-        XCTAssertTrue(twisty.waitForExistence(timeout: 5))
-        twisty.click()
-        XCTAssertTrue(app.staticTexts["Door slam"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Door slam"].waitForExistence(timeout: 5), "groups open expanded")
         XCTAssertTrue(app.staticTexts["Rain"].exists)
         let states = app.images.matching(identifier: "cue-state")
         let labels = (0..<states.count).map { states.element(boundBy: $0).label }
@@ -54,5 +50,11 @@ final class CueListUITests: XCTestCase {
         // The paused cue is blue and flagged: shape and flag symbol carry it, not only the tint.
         XCTAssertTrue(app.images["Blue"].exists)
         XCTAssertTrue(app.images["Flagged"].exists)
+        let twisty = app.disclosureTriangles.firstMatch
+        XCTAssertTrue(twisty.exists)
+        twisty.click()
+        let gone = NSPredicate(format: "exists == false")
+        let hidden = XCTNSPredicateExpectation(predicate: gone, object: app.staticTexts["Door slam"])
+        XCTAssertEqual(XCTWaiter().wait(for: [hidden], timeout: 5), .completed)
     }
 }

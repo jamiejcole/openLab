@@ -55,6 +55,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     let client: EngineClient
     private var stateSub: AnyCancellable?
 
+    /// Cues looked at while applying model changes; tests compare it across list sizes to show an
+    /// edit in place does not scan the list.
+    static var cueVisits = 0
+
     static let maxRuntimeWarnings = 100
     static let maxLogEntries = 500
 
@@ -209,7 +213,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// into groups that have children only.
     @discardableResult
     private static func removeCue(_ id: ModelID, from cues: inout [Cue]) -> Bool {
-        if let i = cues.firstIndex(where: { $0.id == id }) {
+        if let i = cues.firstIndex(where: {
+            cueVisits += 1
+            return $0.id == id
+        }) {
             cues.remove(at: i)
             return true
         }
@@ -226,6 +233,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Runs `body` on the children of the cue `parent`, wherever it is.
     private static func withChildren(of parent: ModelID, in cues: inout [Cue], _ body: (inout [Cue]) -> Void) -> Bool {
         for i in cues.indices where cues[i].id == parent || !cues[i].children.isEmpty {
+            cueVisits += 1
             if cues[i].id == parent {
                 body(&cues[i].children)
                 return true
@@ -238,6 +246,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Puts `cue` over the cue already at `index` under `parent` when that one has the same id.
     private static func replace(_ cue: Cue, under parent: ModelID?, at index: Int, in cues: inout [Cue]) -> Bool {
         func swap(_ list: inout [Cue]) -> Bool {
+            cueVisits += 1
             guard list.indices.contains(index), list[index].id == cue.id else { return false }
             list[index] = cue
             return true

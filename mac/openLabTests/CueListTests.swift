@@ -67,7 +67,7 @@ final class CueListHarness {
     static let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
 
     /// The list shows `snapshot`, connected through the fake engine; the table has a size so rows exist.
-    init(snapshot: JSONValue? = nil) async throws {
+    init(snapshot: JSONValue? = nil, collapsed: Bool = true) async throws {
         let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
         rig = try Rig(snapshot: snapshot ?? FakeEngine.demoSnapshot(base: base))
         let ok = await rig.connect()
@@ -75,6 +75,14 @@ final class CueListHarness {
         vc = CueListViewController(store: rig.store, outlineView: spy)
         vc.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
         vc.view.layoutSubtreeIfNeeded()
+        // Groups open expanded; most tests want the compact list.
+        func collapse(_ nodes: [CueNode]) {
+            for n in nodes where n.isGroup {
+                collapse(n.children)
+                spy.collapseItem(n)
+            }
+        }
+        if collapsed { collapse(vc.roots) }
         spy.resetCounts()
     }
 
@@ -134,6 +142,28 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.vc.listID?.raw, H.list)
     }
 
+    func testGroupsOpenExpandedAndCollapseToTheirRow() async throws {
+        let h = try await H(collapsed: false)
+        XCTAssertEqual(h.visibleIDs(), [H.intro, H.fade, H.group, H.door, H.rain, H.radio])
+        // A group the engine adds later opens expanded too; one that was collapsed and moves stays so.
+        let kids = [h.cue("00000000-0000-0000-0000-0000000000a1", "Kid")]
+        let g = FakeEngine.cueJSON(
+            id: "00000000-0000-0000-0000-0000000000a0", number: nil, name: "New", kind: FakeEngine.groupKind(kids))
+        try h.change(upserts: [try H.upsertJSON(g, index: 0)])
+        XCTAssertEqual(
+            h.visibleIDs().prefix(2).map(\.raw),
+            ["00000000-0000-0000-0000-0000000000a0", "00000000-0000-0000-0000-0000000000a1"])
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
+        let current = try XCTUnwrap(h.store.model?.cue(H.group))
+        let regroup = FakeEngine.cueJSON(
+            id: H.group.raw, number: "2", name: "Act One",
+            kind: FakeEngine.groupKind(
+                current.children.map { h.cue($0.id.raw, $0.name) }))
+        try h.change(upserts: [try H.upsertJSON(regroup, index: 0)], deletes: [H.group])
+        XCTAssertFalse(h.spy.isItemExpanded(try XCTUnwrap(h.vc.node(H.group))))
+        XCTAssertFalse(h.visibleIDs().contains(H.door))
+    }
+
     func testGroupsStartCollapsedAndExpandToTheirChildren() async throws {
         let h = try await H()
         XCTAssertEqual(h.visibleIDs(), [H.intro, H.fade, H.group])
@@ -159,21 +189,30 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "a.wav")
         // The fade cue has no name and no number: its kind stands in, and it points at cue 1.
         XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade")
-        XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "0:05.00")
+        XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "00:05.00")
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Intro")
-        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "")
+        // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.00")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.textColor, .secondaryLabelColor)
+        var timed = FakeEngine.cueJSON(
+            id: H.intro.raw, number: "1", name: "Intro", kind: FakeEngine.audioKind("media/a.wav"), preWait: 1.5)
+        timed.set("armed", .bool(true))
+        try h.change(upserts: [try H.upsertJSON(timed, index: 0)])
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.textColor, .labelColor)
         XCTAssertEqual(h.cell("continue", H.intro)?.images[0].isHidden, true)
     }
 
     func testTimeFormat() {
-        XCTAssertEqual(CueTimeFormat.clock(0), "0:00.00")
-        XCTAssertEqual(CueTimeFormat.clock(65.254), "1:05.25")
+        XCTAssertEqual(CueTimeFormat.clock(0), "00:00.00")
+        XCTAssertEqual(CueTimeFormat.clock(1), "00:01.00")
+        XCTAssertEqual(CueTimeFormat.clock(60), "01:00.00")
+        XCTAssertEqual(CueTimeFormat.clock(65.254), "01:05.25")
         XCTAssertEqual(CueTimeFormat.clock(3661.5), "1:01:01.50")
         XCTAssertEqual(CueTimeFormat.clock(.nan), "")
         XCTAssertEqual(CueTimeFormat.clock(-1), "")
-        XCTAssertEqual(CueTimeFormat.wait(0), "")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: 3), "0:02.00 / 0:05.00")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: nil), "0:02.00")
+        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: 3), "00:02.00 / 00:05.00")
+        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: nil), "00:02.00")
     }
 
     func testColourFlagAndContinueAreShownWithShapesAndLabels() async throws {
@@ -545,15 +584,137 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(reload.rows, IndexSet(integer: 0))
         XCTAssertEqual(reload.columns.map { h.spy.tableColumns[$0].identifier.rawValue }, ["duration"])
         XCTAssertEqual(h.spy.wholeReloads, 0)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "0:02.50 / 0:10.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50 / 00:10.00")
         // Next tick: the same row again; when it ends, that row once more, back to its own duration.
         h.spy.resetCounts()
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
         XCTAssertEqual(h.spy.rowsReloaded, 1)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "0:03.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
         h.spy.resetCounts()
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
         XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "")
         XCTAssertEqual(h.spy.wholeReloads, 0)
+    }
+
+    // MARK: Playhead marker across model changes
+
+    func testGroupLosesItsPlayheadMarkerWhenThePlayheadCueMovesOut() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        XCTAssertFalse(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+        try h.change(upserts: [try H.upsertJSON(h.cue(H.rain.raw, "Rain"), index: 0)], deletes: [H.rain])
+        XCTAssertFalse(h.vc.isPlayheadInside(H.group))
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+    }
+
+    func testGroupGainsAPlayheadMarkerWhenThePlayheadCueMovesIn() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+        try h.change(
+            upserts: [try H.upsertJSON(h.cue(H.intro.raw, "Intro"), parent: H.group, index: 0)], deletes: [H.intro])
+        XCTAssertTrue(h.vc.isPlayheadInside(H.group))
+        XCTAssertFalse(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+    }
+
+    // MARK: Outline equals the store after any sequence of changes
+
+    private func assertOutlineMatchesStore(_ h: CueListHarness, _ step: String) throws {
+        let model = try XCTUnwrap(h.store.model?.cueLists.first)
+        func walk(_ nodes: [CueNode], _ cues: [Cue], _ parent: CueNode?) {
+            XCTAssertEqual(nodes.map(\.id), cues.map(\.id), step)
+            for (n, c) in zip(nodes, cues) {
+                XCTAssertTrue(n.parent === parent, "\(step): parent of \(n.id)")
+                XCTAssertTrue(h.vc.node(n.id) === n, "\(step): index of \(n.id)")
+                walk(n.children, c.children, n)
+            }
+        }
+        walk(h.vc.roots, model.cues, nil)
+        func all(_ nodes: [CueNode]) -> [ModelID] { nodes.flatMap { [$0.id] + all($0.children) } }
+        XCTAssertEqual(h.vc.nodeCount, all(h.vc.roots).count, step)
+        var shown: [ModelID] = []
+        func flat(_ nodes: [CueNode]) {
+            for n in nodes {
+                shown.append(n.id)
+                if n.isGroup && h.spy.isItemExpanded(n) { flat(n.children) }
+            }
+        }
+        flat(h.vc.roots)
+        XCTAssertEqual(h.visibleIDs(), shown, step)
+        let fresh = CueListViewController(store: h.store)
+        XCTAssertEqual(all(fresh.roots), all(h.vc.roots), "\(step): fresh reload")
+    }
+
+    func testSequencesOfChangesLeaveTheOutlineEqualToTheStore() async throws {
+        let h = try await H(collapsed: false)
+        func id(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-0000000001%02d", n) }
+        func group(_ n: Int, _ kids: [JSONValue] = []) -> JSONValue {
+            FakeEngine.cueJSON(id: id(n), number: nil, name: "G\(n)", kind: FakeEngine.groupKind(kids))
+        }
+        func index(of cue: String) -> Int {
+            h.store.model?.cueLists.first?.cues.firstIndex { $0.id.raw == cue } ?? 0
+        }
+        func up(_ cue: JSONValue, _ parent: String? = nil, _ at: Int) throws -> String {
+            try H.upsertJSON(cue, parent: parent.map { ModelID($0) }, index: at)
+        }
+        try assertOutlineMatchesStore(h, "start")
+        // 1. out of a group to the top
+        try h.change(upserts: [try up(h.cue(H.rain.raw, "Rain"), nil, 0)], deletes: [H.rain])
+        try assertOutlineMatchesStore(h, "move out")
+        // 2. a new empty group; 3. between groups
+        try h.change(upserts: [try up(group(1), nil, 2)])
+        try assertOutlineMatchesStore(h, "new group")
+        try h.change(upserts: [try up(h.cue(H.door.raw, "Door"), id(1), 0)], deletes: [H.door])
+        try assertOutlineMatchesStore(h, "between groups")
+        // 4. nested group with a child
+        try h.change(upserts: [try up(group(2, [h.cue(id(20), "K1")]), id(1), 0)])
+        try assertOutlineMatchesStore(h, "nested group")
+        // 5. into a collapsed parent
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(ModelID(id(1)))))
+        try h.change(upserts: [try up(h.cue(id(21), "K2"), id(1), 1)])
+        try assertOutlineMatchesStore(h, "into collapsed parent")
+        // 6. a nested group with its subtree to the top
+        try h.change(upserts: [try up(group(2, [h.cue(id(20), "K1")]), nil, 0)], deletes: [ModelID(id(2))])
+        try assertOutlineMatchesStore(h, "nested group out")
+        // 7. several order-dependent changes in one message
+        try h.change(
+            upserts: [
+                try up(h.cue(id(30), "X"), nil, 0), try up(h.cue(id(31), "Y"), nil, 0),
+                try up(h.cue(H.intro.raw, "Intro"), nil, 3), try up(h.cue(id(32), "Z"), nil, 1),
+            ], deletes: [H.fade, H.intro])
+        try assertOutlineMatchesStore(h, "order dependent")
+        // 8. a cue moved from one group to another and back in one message
+        try h.change(
+            upserts: [
+                try up(h.cue(H.radio.raw, "Radio"), id(1), 0), try up(h.cue(H.radio.raw, "Radio"), id(2), 0),
+            ])
+        try assertOutlineMatchesStore(h, "moved twice")
+        // 9. delete a group whose child is selected
+        h.spy.expandItem(try XCTUnwrap(h.vc.node(ModelID(id(1)))))
+        h.vc.select([ModelID(id(21)), ModelID(id(30))])
+        try h.change(deletes: [ModelID(id(1))])
+        try assertOutlineMatchesStore(h, "delete group")
+        XCTAssertEqual(h.vc.selectedIDs(), [ModelID(id(30))])
+        // 10. a group re-sent in place with fewer children
+        try h.change(upserts: [try up(group(2, [h.cue(id(20), "K1")]), nil, index(of: id(2)))])
+        try assertOutlineMatchesStore(h, "group resent")
+        XCTAssertEqual(h.visibleIDs().filter { $0.raw == H.radio.raw }.count, 0)
+    }
+
+    func testCuesTargetingAGroupsDescendantRefreshWhenTheGroupIsResent() async throws {
+        let h = try await H(collapsed: false)
+        let fade = FakeEngine.cueJSON(
+            id: H.fade.raw, number: nil, name: "",
+            kind: .object(["type": .string("fade"), "target": .string(H.rain.raw), "duration": .double(5)]))
+        try h.change(upserts: [try H.upsertJSON(fade, index: 1)])
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "2.2 Rain")
+        let kids = ["Door slam", "Storm", "Radio"].enumerated().map { i, n in
+            h.cue([H.door, H.rain, H.radio][i].raw, n)
+        }
+        let group = FakeEngine.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: FakeEngine.groupKind(kids))
+        try h.change(upserts: [try H.upsertJSON(group, index: 2)])
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "Storm")
+        try h.change(deletes: [H.group])
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, loc("cue.target.missing"))
     }
 }
