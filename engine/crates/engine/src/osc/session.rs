@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 /// Who sent a message. A UDP peer is its IP address (the source port changes per sender
-/// socket, and replies go to the fixed port 53001); a TCP peer is the connection, with the
+/// socket, and replies go to port 53001 unless the peer set another with `/udpReplyPort`); a TCP peer is the connection, with the
 /// remote address so failures count per machine, not per connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Peer {
@@ -100,6 +100,9 @@ pub enum ConnectResult {
 struct Session {
     connected: bool,
     updates: bool,
+    /// Where `/udpReplyPort` sent this UDP peer's replies and updates; `None`: the server default.
+    /// Lives in the session, so it goes with it (idle expiry, `clear`).
+    reply_port: Option<u16>,
     last_seen: Duration,
 }
 
@@ -264,7 +267,7 @@ impl Sessions {
             if let Some(session) = self.peers.get_mut(&peer) {
                 session.updates = false;
                 session.last_seen = now;
-                if !session.connected {
+                if !session.connected && session.reply_port.is_none() {
                     self.peers.remove(&peer);
                 }
             }
@@ -278,6 +281,28 @@ impl Sessions {
             session.last_seen = now;
         }
         true
+    }
+
+    /// `/udpReplyPort`: replies and updates to the UDP peer go to `port` from now on, until its
+    /// session lapses. Returns false if the peer could not be given state (table full).
+    pub fn set_reply_port(&mut self, peer: Peer, now: Duration, port: u16) -> bool {
+        if !self.ensure(peer, now) {
+            return false;
+        }
+        if let Some(session) = self.peers.get_mut(&peer) {
+            session.reply_port = Some(port);
+            session.last_seen = now;
+        }
+        true
+    }
+
+    /// The port set with `/udpReplyPort` for `peer`, if its session is still alive at `now`.
+    pub fn reply_port(&self, peer: Peer, now: Duration) -> Option<u16> {
+        let session = self.peers.get(&peer)?;
+        if matches!(peer, Peer::Udp(_)) && now.saturating_sub(session.last_seen) >= UDP_IDLE {
+            return None;
+        }
+        session.reply_port
     }
 
     /// Peers that asked for updates, in no particular order. A UDP peer silent for
@@ -376,6 +401,7 @@ impl Sessions {
             Session {
                 connected: false,
                 updates: false,
+                reply_port: None,
                 last_seen: now,
             },
         );

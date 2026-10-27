@@ -16,8 +16,8 @@ use openlab_engine::osc::{
     MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES, MAX_KNOWN_IPS,
     MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
     MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES,
-    Osc, OscInput, OscShow, Outcome, Peer, Reply, SlipDecoder, SlipEvent, Target, UDP_IDLE,
-    decode_packet, encode_message, parse_address, reply_message, slip_encode, upper,
+    Osc, OscInput, OscShow, Outcome, Peer, Reply, Sessions, SlipDecoder, SlipEvent, Target,
+    UDP_IDLE, decode_packet, encode_message, parse_address, reply_message, slip_encode, upper,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -3328,4 +3328,175 @@ fn the_fuzz_seeds_pass_the_fuzz_entry() {
         count += 1;
     }
     assert!(count >= 7);
+}
+
+// 8. /udpReplyPort (QLab 5: the port lives in the UDP session)
+
+fn port_msg(port: i32) -> OscMessage {
+    msg("/udpReplyPort", vec![OscType::Int(port)])
+}
+
+#[test]
+fn udp_reply_port_sets_the_peers_port_and_sends_no_reply() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    assert_eq!(osc.reply_port(udp(), T0), None);
+    let out = send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    assert!(out.replies.is_empty() && out.inputs.is_empty(), "{out:?}");
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+    // Another IP is untouched, and a later one from this peer changes it.
+    let other = Peer::Udp(ip_n(9));
+    assert_eq!(osc.reply_port(other, T0), None);
+    send(&mut osc, &show, udp(), T0, &port_msg(1));
+    assert_eq!(osc.reply_port(udp(), T0), Some(1));
+    send(&mut osc, &show, udp(), T0, &port_msg(65535));
+    assert_eq!(osc.reply_port(udp(), T0), Some(65535));
+    assert_eq!(osc.stats().rejected, 0);
+}
+
+#[test]
+fn the_reply_port_is_forgotten_with_the_session_after_sixty_seconds_of_silence() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    // Any message within the window keeps it, and renews the window.
+    let t50 = T0 + Duration::from_secs(50);
+    send(&mut osc, &show, udp(), t50, &msg("/cue/1/name", vec![]));
+    let t100 = t50 + Duration::from_secs(50);
+    assert_eq!(osc.reply_port(udp(), t100), Some(54329));
+    send(&mut osc, &show, udp(), t100, &msg("/cue/1/name", vec![]));
+    // 75 s of silence: the default again, even before the next message sweeps the session.
+    let t175 = t100 + Duration::from_secs(75);
+    assert_eq!(osc.reply_port(udp(), t175), None);
+    send(&mut osc, &show, udp(), t175, &msg("/cue/1/name", vec![]));
+    assert_eq!(osc.reply_port(udp(), t175), None);
+    // Just under the limit it still holds.
+    send(&mut osc, &show, udp(), t175, &port_msg(2000));
+    assert_eq!(
+        osc.reply_port(udp(), t175 + UDP_IDLE - Duration::from_millis(1)),
+        Some(2000)
+    );
+    assert_eq!(osc.reply_port(udp(), t175 + UDP_IDLE), None);
+}
+
+#[test]
+fn a_reply_port_survives_unsubscribing_and_is_dropped_on_reset() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    let on = msg("/updates", vec![OscType::Int(1)]);
+    let off = msg("/updates", vec![OscType::Int(0)]);
+    send(&mut osc, &show, udp(), T0, &on);
+    send(&mut osc, &show, udp(), T0, &off);
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+    osc.reset_sessions();
+    assert_eq!(osc.reply_port(udp(), T0), None);
+}
+
+#[test]
+fn invalid_reply_ports_are_rejected_and_leave_the_port_alone() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    let bad: Vec<Vec<OscType>> = vec![
+        vec![],
+        vec![OscType::Int(0)],
+        vec![OscType::Int(-1)],
+        vec![OscType::Int(65536)],
+        vec![OscType::Int(i32::MAX)],
+        vec![OscType::Float(5000.0)],
+        vec![s("5000")],
+        vec![OscType::Bool(true)],
+        vec![OscType::Int(5000), OscType::Int(5001)],
+    ];
+    // Before any port was set, nothing is stored.
+    for args in &bad {
+        let m = msg("/udpReplyPort", args.clone());
+        let out = send(&mut osc, &show, udp(), T0, &m);
+        assert_eq!(reply_json(&out.replies[0])["status"], "error", "{args:?}");
+        assert_eq!(osc.reply_port(udp(), T0), None, "{args:?}");
+    }
+    assert_eq!(osc.stats().rejected, bad.len() as u64);
+    // After a good one, a bad one does not change it.
+    send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    for args in &bad {
+        let m = msg("/udpReplyPort", args.clone());
+        send(&mut osc, &show, udp(), T0, &m);
+        assert_eq!(osc.reply_port(udp(), T0), Some(54329), "{args:?}");
+    }
+}
+
+#[test]
+fn a_full_session_table_refuses_a_reply_port_like_updates() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    let sub = msg("/updates", vec![OscType::Int(1)]);
+    for i in 0..MAX_PEERS {
+        send(&mut osc, &show, Peer::Udp(ip_n(i)), T0, &sub);
+    }
+    let newcomer = Peer::Udp(ip_n(MAX_PEERS + 5));
+    let out = send(&mut osc, &show, newcomer, T0, &port_msg(54329));
+    assert_eq!(reply_json(&out.replies[0])["status"], "error");
+    assert_eq!(osc.reply_port(newcomer, T0), None);
+    // A peer that already has a slot can still set one.
+    let held = Peer::Udp(ip_n(3));
+    let out = send(&mut osc, &show, held, T0, &port_msg(54329));
+    assert!(out.replies.is_empty());
+    assert_eq!(osc.reply_port(held, T0), Some(54329));
+}
+
+#[test]
+fn a_tcp_peer_cannot_set_a_reply_port() {
+    let show = Show::open();
+    let mut osc = quiet_osc();
+    let tcp = tcp_peer(1);
+    let mut decoder = SlipDecoder::default();
+    let framed = slip_encode(&bytes(&port_msg(54329)));
+    let out = osc.handle_stream(tcp, T0, &mut decoder, &framed, &show);
+    assert!(out.replies.is_empty() && out.inputs.is_empty(), "{out:?}");
+    assert_eq!(osc.reply_port(tcp, T0), None);
+    // Not even a bad argument is answered, and the same IP's UDP peer is untouched.
+    let framed = slip_encode(&bytes(&msg("/udpReplyPort", vec![])));
+    let out = osc.handle_stream(tcp, T0, &mut decoder, &framed, &show);
+    assert!(out.replies.is_empty());
+    assert_eq!(osc.reply_port(Peer::Udp(tcp.ip()), T0), None);
+    assert_eq!(osc.stats().rejected, 0);
+}
+
+#[test]
+fn a_reply_port_needs_the_passcode_like_updates() {
+    let show = Show::with_passcode("1234");
+    let mut osc = quiet_osc();
+    let out = send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    assert_eq!(reply_json(&out.replies[0])["status"], "denied");
+    assert_eq!(osc.reply_port(udp(), T0), None);
+    connect_status(&mut osc, &show, udp(), T0, "1234");
+    let out = send(&mut osc, &show, udp(), T0, &port_msg(54329));
+    assert!(out.replies.is_empty());
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+    // Not available under a workspace prefix, as `/updates` is not.
+    let prefixed = format!("/workspace/{}/udpReplyPort", upper(workspace()));
+    let out = send(
+        &mut osc,
+        &show,
+        udp(),
+        T0,
+        &msg(&prefixed, vec![OscType::Int(1)]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "error");
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+}
+
+#[test]
+fn changing_the_reply_port_does_not_reset_the_reply_budget() {
+    let mut sessions = Sessions::default();
+    let ip = udp().ip();
+    let kind = openlab_engine::osc::Budget::Strict;
+    let mut spent = 0;
+    while sessions.spend_reply_bytes(ip, kind, T0, 1000) {
+        spent += 1;
+        assert!(spent < 1000);
+    }
+    assert!(sessions.set_reply_port(udp(), T0, 54329));
+    assert!(sessions.set_reply_port(udp(), T0, 54330));
+    assert!(!sessions.spend_reply_bytes(ip, kind, T0, 1000));
 }

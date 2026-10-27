@@ -1899,3 +1899,79 @@ async fn the_active_list_survives_a_resync_and_a_snapshot_so_go_fires_the_same_l
         .await;
     assert_eq!(go_list(&f), Some(second));
 }
+
+/// The next datagram on `socket`, which is not the fixture's reply socket.
+async fn recv_on(socket: &UdpSocket) -> OscMessage {
+    let mut buf = vec![0u8; 70_000];
+    let (n, _) = guard("waiting for a UDP datagram", socket.recv_from(&mut buf))
+        .await
+        .unwrap();
+    decode_packet(&buf[..n]).unwrap().remove(0)
+}
+
+/// Points the fixture's peer (127.0.0.1) at `socket`'s port.
+async fn redirect(f: &Fix, socket: &UdpSocket) {
+    let port = i32::from(socket.local_addr().unwrap().port());
+    f.udp_send(&msg("/udpReplyPort", vec![OscType::Int(port)]))
+        .await;
+}
+
+#[tokio::test]
+async fn udp_reply_port_moves_replies_to_the_new_port_and_sends_no_reply_itself() {
+    let f = fixture(test_workspace()).await;
+    let alt = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    redirect(&f, &alt).await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    // The first datagram on the new port is the read's reply, so `/udpReplyPort` had none.
+    let reply = recv_on(&alt).await;
+    assert_eq!(reply.addr, "/reply/cue/1/name");
+    assert_eq!(body(&reply)["data"], "Opening");
+    // Nothing went to the old port: point back and the first thing there is the next reply.
+    redirect(&f, &f.udp).await;
+    f.udp_send(&msg("/version", vec![])).await;
+    assert_eq!(f.udp_recv().await.addr, "/reply/version");
+}
+
+#[tokio::test]
+async fn updates_follow_the_reply_port() {
+    let f = fixture(test_workspace()).await;
+    let alt = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    redirect(&f, &alt).await;
+    f.udp_send(&msg("/updates", vec![OscType::Int(1)])).await;
+    f.udp_send(&msg("/version", vec![])).await;
+    assert_eq!(recv_on(&alt).await.addr, "/reply/version");
+    f.out
+        .send(ServerMessage::Runtime {
+            seq: 1,
+            changes: vec![RuntimeChange::Playhead {
+                list: list_id(),
+                cue: Some(id(2)),
+            }],
+        })
+        .await
+        .unwrap();
+    assert!(recv_on(&alt).await.addr.ends_with("/playbackPosition"));
+    // None on the default port: point back and the next datagram there is a reply.
+    redirect(&f, &f.udp).await;
+    f.udp_send(&msg("/version", vec![])).await;
+    assert_eq!(f.udp_recv().await.addr, "/reply/version");
+}
+
+#[tokio::test]
+async fn udp_reply_port_over_tcp_is_ignored_and_invalid_ports_do_not_move_replies() {
+    let f = fixture(test_workspace()).await;
+    let alt = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let mut t = f.tcp().await;
+    let port = i32::from(alt.local_addr().unwrap().port());
+    t.send(&msg("/udpReplyPort", vec![OscType::Int(port)]))
+        .await;
+    t.send(&msg("/version", vec![])).await;
+    // The first frame is `/version`'s: the port message got no reply.
+    assert_eq!(t.recv().await.unwrap().addr, "/reply/version");
+    // The UDP peer at the same IP still gets its replies on the default port.
+    f.udp_send(&msg("/udpReplyPort", vec![OscType::Int(70000)]))
+        .await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "error");
+    f.udp_send(&msg("/version", vec![])).await;
+    assert_eq!(f.udp_recv().await.addr, "/reply/version");
+}

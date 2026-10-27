@@ -111,7 +111,8 @@ pub const MAX_REPLY_BYTES_PER_CALL: usize = 2 * 1024 * 1024;
 pub struct Outcome {
     /// To carry out, in order.
     pub inputs: Vec<OscInput>,
-    /// To send back to the peer that sent the bytes: UDP to its address on [`OSC_REPLY_PORT`],
+    /// To send back to the peer that sent the bytes: UDP to its address on [`OSC_REPLY_PORT`]
+    /// (or the port it set with `/udpReplyPort`, see [`Osc::reply_port`]),
     /// TCP SLIP-framed on the same connection.
     pub replies: Vec<OscMessage>,
 }
@@ -381,9 +382,13 @@ impl Osc {
             self.push_reply(&ask, &reply, out);
             return;
         }
+        // Replies on a TCP connection go back on it: there is no port to set.
+        if parsed.address == Address::UdpReplyPort && matches!(peer, Peer::Tcp { .. }) {
+            return;
+        }
         if !authed {
             self.stats.denied += 1;
-            let scope = if parsed.address == Address::Updates {
+            let scope = if matches!(parsed.address, Address::Updates | Address::UdpReplyPort) {
                 Scope::App
             } else {
                 Scope::Workspace
@@ -393,6 +398,10 @@ impl Osc {
         }
         if parsed.address == Address::Updates {
             self.updates(&ask, &message.args, out);
+            return;
+        }
+        if parsed.address == Address::UdpReplyPort {
+            self.udp_reply_port(&ask, &message.args, out);
             return;
         }
         let resolved = resolve(show, &parsed, &message.args, &mut self.call_match_budget);
@@ -428,6 +437,24 @@ impl Osc {
             self.stats.rejected += 1;
             self.push_reply(ask, &Reply::error().scoped(Scope::App), out);
         }
+    }
+
+    /// `/udpReplyPort {port}`: QLab sends no reply when it is allowed, like `/updates`.
+    fn udp_reply_port(&mut self, ask: &Asked<'_>, args: &[rosc::OscType], out: &mut Outcome) {
+        let failed = match dispatch::reply_port_arg(args) {
+            None => true,
+            Some(port) => !self.sessions.set_reply_port(ask.peer, ask.now, port),
+        };
+        if failed {
+            self.stats.rejected += 1;
+            self.push_reply(ask, &Reply::error().scoped(Scope::App), out);
+        }
+    }
+
+    /// The port to send `peer` (a UDP peer) its replies and updates on: the one it set with
+    /// `/udpReplyPort` while its session lives, else `None` (use the server default).
+    pub fn reply_port(&self, peer: Peer, now: Duration) -> Option<u16> {
+        self.sessions.reply_port(peer, now)
     }
 
     /// Encodes an update message for the fan-out (NET-05), or `None` if it is not encodable.
