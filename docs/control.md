@@ -44,7 +44,11 @@ The contents are derived from the edit, not by diffing workspaces. Commands touc
 - `upserts`: every named cue that exists after the edit, at its final `(list, parent, index)`, in tree order (ascending within a container, parents first). A named cue inside another named group is not sent separately: the group's upsert carries its subtree. So the one case that costs more than the footprint is editing a group itself (rename, mode): its subtree travels with it, as the protocol defines a group upsert.
 - A move is therefore a delete plus an upsert in one message.
 
-No command edits cue lists, patches, network patches or settings yet; their upserts/deletes are defined (and applied by `Workspace::apply_changes`) but not produced. When such a command exists, its footprint grows the same way.
+Commands for settings, patches, network patches and cue lists (M1.12) add `Footprint::{lists, patches, network_patches, settings}`; `model_changes` sends `settings`, `cue_list`, `patch` and `network_patch` upserts (every item of a collection that was reordered, at its final index) and deletes, before the cue upserts. Such an edit is `Footprint::is_model_wide`: the control loop tells the cue engine with `model_changed()` (patches decide which cues are broken, lists own playheads), not `model_changed_cues`, and `sync_patches` brings the mixer matrices, delays and master level up to date.
+
+A command with `coalesce` goes through `History::execute_coalescing`; a key over 128 bytes is `bad_request`. `History::execute` says whether anything changed: if not (a value set to what it was, an empty transaction) there is no revision, no `model_changed`, no `document`, and the document is not dirty.
+
+**Patch slots (M4.2f).** A patch's mixer matrix is its index in `Workspace::patches`. `Control::patch_slot_conflict` refuses a command, undo or redo whose `Command::patch_slot_floor` is set (add before the end, remove, move) while an Audio cue routed to a patch at or after that index is not idle, or still has a voice on the device: `command_refused`, `cue <id> is playing on a patch this would move; stop it first`. Nothing is applied and the undo step stays. The guard goes away when the matrices are keyed by stable slot (PROGRESS M4.2f).
 
 `Workspace::apply_changes` is the reference client: deletes (an unknown id is ignored), then upserts (a cue already present is replaced wherever it is). Tests (`core/tests/commands_prop.rs`, `engine/tests/control_model.rs`) assert mirror == engine workspace after every step of random command/undo/redo sequences.
 

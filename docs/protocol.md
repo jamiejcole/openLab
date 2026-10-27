@@ -28,7 +28,7 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 | `type` | Fields | Notes |
 |---|---|---|
 | `hello` | `protocol_version: u32`, `token`, `client_name` | first frame |
-| `command` | `id`, `command` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused` |
+| `command` | `id`, `command`, `coalesce?` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused`. A command that changes nothing (a value set to what it already is) replies `ok` with the current revision, sends no `model_changed` and is no undo step. `coalesce`: a string of at most 128 bytes (longer: `bad_request`, nothing applied); consecutive commands with the same key are one undo step, each still sent as its own `model_changed` ([commands.md](commands.md) "Coalescing"). Absent = no coalescing |
 | `transport` | `id`, `action` | see below |
 | `undo`, `redo` | `id` | like a command; `ok.revision` after, `ok` without a revision if there was nothing to undo or redo |
 | `request` | `id`, `request` | see below |
@@ -131,7 +131,9 @@ These are additions: `PROTOCOL_VERSION` stays 1 (no released client). The Swift 
 | `patch`, `network_patch` | `index`, `patch` | place among the patches |
 | `settings` | `name`, `settings` | the workspace name and settings |
 
-Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`.
+Deletes: `cue {id}` (with its children), `cue_list {id}`, `patch {id}`, `network_patch {id}`. Deleting a cue list deletes its cues with it; the engine only removes empty lists, so the cues were deleted or moved out in the same or an earlier message.
+
+Edits to settings, patches and cue lists: one `settings` upsert (name and all settings), a `patch` / `network_patch` / `cue_list` upsert per item added or changed and a delete per item removed, and for a move (or an undo of one) an upsert of every item in that collection at its final index, ascending. A `cue_list` upsert for a list the client holds keeps its cues. They come before the cue upserts of the same message.
 
 What the engine sends for a cue edit: a `delete` for each cue removed or moved, then an `upsert` for each cue added, moved or changed (its final place; in tree order, parents first, ascending index within a parent), so a move is a delete and an upsert in the same message and several moves in one undo step cannot collide. A cue inside a group that is also upserted is not sent separately. Only the cues the edit names are sent (an undo or redo names what the step changed), and exactly one `model_changed` goes out per edit, undo, redo or runtime model change (`SetArmed`); a client that sees a revision gap requests `snapshot`. Edits to a group itself send its whole subtree. See [control.md](control.md) "Model changes".
 
