@@ -133,7 +133,7 @@ final class TriggersTabTests: XCTestCase {
 
     private var properties: [JSONValue] {
         rig.engine.received.compactMap {
-            if case .command(_, let c) = $0 { return JSONValue.parse((try? c.json.text()) ?? "")?["property"] }
+            if case .command(_, let c, _) = $0 { return JSONValue.parse((try? c.json.text()) ?? "")?["property"] }
             return nil
         }
     }

@@ -1270,7 +1270,7 @@ mod tests {
                     _ => {
                         let command = random_command(&ws, &mut rng, &template, &files, &mut next);
                         let footprint = command.footprint();
-                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                        history.execute(&mut ws, command).ok().map(|_| footprint)
                     }
                 };
                 let Some(footprint) = footprint else { continue };
@@ -1548,7 +1548,7 @@ mod tests {
                         .filter(|_| history.redo(&mut ws).unwrap_or(false)),
                     2..=4 => plan_edit(&ws, &mut rng).and_then(|command| {
                         let footprint = command.footprint();
-                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                        history.execute(&mut ws, command).ok().map(|_| footprint)
                     }),
                     5 => {
                         // A file changes length and is probed again.
@@ -1563,7 +1563,7 @@ mod tests {
                     _ => {
                         let command = random_command(&ws, &mut rng, &template, &files, &mut next);
                         let footprint = command.footprint();
-                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                        history.execute(&mut ws, command).ok().map(|_| footprint)
                     }
                 };
                 if let Some(footprint) = &footprint {

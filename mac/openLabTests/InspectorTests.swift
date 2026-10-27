@@ -103,7 +103,7 @@ final class InspectorTests: XCTestCase {
 
     private var commands: [JSONValue] {
         rig.engine.received.compactMap {
-            if case .command(_, let c) = $0 { return JSONValue.parse((try? c.json.text()) ?? "") }
+            if case .command(_, let c, _) = $0 { return JSONValue.parse((try? c.json.text()) ?? "") }
             return nil
         }
     }

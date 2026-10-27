@@ -341,7 +341,7 @@ final class WorkspaceStoreTests: XCTestCase {
             switch m {
             case .transport(_, .go(let l)): return "go \(l)"
             case .transport(_, .panic): return "panic"
-            case .command(_, let c): return "command \(c == cmd)"
+            case .command(_, let c, _): return "command \(c == cmd)"
             case .request(_, .save): return "save"
             default: return "other"
             }
