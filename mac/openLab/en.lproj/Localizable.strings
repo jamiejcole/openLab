@@ -21,6 +21,23 @@
 "menu.edit.copy" = "Copy";
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
+"menu.edit.delete" = "Delete";
+"menu.cues" = "Cues";
+"menu.cues.new" = "New %@ Cue";
+"menu.cues.renumber" = "Renumber Selected Cues...";
+"menu.cues.moveUp" = "Move Selected Cues Up";
+"menu.cues.moveDown" = "Move Selected Cues Down";
+"edit.ok" = "OK";
+"edit.cancel" = "Cancel";
+"edit.renumber.title" = "Renumber Selected Cues";
+"edit.renumber.start" = "First number:";
+"edit.renumber.increment" = "Increment:";
+"edit.renumber.ok" = "Renumber";
+"edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
+"edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
+"edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
+"edit.error.refused" = "The engine refused the edit: %@";
+"edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
 "menu.transport" = "Transport";
 "menu.transport.go" = "GO";
