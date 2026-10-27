@@ -221,6 +221,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         ("scan_recovery", Request::ScanRecovery),
         ("log_tail", Request::LogTail { max: None }),
+        ("preshow_check", Request::PreshowCheck),
     ]
 }
 
@@ -306,6 +307,17 @@ fn fixtures() -> Vec<(String, Sample)> {
                     value: "Storm".into(),
                 },
             }),
+            coalesce: None,
+        }),
+    );
+    add(
+        "command_coalesce",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::MasterDb { value: -6.0 },
+            }),
+            coalesce: Some("master:1".into()),
         }),
     );
     add(
@@ -326,8 +338,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                     Command::RemoveCue { id: cue_id(11) },
                 ],
             }),
+            coalesce: None,
         }),
     );
+    for (name, command) in model_commands() {
+        add(
+            &format!("command_{name}"),
+            client(ClientMessage::Command {
+                id: rid(4),
+                command: Box::new(command),
+                coalesce: None,
+            }),
+        );
+    }
     for (i, (name, action)) in all_actions().into_iter().enumerate() {
         let file = if i == 0 {
             "transport".to_owned()
@@ -590,6 +613,34 @@ fn fixtures() -> Vec<(String, Sample)> {
                     entries: all_log_kinds().into_iter().map(log_entry_sample).collect(),
                     dropped: 2,
                 }),
+            }),
+        }),
+    );
+    add(
+        "result_preshow_check",
+        server(ServerMessage::Result {
+            id: rid(49),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PreshowCheck(Box::new(preshow_report_sample()))),
+            }),
+        }),
+    );
+    add(
+        "result_preshow_check_ok",
+        server(ServerMessage::Result {
+            id: rid(50),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PreshowCheck(Box::new(PreshowReport {
+                    ok: true,
+                    summary: PreshowSummary::default(),
+                    broken_cues: vec![],
+                    media: vec![],
+                    patches: vec![],
+                    network: vec![],
+                    system: vec![],
+                }))),
             }),
         }),
     );
@@ -941,7 +992,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 11);
+    assert_eq!(all_requests().len(), 12);
 }
 
 #[test]
@@ -1920,6 +1971,120 @@ fn log_kind_idx(k: LogKind) -> usize {
     }
 }
 
+/// Every shape of the pre-show report: both media and destination statuses, a patch the
+/// workspace has and one it lacks, a number-less cue, a system notice.
+fn preshow_report_sample() -> PreshowReport {
+    // Exhaustive: a new status without a sample stops compiling here.
+    for status in [PreshowMediaStatus::Missing, PreshowMediaStatus::Unsupported] {
+        match status {
+            PreshowMediaStatus::Missing | PreshowMediaStatus::Unsupported => {}
+        }
+    }
+    for status in [
+        PreshowTargetStatus::Missing,
+        PreshowTargetStatus::NotChecked,
+    ] {
+        match status {
+            PreshowTargetStatus::Missing | PreshowTargetStatus::NotChecked => {}
+        }
+    }
+    PreshowReport {
+        ok: false,
+        summary: PreshowSummary {
+            broken_cues: 2,
+            media: 2,
+            patches: 2,
+            network: 1,
+            network_unchecked: 1,
+            system: 1,
+            total: 3,
+        },
+        broken_cues: vec![
+            PreshowCue {
+                cue: cue_id(10),
+                list: list_id(1),
+                number: Some("3".into()),
+                name: "Storm".into(),
+                problems: vec![WireProblem::MediaMissing {
+                    media: MediaRef::new("/Shows/storm.wav"),
+                }],
+            },
+            PreshowCue {
+                cue: cue_id(11),
+                list: list_id(1),
+                number: None,
+                name: String::new(),
+                problems: vec![
+                    WireProblem::MediaUnsupported {
+                        media: MediaRef::new("/Shows/rain.mp3"),
+                        reason: "unsupported codec".into(),
+                    },
+                    WireProblem::PatchMissing { patch: patch_id(9) },
+                ],
+            },
+        ],
+        media: vec![
+            PreshowMedia {
+                path: "/Shows/rain.mp3".into(),
+                status: PreshowMediaStatus::Unsupported,
+                reason: Some("unsupported codec".into()),
+                cues: vec![cue_id(11)],
+            },
+            PreshowMedia {
+                path: "/Shows/storm.wav".into(),
+                status: PreshowMediaStatus::Missing,
+                reason: None,
+                cues: vec![cue_id(10)],
+            },
+        ],
+        patches: vec![
+            PreshowPatch {
+                patch: patch_id(1),
+                name: Some("Main".into()),
+                device: Some("Scarlett 2i2".into()),
+                mapped: true,
+                resolution: Some(WireResolution::DeviceMissing {
+                    device: "Scarlett 2i2".into(),
+                }),
+                cues: vec![cue_id(10)],
+            },
+            PreshowPatch {
+                patch: patch_id(9),
+                name: None,
+                device: None,
+                mapped: false,
+                resolution: None,
+                cues: vec![cue_id(11)],
+            },
+        ],
+        network: vec![
+            PreshowTarget {
+                patch: net_id(1),
+                name: Some("Lighting".into()),
+                host: Some("10.0.0.5".into()),
+                port: Some(8000),
+                protocol: Some(NetworkProtocol::Udp),
+                status: PreshowTargetStatus::NotChecked,
+                cues: vec![cue_id(12)],
+            },
+            PreshowTarget {
+                patch: net_id(2),
+                name: None,
+                host: None,
+                port: None,
+                protocol: None,
+                status: PreshowTargetStatus::Missing,
+                cues: vec![cue_id(13)],
+            },
+        ],
+        system: vec![WireWarning::Notice {
+            code: "device_lost".into(),
+            message: "audio device \"Scarlett 2i2\" is lost".into(),
+            cue: None,
+        }],
+    }
+}
+
 fn log_entry_sample(kind: LogKind) -> LogEntry {
     let with_cue = matches!(
         kind,
@@ -2070,6 +2235,262 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
                 message: "message".into(),
             }),
         );
+    }
+}
+
+/// One sample of every command that edits more than the cue tree (M1.12), named for its
+/// fixture.
+fn model_commands() -> Vec<(String, Command)> {
+    let net = NetworkPatch {
+        id: net_id(4),
+        name: "Lights".into(),
+        host: "10.0.0.7".into(),
+        port: 8000,
+        protocol: NetworkProtocol::Udp,
+    };
+    vec![
+        (
+            "add_patch",
+            Command::AddPatch {
+                index: 1,
+                patch: patch(2, 4),
+            },
+        ),
+        (
+            "remove_patch",
+            Command::RemovePatch {
+                id: patch_id(2),
+                even_if_used: false,
+            },
+        ),
+        (
+            "remove_patch_even_if_used",
+            Command::RemovePatch {
+                id: patch_id(2),
+                even_if_used: true,
+            },
+        ),
+        (
+            "move_patch",
+            Command::MovePatch {
+                id: patch_id(2),
+                index: 0,
+            },
+        ),
+        (
+            "add_network_patch",
+            Command::AddNetworkPatch {
+                index: 0,
+                patch: net,
+            },
+        ),
+        (
+            "remove_network_patch",
+            Command::RemoveNetworkPatch {
+                id: net_id(4),
+                even_if_used: false,
+            },
+        ),
+        (
+            "move_network_patch",
+            Command::MoveNetworkPatch {
+                id: net_id(4),
+                index: 0,
+            },
+        ),
+        (
+            "add_cue_list",
+            Command::AddCueList {
+                index: 1,
+                id: list_id(5),
+                name: "Understudy".into(),
+            },
+        ),
+        ("remove_cue_list", Command::RemoveCueList { id: list_id(5) }),
+        (
+            "move_cue_list",
+            Command::MoveCueList {
+                id: list_id(5),
+                index: 0,
+            },
+        ),
+        (
+            "rename_cue_list",
+            Command::RenameCueList {
+                id: list_id(5),
+                name: "Act 2".into(),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(name, command)| (name.to_owned(), command))
+    .chain(property_commands())
+    .collect()
+}
+
+/// One sample of every tagged variant of the setting and property enums, named by its tag.
+fn property_commands() -> Vec<(String, Command)> {
+    let settings = [
+        WorkspaceSetting::MinGoInterval { value: 2.0 },
+        WorkspaceSetting::PanicDuration { value: 1.5 },
+        WorkspaceSetting::AutosaveInterval { value: 60.0 },
+        WorkspaceSetting::OscPasscode { value: None },
+        WorkspaceSetting::MasterDb { value: -6.0 },
+        WorkspaceSetting::Hotkey {
+            key: TransportKey::StopAll,
+            value: Some(Hotkey {
+                key: "f1".into(),
+                modifiers: Modifiers::default(),
+            }),
+        },
+        WorkspaceSetting::AutoNumberStart { value: 10.0 },
+        WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
+    ];
+    let properties = [
+        PatchProperty::Name {
+            value: "FOH".into(),
+        },
+        PatchProperty::MasterDb { value: -3.0 },
+        PatchProperty::OutputLevel {
+            output: 1,
+            value: -3.0,
+        },
+        PatchProperty::OutputMute {
+            output: 0,
+            value: true,
+        },
+        PatchProperty::OutputDelay {
+            output: 1,
+            value: 12.5,
+        },
+        PatchProperty::OutputPolarity {
+            output: 0,
+            value: true,
+        },
+        PatchProperty::ChannelCount { value: 6 },
+        PatchProperty::Outputs {
+            value: vec![patch_output(); 2],
+        },
+    ];
+    let network = [
+        NetworkPatchProperty::Name {
+            value: "Lights".into(),
+        },
+        NetworkPatchProperty::Host {
+            value: "192.168.1.9".into(),
+        },
+        NetworkPatchProperty::Port { value: 65535 },
+        NetworkPatchProperty::Protocol {
+            value: NetworkProtocol::Tcp,
+        },
+    ];
+    let mut out = Vec::new();
+    for setting in settings {
+        out.push((
+            format!("set_workspace_setting_{}", tag(&setting)),
+            Command::SetWorkspaceSetting { setting },
+        ));
+    }
+    for property in properties {
+        out.push((
+            format!("set_patch_property_{}", tag(&property)),
+            Command::SetPatchProperty {
+                id: patch_id(2),
+                property,
+            },
+        ));
+    }
+    for property in network {
+        out.push((
+            format!("set_network_patch_property_{}", tag(&property)),
+            Command::SetNetworkPatchProperty {
+                id: net_id(4),
+                property,
+            },
+        ));
+    }
+    out
+}
+
+const MODEL_COMMAND_COUNT: usize = 13;
+/// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
+/// stops compiling here until it has an index and a sample in [`model_commands`].
+fn model_command_idx(c: &Command) -> Option<usize> {
+    Some(match c {
+        Command::AddCue { .. }
+        | Command::Paste { .. }
+        | Command::RemoveCue { .. }
+        | Command::MoveCue { .. }
+        | Command::ReparentCue { .. }
+        | Command::SetCueProperty { .. }
+        | Command::BatchSet { .. }
+        | Command::SetCueNumbers { .. }
+        | Command::Renumber { .. }
+        | Command::Transaction { .. } => return None,
+        Command::SetWorkspaceSetting { .. } => 0,
+        Command::AddPatch { .. } => 1,
+        Command::RemovePatch { .. } => 2,
+        Command::MovePatch { .. } => 3,
+        Command::SetPatchProperty { .. } => 4,
+        Command::AddNetworkPatch { .. } => 5,
+        Command::RemoveNetworkPatch { .. } => 6,
+        Command::MoveNetworkPatch { .. } => 7,
+        Command::SetNetworkPatchProperty { .. } => 8,
+        Command::AddCueList { .. } => 9,
+        Command::RemoveCueList { .. } => 10,
+        Command::MoveCueList { .. } => 11,
+        Command::RenameCueList { .. } => 12,
+    })
+}
+
+#[test]
+fn every_model_command_and_nested_shape_has_a_fixture_sample() {
+    assert_covered(
+        "model commands",
+        model_commands()
+            .iter()
+            .filter_map(|(_, c)| model_command_idx(c)),
+        MODEL_COMMAND_COUNT,
+    );
+    let tags: BTreeSet<String> = model_commands().iter().map(|(_, c)| tag(c)).collect();
+    assert_eq!(tags.len(), MODEL_COMMAND_COUNT);
+}
+
+#[test]
+fn the_default_even_if_used_is_left_out_and_read_back() {
+    let json = serde_json::to_value(Command::RemovePatch {
+        id: patch_id(2),
+        even_if_used: false,
+    })
+    .unwrap();
+    assert!(json.get("even_if_used").is_none());
+    let back: Command = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        back,
+        Command::RemovePatch {
+            id: patch_id(2),
+            even_if_used: false
+        }
+    );
+}
+
+#[test]
+fn a_coalesce_key_round_trips_and_is_optional() {
+    let msg = ClientMessage::Command {
+        id: rid(9),
+        command: Box::new(Command::RenameCueList {
+            id: list_id(5),
+            name: "x".into(),
+        }),
+        coalesce: Some("rename:1".into()),
+    };
+    let text = encode_client(&msg).unwrap();
+    assert_eq!(decode_client(&text).unwrap(), msg);
+    let no_key = text.replace(r#","coalesce":"rename:1""#, "");
+    assert!(!no_key.contains("coalesce"));
+    match decode_client(&no_key).unwrap() {
+        ClientMessage::Command { coalesce, .. } => assert_eq!(coalesce, None),
+        other => panic!("{other:?}"),
     }
 }
 
@@ -2390,6 +2811,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
+        Just(Request::PreshowCheck),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
     ]
@@ -2397,6 +2819,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
 
 fn arb_command() -> impl Strategy<Value = Command> {
     prop_oneof![
+        arb_text().prop_map(|value| Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OscPasscode { value: Some(value) }
+        }),
+        (arb_text(), 0usize..9).prop_map(|(name, index)| Command::AddCueList {
+            index,
+            id: list_id(7),
+            name
+        }),
+        (0usize..70, arb_time()).prop_map(|(output, value)| Command::SetPatchProperty {
+            id: patch_id(1),
+            property: PatchProperty::OutputLevel { output, value }
+        }),
         arb_cue().prop_map(|id| Command::RemoveCue { id }),
         (arb_cue(), arb_text()).prop_map(|(id, value)| Command::SetCueProperty {
             id,
@@ -2427,10 +2861,16 @@ fn arb_client() -> impl Strategy<Value = ClientMessage> {
                 }
             }
         ),
-        (any::<u64>(), arb_command()).prop_map(|(id, command)| ClientMessage::Command {
-            id: rid(id),
-            command: Box::new(command)
-        }),
+        (
+            any::<u64>(),
+            arb_command(),
+            proptest::option::of(arb_text())
+        )
+            .prop_map(|(id, command, coalesce)| ClientMessage::Command {
+                id: rid(id),
+                command: Box::new(command),
+                coalesce
+            }),
         (any::<u64>(), arb_action()).prop_map(|(id, action)| transport(id, action)),
         any::<u64>().prop_map(|id| ClientMessage::Undo { id: rid(id) }),
         any::<u64>().prop_map(|id| ClientMessage::Redo { id: rid(id) }),

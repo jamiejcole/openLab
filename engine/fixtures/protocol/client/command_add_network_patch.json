@@ -1,0 +1,15 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_network_patch",
+    "index": 0,
+    "patch": {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "name": "Lights",
+      "host": "10.0.0.7",
+      "port": 8000,
+      "protocol": "udp"
+    }
+  }
+}

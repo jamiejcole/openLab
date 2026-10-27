@@ -110,7 +110,11 @@ impl OscInput {
     pub fn into_client_message(self, id: RequestId) -> ClientMessage {
         match self {
             Self::Transport(action) => ClientMessage::Transport { id, action },
-            Self::Command(command) => ClientMessage::Command { id, command },
+            Self::Command(command) => ClientMessage::Command {
+                id,
+                command,
+                coalesce: None,
+            },
         }
     }
 }

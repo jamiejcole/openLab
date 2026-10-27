@@ -187,6 +187,7 @@ fn command(s: &mut OfflineShow, command: Command) -> Vec<ServerMessage> {
     s.send(ClientMessage::Command {
         id,
         command: Box::new(command),
+        coalesce: None,
     })
 }
 
