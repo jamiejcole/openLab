@@ -442,6 +442,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// of millions of frames per channel (out of memory); rates below 8 kHz are now unplayable.
 /// `flac-damaged-no-checkpoints.flac`: damage in a file too short for a seek checkpoint asked
 /// for checkpoint 0 and underflowed (only with `cfg(fuzzing)`, where symphonia skips FLAC CRCs).
+/// `id3-wav-extensible-mask-shift.wav`: an ID3 tag hid a 64-channel extensible WAV from the header
+/// check, and symphonia 0.6.1 overflowed a shift fixing its channel mask; the embedded header is
+/// now found and rejected first.
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
