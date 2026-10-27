@@ -78,6 +78,8 @@ Paths are never empty, and the paths of `open` and `save_as` must be absolute (`
 
 #### Replacing the workspace (M4.4)
 
+> Superseded by M4.15: connections bind to one of several open workspaces, `new`/`open` open another instead of replacing, `revert` is removed and `close` is added (ARCHITECTURE §6). This section describes the one-workspace behaviour the code still has until M4.15f/g land.
+
 `new`, `open`, `open_recovery` and `revert` replace the workspace the engine holds:
 
 - **They stop everything first**: every running cue is hard-stopped (no fade), as if Panic were pressed twice, then the workspace, undo history, cue engine state and media catalog are rebuilt. This is the engine's own choice (QLab closes a workspace by stopping it); the UI should confirm with the operator when cues are running (SM-05) before sending the request.
