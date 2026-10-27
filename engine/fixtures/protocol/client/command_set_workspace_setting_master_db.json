@@ -1,0 +1,11 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_workspace_setting",
+    "setting": {
+      "type": "master_db",
+      "value": -6.0
+    }
+  }
+}

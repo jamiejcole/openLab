@@ -735,6 +735,7 @@ impl Control {
             }
             Request::Snapshot
             | Request::ListDevices
+            | Request::PreshowCheck
             | Request::LogTail { .. }
             | Request::Relink { .. } => {}
         }
