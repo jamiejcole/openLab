@@ -406,12 +406,33 @@ fn a_frozen_sample_clock_does_not_spin_the_loop() {
     assert!(s.rendered() > before);
 }
 
-/// A stall with nothing due waits the full bound; a message is not delayed by the floor (the
-/// runner's `recv_timeout` returns at once), and its tick sees the stall as before.
+/// A stall with nothing due waits the full bound.
 #[test]
-fn a_stall_floor_never_exceeds_the_idle_wait() {
+fn an_idle_stalled_loop_waits_the_full_bound() {
     let mut s = show(workspace(vec![]));
     s.run(BLOCK);
     let hints = hints_while_frozen(&mut s, 5);
     assert!(hints.iter().all(|h| *h == MAX_WAIT));
+}
+
+/// The floor is a quarter block at most: a small device block (here 16 frames = 2 ms) gets a
+/// floor under 1 ms, and a deadline entering the window is still started on its sample.
+#[test]
+fn a_small_block_keeps_its_floor_below_the_window() {
+    use openlab_engine::control::stall_floor;
+    assert_eq!(stall_floor(64, 8000), std::time::Duration::from_millis(1));
+    assert_eq!(
+        stall_floor(64, 48000),
+        std::time::Duration::from_secs_f64(64.0 / 48000.0 / 4.0)
+    );
+    let path = wav(&dc(200, 0.5));
+    let mut c = audio(1, &path, 0);
+    c.pre_wait = secs(1000);
+    let ws = workspace(vec![c]);
+    let mut cfg = config(&ws);
+    cfg.block_frames = 16;
+    let mut s = show_with(ws, cfg);
+    let at = go(&mut s) as usize;
+    s.run(2000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at + 1000));
 }
