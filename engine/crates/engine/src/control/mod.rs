@@ -40,7 +40,8 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
+    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, model_changes_indexed,
+    seconds_to_samples,
 };
 
 pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
@@ -246,6 +247,9 @@ pub struct Control {
     primes_dirty: bool,
     warnings_dirty: bool,
     warnings: Vec<WireWarning>,
+    /// Edits whose `model_changed` was found by walking the workspace (the cue index could
+    /// not serve; a cost measure).
+    model_change_walks: u64,
     /// A `document` / `warnings` message did not fit the outbound channel: send the latest
     /// again once there is room.
     resend_document: bool,
@@ -338,6 +342,7 @@ impl Control {
             primes_dirty: true,
             warnings_dirty: true,
             warnings: Vec::new(),
+            model_change_walks: 0,
             resend_document: false,
             resend_warnings: false,
             seen: Seen::default(),
@@ -650,13 +655,19 @@ impl Control {
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
         self.engine.model_changed_cues(footprint);
         self.revision += 1;
-        let (upserts, deletes) = model_changes(&self.ws, footprint);
+        // The catalog's cue index follows the edit first; the changes are read through it, at
+        // the cost of the edit's cues (M4.12c). The walk is the fallback.
+        self.media.sync_cues(&self.ws, footprint);
+        let (upserts, deletes) = model_changes_indexed(&self.ws, footprint, self.media.index())
+            .unwrap_or_else(|| {
+                self.model_change_walks += 1;
+                model_changes(&self.ws, footprint)
+            });
         self.out.send(ServerMessage::ModelChanged {
             revision: self.revision,
             upserts,
             deletes,
         });
-        self.media.sync_cues(&self.ws, footprint);
         self.sync_workspace(false)
     }
 
@@ -1372,7 +1383,7 @@ impl Control {
                 None,
             ));
         }
-        for (cue, e) in self.checks.check(&self.ws, &self.media, self.rate) {
+        for (cue, e) in self.checks.check(&self.ws, &mut self.media, self.rate) {
             list.push(notice(
                 "bad_plan",
                 format!("the cue's slices cannot be played: {e}"),
@@ -1543,6 +1554,24 @@ impl Control {
     /// only the cues it changed).
     pub fn plan_builds(&self) -> u64 {
         self.checks.builds()
+    }
+
+    /// Cues the `bad_plan` checks have looked at so far (a cost measure: an edit looks at the
+    /// cues it touched, M4.12c).
+    pub fn plan_cues_examined(&self) -> u64 {
+        self.checks.examined()
+    }
+
+    /// Walks of every audio cue the `bad_plan` checks made so far (a newly followed workspace;
+    /// an edit or a probe answer makes none, M4.12c).
+    pub fn plan_walks(&self) -> u64 {
+        self.checks.walks()
+    }
+
+    /// Edits whose `model_changed` walked the workspace instead of reading the cue index (a
+    /// cost measure; none for a valid workspace, M4.12c).
+    pub fn model_change_walks(&self) -> u64 {
+        self.model_change_walks
     }
 
     pub fn workspace(&self) -> &Workspace {

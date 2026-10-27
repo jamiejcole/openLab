@@ -142,9 +142,32 @@ pub struct MediaCatalog {
     uses: HashMap<CueId, Use>,
     /// Cues the catalog has read from the workspace (a full pass reads all, an edit its own).
     cues_read: u64,
+    /// What changed for the slice-plan checks since they last looked.
+    plan_changes: PlanChanges,
     /// Jobs sent to the workers (tests wait for exactly that many answers).
     #[cfg(test)]
     jobs: u64,
+}
+
+/// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked
+/// (M4.12c): kept here because the catalog sees every edit's cues and every probe change, so
+/// the checks look only at those.
+#[derive(Debug, Default)]
+pub struct PlanChanges {
+    /// The whole workspace was followed again (opened, reset, an edit that could not be
+    /// followed from its footprint): every cue may have changed.
+    pub all: bool,
+    /// Cues an edit added, removed, edited or moved (a group's descendants included when it
+    /// was added or removed).
+    pub cues: BTreeSet<CueId>,
+    /// Files whose probe changed (answered, failed, forgotten, asked afresh).
+    pub keys: BTreeSet<String>,
+}
+
+impl PlanChanges {
+    pub fn is_empty(&self) -> bool {
+        !self.all && self.cues.is_empty() && self.keys.is_empty()
+    }
 }
 
 /// One cue's use of a media file.
@@ -185,6 +208,7 @@ impl MediaCatalog {
             index: CueIndex::default(),
             uses: HashMap::new(),
             cues_read: 0,
+            plan_changes: PlanChanges::default(),
             #[cfg(test)]
             jobs: 0,
         };
@@ -236,6 +260,10 @@ impl MediaCatalog {
     /// changed their mind. Probes go out in workspace order; files near a playhead are moved
     /// ahead with [`Self::prioritize`].
     pub fn sync(&mut self, ws: &Workspace) {
+        self.plan_changes = PlanChanges {
+            all: true,
+            ..PlanChanges::default()
+        };
         let mut uses: HashMap<CueId, Use> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -332,6 +360,9 @@ impl MediaCatalog {
         }
         // Each cue once: a cue can be both touched and new.
         let seen: BTreeSet<CueId> = touched.iter().chain(&delta.fresh).copied().collect();
+        // Trims and markers change without the file: the plan checks look at every cue read.
+        self.plan_changes.cues.extend(seen.iter().copied());
+        self.plan_changes.cues.extend(delta.gone.iter().copied());
         for id in &seen {
             if !self.index.contains(*id) {
                 continue;
@@ -370,6 +401,7 @@ impl MediaCatalog {
                 && let Some(e) = self.entries.remove(key.as_str())
             {
                 self.reserved = self.reserved.saturating_sub(e.reserved);
+                self.plan_changes.keys.insert(key.clone());
             }
         }
         // New files in workspace order (the order a full sync asks in).
@@ -535,6 +567,10 @@ impl MediaCatalog {
         {
             self.jobs += u64::from(asked);
         }
+        // A new entry, or one that fails at once: what `media` gives may change.
+        if !asked || !self.entries.contains_key(&key) {
+            self.plan_changes.keys.insert(key.clone());
+        }
         match self.entries.get_mut(&key) {
             Some(e) => {
                 e.ticket = ticket;
@@ -600,6 +636,7 @@ impl MediaCatalog {
             {
                 e.probe = Probe::Failed;
                 e.timed_out = true;
+                self.plan_changes.keys.insert(key.clone());
                 out.push((
                     MediaRef::new(key),
                     MediaStatus::Unsupported {
@@ -636,6 +673,7 @@ impl MediaCatalog {
                 };
                 let ready = matches!(probe, Probe::Ready(_));
                 entry.probe = probe;
+                self.plan_changes.keys.insert(key.clone());
                 entry.preloaded = None;
                 self.reserved = self.reserved.saturating_sub(entry.reserved);
                 entry.reserved = 0;
@@ -675,6 +713,24 @@ impl MediaCatalog {
 
     pub fn get(&self, key: &str) -> Option<&Probe> {
         self.entries.get(key).map(|e| &e.probe)
+    }
+
+    /// The probe of `key`, if it is playable (what a plan is built from; no path is cloned).
+    pub fn ready(&self, key: &str) -> Option<&Arc<Ready>> {
+        match &self.entries.get(key)?.probe {
+            Probe::Ready(ready) => Some(ready),
+            Probe::Pending | Probe::Failed => None,
+        }
+    }
+
+    /// Where every cue is, in step with the workspace after `sync` or `sync_cues`.
+    pub fn index(&self) -> &CueIndex {
+        &self.index
+    }
+
+    /// What may have changed the slice-plan checks since this was last called.
+    pub fn take_plan_changes(&mut self) -> PlanChanges {
+        std::mem::take(&mut self.plan_changes)
     }
 
     /// What a stream of `key` reads: its preloaded samples if it has them, else the file.
@@ -891,7 +947,12 @@ mod tests {
 
     /// A mono 32-bit float WAV of 100 frames (400 bytes preloaded).
     fn write_wav(dir: &Path, name: &str) -> String {
-        let data_len = 100u32 * 4;
+        write_wav_frames(dir, name, 100)
+    }
+
+    /// A mono 32-bit float WAV of `frames` frames at 8 kHz.
+    fn write_wav_frames(dir: &Path, name: &str, frames: u32) -> String {
+        let data_len = frames * 4;
         let mut v = Vec::new();
         v.extend_from_slice(b"RIFF");
         v.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -973,6 +1034,14 @@ mod tests {
             .map(|(id, u)| (*id, (u.key.clone(), u.preload)))
             .collect();
         (cat.reserved, entries, uses)
+    }
+
+    /// Random walks for the twin tests: `default` for CI, `OPENLAB_PROP_CASES` for a sweep.
+    fn sweep_seeds(default: u64) -> u64 {
+        std::env::var("OPENLAB_PROP_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
     }
 
     struct Rng(u64);
@@ -1133,7 +1202,7 @@ mod tests {
             .collect();
         let (base, template) = template();
         let (mut preloaded, mut over, mut released, mut cleared) = (0, 0, 0, 0);
-        for seed in 1..=30u64 {
+        for seed in 1..=sweep_seeds(30) {
             let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             // Room for two of the five files (400 bytes each): the rest are over budget.
             let (mut inc, rx_inc) = catalog(900);
@@ -1357,5 +1426,181 @@ mod tests {
             "the late answer did not bring the samples back"
         );
         assert_eq!(cat.preload_reserved(), 0);
+    }
+
+    // ----- slice-plan checks followed from the catalog's notes (M4.12c) -----
+
+    use super::super::checks::PlanChecks;
+    use openlab_core::SliceMarker;
+    use std::num::NonZeroU32;
+
+    const PLAN_RATE: NonZeroU32 = NonZeroU32::new(48_000).unwrap();
+
+    /// New trims, markers and counts for an audio cue (its file kept): a start past the end of
+    /// a 12.5 ms file fails, the rest plays (a marker past a short file cuts nothing).
+    fn plan_edit(ws: &Workspace, rng: &mut Rng) -> Option<Command> {
+        let audio: Vec<&Cue> = all_cues(ws)
+            .into_iter()
+            .filter_map(|(id, _)| ws.find_cue(id))
+            .filter(|c| matches!(c.kind, CueKind::Audio { .. }))
+            .collect();
+        let cue = *audio.get(rng.below(audio.len()))?;
+        let mut kind = cue.kind.clone();
+        if let CueKind::Audio {
+            start_time,
+            slices,
+            last_slice_play_count,
+            ..
+        } = &mut kind
+        {
+            *start_time = [0.0, 0.004, 0.02][rng.below(3)];
+            *slices = match rng.below(3) {
+                0 => vec![],
+                n => vec![SliceMarker {
+                    time: 0.3,
+                    play_count: u32::try_from(n).unwrap(),
+                }],
+            };
+            *last_slice_play_count = [1, 2][rng.below(2)];
+        }
+        Some(Command::SetCueProperty {
+            id: cue.id,
+            property: CueProperty::Kind { value: kind },
+        })
+    }
+
+    /// Plan checks told only what the catalog noted (the cues of each edit, the files whose
+    /// probe changed) answer exactly what a walk of every audio cue answers, after any edits,
+    /// undos and redos (groups removed and added again under their ids included), probe
+    /// answers, re-probes of files that changed length, and checks with nothing new; and they
+    /// look at what changed, not at the show.
+    #[test]
+    fn plan_checks_following_changes_equal_a_full_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..5)
+            .map(|n| write_wav(dir.path(), &format!("f{n}.wav")))
+            .collect();
+        let (base, template) = template();
+        let (mut warned, mut cleared, mut reprobed) = (0, 0, 0);
+        for seed in 1..=sweep_seeds(30) {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let (mut cat, rx) = catalog(900);
+            let mut got = 0;
+            let (mut ws, mut history, mut next) = (base.clone(), History::new(), 20_000u128);
+            cat.sync(&ws);
+            let mut checks = PlanChecks::default();
+            let mut last: Vec<(CueId, String)> = Vec::new();
+            for step in 0..80 {
+                let footprint = match rng.below(12) {
+                    0 => history
+                        .peek_undo()
+                        .map(openlab_core::Command::footprint)
+                        .filter(|_| history.undo(&mut ws).unwrap_or(false)),
+                    1 => history
+                        .peek_redo()
+                        .map(openlab_core::Command::footprint)
+                        .filter(|_| history.redo(&mut ws).unwrap_or(false)),
+                    2..=4 => plan_edit(&ws, &mut rng).and_then(|command| {
+                        let footprint = command.footprint();
+                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                    }),
+                    5 => {
+                        // A file changes length and is probed again.
+                        let n = rng.below(files.len());
+                        let frames = [100, 8000][rng.below(2)];
+                        write_wav_frames(dir.path(), &format!("f{n}.wav"), frames);
+                        cat.reprobe(&files[n]);
+                        reprobed += 1;
+                        None
+                    }
+                    6 => None,
+                    _ => {
+                        let command = random_command(&ws, &mut rng, &template, &files, &mut next);
+                        let footprint = command.footprint();
+                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                    }
+                };
+                if let Some(footprint) = &footprint {
+                    cat.sync_cues(&ws, footprint);
+                }
+                if rng.below(2) == 0 {
+                    settle(&mut cat, &rx, &mut got);
+                }
+                let got_now = checks.check(&ws, &mut cat, PLAN_RATE);
+                let reference = PlanChecks::default().check_all(&ws, &cat, PLAN_RATE);
+                assert_eq!(got_now, reference, "seed {seed} step {step}");
+                warned += got_now.iter().filter(|w| !last.contains(w)).count();
+                cleared += last.iter().filter(|w| !got_now.contains(w)).count();
+                last = got_now;
+            }
+            // Only the first check (a newly followed workspace) walked the show.
+            assert_eq!(checks.walks(), 1, "seed {seed}");
+        }
+        assert!(warned > 50, "warnings reached: {warned}");
+        assert!(cleared > 30, "warnings cleared: {cleared}");
+        assert!(reprobed > 50, "re-probes: {reprobed}");
+    }
+
+    /// The cost pin: in a show of 500 audio cues, an edit of one cue looks at that cue, a probe
+    /// answer for one file at the cues on it, and a check with nothing new at none.
+    #[test]
+    fn plan_checks_look_at_the_edit_not_the_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..5)
+            .map(|n| write_wav(dir.path(), &format!("f{n}.wav")))
+            .collect();
+        let (mut ws, template) = template();
+        let mut cues = Vec::new();
+        for n in 0..500u128 {
+            let mut c = template.clone();
+            c.id = CueId(uuid::Uuid::from_u128(30_000 + n));
+            c.number = None;
+            set_media(&mut c, &files[usize::try_from(n % 5).unwrap()], false);
+            cues.push(c);
+        }
+        let first = cues[0].id;
+        ws.cue_lists[0].cues = cues;
+        let (mut cat, rx) = catalog(0);
+        let mut got = 0;
+        cat.sync(&ws);
+        settle(&mut cat, &rx, &mut got);
+        let mut checks = PlanChecks::default();
+        checks.check(&ws, &mut cat, PLAN_RATE);
+        let examined = checks.examined();
+        checks.check(&ws, &mut cat, PLAN_RATE);
+        assert_eq!(
+            checks.examined(),
+            examined,
+            "nothing new: nothing looked at"
+        );
+
+        let mut rng = Rng(7);
+        let mut command = plan_edit(&ws, &mut rng).unwrap();
+        if let Command::SetCueProperty { id, .. } = &mut command {
+            *id = first;
+        }
+        let footprint = command.footprint();
+        ws.apply(command).unwrap();
+        cat.sync_cues(&ws, &footprint);
+        let builds = checks.builds();
+        checks.check(&ws, &mut cat, PLAN_RATE);
+        assert_eq!(checks.examined(), examined + 1, "an edit: its cue");
+        assert_eq!(checks.builds(), builds + 1);
+
+        // One file probed again: its 100 cues.
+        cat.reprobe(&files[1]);
+        settle(&mut cat, &rx, &mut got);
+        let examined = checks.examined();
+        checks.check(&ws, &mut cat, PLAN_RATE);
+        assert_eq!(
+            checks.examined(),
+            examined + 100,
+            "a probe: the cues on its file"
+        );
+        assert_eq!(
+            checks.check(&ws, &mut cat, PLAN_RATE),
+            PlanChecks::default().check_all(&ws, &cat, PLAN_RATE)
+        );
+        assert_eq!(checks.walks(), 1);
     }
 }
