@@ -305,6 +305,56 @@ fn a_transaction_that_adds_edits_moves_and_removes_is_followed() {
     assert!(!twin.inc.has_broken_descendant(id(5)));
 }
 
+fn broken_ids(twin: &Twin) -> Vec<CueId> {
+    twin.inc
+        .broken_cues()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+#[test]
+fn a_group_removed_and_added_again_under_its_id_is_followed_with_its_new_children() {
+    // Group 10 { fade 11 without a target }, memo 1.
+    let mut twin = Twin::new(vec![
+        cue(10, group(vec![cue(11, fade(99))])),
+        cue(1, CueKind::Memo),
+    ]);
+    assert_eq!(broken_ids(&twin), vec![id(11)]);
+    let at = Position {
+        list: list_id(1),
+        parent: None,
+        index: 0,
+    };
+    twin.edit(Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: id(10) },
+            Command::AddCue {
+                at: at.clone(),
+                cue: cue(10, group(vec![cue(12, fade(98))])),
+                auto_number: false,
+            },
+        ],
+    });
+    // The old child is no longer broken, the new one is.
+    assert_eq!(broken_ids(&twin), vec![id(12)]);
+    // Undo puts the old group back: the same shape again.
+    twin.undo();
+    assert_eq!(broken_ids(&twin), vec![id(11)]);
+    // The group becomes a plain cue under the same id: its child is gone with it.
+    twin.edit(Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: id(10) },
+            Command::AddCue {
+                at,
+                cue: cue(10, CueKind::Memo),
+                auto_number: false,
+            },
+        ],
+    });
+    assert!(broken_ids(&twin).is_empty());
+}
+
 #[test]
 fn an_edit_costs_what_it_touched() {
     // 2,000 audio cues, and a fade on cue 1,500.

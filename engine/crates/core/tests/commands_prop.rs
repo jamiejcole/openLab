@@ -294,6 +294,34 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
 }
 
 /// Operations 0–10 are the commands; 100 + n is `SetCueProperty` with property variant n.
+/// A transaction that removes a cue and adds a cue with the same id back (anywhere): as a
+/// group with other children, as a plain cue, or as a copy of the removed one (what undoing a
+/// removal does). The index and the problem bookkeeping must not keep the old cue's place.
+fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
+    let ids = all_ids(ws);
+    let id = choose(&ids, p.a)?;
+    let mut evolving = ws.clone();
+    let remove = Command::RemoveCue { id };
+    evolving.apply(remove.clone()).ok()?;
+    let new = match p.b % 3 {
+        0 => {
+            let kids = (0..p.c % 3)
+                .map(|_| common::cue(g.fresh().0.as_u128(), kind(&evolving, p)))
+                .collect();
+            common::cue(id.0.as_u128(), group(kids))
+        }
+        1 => common::cue(id.0.as_u128(), kind(&evolving, p)),
+        _ => ws.find_cue(id)?.clone(),
+    };
+    let add = Command::AddCue {
+        at: position(&evolving, p.c, p.d),
+        cue: new,
+        auto_number: false,
+    };
+    evolving.apply(add.clone()).ok()?;
+    Some(vec![remove, add])
+}
+
 fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     let ids = all_ids(ws);
     let id = choose(&ids, p.a);
@@ -369,6 +397,11 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             increment: [1.0, 5.0, 0.1, 0.0, f64::INFINITY, 0.5][p.d as usize % 6],
         },
         10 => {
+            if p.d % 4 == 3
+                && let Some(commands) = readd(ws, g, p)
+            {
+                return Some(Command::Transaction { commands });
+            }
             // Each inner command is built against the workspace the earlier ones leave, so a
             // cue added in the transaction can be edited, moved or removed later in it. Inner
             // commands that would be refused are left out (the whole transaction would be).
@@ -787,6 +820,7 @@ fn the_generator_exercises_every_command() {
     let mut applied: HashMap<u8, usize> = HashMap::new();
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
+    let mut readded = 0;
     for _ in 0..20 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
@@ -803,6 +837,12 @@ fn the_generator_exercises_every_command() {
             if let Command::Transaction { commands } = &command {
                 // An inner command that touches a cue an earlier one added.
                 let mut added = std::collections::HashSet::new();
+                if let [Command::RemoveCue { id: a }, Command::AddCue { cue, .. }] =
+                    commands.as_slice()
+                    && cue.id == *a
+                {
+                    readded += 1;
+                }
                 for inner in commands {
                     let fp = inner.footprint();
                     if fp
@@ -835,6 +875,10 @@ fn the_generator_exercises_every_command() {
     assert!(
         dependent >= 5,
         "only {dependent} transactions with dependent commands"
+    );
+    assert!(
+        readded >= 5,
+        "only {readded} transactions re-adding a removed id"
     );
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)

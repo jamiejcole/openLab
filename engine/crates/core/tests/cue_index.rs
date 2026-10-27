@@ -216,6 +216,52 @@ fn duplicate_ids_are_flagged_and_always_rebuilt() {
     assert_eq!(index.ancestors(id(2)).count(), 0);
 }
 
+fn replace(ws: &mut Workspace, index: &mut CueIndex, at: Position, new: Cue) -> IndexDelta {
+    let command = Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: new.id },
+            Command::AddCue {
+                at,
+                cue: new,
+                auto_number: false,
+            },
+        ],
+    };
+    ws.apply(command.clone()).unwrap();
+    follow(index, ws, &command)
+}
+
+#[test]
+fn a_cue_removed_and_added_again_under_its_id_gets_its_new_kids_and_loses_the_old() {
+    // A group replaced by a group with other kids, and by a plain cue.
+    for (new, kids) in [
+        (cue(2, group(vec![memo(9)])), vec![9u128]),
+        (memo(2), vec![]),
+    ] {
+        let mut ws = sample();
+        let mut index = CueIndex::build(&ws);
+        let delta = replace(&mut ws, &mut index, pos(None, 1), new);
+        let mut gone = delta.gone.clone();
+        gone.sort();
+        assert_eq!(gone, vec![id(3), id(4), id(5)]);
+        assert_eq!(delta.fresh.len(), kids.len());
+        for kid in kids {
+            assert!(index.contains(id(kid)));
+        }
+        assert!(!index.contains(id(3)) && !index.contains(id(5)));
+    }
+    // A plain cue replaced by a group of the same id.
+    let mut ws = sample();
+    let mut index = CueIndex::build(&ws);
+    let delta = replace(
+        &mut ws,
+        &mut index,
+        pos(None, 0),
+        cue(1, group(vec![memo(9)])),
+    );
+    assert_eq!(delta.fresh, vec![id(9)]);
+}
+
 #[test]
 fn a_changed_set_of_cue_lists_rebuilds() {
     let mut ws = sample();

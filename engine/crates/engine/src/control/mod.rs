@@ -1488,9 +1488,19 @@ impl Control {
         self.media.pending()
     }
 
+    /// Preload jobs started and not answered yet.
+    pub fn preloads_pending(&self) -> usize {
+        self.media.preloads_pending()
+    }
+
     /// Probe workers replaced because they were stuck.
     pub fn abandoned_probe_workers(&self) -> usize {
         self.media.abandoned_workers()
+    }
+
+    /// Cues the media catalog has read from the workspace (see `MediaCatalog::cues_read`).
+    pub fn media_cues_read(&self) -> u64 {
+        self.media.cues_read()
     }
 
     /// Memory taken from the preload budget.

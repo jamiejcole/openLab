@@ -439,17 +439,21 @@ fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
 
 #[test]
 fn a_cue_playing_from_a_preload_keeps_playing_when_the_preload_is_released() {
-    let path = wav(&dc(4000, 0.5));
+    let path = wav(&dc(200_000, 0.5));
     let mut c = audio(1, &path, 0);
     if let CueKind::Audio { preload, .. } = &mut c.kind {
         *preload = true;
     }
     let mut s = show(workspace(vec![c]));
-    assert_eq!(s.control().preload_reserved(), 16_000);
+    assert_eq!(s.control().preload_reserved(), 800_000);
+    s.settle_media();
     let at = go(&mut s) as usize;
     s.run(BLOCK * 8);
     set_preload(&mut s, 1, false);
     assert_eq!(s.control().preload_reserved(), 0);
+    // The file is emptied behind the voice: one that streamed from it would run dry, only one
+    // holding the preloaded samples is unaffected.
+    std::fs::write(&path, b"").unwrap();
     s.run(4000);
     let ch = s.channel(0);
     assert!(

@@ -141,6 +141,8 @@ pub struct MediaCatalog {
     /// What each audio cue with a file contributes to `entries`' counts.
     uses: HashMap<CueId, Use>,
     /// Jobs sent to the workers (tests wait for exactly that many answers).
+    /// Cues the catalog has read from the workspace (a full pass reads all, an edit its own).
+    cues_read: u64,
     #[cfg(test)]
     jobs: u64,
 }
@@ -182,6 +184,7 @@ impl MediaCatalog {
             reserved: 0,
             index: CueIndex::default(),
             uses: HashMap::new(),
+            cues_read: 0,
             #[cfg(test)]
             jobs: 0,
         };
@@ -222,7 +225,9 @@ impl MediaCatalog {
         let mut uses: HashMap<CueId, Use> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        let mut visited = 0;
         self.index = CueIndex::build_visiting(ws, |cue| {
+            visited += 1;
             if let Some((key, preload)) = media_use(cue) {
                 if seen.insert(key.to_owned()) {
                     order.push(key.to_owned());
@@ -236,6 +241,7 @@ impl MediaCatalog {
                 );
             }
         });
+        self.cues_read += visited;
         let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
         for u in uses.values() {
             let n = counts.entry(u.key.as_str()).or_default();
@@ -313,6 +319,7 @@ impl MediaCatalog {
             if !self.index.contains(*id) {
                 continue;
             }
+            self.cues_read += 1;
             let Some(cue) = self.index.locate(ws, *id) else {
                 // The footprint and the index disagree with the workspace: start over.
                 return self.sync(ws);
@@ -666,12 +673,31 @@ impl MediaCatalog {
         Some((Arc::clone(ready), media))
     }
 
+    /// Whether `key` is held in memory (a preload finished and not released).
+    pub fn is_preloaded(&self, key: &str) -> bool {
+        self.entries.get(key).is_some_and(|e| e.preloaded.is_some())
+    }
+
+    /// Preload jobs started and not answered yet.
+    pub fn preloads_pending(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|e| e.preload_ticket != 0 && e.preloaded.is_none() && !e.preload_failed)
+            .count()
+    }
+
     /// Probes still running (re-probes included).
     pub fn pending(&self) -> usize {
         self.entries
             .values()
             .filter(|e| e.asking && !e.timed_out)
             .count()
+    }
+
+    /// How many cues the catalog has read from the workspace so far: a pin on the cost of
+    /// answers and edits (an open reads every cue once; nothing else may read them all).
+    pub fn cues_read(&self) -> u64 {
+        self.cues_read
     }
 
     /// Bytes of the workspace preload budget in use.
@@ -1005,7 +1031,7 @@ mod tests {
             c
         };
         // An empty show can only be added to.
-        match if cues.is_empty() { 0 } else { rng.below(7) } {
+        match if cues.is_empty() { 0 } else { rng.below(8) } {
             0 | 1 => Command::AddCue {
                 at: position(rng),
                 cue: new_cue(rng, false),
@@ -1025,6 +1051,24 @@ mod tests {
                 id: pick(rng).0,
                 to: position(rng),
             },
+            6 => {
+                // A cue removed and added again under its id: as a group with other cues, or
+                // as a plain cue.
+                let id = pick(rng).0;
+                let group = rng.below(2) == 0;
+                let mut cue = new_cue(rng, group);
+                cue.id = id;
+                Command::Transaction {
+                    commands: vec![
+                        Command::RemoveCue { id },
+                        Command::AddCue {
+                            at: position(rng),
+                            cue,
+                            auto_number: false,
+                        },
+                    ],
+                }
+            }
             _ => {
                 // Another file and preload setting for a cue (whatever it was).
                 let mut probe = template.clone();
@@ -1125,6 +1169,75 @@ mod tests {
             cleared > 5,
             "over-budget flags cleared by a release: {cleared}"
         );
+    }
+
+    /// A group removed and added again under its id in one edit: the new group's file is
+    /// probed and counted, the old one's is forgotten (with its preload).
+    #[test]
+    fn a_group_replaced_under_its_id_moves_its_files_users_to_the_new_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old_file, new_file) = (
+            write_wav(dir.path(), "old.wav"),
+            write_wav(dir.path(), "new.wav"),
+        );
+        let (mut ws, template) = template();
+        let mut old_child = template.clone();
+        set_media(&mut old_child, &old_file, true);
+        let mut new_child = template.clone();
+        new_child.id = CueId(uuid::Uuid::from_u128(10_003));
+        set_media(&mut new_child, &new_file, true);
+        let group = |id: u128, child: Cue| Cue {
+            id: CueId(uuid::Uuid::from_u128(id)),
+            kind: CueKind::Group {
+                mode: GroupMode::Timeline,
+                children: vec![child],
+            },
+            number: None,
+            ..template.clone()
+        };
+        ws.cue_lists[0].cues = vec![group(10_001, old_child)];
+        let (mut inc, rx_inc) = catalog(10_000);
+        let (mut full, rx_full) = catalog(10_000);
+        let (mut got_inc, mut got_full) = (0, 0);
+        inc.sync(&ws);
+        full.sync(&ws);
+        settle(&mut inc, &rx_inc, &mut got_inc);
+        settle(&mut full, &rx_full, &mut got_full);
+        assert_eq!(inc.preload_reserved(), 400);
+        let command = Command::Transaction {
+            commands: vec![
+                Command::RemoveCue {
+                    id: CueId(uuid::Uuid::from_u128(10_001)),
+                },
+                Command::AddCue {
+                    at: Position {
+                        list: ws.cue_lists[0].id,
+                        parent: None,
+                        index: 0,
+                    },
+                    cue: group(10_001, new_child),
+                    auto_number: false,
+                },
+            ],
+        };
+        let footprint = command.footprint();
+        ws.apply(command).unwrap();
+        inc.sync_cues(&ws, &footprint);
+        full.sync(&ws);
+        assert!(inc.index.matches(&ws));
+        assert_eq!(view(&inc), view(&full));
+        settle(&mut inc, &rx_inc, &mut got_inc);
+        settle(&mut full, &rx_full, &mut got_full);
+        assert_eq!(view(&inc), view(&full));
+        assert!(
+            inc.get(&new_file).is_some(),
+            "the new child's file is probed"
+        );
+        assert!(
+            inc.get(&old_file).is_none(),
+            "the old child's file is forgotten"
+        );
+        assert_eq!(inc.preload_reserved(), 400, "one preload, the new file's");
     }
 
     #[test]

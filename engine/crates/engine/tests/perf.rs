@@ -373,7 +373,12 @@ fn probe_answers_do_not_rescan_the_workspace() {
     // workspace and its edits come in, so an answer reads a counter; no scan exists to count.
     let path = show_file(&big_workspace());
     let (mut s, _) = open(&path);
+    s.settle_media();
+    // Opening read every cue once; the thousands of probe answers read none.
+    let opened = s.control().media_cues_read();
+    assert!(opened >= 2_000, "the open reads the cues: {opened}");
     s.run(BLOCK * 4);
+    assert_eq!(s.control().media_cues_read(), opened, "answers read no cue");
     // An edit that adds a file that wants preloading: its answer sees the new model.
     let wav = wav(&dc(64, 0.5));
     let mut c = audio(9_000_002, &wav, 0);
@@ -393,6 +398,11 @@ fn probe_answers_do_not_rescan_the_workspace() {
         },
     );
     s.settle_media();
+    assert!(
+        s.control().media_cues_read() <= opened + 2,
+        "an edit and its answer read their own cue, not the show: {} cues",
+        s.control().media_cues_read() - opened
+    );
     assert!(
         s.control().preload_reserved() > 0,
         "the new cue is preloaded"

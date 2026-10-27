@@ -147,6 +147,9 @@ struct Prime {
 struct Sig {
     media: String,
     probe: usize,
+    /// Built from the preloaded samples: a stream primed from disk before a preload landed is
+    /// replaced, and one primed from memory is when the preload is released.
+    preloaded: bool,
     start: u64,
     end: Option<u64>,
     marks: Vec<(u64, u32)>,
@@ -1304,6 +1307,7 @@ fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
     Some(Sig {
         media: media.as_str().to_owned(),
         probe: Arc::as_ptr(ready) as usize,
+        preloaded: env.media.is_preloaded(media.as_str()),
         start: start_time.to_bits(),
         end: end_time.map(f64::to_bits),
         marks: slices
