@@ -475,7 +475,11 @@ fn answers_with_snapshot(message: &ClientMessage) -> bool {
     matches!(
         message,
         ClientMessage::Request {
-            request: Request::Snapshot | Request::Open { .. } | Request::New | Request::Revert,
+            request: Request::Snapshot
+                | Request::Open { .. }
+                | Request::OpenRecovery { .. }
+                | Request::New { .. }
+                | Request::Revert { .. },
             ..
         }
     )

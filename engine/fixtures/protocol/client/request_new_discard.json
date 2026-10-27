@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 60,
+  "request": {
+    "type": "new",
+    "discard_changes": true
+  }
+}
