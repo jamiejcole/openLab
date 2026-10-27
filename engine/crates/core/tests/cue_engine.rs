@@ -449,8 +449,7 @@ fn disarmed_cue_skips_its_action_but_keeps_timing_and_continue() {
 }
 
 #[test]
-fn unsupported_kind_warns_completes_at_once_and_continues() {
-    // Network cues come with M4.6.
+fn network_cue_sends_completes_at_once_and_continues() {
     let send = timed(
         cue(
             1,
@@ -466,10 +465,11 @@ fn unsupported_kind_warns_completes_at_once_and_continues() {
     );
     let mut rig = Rig::new(vec![send, memo(2), sound(10)]);
     let go = rig.go(0);
-    assert_eq!(
-        warnings(&go),
-        vec![EngineWarning::Unsupported { cue: id(1) }]
-    );
+    assert!(warnings(&go).is_empty());
+    assert!(go.iter().any(|a| matches!(
+        a,
+        Action::SendOsc { cue, address, .. } if *cue == id(1) && address == "/go"
+    )));
     assert_eq!(rig.state(10), CueState::Idle);
     assert_eq!(running_at(&go, 2), Some(0));
     assert!(go.iter().all(|a| !is_voice_action(a)));

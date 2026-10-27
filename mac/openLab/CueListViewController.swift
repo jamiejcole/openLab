@@ -107,7 +107,7 @@ final class CueCell: NSTableCellView {
 /// until then). Each window has its own view controller, so each has its own selected list.
 /// It mirrors the store's tree in `CueNode`s and applies `StoreChange`s as row inserts, removals,
 /// moves and reloads; it reloads the whole table only for a snapshot or when it has lost sync.
-/// Read-only: editing, drag and drop and transport keys come later (M5.10, M5.11).
+/// Editing goes through `CueEditor`; this class only offers the drag and drop, which it hands to `onMove`.
 @MainActor
 final class CueListViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     /// QLab order. The first and last columns carry no title.
@@ -169,6 +169,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
+        outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
+        outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
@@ -233,6 +235,27 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         chosenList = id
         sentPlayhead = nil
         rebuild()
+    }
+
+    /// Show Mode: rows cannot be dragged and nothing can be dropped.
+    var isEditLocked = false
+    /// A validated drop: the cues go before child `index` of the parent (nil: top level).
+    var onMove: (([ModelID], ModelID?, Int) -> Void)?
+    private var dragged: [CueNode] = []
+    static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
+
+    /// Selects and shows `ids` as a click would: the inspector follows and the playhead moves.
+    func selectAsUser(_ ids: [ModelID]) {
+        for id in ids {
+            var p = nodes[id]?.parent
+            while let a = p {
+                outlineView.expandItem(a)
+                p = a.parent
+            }
+        }
+        let rows = IndexSet(ids.compactMap { nodes[$0] }.map { outlineView.row(forItem: $0) }.filter { $0 >= 0 })
+        outlineView.selectRowIndexes(rows, byExtendingSelection: false)
+        if let row = rows.first { outlineView.scrollRowToVisible(row) }
     }
 
     /// Told of every selection change (the inspector follows it).
@@ -512,6 +535,106 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         (item as? CueNode)?.isGroup ?? false
+    }
+
+    // MARK: Drag and drop
+
+    func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
+        guard !isEditLocked, let node = item as? CueNode else { return nil }
+        let pb = NSPasteboardItem()
+        pb.setString(node.id.raw, forType: Self.dragType)
+        return pb
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint,
+        forItems draggedItems: [Any]
+    ) {
+        let items = draggedItems.compactMap { $0 as? CueNode }
+        // Dragging a selected row drags the whole selection, in list order.
+        let selected = selectedIDs().compactMap { nodes[$0] }
+        dragged = CueEditor.topLevel(selected.contains { n in items.contains { $0 === n } } ? selected : items)
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        dragged = []
+    }
+
+    /// Where a drop lands, as (parent, index): dropping on a group puts the cue at its end, on any
+    /// other cue after it.
+    private func dropTarget(_ item: Any?, _ index: Int) -> (parent: CueNode?, index: Int) {
+        let node = item as? CueNode
+        if index != NSOutlineViewDropOnItemIndex { return (node, index) }
+        guard let node else { return (nil, roots.count) }
+        if node.isGroup { return (node, node.children.count) }
+        let siblings = node.parent?.children ?? roots
+        return (node.parent, (siblings.firstIndex { $0 === node } ?? siblings.count - 1) + 1)
+    }
+
+    /// What a drop of files from Finder would do.
+    enum FileDrop: Equatable {
+        case replace(ModelID, URL)
+        case insert([URL], ModelID?, Int)
+    }
+
+    var onFileDrop: ((FileDrop) -> Void)?
+
+    /// The file URLs of a drag from Finder (empty for a drag of our own rows).
+    private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
+        guard dragged.isEmpty else { return [] }
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
+    /// What a file drop does, or nil to refuse it: all audio files, nothing in Show Mode. A single
+    /// file dropped on an audio cue's row replaces its file; anything else makes cues where it lands.
+    func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
+        guard !isEditLocked, CueEditor.hasAudioExtensions(urls) else { return nil }
+        if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
+            node.cue.kindType == "audio"
+        {
+            return .replace(node.id, urls[0])
+        }
+        let target = dropTarget(item, index)
+        return .insert(urls, target.parent?.id, target.index)
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
+        proposedChildIndex index: Int
+    ) -> NSDragOperation {
+        let files = fileURLs(info)
+        if !files.isEmpty {
+            guard let plan = fileDropPlan(files, item: item, index: index) else { return [] }
+            if case .insert(_, let parent, let at) = plan {
+                outlineView.setDropItem(parent.flatMap { nodes[$0] }, dropChildIndex: at)
+            }
+            return .copy
+        }
+        guard !isEditLocked, !dragged.isEmpty else { return [] }
+        let target = dropTarget(item, index)
+        guard CueEditor.canDrop(dragged, into: target.parent) else { return [] }
+        outlineView.setDropItem(target.parent, dropChildIndex: target.index)
+        return .move
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
+    ) -> Bool {
+        let files = fileURLs(info)
+        if !files.isEmpty {
+            guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
+            onFileDrop?(plan)
+            return true
+        }
+        guard !isEditLocked, !dragged.isEmpty else { return false }
+        let target = dropTarget(item, index)
+        guard CueEditor.canDrop(dragged, into: target.parent) else { return false }
+        onMove?(dragged.map(\.id), target.parent?.id, target.index)
+        return true
     }
 
     // MARK: NSOutlineViewDelegate

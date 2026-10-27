@@ -10,6 +10,6 @@ final class MainMenuTests: XCTestCase {
         let titles = MainMenu.make().bar.items.compactMap {
             $0.submenu?.title
         }
-        XCTAssertEqual(titles, ["openLab", "File", "Edit", "View", "Transport", "Window", "Help"])
+        XCTAssertEqual(titles, ["openLab", "File", "Edit", "Cues", "View", "Transport", "Window", "Help"])
     }
 }
