@@ -763,6 +763,7 @@ impl Control {
             }
             Request::Snapshot
             | Request::ListDevices
+            | Request::SetOutputOverrides { .. }
             | Request::PreshowCheck
             | Request::LogTail { .. }
             | Request::Relink { .. } => {}

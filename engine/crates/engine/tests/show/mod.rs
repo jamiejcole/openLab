@@ -21,6 +21,7 @@ use openlab_core::{
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
+use openlab_engine::control::watch::WatchMode;
 use uuid::Uuid;
 
 pub mod device;
@@ -178,6 +179,8 @@ pub fn mixer_config() -> MixerConfig {
 pub fn config(ws: &Workspace) -> ControlConfig {
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
+    // No watch thread: a test runs passes itself (`OfflineShow::watch_pass`).
+    c.watch.mode = WatchMode::Manual;
     c.devices = vec![DeviceInfo {
         name: "Offline".into(),
         output_channels: 2,

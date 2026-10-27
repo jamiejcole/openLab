@@ -511,12 +511,17 @@ impl CueEngine {
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
             Input::MediaStatus { media, status } => {
-                self.availability(vec![(media, status)], Vec::new(), cx);
+                self.availability(vec![(media, status)], Vec::new(), Vec::new(), cx);
             }
             Input::PatchStatus { patch, resolution } => {
-                self.availability(Vec::new(), vec![(patch, resolution)], cx);
+                self.availability(Vec::new(), vec![(patch, resolution)], Vec::new(), cx);
             }
-            Input::Availability { media, patches } => self.availability(media, patches, cx),
+            Input::Availability { media, patches } => {
+                self.availability(media, patches, Vec::new(), cx);
+            }
+            Input::NetworkAvailability { patches } => {
+                self.availability(Vec::new(), Vec::new(), patches, cx);
+            }
             Input::DeviceLost => self.device_lost(cx),
         }
     }
@@ -1566,10 +1571,7 @@ impl CueEngine {
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
             | CueKind::Disarm { .. } => Act::Control,
-            CueKind::Network { .. } => {
-                cx.warn(EngineWarning::Unsupported { cue });
-                Act::Silent(0)
-            }
+            CueKind::Network { .. } => Act::Send,
         };
         // QLab: a Devamp cue's "start next cue" is its continue, fired when the loop is left
         // (see `devamp`), so its own continue mode does not also start the next cue. A broken
@@ -1608,6 +1610,26 @@ impl CueEngine {
                     first: voice_at,
                 };
             }
+            Act::Send => {
+                if let CueKind::Network {
+                    destination,
+                    address,
+                    args,
+                } = &model.kind
+                {
+                    cx.out.push(Action::SendOsc {
+                        cue,
+                        at,
+                        destination: *destination,
+                        address: address.clone(),
+                        args: args.clone(),
+                    });
+                }
+                if run.voice == Voice::Loaded {
+                    cx.out.push(Action::UnloadVoice { cue, run: run.run });
+                }
+                run.voice = Voice::None;
+            }
             Act::Silent(_) | Act::Group | Act::Fade(_) | Act::Control => {
                 if run.voice == Voice::Loaded {
                     cx.out.push(Action::UnloadVoice { cue, run: run.run });
@@ -1619,7 +1641,7 @@ impl CueEngine {
             start: at,
             end: match act {
                 Act::Silent(d) | Act::Fade(d) => Some(at.saturating_add(d.saturating_sub(offset))),
-                Act::Control => Some(at),
+                Act::Control | Act::Send => Some(at),
                 Act::Voice | Act::Group => None,
             },
         };
@@ -1635,7 +1657,7 @@ impl CueEngine {
             Act::Group => self.start_children(cue, at, cx),
             Act::Fade(_) => self.fade_begin(cue, at, cx),
             Act::Control => self.control(cue, at, cx),
-            Act::Voice | Act::Silent(_) => {}
+            Act::Voice | Act::Silent(_) | Act::Send => {}
         }
     }
 
@@ -1767,6 +1789,8 @@ enum Act {
     Fade(SampleTime),
     /// Acts on its target at once and completes.
     Control,
+    /// Sends a Network cue's OSC message and completes at once.
+    Send,
     /// Runs the group's children; completes when none is busy.
     Group,
 }

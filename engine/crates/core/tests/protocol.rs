@@ -221,6 +221,12 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         ("scan_recovery", Request::ScanRecovery),
         ("log_tail", Request::LogTail { max: None }),
+        (
+            "set_output_overrides",
+            Request::SetOutputOverrides {
+                network_disabled: true,
+            },
+        ),
         ("preshow_check", Request::PreshowCheck),
     ]
 }
@@ -557,6 +563,7 @@ fn fixtures() -> Vec<(String, Sample)> {
     lost.cpu_percent = None;
     lost.engine_load = None;
     lost.disk.healthy = false;
+    lost.network_output_disabled = true;
     lost.device = DeviceStatus {
         name: None,
         state: DeviceState::Lost,
@@ -1011,7 +1018,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 12);
+    assert_eq!(all_requests().len(), 13);
 }
 
 #[test]
@@ -1546,7 +1553,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 11;
+const ENGINE_PROBLEM_COUNT: usize = 14;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -1559,7 +1566,10 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::PatchMissing { .. } => 7,
         CueProblem::DeviceUnavailable { .. } => 8,
         CueProblem::NetworkPatchMissing { .. } => 9,
-        CueProblem::StartedBroken => 10,
+        CueProblem::NetworkHostInvalid { .. } => 10,
+        CueProblem::NetworkHostUnresolved { .. } => 11,
+        CueProblem::NetworkMessageInvalid { .. } => 12,
+        CueProblem::StartedBroken => 13,
     }
 }
 
@@ -1575,7 +1585,10 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::PatchMissing { .. } => 7,
         WireProblem::DeviceUnavailable { .. } => 8,
         WireProblem::NetworkPatchMissing { .. } => 9,
-        WireProblem::StartedBroken => 10,
+        WireProblem::NetworkHostInvalid { .. } => 10,
+        WireProblem::NetworkHostUnresolved { .. } => 11,
+        WireProblem::NetworkMessageInvalid { .. } => 12,
+        WireProblem::StartedBroken => 13,
     }
 }
 
@@ -1901,6 +1914,34 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             CueProblem::NetworkPatchMissing { patch: net_id(6) },
             WireProblem::NetworkPatchMissing { patch: net_id(6) },
         ),
+        (
+            CueProblem::NetworkHostInvalid {
+                patch: net_id(6),
+                reason: "the port must be 1 to 65535".into(),
+            },
+            WireProblem::NetworkHostInvalid {
+                patch: net_id(6),
+                reason: "the port must be 1 to 65535".into(),
+            },
+        ),
+        (
+            CueProblem::NetworkHostUnresolved {
+                patch: net_id(6),
+                reason: "no such host".into(),
+            },
+            WireProblem::NetworkHostUnresolved {
+                patch: net_id(6),
+                reason: "no such host".into(),
+            },
+        ),
+        (
+            CueProblem::NetworkMessageInvalid {
+                reason: "the OSC address must start with /".into(),
+            },
+            WireProblem::NetworkMessageInvalid {
+                reason: "the OSC address must start with /".into(),
+            },
+        ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
     ]
 }
@@ -2150,6 +2191,7 @@ fn status_sample() -> SystemStatus {
             latency_ms: Some(11.5),
         },
         log_dropped: 0,
+        network_output_disabled: false,
     }
 }
 
@@ -2873,6 +2915,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
+        any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
