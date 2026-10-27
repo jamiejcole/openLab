@@ -175,6 +175,9 @@ pub struct ControlConfig {
     pub show_log: crate::diag::ShowLog,
     /// Send `status` messages (DX-03). `None`: never (offline tests; the host turns it on).
     pub status: Option<crate::diag::StatusConfig>,
+    /// Push each new show-log record as a `log_entry` message (DX-02, M4.7c). Off by default
+    /// (offline tests); the host turns it on.
+    pub push_log: bool,
     /// Process CPU seconds for `status` (tests inject a fake).
     pub cpu_probe: fn() -> Option<f64>,
     /// What Network cues send through and host names are looked up with (tests inject a
@@ -210,6 +213,7 @@ impl ControlConfig {
             probe_volume: None,
             show_log: crate::diag::ShowLog::default(),
             status: None,
+            push_log: false,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
@@ -727,14 +731,18 @@ impl Control {
                     );
                 }
                 Request::LogTail { max } => {
-                    let (entries, dropped) = self.log_tail(max);
+                    let (entries, dropped, seq) = self.log_tail(max);
                     reply(
                         to,
                         ServerMessage::Result {
                             id,
                             outcome: Outcome::Ok(OkBody {
                                 revision: None,
-                                data: Some(ResultData::LogTail { entries, dropped }),
+                                data: Some(ResultData::LogTail {
+                                    entries,
+                                    dropped,
+                                    seq,
+                                }),
                             }),
                         },
                     );
@@ -959,6 +967,32 @@ impl Control {
                     ),
                 ),
                 DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
+                DeviceEvent::Stalled { ms, log } => {
+                    if let Some(earlier) = log {
+                        let more = if earlier > 0 {
+                            format!(" ({earlier} more stall(s) since the last notice)")
+                        } else {
+                            String::new()
+                        };
+                        self.log_device(
+                            LogLevel::Warn,
+                            format!(
+                                "audio device \"{name}\": no audio callback for {ms} ms; the \
+                                 device is treated as lost if it stays silent{more}"
+                            ),
+                        );
+                    }
+                    self.warnings_dirty = true;
+                }
+                DeviceEvent::StallCleared { log } => {
+                    if log {
+                        self.log_device(
+                            LogLevel::Info,
+                            format!("audio device \"{name}\": audio callbacks resumed"),
+                        );
+                    }
+                    self.warnings_dirty = true;
+                }
                 DeviceEvent::Unrecoverable { why } => {
                     self.log_device(
                         LogLevel::Error,
@@ -1810,6 +1844,16 @@ impl Control {
                     format!(
                         "audio device \"{name}\" is lost: the cues that played on it were \
                          stopped, and cues on it cannot start; reconnecting"
+                    ),
+                    None,
+                ));
+            }
+            if d.is_stalled() && !d.is_down() {
+                list.push(notice(
+                    "device_stalled",
+                    format!(
+                        "audio device \"{name}\" has stopped calling back: it is treated as \
+                         lost if it stays silent"
                     ),
                     None,
                 ));

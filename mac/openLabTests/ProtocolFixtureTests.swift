@@ -17,6 +17,7 @@ final class ProtocolFixtureTests: XCTestCase {
         case .progress: return "progress"
         case .meters: return "meters"
         case .log: return "log"
+        case .logEntry: return "log_entry"
         case .status: return "status"
         case .warnings: return "warnings"
         case .result: return "result"

@@ -7,7 +7,7 @@
 //! device thread's answers on the control inbox.
 
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use openlab_audio::{
@@ -64,6 +64,8 @@ struct State {
     panic_on_open: bool,
     /// The next list read leaves this device out (a host busy reconfiguring it).
     hide_once: Option<String>,
+    /// The next stream opens but does not call back (until `unstall`).
+    silent_next_open: bool,
 }
 
 /// The stand-in host audio system, shared by the layer (device thread) and the test.
@@ -103,6 +105,36 @@ impl Fake {
         s.rendering = false;
         if report && let Some(r) = &s.reporter {
             r.report(HostError::Lost);
+        }
+    }
+
+    /// The open stream stops calling back, with no error and the device still listed (a host
+    /// that hangs): the M4.2g stall watchdog's case.
+    pub fn stall(&self) {
+        self.state.lock().unwrap().rendering = false;
+    }
+
+    /// The next stream opened is silent from the start (a host slow to start calling back).
+    pub fn silent_next_open(&self) {
+        self.state.lock().unwrap().silent_next_open = true;
+    }
+
+    /// The stalled stream calls back again.
+    pub fn unstall(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.rendering = s.host.is_some();
+    }
+
+    /// A callback with no frames, as a live device keeps making between the blocks the test
+    /// renders (the stall watchdog counts callbacks, and a wall clock that moves without
+    /// them would look like a hung stream).
+    fn heartbeat(&self) {
+        let mut s = self.state.lock().unwrap();
+        if !s.rendering {
+            return;
+        }
+        if let Some(host) = s.host.as_mut() {
+            host.render(&mut [0.0f32; 0], None);
         }
     }
 
@@ -222,7 +254,7 @@ impl DeviceLayer for FakeLayer {
         let (host, link) = OutputHost::new(mixer, channels);
         s.reporter = Some(link.reporter());
         s.host = Some(host);
-        s.rendering = true;
+        s.rendering = !std::mem::take(&mut s.silent_next_open);
         s.open_id = Some(device.id.clone());
         let info = StreamInfo {
             device_id: device.id.clone(),
@@ -230,6 +262,7 @@ impl DeviceLayer for FakeLayer {
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
             block_frames: Some(s.block),
+            sample_rate: RATE,
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -277,6 +310,8 @@ pub struct DeviceShow {
     control: Control,
     pub fake: Arc<Fake>,
     wall: Arc<Mutex<Duration>>,
+    /// Time the Mac slept: the sleep-counting clock has moved on, the monotonic one has not.
+    slept: Arc<Mutex<Duration>>,
     inbox: Receiver<Inbox>,
     inbox_tx: Sender<Inbox>,
     outbound: OutboundRx,
@@ -297,6 +332,13 @@ impl DeviceShow {
             let wall = Arc::clone(&wall);
             Arc::new(move || base + *wall.lock().unwrap())
         };
+        // The clock that counts sleep: it follows the wall clock, and `sleep` moves it alone.
+        let slept = Arc::new(Mutex::new(Duration::ZERO));
+        let sys_base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let sleep_clock = {
+            let (wall, slept) = (Arc::clone(&wall), Arc::clone(&slept));
+            Arc::new(move || sys_base + *wall.lock().unwrap() + *slept.lock().unwrap())
+        };
         let request = OpenRequest {
             device_id: Some(devices[0].id.clone()),
             buffer_frames: Some(u32::try_from(BLOCK).unwrap()),
@@ -309,7 +351,8 @@ impl DeviceShow {
             inbox_tx.clone(),
             clock,
         )
-        .unwrap();
+        .unwrap()
+        .with_sleep_clock(sleep_clock);
         let (out_tx, outbound) = outbound_channel(4096);
         let control = Control::new(
             ws,
@@ -324,6 +367,7 @@ impl DeviceShow {
             control,
             fake,
             wall,
+            slept,
             inbox,
             inbox_tx,
             outbound,
@@ -350,8 +394,18 @@ impl DeviceShow {
         self.rendered() + self.control.block_frames()
     }
 
-    /// Moves the wall clock on (the device policy's only clock).
+    /// The Mac sleeps for `d`: the clock that counts sleep moves, the wall clock does not (as
+    /// `Instant` on macOS).
+    pub fn sleep(&mut self, d: Duration) {
+        *self.slept.lock().unwrap() += d;
+    }
+
+    /// Moves the wall clock on (the device policy's clock). A live device keeps calling back
+    /// while time passes, so a callback is made first (`Fake::heartbeat`): the tests written
+    /// before the stall watchdog move the clock by seconds without rendering a block, which
+    /// the watchdog would otherwise take for a hung stream. A stalled fake makes none.
     pub fn advance(&mut self, d: Duration) {
+        self.fake.heartbeat();
         *self.wall.lock().unwrap() += d;
     }
 

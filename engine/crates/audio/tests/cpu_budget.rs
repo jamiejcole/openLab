@@ -15,7 +15,9 @@
 //! `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`
 //!
 //! One test function runs every measurement in sequence: parallel tests would compete for the
-//! cores and skew each other's timings. `Instant` is used here and nowhere else.
+//! cores and skew each other's timings. `Instant` is used here and, since M4.7a, by the device
+//! callback adapter (`OutputHost::render`, one pair per callback for `engine_load`); the cost of
+//! that pair is measured and reported here too.
 //!
 //! What is timed: only `OfflineRenderer::render_into` for one block at a time, i.e. the mixer
 //! callback on the rendering thread (voice reads, fades, de-zipper, crosspoints, patch, output
@@ -377,6 +379,19 @@ fn run(block: usize, feed: Feed) -> Result<Stats, String> {
     })
 }
 
+/// Mean cost of the `Instant::now` + `elapsed` pair `OutputHost::render` adds per callback.
+fn instant_pair_ns() -> f64 {
+    const PAIRS: u32 = 1_000_000;
+    let start = Instant::now();
+    let mut sink = Duration::ZERO;
+    for _ in 0..PAIRS {
+        let t = std::hint::black_box(Instant::now());
+        sink += t.elapsed();
+    }
+    std::hint::black_box(sink);
+    start.elapsed().as_nanos() as f64 / f64::from(PAIRS)
+}
+
 fn report(name: &str, block: usize, s: &Stats) {
     println!(
         "{name} block={block:>3}: {:.1}x real time (render only), p50 {:.1} us  p99 {:.1} us  max {:.1} us  (budget per block {:.0} us), underrun frames {}, voices started {}, incl. control/feed work {:.1}x",
@@ -427,6 +442,16 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
     report_only("rings    ", 256, Feed::Rings);
     report_only("rings    ", 64, Feed::Rings);
     report_only("resampled", 512, Feed::Resampled);
+    let pair_ns = instant_pair_ns();
+    let block_64_ns = 64.0 / f64::from(RATE) * 1e9;
+    println!(
+        "engine_load timing (M4.7a): {pair_ns:.0} ns per Instant pair, {:.3} % of a 64-frame block",
+        pair_ns / block_64_ns * 100.0
+    );
+    assert!(
+        pair_ns < block_64_ns / 100.0,
+        "timing the callback must cost under 1 % of the smallest block: {pair_ns:.0} ns"
+    );
     assert!(
         best >= MIN_REALTIME_RATIO,
         "mixer render cost regressed: best of {GATE_RUNS} runs {best:.1}x real time, budget {MIN_REALTIME_RATIO}x (NFR-23, QA-06)"
