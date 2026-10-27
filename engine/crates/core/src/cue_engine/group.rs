@@ -129,6 +129,15 @@ impl CueEngine {
         if matches!(self.slots.get(&group), Some(Slot::Active(run)) if run.is_group_stopping()) {
             return;
         }
+        // Loaded to a time at or past its nominal span, a playlist or random group has nothing
+        // left to play: its action ends at once and its post-wait counts from the load time
+        // (M4.11b). A span that is unknown (unprobed audio) or endless (a looping playlist)
+        // clamps nothing.
+        let offset = match self.slots.get(&group) {
+            Some(Slot::Active(run)) => run.action_offset,
+            _ => 0,
+        };
+        let spent = |span: Option<SampleTime>| offset > 0 && span.is_some_and(|s| offset >= s);
         match mode {
             GroupMode::Timeline => {
                 for child in children {
@@ -140,10 +149,27 @@ impl CueEngine {
                     self.start(first.id, at, cx);
                 }
             }
-            GroupMode::Playlist { .. } => self.playlist_next(group, at, cx),
+            GroupMode::Playlist { loop_, .. } => {
+                let span = (!*loop_)
+                    .then(|| {
+                        children.iter().try_fold(0, |acc: SampleTime, c| {
+                            Some(acc.saturating_add(self.nominal_span(c, 1, cx)?))
+                        })
+                    })
+                    .flatten();
+                if !spent(span) {
+                    self.playlist_next(group, at, cx);
+                }
+            }
             GroupMode::StartRandom => {
                 if let Some(child) = self.pick_random(group, children) {
-                    self.start(child, at, cx);
+                    let span = children
+                        .iter()
+                        .find(|c| c.id == child)
+                        .and_then(|c| self.nominal_span(c, 1, cx));
+                    if !spent(span) {
+                        self.start(child, at, cx);
+                    }
                 }
             }
         }

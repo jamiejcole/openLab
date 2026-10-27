@@ -18,6 +18,8 @@ enum CueProperty: Hashable, Sendable {
     case triggers(hotkey: JSONValue?, osc: String?)
     case secondTrigger(String)
     case secondTriggerOnRelease(Bool)
+    /// The whole kind (a different audio file, say); never to or from a Group.
+    case kind(JSONValue)
 
     var json: JSONValue {
         func p(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
@@ -35,6 +37,7 @@ enum CueProperty: Hashable, Sendable {
             return p("triggers", .object(["hotkey": hotkey ?? .null, "osc": osc.map { .string($0) } ?? .null]))
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
+        case .kind(let v): return p("kind", v)
         }
     }
 }
@@ -43,6 +46,15 @@ extension Command {
     /// `SetCueProperty { id, property }`.
     static func setProperty(_ id: ModelID, _ property: CueProperty) -> Command {
         Command(.object(["type": .string("set_cue_property"), "id": .string(id.raw), "property": property.json]))
+    }
+
+    /// `SetCueNumbers` clearing the number of each cue (one undo step).
+    static func clearNumbers(_ ids: [ModelID]) -> Command {
+        Command(
+            .object([
+                "type": .string("set_cue_numbers"),
+                "numbers": .array(ids.map { .object(["id": .string($0.raw), "number": .null]) }),
+            ]))
     }
 
     /// `SetCueNumbers` for one cue; nil clears the number.

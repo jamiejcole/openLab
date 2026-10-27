@@ -151,8 +151,18 @@ fn the_control_loop_never_waits_for_the_disk() {
     s.run(BLOCK * 10);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // A writer releases the probe with something unplayable: the waiting start fails.
-    std::fs::write(&fifo, b"not audio").unwrap();
+    // A writer releases the probe with something unplayable: the waiting start fails. Opening
+    // the pipe is the hand-over (it returns once the probe's read end is open). The probe
+    // refuses a pipe at its first seek and closes it without reading, so the bytes below race
+    // with that close and may hit EPIPE: they are only there to be unplayable if read, and the
+    // outcome does not depend on them, so a broken pipe is fine.
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    match std::io::Write::write_all(&mut writer, b"not audio") {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("writing the pipe: {e}"),
+    }
+    drop(writer);
     s.settle_media();
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
@@ -661,4 +671,44 @@ fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
     assert!(s.control().engine().is_halted(id(10)));
     s.run(4000);
     assert!(s.channel(1).iter().all(|&v| v == 0.0), "c2 never plays");
+}
+
+/// M4.11b: a start held by its probe that then finds nothing left to play (loaded past the end)
+/// ends on the sample it is released on, so its successor starts there with no `late_start`.
+#[test]
+fn a_held_start_loaded_past_the_end_starts_its_successor_on_release() {
+    let path = wav(&dc(200, 0.5));
+    let next = wav(&dc(200, 0.5));
+    gate(&path);
+    let mut held = audio(1, &path, 0);
+    held.continue_mode = ContinueMode::AutoFollow;
+    let ws = workspace(vec![held, audio(2, &next, 1)]);
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = ProbeTime::new().clock();
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: secs(100_000),
+    });
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(BLOCK * 10);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    release(&path);
+    s.settle_media();
+    s.run(2000);
+    let msgs = s.take_outbound();
+    assert!(
+        !warnings(&msgs)
+            .iter()
+            .any(|w| matches!(w, WireWarning::LateStart { .. })),
+        "{:?}",
+        warnings(&msgs)
+    );
+    assert!(
+        first_nonzero(&s.channel(1)).is_some(),
+        "the successor played"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    run_until_idle(&mut s, id(2), 2000);
 }
