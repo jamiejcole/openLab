@@ -221,6 +221,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         ("scan_recovery", Request::ScanRecovery),
         ("log_tail", Request::LogTail { max: None }),
+        ("preshow_check", Request::PreshowCheck),
     ]
 }
 
@@ -616,6 +617,34 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_preshow_check",
+        server(ServerMessage::Result {
+            id: rid(49),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PreshowCheck(Box::new(preshow_report_sample()))),
+            }),
+        }),
+    );
+    add(
+        "result_preshow_check_ok",
+        server(ServerMessage::Result {
+            id: rid(50),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PreshowCheck(Box::new(PreshowReport {
+                    ok: true,
+                    summary: PreshowSummary::default(),
+                    broken_cues: vec![],
+                    media: vec![],
+                    patches: vec![],
+                    network: vec![],
+                    system: vec![],
+                }))),
+            }),
+        }),
+    );
+    add(
         "result_relink",
         server(ServerMessage::Result {
             id: rid(45),
@@ -963,7 +992,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 11);
+    assert_eq!(all_requests().len(), 12);
 }
 
 #[test]
@@ -1942,6 +1971,120 @@ fn log_kind_idx(k: LogKind) -> usize {
     }
 }
 
+/// Every shape of the pre-show report: both media and destination statuses, a patch the
+/// workspace has and one it lacks, a number-less cue, a system notice.
+fn preshow_report_sample() -> PreshowReport {
+    // Exhaustive: a new status without a sample stops compiling here.
+    for status in [PreshowMediaStatus::Missing, PreshowMediaStatus::Unsupported] {
+        match status {
+            PreshowMediaStatus::Missing | PreshowMediaStatus::Unsupported => {}
+        }
+    }
+    for status in [
+        PreshowTargetStatus::Missing,
+        PreshowTargetStatus::NotChecked,
+    ] {
+        match status {
+            PreshowTargetStatus::Missing | PreshowTargetStatus::NotChecked => {}
+        }
+    }
+    PreshowReport {
+        ok: false,
+        summary: PreshowSummary {
+            broken_cues: 2,
+            media: 2,
+            patches: 2,
+            network: 1,
+            network_unchecked: 1,
+            system: 1,
+            total: 3,
+        },
+        broken_cues: vec![
+            PreshowCue {
+                cue: cue_id(10),
+                list: list_id(1),
+                number: Some("3".into()),
+                name: "Storm".into(),
+                problems: vec![WireProblem::MediaMissing {
+                    media: MediaRef::new("/Shows/storm.wav"),
+                }],
+            },
+            PreshowCue {
+                cue: cue_id(11),
+                list: list_id(1),
+                number: None,
+                name: String::new(),
+                problems: vec![
+                    WireProblem::MediaUnsupported {
+                        media: MediaRef::new("/Shows/rain.mp3"),
+                        reason: "unsupported codec".into(),
+                    },
+                    WireProblem::PatchMissing { patch: patch_id(9) },
+                ],
+            },
+        ],
+        media: vec![
+            PreshowMedia {
+                path: "/Shows/rain.mp3".into(),
+                status: PreshowMediaStatus::Unsupported,
+                reason: Some("unsupported codec".into()),
+                cues: vec![cue_id(11)],
+            },
+            PreshowMedia {
+                path: "/Shows/storm.wav".into(),
+                status: PreshowMediaStatus::Missing,
+                reason: None,
+                cues: vec![cue_id(10)],
+            },
+        ],
+        patches: vec![
+            PreshowPatch {
+                patch: patch_id(1),
+                name: Some("Main".into()),
+                device: Some("Scarlett 2i2".into()),
+                mapped: true,
+                resolution: Some(WireResolution::DeviceMissing {
+                    device: "Scarlett 2i2".into(),
+                }),
+                cues: vec![cue_id(10)],
+            },
+            PreshowPatch {
+                patch: patch_id(9),
+                name: None,
+                device: None,
+                mapped: false,
+                resolution: None,
+                cues: vec![cue_id(11)],
+            },
+        ],
+        network: vec![
+            PreshowTarget {
+                patch: net_id(1),
+                name: Some("Lighting".into()),
+                host: Some("10.0.0.5".into()),
+                port: Some(8000),
+                protocol: Some(NetworkProtocol::Udp),
+                status: PreshowTargetStatus::NotChecked,
+                cues: vec![cue_id(12)],
+            },
+            PreshowTarget {
+                patch: net_id(2),
+                name: None,
+                host: None,
+                port: None,
+                protocol: None,
+                status: PreshowTargetStatus::Missing,
+                cues: vec![cue_id(13)],
+            },
+        ],
+        system: vec![WireWarning::Notice {
+            code: "device_lost".into(),
+            message: "audio device \"Scarlett 2i2\" is lost".into(),
+            cue: None,
+        }],
+    }
+}
+
 fn log_entry_sample(kind: LogKind) -> LogEntry {
     let with_cue = matches!(
         kind,
@@ -2668,6 +2811,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
+        Just(Request::PreshowCheck),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
     ]
