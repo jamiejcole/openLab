@@ -159,7 +159,7 @@ impl OscShow for Show {
         }
     }
     fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        matches!(address, "/lights/blackout" | "/fx/all*").then_some(TRIGGERED)
+        matches!(address, "/lights/blackout" | "/fx/all*" | "/cue/zz*/name").then_some(TRIGGERED)
     }
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
         match cue {
@@ -779,16 +779,24 @@ fn with_a_passcode_everything_but_connect_is_denied_until_connected() {
     let out = send(
         &mut osc,
         &show,
-        tcp,
+        udp(),
         T0,
-        &msg("/updates", vec![OscType::Int(1)]),
+        &msg("/udpReplyPort", vec![OscType::Int(5000)]),
     );
     // An application-level message: no workspace id in the reply.
     assert_eq!(
         reply_json(&out.replies[0]),
-        json!({"address": "/updates", "status": "denied"})
+        json!({"address": "/udpReplyPort", "status": "denied"})
     );
-    assert!(osc.update_subscribers(T0).is_empty());
+    // `/updates` works at any access level (what is sent is filtered by View when it goes out).
+    let out = send(
+        &mut osc,
+        &show,
+        tcp,
+        T0,
+        &msg("/updates", vec![OscType::Int(1)]),
+    );
+    assert!(out.replies.is_empty());
 }
 
 #[test]
@@ -909,8 +917,9 @@ fn a_wrong_passcode_never_drops_a_connected_peer_and_reset_forgets_everyone() {
         &msg("/updates", vec![OscType::Int(1)]),
     );
     // Many bad /connects from the same address (a forger, or someone behind the same NAT):
-    // the console stays connected and subscribed, and is not locked out.
-    for _ in 0..MAX_BAD_PASSCODES * 3 {
+    // the console stays connected and subscribed. Its wrong guesses count like anyone's, so
+    // after the limit its `/connect` is `denied` (a lockout), but nothing else is.
+    for n in 0..MAX_BAD_PASSCODES * 3 {
         let out = send(
             &mut osc,
             &show,
@@ -918,17 +927,23 @@ fn a_wrong_passcode_never_drops_a_connected_peer_and_reset_forgets_everyone() {
             T0,
             &msg("/connect", vec![s("bad")]),
         );
-        assert_eq!(reply_json(&out.replies[0])["data"], "badpass");
+        let body = reply_json(&out.replies[0]);
+        if n < MAX_BAD_PASSCODES {
+            assert_eq!(body["data"], "badpass");
+        } else {
+            assert_eq!(body["status"], "denied");
+        }
         let out = send(&mut osc, &show, console, T0, &msg("/go", vec![]));
         assert_eq!(out.inputs.len(), 1);
     }
     assert_eq!(osc.update_subscribers(T0), vec![console]);
-    // And it can still re-send the right passcode.
+    // Once the lockout is over it can re-send the right passcode.
+    let later = T0 + Duration::from_secs(31);
     let out = send(
         &mut osc,
         &show,
         console,
-        T0,
+        later,
         &msg("/connect", vec![s("s3cret")]),
     );
     assert_eq!(reply_json(&out.replies[0])["status"], "ok");
@@ -3592,7 +3607,6 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/runningCues", vec![]), View),
         (msg("/selectedCues", vec![]), View),
         (msg("/playheadID", vec![]), View),
-        (msg("/updates", vec![OscType::Int(1)]), View),
         (msg("/udpReplyPort", vec![OscType::Int(5000)]), View),
         // Edit: every other property write, and /select.
         (msg("/cue/1/name", vec![s("New")]), Edit),
@@ -3734,13 +3748,13 @@ fn denied_replies_hold_nothing_about_the_show() {
     let out = send(
         &mut osc,
         &show,
-        tcp_peer(2),
+        udp(),
         T0,
-        &msg("/updates", vec![OscType::Int(1)]),
+        &msg("/udpReplyPort", vec![OscType::Int(5000)]),
     );
     assert_eq!(
         reply_json(&out.replies[0]),
-        json!({"address": "/updates", "status": "denied"})
+        json!({"address": "/udpReplyPort", "status": "denied"})
     );
     assert_eq!(osc.stats().denied, 2);
 }
@@ -3818,6 +3832,54 @@ fn a_denied_write_changes_nothing_and_an_allowed_one_becomes_a_command() {
         T0,
         &msg("/select/1", vec![])
     )));
+}
+
+#[test]
+fn a_trigger_shaped_like_a_read_still_needs_control() {
+    // `/cue/zz*/name` with no argument looks like a read of every cue named zz*, but no cue
+    // matches and a cue's own trigger has exactly that address.
+    let trigger = msg("/cue/zz*/name", vec![]);
+    let show = Show::with_access(table(rights(true, true, false)));
+    for peer in [udp(), tcp_peer(1)] {
+        let mut osc = quiet_osc();
+        let out = send(&mut osc, &show, peer, T0, &trigger);
+        assert!(out.inputs.is_empty(), "{out:?}");
+        assert!(was_denied(&out), "{out:?}");
+    }
+    // With Control it starts the cue.
+    let mut osc = quiet_osc();
+    connect_status(&mut osc, &show, udp(), T0, VIEW_CONTROL);
+    let out = send(&mut osc, &show, udp(), T0, &trigger);
+    assert_eq!(out.inputs.len(), 1);
+}
+
+#[test]
+fn a_peer_connected_with_a_no_rights_row_can_do_nothing() {
+    let show = Show::with_access(OscAccess {
+        no_passcode: OscRights::ALL,
+        passcodes: vec![OscPasscode {
+            passcode: "0".into(),
+            rights: OscRights::NONE,
+        }],
+    });
+    for peer in [udp(), tcp_peer(1)] {
+        let mut osc = quiet_osc();
+        let out = send(&mut osc, &show, peer, T0, &msg("/connect", vec![s("0")]));
+        assert_eq!(reply_json(&out.replies[0])["data"], "ok:");
+        for (m, _) in classified() {
+            if m.addr == "/udpReplyPort" && matches!(peer, Peer::Tcp { .. }) {
+                continue;
+            }
+            assert!(!allowed(&mut osc, &show, peer, &m), "{}", m.addr);
+        }
+        assert!(!allowed(
+            &mut osc,
+            &show,
+            peer,
+            &msg("/cue/zz*/name", vec![])
+        ));
+        assert!(!osc.may_receive_updates(peer, show.access()));
+    }
 }
 
 #[test]
@@ -4057,18 +4119,49 @@ fn a_peer_that_may_not_read_is_held_to_small_frames_and_the_strict_budget() {
 }
 
 #[test]
-fn updates_need_view_and_only_viewers_are_subscribed() {
+fn updates_work_at_any_access_level_but_only_viewers_may_receive_them() {
     let show = Show::with_access(table(OscRights::NONE));
     let mut osc = quiet_osc();
     let on = msg("/updates", vec![OscType::Int(1)]);
-    assert!(!allowed(&mut osc, &show, udp(), &on));
-    assert!(osc.update_subscribers(T0).is_empty());
-    connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY);
-    assert!(allowed(&mut osc, &show, udp(), &on));
+    // QLab: `/updates` is allowed at any access level, without a reply.
+    let out = send(&mut osc, &show, udp(), T0, &on);
+    assert!(out.replies.is_empty());
     assert_eq!(osc.update_subscribers(T0), vec![udp()]);
-    // A No Passcode peer with View can subscribe without connecting.
-    let show = Show::with_access(table(rights(true, false, false)));
+    // ... but what an update carries is cue data: no View, no updates.
+    assert!(!osc.may_receive_updates(udp(), show.access()));
+    connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY);
+    assert!(osc.may_receive_updates(udp(), show.access()));
+    // A No Passcode peer with View needs no connect.
+    let open = Show::with_access(table(rights(true, false, false)));
+    let osc = quiet_osc();
+    assert!(osc.may_receive_updates(tcp_peer(5), open.access()));
+    // The right is judged against the table as it is now.
+    assert!(!osc.may_receive_updates(tcp_peer(5), show.access()));
+}
+
+#[test]
+fn a_connected_peer_cannot_search_the_table_for_more_rights() {
+    // The reviewer's attack: connect with the weakest row, then guess every passcode.
+    let show = Show::with_access(table(OscRights::NONE));
     let mut osc = quiet_osc();
-    assert!(allowed(&mut osc, &show, tcp_peer(5), &on));
-    assert_eq!(osc.update_subscribers(T0), vec![tcp_peer(5)]);
+    connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY);
+    let mut reached_control = false;
+    for guess in 0..=9999u32 {
+        let code = format!("{guess:04}");
+        if connect_status(&mut osc, &show, udp(), T0, &code) == "ok"
+            && allowed(&mut osc, &show, udp(), &msg("/go", vec![]))
+        {
+            reached_control = true;
+            break;
+        }
+    }
+    assert!(!reached_control, "guessing found a row with Control");
+    // The lockout also holds against the one right guess.
+    assert_eq!(
+        connect_status(&mut osc, &show, udp(), T0, EVERYTHING),
+        "denied"
+    );
+    assert!(!allowed(&mut osc, &show, udp(), &msg("/go", vec![])));
+    // It is still connected, with its own rights.
+    assert!(osc.is_connected(udp()));
 }

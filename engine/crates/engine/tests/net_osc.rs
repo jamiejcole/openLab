@@ -2330,3 +2330,37 @@ async fn adding_a_passcode_keeps_sessions_but_narrowing_the_table_ends_them() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn updates_go_only_to_subscribers_that_may_view() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    // `/updates` is accepted at any access level (no reply) ...
+    f.udp_subscribe().await;
+    let rename = |name: &str, revision| {
+        let mut edited = test_workspace().cue_lists[0].cues[0].clone();
+        edited.name = name.into();
+        ServerMessage::ModelChanged {
+            revision,
+            upserts: vec![Upsert::Cue {
+                list: list_id(),
+                parent: None,
+                index: 0,
+                cue: Box::new(edited),
+            }],
+            deletes: vec![],
+        }
+    };
+    // ... but this peer may not view, so the cue data stays away. The round trip answers
+    // before anything else arrives only if no update was sent.
+    f.out.send(rename("Hidden", 1)).await.unwrap();
+    f.udp_sync().await;
+    // Connecting with a View passcode starts the updates (the subscription was kept).
+    f.udp_send(&msg("/connect", vec![text("1111")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view");
+    f.out.send(rename("Shown", 2)).await.unwrap();
+    let (addr, _) = next_update(&f).await;
+    assert_eq!(
+        addr,
+        format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1))
+    );
+}
