@@ -102,6 +102,7 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     config.mixer_patches = MAX_PATCHES;
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
+        config.app_dirs = Some(dirs);
     }
     let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     // Port and token are what M4.9 writes to `engine.json`.

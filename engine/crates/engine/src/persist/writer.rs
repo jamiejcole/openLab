@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle};
 
 use openlab_core::{Workspace, WorkspaceId};
 
-use super::{AppDirs, PersistError, SaveReport, save_workspace, write_recovery};
+use super::{AppDirs, PersistError, SaveReport, clear_recovery, save_workspace, write_recovery};
 
 /// What a writer job does; passed to the test hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,9 +52,18 @@ struct AutosaveJob {
     reply: AutosaveReply,
 }
 
+struct ClearJob {
+    workspace: WorkspaceId,
+    show_path: Option<PathBuf>,
+    reply: ClearReply,
+}
+
+type ClearReply = Sender<Result<(), PersistError>>;
+
 #[derive(Default)]
 struct State {
     saves: VecDeque<SaveJob>,
+    clears: VecDeque<ClearJob>,
     autosave: Option<AutosaveJob>,
     /// Newest revision of a workspace that a manual save has made durable.
     saved: Option<(WorkspaceId, u64)>,
@@ -175,10 +184,43 @@ impl SaveWriter {
         self.shared.wake.notify_one();
         answer
     }
+
+    /// Queues the removal of the recovery file (and its moved-aside copies) of `workspace` at
+    /// `show_path`: the operator dropped the edits it holds. It runs on the writer thread after
+    /// any job already running (an autosave of those edits that is mid-write finishes first and
+    /// is then removed), and a pending autosave of that workspace and path is cancelled, so the
+    /// dropped edits cannot reappear as a recovery offer.
+    pub fn clear_recovery(
+        &self,
+        workspace: WorkspaceId,
+        show_path: Option<PathBuf>,
+    ) -> Receiver<Result<(), PersistError>> {
+        let (reply, answer) = mpsc::channel();
+        let mut state = self.shared.lock();
+        if state.closing {
+            let _ = reply.send(Err(PersistError::WriterGone));
+            return answer;
+        }
+        let cancelled = state
+            .autosave
+            .take_if(|a| a.workspace.id == workspace && a.show_path == show_path);
+        if let Some(old) = cancelled {
+            let _ = old.reply.send(Ok(None));
+        }
+        state.clears.push_back(ClearJob {
+            workspace,
+            show_path,
+            reply,
+        });
+        drop(state);
+        self.shared.wake.notify_one();
+        answer
+    }
 }
 
 enum Next {
     Save(SaveJob),
+    Clear(ClearJob),
     Autosave(AutosaveJob),
 }
 
@@ -187,6 +229,9 @@ fn next_job(shared: &Shared) -> Option<Next> {
     loop {
         if let Some(job) = state.saves.pop_front() {
             return Some(Next::Save(job));
+        }
+        if let Some(job) = state.clears.pop_front() {
+            return Some(Next::Clear(job));
         }
         if state.closing {
             if let Some(job) = state.autosave.take() {
@@ -228,6 +273,10 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send)>)
                     };
                     state.saved = Some((job.workspace.id, newest));
                 }
+                let _ = job.reply.send(result);
+            }
+            Next::Clear(job) => {
+                let result = clear_recovery(dirs, job.workspace, job.show_path.as_deref());
                 let _ = job.reply.send(result);
             }
             Next::Autosave(job) => {

@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 64,
+  "request": {
+    "type": "revert",
+    "discard_changes": true
+  }
+}

@@ -272,7 +272,7 @@ pub fn resolve_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::PatchOutput;
+    use crate::model::{CueListId, PatchOutput, Workspace};
 
     fn ws(n: u128) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(n))
@@ -522,5 +522,24 @@ mod tests {
                 outputs: 3
             }
         );
+    }
+
+    #[test]
+    fn a_settings_file_with_the_retired_recent_files_key_still_loads() {
+        // Recent files were kept here for a while and are now the app's (WS-08).
+        let loaded = load_settings(
+            r#"{"settings_version": 1, "backup_keep": 7, "recent_files": ["/a.openlab", 1]}"#,
+        );
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.settings.backup_keep, 7);
+    }
+
+    #[test]
+    fn new_empty_workspace_is_valid_and_round_trips() {
+        let ws = Workspace::new_empty(ws(1), CueListId(Uuid::from_u128(2)), pid(3));
+        let text = crate::save_show(&ws).unwrap();
+        let loaded = crate::load_show(&text).unwrap();
+        assert_eq!(loaded.workspace, ws);
+        assert!(loaded.warnings.is_empty());
     }
 }
