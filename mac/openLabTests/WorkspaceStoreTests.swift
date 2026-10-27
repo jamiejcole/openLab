@@ -298,6 +298,51 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(dropped, 2)
     }
 
+    func testPreshowCheckReturnsTheReportAndFixturesDecode() async throws {
+        let rig = try await connectedRig()
+        let result = await rig.store.preshowCheck()
+        guard case .success(let clean) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(clean.ok)
+        XCTAssertEqual(clean.summary.total, 0)
+        XCTAssertTrue(rig.engine.received.contains { $0.isPreshowCheck })
+
+        rig.engine.preshowProblems = true
+        guard case .success(let bad) = await rig.store.preshowCheck() else { return XCTFail("sample") }
+        XCTAssertFalse(bad.ok)
+        XCTAssertEqual(bad.summary.total, 2)
+        XCTAssertEqual(bad.brokenCues.map(\.name), ["Storm"])
+        XCTAssertEqual(bad.media.map(\.status), [.missing])
+        XCTAssertEqual(bad.system.count, 1)
+
+        guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_preshow_check")),
+            case .preshowCheck(let r)? = ok.data
+        else { return XCTFail("fixture") }
+        XCTAssertFalse(r.ok)
+        XCTAssertEqual(r.summary.brokenCues, 2)
+        XCTAssertEqual(r.summary.networkUnchecked, 1)
+        XCTAssertEqual(r.summary.total, 3)
+        XCTAssertEqual(r.brokenCues.map(\.name), ["Storm", ""])
+        XCTAssertEqual(r.brokenCues[0].number, "3")
+        XCTAssertNil(r.brokenCues[1].number)
+        XCTAssertEqual(r.brokenCues[0].problems.first?.type, "media_missing")
+        XCTAssertEqual(r.media.map(\.status), [.unsupported, .missing])
+        XCTAssertEqual(r.media[0].reason, "unsupported codec")
+        XCTAssertEqual(r.patches[0].resolution?.type, "device_missing")
+        XCTAssertTrue(r.patches[0].mapped)
+        XCTAssertNil(r.patches[1].name)
+        XCTAssertNil(r.patches[1].resolution)
+        XCTAssertEqual(r.network.map(\.status), [.notChecked, .missing])
+        XCTAssertEqual(r.network[0].port, 8000)
+        XCTAssertEqual(r.network[0].protocol, "udp")
+        XCTAssertEqual(r.system.first?.type, "notice")
+
+        guard case .result(_, .ok(let okOK)) = try msg(try Fixtures.text("server", "result_preshow_check_ok")),
+            case .preshowCheck(let empty)? = okOK.data
+        else { return XCTFail("ok fixture") }
+        XCTAssertTrue(empty.ok)
+        XCTAssertTrue(empty.brokenCues.isEmpty)
+    }
+
     func testProgressDocumentAndWarnings() async throws {
         let rig = try await connectedRig()
         let s = rig.store
@@ -341,7 +386,7 @@ final class WorkspaceStoreTests: XCTestCase {
             switch m {
             case .transport(_, .go(let l)): return "go \(l)"
             case .transport(_, .panic): return "panic"
-            case .command(_, let c): return "command \(c == cmd)"
+            case .command(_, let c, _): return "command \(c == cmd)"
             case .request(_, .save): return "save"
             default: return "other"
             }
@@ -379,6 +424,11 @@ final class WorkspaceStoreTests: XCTestCase {
 }
 
 extension ClientMessage {
+    fileprivate var isPreshowCheck: Bool {
+        if case .request(_, .preshowCheck) = self { return true }
+        return false
+    }
+
     fileprivate func isLogTail(max: UInt32?) -> Bool {
         if case .request(_, .logTail(let m)) = self { return m == max }
         return false

@@ -76,7 +76,7 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord(KeyChord.down)), .reserved)
         XCTAssertEqual(validate(KeyChord(" ")), .duplicate(of: .go))
         XCTAssertEqual(validate(KeyChord("[")), .duplicate(of: .pauseAll))
-        XCTAssertEqual(validate(KeyChord("p")), .duplicate(of: .pauseResumeSelected))
+        XCTAssertNil(validate(KeyChord("p")), "a fixed app default (L, P, V) yields to a cue hotkey")
         XCTAssertEqual(validate(KeyChord("\u{7F}")), .unsupported)
         XCTAssertEqual(validate(KeyChord("q", [.command]), menu: [KeyChord("q", [.command])]), .menuKey)
     }
@@ -133,9 +133,46 @@ final class TriggersTabTests: XCTestCase {
 
     private var properties: [JSONValue] {
         rig.engine.received.compactMap {
-            if case .command(_, let c) = $0 { return JSONValue.parse((try? c.json.text()) ?? "")?["property"] }
+            if case .command(_, let c, _) = $0 { return JSONValue.parse((try? c.json.text()) ?? "")?["property"] }
             return nil
         }
+    }
+
+    // MARK: Show Mode (SM-01)
+
+    func testLockedInspectorBlocksEveryEditPathAndUnlockRestores() async {
+        let before = rig.engine.received.count
+        vc.isLocked = true
+        let controls: [NSControl] = [
+            vc.numberField, vc.nameField, vc.preWaitField, vc.postWaitField, vc.oscField, vc.hotkeyField,
+            vc.hotkeyClear, vc.secondTriggerPopup, vc.onReleaseCheck, vc.colourPopup, vc.continuePopup,
+            vc.flaggedCheck, vc.armedCheck,
+        ]
+        XCTAssertTrue(controls.allSatisfy { !$0.isEnabled })
+        XCTAssertFalse(vc.notesView.isEditable)
+        XCTAssertFalse(vc.hotkeyField.acceptsFirstResponder, "the recorder cannot take focus")
+
+        XCTAssertFalse(vc.record(KeyChord("k", [.command, .shift])))
+        vc.clearHotkey()
+        vc.nameField.stringValue = "Changed"
+        vc.commit(.name)
+        vc.colourPopup.selectItem(at: 2)
+        _ = vc.colourPopup.target?.perform(vc.colourPopup.action, with: vc.colourPopup)
+        vc.flaggedCheck.state = .on
+        _ = vc.flaggedCheck.target?.perform(vc.flaggedCheck.action, with: vc.flaggedCheck)
+        await settle()
+        XCTAssertEqual(rig.engine.received.count, before, "nothing reached the engine")
+
+        // A re-render while locked keeps the controls locked.
+        vc.render(force: Set(InspectorField.allCases))
+        XCTAssertFalse(vc.nameField.isEnabled)
+
+        vc.isLocked = false
+        XCTAssertTrue(vc.nameField.isEnabled)
+        XCTAssertTrue(vc.notesView.isEditable)
+        XCTAssertFalse(vc.hotkeyClear.isEnabled, "no hotkey yet: Clear stays off as in Edit Mode")
+        XCTAssertTrue(vc.record(KeyChord("k", [.command, .shift])))
+        await assertEventually { vc.hotkeyField.stringValue == "⇧⌘K" }
     }
 
     func testTabExistsAfterBasics() {
@@ -379,6 +416,23 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertTrue(app.handleKeyDown(e) === e)
         await settle()
         XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
+    }
+
+    func testFixedDefaultKeysYieldToACueHotkey() async throws {
+        keyDoc = "doc-1"
+        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        for key in ["v", "l"] {
+            _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
+            await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
+            XCTAssertNil(app.handleKeyDown(try event(key)), "\(key) fires the cue")
+            await assertEventually { !sent(.start(cue: intro)).isEmpty }
+            XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .loadSelected))
+            XCTAssertTrue(
+                first.logEntries.contains { $0.level == .warn && $0.message.contains("yields to a cue hotkey") })
+        }
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2, "once each")
+        _ = app.frontKeys
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2)
     }
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {

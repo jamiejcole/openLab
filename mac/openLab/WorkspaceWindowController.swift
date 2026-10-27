@@ -19,7 +19,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPanic: (() -> Void)?
     /// Pause, resume or panic of one cue, from the Active Cues panel.
     var onCueAction: ((TransportAction) -> Void)? {
-        didSet { sidebar.onCueAction = onCueAction }
+        didSet {
+            sidebar.onCueAction = onCueAction
+            inspector.onTransport = onCueAction
+        }
     }
     /// Relink missing media was asked for (Warnings row or File menu).
     var onRelink: (() -> Void)? {
@@ -71,6 +74,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
+        footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
@@ -96,6 +100,42 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func showLog() {
         logWindow.showWindow(nil)
         Task { await logWindow.refresh() }
+    }
+
+    /// Show Mode (SM-01) belongs to this window only and is not saved: the protocol has no field for
+    /// it (docs/handoff/m5-protocol-requests.md). Locks the inspector and cue-type row; transport,
+    /// hotkeys, the sidebar and the layout toggles keep working, as in QLab.
+    private(set) var isShowMode = false
+
+    /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
+    /// in the inspector, like Save and Close; if that is invalid or refused the window stays in
+    /// Edit Mode with the field's message showing, so it never locks over unsaved text.
+    func requestShowMode(_ on: Bool) async {
+        if on, !isShowMode, await !commitPendingEdits() {
+            NSSound.beep()
+            footer.setShowMode(false)
+            return
+        }
+        setShowMode(on)
+    }
+
+    func setShowMode(_ on: Bool) {
+        guard on != isShowMode else { return }
+        isShowMode = on
+        inspector.isLocked = on
+        cueToolbar.isLocked = on
+        sidebar.relinkLocked = on
+        footer.setShowMode(on)
+        refreshTitle()
+    }
+
+    /// The workspace's name (set by the app as the engine reports it); Show Mode adds a suffix.
+    var workspaceName = loc("window.main.title") {
+        didSet { refreshTitle() }
+    }
+
+    private func refreshTitle() {
+        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
     }
 
     private func syncSidebarList() {

@@ -87,6 +87,7 @@ async fn commands_and_transport_over_the_wire() {
                         value: format!("name {n}"),
                     },
                 }),
+                coalesce: None,
             };
             c.send(Message::text(encode_client(&rename).unwrap()))
                 .await

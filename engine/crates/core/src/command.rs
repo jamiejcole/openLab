@@ -21,8 +21,13 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::command_model::{
+    NetworkPatchProperty, PatchProperty, WorkspaceSetting, apply_model, no_change,
+};
 use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
-use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, Workspace};
+use crate::model::{
+    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
+};
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
     walk_mut,
@@ -164,6 +169,68 @@ pub enum Command {
     Transaction {
         commands: Vec<Command>,
     },
+    /// One workspace setting (ED-07; PB-02, PB-03, PB-11, NET-02, NFR-05, ED-08, TRG-01).
+    SetWorkspaceSetting {
+        setting: WorkspaceSetting,
+    },
+    /// Adds an output patch at `index` (0 to the current count).
+    AddPatch {
+        index: usize,
+        patch: OutputPatch,
+    },
+    /// Removes an output patch. Refused while a cue routes to it, unless `even_if_used`
+    /// (the inverse of an add sets it: undo must restore exactly).
+    RemovePatch {
+        id: PatchId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        even_if_used: bool,
+    },
+    /// Moves a patch to `index` among the patches (counted after taking it out).
+    MovePatch {
+        id: PatchId,
+        index: usize,
+    },
+    SetPatchProperty {
+        id: PatchId,
+        property: PatchProperty,
+    },
+    AddNetworkPatch {
+        index: usize,
+        patch: NetworkPatch,
+    },
+    /// As [`Command::RemovePatch`], for the cues' network destinations.
+    RemoveNetworkPatch {
+        id: NetworkPatchId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        even_if_used: bool,
+    },
+    MoveNetworkPatch {
+        id: NetworkPatchId,
+        index: usize,
+    },
+    SetNetworkPatchProperty {
+        id: NetworkPatchId,
+        property: NetworkPatchProperty,
+    },
+    /// Adds an empty cue list at `index` (0 to the current count).
+    AddCueList {
+        index: usize,
+        id: CueListId,
+        name: String,
+    },
+    /// Removes an empty cue list. Refused if it holds cues (remove or move them first) or if
+    /// it is the only list.
+    RemoveCueList {
+        id: CueListId,
+    },
+    MoveCueList {
+        id: CueListId,
+        index: usize,
+    },
+    RenameCueList {
+        id: CueListId,
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -200,6 +267,36 @@ pub enum CommandError {
     NotBatchable,
     #[error("cue values are invalid: {}", join(.0))]
     InvalidCue(Vec<ValidationIssue>),
+    #[error("patch {0} does not exist")]
+    PatchNotFound(PatchId),
+    #[error("network patch {0} does not exist")]
+    NetworkPatchNotFound(NetworkPatchId),
+    #[error("patch id {0} is already in use")]
+    DuplicatePatchId(PatchId),
+    #[error("network patch id {0} is already in use")]
+    DuplicateNetworkPatchId(NetworkPatchId),
+    #[error("cue list id {0} is already in use")]
+    DuplicateCueListId(CueListId),
+    #[error("patch {patch} is used by cue {cue}")]
+    PatchInUse { patch: PatchId, cue: CueId },
+    #[error("network patch {patch} is used by cue {cue}")]
+    NetworkPatchInUse { patch: NetworkPatchId, cue: CueId },
+    /// Refused by the engine: patch positions are mixer slots, so patches cannot be inserted,
+    /// removed, moved or resized while any voice is on the device (until M4.15b).
+    #[error(
+        "audio is playing: patches cannot be inserted, removed, moved or resized until it stops"
+    )]
+    PatchPlaying,
+    #[error("cue list {0} still has cues")]
+    CueListNotEmpty(CueListId),
+    #[error("cue list {0} is the only one")]
+    LastCueList(CueListId),
+    #[error("patch {patch} has no output {output}")]
+    PatchOutputOutOfRange { patch: PatchId, output: usize },
+    #[error("{0}")]
+    InvalidValue(&'static str),
+    #[error("values are invalid: {}", join(.0))]
+    InvalidModel(Vec<ValidationIssue>),
     #[error("transactions cannot be nested")]
     NestedTransaction,
     #[error("command {index} of the transaction was refused: {source}")]
@@ -225,17 +322,31 @@ impl Workspace {
     /// workspace is exactly as it was.
     pub fn apply(&mut self, command: Command) -> Result<Inverse, CommandError> {
         match command {
-            Command::Transaction { commands } => transaction(self, commands),
-            other => single(self, other),
+            Command::Transaction { commands } => transaction(self, commands, false),
+            other => single(self, other, false),
+        }
+    }
+
+    /// Applies an undo or redo step. It puts back a state the workspace had, so it is not
+    /// refused for a value problem that state already had when the show was loaded (a hotkey
+    /// name load only warns about): an undo must never get stuck on one.
+    pub fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
+        match command {
+            Command::Transaction { commands } => transaction(self, commands, true),
+            other => single(self, other, true),
         }
     }
 }
 
-fn transaction(ws: &mut Workspace, commands: Vec<Command>) -> Result<Inverse, CommandError> {
+fn transaction(
+    ws: &mut Workspace,
+    commands: Vec<Command>,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
     let snapshot = ws.clone();
     let mut undo_steps = Vec::with_capacity(commands.len());
     for (index, command) in commands.into_iter().enumerate() {
-        match single(ws, command) {
+        match single(ws, command, restoring) {
             Ok(inverse) => undo_steps.push(inverse),
             Err(error) => {
                 *ws = snapshot;
@@ -260,7 +371,7 @@ fn transaction(ws: &mut Workspace, commands: Vec<Command>) -> Result<Inverse, Co
 }
 
 /// Everything except a plain transaction. Each arm is atomic.
-fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError> {
+fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inverse, CommandError> {
     match command {
         Command::AddCue {
             at,
@@ -293,6 +404,9 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
                 ..from.clone()
             };
             relocate(ws, id, &path, &to)?;
+            if to == from {
+                return Ok(no_change());
+            }
             Ok(Command::MoveCue {
                 id,
                 index: from.index,
@@ -302,9 +416,12 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
             let path = find_path(ws, id).ok_or(CommandError::CueNotFound(id))?;
             let from = position_of(ws, &path).ok_or(CommandError::Internal)?;
             relocate(ws, id, &path, &to)?;
+            if to == from {
+                return Ok(no_change());
+            }
             Ok(Command::ReparentCue { id, to: from })
         }
-        Command::SetCueProperty { id, property } => set_property(ws, id, property),
+        Command::SetCueProperty { id, property } => set_property(ws, id, property, restoring),
         Command::BatchSet { ids, property } => {
             if matches!(property, CueProperty::Kind { .. }) {
                 return Err(CommandError::NotBatchable);
@@ -316,7 +433,7 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
                     property: property.clone(),
                 })
                 .collect();
-            transaction(ws, commands)
+            transaction(ws, commands, restoring)
         }
         Command::SetCueNumbers { numbers } => set_numbers(ws, numbers),
         Command::Renumber {
@@ -325,6 +442,7 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
             increment,
         } => renumber(ws, &ids, start, increment),
         Command::Transaction { .. } => Err(CommandError::NestedTransaction),
+        other => apply_model(ws, &other, restoring).unwrap_or(Err(CommandError::Internal)),
     }
 }
 
@@ -556,6 +674,11 @@ impl CueProperty {
         })
     }
 
+    /// Whether `other` sets the same field (`History` coalescing).
+    pub(crate) fn same_slot(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
     /// Sets the property. Returns `false`, changing nothing, if `cue` cannot have it.
     fn write(&self, cue: &mut Cue) -> bool {
         match self {
@@ -608,6 +731,7 @@ fn set_property(
     ws: &mut Workspace,
     id: CueId,
     property: CueProperty,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     let path = find_path(ws, id).ok_or(CommandError::CueNotFound(id))?;
     let cue = cue_at(ws, &path).ok_or(CommandError::Internal)?;
@@ -631,9 +755,22 @@ fn set_property(
             | CueProperty::Triggers { .. }
     ) {
         property.write(&mut probe);
-        refuse(subtree_issues(ws, &[probe], path.indices.len()))?;
+        if !restoring {
+            // Only what the new value introduces: the old one may carry a warning from load.
+            let mut was = blank_cue(id);
+            old.write(&mut was);
+            let existing = subtree_issues(ws, &[was], path.indices.len());
+            let issues = subtree_issues(ws, &[probe], path.indices.len())
+                .into_iter()
+                .filter(|i| !existing.contains(i))
+                .collect();
+            refuse(issues)?;
+        }
     }
 
+    if old == property {
+        return Ok(no_change());
+    }
     let cue = cue_at_mut(ws, &path).ok_or(CommandError::Internal)?;
     if !property.write(cue) {
         return Err(CommandError::Internal);
@@ -777,6 +914,9 @@ fn set_numbers(
         return Err(error);
     }
 
+    if old.iter().all(|o| wanted.get(&o.id) == Some(&o.number)) {
+        return Ok(no_change());
+    }
     for list in &mut ws.cue_lists {
         walk_mut(&mut list.cues, &mut |cue| {
             if let Some(number) = wanted.get(&cue.id) {
