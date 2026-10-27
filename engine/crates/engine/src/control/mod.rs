@@ -1204,6 +1204,7 @@ impl Control {
     fn supervise_watch(&mut self) {
         self.watch.apply(self.media.take_key_changes());
         self.watch.supervise();
+        self.media.set_watch_stalled(self.watch.stalled_volumes());
         for (level, message) in self.watch.take_logs() {
             self.log(level, message);
         }

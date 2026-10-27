@@ -12,12 +12,14 @@
 //! it for ever; its file is reported unplayable meanwhile (a late answer still counts). The
 //! abandoned thread is leaked: it ends when its read returns, if it ever does.
 //!
-//! A stuck probe also marks its volume stalled (the volume of the path, named as the media watch
-//! names them). Jobs for a stalled volume do not take a worker: they wait in a deferred list
-//! the control thread releases, one trial at a time, once no probe is in flight on the volume
-//! and its backoff has passed, or all at once when a probe on the volume answers. So a dead
-//! network share costs at most the threads that were already stuck on it, and probes of other
-//! volumes are never queued behind it (M2.25b).
+//! Probe scheduling per volume (M2.25b). A volume is the mount a path is on (`bucket_of`, as the
+//! media watch names them: `/Volumes/<name>`, `/mnt/<name>`, a drive or share; everything else,
+//! the system disk included, is `/`). One slow probe is not a verdict on a mount, so a volume
+//! counts as stalled only when the media watch reports it stalled, or when two different files'
+//! probes are stuck on it (preloads never count). A stalled volume gets one trial job at a time
+//! (the rest wait, still pending, no worker taken; files keep any last answer) and the next
+//! trial waits out a backoff after one gets stuck or fails. Any answer from the volume ends the
+//! probe-side stall. Jobs on other volumes always run. See docs/control.md.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -106,117 +108,214 @@ impl Job {
     }
 }
 
-/// A volume with jobs in flight, or one that stalled.
+/// Different files with a stuck probe that make a volume stalled on the probes' word alone.
+const CORROBORATION: usize = 2;
+
+/// A volume with jobs in flight or a stall to remember.
 #[derive(Debug, Default)]
 struct Volume {
-    /// Jobs running on it, abandoned workers' included.
     in_flight: usize,
-    /// A probe on it was given up on and none has answered since.
-    stalled: bool,
-    /// A stalled volume gets a trial once nothing is in flight and this has passed (`None`: the
-    /// stuck job has not returned yet).
+    /// Files whose probe was given up on and none has answered since (preloads never count).
+    stuck: HashSet<String>,
+    /// The trial job running (a stalled volume has at most one), by id.
+    trial: Option<u64>,
+    /// No trial before this (set when a trial got stuck or failed).
     retry_at: Option<Instant>,
     backoff: Duration,
 }
 
 impl Volume {
-    /// A job may start on it: it works, or it is stalled and a trial is due.
-    fn due(&self, now: Instant) -> bool {
-        !self.stalled || (self.in_flight == 0 && self.retry_at.is_none_or(|t| now >= t))
+    fn next_wait(&mut self) -> Duration {
+        let wait = self.backoff.max(RETRY_FIRST);
+        self.backoff = wait.saturating_mul(2).min(RETRY_MAX);
+        wait
     }
+
+    fn trial_due(&self, now: Instant) -> bool {
+        self.trial.is_none() && self.retry_at.is_none_or(|t| now >= t)
+    }
+}
+
+/// A job a worker has taken.
+struct Taken {
+    job: Job,
+    /// The gate's epoch then: a job taken before a reset does not touch the new state.
+    epoch: u64,
+    trial: Option<u64>,
 }
 
 /// What the workers and the control thread share about the volumes (never held across I/O).
 #[derive(Debug, Default)]
 struct Gate {
-    /// The highest ticket a worker took per file: a copy of a job already taken (the
-    /// high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not probed again.
-    claimed: HashMap<String, u64>,
+    /// The highest ticket a worker took per (probe or not, file): a copy of a job already taken
+    /// (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not run again.
+    claimed: HashMap<(bool, String), u64>,
     volumes: HashMap<String, Volume>,
     /// Jobs for stalled volumes (and whether they came from the high-priority queue).
     deferred: Vec<(Job, bool)>,
-    /// Volumes that stalled (`true`) or answered again (`false`), for the log.
+    /// Volumes the probes alone found stalled (`true`) or answering again (`false`), for the log.
     events: Vec<(String, bool)>,
+    /// Volumes the media watch reports stalled (its notice is the only one).
+    watch_stalled: HashSet<String>,
+    epoch: u64,
+    next_trial: u64,
 }
 
 impl Gate {
+    fn stalled(&self, bucket: &str) -> bool {
+        self.watch_stalled.contains(bucket)
+            || self
+                .volumes
+                .get(bucket)
+                .is_some_and(|v| v.stuck.len() >= CORROBORATION)
+    }
+
+    /// May a job start on `bucket` now: it works, or it is stalled and a trial is due.
+    fn may_start(&self, bucket: &str, now: Instant) -> bool {
+        !self.stalled(bucket) || self.volumes.get(bucket).is_none_or(|v| v.trial_due(now))
+    }
+
     /// Takes a job for a worker: `Some` to run it, `None` if it was dropped (taken already) or
-    /// deferred (its volume is stalled and not due a trial).
-    fn admit(&mut self, job: Job, high: bool, now: Instant) -> Option<Job> {
+    /// deferred (its volume is stalled and no trial is due).
+    fn admit(&mut self, job: Job, high: bool, now: Instant) -> Option<Taken> {
         let (key, ticket) = job.key();
-        if self.claimed.get(key).is_some_and(|t| *t >= ticket) {
+        let claim = (job.is_probe(), key.to_owned());
+        if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
             return None;
         }
         let bucket = bucket_of(job.path());
-        if !self.volumes.get(&bucket).is_none_or(|v| v.due(now)) {
+        if !self.may_start(&bucket, now) {
             self.defer(job, high);
             return None;
         }
-        self.claimed.insert(key.to_owned(), ticket);
-        self.volumes.entry(bucket).or_default().in_flight += 1;
-        Some(job)
+        let trial = self.stalled(&bucket).then(|| {
+            self.next_trial += 1;
+            self.next_trial
+        });
+        self.claimed.insert(claim, ticket);
+        let v = self.volumes.entry(bucket).or_default();
+        v.in_flight += 1;
+        v.trial = trial.or(v.trial);
+        Some(Taken {
+            job,
+            epoch: self.epoch,
+            trial,
+        })
     }
 
-    /// One deferred job per file and kind: a newer ticket replaces an older one.
+    /// One deferred job per file and kind: a newer ticket replaces an older one, and a job
+    /// asked for urgently stays urgent.
     fn defer(&mut self, job: Job, high: bool) {
         let (key, ticket) = job.key();
         let same = |j: &Job| j.is_probe() == job.is_probe() && j.key().0 == key;
-        if self
+        if let Some((_, h)) = self
             .deferred
-            .iter()
-            .any(|(j, _)| same(j) && j.key().1 >= ticket)
+            .iter_mut()
+            .find(|(j, _)| same(j) && j.key().1 >= ticket)
         {
+            *h |= high;
             return;
         }
+        let high = high || self.deferred.iter().any(|(j, h)| same(j) && *h);
         self.deferred.retain(|(j, _)| !same(j));
         self.deferred.push((job, high));
     }
 
-    /// A job on `bucket` ended. An answer (even a file that is missing or damaged) shows the
-    /// volume works; an I/O error does not, so a stalled volume waits longer before the next try.
-    fn finished(&mut self, bucket: &str, answered: bool, now: Instant) {
-        let Some(v) = self.volumes.get_mut(bucket) else {
-            return;
-        };
-        v.in_flight = v.in_flight.saturating_sub(1);
-        if v.stalled {
-            if answered {
-                v.stalled = false;
-                self.events.push((bucket.to_owned(), false));
-            } else if v.in_flight == 0 {
-                let wait = v.backoff.max(RETRY_FIRST);
-                v.retry_at = Some(now + wait);
-                v.backoff = wait.saturating_mul(2).min(RETRY_MAX);
-            }
-        }
-        if v.in_flight == 0 && !v.stalled {
+    fn tidy(&mut self, bucket: &str) {
+        if self
+            .volumes
+            .get(bucket)
+            .is_some_and(|v| v.in_flight == 0 && v.stuck.is_empty() && v.trial.is_none())
+        {
             self.volumes.remove(bucket);
         }
     }
 
-    /// A job on `bucket` is stuck: the volume stalls, if a job is still on it.
-    fn stall(&mut self, bucket: &str) {
-        if let Some(v) = self.volumes.get_mut(bucket)
-            && v.in_flight > 0
-            && !v.stalled
-        {
-            v.stalled = true;
+    /// A job taken in `epoch` ended. An answer (even a file that is missing or damaged) shows
+    /// the volume works and ends the probe-side stall; an I/O error does not, so a failed
+    /// trial waits before the next.
+    #[allow(clippy::too_many_arguments)]
+    fn finished(
+        &mut self,
+        epoch: u64,
+        bucket: &str,
+        key: &str,
+        probe: bool,
+        trial: Option<u64>,
+        answered: bool,
+        now: Instant,
+    ) {
+        if epoch != self.epoch {
+            return;
+        }
+        let watch = self.watch_stalled.contains(bucket);
+        let Some(v) = self.volumes.get_mut(bucket) else {
+            return;
+        };
+        v.in_flight = v.in_flight.saturating_sub(1);
+        let was_stalled = v.stuck.len() >= CORROBORATION;
+        if probe {
+            v.stuck.remove(key);
+        }
+        let mine = trial.is_some() && v.trial == trial;
+        if mine {
+            v.trial = None;
+        }
+        if answered {
+            if was_stalled && !watch {
+                self.events.push((bucket.to_owned(), false));
+            }
+            v.stuck.clear();
             v.retry_at = None;
-            v.backoff = RETRY_FIRST;
-            self.events.push((bucket.to_owned(), true));
+            v.backoff = Duration::ZERO;
+        } else if mine {
+            let wait = v.next_wait();
+            v.retry_at = Some(now + wait);
+        }
+        self.tidy(bucket);
+    }
+
+    /// A job taken in `epoch` is stuck (the watchdog gave up on its worker). A stuck probe is
+    /// counted against its volume; a stuck trial stops blocking the next one, after a wait.
+    fn timed_out(
+        &mut self,
+        epoch: u64,
+        bucket: &str,
+        key: &str,
+        probe: bool,
+        trial: Option<u64>,
+        now: Instant,
+    ) {
+        if epoch != self.epoch {
+            return;
+        }
+        let watch = self.watch_stalled.contains(bucket);
+        let v = self.volumes.entry(bucket.to_owned()).or_default();
+        if probe {
+            let before = v.stuck.len();
+            v.stuck.insert(key.to_owned());
+            if before < CORROBORATION && v.stuck.len() >= CORROBORATION && !watch {
+                self.events.push((bucket.to_owned(), true));
+            }
+        }
+        if trial.is_some() && v.trial == trial {
+            v.trial = None;
+            let wait = v.next_wait();
+            v.retry_at = Some(now + wait);
         }
     }
 
     /// The deferred jobs that may run now: all on a volume that works, one trial on a stalled
-    /// volume that is due.
-    fn release_due(&mut self, now: Instant) -> Vec<(Job, bool)> {
-        let mut trial: HashSet<String> = HashSet::new();
+    /// volume that is due (`trials`: workers can be spared for one).
+    fn release_due(&mut self, now: Instant, trials: bool) -> Vec<(Job, bool)> {
+        let mut tried: HashSet<String> = HashSet::new();
         let mut out = Vec::new();
         for (job, high) in std::mem::take(&mut self.deferred) {
             let bucket = bucket_of(job.path());
-            let go = match self.volumes.get(&bucket) {
-                Some(v) if v.stalled => v.due(now) && trial.insert(bucket),
-                _ => true,
+            let go = if self.stalled(&bucket) {
+                trials && self.may_start(&bucket, now) && tried.insert(bucket)
+            } else {
+                true
             };
             if go {
                 out.push((job, high));
@@ -225,6 +324,16 @@ impl Gate {
             }
         }
         out
+    }
+
+    /// Another workspace: nothing known about the volumes carries over, and jobs still running
+    /// do not report into the new state.
+    fn reset(&mut self) {
+        self.epoch += 1;
+        self.claimed.clear();
+        self.volumes.clear();
+        self.deferred.clear();
+        self.events.clear();
     }
 }
 
@@ -282,10 +391,23 @@ struct Entry {
     watch: u64,
 }
 
+/// The job a worker is on.
+struct Busy {
+    since: Instant,
+    key: String,
+    ticket: u64,
+    bucket: String,
+    probe: bool,
+    epoch: u64,
+    trial: Option<u64>,
+    /// The watchdog has judged it stuck (once).
+    reported: bool,
+}
+
 /// A worker as the watchdog sees it.
 struct WorkerState {
-    /// The job it is on (file, ticket, volume) and since when.
-    busy: Mutex<Option<(Instant, String, u64, String)>>,
+    /// The job it is on.
+    busy: Mutex<Option<Busy>>,
     abandoned: AtomicBool,
 }
 
@@ -452,13 +574,7 @@ impl MediaCatalog {
     /// find no entry (or a newer ticket) and are ignored.
     pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
         self.entries.clear();
-        {
-            // New tickets are higher than any taken, so old claims are not needed; deferred
-            // jobs are for files that were forgotten.
-            let mut gate = lock(&self.gate);
-            gate.claimed.clear();
-            gate.deferred.clear();
-        }
+        lock(&self.gate).reset();
         self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
         self.reserved = 0;
@@ -742,7 +858,7 @@ impl MediaCatalog {
             // dropped, or probe the file twice.
             if lock(&self.gate)
                 .claimed
-                .get(key)
+                .get(&(true, key.to_owned()))
                 .is_some_and(|t| *t >= e.ticket)
             {
                 continue;
@@ -844,21 +960,30 @@ impl MediaCatalog {
         let mut stuck = Vec::new();
         let now = self.clock.now();
         for (i, w) in self.workers.iter().enumerate() {
-            let busy = lock(&w.busy);
-            if let Some((since, key, ticket, bucket)) = busy.as_ref()
-                && now.saturating_duration_since(*since) >= self.timeout
+            let mut busy = lock(&w.busy);
+            if let Some(b) = busy.as_mut()
+                && !b.reported
+                && now.saturating_duration_since(b.since) >= self.timeout
             {
-                stuck.push((i, key.clone(), *ticket, bucket.clone()));
+                b.reported = true;
+                stuck.push((
+                    i,
+                    b.key.clone(),
+                    b.ticket,
+                    b.bucket.clone(),
+                    b.probe,
+                    b.epoch,
+                    b.trial,
+                ));
             }
         }
         {
-            // The volume stalls even when no worker can be spared to replace the stuck one.
             let mut gate = lock(&self.gate);
-            for (_, _, _, bucket) in &stuck {
-                gate.stall(bucket);
+            for (_, key, _, bucket, probe, epoch, trial) in &stuck {
+                gate.timed_out(*epoch, bucket, key, *probe, *trial, now);
             }
         }
-        for (i, key, ticket, _) in stuck.into_iter().rev() {
+        for (i, key, ticket, ..) in stuck.into_iter().rev() {
             if self.abandoned >= MAX_ABANDONED_WORKERS {
                 if !self.limit_reported {
                     self.limit_reported = true;
@@ -872,27 +997,24 @@ impl MediaCatalog {
             let _ = self.spawn();
             self.give_up(&key, ticket, &mut out);
         }
-        // Jobs that wait for a stalled volume fail the same way, so a cue on a dead share is
-        // broken at once instead of holding its start.
-        let (released, waiting) = {
-            let mut gate = lock(&self.gate);
-            let released = gate.release_due(now);
-            let waiting: Vec<(String, u64)> = gate
-                .deferred
-                .iter()
-                .filter(|(j, _)| j.is_probe())
-                .map(|(j, _)| (j.key().0.to_owned(), j.key().1))
-                .collect();
-            (released, waiting)
-        };
+        // Jobs that waited for a stalled volume run when it works again, or one at a time as
+        // trials while workers can be spared (half the replacement budget is kept for others).
+        let released =
+            lock(&self.gate).release_due(now, self.abandoned < MAX_ABANDONED_WORKERS / 2);
         for (job, high) in released {
             let queue = if high { &self.high } else { &self.low };
             let _ = queue.send(job);
         }
-        for (key, ticket) in waiting {
-            self.give_up(&key, ticket, &mut out);
-        }
         out
+    }
+
+    /// The volumes the media watch reports stalled: the probes defer to them too.
+    pub fn set_watch_stalled<'a>(&mut self, volumes: impl IntoIterator<Item = &'a str>) {
+        let set: HashSet<String> = volumes.into_iter().map(str::to_owned).collect();
+        let mut gate = lock(&self.gate);
+        if gate.watch_stalled != set {
+            gate.watch_stalled = set;
+        }
     }
 
     /// Reports `key`'s probe `ticket` unplayable, if it is still the one asked and not answered.
@@ -1182,14 +1304,23 @@ fn worker(
         };
         // A job for a stalled volume waits for the control thread to release it; a copy of a
         // job already taken is dropped.
-        let Some(job) = lock(gate).admit(job, from_high, clock.now()) else {
+        let Some(Taken { job, epoch, trial }) = lock(gate).admit(job, from_high, clock.now())
+        else {
             continue;
         };
         let bucket = bucket_of(job.path());
-        {
-            let (key, ticket) = job.key();
-            *lock(&state.busy) = Some((clock.now(), key.to_owned(), ticket, bucket.clone()));
-        }
+        let probe_job = job.is_probe();
+        let key = job.key().0.to_owned();
+        *lock(&state.busy) = Some(Busy {
+            since: clock.now(),
+            key: key.clone(),
+            ticket: job.key().1,
+            bucket: bucket.clone(),
+            probe: probe_job,
+            epoch,
+            trial,
+            reported: false,
+        });
         let (answer, answered) = match job {
             Job::Probe { key, ticket, path } => {
                 let result = probe(&path).map(|p| (path, p));
@@ -1222,7 +1353,15 @@ fn worker(
             }
         };
         *lock(&state.busy) = None;
-        lock(gate).finished(&bucket, answered, clock.now());
+        lock(gate).finished(
+            epoch,
+            &bucket,
+            &key,
+            probe_job,
+            trial,
+            answered,
+            clock.now(),
+        );
         if inbox.send(Inbox::Probe(answer)).is_err() || state.abandoned.load(Ordering::Acquire) {
             return;
         }
@@ -2103,7 +2242,7 @@ mod tests {
         assert_eq!(checks.walks(), 1);
     }
 
-    // ----- a stalled volume does not starve the others (M2.25b) -----
+    // ----- probe scheduling per volume (M2.25b) -----
 
     fn job(key: &str, ticket: u64) -> Job {
         Job::Probe {
@@ -2113,171 +2252,439 @@ mod tests {
         }
     }
 
+    fn preload(key: &str, ticket: u64) -> Job {
+        Job::Preload {
+            key: key.to_owned(),
+            ticket,
+            path: PathBuf::from(key),
+            max_bytes: 1,
+        }
+    }
+
     const DEAD: &str = "/mnt/dead";
+    const SEC: Duration = Duration::from_secs(1);
+
+    /// Takes `job` as a worker would, and has it stuck.
+    fn stuck(gate: &mut Gate, key: &str, ticket: u64, now: Instant) -> Taken {
+        let t = gate.admit(job(key, ticket), false, now).unwrap();
+        gate.timed_out(t.epoch, &bucket_of(Path::new(key)), key, true, t.trial, now);
+        t
+    }
 
     #[test]
-    fn a_stalled_volume_defers_its_jobs_and_is_tried_again_with_backoff() {
+    fn one_stuck_probe_or_any_stuck_preloads_do_not_stall_a_volume() {
         let t0 = Instant::now();
         let mut gate = Gate::default();
-        assert!(gate.admit(job("/mnt/dead/a.wav", 1), false, t0).is_some());
-        // The same job again (the high-priority copy) is dropped, not deferred.
-        assert!(gate.admit(job("/mnt/dead/a.wav", 1), true, t0).is_none());
-        assert!(gate.deferred.is_empty());
-        gate.stall(DEAD);
+        stuck(&mut gate, "/Users/me/Show/slow.mp3", 1, t0);
+        // The system disk still takes every other file.
+        for n in 2..6 {
+            assert!(
+                gate.admit(job(&format!("/Users/me/other/{n}.wav"), n), false, t0)
+                    .is_some()
+            );
+        }
+        // Stuck preloads (the same or different files) never count.
+        for n in 10..14 {
+            let key = format!("/Users/me/pre/{n}.wav");
+            let t = gate.admit(preload(&key, n), false, t0).unwrap();
+            gate.timed_out(t.epoch, "/", &key, false, t.trial, t0);
+        }
+        assert!(!gate.stalled("/"));
+        assert!(gate.admit(job("/Users/me/x.wav", 20), false, t0).is_some());
+        assert!(gate.events.is_empty() && gate.deferred.is_empty());
+        // The same file stuck twice is still one file.
+        gate.timed_out(gate.epoch, "/", "/Users/me/Show/slow.mp3", true, None, t0);
+        assert!(!gate.stalled("/"));
+    }
+
+    #[test]
+    fn two_stuck_files_stall_a_volume_one_trial_at_a_time_with_backoff() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        stuck(&mut gate, "/mnt/dead/a.wav", 1, t0);
+        stuck(&mut gate, "/mnt/dead/b.wav", 2, t0);
         assert_eq!(gate.events, vec![(DEAD.to_owned(), true)]);
-        // One in flight on a stalled volume: the others wait; other volumes proceed.
-        assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
-        assert!(gate.admit(job("/mnt/dead/b.wav", 3), false, t0).is_none());
-        assert_eq!(gate.deferred.len(), 1, "one per file, the newest");
-        assert!(gate.admit(job("/mnt/ok/c.wav", 4), false, t0).is_some());
-        assert!(gate.release_due(t0).is_empty());
-        // The stuck probe returns with an I/O error: wait 30 s, then 60 s, ... up to 300 s.
+        // Healthy volumes always proceed.
+        assert!(gate.admit(job("/mnt/ok/c.wav", 3), false, t0).is_some());
+        assert!(gate.admit(job("/Users/me/c.wav", 3), false, t0).is_some());
+        // The stuck probes do not block the first trial; then the rest wait.
+        let trial = gate.admit(job("/mnt/dead/c.wav", 4), false, t0).unwrap();
+        assert!(trial.trial.is_some());
+        assert!(gate.admit(job("/mnt/dead/d.wav", 5), true, t0).is_none());
+        assert!(gate.admit(job("/mnt/dead/e.wav", 6), false, t0).is_none());
+        assert!(gate.release_due(t0, true).is_empty());
+        // The trial gets stuck too: an abandoned job does not block the next one, after 30 s,
+        // then 60 s, doubling to 300 s.
         let mut now = t0;
-        let mut ticket = 20;
+        let mut ticket = 10;
+        let mut trial = trial;
         for wait in [30, 60, 120, 240, 300, 300] {
-            gate.finished(DEAD, false, now);
+            gate.timed_out(trial.epoch, DEAD, trial.job.key().0, true, trial.trial, now);
             let early = now + Duration::from_secs(wait - 1);
-            assert!(gate.release_due(early).is_empty());
+            assert!(gate.release_due(early, true).is_empty(), "{wait}");
+            now += Duration::from_secs(wait);
+            assert!(
+                gate.release_due(now, false).is_empty(),
+                "no worker to spare"
+            );
+            let mut out = gate.release_due(now, true);
+            assert_eq!(out.len(), 1, "one trial per stalled volume");
+            ticket += 1;
+            trial = gate.admit(out.remove(0).0, false, now).unwrap();
+            assert!(trial.trial.is_some());
+            // Others still wait while it runs.
+            assert!(gate.release_due(now, true).is_empty());
             ticket += 1;
             assert!(
-                gate.admit(job("/mnt/dead/z.wav", ticket), false, early)
+                gate.admit(job("/mnt/dead/y.wav", ticket), false, now)
                     .is_none()
             );
-            now += Duration::from_secs(wait);
-            let out = gate.release_due(now);
-            assert_eq!(out.len(), 1, "one trial per stalled volume");
-            // The trial runs (as a worker would after taking it).
-            let (j, high) = out.into_iter().next().unwrap();
-            assert!(!high);
-            assert!(gate.admit(j, false, now).is_some());
-            // Others still wait while it runs.
-            ticket += 1;
-            gate.defer(job("/mnt/dead/y.wav", ticket), false);
-            assert!(gate.release_due(now).is_empty());
-            gate.deferred.clear();
         }
         // The trial answers (the file is missing: the volume works): everything is released.
-        gate.defer(job("/mnt/dead/e.wav", 91), false);
-        gate.defer(job("/mnt/dead/f.wav", 92), false);
-        gate.finished(DEAD, true, now);
+        gate.finished(
+            trial.epoch,
+            DEAD,
+            trial.job.key().0,
+            true,
+            trial.trial,
+            true,
+            now,
+        );
         assert_eq!(gate.events.last(), Some(&(DEAD.to_owned(), false)));
-        assert_eq!(gate.release_due(now).len(), 2);
-        assert!(gate.admit(job("/mnt/dead/g.wav", 93), false, now).is_some());
+        assert!(!gate.stalled(DEAD));
+        assert!(!gate.release_due(now, false).is_empty());
+        assert!(gate.deferred.is_empty());
+    }
+
+    #[test]
+    fn a_failing_trial_waits_and_a_late_return_of_a_stuck_job_clears_the_stall() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        let a = stuck(&mut gate, "/mnt/dead/a.wav", 1, t0);
+        stuck(&mut gate, "/mnt/dead/b.wav", 2, t0);
+        let t = gate.admit(job("/mnt/dead/c.wav", 3), false, t0).unwrap();
+        gate.finished(t.epoch, DEAD, "/mnt/dead/c.wav", true, t.trial, false, t0);
+        assert!(
+            gate.admit(job("/mnt/dead/d.wav", 4), false, t0 + 29 * SEC)
+                .is_none()
+        );
+        assert!(
+            gate.admit(job("/mnt/dead/d.wav", 4), false, t0 + 30 * SEC)
+                .is_some()
+        );
+        // A stuck job comes back with an answer: the volume works.
+        gate.finished(
+            a.epoch,
+            DEAD,
+            "/mnt/dead/a.wav",
+            true,
+            a.trial,
+            true,
+            t0 + 31 * SEC,
+        );
+        assert!(!gate.stalled(DEAD));
+        assert_eq!(gate.events.last(), Some(&(DEAD.to_owned(), false)));
+    }
+
+    #[test]
+    fn a_reset_forgets_the_volumes_and_late_jobs_do_not_touch_the_new_state() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        // Two jobs that never return (a FIFO, a hard-mounted share).
+        let a = stuck(&mut gate, "/mnt/dead/a.wav", 1, t0);
+        stuck(&mut gate, "/mnt/dead/b.wav", 2, t0);
+        assert!(gate.stalled(DEAD));
+        gate.reset();
+        assert!(!gate.stalled(DEAD));
+        assert!(
+            gate.admit(job("/mnt/dead/a.wav", 3), false, t0)
+                .unwrap()
+                .trial
+                .is_none()
+        );
+        // The old job ends now: the new state is not changed (no stall, no in-flight count).
+        gate.finished(a.epoch, DEAD, "/mnt/dead/a.wav", true, None, false, t0);
+        gate.timed_out(a.epoch, DEAD, "/mnt/dead/a.wav", true, None, t0);
+        assert_eq!(gate.volumes[DEAD].in_flight, 1);
+        assert!(gate.volumes[DEAD].stuck.is_empty());
+    }
+
+    #[test]
+    fn a_probe_and_a_preload_of_one_file_do_not_shadow_each_other() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        // The preload (ticket 13) is taken before the probe (ticket 12): both run.
+        assert!(gate.admit(preload("/a/k.wav", 13), false, t0).is_some());
+        assert!(gate.admit(job("/a/k.wav", 12), false, t0).is_some());
+        // A copy of either is dropped.
+        assert!(gate.admit(job("/a/k.wav", 12), true, t0).is_none());
+        assert!(gate.admit(preload("/a/k.wav", 13), true, t0).is_none());
+        assert!(gate.deferred.is_empty());
+    }
+
+    #[test]
+    fn a_watch_stall_defers_probes_and_makes_no_notice_of_its_own() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        gate.watch_stalled.insert(DEAD.to_owned());
+        let trial = gate.admit(job("/mnt/dead/a.wav", 1), false, t0).unwrap();
+        assert!(trial.trial.is_some());
+        assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
+        assert!(gate.admit(job("/mnt/ok/b.wav", 2), false, t0).is_some());
+        // The stuck probes add up to the same verdict: the watch's notice is the only one.
+        gate.timed_out(trial.epoch, DEAD, "/mnt/dead/a.wav", true, trial.trial, t0);
+        gate.timed_out(gate.epoch, DEAD, "/mnt/dead/c.wav", true, None, t0);
+        assert!(gate.events.is_empty());
+        // The trial answered: the next waits no backoff, one at a time while the watch says so.
+        gate.finished(
+            trial.epoch,
+            DEAD,
+            "/mnt/dead/a.wav",
+            true,
+            trial.trial,
+            true,
+            t0,
+        );
+        assert_eq!(gate.release_due(t0, true).len(), 1);
+    }
+
+    #[test]
+    fn a_deferred_job_asked_for_urgently_stays_urgent() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        gate.watch_stalled.insert(DEAD.to_owned());
+        assert!(gate.admit(job("/mnt/dead/a.wav", 1), false, t0).is_some());
+        assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
+        assert!(gate.admit(job("/mnt/dead/b.wav", 2), true, t0).is_none());
+        assert!(gate.admit(job("/mnt/dead/b.wav", 2), false, t0).is_none());
+        assert_eq!(gate.deferred.len(), 1);
+        assert!(gate.deferred[0].1);
     }
 
     #[cfg(unix)]
     struct Hang(Mutex<(usize, bool)>, std::sync::Condvar);
-    #[cfg(unix)]
-    static HANG: Hang = Hang(Mutex::new((0, false)), std::sync::Condvar::new());
 
     #[cfg(unix)]
-    /// A probe of a file on the dead volume blocks until [`HANG`] opens.
-    fn hang_probe(path: &Path) -> Result<Probed, MediaError> {
-        if path.starts_with(DEAD) {
-            let mut g = lock(&HANG.0);
+    impl Hang {
+        const fn new() -> Self {
+            Self(Mutex::new((0, false)), std::sync::Condvar::new())
+        }
+
+        fn block(&self) {
+            let mut g = lock(&self.0);
             g.0 += 1;
-            HANG.1.notify_all();
+            self.1.notify_all();
             while !g.1 {
-                g = HANG.1.wait(g).unwrap_or_else(PoisonError::into_inner);
+                g = self.1.wait(g).unwrap_or_else(PoisonError::into_inner);
             }
+        }
+
+        fn entered(&self) -> usize {
+            lock(&self.0).0
+        }
+
+        fn open(&self) {
+            lock(&self.0).1 = true;
+            self.1.notify_all();
+        }
+
+        fn wait_entered(&self, n: usize) {
+            let mut g = lock(&self.0);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while g.0 < n {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "probes never came");
+                g = self.1.wait_timeout(g, left).unwrap().0;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    static DEAD_VOLUME: Hang = Hang::new();
+    #[cfg(unix)]
+    static SLOW_FILE: Hang = Hang::new();
+    #[cfg(unix)]
+    static FIFO_VOLUME: Hang = Hang::new();
+
+    #[cfg(unix)]
+    fn dead_probe(path: &Path) -> Result<Probed, MediaError> {
+        if path.starts_with(DEAD) {
+            DEAD_VOLUME.block();
         }
         fake(path)
     }
 
     #[cfg(unix)]
-    fn wait_entered(n: usize) {
-        let mut g = lock(&HANG.0);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while g.0 < n {
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "probes never came");
-            g = HANG.1.wait_timeout(g, left).unwrap().0;
+    fn slow_probe(path: &Path) -> Result<Probed, MediaError> {
+        if path == Path::new("/slow/hang.wav") {
+            SLOW_FILE.block();
         }
+        fake(path)
     }
 
     #[cfg(unix)]
-    #[test]
-    fn a_hung_volume_with_many_files_cannot_delay_a_healthy_one() {
+    fn fifo_probe(path: &Path) -> Result<Probed, MediaError> {
+        if path.starts_with("/mnt/fifo") {
+            FIFO_VOLUME.block();
+        }
+        fake(path)
+    }
+
+    #[cfg(unix)]
+    fn timed_catalog(
+        probe: ProbeFn,
+    ) -> (
+        MediaCatalog,
+        Receiver<Inbox>,
+        Arc<std::sync::atomic::AtomicU64>,
+    ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let base = Instant::now();
         let ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let tick = Arc::clone(&ms);
         let clock =
             ProbeClock::new(move || base + Duration::from_millis(tick.load(Ordering::Acquire)));
-        let mut cat =
-            MediaCatalog::new(tx, None, 0, hang_probe, Duration::from_secs(30), clock).unwrap();
+        let cat = MediaCatalog::new(tx, None, 0, probe, Duration::from_secs(30), clock).unwrap();
+        (cat, rx, ms)
+    }
+
+    #[cfg(unix)]
+    fn next_answer(rx: &Receiver<Inbox>) -> ProbeAnswer {
+        match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
+            Inbox::Probe(a) => a,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn advance(ms: &std::sync::atomic::AtomicU64, secs: u64) {
+        ms.fetch_add(secs * 1000, Ordering::AcqRel);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_volume_with_many_files_cannot_delay_a_healthy_one() {
+        let (mut cat, rx, ms) = timed_catalog(dead_probe);
         let dead: Vec<String> = (0..6).map(|i| format!("{DEAD}/{i}.wav")).collect();
         for k in &dead {
             cat.request(k.clone());
         }
         cat.request("/healthy/h.wav".to_owned());
-        wait_entered(2);
-        // Priming asks for the dead files again, urgently: the copies of jobs a worker holds
-        // are not sent, the others are deferred like the rest.
+        DEAD_VOLUME.wait_entered(2);
+        // Priming asks for the dead files again, urgently: copies of jobs a worker holds are
+        // not sent, the others wait like the rest.
         cat.prioritize(dead.iter().map(String::as_str));
         assert!(cat.watchdog().is_empty(), "not stuck before the timeout");
-        ms.fetch_add(31_000, Ordering::AcqRel);
-        // The two stuck files, and any waiting ones a fresh worker had already deferred.
+        advance(&ms, 31);
+        // Two files stuck: only they are given up on; the rest stay pending, not failed.
         let mut reported: Vec<String> = cat
             .watchdog()
             .into_iter()
             .map(|(m, _)| m.as_str().to_owned())
             .collect();
-        assert!(reported.len() >= 2);
-        assert_eq!(cat.abandoned_workers(), 2);
+        assert_eq!(reported.len(), 2);
         assert_eq!(cat.take_volume_events(), vec![(DEAD.to_owned(), true)]);
         // The healthy file is probed by a fresh worker, whatever sits ahead of it.
-        let healthy = match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
-            Inbox::Probe(a) => a,
-            other => panic!("{other:?}"),
-        };
+        let healthy = next_answer(&rx);
         assert!(matches!(&healthy, ProbeAnswer::Probed { key, .. } if key == "/healthy/h.wav"));
         assert!(cat.answer(healthy).is_some());
         assert!(matches!(cat.get("/healthy/h.wav"), Some(Probe::Ready(_))));
-        // No more probes went to the dead volume; its other files wait, and read as unplayable.
-        while lock(&cat.gate).deferred.len() < 4 {
+        // One trial of the dead volume runs; the three others wait (no worker taken).
+        DEAD_VOLUME.wait_entered(3);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while lock(&cat.gate).deferred.len() < 3 {
+            assert!(Instant::now() < deadline, "files never deferred");
             std::thread::yield_now();
         }
-        assert_eq!(lock(&HANG.0).0, 2);
+        assert_eq!(DEAD_VOLUME.entered(), 3);
+        assert_eq!(cat.abandoned_workers(), 2);
+        for k in &dead {
+            if !reported.contains(k) {
+                assert!(matches!(cat.get(k), Some(Probe::Pending)), "{k}");
+            }
+        }
+        // The trial is stuck too: given up on, replaced, and the next trial waits 30 s.
+        advance(&ms, 31);
         reported.extend(
             cat.watchdog()
                 .into_iter()
                 .map(|(m, _)| m.as_str().to_owned()),
         );
-        reported.sort();
-        assert_eq!(reported, dead, "each dead file is reported once");
-        assert_eq!(
-            cat.abandoned_workers(),
-            2,
-            "no worker is lost to the waiting files"
-        );
-        ms.fetch_add(600_000, Ordering::AcqRel);
-        assert!(cat.watchdog().is_empty());
-        assert_eq!(cat.abandoned_workers(), 2);
-        assert_eq!(
-            lock(&HANG.0).0,
-            2,
-            "the stuck probes are still the only ones in flight"
-        );
-        // The volume comes back: the stuck probes answer (late answers count) and the waiting
+        assert_eq!(reported.len(), 3);
+        assert_eq!(cat.abandoned_workers(), 3);
+        advance(&ms, 29);
+        cat.watchdog();
+        assert_eq!(lock(&cat.gate).deferred.len(), 3);
+        advance(&ms, 2);
+        cat.watchdog();
+        DEAD_VOLUME.wait_entered(4);
+        assert_eq!(cat.abandoned_workers(), 3, "waiting files cost no worker");
+        // The volume comes back: stuck probes answer (late answers count) and the waiting
         // files are probed.
-        lock(&HANG.0).1 = true;
-        HANG.1.notify_all();
+        DEAD_VOLUME.open();
         let mut answered = 0;
         while answered < 6 {
-            match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
-                Inbox::Probe(a) => {
-                    cat.answer(a);
-                    answered += 1;
-                }
-                other => panic!("{other:?}"),
-            }
+            cat.answer(next_answer(&rx));
+            answered += 1;
             cat.watchdog();
         }
         for k in &dead {
             assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
         }
         assert_eq!(cat.take_volume_events(), vec![(DEAD.to_owned(), false)]);
-        assert_eq!(cat.abandoned_workers(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_slow_file_leaves_the_other_files_of_its_volume_alone() {
+        let (mut cat, rx, ms) = timed_catalog(slow_probe);
+        cat.request("/slow/hang.wav".to_owned());
+        SLOW_FILE.wait_entered(1);
+        cat.request("/slow/fine1.wav".to_owned());
+        cat.request("/other/fine2.wav".to_owned());
+        for _ in 0..2 {
+            assert!(cat.answer(next_answer(&rx)).is_some());
+        }
+        advance(&ms, 31);
+        // Only the slow file is given up on (as before); its mount is not stalled.
+        let out = cat.watchdog();
+        assert_eq!(out.len(), 1);
+        assert!(cat.take_volume_events().is_empty());
+        cat.request("/slow/fine3.wav".to_owned());
+        assert!(cat.answer(next_answer(&rx)).is_some());
+        assert!(lock(&cat.gate).deferred.is_empty());
+        for k in ["/slow/fine1.wav", "/other/fine2.wav", "/slow/fine3.wav"] {
+            assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
+        }
+        assert_eq!(cat.abandoned_workers(), 1);
+        SLOW_FILE.open();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobs_that_never_return_do_not_stall_a_volume_for_good() {
+        let (mut cat, rx, ms) = timed_catalog(fifo_probe);
+        cat.request("/mnt/fifo/a.wav".to_owned());
+        cat.request("/mnt/fifo/b.wav".to_owned());
+        FIFO_VOLUME.wait_entered(2);
+        advance(&ms, 31);
+        assert_eq!(cat.watchdog().len(), 2);
+        assert_eq!(
+            cat.take_volume_events(),
+            vec![("/mnt/fifo".to_owned(), true)]
+        );
+        assert!(lock(&cat.gate).stalled("/mnt/fifo"));
+        // Another workspace is opened: nothing of the stall carries over.
+        cat.reset(None, &template().0);
+        assert!(!lock(&cat.gate).stalled("/mnt/fifo"));
+        cat.request("/mnt/fifo/c.wav".to_owned());
+        FIFO_VOLUME.wait_entered(3);
+        assert!(lock(&cat.gate).deferred.is_empty());
+        // The old jobs' reports never reach the new state.
+        FIFO_VOLUME.open();
+        for _ in 0..3 {
+            next_answer(&rx);
+        }
+        assert!(!lock(&cat.gate).stalled("/mnt/fifo"));
     }
 }
