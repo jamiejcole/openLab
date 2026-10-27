@@ -359,6 +359,48 @@ fn load_to_time_starts_part_way_in() {
     assert_eq!(last_nonzero(&ch0), Some(at + 2999));
 }
 
+/// M4.11b: a load past the end of an audio cue's length loads it to its end (QLab 5). Starting it
+/// plays nothing and ends on its start sample, so its auto-follow successor starts on that
+/// sample too, with no `late_start` warning.
+#[test]
+fn load_past_the_end_starts_the_successor_on_time() {
+    let a = wav(&dc(500, 0.25));
+    let b = wav(&dc(500, 0.5));
+    let mut c1 = audio(1, &a, 0);
+    c1.continue_mode = ContinueMode::AutoFollow;
+    let mut s = show(workspace(vec![c1, audio(2, &b, 1)]));
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: secs(10_000),
+    });
+    s.run(BLOCK * 2);
+    // Loaded, not complete: nothing has played and nothing followed.
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Loaded
+    );
+    assert_eq!(
+        s.control().engine().state(id(2)),
+        openlab_core::CueState::Idle
+    );
+    let at = start(&mut s, 1) as usize;
+    s.run(4000);
+    let ch0 = s.channel(0);
+    let ch1 = s.channel(1);
+    assert_eq!(first_nonzero(&ch0), None);
+    assert_eq!(first_nonzero(&ch1), Some(at));
+    assert_eq!(last_nonzero(&ch1), Some(at + 499));
+    let msgs = s.take_outbound();
+    assert!(
+        !warnings(&msgs)
+            .iter()
+            .any(|w| matches!(w, WireWarning::LateStart { .. })),
+        "{:?}",
+        warnings(&msgs)
+    );
+    assert_eq!(s.control().live_voices(), 0);
+}
+
 /// The `wait_hint` the loop would sleep for before each of `ticks` ticks while the device renders
 /// nothing (a stall, before the watchdog declares a loss). Sleeping is virtual: only counted.
 fn hints_while_frozen(
