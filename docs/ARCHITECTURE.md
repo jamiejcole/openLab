@@ -202,7 +202,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 | Audio | offline render driver | sample-accurate starts, fade curves, matrix/patch math, loops/devamp, RT-safety (`assert_no_alloc`) |
 | Engine | integration tests over real WebSocket/OSC sockets on localhost | protocol, OSC subset, save/load/recovery, device-loss simulation |
 | Robustness | `cargo-fuzz` (nightly); the OSC-session and protocol fuzz bodies also run on stable in `cargo test` | show file, OSC (one packet; sessions over time), protocol (decoders and the control loop), media decoders |
-| Soak / perf | render driver | 24 h accelerated soak (`tests/soak.rs`: generated show, random operator, invariants counted in voices/streams/messages, not RSS); CPU budget (§3.6) |
+| Soak / perf | render driver; wall clock for the real-time soak | 24 h accelerated soak (`tests/soak.rs`: generated show, random operator, invariants counted in voices/streams/messages, not RSS); a minutes-long real-time soak of the same show and operator (`tests/soak_rt.rs`, `#[ignore]`: the one test category that reads the wall clock, to measure real wake jitter); CPU budget (§3.6) |
 | Contract | golden fixtures | Rust ↔ Swift protocol parity |
 | macOS UI | XCTest (view logic vs. mock `EngineClient`), XCUITest (real headless engine) | editing flows, show mode, reconnect after engine/UI restart |
 | Sanitizers | ASan/TSan (nightly Rust job; Xcode scheme options for Swift) | memory/thread errors |
@@ -210,7 +210,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 **CI (GitHub Actions)**, on every PR (once, via `pull_request`), every push to `main`, nightly, and on demand. A `changes` job skips what a change cannot affect: Rust jobs, `cargo deny` and fuzz only when `engine/` changes, the app job when `mac/` or `engine/` changes, everything when CI or the Makefile changes; a docs-only PR runs nothing heavy. Branch protection requires the single `CI Result` job, which passes when every job that ran passed:
 - Rust: `fmt --check`, `clippy -D warnings`, `test` on macOS arm64, macOS Intel (x86_64, while GitHub offers an Intel runner) and Windows x64; `cargo deny check` (licences must be GPLv3-compatible, advisories).
 - macOS app: `xcodegen` + `xcodebuild test` (unit + UI tests).
-- CPU budget, perf budget and the 24 h virtual soak (release) on the Intel runner, on `main` pushes and the nightly run only (not on PRs, to keep PR feedback fast); a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
+- CPU budget, perf budget, the 24 h virtual soak and a 3-minute real-time soak (`OPENLAB_SOAK_RT_SECS=180`; the real `runner::run_observed` loop against a thread that renders the mixer on a real-time cadence: no xrun, underrun, fault or dropped event; wake jitter p99/max, longest tick gap, device lateness and late-start warnings bounded; voice/stream/queue counts bounded) (release) on the Intel runner, on `main` pushes and the nightly run only (not on PRs, to keep PR feedback fast); a ten-virtual-minute soak runs in every `cargo test`; the real-time soak is `#[ignore]` and never runs there. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
 - Pin the Xcode version in CI. Xcode 27.1's minimum macOS deployment target is exactly 12.0 — **a future Xcode that drops 12.0 must not be adopted** without a plan for Monterey.
 
 ## 12. Dependencies
