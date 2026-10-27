@@ -1563,7 +1563,8 @@ fn event_fade_out_completes() {
 #[test]
 fn event_failure_breaks_every_running_state() {
     // The failed run's voice is released at once, so nothing can keep sounding (review H1).
-    // Cue 1 auto-continues 5 s after its action start: a failure keeps that schedule, except
+    // Cue 1 auto-continues 5 s after its action start: a failure keeps that schedule (a device_lost
+    // failure cancels it: `a_device_lost_run_cancels_its_auto_continue_and_pre_wait`), except
     // where it was already cancelled (stopping) or is held by a pause.
     for (from, voice, continues_at) in [
         (Setup::Loaded, V::Unload, None),
@@ -1580,7 +1581,7 @@ fn event_failure_breaks_every_running_state() {
             Input::ActionFailed {
                 cue: id(1),
                 run,
-                reason: BrokenReason::DeviceLost,
+                reason: BrokenReason::StreamFailed,
             },
         );
         assert_eq!(
@@ -1596,7 +1597,7 @@ fn event_failure_breaks_every_running_state() {
         assert_eq!(rig.state(1), CueState::Broken, "{from:?}");
         assert_eq!(
             rig.engine.broken_reason(id(1)),
-            Some(BrokenReason::DeviceLost),
+            Some(BrokenReason::StreamFailed),
             "{from:?}"
         );
     }
