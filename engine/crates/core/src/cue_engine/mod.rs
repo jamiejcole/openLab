@@ -32,13 +32,13 @@ pub use time::*;
 pub use transport::PANIC_CURVE;
 pub use types::*;
 
-use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, SecondTrigger};
+use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec};
 use crate::cue_index::CueContainer;
 use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
 use playhead::Playhead;
-use preview::Preview;
+use preview::{PanickedPreview, Preview};
 use rng::SplitMix64;
 use run::{DevampWait, Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 
@@ -83,6 +83,10 @@ pub struct CueEngine {
     model_dirty: bool,
     /// Cues being previewed (see `preview.rs`); apart from the show's runs.
     previews: BTreeMap<CueId, Preview>,
+    /// Groups being previewed and the audio cues inside them that their preview plays still.
+    group_previews: BTreeMap<CueId, BTreeSet<CueId>>,
+    /// Voices of previews fading out in the panic under way (see `preview.rs`).
+    panicked_previews: Vec<PanickedPreview>,
     next_preview: u64,
     /// `chain_limit` of the workspace as of the last such pass.
     limit: usize,
@@ -146,6 +150,8 @@ impl CueEngine {
             panic: None,
             model_dirty: true,
             previews: BTreeMap::new(),
+            group_previews: BTreeMap::new(),
+            panicked_previews: Vec::new(),
             next_preview: 0,
             limit: 0,
             lengths: BTreeMap::new(),
@@ -248,6 +254,10 @@ impl CueEngine {
             .is_some_and(|(start, end)| now >= end || now < start)
         {
             self.panic = None;
+        }
+        // Their fades have ended (or the clock went back): a later Panic has nothing to cut.
+        if self.panic.is_none() {
+            self.panicked_previews.clear();
         }
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after
@@ -934,18 +944,13 @@ impl CueEngine {
                         return cx.warn(EngineWarning::CueBroken { cue });
                     }
                 }
-                Some(Slot::Active(run)) => {
-                    let paused = run.paused_at.is_some();
-                    let mut option = model.second_trigger.effective(&model.kind);
-                    // An option with nothing to act on leaves a paused cue to the `nothing`
-                    // rule: it resumes.
-                    if paused && !self.acts_on_paused(cue, option, at, cx) {
-                        option = SecondTrigger::Nothing;
-                    }
-                    if !(option == SecondTrigger::Nothing && paused) {
-                        return self.second_trigger(cue, option, at, cx);
-                    }
+                // A paused cue resumes whatever its option (QLab check S1, M2.28): the option
+                // applies only to a cue that is playing (or waiting).
+                Some(Slot::Active(run)) if run.paused_at.is_none() => {
+                    let option = model.second_trigger.effective(&model.kind);
+                    return self.second_trigger(cue, option, at, cx);
                 }
+                Some(Slot::Active(_)) => {}
                 Some(Slot::Loaded(_)) | None => {}
             }
         }

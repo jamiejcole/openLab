@@ -328,6 +328,24 @@ fn fixtures() -> Vec<(String, Sample)> {
             }),
         }),
     );
+    // A Devamp cue's settings, `devamp_mode` included (M2.28), travel as its kind.
+    add(
+        "command_set_devamp_kind",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(12),
+                property: CueProperty::Kind {
+                    value: CueKind::Devamp {
+                        target: Some(cue_id(10)),
+                        start_next_cue: true,
+                        stop_target_when_slice_ends: false,
+                        devamp_mode: DevampMode::LoopingCue,
+                    },
+                },
+            }),
+        }),
+    );
     for (i, (name, action)) in all_actions().into_iter().enumerate() {
         let file = if i == 0 {
             "transport".to_owned()
@@ -1564,11 +1582,13 @@ fn engine_go_idx(r: GoIgnoredReason) -> usize {
     }
 }
 
-const PREVIEW_IGNORED_COUNT: usize = 2;
+const PREVIEW_IGNORED_COUNT: usize = 4;
 fn engine_preview_idx(r: PreviewIgnoredReason) -> usize {
     match r {
         PreviewIgnoredReason::NotAudio => 0,
         PreviewIgnoredReason::AlreadyPreviewing => 1,
+        PreviewIgnoredReason::Disarmed => 2,
+        PreviewIgnoredReason::NothingToPreview => 3,
     }
 }
 
@@ -1870,6 +1890,11 @@ fn preview_table() -> Vec<(PreviewIgnoredReason, WirePreviewIgnored)> {
         (
             PreviewIgnoredReason::AlreadyPreviewing,
             WirePreviewIgnored::AlreadyPreviewing,
+        ),
+        (PreviewIgnoredReason::Disarmed, WirePreviewIgnored::Disarmed),
+        (
+            PreviewIgnoredReason::NothingToPreview,
+            WirePreviewIgnored::NothingToPreview,
         ),
     ]
 }

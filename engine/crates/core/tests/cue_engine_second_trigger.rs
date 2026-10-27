@@ -363,14 +363,50 @@ fn nothing_resumes_a_paused_cue() {
     assert_eq!(rig.state(1), CueState::Running);
 }
 
+/// QLab check S1 (M2.28): a trigger on a paused cue resumes it, whatever its option.
 #[test]
-fn stop_panic_and_hard_stop_stop_a_paused_cue_without_resuming_it() {
-    for option in [ST::Stop, ST::HardStop, ST::Panic] {
+fn a_trigger_on_a_paused_cue_resumes_it_whatever_its_option() {
+    for option in [
+        ST::Nothing,
+        ST::Stop,
+        ST::HardStop,
+        ST::Panic,
+        ST::HardStopAndRestart,
+        ST::Devamp,
+    ] {
         let mut rig = Rig::new(vec![with(sound(1), option)]);
         rig.start(0, 1);
         rig.pause(50, 1);
         let run = rig.run(1);
         let out = rig.start(100, 1);
+        assert!(voice_stops(&out).is_empty(), "{option:?}: {out:?}");
+        assert!(voice_starts(&out).is_empty(), "{option:?}: {out:?}");
+        assert!(
+            out.iter().any(|a| matches!(
+                a,
+                Action::ResumeVoice { paused, at: 100, .. } if *paused == run
+            )),
+            "{option:?}: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|a| matches!(a, Action::DevampVoice { .. })),
+            "{option:?}: {out:?}"
+        );
+        assert!(warnings(&out).is_empty(), "{option:?}: {out:?}");
+        assert_eq!(rig.state(1), CueState::Running, "{option:?}");
+    }
+}
+
+/// The release of a cue that asks for a second trigger on release still applies its option to
+/// a paused cue (only a trigger resumes it, QLab check S5).
+#[test]
+fn stop_panic_and_hard_stop_on_release_stop_a_paused_cue_without_resuming_it() {
+    for option in [ST::Stop, ST::HardStop, ST::Panic] {
+        let mut rig = Rig::new(vec![on_release(with(sound(1), option))]);
+        rig.start(0, 1);
+        rig.pause(50, 1);
+        let run = rig.run(1);
+        let out = rig.release(100, 1);
         // A paused voice is silent: no fade, and it is not resumed first.
         assert_eq!(
             voice_stops(&out),
@@ -386,12 +422,12 @@ fn stop_panic_and_hard_stop_stop_a_paused_cue_without_resuming_it() {
 }
 
 #[test]
-fn hard_stop_and_restart_restarts_a_paused_cue() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::HardStopAndRestart)]);
+fn hard_stop_and_restart_on_release_restarts_a_paused_cue() {
+    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::HardStopAndRestart))]);
     rig.start(0, 1);
     rig.pause(50, 1);
     let run = rig.run(1);
-    let out = rig.start(100, 1);
+    let out = rig.release(100, 1);
     assert_eq!(voice_stops(&out), vec![(id(1), run, 100, None)]);
     let fresh = rig.run(1);
     assert_eq!(voice_starts(&out), vec![(id(1), fresh, 100)]);
@@ -400,12 +436,12 @@ fn hard_stop_and_restart_restarts_a_paused_cue() {
 }
 
 #[test]
-fn devamp_on_a_paused_cue_is_held_for_the_resume() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Devamp)]);
+fn devamp_on_release_on_a_paused_cue_is_held_for_the_resume() {
+    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Devamp))]);
     rig.start(0, 1);
     rig.pause(50, 1);
-    // Nothing is sent to the paused voice, and the trigger does not resume it.
-    assert!(rig.start(100, 1).is_empty());
+    // Nothing is sent to the paused voice, and the release does not resume it.
+    assert!(rig.release(100, 1).is_empty());
     assert_eq!(rig.state(1), CueState::Paused);
     let out = rig.at(200, Input::Resume { cue: id(1) });
     let fresh = rig.run(1);
@@ -659,14 +695,17 @@ fn play_previous_goes_back_wrapping_when_the_playlist_loops() {
     assert_eq!(playing(&rig.start(200, 1)), vec![id(12)]);
     assert_eq!(playing(&rig.start(300, 1)), vec![id(11)]);
 
-    // Without loop, "previous" on the first child plays it again from the top.
+    // Without loop, "previous" on the first child stops the playlist (QLab check S4, M2.28):
+    // nothing starts and its auto-follow does not fire.
     let mut rig = playlist_rig(false, ST::PlayPrevious);
     let first = rig.run(11);
     let out = rig.start(100, 1);
     assert_eq!(voice_stops(&out), vec![(id(11), first, 100, None)]);
-    assert_eq!(playing(&out), vec![id(11)]);
-    assert_ne!(rig.run(11), first);
-    assert_eq!(rig.state(1), CueState::Running);
+    assert!(playing(&out).is_empty(), "{out:?}");
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(11), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.engine.next_deadline(), None);
 }
 
 #[test]
@@ -698,11 +737,12 @@ fn play_previous_after_moving_on_returns_to_the_child_before() {
 }
 
 #[test]
-fn play_next_on_a_paused_playlist_resumes_it_on_the_next_child() {
+fn play_next_on_release_on_a_paused_playlist_resumes_it_on_the_next_child() {
     let mut rig = playlist_rig(false, ST::PlayNext);
+    rig.ws.cue_lists[0].cues[0].second_trigger_on_release = true;
     rig.pause(50, 1);
     let eleven = rig.run(11);
-    let out = rig.start(100, 1);
+    let out = rig.release(100, 1);
     assert_eq!(voice_stops(&out), vec![(id(11), eleven, 100, None)]);
     assert!(!out.iter().any(|a| matches!(a, Action::ResumeVoice { .. })));
     assert_eq!(playing(&out), vec![id(12)]);
@@ -939,6 +979,7 @@ fn a_devamp_cues_start_next_cue_is_a_second_trigger() {
             target: Some(id(1)),
             start_next_cue: true,
             stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     );
     let mut rig = Rig::new(vec![sound(1), devamp, with(sound(3), ST::Stop)]);
@@ -1288,15 +1329,15 @@ fn a_paused_cue_whose_option_cannot_act_resumes() {
     assert_eq!(started, vec![id(2), id(11)]);
 }
 
-/// Review M1: a paused playlist that can move on still does (the option acts).
+/// Review M1: on release, a paused cue whose option can act gets it; a trigger resumes it
+/// (QLab check S1) and sends the devamp held for the resume.
 #[test]
-fn a_paused_cue_whose_option_can_act_gets_it() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Devamp)]);
+fn a_paused_cue_whose_option_can_act_gets_it_on_release() {
+    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Devamp))]);
     rig.start(0, 1);
     rig.pause(50, 1);
-    assert!(rig.start(100, 1).is_empty());
+    assert!(rig.release(100, 1).is_empty());
     assert_eq!(rig.state(1), CueState::Paused);
-    // A second devamp has nothing to act on (one is pending): the cue resumes.
     let out = rig.start(200, 1);
     assert_eq!(rig.state(1), CueState::Running);
     assert!(

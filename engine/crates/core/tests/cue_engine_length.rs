@@ -244,6 +244,7 @@ fn a_devamp_answer_and_its_length_end_the_loop_on_time() {
             target: Some(cue_id(1)),
             start_next_cue: false,
             stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     );
     let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC), devamp], 0);

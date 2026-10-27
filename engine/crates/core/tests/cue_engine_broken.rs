@@ -374,6 +374,7 @@ fn invalid_self_and_wrong_kind_targets_are_broken() {
                 target: Some(id(1)),
                 start_next_cue: false,
                 stop_target_when_slice_ends: false,
+                devamp_mode: DevampMode::CurrentSlice,
             },
         ),
         cue(7, group(vec![sound(8)])),
@@ -825,6 +826,7 @@ fn a_broken_devamp_cue_uses_its_own_continue_like_a_disarmed_one() {
             target: Some(id(3)),
             start_next_cue: true,
             stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     );
     devamp.continue_mode = AC;
@@ -843,6 +845,7 @@ fn a_broken_devamp_cue_uses_its_own_continue_like_a_disarmed_one() {
             target: Some(id(3)),
             start_next_cue: true,
             stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     );
     devamp.continue_mode = ContinueMode::DoNotContinue;
