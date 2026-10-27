@@ -12,7 +12,7 @@ use openlab_core::protocol::{
     RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
     WireWarning,
 };
-use openlab_core::{Command, ContinueMode, CueKind, CueProblem, CueProperty, CueState};
+use openlab_core::{Command, ContinueMode, CueKind, CueProblem, CueProperty, CueState, GroupMode};
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
 
@@ -229,8 +229,12 @@ fn files_near_the_playhead_are_probed_first() {
 #[test]
 fn a_start_held_by_its_probe_fails_after_five_seconds() {
     let path = wav(&dc(200, 0.5));
+    let next = wav(&dc(200, 0.5));
     gate(&path);
-    let ws = workspace(vec![audio(1, &path, 0)]);
+    // The held start never played, so it is skipped: its auto-follow still fires (M4.14).
+    let mut held = audio(1, &path, 0);
+    held.continue_mode = ContinueMode::AutoFollow;
+    let ws = workspace(vec![held, audio(2, &next, 1)]);
     let mut c = config(&ws);
     c.probe = gated_probe;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
@@ -254,6 +258,9 @@ fn a_start_held_by_its_probe_fails_after_five_seconds() {
         w,
         WireWarning::Notice { code, .. } if code == "probe_timeout"
     )));
+    s.run(BLOCK * 4);
+    assert!(first_nonzero(&s.channel(1)).is_some(), "the follow played");
+    s.run(400);
     assert_eq!(s.control().live_voices(), 0);
     release(&path);
 }
@@ -561,4 +568,39 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
     });
     s.run(BLOCK);
     assert_eq!(length(&s, 1), None);
+}
+
+#[test]
+fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
+    // M4.14 (QLab P5/G2): c2's file changes after its probe, so its stream fails before it
+    // produced any audio: c2 is skipped (StartFailed), the playlist does not halt and c3 plays.
+    let one = wav(&dc(300, 0.5));
+    let two = wav(&dc(300, 0.5));
+    let three = wav(&dc(300, 0.25));
+    let playlist = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &one, 0), audio(2, &two, 0), audio(3, &three, 1)],
+        },
+    );
+    let ws = workspace(vec![playlist]);
+    let mut config = config(&ws);
+    // No prime, so c2's stream is opened when it starts, after the file changed.
+    config.prime_cues = 0;
+    let mut s = show_with(ws, config);
+    std::fs::write(&two, std::fs::read(wav(&dc(200, 0.5))).unwrap()).unwrap();
+    let at = go(&mut s) as usize;
+    s.run(3000);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    assert!(!s.control().engine().is_halted(id(10)));
+    let first = first_nonzero(&s.channel(1)).expect("c3 played");
+    assert!(first > at + 299, "c3 starts after c1: {first}");
+    assert_eq!(
+        states(&s.take_outbound(), id(2)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
 }
