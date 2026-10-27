@@ -31,6 +31,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let cueList: CueListViewController
+    let editor: CueEditor
     let inspector: InspectorViewController
     let sidebar: SidebarViewController
     private var sub: AnyCancellable?
@@ -43,6 +44,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     init(store: WorkspaceStore) {
         self.store = store
         cueList = CueListViewController(store: store)
+        editor = CueEditor(store: store, cueList: cueList)
         sidebar = SidebarViewController(store: store)
         inspector = InspectorViewController(store: store)
         let window = NSWindow(
@@ -56,6 +58,22 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
+        editor.isLocked = { [weak self] in self?.isShowMode ?? true }
+        editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
+        editor.notify = { [weak self] message in self?.showNotice(message) }
+        cueList.onMove = { [weak self] ids, parent, index in
+            Task { await self?.editor.move(ids, to: parent, at: index) }
+        }
+        cueList.onFileDrop = { [weak self] drop in
+            Task {
+                switch drop {
+                case .replace(let id, let url): await self?.editor.replaceFile(of: id, with: url)
+                case .insert(let urls, let parent, let index):
+                    await self?.editor.addFiles(urls, parent: parent, index: index)
+                }
+            }
+        }
+        cueToolbar.onAdd = { [weak self] kind in Task { await self?.editor.add(kind) } }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
@@ -124,10 +142,49 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         isShowMode = on
         inspector.isLocked = on
         cueToolbar.isLocked = on
+        cueList.isEditLocked = on
         sidebar.relinkLocked = on
         footer.setShowMode(on)
         refreshTitle()
     }
+
+    /// Why an edit was refused: a sheet on this window (beep when it has none).
+    func showNotice(_ message: String) {
+        guard let window else { return NSSound.beep() }
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: loc("edit.ok"))
+        alert.beginSheetModal(for: window)
+    }
+
+    /// Asks for the first number and increment, then renumbers the selected cues (ED-08).
+    func promptRenumber() {
+        guard !isShowMode, let window, !cueList.selectedIDs().isEmpty else { return NSSound.beep() }
+        let settings = store.model?.settings
+        let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
+        let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
+        let form = NSGridView(views: [
+            [NSTextField(labelWithString: loc("edit.renumber.start")), start],
+            [NSTextField(labelWithString: loc("edit.renumber.increment")), step],
+        ])
+        form.frame = NSRect(x: 0, y: 0, width: 220, height: 56)
+        start.setAccessibilityIdentifier("renumber-start")
+        step.setAccessibilityIdentifier("renumber-increment")
+        let alert = NSAlert()
+        alert.messageText = loc("edit.renumber.title")
+        alert.accessoryView = form
+        alert.addButton(withTitle: loc("edit.renumber.ok"))
+        alert.addButton(withTitle: loc("edit.cancel"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
+                return self.showNotice(loc("edit.error.renumberValues"))
+            }
+            Task { await self.editor.renumberSelection(start: a, increment: b) }
+        }
+    }
+
+    private static func plain(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
 
     /// The workspace's name (set by the app as the engine reports it); Show Mode adds a suffix.
     var workspaceName = loc("window.main.title") {

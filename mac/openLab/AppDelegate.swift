@@ -61,6 +61,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Task { await appController.frontController?.requestShowMode(false) }
     }
 
+    // MARK: Cue editing (all refuse in Show Mode; `validateMenuItem` greys them)
+
+    /// The editor of the key window's workspace.
+    @MainActor private var editor: CueEditor? { appController.frontController?.editor }
+
+    /// Text being edited (a field editor) keeps its own Undo and Cmd-Delete.
+    @MainActor private var textEditor: NSText? {
+        (NSApp.keyWindow?.firstResponder as? NSText).flatMap { $0.isEditable ? $0 : nil }
+    }
+
+    /// Any text in focus, editable or not, owns Cut, Copy and Paste.
+    @MainActor private var anyText: NSText? { NSApp.keyWindow?.firstResponder as? NSText }
+
+    @MainActor @objc func newCue(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let kind = NewCueKind(rawValue: raw) else { return }
+        Task { await editor?.add(kind) }
+    }
+    @MainActor @objc func deleteCues(_ sender: Any?) { Task { await editor?.deleteSelection() } }
+    @MainActor @objc func deleteNumbers(_ sender: Any?) { Task { await editor?.deleteNumbers() } }
+    /// Cut, Copy and Paste: text being edited keeps them; otherwise they act on the cues.
+    @MainActor @objc func copyCues(_ sender: Any?) {
+        if let text = anyText { return text.copy(sender) }
+        Task { await editor?.copySelection() }
+    }
+    @MainActor @objc func cutCues(_ sender: Any?) {
+        if let text = anyText { return text.cut(sender) }
+        Task { await editor?.cutSelection() }
+    }
+    @MainActor @objc func pasteCues(_ sender: Any?) {
+        if let text = anyText { return text.paste(sender) }
+        Task { await editor?.paste() }
+    }
+    @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
+    @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
+    @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
+    @MainActor @objc func undoEdit(_ sender: Any?) {
+        switch CueEditor.textUndo(textEditor, redo: false) {
+        case nil: Task { await editor?.undo() }
+        case false?: NSSound.beep()
+        case true?: break
+        }
+    }
+    @MainActor @objc func redoEdit(_ sender: Any?) {
+        switch CueEditor.textUndo(textEditor, redo: true) {
+        case nil: Task { await editor?.redo() }
+        case false?: NSSound.beep()
+        case true?: break
+        }
+    }
+
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
 
     @MainActor @objc func relinkMedia(_ sender: Any?) {
@@ -82,6 +132,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if item.action == #selector(enterShowMode(_:)) || item.action == #selector(enterEditMode(_:)) {
             guard let front = appController.frontController else { return false }
             return front.isShowMode == (item.action == #selector(enterEditMode(_:)))
+        }
+        if item.action == #selector(newCue(_:)) || item.action == #selector(renumberCues(_:))
+            || item.action == #selector(moveCuesUp(_:)) || item.action == #selector(moveCuesDown(_:))
+        {
+            return appController.frontController.map { !$0.isShowMode } ?? false
+        }
+        if item.action == #selector(copyCues(_:)) || item.action == #selector(cutCues(_:)) {
+            return anyText != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(pasteCues(_:)) {
+            return anyText != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(deleteNumbers(_:)) {
+            return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(deleteCues(_:)) {
+            return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(undoEdit(_:)) {
+            return textEditor != nil || (editor?.canUndo ?? false)
+        }
+        if item.action == #selector(redoEdit(_:)) {
+            return textEditor != nil || (editor?.canRedo ?? false)
         }
         if item.action == #selector(relinkMedia(_:)) {
             return appController.frontController.map { !$0.isShowMode } ?? false
