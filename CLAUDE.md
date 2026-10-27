@@ -64,6 +64,7 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - Work only on the `PROGRESS.md` task(s) you were assigned.
 - When a task is complete **and tested**, tick it in `PROGRESS.md`. Tick a requirement in `REQUIREMENTS.md` only when every part of it within the current release scope (§21) is implemented and tested.
 - If you discover missing work, add an unticked task under the right milestone with a note — don't silently expand scope.
+- Keep `PROGRESS.md` lines short: tick boxes and add new one-line tasks only. Never append notes to an existing line (every open PR edits this file; long lines cause merge conflicts) — notes go in the PR, the docs, or `docs/handoff/`.
 
 ## Git
 - Commit with plain terminal commands: `git add …` then `git commit -m "…"`.
