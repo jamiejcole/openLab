@@ -122,6 +122,7 @@
 "problem.target_missing" = "The target cue is missing";
 "problem.target_self" = "The cue targets itself";
 "problem.target_wrong_kind" = "The target is the wrong kind of cue";
+"problem.nothing_to_fade" = "No parameters set to fade";
 "problem.no_media" = "No media file";
 "problem.media_missing" = "The media file is missing";
 "problem.media_unsupported" = "The media file is not supported";
@@ -208,6 +209,7 @@
 "problem.target_missing" = "Its target, {target}, does not exist.";
 "problem.target_self" = "It targets itself.";
 "problem.target_wrong_kind" = "Its target, {target}, is the wrong kind of cue.";
+"problem.nothing_to_fade" = "It sets no level to fade.";
 "problem.no_media" = "No media file is chosen.";
 "problem.media_missing" = "Media file not found: {media}";
 "problem.media_unsupported" = "Media file cannot be played: {media}";
