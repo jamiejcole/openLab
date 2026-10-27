@@ -733,10 +733,11 @@ fn go_on_a_playlist_child_plays_on_through_the_rest_without_the_group_running() 
 #[test]
 fn a_child_of_an_idle_playlist_follows_through_past_children_that_cannot_start() {
     // A child broken at run time (not reset) is passed over; one with static problems is
-    // skipped as any broken cue, keeping its timing; the chain stops after the last child.
+    // skipped as any broken cue, keeping its timing; the chain stops after the last child
+    // (without loop: a looping one wraps, `cue_engine_qlab_checks.rs` Q4).
     let g = grp(
         1,
-        playlist(true, false),
+        playlist(false, false),
         vec![
             wait(10, 1.0),
             sound(11),
@@ -753,7 +754,7 @@ fn a_child_of_an_idle_playlist_follows_through_past_children_that_cannot_start()
     assert!(warnings(&next).contains(&EngineWarning::CueBroken { cue: id(11) }));
     assert!(warnings(&next).contains(&EngineWarning::CueBroken { cue: id(12) }));
     assert_eq!(starts(&next), vec![(id(13), 1200)]);
-    // Looping or not, the last child does not wrap.
+    // Without loop the last child does not wrap.
     assert!(starts(&rig.tick(2200)).is_empty());
     assert!(rig.engine.next_deadline().is_none());
     assert_eq!(rig.state(1), CueState::Broken);
@@ -935,7 +936,9 @@ fn shuffled_playlist_plays_every_child_once_per_pass_in_a_fresh_order() {
 }
 
 #[test]
-fn playlist_skips_a_child_that_breaks_and_does_not_auto_follow() {
+fn a_playlist_child_that_breaks_with_no_known_end_ends_the_playlist_without_a_follow() {
+    // QLab check Q2: the playlist halts (no further child). Nothing tells the engine how long
+    // the broken child would have played, so the group ends now and cannot time its follow.
     let p = timed(
         grp(1, playlist(false, false), vec![sound(10), wait(11, 1.0)]),
         0.0,
@@ -946,10 +949,12 @@ fn playlist_skips_a_child_that_breaks_and_does_not_auto_follow() {
     rig.go(0);
     let failed = rig.failed(500, 10);
     assert_eq!(changes(&failed, 10), vec![(CueState::Broken, 500)]);
-    assert_eq!(starts(&failed), vec![(id(11), 500)]);
-    let tick = rig.tick(1500);
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1500)]);
+    assert!(starts(&failed).is_empty());
+    assert_eq!(changes(&failed, 1), vec![(CueState::Idle, 500)]);
+    assert!(rig.engine.next_deadline().is_none());
+    rig.tick(1500);
     assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(11), CueState::Idle);
 
     // Next time the broken child cannot start: it is skipped at once.
     let go = rig.start(2000, 1);
@@ -1765,11 +1770,17 @@ fn paused_looping_playlist_moves_on_at_resume_after_an_end_in_flight() {
 }
 
 #[test]
-fn paused_playlist_moves_on_at_resume_after_a_failure_in_flight() {
+fn paused_playlist_halts_at_resume_after_a_failure_in_flight() {
+    // QLab check Q2: a child that broke while playing halts the playlist; looping, it has no
+    // end to time a follow by, and the broken child's end is not known: it ends on the resume.
     let (rig, resume) = paused_with_end_in_flight(true, true);
     assert_eq!(rig.state(10), CueState::Broken);
-    assert_eq!(starts(&resume), vec![(id(11), 2000)]);
-    assert_eq!(rig.state(1), CueState::Running);
+    assert!(starts(&resume).is_empty());
+    assert_eq!(
+        changes(&resume, 1),
+        vec![(CueState::Running, 2000), (CueState::Idle, 2000)]
+    );
+    assert!(rig.engine.next_deadline().is_none());
 }
 
 #[test]
