@@ -12,7 +12,7 @@ From the M5 (macOS app) orchestrator. These answers are for the M4 orchestrator 
 - macOS already provides this. `NSDocumentController.shared.noteNewRecentDocumentURL(_:)` fills File ▸ Open Recent and the Dock menu, and remembers the files per user. QLab's Open Recent works the same way.
 - It follows the earlier M1-C split, which left recent files to the UI.
 - Every UI writes its own list. Engine-side storage would mean a list in two places plus a protocol request, for no gain.
-- Open-on-launch is the app deciding what to send after `welcome`. On launch the app sends `open { path }` for the most recent file. If that file has a newer autosave, the existing `recovery_offer` flow covers it.
+- Open-on-launch is the app deciding what to send after `welcome`. On launch, if the option is on, the app sends `open { path }` for the most recent file. Otherwise it shows the welcome window (see 2). If that file has a newer autosave, the existing `recovery_offer` flow covers it.
 
 **Engine changes:**
 - Remove `recent_files` from machine settings, with its load-time cleanup, its pruning and its recording on open or save-as, along with the tests for them. Old settings files that still contain the key should keep loading; ignoring unknown keys is enough.
@@ -23,20 +23,31 @@ From the M5 (macOS app) orchestrator. These answers are for the M4 orchestrator 
 - The app records a path when an `open`, `save_as` or `open_recovery`-then-save `result` succeeds. It takes the path from the broadcast `document.path`, so a workspace opened by another client is recorded too.
 - A recent file that has gone missing comes back from `open` as `io`. The app then shows an error and removes the entry.
 
-## 2. Close (WS-02): no `close` request for v0.0.1
+## 2. Close (WS-02): QLab-style close and a "no workspace" state
 
-**Decision:** no engine `close` request and no engine state with no workspace in v0.0.1. In the app:
-- **Close (⌘W):** closes the main window only. The workspace stays loaded and playing. The Dock icon or Window ▸ Main Window (⌘0) brings the window back. This already exists (M5.17, PR #7).
-- **Replacing the workspace:** New, Open or Quit. If there are unsaved changes, these go through the unsaved-changes sheet (see 3).
+**Decision (confirmed by the user):** Close works the way it does in QLab. Closing the workspace stops its playback and unloads it. The app then shows an empty welcome window. Under §21's one-workspace limit this means the engine can be in a state with **no workspace** loaded.
 
-**Reasons:**
-- §21 limits v0.0.1 to one open workspace. The engine therefore always holds exactly one, and a state with no workspace would add an engine state, a UI state and new error paths for nothing an operator needs.
-- It is safer in the booth. In QLab, closing a workspace stops its cues. Here an accidental ⌘W mid-show must never stop playback (NFR-01).
-- QLab shows a launch/welcome window when no workspace is open. That belongs with multiple open workspaces (full WS-02, after v0.0.1). The explicit close and the empty state should be designed then, together with that window.
+**Reasons:** the user chose to follow QLab here (UI-07). Operators expect Close to unload the show, and it gives a clean launch state too.
 
-**This differs from QLab** (Close stops and unloads the workspace). §21 should say: *WS-02 v0.0.1: Close closes the window; the workspace stays loaded.* The M5 orchestrator is confirming this with the user. Until then, treat it as the plan.
+**Engine changes:**
+- **New request `close { discard_changes? }`.** If there are unsaved edits it refuses with `unsaved_changes`, like `new`, `open` and `revert`. Otherwise it stops every running and paused cue at once (as a hard stop, not a fade), drops the workspace, stops autosaving it, and answers `result`. With `discard_changes: true` it also deletes the autosave of the dropped edits, as the other requests already do. A `close` when no workspace is open succeeds and does nothing.
+- **Snapshot without a workspace.** `snapshot.workspace` and `snapshot.document` become nullable (null means no workspace). After a `close`, every client gets that snapshot (to the requester before its `result`), the same as after `open`. `welcome` carries it too, so a client that connects while nothing is open can tell. Lists and states are empty, and `revision` and `runtime_seq` keep rising. `PROTOCOL_VERSION` can stay 1, because no released client depends on these fields being non-null (the Swift client is written after this). If you would rather bump the version, say so.
+- **Engine start.** The engine starts with no workspace and waits for the app to send `new`, `open` or `open_recovery`. If it starts with an empty workspace today, change that. Starting empty is what makes the launch decision (welcome window, open-on-launch, crash recovery) belong to the app. Please confirm this fits M4.2 start-up and the supervision in M5.2.
+- **Requests that need a workspace** (edits, transport, `save`, `save_as`, `relink`, `snapshot`-dependent commands) answer `no_workspace` while none is loaded. That code already exists. `new`, `open`, `open_recovery`, `scan_recovery`, `list_devices` and `close` keep working.
+- **OSC with no workspace:** treat it the same as a workspace id that matches nothing. What QLab does in that case is being measured in a separate session (`qlab-osc-findings.md`). Follow those findings in docs/osc.md.
+- Update docs/protocol.md (the `close` row, nullable snapshot fields, the no-workspace rules) and regenerate fixtures (`client/close.json`, `server/snapshot_no_workspace.json`). The Swift client follows in M5.1.
 
-**Engine changes:** none. Keep `no_workspace` for its current meaning (revert of a never-saved show).
+**App side (M5, for information):**
+- **⌘W and File ▸ Close** send `close`.
+  - If the workspace has unsaved changes, the app first shows the Save / Don't Save / Cancel sheet.
+  - If cues are running, it first asks for confirmation ("Closing stops N running cues"). In Show Mode, closing needs that confirmation every time (SM-05 spirit).
+- **Welcome window:** when the snapshot has no workspace, the app hides the main window and shows a small welcome window offering:
+  - New Workspace;
+  - Open…;
+  - the recent files list (app-owned, see 1);
+  - any recovery entries from `scan_recovery`.
+  It shows the same window at launch when there's no open-on-launch file.
+- M5.17's current behaviour (⌘W closes only the window; the Dock icon or ⌘0 brings it back) changes. While a workspace is open, the Dock icon or ⌘0 brings the main window back. With no workspace, they show the welcome window. That becomes a new M5 task, made once `close` exists.
 
 ## 3. Protocol additions: fine for the app, with three requests
 
