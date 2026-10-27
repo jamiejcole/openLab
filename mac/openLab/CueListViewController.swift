@@ -205,6 +205,21 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
+    /// Selects `id` and scrolls to it, opening any collapsed groups above it. Like `select`, it
+    /// does not move the playhead.
+    func reveal(_ id: ModelID) {
+        var parent = nodes[id]?.parent
+        while let node = parent {
+            outlineView.expandItem(node)
+            parent = node.parent
+        }
+        select([id])
+        if let node = nodes[id] {
+            let row = outlineView.row(forItem: node)
+            if row >= 0 { outlineView.scrollRowToVisible(row) }
+        }
+    }
+
     /// The list to show: the chosen one while it exists, else the first.
     private func shownList() -> CueList? {
         let lists = store.model?.cueLists ?? []
@@ -247,6 +262,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
         case .progress(let ids): refresh(ids, columns: ["duration"])
+        case .notices: break
         }
     }
 

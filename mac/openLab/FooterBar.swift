@@ -69,7 +69,10 @@ final class FooterBar: NSView {
     let modeSwitch = NSSegmentedControl(
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
         trackingMode: .selectOne, target: nil, action: nil)
-    let statusLabel = NSTextField(labelWithString: loc("footer.status.empty"))
+    /// The engine's health in one line (DX-03); clicking it opens the details.
+    let statusButton = NSButton()
+    private(set) var presentation = StatusPresentation.make(nil)
+    private var popover: NSPopover?
     let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
@@ -88,9 +91,12 @@ final class FooterBar: NSView {
         setAX(AX.footer)
         modeSwitch.selectedSegment = 0
         modeSwitch.setAX(AX.modeSwitch, label: loc("footer.mode.label"))
-        statusLabel.setAX(AX.statusLabel)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.alignment = .center
+        statusButton.isBordered = false
+        statusButton.imagePosition = .imageLeading
+        statusButton.setAX(AX.statusLabel)
+        statusButton.target = self
+        statusButton.action = #selector(showStatusDetails)
+        show(status: nil)
 
         for spec in Self.specs {
             let name = loc(spec.key)
@@ -113,7 +119,7 @@ final class FooterBar: NSView {
 
         let left = NSStackView(views: [modeSwitch] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let bar = NSStackView(views: [left, statusLabel, right])
+        let bar = NSStackView(views: [left, statusButton, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
@@ -123,6 +129,36 @@ final class FooterBar: NSView {
             bar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
+    }
+
+    /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
+    func show(status: SystemStatus?) {
+        let p = StatusPresentation.make(status)
+        presentation = p
+        statusButton.title = p.summary
+        statusButton.image = symbolImage(p.symbol, p.summary)
+        statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil
+        statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
+        statusButton.setAccessibilityLabel(p.summary)
+        statusButton.toolTip = loc("status.tooltip")
+    }
+
+    @objc func showStatusDetails() {
+        popover?.close()
+        let text = NSTextField(wrappingLabelWithString: presentation.details.joined(separator: "\n"))
+        text.setAX(AX.statusDetails)
+        text.isSelectable = true
+        text.preferredMaxLayoutWidth = 340
+        text.frame = NSRect(x: 12, y: 12, width: 340, height: max(40, text.fittingSize.height))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 364, height: text.frame.height + 24))
+        content.addSubview(text)
+        let controller = NSViewController()
+        controller.view = content
+        let p = NSPopover()
+        p.behavior = .transient
+        p.contentViewController = controller
+        p.show(relativeTo: statusButton.bounds, of: statusButton, preferredEdge: .maxY)
+        popover = p
     }
 
     @objc private func toggled(_ sender: NSButton) {

@@ -17,6 +17,8 @@ final class AppController {
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
     var alerts: WorkspaceAlerts = AppKitAlerts()
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
+    /// The folder to search for missing media (nil: cancelled).
+    var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel
     var pickSaveURL: @MainActor (String) -> URL? = AppController.savePanel
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
@@ -64,6 +66,7 @@ final class AppController {
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
+            wc.onRelink = { [weak self] in Task { await self?.relinkMedia(on: store) } }
             windows[doc] = wc
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
@@ -268,6 +271,40 @@ final class AppController {
         _ = store.receive(.log(.error, String(format: loc("error.transportFailed"), describe(error))))
     }
 
+    /// Asks for a folder and has the engine relink missing media from it (WS-03). The outcome is
+    /// told to the operator and written to the show log; the cues that were fixed leave the
+    /// Warnings tab by themselves when the engine reports them playable.
+    func relinkMedia(on store: WorkspaceStore) async {
+        guard let folder = pickFolderURL() else { return }
+        switch await store.relink(folder: folder.path) {
+        case .success(let ok):
+            guard case .relink(let relinked, let ambiguous, let unmatched)? = ok.data else {
+                report(.encoding("relink result has no relink data"), on: store)
+                return
+            }
+            let message = Self.relinkSummary(relinked: relinked, ambiguous: ambiguous.count, unmatched: unmatched.count)
+            let clean = ambiguous.isEmpty && unmatched.isEmpty
+            _ = store.receive(.log(clean ? .info : .warn, message))
+            if clean { alerts.showInfo(message) } else { alerts.showError(message) }
+        case .failure(let e):
+            let message = String(format: loc("relink.failed"), describe(e))
+            _ = store.receive(.log(.error, message))
+            alerts.showError(message)
+        }
+    }
+
+    static func relinkSummary(relinked: Int, ambiguous: Int, unmatched: Int) -> String {
+        var parts = [String(format: loc("relink.relinked"), relinked)]
+        if ambiguous > 0 { parts.append(String(format: loc("relink.ambiguous"), ambiguous)) }
+        if unmatched > 0 { parts.append(String(format: loc("relink.unmatched"), unmatched)) }
+        return parts.joined(separator: " ")
+    }
+
+    /// Opens the log window of the key workspace (the first one when none is key).
+    func showLog() {
+        (frontController ?? windows.values.first)?.showLog()
+    }
+
     @discardableResult
     private func go(_ store: WorkspaceStore) async -> Result<OkBody, EngineError>? {
         guard let list = windows.values.first(where: { $0.store === store })?.cueList.listID else { return nil }
@@ -462,6 +499,16 @@ final class AppController {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private static func folderPanel() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = loc("relink.panel.message")
+        panel.prompt = loc("relink.panel.prompt")
         return panel.runModal() == .OK ? panel.url : nil
     }
 

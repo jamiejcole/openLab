@@ -19,6 +19,8 @@ enum MainMenu {
                 item("menu.window.minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
                 item("menu.window.zoom", #selector(NSWindow.performZoom(_:))),
                 .separator(),
+                .separator(),
+                logItem(),
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
         )
@@ -57,6 +59,8 @@ enum MainMenu {
             [
                 item("menu.file.new", #selector(AppDelegate.newWorkspace(_:)), "n"),
                 item("menu.file.open", #selector(AppDelegate.openWorkspace(_:)), "o"),
+                .separator(),
+                item("menu.file.relink", #selector(AppDelegate.relinkMedia(_:))),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
             ]
@@ -101,6 +105,12 @@ enum MainMenu {
             entry.keyEquivalent = chord?.key ?? ""
             entry.keyEquivalentModifierMask = chord?.modifiers ?? []
         }
+    }
+
+    private static func logItem() -> NSMenuItem {
+        let log = item("menu.window.log", #selector(AppDelegate.showLog(_:)), "l")
+        log.keyEquivalentModifierMask = [.command, .option]
+        return log
     }
 
     private static func menu(_ key: String, _ items: [NSMenuItem]) -> NSMenu {
