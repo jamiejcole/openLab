@@ -19,6 +19,7 @@ mod patches;
 pub mod plan;
 pub mod runner;
 mod voices;
+pub mod watch;
 
 use std::collections::VecDeque;
 use std::hash::{BuildHasher, RandomState};
@@ -60,6 +61,7 @@ use media::MediaCatalog;
 use observe::Observe;
 use patches::Patches;
 use voices::{Effects, Env, Voices};
+use watch::{MediaWatch, WatchAnswer, WatchBatch, WatchEvent};
 
 /// The longest the loop sleeps without a reason to wake (ARCHITECTURE §3.2).
 pub const MAX_WAIT: Duration = Duration::from_millis(5);
@@ -155,6 +157,8 @@ pub struct ControlConfig {
     pub status: Option<crate::diag::StatusConfig>,
     /// Process CPU seconds for `status` (tests inject a fake).
     pub cpu_probe: fn() -> Option<f64>,
+    /// The media watch (M2.25): how files are statted, how often, and on which thread.
+    pub watch: watch::WatchConfig,
 }
 
 impl ControlConfig {
@@ -181,6 +185,7 @@ impl ControlConfig {
             show_log: crate::diag::ShowLog::default(),
             status: None,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
+            watch: watch::WatchConfig::default(),
         }
     }
 }
@@ -219,6 +224,9 @@ pub struct Control {
     mixer: MixerController,
     streamer: DiskStreamer,
     media: MediaCatalog,
+    watch: MediaWatch,
+    /// Watch batches taken from the inbox, handled at the next tick.
+    watch_batches: Vec<WatchBatch>,
     voices: Voices,
     checks: PlanChecks,
     patches: Patches,
@@ -300,6 +308,7 @@ impl Control {
             .and_then(|p| p.parent())
             .map(PathBuf::from);
         let docs = Docs::new(&config, inbox.clone())?;
+        let watch = MediaWatch::new(&config.watch, config.clock.clone(), inbox.clone())?;
         let media = MediaCatalog::new(
             inbox,
             show_dir,
@@ -321,6 +330,8 @@ impl Control {
             mixer,
             streamer,
             media,
+            watch,
+            watch_batches: Vec::new(),
             voices: Voices::new(),
             checks: PlanChecks::default(),
             patches,
@@ -398,6 +409,8 @@ impl Control {
             Inbox::Probe(answer) => self.probe_answer(answer),
             Inbox::Device(answer) => self.device_answer(answer),
             Inbox::Doc(answer) => self.doc_answer(answer),
+            Inbox::Watch(WatchAnswer::Batch(batch)) => self.watch_batches.push(batch),
+            Inbox::Watch(WatchAnswer::BucketAnswered { bucket }) => self.watch.answered(&bucket),
             Inbox::Log { level, message } => self.log(level, message),
             Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
             Inbox::Shutdown => return Flow::Shutdown,
@@ -410,6 +423,7 @@ impl Control {
     pub fn tick(&mut self) {
         self.poll_device();
         let now = self.now();
+        self.watch_events();
         self.flush_media(now);
         let mut fx = Effects::default();
         while let Some(e) = self.mixer.poll_event() {
@@ -441,6 +455,7 @@ impl Control {
                 ),
             );
         }
+        self.supervise_watch();
         self.deliver_deferred(now);
         if self.engine.is_due(now) {
             self.feed(Input::Tick, now);
@@ -951,6 +966,71 @@ impl Control {
         }
     }
 
+    /// The media watch's findings since the last tick, before the probe answers go to the
+    /// engine: a file gone is `Missing` in this tick's `Availability` (its cues are broken
+    /// within the tick); a file back, changed or unreadable is probed again. Batches of an
+    /// older generation (the catalog was reset since) are dropped. Key changes go out first,
+    /// so a reset's new generation is in force.
+    fn watch_events(&mut self) {
+        self.watch.apply(self.media.take_key_changes());
+        if self.watch_batches.is_empty() {
+            return;
+        }
+        for batch in std::mem::take(&mut self.watch_batches) {
+            let Some(events) = self.watch.accept(batch) else {
+                continue;
+            };
+            for event in events {
+                match event {
+                    WatchEvent::Gone { key, id, .. } => {
+                        if let Some(status) = self.media.mark_missing(&key, id) {
+                            self.pending_media.push(status);
+                        }
+                    }
+                    WatchEvent::Back { key, id, .. }
+                    | WatchEvent::Changed { key, id, .. }
+                    | WatchEvent::Unreadable { key, id, .. } => {
+                        self.media.recheck(&key, id);
+                    }
+                }
+            }
+            // Primes of a file gone are dropped; a file probed again near a playhead is
+            // probed first.
+            self.primes_dirty = true;
+            self.warnings_dirty = true;
+        }
+    }
+
+    /// The watch's key changes, watchdog, log entries and notices.
+    fn supervise_watch(&mut self) {
+        self.watch.apply(self.media.take_key_changes());
+        self.watch.supervise();
+        for (level, message) in self.watch.take_logs() {
+            self.log(level, message);
+        }
+        if self.watch.take_notices_changed() {
+            self.warnings_dirty = true;
+        }
+    }
+
+    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
+    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
+    /// found nothing.
+    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
+        self.watch.apply(self.media.take_key_changes());
+        self.watch.manual_pass()
+    }
+
+    /// Watch batches of the current generation taken so far (a cost measure).
+    pub fn watch_batches(&self) -> u64 {
+        self.watch.batches()
+    }
+
+    /// Media watchers abandoned in a stalled stat.
+    pub fn abandoned_watchers(&self) -> usize {
+        self.watch.abandoned()
+    }
+
     /// Hands the probe answers gathered since the last tick to the engine in one
     /// `Availability`, then starts the voices that waited for them.
     fn flush_media(&mut self, now: SampleTime) {
@@ -1391,6 +1471,7 @@ impl Control {
             ));
         }
         self.device_warnings(&mut list);
+        self.watch.notices(&mut list);
         if self.seen.alloc_violations > 0 {
             list.push(notice(
                 "realtime_allocation",

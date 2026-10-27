@@ -108,6 +108,9 @@ struct Entry {
     over_budget: bool,
     /// The preload failed (decode error, memory): it streams.
     preload_failed: bool,
+    /// The id of the file's watch (its first ticket): an event of an earlier watch of the same
+    /// key does not count.
+    watch: u64,
 }
 
 /// A worker as the watchdog sees it.
@@ -144,6 +147,8 @@ pub struct MediaCatalog {
     cues_read: u64,
     /// What changed for the slice-plan checks since they last looked.
     plan_changes: PlanChanges,
+    /// Files to start or stop watching (drained by the control loop into watch jobs).
+    key_changes: Vec<KeyChange>,
     /// Jobs sent to the workers (tests wait for exactly that many answers).
     #[cfg(test)]
     jobs: u64,
@@ -168,6 +173,15 @@ impl PlanChanges {
     pub fn is_empty(&self) -> bool {
         !self.all && self.cues.is_empty() && self.keys.is_empty()
     }
+}
+
+/// A file the media watch is to start or stop watching (docs/control.md "Media watch").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyChange {
+    /// Everything was forgotten (the catalog was reset).
+    Reset,
+    Watch { key: String, path: PathBuf, id: u64 },
+    Unwatch { key: String },
 }
 
 /// One cue's use of a media file.
@@ -209,6 +223,7 @@ impl MediaCatalog {
             uses: HashMap::new(),
             cues_read: 0,
             plan_changes: PlanChanges::default(),
+            key_changes: Vec::new(),
             #[cfg(test)]
             jobs: 0,
         };
@@ -248,6 +263,7 @@ impl MediaCatalog {
     /// find no entry (or a newer ticket) and are ignored.
     pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
         self.entries.clear();
+        self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
         self.reserved = 0;
         self.show_dir = show_dir;
@@ -299,6 +315,8 @@ impl MediaCatalog {
             }
             None => {
                 freed += e.reserved;
+                self.key_changes
+                    .push(KeyChange::Unwatch { key: k.clone() });
                 false
             }
         });
@@ -401,6 +419,8 @@ impl MediaCatalog {
                 && let Some(e) = self.entries.remove(key.as_str())
             {
                 self.reserved = self.reserved.saturating_sub(e.reserved);
+                self.key_changes
+                    .push(KeyChange::Unwatch { key: key.clone() });
                 self.plan_changes.keys.insert(key.clone());
             }
         }
@@ -551,13 +571,13 @@ impl MediaCatalog {
         self.next_ticket += 1;
         let ticket = self.next_ticket;
         let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
-        let asked = match path {
+        let asked = match &path {
             Some(path) => self
                 .low
                 .send(Job::Probe {
                     key: key.clone(),
                     ticket,
-                    path,
+                    path: path.clone(),
                 })
                 .is_ok(),
             // A relative reference in a show that was never saved has no folder to be in.
@@ -582,6 +602,14 @@ impl MediaCatalog {
                 }
             }
             None => {
+                // Watched from its first use; a reference with no place on disk cannot be.
+                if let Some(path) = path {
+                    self.key_changes.push(KeyChange::Watch {
+                        key: key.clone(),
+                        path,
+                        id: ticket,
+                    });
+                }
                 self.entries.insert(
                     key,
                     Entry {
@@ -598,6 +626,7 @@ impl MediaCatalog {
                         reserved: 0,
                         over_budget: false,
                         preload_failed: false,
+                        watch: ticket,
                     },
                 );
             }
@@ -709,6 +738,45 @@ impl MediaCatalog {
                 None
             }
         }
+    }
+
+    /// The watch found `key`'s file gone (its watch `id`): as a probe that found no file, at
+    /// once. The probe fails, the preload goes (its budget back), and an answer still to come
+    /// is ignored (the ticket moves on). Returns the status for the cue engine, or `None` for
+    /// an event of an earlier watch of the key or a file no cue uses any more.
+    pub fn mark_missing(&mut self, key: &str, id: u64) -> Option<(MediaRef, MediaStatus)> {
+        let entry = self.entries.get_mut(key).filter(|e| e.watch == id)?;
+        self.next_ticket += 1;
+        entry.ticket = self.next_ticket;
+        entry.asking = false;
+        entry.urgent = false;
+        entry.timed_out = false;
+        entry.probe = Probe::Failed;
+        self.reserved = self.reserved.saturating_sub(entry.reserved);
+        entry.reserved = 0;
+        entry.preloaded = None;
+        entry.over_budget = false;
+        entry.preload_failed = false;
+        entry.preload_ticket = 0;
+        entry.wants_preload = false;
+        self.plan_changes.keys.insert(key.to_owned());
+        Some((MediaRef::new(key), MediaStatus::Missing))
+    }
+
+    /// The watch found `key`'s file back, changed or unreadable (its watch `id`): probes it
+    /// afresh, even if a probe is under way (it may have read what was there before). The last
+    /// answer stands until then. `false` for an event of an earlier watch.
+    pub fn recheck(&mut self, key: &str, id: u64) -> bool {
+        if !self.entries.get(key).is_some_and(|e| e.watch == id) {
+            return false;
+        }
+        self.request(key.to_owned());
+        true
+    }
+
+    /// Files to start or stop watching since this was last called, in order.
+    pub fn take_key_changes(&mut self) -> Vec<KeyChange> {
+        std::mem::take(&mut self.key_changes)
     }
 
     pub fn get(&self, key: &str) -> Option<&Probe> {
@@ -1000,6 +1068,130 @@ mod tests {
         }
     }
 
+    /// Applies the catalog's key changes to `watched` as the watch would, and checks the watch
+    /// then watches exactly the catalog's files, each under its current watch id.
+    fn follow_keys(cat: &mut MediaCatalog, watched: &mut BTreeMap<String, u64>) {
+        for change in cat.take_key_changes() {
+            match change {
+                KeyChange::Reset => watched.clear(),
+                KeyChange::Watch { key, id, .. } => {
+                    assert!(watched.insert(key, id).is_none(), "watched twice");
+                }
+                KeyChange::Unwatch { key } => {
+                    assert!(watched.remove(&key).is_some(), "unwatched unknown");
+                }
+            }
+        }
+        let expected: BTreeMap<String, u64> = cat
+            .entries
+            .iter()
+            .map(|(k, e)| (k.clone(), e.watch))
+            .collect();
+        assert_eq!(*watched, expected);
+    }
+
+    #[test]
+    fn the_watch_follows_the_files_the_catalog_knows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_wav(dir.path(), "a.wav");
+        let b = write_wav(dir.path(), "b.wav");
+        let (mut ws, template) = template();
+        let mut c1 = template.clone();
+        c1.id = CueId(uuid::Uuid::from_u128(901));
+        c1.number = None;
+        set_media(&mut c1, &a, false);
+        let mut c2 = c1.clone();
+        c2.id = CueId(uuid::Uuid::from_u128(902));
+        set_media(&mut c2, &b, false);
+        ws.cue_lists[0].cues = vec![c1, c2];
+        let (mut cat, rx) = catalog(0);
+        let mut got = 0;
+        cat.sync(&ws);
+        let mut watched = BTreeMap::new();
+        follow_keys(&mut cat, &mut watched);
+        assert_eq!(watched.len(), 2);
+        settle(&mut cat, &rx, &mut got);
+        // A re-probe is not a new watch.
+        cat.reprobe(&a);
+        assert!(cat.take_key_changes().is_empty());
+        settle(&mut cat, &rx, &mut got);
+        // A reset starts over: everything watched again under new ids.
+        let old = watched.clone();
+        cat.reset(None, &ws);
+        let changes = cat.take_key_changes();
+        assert_eq!(changes.first(), Some(&KeyChange::Reset));
+        watched.clear();
+        for c in changes.into_iter().skip(1) {
+            let KeyChange::Watch { key, id, path } = c else {
+                panic!("{c:?}")
+            };
+            assert_eq!(path, PathBuf::from(&key));
+            watched.insert(key, id);
+        }
+        assert_eq!(watched.len(), 2);
+        assert!(watched.iter().all(|(k, id)| old.get(k) != Some(id)));
+        settle(&mut cat, &rx, &mut got);
+        // A relative reference in a show never saved has no path: not watched.
+        let mut c3 = template.clone();
+        c3.id = CueId(uuid::Uuid::from_u128(903));
+        set_media(&mut c3, "sounds/rel.wav", false);
+        ws.cue_lists[0].cues.push(c3);
+        cat.sync(&ws);
+        assert!(cat.take_key_changes().is_empty());
+        assert!(matches!(cat.get("sounds/rel.wav"), Some(Probe::Failed)));
+    }
+
+    #[test]
+    fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_wav(dir.path(), "a.wav");
+        let (mut ws, template) = template();
+        let mut c1 = template.clone();
+        c1.id = CueId(uuid::Uuid::from_u128(911));
+        c1.number = None;
+        set_media(&mut c1, &a, true);
+        ws.cue_lists[0].cues = vec![c1];
+        let (mut cat, rx) = catalog(10_000);
+        let mut got = 0;
+        cat.sync(&ws);
+        let id = match cat.take_key_changes().as_slice() {
+            [KeyChange::Watch { id, .. }] => *id,
+            other => panic!("{other:?}"),
+        };
+        settle(&mut cat, &rx, &mut got);
+        assert!(cat.is_preloaded(&a));
+        assert_eq!(cat.preload_reserved(), 400);
+        // An event of another watch of the key changes nothing.
+        assert_eq!(cat.mark_missing(&a, id + 1000), None);
+        assert!(!cat.recheck(&a, id + 1000));
+        assert!(cat.ready(&a).is_some());
+        // Gone while a re-probe is under way: failed now, the budget back, the answer ignored.
+        cat.reprobe(&a);
+        assert_eq!(
+            cat.mark_missing(&a, id),
+            Some((MediaRef::new(a.as_str()), MediaStatus::Missing))
+        );
+        assert!(matches!(cat.get(&a), Some(Probe::Failed)));
+        assert!(!cat.is_preloaded(&a));
+        assert_eq!(cat.preload_reserved(), 0);
+        assert_eq!(cat.pending(), 0);
+        assert!(cat.take_plan_changes().keys.contains(&a));
+        let late = answer(&rx);
+        got += 1;
+        assert_eq!(cat.answer(late), None, "the answer of a probe before the loss");
+        assert!(matches!(cat.get(&a), Some(Probe::Failed)));
+        // Back: probed afresh, and preloaded again.
+        assert!(cat.recheck(&a, id));
+        settle(&mut cat, &rx, &mut got);
+        assert!(cat.ready(&a).is_some());
+        assert!(cat.is_preloaded(&a));
+        assert_eq!(cat.preload_reserved(), 400);
+        // A file no cue uses any more is not marked.
+        ws.cue_lists[0].cues.clear();
+        cat.sync(&ws);
+        assert_eq!(cat.mark_missing(&a, id), None);
+    }
+
     /// Everything the catalog knows about its files, for comparing two catalogs.
     type View = (
         u64,
@@ -1211,6 +1403,8 @@ mod tests {
             let (mut ws, mut history, mut next) = (base.clone(), History::new(), 10_000u128);
             inc.sync(&ws);
             full.sync(&ws);
+            let mut watched = BTreeMap::new();
+            follow_keys(&mut inc, &mut watched);
             for step in 0..60 {
                 let footprint = match rng.below(9) {
                     0 => history
@@ -1231,6 +1425,8 @@ mod tests {
                 let before = view(&inc);
                 inc.sync_cues(&ws, &footprint);
                 full.sync(&ws);
+                full.take_key_changes();
+                follow_keys(&mut inc, &mut watched);
                 assert!(inc.index.matches(&ws), "seed {seed} step {step}");
                 assert_eq!(view(&inc), view(&full), "seed {seed} step {step}");
                 settle(&mut inc, &rx_inc, &mut got_inc);
