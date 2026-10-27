@@ -185,6 +185,8 @@ impl Show {
                     bind: Ipv4Addr::LOCALHOST.into(),
                     port: 0,
                     reply_port,
+                    // The sessions repeat the same read as a barrier.
+                    duplicate_window: Duration::ZERO,
                     ..OscConfig::default()
                 }),
                 ..ServerConfig::default()
@@ -610,7 +612,7 @@ impl Osc {
     fn new(link: Link, ws: &Workspace) -> Self {
         Self {
             link,
-            ws_id: ws.id.to_string(),
+            ws_id: ws.id.to_string().to_uppercase(),
             updates: HashMap::new(),
             playhead: None,
         }
@@ -703,15 +705,19 @@ impl Osc {
         .await;
         let prefix = format!("/update/workspace/{}", self.ws_id);
         if let Some(rest) = m.addr.strip_prefix(&format!("{prefix}/cue_id/")) {
-            let cue: uuid::Uuid = rest.parse().unwrap();
-            *self.updates.entry(CueId(cue)).or_default() += 1;
+            // A cue, or the list or `__root__` that changes with it.
+            if let Ok(cue) = rest.parse::<uuid::Uuid>() {
+                *self.updates.entry(CueId(cue)).or_default() += 1;
+            }
         } else if m.addr.starts_with(&format!("{prefix}/cueList/"))
             && m.addr.ends_with("/playbackPosition")
         {
-            let [OscType::String(s)] = m.args.as_slice() else {
-                panic!("{m:?}")
+            // No argument: the playhead is past the end.
+            self.playhead = match m.args.as_slice() {
+                [OscType::String(s)] => Some(s.to_lowercase()),
+                [] => None,
+                _ => panic!("{m:?}"),
             };
-            self.playhead = Some(s.clone());
         }
         m
     }
@@ -757,7 +763,9 @@ impl Osc {
     }
 
     async fn subscribe(&mut self) {
-        let v = self.ask("/updates", vec![OscType::Int(1)]).await;
+        // QLab sends no reply to `/updates`: a read afterwards is the barrier.
+        self.send("/updates", vec![OscType::Int(1)]).await;
+        let v = self.ask("/cue/1/name", vec![]).await;
         assert_eq!(v["status"], "ok", "{v}");
     }
 

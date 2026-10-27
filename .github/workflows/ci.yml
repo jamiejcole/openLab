@@ -98,6 +98,16 @@ jobs:
       - name: Soak test (24 h virtual)
         if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
         run: cargo test --release --locked -p openlab-engine --test soak -- --ignored --nocapture
+      # NFR-09/QA-05: the same show and operator for three minutes of wall clock against the real
+      # control loop, with real timer wake-ups and a device stand-in rendering in real time
+      # (jitter, xruns, late starts, counts); about four minutes with its final checkpoint.
+      # Nightly and on demand only: its bounds depend on a shared runner's timer, and a noisy
+      # night must not turn a push to main red.
+      - name: Soak test (3 min real time)
+        if: matrix.os == 'macos-26-intel' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          OPENLAB_SOAK_RT_SECS: "180"
+        run: cargo test --release --locked -p openlab-engine --test soak_rt -- --ignored --nocapture
 
   cargo-deny:
     needs: changes
