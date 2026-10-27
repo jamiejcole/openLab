@@ -50,7 +50,7 @@ pub use media::PROBE_WORKERS;
 
 use crate::persist::AppDirs;
 use checks::PlanChecks;
-use devices::{DEVICE_LOSS_GRACE, Device, DeviceAnswer, DeviceEvent};
+use devices::{Device, DeviceAnswer, DeviceEvent};
 use docs::Docs;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
@@ -208,8 +208,7 @@ pub struct Control {
     voices: Voices,
     checks: PlanChecks,
     patches: Patches,
-    /// What patches resolve against: the device the mixer plays on (none once an outage has
-    /// outlasted its grace period).
+    /// What patches resolve against: the device the mixer plays on (none during an outage).
     playable: Vec<DeviceInfo>,
     out: Outbound,
     docs: Docs,
@@ -685,19 +684,7 @@ impl Control {
             .unwrap_or_default();
         for event in events {
             match event {
-                DeviceEvent::Lost { why } => {
-                    let message = format!(
-                        "audio device \"{name}\" lost ({why}): the show is held where it was \
-                         cut and resumes there if the device is back within {} s",
-                        DEVICE_LOSS_GRACE.as_secs()
-                    );
-                    self.log(LogLevel::Error, message.clone());
-                    self.runtime(vec![RuntimeChange::Warning {
-                        warning: notice("device_lost", message, None),
-                    }]);
-                    self.warnings_dirty = true;
-                }
-                DeviceEvent::GraceExpired => self.device_grace_expired(&name),
+                DeviceEvent::Lost { why } => self.device_lost(&name, &why),
                 DeviceEvent::Restored => self.device_restored(&name),
                 // Patches resolve against the device the mixer plays on, so a change in the
                 // list changes them only through a loss or a reopen; resolving again is cheap.
@@ -747,11 +734,12 @@ impl Control {
         }
     }
 
-    /// The outage outlasted the grace period: the patches on the device are reported missing
-    /// (loaded cues on them unload, starts are refused as broken), every run with a voice
-    /// fails with `device_lost`, and every voice is stopped so nothing resumes when the device
-    /// comes back.
-    fn device_grace_expired(&mut self, name: &str) {
+    /// The device went away (M4.2g, as QLab 5): the patches on it are reported missing (loaded
+    /// cues on them unload, starts are refused as broken, idle cues show broken), every run
+    /// with a voice on it ends at once with `ActionFailed { device_lost }` (hard stop, no
+    /// fade; the voice and its stream are released, auto-follow never fires), and every voice
+    /// the mixer holds is stopped, so nothing sounds, or resumes, when the device returns.
+    fn device_lost(&mut self, name: &str, why: &str) {
         let now = self.now();
         self.playable.clear();
         for input in self.sync_patches(false) {
@@ -769,7 +757,8 @@ impl Control {
                 now,
             );
         }
-        // Orphaned tails and anything the engine no longer owns.
+        // Orphaned tails and anything the engine no longer owns. Dated on the first sample the
+        // mixer renders after the outage (`stop_floor`), so a voice plays nothing more.
         let floor = self.stop_floor();
         let commands = self
             .voices
@@ -782,19 +771,19 @@ impl Control {
             })
             .collect();
         self.send_commands(commands);
-        self.log(
-            LogLevel::Error,
-            format!(
-                "audio device \"{name}\" still lost after {} s: {failed} cue(s) playing on it \
-                 failed; still reconnecting",
-                DEVICE_LOSS_GRACE.as_secs()
-            ),
+        let message = format!(
+            "audio device \"{name}\" lost ({why}): {failed} cue(s) playing on it stopped; \
+             they start again from the beginning with GO once the device is back"
         );
+        self.log(LogLevel::Error, message.clone());
+        self.runtime(vec![RuntimeChange::Warning {
+            warning: notice("device_lost", message, None),
+        }]);
         self.warnings_dirty = true;
     }
 
-    /// The stream was reopened: patches resolve against the device again (cues that failed
-    /// with `device_lost` become playable), voices held through the outage play on.
+    /// The stream was reopened: patches resolve against the device again (cues that
+    /// failed with `device_lost`, and idle cues on it, become playable).
     fn device_restored(&mut self, name: &str) {
         let Some(device) = self.backend.device() else {
             return;
@@ -1346,22 +1335,12 @@ impl Control {
                     ),
                     None,
                 ));
-            } else if d.grace_expired() {
+            } else if d.is_down() {
                 list.push(notice(
                     "device_lost",
                     format!(
                         "audio device \"{name}\" is lost: the cues that played on it were \
                          stopped, and cues on it cannot start; reconnecting"
-                    ),
-                    None,
-                ));
-            } else if d.is_down() {
-                list.push(notice(
-                    "device_lost",
-                    format!(
-                        "audio device \"{name}\" is lost: the show is held and resumes if it \
-                         is back within {} s; reconnecting",
-                        DEVICE_LOSS_GRACE.as_secs()
                     ),
                     None,
                 ));

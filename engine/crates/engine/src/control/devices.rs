@@ -10,8 +10,8 @@
 //! from being read. Both answer through the control inbox ([`Inbox::Device`]); the control
 //! thread never calls the device layer. [`Device`] is the control thread's side: it decides
 //! when to list, close and reopen, and watches for jobs that never finish, from a wall clock
-//! that tests inject ([`WallClock`]). What the show does during an outage (the grace period,
-//! failing the cues) is the control loop's (`control/mod.rs`).
+//! that tests inject ([`WallClock`]). What the show does when the device goes (stopping the cues
+//! that play on it, M4.2g) is the control loop's (`control/mod.rs`).
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -28,13 +28,6 @@ use openlab_audio::{
 
 use super::Inbox;
 
-/// Downtime after which the runs playing on a lost device fail (`device_lost`): counted over
-/// every outage in the last [`GRACE_WINDOW`], so a device that keeps dropping out and coming
-/// back fails the cues as one long outage would. Wall clock: sample time stands still while no
-/// device runs.
-pub const DEVICE_LOSS_GRACE: Duration = Duration::from_secs(10);
-/// The window [`DEVICE_LOSS_GRACE`] is counted over.
-pub const GRACE_WINDOW: Duration = Duration::from_secs(60);
 /// A reopened stream that has played this long resets the reopen backoff; one lost sooner
 /// keeps it growing.
 pub const STABLE_UP: Duration = Duration::from_secs(5);
@@ -51,7 +44,7 @@ pub const FIRST_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// An output device as the host lists it.
 pub type ListedDevice = openlab_audio::DeviceInfo;
 
-/// The wall clock of the device policy (grace, backoff, list polling, watchdog). Tests inject
+/// The wall clock of the device policy (backoff, list polling, watchdog). Tests inject
 /// their own.
 pub type WallClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
@@ -367,7 +360,6 @@ pub fn start_with_timeout(
         stream: Stream::Up,
         info,
         outage: None,
-        downtime: VecDeque::new(),
         attempts: 0,
         up_since: now,
         stuck: None,
@@ -438,9 +430,7 @@ enum Stream {
 
 /// The current outage.
 struct Outage {
-    since: Instant,
     next_try: Instant,
-    expired: bool,
 }
 
 /// What changed, for the control loop to act on.
@@ -448,8 +438,6 @@ struct Outage {
 pub enum DeviceEvent {
     /// The stream stopped playing on its device: an outage starts.
     Lost { why: String },
-    /// The downtime has reached [`DEVICE_LOSS_GRACE`].
-    GraceExpired,
     /// The device plays again (the stream was reopened).
     Restored,
     /// The device list changed.
@@ -492,8 +480,6 @@ pub struct Device {
     /// The open stream, or the last one while it is down.
     info: StreamInfo,
     outage: Option<Outage>,
-    /// Past outages (start, end) within [`GRACE_WINDOW`].
-    downtime: VecDeque<(Instant, Instant)>,
     /// Opens since the stream last stayed up [`STABLE_UP`]: the backoff step.
     attempts: u32,
     up_since: Instant,
@@ -517,11 +503,6 @@ impl Device {
     /// The stream is not playing on its device (an outage).
     pub fn is_down(&self) -> bool {
         self.outage.is_some()
-    }
-
-    /// The outage has outlasted the grace period.
-    pub fn grace_expired(&self) -> bool {
-        self.outage.as_ref().is_some_and(|o| o.expired)
     }
 
     /// Why sound cannot come back without a restart, if it cannot.
@@ -553,7 +534,7 @@ impl Device {
         self.alloc_base.saturating_add(current)
     }
 
-    /// Each control tick: host errors, the pending mixer, reopen attempts, the grace period,
+    /// Each control tick: host errors, the pending mixer, reopen attempts,
     /// the watchdog and the device list.
     pub fn poll(&mut self) -> Vec<DeviceEvent> {
         let now = (self.wall)();
@@ -574,17 +555,11 @@ impl Device {
         {
             self.stream = Stream::Down(Box::new(m));
         }
-        if self.outage.is_some() {
-            let down = self.downtime(now);
-            if let Some(o) = &mut self.outage {
-                if !o.expired && down >= DEVICE_LOSS_GRACE {
-                    o.expired = true;
-                    events.push(DeviceEvent::GraceExpired);
-                }
-                if now >= o.next_try && matches!(self.stream, Stream::Down(_)) {
-                    self.reopen();
-                }
-            }
+        if let Some(o) = &self.outage
+            && now >= o.next_try
+            && matches!(self.stream, Stream::Down(_))
+        {
+            self.reopen();
         }
         self.watchdog(now, &mut events);
         if self.listing.is_none() && now >= self.next_list {
@@ -615,9 +590,7 @@ impl Device {
                 self.answered(JobKind::Open);
                 match result {
                     Ok(info) => {
-                        if let Some(o) = self.outage.take() {
-                            self.downtime.push_back((o.since, now));
-                        }
+                        self.outage = None;
                         self.callbacks_at_list = info.monitor.callbacks();
                         self.missing_reads = 0;
                         self.info = info;
@@ -679,23 +652,6 @@ impl Device {
         }
     }
 
-    /// Downtime within [`GRACE_WINDOW`] up to `now`, the current outage included.
-    fn downtime(&mut self, now: Instant) -> Duration {
-        let from = now.checked_sub(GRACE_WINDOW).unwrap_or(now);
-        while self.downtime.front().is_some_and(|&(_, end)| end <= from) {
-            self.downtime.pop_front();
-        }
-        let past: Duration = self
-            .downtime
-            .iter()
-            .map(|&(start, end)| end.saturating_duration_since(start.max(from)))
-            .sum();
-        let current = self.outage.as_ref().map_or(Duration::ZERO, |o| {
-            now.saturating_duration_since(o.since.max(from))
-        });
-        past + current
-    }
-
     fn lose(&mut self, now: Instant, why: String, events: &mut Vec<DeviceEvent>) {
         if self.outage.is_some() {
             return;
@@ -705,9 +661,7 @@ impl Device {
             .saturating_add(self.info.monitor.alloc_violations());
         self.missing_reads = 0;
         self.outage = Some(Outage {
-            since: now,
             next_try: now + backoff(self.attempts),
-            expired: false,
         });
         events.push(DeviceEvent::Lost { why });
         self.stream = if self.send(Job::Close, JobKind::Close, now) {
