@@ -28,6 +28,12 @@ fn timed(ws: &openlab_core::Workspace) -> (ControlConfig, ManualClock) {
 }
 
 fn tail(s: &mut OfflineShow, max: Option<u32>) -> (Vec<LogEntry>, u64) {
+    let (entries, dropped, _) = tail_seq(s, max);
+    (entries, dropped)
+}
+
+/// `log_tail`'s entries, `dropped` and `seq`.
+fn tail_seq(s: &mut OfflineShow, max: Option<u32>) -> (Vec<LogEntry>, u64, u64) {
     let id = s.request_id();
     let replies = s.send(ClientMessage::Request {
         id,
@@ -37,13 +43,41 @@ fn tail(s: &mut OfflineShow, max: Option<u32>) -> (Vec<LogEntry>, u64) {
         Some(ServerMessage::Result {
             outcome:
                 Outcome::Ok(OkBody {
-                    data: Some(ResultData::LogTail { entries, dropped }),
+                    data:
+                        Some(ResultData::LogTail {
+                            entries,
+                            dropped,
+                            seq,
+                        }),
                     ..
                 }),
             ..
-        }) => (entries.clone(), *dropped),
+        }) => (entries.clone(), *dropped, *seq),
         other => panic!("no log tail: {other:?}"),
     }
+}
+
+/// The `log_entry` pushes among `msgs`.
+fn pushed(msgs: &[ServerMessage]) -> Vec<(u64, LogEntry)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::LogEntry { seq, entry } => Some((*seq, entry.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pushing(ws: &openlab_core::Workspace) -> (ControlConfig, ManualClock) {
+    let (mut c, clock) = timed(ws);
+    c.push_log = true;
+    (c, clock)
+}
+
+fn note(s: &mut OfflineShow, n: usize) {
+    s.deliver(Inbox::Log {
+        level: LogLevel::Info,
+        message: format!("note {n}"),
+    });
 }
 
 /// The entries without the engine's own start-up record.
@@ -471,4 +505,125 @@ fn records_reach_the_log_file_as_json_lines_in_order() {
         .collect();
     assert_eq!(on_disk, in_memory);
     assert!(on_disk.len() >= 5, "{text}");
+}
+
+#[test]
+fn records_are_pushed_live_only_when_the_host_asks() {
+    let path = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let (c, _clock) = timed(&ws);
+    let mut s = show_with(ws, c);
+    go(&mut s);
+    run_until_idle(&mut s, id(1), 8000);
+    assert!(pushed(&s.take_outbound()).is_empty());
+}
+
+#[test]
+fn each_record_is_pushed_as_a_log_entry_with_a_rising_seq_matching_log_tail() {
+    let path = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let (c, _clock) = pushing(&ws);
+    let mut s = show_with(ws, c);
+    let mut msgs = s.take_outbound();
+    s.deliver(Inbox::Trigger {
+        source: "osc 192.0.2.7".into(),
+        detail: "transport go".into(),
+    });
+    go(&mut s);
+    run_until_idle(&mut s, id(1), 8000);
+    msgs.extend(s.take_outbound());
+    let live = pushed(&msgs);
+    let (all, _, seq) = tail_seq(&mut s, None);
+    // Every record so far was pushed, in order, numbered from 1, and equals the stored one.
+    assert_eq!(live.len(), all.len(), "{live:#?}");
+    assert_eq!(
+        live.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        (1..=all.len() as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(live.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(), all);
+    assert_eq!(seq, all.len() as u64, "log_tail says where it ends");
+    let kinds = kinds(&all);
+    for k in [
+        LogKind::Trigger,
+        LogKind::Go,
+        LogKind::CueStart,
+        LogKind::CueStop,
+    ] {
+        assert!(kinds.contains(&k), "{kinds:?}");
+    }
+    for m in &msgs {
+        check_wire(m);
+    }
+}
+
+#[test]
+fn a_flood_is_cut_to_the_budget_and_the_newest_held_back_goes_out_when_the_window_ends() {
+    let ws = workspace(vec![]);
+    let (c, clock) = pushing(&ws);
+    let mut s = show_with(ws, c);
+    s.take_outbound();
+    let (_, _, before) = tail_seq(&mut s, Some(0));
+    clock.set(T0 + 20_000);
+    for n in 0..500 {
+        note(&mut s, n);
+    }
+    let live = pushed(&s.take_outbound());
+    // 200 per 10 s window: the first 200 of the flood.
+    assert_eq!(live.len(), 200);
+    assert_eq!(live[0].0, before + 1);
+    assert_eq!(live[199].0, before + 200);
+    // Ticks inside the window push nothing more.
+    clock.set(T0 + 29_999);
+    s.tick();
+    assert!(pushed(&s.take_outbound()).is_empty());
+    // The window ends: the newest record held back goes out, so a client sees the gap at once
+    // and reads `log_tail`.
+    clock.set(T0 + 30_000);
+    s.tick();
+    let [(seq, entry)] = pushed(&s.take_outbound()).try_into().unwrap();
+    let (_, _, newest) = tail_seq(&mut s, Some(1));
+    assert_eq!(seq, newest);
+    assert_eq!(seq, before + 500);
+    assert_eq!(entry.message, "note 499");
+    // Nothing is held back any more.
+    clock.set(T0 + 40_000);
+    s.tick();
+    assert!(pushed(&s.take_outbound()).is_empty());
+}
+
+#[test]
+fn a_client_that_does_not_keep_up_loses_pushes_not_state_and_gets_the_newest_later() {
+    let ws = workspace(vec![]);
+    let (c, clock) = pushing(&ws);
+    let mut s = OfflineShow::with_outbound_capacity(ws, mixer_config(), c, 8).unwrap();
+    s.take_outbound();
+    clock.set(T0 + 20_000);
+    // Half the channel is the limit for lossy messages; `log` (a state message) is not lossy,
+    // so each note puts a `log` in and leaves room for no push once four are queued.
+    for n in 0..6 {
+        note(&mut s, n);
+    }
+    let msgs = s.take_outbound();
+    let logs = msgs
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::Log { .. }))
+        .count();
+    let live = pushed(&msgs);
+    assert!(logs >= 4, "{msgs:#?}");
+    assert!(live.len() < 6, "some pushes were dropped: {msgs:#?}");
+    // Room again: the next tick delivers the newest record that was dropped.
+    s.tick();
+    let after = s.take_outbound();
+    // Lost pushes are the client's to notice (by `seq`): they do not raise the "not keeping
+    // up" notice, which, being a pushed record itself, would otherwise report its own loss.
+    assert!(
+        !after
+            .iter()
+            .any(|m| matches!(m, ServerMessage::Log { message, .. } if message.contains("not keeping up"))),
+        "{after:#?}"
+    );
+    let [(seq, entry)] = pushed(&after).try_into().unwrap();
+    assert_eq!(entry.message, "note 5");
+    let (_, _, newest) = tail_seq(&mut s, Some(0));
+    assert_eq!(seq, newest);
 }

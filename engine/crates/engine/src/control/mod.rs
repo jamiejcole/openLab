@@ -155,6 +155,9 @@ pub struct ControlConfig {
     pub show_log: crate::diag::ShowLog,
     /// Send `status` messages (DX-03). `None`: never (offline tests; the host turns it on).
     pub status: Option<crate::diag::StatusConfig>,
+    /// Push each new show-log record as a `log_entry` message (DX-02, M4.7c). Off by default
+    /// (offline tests); the host turns it on.
+    pub push_log: bool,
     /// Process CPU seconds for `status` (tests inject a fake).
     pub cpu_probe: fn() -> Option<f64>,
 }
@@ -183,6 +186,7 @@ impl ControlConfig {
             probe_clock: media::ProbeClock::system(),
             show_log: crate::diag::ShowLog::default(),
             status: None,
+            push_log: false,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
         }
     }
@@ -561,14 +565,18 @@ impl Control {
                     },
                 ),
                 Request::LogTail { max } => {
-                    let (entries, dropped) = self.log_tail(max);
+                    let (entries, dropped, seq) = self.log_tail(max);
                     reply(
                         to,
                         ServerMessage::Result {
                             id,
                             outcome: Outcome::Ok(OkBody {
                                 revision: None,
-                                data: Some(ResultData::LogTail { entries, dropped }),
+                                data: Some(ResultData::LogTail {
+                                    entries,
+                                    dropped,
+                                    seq,
+                                }),
                             }),
                         },
                     );

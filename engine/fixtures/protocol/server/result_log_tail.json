@@ -73,7 +73,8 @@
           "message": "message"
         }
       ],
-      "dropped": 2
+      "dropped": 2,
+      "seq": 1009
     }
   }
 }
