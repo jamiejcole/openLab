@@ -363,6 +363,8 @@ impl Osc {
         };
         let workspace = show.workspace_id();
         let rights = self.rights_of(peer, show);
+        self.sessions
+            .set_strangers_may_view(show.access().no_passcode.allows(OscRight::View));
         let authed = rights.allows(OscRight::View);
         let ask = Asked {
             connected: self.sessions.is_connected(peer),

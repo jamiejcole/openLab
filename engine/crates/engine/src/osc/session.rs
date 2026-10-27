@@ -55,6 +55,11 @@ pub const GLOBAL_WINDOW: Duration = Duration::from_secs(60);
 /// Addresses remembered as having connected. A correct passcode from one of them passes the
 /// lockouts above.
 pub const MAX_KNOWN_IPS: usize = 64;
+
+/// Sessions held by peers that have no rights (a bare `/updates` or `/udpReplyPort`). Past this
+/// the one silent longest among them is evicted, so forged subscribers cannot fill the table
+/// and keep a console from connecting. A session with rights is never evicted.
+pub const MAX_RIGHTLESS_SESSIONS: usize = 64;
 /// IPs tracked for failures / reply budgets.
 pub const MAX_TRACKED_IPS: usize = 1024;
 /// Reply bytes one UDP source may be sent at once, and per second after that. Bounds how much
@@ -135,9 +140,17 @@ pub struct Sessions {
     budgets: HashMap<(IpAddr, Budget), Bucket>,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
+    /// Whether a peer that has not connected may view (No Passcode has View): then sessions
+    /// without rights are ordinary subscribers and are not capped.
+    strangers_may_view: bool,
 }
 
 impl Sessions {
+    /// Told by the caller on every message, from the workspace's table as it is now.
+    pub fn set_strangers_may_view(&mut self, may: bool) {
+        self.strangers_may_view = may;
+    }
+
     pub fn len(&self) -> usize {
         self.peers.len()
     }
@@ -209,24 +222,30 @@ impl Sessions {
                 matched = Some(row.rights);
             }
         }
-        // A correct passcode from an address that connected before gets through the lockouts,
-        // so an attacker's wrong guesses cannot keep the operator out after a dropped link.
-        // Not for a peer that is connected already: it needs no way back in, and the exemption
-        // would let it keep guessing for a row with more rights while locked out.
+        // A correct passcode from an address that connected before gets through the GLOBAL budget
+        // (rotating forged sources must not keep the operator out after a dropped link), but
+        // never past its own address's lockout: that would let a peer sharing the address keep
+        // guessing for free. Not for a peer that is connected already: it needs no way back in.
+        let own_locked = self.own_locked(peer.ip(), now);
         let known_and_right =
             current.is_none() && matched.is_some() && self.known.contains(&peer.ip());
-        if !known_and_right && self.locked_out(peer.ip(), now) {
-            return ConnectResult::LockedOut;
-        }
+        let locked = own_locked || (self.global_locked(now) && !known_and_right);
         let Some(rights) = matched else {
-            // A connected peer's wrong guess counts too (it stays connected): otherwise it could
-            // search the table for a row with more rights without limit.
+            // A wrong guess counts even during a lockout, and a connected peer's counts too (it
+            // stays connected): otherwise it could search the table for more rights for free.
             self.record_failure(peer.ip(), now);
             if current.is_some() {
                 self.touch(peer, now);
             }
-            return ConnectResult::BadPasscode;
+            return if locked {
+                ConnectResult::LockedOut
+            } else {
+                ConnectResult::BadPasscode
+            };
         };
+        if locked {
+            return ConnectResult::LockedOut;
+        }
         if !self.ensure(peer, now) {
             return ConnectResult::TableFull;
         }
@@ -247,15 +266,16 @@ impl Sessions {
         self.known.push(ip);
     }
 
-    fn locked_out(&self, ip: IpAddr, now: Duration) -> bool {
-        let global = self.global_count >= GLOBAL_MAX_FAILURES
-            && now.saturating_sub(self.global_start) < GLOBAL_WINDOW;
-        let own = self
-            .failures
+    fn global_locked(&self, now: Duration) -> bool {
+        self.global_count >= GLOBAL_MAX_FAILURES
+            && now.saturating_sub(self.global_start) < GLOBAL_WINDOW
+    }
+
+    fn own_locked(&self, ip: IpAddr, now: Duration) -> bool {
+        self.failures
             .get(&ip)
             .and_then(|f| f.locked_until)
-            .is_some_and(|until| now < until);
-        global || own
+            .is_some_and(|until| now < until)
     }
 
     fn record_failure(&mut self, ip: IpAddr, now: Duration) {
@@ -422,6 +442,25 @@ impl Sessions {
         }
     }
 
+    /// Makes room for one more session without rights: the cap is on those only.
+    fn evict_rightless_over_cap(&mut self) {
+        if self.strangers_may_view {
+            return;
+        }
+        while self.peers.values().filter(|s| s.rights.is_none()).count() >= MAX_RIGHTLESS_SESSIONS {
+            let oldest = self
+                .peers
+                .iter()
+                .filter(|(_, s)| s.rights.is_none())
+                .min_by_key(|(_, s)| s.last_seen)
+                .map(|(p, _)| *p);
+            match oldest {
+                Some(p) => self.peers.remove(&p),
+                None => break,
+            };
+        }
+    }
+
     fn ensure(&mut self, peer: Peer, now: Duration) -> bool {
         if self.peers.contains_key(&peer) {
             return true;
@@ -429,6 +468,7 @@ impl Sessions {
         if self.peers.len() >= MAX_PEERS {
             return false;
         }
+        self.evict_rightless_over_cap();
         self.peers.insert(
             peer,
             Session {
