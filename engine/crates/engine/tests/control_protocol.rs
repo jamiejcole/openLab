@@ -341,6 +341,103 @@ fn an_edit_in_a_big_show_rebuilds_only_what_it_changed() {
     assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
+/// The cues of the last `warnings` message's `bad_plan` notices, in order.
+fn bad_plans(messages: &[ServerMessage]) -> Option<Vec<openlab_core::CueId>> {
+    messages.iter().rev().find_map(|m| match m {
+        ServerMessage::Warnings { warnings } => Some(
+            warnings
+                .iter()
+                .filter_map(|w| match w {
+                    openlab_core::protocol::WireWarning::Notice {
+                        code,
+                        cue: Some(cue),
+                        ..
+                    } if code == "bad_plan" => Some(*cue),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => None,
+    })
+}
+
+#[test]
+fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
+    // M4.12c: the slice-plan checks look only at what each edit touched; the warnings still
+    // name exactly the cues whose slices cannot play, in workspace order. A 300-frame file and
+    // a start time past its end make a plan that cannot play.
+    let path = wav(&dc(300, 0.5));
+    let mut cues: Vec<_> = (1..=5).map(|n| audio(n, &path, 0)).collect();
+    cues.push(openlab_core::Cue {
+        kind: CueKind::Group {
+            mode: openlab_core::GroupMode::Timeline,
+            children: vec![audio(6, &path, 0), audio(7, &path, 0)],
+        },
+        ..audio(100, &path, 0)
+    });
+    let mut s = show(workspace(cues));
+    s.settle_media();
+    s.run(BLOCK);
+    let edit = |s: &mut openlab_engine::control::offline::OfflineShow, command: Command| {
+        s.take_outbound();
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Command {
+            id,
+            command: Box::new(command),
+            coalesce: None,
+        });
+        assert!(matches!(result(&replies), Outcome::Ok(_)), "{replies:?}");
+        s.run(BLOCK);
+        bad_plans(&s.take_outbound())
+    };
+    let past_end = |s: &openlab_engine::control::offline::OfflineShow, n: u128| {
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(n))
+            .unwrap()
+            .kind
+            .clone();
+        if let CueKind::Audio { start_time, .. } = &mut kind {
+            *start_time = 0.5;
+        }
+        Command::SetCueProperty {
+            id: id(n),
+            property: CueProperty::Kind { value: kind },
+        }
+    };
+    let c = past_end(&s, 7);
+    assert_eq!(edit(&mut s, c), Some(vec![id(7)]));
+    let c = past_end(&s, 2);
+    assert_eq!(edit(&mut s, c), Some(vec![id(2), id(7)]));
+    // The group moves to the top: its cue's warning now comes first, though no cue in it was
+    // touched.
+    let moved = edit(
+        &mut s,
+        Command::MoveCue {
+            id: id(100),
+            index: 0,
+        },
+    );
+    assert_eq!(moved, Some(vec![id(7), id(2)]));
+    // Gone with its group, and back with the undo.
+    assert_eq!(
+        edit(&mut s, Command::RemoveCue { id: id(100) }),
+        Some(vec![id(2)])
+    );
+    s.take_outbound();
+    let undo = s.request_id();
+    s.send(ClientMessage::Undo { id: undo });
+    s.run(BLOCK);
+    assert_eq!(bad_plans(&s.take_outbound()), Some(vec![id(7), id(2)]));
+    assert_eq!(
+        s.control().plan_walks(),
+        1,
+        "no edit walked every audio cue"
+    );
+    assert_eq!(s.control().model_change_walks(), 0);
+}
+
 #[test]
 fn a_client_that_falls_behind_loses_meters_first_and_state_never() {
     let path = wav(&dc(16000, 0.5));

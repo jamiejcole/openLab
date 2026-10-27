@@ -172,6 +172,8 @@ async fn osc_follows_a_revert_and_an_open() {
                 bind: Ipv4Addr::LOCALHOST.into(),
                 port: 0,
                 reply_port: socket.local_addr().unwrap().port(),
+                // The test polls with the same read again and again.
+                duplicate_window: Duration::ZERO,
                 ..OscConfig::default()
             }),
             ..ServerConfig::default()
@@ -231,7 +233,7 @@ async fn osc_follows_a_revert_and_an_open() {
     // And it starts A, not B.
     osc.send(&msg("/updates", vec![OscType::Int(1)])).await;
     osc.send(&msg("/cue/5/start", vec![])).await;
-    let ws_id = ws.id.to_string();
+    let ws_id = ws.id.to_string().to_uppercase();
     let first_update = guard("a cue state update", async {
         loop {
             let m = osc.recv().await;

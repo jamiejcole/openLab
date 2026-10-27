@@ -159,6 +159,17 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
             "stop_preview",
             TransportAction::StopPreview { cue: Some(c) },
         ),
+        // Added last: a fixture's request id is its position in this list.
+        ("stop_all", TransportAction::StopAll),
+        ("hard_stop_all", TransportAction::HardStopAll),
+        ("panic_cue", TransportAction::PanicCue { cue: c }),
+        (
+            "go_from",
+            TransportAction::GoFrom {
+                list: list(),
+                cue: c,
+            },
+        ),
     ]
 }
 
@@ -929,6 +940,10 @@ fn every_message_type_and_variant_has_a_fixture() {
         match action {
             TransportAction::Go { .. }
             | TransportAction::Panic
+            | TransportAction::StopAll
+            | TransportAction::HardStopAll
+            | TransportAction::PanicCue { .. }
+            | TransportAction::GoFrom { .. }
             | TransportAction::PauseAll
             | TransportAction::ResumeAll
             | TransportAction::SetPlayhead { .. }
@@ -947,7 +962,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::StopPreview { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 18);
+    assert_eq!(all_actions().len(), 22);
     assert_eq!(all_requests().len(), 11);
 }
 
@@ -2603,6 +2618,10 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
             })
         }),
         arb_cue().prop_map(|cue| TransportAction::HardStop { cue }),
+        arb_cue().prop_map(|cue| TransportAction::PanicCue { cue }),
+        (arb_list(), arb_cue()).prop_map(|(list, cue)| TransportAction::GoFrom { list, cue }),
+        Just(TransportAction::StopAll),
+        Just(TransportAction::HardStopAll),
         arb_cue().prop_map(|cue| TransportAction::Pause { cue }),
         arb_cue().prop_map(|cue| TransportAction::Resume { cue }),
         (arb_cue(), arb_time()).prop_map(|(cue, at)| TransportAction::Load { cue, at }),

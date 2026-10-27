@@ -33,6 +33,7 @@ pub use transport::PANIC_CURVE;
 pub use types::*;
 
 use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, SecondTrigger};
+use crate::cue_index::CueContainer;
 use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
 
@@ -87,6 +88,9 @@ pub struct CueEngine {
     limit: usize,
     /// How many such passes have run (a cost measure, see `model_syncs`).
     model_syncs: u64,
+    /// Walks of the whole workspace made to follow edits (a cost measure, see
+    /// `whole_show_passes`).
+    whole_show_passes: u64,
     /// The `now` of the last call and the cue starts made by the calls at that `now` so far.
     /// The chain budget is per sample, not per call: mixer feedback dated on the sample it is
     /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
@@ -142,6 +146,7 @@ impl CueEngine {
             next_preview: 0,
             limit: 0,
             model_syncs: 0,
+            whole_show_passes: 0,
             spent: (0, 0),
         }
     }
@@ -195,6 +200,15 @@ impl CueEngine {
         self.model_syncs
     }
 
+    /// How many times following edits walked the whole workspace: counting its cues, reading a
+    /// list's positions for its playhead, collecting the cue ids present (M4.12c). The engine's
+    /// cue index answers these, so an edit told with `model_changed_cues` adds none; a full
+    /// rebuild (`model_changed`, a newly opened workspace) and an index that cannot be trusted
+    /// (duplicate ids) do.
+    pub fn whole_show_passes(&self) -> u64 {
+        self.whole_show_passes
+    }
+
     /// Applies one input at scheduling time `now` (the earliest sample a command can still hit).
     /// `ws` is the current workspace; edits since the last call are taken into account first.
     pub fn handle(&mut self, ws: &Workspace, input: Input, now: SampleTime) -> Vec<Action> {
@@ -203,23 +217,21 @@ impl CueEngine {
         // change nobody signalled, as for the static problems.
         let signalled = std::mem::take(&mut self.model_dirty);
         let follow_edits = signalled || cfg!(debug_assertions);
-        if follow_edits {
-            self.limit = Self::chain_limit(ws);
-        }
         if signalled {
             self.model_syncs = self.model_syncs.saturating_add(1);
         }
-        let limit = self.limit;
         let spent = match self.spent {
             (at, starts) if at == now => starts,
             _ => 0,
         };
+        // The budget is set once the problems (and the cue index with them) follow the edits:
+        // nothing before that starts a cue.
         let mut cx = Ctx {
             ws,
             now,
             horizon: self.config.horizon(now),
-            budget: limit.saturating_sub(spent),
-            limit,
+            budget: 0,
+            limit: self.limit,
             limit_verified: follow_edits,
             out: Vec::new(),
             vacated: Vec::new(),
@@ -238,6 +250,11 @@ impl CueEngine {
         // `model_changed`.
         let counted = self.unsignalled_model_changes();
         self.sync_problems(&mut cx);
+        if follow_edits {
+            self.limit = self.counted_chain_limit(ws);
+        }
+        cx.limit = self.limit;
+        cx.budget = self.limit.saturating_sub(spent);
         if follow_edits {
             let changed = self.sync_model(&mut cx) | self.sync_playheads(&mut cx);
             // Once per call: the problems may have noticed the same edit.
@@ -364,6 +381,19 @@ impl CueEngine {
             .unwrap_or_default()
     }
 
+    /// [`Self::chain_limit`] from the cue index's count, which is in step with `ws` once the
+    /// problems follow the edits; counted from `ws` when the index has duplicate ids (it counts
+    /// each id once).
+    fn counted_chain_limit(&mut self, ws: &Workspace) -> usize {
+        let tree = self.problems.tree();
+        if tree.has_duplicates() {
+            self.whole_show_passes = self.whole_show_passes.saturating_add(1);
+            Self::chain_limit(ws)
+        } else {
+            tree.len().saturating_add(CHAIN_MARGIN)
+        }
+    }
+
     /// Most cue starts one call carries out: the workspace's cue count plus [`CHAIN_MARGIN`].
     pub fn chain_limit(ws: &Workspace) -> usize {
         ws.cue_lists
@@ -377,6 +407,7 @@ impl CueEngine {
         match input {
             Input::Tick => {}
             Input::Go { list } => self.go(list, cx),
+            Input::GoFrom { list, cue } => self.go_from(list, cue, cx),
             Input::Start { cue } => {
                 if self.known(cue, cx) {
                     self.start(cue, cx.now, cx);
@@ -431,6 +462,12 @@ impl CueEngine {
             Input::Preview { cue } => self.preview(cue, cx),
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
+            Input::StopAll => self.stop_all(cx),
+            Input::PanicCue { cue } => {
+                if self.known(cue, cx) {
+                    self.panic_tree(cue, cx);
+                }
+            }
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
             Input::MediaStatus { media, status } => {
@@ -461,23 +498,42 @@ impl CueEngine {
         if self.slots.is_empty() {
             return previews_ended;
         }
-        let mut present = HashSet::new();
-        for list in &cx.ws.cue_lists {
-            collect_ids(&list.cues, &mut present);
+        // The cue index is in step with the workspace here (the problems followed the edits);
+        // with duplicate ids it is not the reference, and the workspace is walked.
+        let ws = cx.ws;
+        let tree = self.problems.tree();
+        let walked: Option<HashSet<CueId>> = tree.has_duplicates().then(|| {
+            let mut present = HashSet::new();
+            for list in &ws.cue_lists {
+                collect_ids(&list.cues, &mut present);
+            }
+            present
+        });
+        if walked.is_some() {
+            self.whole_show_passes = self.whole_show_passes.saturating_add(1);
         }
-        self.random_cycles
-            .retain(|group, _| present.contains(group));
-        self.continued.retain(|group| present.contains(group));
+        let tree = self.problems.tree();
+        let present = |id: &CueId| match &walked {
+            Some(present) => present.contains(id),
+            None => tree.contains(*id),
+        };
+        let is_group = |id: CueId| {
+            let cue = match &walked {
+                Some(_) => ws.find_cue(id),
+                None => tree.locate(ws, id),
+            };
+            cue.is_some_and(|c| matches!(c.kind, CueKind::Group { .. }))
+        };
+        self.random_cycles.retain(|group, _| present(group));
+        self.continued.retain(|group| present(group));
         // Gone, or now a cue of the other sort (group or not) than the one running: a runtime
         // only fits the kind it was started as.
-        let ws = cx.ws;
         let gone: Vec<CueId> = self
             .slots
             .iter()
             .filter(|(id, slot)| {
-                !present.contains(*id)
-                    || matches!(slot, Slot::Active(run) if run.group.is_some()
-                        != ws.find_cue(**id).is_some_and(|c| matches!(c.kind, CueKind::Group { .. })))
+                !present(id)
+                    || matches!(slot, Slot::Active(run) if run.group.is_some() != is_group(**id))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -504,40 +560,138 @@ impl CueEngine {
     }
 
     /// Follows edits to the cue lists. Returns whether any list's cues (or the set of lists)
-    /// differ from the last pass.
+    /// differ from the last pass (as far as a call nothing was signalled for needs to know).
+    ///
+    /// Called once the problems follow the edits, so the engine's cue index is in step with the
+    /// workspace. A playhead that keeps its list's positions (after a full rebuild, or while the
+    /// index has duplicate ids) compares them with the list's positions now, as it always did.
+    /// One that leaves them to the index follows an edit from its footprint (M4.12c): the
+    /// index, before it followed the edit, said what the edit touched around the playhead
+    /// ([`playhead::Followed`]); with nothing added, removed or moved nothing is read at all.
+    /// Both ways place the playhead alike (property-tested against `model_changed`).
     fn sync_playheads(&mut self, cx: &mut Ctx) -> bool {
         let before = self.playheads.len();
         self.playheads
             .retain(|id, _| cx.ws.cue_lists.iter().any(|l| l.id == *id));
         let mut changed = self.playheads.len() != before;
         for list in &cx.ws.cue_lists {
-            match self.playheads.get_mut(&list.id) {
+            let tree = self.problems.tree();
+            let (moved, around) = match self.playheads.get_mut(&list.id) {
                 Some(playhead) => {
-                    let (edited, moved) = playhead.sync(&list.cues);
-                    changed |= edited;
-                    if moved {
-                        cx.out.push(Action::PlayheadChanged {
-                            list: list.id,
-                            cue: playhead.cue,
-                        });
+                    let followed = playhead.followed.take();
+                    if let Some(old) = playhead.take_order() {
+                        self.whole_show_passes = self.whole_show_passes.saturating_add(1);
+                        let (edited, moved) =
+                            playhead.follow(&old, playhead::positions(&list.cues));
+                        changed |= edited;
+                        // An edit can put the playhead into a group without moving it (the cue
+                        // dragged into the group, which can leave the positions' order as it
+                        // was) or move it within one (its cue deleted): look whenever edits
+                        // are followed.
+                        let around = playhead
+                            .cue
+                            .map(|id| playhead::groups_around(&list.cues, id))
+                            .unwrap_or_default();
+                        (moved, Some(around))
+                    } else if let Some(followed) = followed {
+                        changed = true;
+                        let in_list = |id: &CueId| tree.list_of(*id) == Some(list.id);
+                        let cue = match playhead.cue {
+                            Some(id) if in_list(&id) => Some(id),
+                            Some(_) => followed
+                                .maybe
+                                .iter()
+                                .copied()
+                                .find(in_list)
+                                .or(followed.sure.filter(in_list)),
+                            None if followed.was_empty => {
+                                tree.kids(CueContainer::List(list.id)).first().copied()
+                            }
+                            None => None,
+                        };
+                        let moved = playhead.set(cue);
+                        let mut around: Vec<CueId> = cue
+                            .map(|id| tree.ancestors(id).collect())
+                            .unwrap_or_default();
+                        around.reverse();
+                        (moved, Some(around))
+                    } else {
+                        // Nothing added, removed or moved since the playhead last looked: its
+                        // list's positions and the groups around it are as they were.
+                        (false, None)
                     }
-                    // An edit can put the playhead into a group without moving it (the cue
-                    // dragged into the group, which can leave the positions' order as it was)
-                    // or move it within one (its cue deleted): look whenever edits are followed.
-                    self.forget_continues(cx.ws, list.id, None);
                 }
                 None => {
                     changed = true;
-                    let playhead = Playhead::new(&list.cues);
-                    cx.out.push(Action::PlayheadChanged {
-                        list: list.id,
-                        cue: playhead.cue,
-                    });
-                    self.playheads.insert(list.id, playhead);
+                    self.whole_show_passes = self.whole_show_passes.saturating_add(1);
+                    self.playheads.insert(list.id, Playhead::new(&list.cues));
+                    (true, None)
+                }
+            };
+            if moved {
+                cx.out.push(Action::PlayheadChanged {
+                    list: list.id,
+                    cue: self.playhead(list.id),
+                });
+            }
+            if let Some(around) = around {
+                self.enter_groups(list.id, around, None);
+            }
+        }
+        // The index holds every list's positions from here, unless it cannot be trusted with
+        // them (duplicate ids: it counts each id once, the positions do not).
+        let trusted = !self.problems.tree().has_duplicates();
+        for list in &cx.ws.cue_lists {
+            if let Some(playhead) = self.playheads.get_mut(&list.id) {
+                if trusted {
+                    playhead.take_order();
+                } else if !playhead.keeps_order() {
+                    playhead.keep_order(playhead::positions(&list.cues));
                 }
             }
         }
         changed
+    }
+
+    /// Before the cue index follows an edit that added, removed or moved `structural`: each
+    /// playhead that leaves its positions to the index notes what the edit touched around it
+    /// (`sync_playheads` places it once the index has followed).
+    pub(super) fn playheads_before_edit(&mut self, ws: &Workspace, structural: &BTreeSet<CueId>) {
+        let tree = self.problems.tree();
+        for (list, playhead) in &mut self.playheads {
+            // Only one edit is followed between two passes; one already noted stays.
+            if !playhead.keeps_order() && playhead.followed.is_none() {
+                // A playhead cue the edit did not touch but the workspace no longer has was
+                // deleted by an edit nobody signalled (the caller's breach). The footprint
+                // knows nothing of it, so keep the old list order and let the pass compare it
+                // with the list as it stands, as a full rebuild would.
+                let breached = playhead.cue.is_some_and(|c| {
+                    !structural.contains(&c)
+                        && !tree.ancestors(c).any(|g| structural.contains(&g))
+                        && tree.locate(ws, c).is_none()
+                });
+                if breached {
+                    playhead.keep_order(tree.list_order(*list));
+                } else {
+                    playhead.followed =
+                        Some(playhead::followed(tree, *list, playhead.cue, structural));
+                }
+            }
+        }
+    }
+
+    /// Before the cue index is rebuilt: each playhead that leaves its positions to the index and
+    /// noted nothing about an edit keeps them itself, so `sync_playheads` can compare.
+    pub(super) fn keep_playhead_orders(&mut self) {
+        let tree = self.problems.tree();
+        let mut kept = 0u64;
+        for (list, playhead) in &mut self.playheads {
+            if !playhead.keeps_order() && playhead.followed.is_none() {
+                playhead.keep_order(tree.list_order(*list));
+                kept += 1;
+            }
+        }
+        self.whole_show_passes = self.whole_show_passes.saturating_add(kept);
     }
 
     // ----- GO and playheads -----
@@ -547,18 +701,46 @@ impl CueEngine {
         if !cx.ws.cue_lists.iter().any(|l| l.id == list) {
             return ignored(GoIgnoredReason::UnknownList, cx);
         }
-        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
-        // A clock that went backwards (device restart) never blocks GO.
-        if let Some(last) = self.last_go
-            && cx.now >= last
-            && cx.now - last < interval
-        {
+        if self.double_go(cx) {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
         if let Err(reason) = self.go_on(list, cx.now, cx) {
             return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
+    }
+
+    /// Whether a GO now is within `min_go_interval` of the last one. A clock that went backwards
+    /// (device restart) never blocks GO.
+    fn double_go(&self, cx: &Ctx) -> bool {
+        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
+        self.last_go
+            .is_some_and(|last| cx.now >= last && cx.now - last < interval)
+    }
+
+    /// GO from `cue`: only if the playhead can rest there.
+    fn go_from(&mut self, list: CueListId, cue: CueId, cx: &mut Ctx) {
+        let Some(cues) = cx
+            .ws
+            .cue_lists
+            .iter()
+            .find(|l| l.id == list)
+            .map(|l| &l.cues)
+        else {
+            return cx.warn(EngineWarning::UnknownList { list });
+        };
+        if !playhead::positions(cues).contains(&cue) {
+            return cx.warn(EngineWarning::NotInList { list, cue });
+        }
+        // A GO that double-GO protection would refuse leaves the playhead where it was.
+        if self.double_go(cx) {
+            return cx.out.push(Action::GoIgnored {
+                list,
+                reason: GoIgnoredReason::DoubleGo,
+            });
+        }
+        self.move_playhead(list, Some(cue), cx);
+        self.go(list, cx);
     }
 
     fn navigate(&mut self, list: CueListId, cx: &mut Ctx, step: fn(&mut Playhead, &[Cue]) -> bool) {
@@ -650,13 +832,21 @@ impl CueEngine {
         let Some(cues) = ws.cue_lists.iter().find(|l| l.id == list).map(|l| &l.cues) else {
             return;
         };
+        let Some(id) = self.playheads.get(&list).map(|p| p.cue) else {
+            return;
+        };
+        let now = id
+            .map(|id| playhead::groups_around(cues, id))
+            .unwrap_or_default();
+        self.enter_groups(list, now, gone);
+    }
+
+    /// [`Self::forget_continues`] with the groups around the playhead now (`now`, outermost
+    /// first) already found.
+    fn enter_groups(&mut self, list: CueListId, now: Vec<CueId>, gone: Option<CueId>) {
         let Some(playhead) = self.playheads.get_mut(&list) else {
             return;
         };
-        let now = playhead
-            .cue
-            .map(|id| playhead::groups_around(cues, id))
-            .unwrap_or_default();
         let before = std::mem::replace(&mut playhead.around, now);
         for group in &playhead.around {
             if !before.contains(group) && Some(*group) != gone {
