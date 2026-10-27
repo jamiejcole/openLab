@@ -1026,6 +1026,43 @@ fn batch_set_with_one_bad_cue_changes_nothing() {
 }
 
 #[test]
+fn batch_set_rolls_back_cues_already_written_when_a_later_one_is_refused() {
+    let mut ws = sample();
+    // Cues 1 and 3 are written before the missing id refuses the batch; 1 is listed twice.
+    let before = ws.clone();
+    let batch = Command::BatchSet {
+        ids: vec![cue_id(1), cue_id(3), cue_id(1), cue_id(99)],
+        property: CueProperty::Color {
+            value: CueColor::Red,
+        },
+    };
+    let error = refused(&mut ws, batch);
+    assert_eq!(
+        error,
+        CommandError::InTransaction {
+            index: 3,
+            source: Box::new(CommandError::CueNotFound(cue_id(99)))
+        }
+    );
+    assert_eq!(ws, before);
+    assert_eq!(show_text(&ws), show_text(&before));
+}
+
+#[test]
+fn batch_set_with_a_repeated_cue_undoes_to_the_first_value() {
+    let mut ws = sample();
+    let before = ws.clone();
+    let inverse = ws
+        .apply(Command::BatchSet {
+            ids: vec![cue_id(1), cue_id(1)],
+            property: CueProperty::Flagged { value: true },
+        })
+        .unwrap();
+    ws.apply(inverse).unwrap();
+    assert_eq!(ws, before);
+}
+
+#[test]
 fn batch_set_refuses_kind() {
     let mut ws = sample();
     let batch = Command::BatchSet {

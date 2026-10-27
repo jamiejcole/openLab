@@ -21,6 +21,7 @@ mod patches;
 pub mod plan;
 mod preshow;
 pub mod runner;
+mod voice_ids;
 mod voices;
 pub mod watch;
 
@@ -65,6 +66,7 @@ use media::MediaCatalog;
 use netout::{NetOut, SendOutcome};
 use observe::Observe;
 use patches::Patches;
+use voice_ids::VoiceIds;
 use voices::{Effects, Env, Voices};
 use watch::{MediaWatch, WatchAnswer, WatchBatch, WatchEvent};
 
@@ -255,6 +257,8 @@ pub struct Control {
     /// Watch batches taken from the inbox, handled at the next tick.
     watch_batches: Vec<WatchBatch>,
     voices: Voices,
+    /// Mixer voice ids: engine-wide, never reused (shared by every workspace with M4.15).
+    voice_ids: VoiceIds,
     checks: PlanChecks,
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
@@ -385,6 +389,7 @@ impl Control {
             watch,
             watch_batches: Vec::new(),
             voices: Voices::new(),
+            voice_ids: VoiceIds::new(),
             checks: PlanChecks::default(),
             patches,
             playable,
@@ -507,6 +512,7 @@ impl Control {
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.rate);
         self.voices.expire_held(now, hold, &mut fx);
         self.follow(fx, now);
+        self.reclaim_slots(now);
         let stuck = self.media.watchdog();
         if !stuck.is_empty() {
             self.log(
@@ -563,6 +569,17 @@ impl Control {
         self.health();
         self.observe_tick();
         self.mixer.pump();
+    }
+
+    /// A retired patch slot whose last voice has left is freed (zeroed), and a patch waiting
+    /// for a slot gets it (docs/control.md "Patch slots").
+    fn reclaim_slots(&mut self, now: SampleTime) {
+        if !self.patches.has_retired() || !self.patches.reclaimable(&self.voices.slots_in_use()) {
+            return;
+        }
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
     }
 
     /// How long the loop may wait for the inbox before it must tick again: until the next
@@ -633,10 +650,6 @@ impl Control {
                     );
                     return Flow::Continue;
                 }
-                if let Some(e) = self.patch_layout_conflict(Some(&command), false) {
-                    reply(to, refused(id, &e));
-                    return Flow::Continue;
-                }
                 let footprint = command.footprint();
                 match self
                     .history
@@ -664,15 +677,6 @@ impl Control {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
-                let step = if undo {
-                    self.history.peek_undo()
-                } else {
-                    self.history.peek_redo()
-                };
-                if let Some(e) = self.patch_layout_conflict(step, true) {
-                    reply(to, refused(id, &e));
-                    return Flow::Continue;
-                }
                 let result = if undo {
                     self.history.undo(&mut self.ws)
                 } else {
@@ -764,33 +768,6 @@ impl Control {
             ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
         }
         Flow::Continue
-    }
-
-    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting before the
-    /// end, removing, moving or resizing a patch would re-route or silence a voice on the
-    /// device, whatever cue it belongs to (a show cue, a preview, a stopping tail, an orphan)
-    /// and whatever patch that cue's model names now. So any such edit, undo or redo
-    /// (`Command::changes_patch_layout`, judged on the final state of a transaction) is refused
-    /// while any voice is on the device. Lifted by the stable slot allocator.
-    fn patch_layout_conflict(
-        &self,
-        step: Option<&Command>,
-        restoring: bool,
-    ) -> Option<CommandError> {
-        let step = step?;
-        if self.voices.on_device().is_empty() || !step.changes_patch_layout(&self.ws) {
-            return None;
-        }
-        // A step that would be refused anyway (a patch a cue uses, a bad value) gets that
-        // reason, not this one. The dry run clones the workspace, but only for a patch layout
-        // edit while audio plays.
-        let mut dry = self.ws.clone();
-        let applied = if restoring {
-            dry.apply_restoring(step.clone())
-        } else {
-            dry.apply(step.clone())
-        };
-        applied.is_ok().then_some(CommandError::PatchPlaying)
     }
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
@@ -896,18 +873,19 @@ impl Control {
         inputs
     }
 
-    /// Resolves the patches against the playable devices and brings the mixer's matrices,
-    /// output delays and master level up to date. Returns the `Availability` for the patches
-    /// whose resolution changed (`all`: every patch).
+    /// Resolves the patches against the playable devices and brings the mixer's matrices (with
+    /// the workspace master folded in) and output delays up to date. Returns the
+    /// `Availability` for the patches whose resolution changed (`all`: every patch).
     fn sync_patches(&mut self, all: bool) -> Vec<Input> {
         self.map_unmapped_patches();
-        let (cmds, changed) = self
-            .patches
-            .sync(&self.ws, &self.config.machine, &self.playable);
+        let busy = self.voices.slots_in_use();
+        let (cmds, changed) =
+            self.patches
+                .sync(&self.ws, &self.config.machine, &self.playable, &busy);
         let now = self.now();
-        for cmd in cmds {
-            self.mixer.send(now, cmd);
-        }
+        // One batch (split only past the queue's size), so a master move changes every patch
+        // on the same sample.
+        self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
         self.warnings_dirty = true;
         let patches = if all {
             self.patches.resolutions()
@@ -1256,6 +1234,7 @@ impl Control {
                 media: &self.media,
                 streamer: &mut self.streamer,
                 patches: &self.patches,
+                ids: &mut self.voice_ids,
                 rate: self.rate,
                 cue_outputs: self.cue_outputs,
                 now,
@@ -1319,6 +1298,7 @@ impl Control {
                 media: &self.media,
                 streamer: &mut self.streamer,
                 patches: &self.patches,
+                ids: &mut self.voice_ids,
                 rate: self.rate,
                 cue_outputs: self.cue_outputs,
                 now,
@@ -1565,6 +1545,7 @@ impl Control {
             media: &self.media,
             streamer: &mut self.streamer,
             patches: &self.patches,
+            ids: &mut self.voice_ids,
             rate: self.rate,
             cue_outputs: self.cue_outputs,
             now,
@@ -1809,8 +1790,8 @@ impl Control {
     }
 
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
-    /// more device channels than the device has (`outputs_dropped`), device outputs that
-    /// patches give different delays.
+    /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
+    /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
     fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         if let Some(d) = self.backend.device() {
             let name = &d.info().name;
@@ -1872,6 +1853,22 @@ impl Control {
                     None,
                 ));
             }
+        }
+        for &id in self.patches.exhausted() {
+            let name = self
+                .ws
+                .patches
+                .iter()
+                .find(|p| p.id == id)
+                .map_or("", |p| p.name.as_str());
+            list.push(notice(
+                "mixer_patches_exhausted",
+                format!(
+                    "patch \"{name}\" cannot play: all {} mixer patches are in use",
+                    self.patches.capacity()
+                ),
+                None,
+            ));
         }
         for output in self.patches.delay_conflicts() {
             list.push(notice(
