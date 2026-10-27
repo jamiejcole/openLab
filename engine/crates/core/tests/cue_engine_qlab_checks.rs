@@ -512,3 +512,187 @@ fn k1_two_cues_with_the_same_hotkey_both_start_with_no_warning() {
     assert_eq!(rig.state(1), CueState::Running);
     assert_eq!(rig.state(30), CueState::Running);
 }
+
+// ----- fix round 1 (review of M2.24) -----
+
+#[test]
+fn h1_go_on_a_playlist_child_stands_on_the_cue_after_the_group_without_losing_its_continue() {
+    // The group never runs, so its auto-follow (2) never fires: the playhead stands on 2.
+    let p = timed(
+        grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2), memo(3)]);
+    rig.set_playhead(10);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    assert_eq!(starts(&rig.tick(1000)), vec![(id(11), 1000)]);
+    assert!(starts(&rig.tick(2000)).is_empty());
+    assert_eq!(starts(&rig.go(2100)), vec![(id(2), 2100)]);
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+#[test]
+fn h1_leaving_a_start_first_group_that_never_ran_stands_on_its_continue_target() {
+    let g = timed(
+        grp(
+            1,
+            GroupMode::StartFirstAndGoToNext,
+            vec![memo(10), wait(11, 1.0)],
+        ),
+        0.0,
+        0.0,
+        AC,
+    );
+    let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+    rig.set_playhead(11);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    // A group that ran and fired its continue: its target has played, so it is skipped.
+    let g = timed(
+        grp(1, GroupMode::StartFirstAndEnter, vec![memo(10), memo(11)]),
+        0.0,
+        0.0,
+        AC,
+    );
+    let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+    let go = rig.go(0);
+    assert!(starts(&go).contains(&(id(2), 0)));
+    assert_eq!(rig.playhead(), Some(id(11)));
+    rig.go(100);
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+/// A slice marker as `(time, play count)`.
+type Mark = (f64, u32);
+
+fn audio_of(ws: &Workspace) -> (Option<f64>, Vec<(f64, u32)>, u32) {
+    match &ws.cue_lists[0].cues[0].kind {
+        CueKind::Audio {
+            end_time,
+            slices,
+            last_slice_play_count,
+            ..
+        } => (
+            *end_time,
+            slices.iter().map(|s| (s.time, s.play_count)).collect(),
+            *last_slice_play_count,
+        ),
+        _ => panic!("not audio"),
+    }
+}
+
+#[test]
+fn m1_d6_repair_keeps_a_short_trim_and_the_loops_it_merges() {
+    // A 40 ms trim is moved to the 51 ms floor, not cleared (which would play the whole file).
+    let mut trim = sliced(1.0, 1.04, &[]);
+    let mut ws = workspace(vec![cue(1, trim.clone())]);
+    let issues = repair(&mut ws);
+    assert_eq!(audio_of(&ws).0, Some(1.0 + MIN_SLICE_SECONDS));
+    assert!(
+        issues
+            .iter()
+            .any(|i| matches!(i.kind, IssueKind::EndTimeTooShort { .. }))
+    );
+    let text = save_show(&ws).unwrap();
+    assert_eq!(load_show(&text).unwrap().workspace, ws);
+    assert!(validate(&ws).is_empty());
+    // Not after the start at all: cleared, as before.
+    if let CueKind::Audio { end_time, .. } = &mut trim {
+        *end_time = Some(0.5);
+    }
+    let mut ws = workspace(vec![cue(1, trim)]);
+    assert!(
+        repair(&mut ws)
+            .iter()
+            .any(|i| i.kind == IssueKind::InvalidEndTime)
+    );
+    assert_eq!(audio_of(&ws).0, None);
+
+    // A short vamp merged into the next slice keeps the vamp; a loop keeps the larger count.
+    // (marks, markers kept, last slice's play count)
+    let cases: [(&[Mark], Vec<Mark>, u32); 3] = [
+        (&[(1.0, 1), (1.03, 0)], vec![(1.0, 1)], 0),
+        (
+            &[(0.5, 1), (0.52, 3), (1.0, 1)],
+            vec![(0.5, 1), (1.0, 3)],
+            1,
+        ),
+        // Too close to the end: the last slice joins the vamp before it.
+        (&[(1.0, 1), (1.98, 0)], vec![(1.0, 1)], 0),
+    ];
+    for (marks, kept, last) in cases {
+        let mut ws = workspace(vec![cue(1, sliced(0.0, 2.0, marks))]);
+        let issues = repair(&mut ws);
+        assert!(
+            issues
+                .iter()
+                .all(|i| matches!(i.kind, IssueKind::SliceTooShort { .. })),
+            "{issues:?}"
+        );
+        assert_eq!(audio_of(&ws), (Some(2.0), kept, last), "{marks:?}");
+        // The repaired show saves and loads back unchanged, with nothing left to repair.
+        let text = save_show(&ws).unwrap();
+        assert_eq!(load_show(&text).unwrap().workspace, ws);
+        assert!(validate(&ws).is_empty());
+    }
+}
+
+fn failed_before_playing(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    let run = rig.engine.run_of(id(n)).unwrap();
+    rig.at(
+        now,
+        Input::StartFailed {
+            cue: id(n),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    )
+}
+
+#[test]
+fn m2_an_auto_follow_cue_whose_stream_fails_before_playing_starts_the_next_cue() {
+    // Its file went away after the probe: found only when its stream opens (QLab check P5).
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), wait(2, 1.0), memo(3)]);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    let failed = failed_before_playing(&mut rig, 50, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Broken, 50)]);
+    assert_eq!(starts(&failed), vec![(id(2), 50)]);
+    assert_eq!(
+        rig.engine.broken_reason(id(1)),
+        Some(BrokenReason::StreamFailed)
+    );
+
+    // A failure after it has played still cancels its auto-follow (rule 2).
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), wait(2, 1.0), memo(3)]);
+    rig.go(0);
+    let run = rig.engine.run_of(id(1)).unwrap();
+    let failed = rig.at(
+        500,
+        Input::ActionFailed {
+            cue: id(1),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    assert!(starts(&failed).is_empty());
+}
+
+#[test]
+fn m2_a_playlist_skips_a_child_whose_stream_fails_before_playing_and_still_auto_follows() {
+    let p = timed(
+        grp(1, playlist(), vec![sound(10), wait(11, 0.5)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    rig.go(0);
+    let failed = failed_before_playing(&mut rig, 50, 10);
+    assert_eq!(starts(&failed), vec![(id(11), 50)]);
+    let end = rig.tick(550);
+    assert_eq!(starts(&end), vec![(id(2), 550)]);
+}

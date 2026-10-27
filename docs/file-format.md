@@ -87,11 +87,12 @@ cue, and the cue shows as broken where it cannot run.
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
-| An Audio cue's `end_time` less than 51 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` cleared (play to end) |
+| An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
+| An Audio cue's `end_time` less than 51 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 51 ms (QLab 5's shortest trim) |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
-| A slice marker less than 51 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; removed: every slice, and so every loop, is at least 51 ms long, as QLab 5's editor allows (M2.24). Without an `end_time` the file's length is not in the show, so the last slice meets only the audio engine's 10 ms loop floor (`MIN_LOOP_MS`) when the voice is planned |
+| A slice marker less than 51 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; removed: every slice, and so every loop, is at least 51 ms long, as QLab 5's editor allows (M2.24). The two slices it separated become one, whose play count is a vamp (`0`) if either was, else the larger count, so a loop (and a Devamp cue aimed at it) survives the repair. Without an `end_time` the file's length is not in the show, so the last slice meets only the audio engine's 10 ms loop floor (`MIN_LOOP_MS`) when the voice is planned |
 | A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
 | A patch output delay outside 0–1000 ms | Warning; clamped |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |

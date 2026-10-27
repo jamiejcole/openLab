@@ -171,7 +171,12 @@ impl CueEngine {
         self.start(cue.id, at, cx);
         // The playhead skips the rest of the cue's continue chain, as the model stands now, or
         // enters a "start first and enter" group.
-        let next = playhead::after_go(&path, |c| self.is_armed(c), |c| self.has_problems(c.id));
+        let next = playhead::after_go(
+            &path,
+            |c| self.is_armed(c),
+            |c| self.has_problems(c.id),
+            |c| self.busy(c.id) || self.continued.contains(&c.id),
+        );
         self.move_playhead(list, next, cx);
         Ok(())
     }

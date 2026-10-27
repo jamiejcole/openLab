@@ -108,6 +108,9 @@ pub(super) struct Run {
     /// keeps its schedule (QLab 5). Once nothing is pending the slot is removed (the problems,
     /// not the run, make it report `broken` then).
     pub static_broken: bool,
+    /// Broke (`broken`) before its voice produced any audio (`Input::StartFailed`): skipped,
+    /// as a cue with static problems is, so it still follows and its group is not failed.
+    pub unplayed: bool,
     /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
     /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
     pub panicked: bool,
@@ -227,6 +230,7 @@ impl Run {
             committed: 0,
             broken: None,
             static_broken: false,
+            unplayed: false,
             panicked: false,
             started: 0,
             group,

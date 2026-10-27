@@ -162,6 +162,16 @@ pub enum Input {
         run: RunId,
         reason: BrokenReason,
     },
+    /// Feedback: the run's voice or stream failed before it produced any audio (the stream
+    /// could not be opened or primed, its file was gone, the mixer refused the voice's first
+    /// start). As `ActionFailed`, but the cue was only skipped, like a cue with static problems
+    /// (QLab 5, checks P5/G2): its auto-follow still fires and its group still auto-follows.
+    /// A failure after the voice has played audio is `ActionFailed`.
+    StartFailed {
+        cue: CueId,
+        run: RunId,
+        reason: BrokenReason,
+    },
     /// From the binary, when it starts (or devamps) a voice whose end it knows in advance: the
     /// run's action is `frames` samples long, counted from the action's start (a load-to-time
     /// offset included), so it ends when the voice's position reaches `frames`. The engine

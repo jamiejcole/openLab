@@ -180,11 +180,16 @@ pub(super) fn locate(cues: &[Cue], id: CueId) -> Option<Vec<(&[Cue], usize)>> {
 /// - an armed (as `armed` says) "start first and enter" group with children: into the group, to
 ///   the cue after its first child's continue chain;
 /// - a child of a playlist group: out of the group (QLab 5: GO on a child of a stopped playlist
-///   plays on through the rest of its children), to the cue after the group's continue chain;
+///   plays on through the rest of its children);
 /// - otherwise the cue after the cue's continue chain among its siblings (inside timeline groups
 ///   the children's continue modes are ignored, so the next sibling); past the last sibling, out
-///   of the group, to the cue after the group's own continue chain (and so on up); past the end
-///   of the list, `None`. A disarmed group is skipped as a unit like any disarmed cue.
+///   of the group (and so on up); past the end of the list, `None`. A disarmed group is skipped
+///   as a unit like any disarmed cue.
+///
+/// Leaving a group, the playhead goes to the cue after the group's own continue chain only if
+/// the group's continue fires or has fired (`continues`: it has a run, or its last run fired
+/// its continue); a group with no run fires none, so the playhead stands on the cue right
+/// after it and its continue targets are not lost.
 ///
 /// `broken` says which cues have static problems: a broken Devamp cue starts no next cue (its
 /// own continue mode applies instead). A broken cue's auto-continue and auto-follow both still
@@ -193,6 +198,7 @@ pub(super) fn after_go(
     path: &[(&[Cue], usize)],
     armed: impl Fn(&Cue) -> bool,
     broken: impl Fn(&Cue) -> bool,
+    continues: impl Fn(&Cue) -> bool,
 ) -> Option<CueId> {
     let &(level, index) = path.last()?;
     if let Some(
@@ -221,7 +227,10 @@ pub(super) fn after_go(
                 _ => None,
             },
         };
+        // Above the GOed cue's own level, `index` is a group the playhead is leaving.
+        let leaving = depth.saturating_add(1) < path.len();
         let last = match mode {
+            _ if leaving && level.get(index).is_some_and(|g| !continues(g)) => index,
             // The rest of a playlist plays on from a child GOed on its own.
             Some(GroupMode::Playlist { .. }) => level.len().saturating_sub(1),
             Some(GroupMode::Timeline) => index,
