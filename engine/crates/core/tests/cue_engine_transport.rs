@@ -1083,6 +1083,40 @@ fn a_second_panic_on_a_cue_fading_out_stops_it_at_once_and_leaves_the_rest() {
 }
 
 #[test]
+fn a_first_panic_on_a_group_with_only_some_children_fading_fades_the_rest() {
+    // Panic Selected on A, then on its group: B has not been panicked, so it fades (no click).
+    let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.at(100, Input::PanicCue { cue: id(2) });
+    let group = rig.at(300, Input::PanicCue { cue: id(1) });
+    assert_eq!(voice_stops(&group), vec![(id(3), 300, panic_fade(800))]);
+    assert_eq!(rig.state(3), CueState::Stopping);
+    // A press on the group now finds every child fading: a second press.
+    let second = rig.at(400, Input::PanicCue { cue: id(1) });
+    assert_eq!(
+        voice_stops(&second),
+        vec![(id(2), 400, None), (id(3), 400, None)]
+    );
+}
+
+#[test]
+fn a_panic_cue_on_a_cue_fading_in_a_workspace_panic_stops_it_at_once() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    rig.panic(100);
+    let one = rig.at(300, Input::PanicCue { cue: id(1) });
+    assert_eq!(voice_stops(&one), vec![(id(1), 300, None)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(
+        rig.state(2),
+        CueState::Stopping,
+        "the workspace panic goes on"
+    );
+    assert_eq!(rig.engine.panic_end(), Some(1100));
+}
+
+#[test]
 fn a_cues_own_panic_with_no_panic_duration_stops_it_at_once() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     rig.ws.settings.panic_duration = 0.0;
