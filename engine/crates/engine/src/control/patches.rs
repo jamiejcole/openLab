@@ -23,24 +23,27 @@ use std::num::NonZeroU32;
 
 use openlab_audio::{CommandKind, MAX_PATCHES, OutputSettings};
 use openlab_core::{
-    DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchResolution, Workspace, db_to_gain,
-    resolve_patch,
+    DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchOutput, PatchResolution, Workspace,
+    db_to_gain, resolve_patch,
 };
 
-/// What a mixer slot was given to: a patch, at the output count it had then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a retired mixer slot was given to: a patch, at the output count it had then, and the
+/// device channels its outputs were mapped to (empty if it was not mapped).
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Holder {
     patch: PatchId,
     outputs: usize,
+    channels: Vec<u32>,
 }
 
 pub struct Patches {
     /// The mixer slot of each workspace patch that has one (and the output count it was laid
     /// out for), stable while the patch exists.
     slots: HashMap<PatchId, (u16, usize)>,
-    /// Slots a voice may still play through whose patch is gone or was resized: their routing
-    /// stays as it was (under the workspace master, which still applies) until no voice uses
-    /// them.
+    /// Slots a voice may still play through whose patch is gone or was resized, until no voice
+    /// uses them. A removed patch's slot keeps its routing; a resized one keeps its layout but
+    /// follows the patch's settings ([`Self::retired_base`]). Both stay under the workspace
+    /// master.
     retired: BTreeMap<u16, Holder>,
     /// Free slots, the least recently freed first (a slot is reused as late as possible).
     free: VecDeque<u16>,
@@ -126,14 +129,51 @@ impl Patches {
             seen.insert(patch.id, resolution);
         }
         self.resolutions = seen;
-        let retired: Vec<u16> = self.retired.keys().copied().collect();
-        for slot in retired {
-            if let Some(base) = self.bases.get(usize::from(slot)).cloned() {
+        let retired: Vec<(u16, Holder)> =
+            self.retired.iter().map(|(&s, h)| (s, h.clone())).collect();
+        for (slot, holder) in retired {
+            let base = match ws.patches.iter().find(|p| p.id == holder.patch) {
+                Some(patch) => self.retired_base(slot, &holder, patch),
+                None => self.bases.get(usize::from(slot)).cloned(),
+            };
+            if let Some(base) = base {
                 self.apply(slot, base, ws_master, &mut commands);
             }
         }
         self.sync_delays(ws, &mut commands);
         (commands, changed)
+    }
+
+    /// The matrix of a slot retired by a resize while its patch still exists: the layout the
+    /// playing voices started with (their first `min(old, new)` outputs) follows the patch's
+    /// current master, levels, mutes, polarity and, when it is mapped, its device channels (else
+    /// the channels it had when it was retired). Outputs the patch no longer has keep their last
+    /// gains: nothing controls them any more, and cutting them would change what is playing.
+    fn retired_base(&self, slot: u16, holder: &Holder, patch: &OutputPatch) -> Option<Vec<f32>> {
+        let n = self.device_outputs;
+        let mut m = self.bases.get(usize::from(slot))?.clone();
+        let channels: &[u32] = match self.resolutions.get(&patch.id) {
+            Some(PatchResolution::Mapped { channels, .. }) => channels,
+            _ => &holder.channels,
+        };
+        let master = db_to_gain(patch.master_db);
+        let rows = holder.outputs.min(patch.outputs.len()).min(n);
+        for o in 0..rows {
+            if let Some(row) = m.get_mut(o * n..(o + 1) * n) {
+                row.fill(0.0);
+            }
+            let (Some(out), Some(&ch)) = (patch.outputs.get(o), channels.get(o)) else {
+                continue;
+            };
+            let Ok(d) = usize::try_from(ch) else { continue };
+            if d >= n {
+                continue;
+            }
+            if let Some(g) = m.get_mut(o * n + d) {
+                *g = output_gain(master, out);
+            }
+        }
+        Some(m)
     }
 
     /// Sends slot `slot` the gains `base` × the workspace master (exactly `base` at 0 dB).
@@ -161,6 +201,10 @@ impl Patches {
                     Holder {
                         patch,
                         outputs: *outputs,
+                        channels: match self.resolutions.get(&patch) {
+                            Some(PatchResolution::Mapped { channels, .. }) => channels.clone(),
+                            _ => Vec::new(),
+                        },
                     },
                 )),
             }
@@ -172,13 +216,15 @@ impl Patches {
         // A retired slot goes back to its patch when that has the same id and size again (an
         // undo) and no slot; else it is zeroed and freed once no voice uses it.
         let zero = vec![0.0; self.device_outputs * self.device_outputs];
-        let retired: Vec<(u16, Holder)> = self.retired.iter().map(|(&s, &h)| (s, h)).collect();
-        for (slot, holder) in retired {
-            if live.get(&holder.patch) == Some(&holder.outputs)
-                && !self.slots.contains_key(&holder.patch)
-            {
+        let retired: Vec<(u16, PatchId, usize)> = self
+            .retired
+            .iter()
+            .map(|(&s, h)| (s, h.patch, h.outputs))
+            .collect();
+        for (slot, patch, outputs) in retired {
+            if live.get(&patch) == Some(&outputs) && !self.slots.contains_key(&patch) {
                 self.retired.remove(&slot);
-                self.slots.insert(holder.patch, (slot, holder.outputs));
+                self.slots.insert(patch, (slot, outputs));
             } else if !busy.contains(&slot) {
                 self.retired.remove(&slot);
                 if let Some(b) = self.bases.get_mut(usize::from(slot)) {
@@ -324,16 +370,8 @@ impl Patches {
             if o >= n || d >= n {
                 continue;
             }
-            let mut g = if out.mute {
-                0.0
-            } else {
-                master * db_to_gain(out.level_db)
-            };
-            if out.polarity_inverted {
-                g = -g;
-            }
             if let Some(slot) = m.get_mut(o * n + d) {
-                *slot = g;
+                *slot = output_gain(master, out);
             }
         }
         m
@@ -389,6 +427,16 @@ impl Patches {
             _ => None,
         }
     }
+}
+
+/// One patch output's gain: patch master × level (muted: 0; polarity: negative).
+fn output_gain(master: f32, out: &PatchOutput) -> f32 {
+    let g = if out.mute {
+        0.0
+    } else {
+        master * db_to_gain(out.level_db)
+    };
+    if out.polarity_inverted { -g } else { g }
 }
 
 /// A delay in ms (the show file allows 0–1000) in frames, rounded; the mixer caps it at 1 s.
@@ -795,6 +843,40 @@ mod tests {
         p.sync(&ws, &s3, &device(4), &idle());
         assert_eq!(slot(&p, 10), Some(1));
         assert!(!p.has_retired());
+    }
+
+    #[test]
+    fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() {
+        let map = |ws: &Workspace, channels: Vec<u32>| {
+            let mut s = MachineSettings::default();
+            s.set_patch_mapping(
+                ws.id,
+                id(10),
+                PatchMapping {
+                    device: "Dev".into(),
+                    channels,
+                },
+            )
+            .unwrap();
+            s
+        };
+        let mut p = Patches::new(3, 4, rate());
+        let mut ws = ws_of(&[10]);
+        ws.patches[0].outputs.push(out(-6.0, false, false));
+        p.sync(&ws, &map(&ws, vec![1, 2]), &device(4), &idle());
+        let lost_row = p.sent[0][4..8].to_vec();
+        assert_eq!(lost_row, vec![0.0, 0.0, db_to_gain(-6.0), 0.0]);
+        // One output now, remapped to device output 3, while a voice plays on slot 0.
+        ws.patches[0].outputs.pop();
+        p.sync(&ws, &map(&ws, vec![3]), &device(4), &busy(&[0]));
+        assert_eq!(slot(&p, 10), Some(1));
+        // Output 1 follows the new mapping; output 2, gone from the patch, keeps its gain.
+        assert_eq!(&p.sent[0][0..4], &[0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(&p.sent[0][4..8], lost_row.as_slice());
+        // A mapping that no longer fits: the channels it had when it was retired.
+        p.sync(&ws, &map(&ws, vec![3, 0]), &device(4), &busy(&[0]));
+        assert_eq!(&p.sent[0][0..4], &[0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(&p.sent[0][4..8], lost_row.as_slice());
     }
 
     #[test]
