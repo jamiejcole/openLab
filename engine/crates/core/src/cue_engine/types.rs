@@ -162,6 +162,16 @@ pub enum Input {
         run: RunId,
         reason: BrokenReason,
     },
+    /// Feedback: the run's voice or stream failed before it produced any audio (the stream
+    /// could not be opened or primed, its file was gone, the mixer refused the voice's first
+    /// start). As `ActionFailed`, but the cue was only skipped, like a cue with static problems
+    /// (QLab 5, checks P5/G2): its auto-follow still fires and its group still auto-follows.
+    /// A failure after the voice has played audio is `ActionFailed`.
+    StartFailed {
+        cue: CueId,
+        run: RunId,
+        reason: BrokenReason,
+    },
     /// From the binary, when it starts (or devamps) a voice whose end it knows in advance: the
     /// run's action is `frames` samples long, counted from the action's start (a load-to-time
     /// offset included), so it ends when the voice's position reaches `frames`. The engine
@@ -506,8 +516,10 @@ pub enum Action {
         problems: Vec<CueProblem>,
     },
     /// A group gained or lost a descendant (any depth) shown with static problems: `warning`
-    /// is the new `CueEngine::has_broken_descendant`. The group itself is not broken (QLab 5
-    /// shows a warning on it). Also sent, with `false`, once for a deleted group that had one.
+    /// is the new `CueEngine::has_broken_descendant`. It is why the group shows as broken (QLab 5;
+    /// a group with no runtime reports the state `broken` meanwhile) although it has no problems
+    /// of its own and still starts. Also sent, with `false`, once for a deleted group that had
+    /// one.
     GroupWarningChanged {
         group: CueId,
         warning: bool,
@@ -565,7 +577,7 @@ pub enum EngineWarning {
     /// Start/GO/continue on a cue that is already active (pre-waiting, running, post-waiting,
     /// fading or stopping) did nothing; `state` is the state it was in. Its second-trigger option
     /// is `nothing`, or it is `play_next`/`play_previous` and the playlist was not playing a
-    /// child it could move on from (not in its action, stopping, adopted or devamped).
+    /// child it could move on from (not in its action, stopping or devamped).
     TriggerIgnored {
         cue: CueId,
         state: CueState,

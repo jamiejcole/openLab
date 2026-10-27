@@ -399,7 +399,7 @@ fn start_cue_on_a_broken_target_warns() {
 #[test]
 fn control_cue_with_a_missing_target_is_broken_and_keeps_its_auto_continue() {
     // M2.8: a missing or unset target makes the cue broken before it runs. GO does not start
-    // it, but its auto-continue keeps its timing; it never auto-follows.
+    // it, but its continue keeps its timing (an auto-follow too since M2.24, QLab check P5).
     let mut rig = Rig::new(vec![
         timed(start_cue(1, 99), 0.0, 0.5, AC),
         timed(cue(2, CueKind::Start { target: None }), 0.0, 0.0, AF),
@@ -414,13 +414,13 @@ fn control_cue_with_a_missing_target_is_broken_and_keeps_its_auto_continue() {
     assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
     assert!(starts(&go).is_empty());
     let tick = rig.tick(500);
-    // Cue 1's continue starts cue 2 (broken: no start, and no follow to cue 3).
+    // Cue 1's continue starts cue 2 (broken: no start, but it is skipped and its auto-follow
+    // starts cue 3, as in QLab: M2.24, check P5).
     assert_eq!(
         warnings(&tick),
         vec![EngineWarning::CueBroken { cue: id(2) }]
     );
-    assert!(starts(&tick).is_empty());
-    assert_eq!(rig.state(3), CueState::Idle);
+    assert_eq!(starts(&tick), vec![(id(3), 500)]);
     assert_eq!(rig.state(1), CueState::Broken);
     assert!(rig.engine.next_deadline().is_none());
 }
@@ -449,16 +449,19 @@ fn start_cue_on_a_group_starts_it_in_its_mode() {
 }
 
 #[test]
-fn start_cue_on_a_child_runs_its_group_adopted() {
+fn start_cue_on_a_child_starts_only_that_child() {
+    // M2.24 (QLab check G4): the group does not run.
     let mut rig = Rig::new(vec![
         start_cue(1, 3),
         grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
     ]);
     let go = rig.go(0);
     assert_eq!(voice_starts(&go), vec![(id(3), 0)]);
-    assert_eq!(rig.state(2), CueState::Running);
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(3), CueState::Running);
     rig.ended(100, 3, 50);
     assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(4), CueState::Idle);
 }
 
 // ----- Stop (CT-12) -----
@@ -918,9 +921,9 @@ fn goto_into_a_group_stands_on_the_child() {
     ]);
     let go = rig.go(0);
     assert_eq!(voice_starts(&go), vec![(id(4), 0)]);
-    // The group runs adopted; the playhead goes to the next sibling (timeline children do
-    // not chain).
-    assert_eq!(rig.state(2), CueState::Running);
+    // The group does not run (M2.24, QLab check G4); the playhead goes to the next sibling
+    // (timeline children do not chain).
+    assert_eq!(rig.state(2), CueState::Idle);
     assert_eq!(rig.playhead(), Some(id(5)));
     // Without GO it just stands on the child.
     let mut rig = Rig::new(vec![
@@ -1518,11 +1521,12 @@ fn a_devamped_target_stopped_while_paused_starts_nothing() {
 }
 
 #[test]
-fn go_on_a_devamp_with_start_next_skips_the_cue_it_will_start() {
-    // Review M3: the Devamp cue counts as auto-continuing into its next cue.
+fn go_on_a_devamp_with_start_next_stands_on_the_cue_it_will_start() {
+    // M2.24 (QLab check D5, superseding review M3): the playhead stands on the cue the Devamp
+    // cue will start when the loop is left.
     let mut rig = devamp_rig(true, false, 0);
     rig.go(100);
-    assert_eq!(rig.playhead(), Some(id(4)));
+    assert_eq!(rig.playhead(), Some(id(3)));
     // Without "start next cue" the next cue stands by as usual.
     let mut rig = devamp_rig(false, false, 0);
     rig.go(100);
