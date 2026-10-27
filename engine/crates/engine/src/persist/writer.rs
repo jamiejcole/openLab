@@ -6,9 +6,20 @@
 //! The queue is bounded by coalescing, because the disk may be slow or hung (network share,
 //! sleeping USB drive) while autosave keeps firing:
 //! - at most one pending manual save per target file; a newer one replaces it;
-//! - at most one pending autosave; a newer one replaces it;
-//! - manual saves run before a pending autosave, and an autosave whose revision is not newer
-//!   than the last durably saved one is dropped (no recovery file for already-saved state).
+//! - at most one pending autosave per recovery target (workspace id plus show path, which is
+//!   what names the recovery file); a newer one replaces only its own target's, so several
+//!   open workspaces never displace each other's autosaves;
+//! - at most [`MAX_PENDING_TARGETS`] targets wait in the normal queue. A new target beyond that
+//!   pushes the oldest waiting autosave into a write-through queue that runs before the rest,
+//!   so the cap itself never costs an autosave. That queue still coalesces per target, and is
+//!   capped at [`MAX_FORCED_TARGETS`]: during a long disk hang closed workspaces and Save As
+//!   paths add targets beyond the open ones (8 by WS-02), and when it is full the oldest
+//!   forced autosave is shed (answered `Ok(None)`, counted by
+//!   [`SaveWriter::shed_autosaves`]). That is safe: an autosave is a recovery convenience and
+//!   the next autosave of a still-open workspace replaces it anyway;
+//! - manual saves run before pending autosaves, and an autosave whose revision is not newer
+//!   than the last durably saved one of its workspace is dropped (no recovery file for
+//!   already-saved state).
 //!
 //! Dropping the writer finishes the running job and any pending manual saves and discards
 //! pending autosaves, so shutdown never waits behind a backlog.
@@ -45,6 +56,11 @@ struct SaveJob {
     reply: SaveReply,
 }
 
+/// Hard cap on targets waiting in the normal autosave queue; see the module docs.
+pub const MAX_PENDING_TARGETS: usize = 16;
+/// Hard cap on the write-through queue; see the module docs.
+pub const MAX_FORCED_TARGETS: usize = 32;
+
 struct AutosaveJob {
     workspace: Box<Workspace>,
     show_path: Option<PathBuf>,
@@ -60,13 +76,25 @@ struct ClearJob {
 
 type ClearReply = Sender<Result<(), PersistError>>;
 
+impl AutosaveJob {
+    fn targets(&self, workspace: WorkspaceId, show_path: &Option<PathBuf>) -> bool {
+        self.workspace.id == workspace && self.show_path == *show_path
+    }
+}
+
 #[derive(Default)]
 struct State {
     saves: VecDeque<SaveJob>,
     clears: VecDeque<ClearJob>,
-    autosave: Option<AutosaveJob>,
-    /// Newest revision of a workspace that a manual save has made durable.
-    saved: Option<(WorkspaceId, u64)>,
+    /// Pending autosaves, at most one per target, oldest first.
+    autosaves: VecDeque<AutosaveJob>,
+    /// Autosaves pushed out of `autosaves` by the cap; written before it, at most one per target.
+    forced: VecDeque<AutosaveJob>,
+    /// Autosaves shed because `forced` was full.
+    shed: u64,
+    /// Newest revision per workspace that a manual save has made durable (the most recent
+    /// [`MAX_PENDING_TARGETS`] workspaces; an evicted one only risks one redundant autosave).
+    saved: VecDeque<(WorkspaceId, u64)>,
     closing: bool,
 }
 
@@ -91,6 +119,11 @@ pub struct SaveWriter {
 }
 
 impl SaveWriter {
+    /// How many pending autosaves were shed because the write-through queue was full.
+    pub fn shed_autosaves(&self) -> u64 {
+        self.shared.lock().shed
+    }
+
     pub fn spawn(dirs: AppDirs) -> io::Result<Self> {
         Self::spawn_inner(dirs, None)
     }
@@ -157,7 +190,8 @@ impl SaveWriter {
     }
 
     /// Queues an autosave of `workspace` to its recovery file, bound to `show_path` (`None`
-    /// before the first save). It is skipped (`Ok(None)`) if a newer autosave replaces it, or
+    /// before the first save). It is skipped (`Ok(None)`) if a newer autosave of the same
+    /// workspace and show path replaces it (other targets are untouched), or
     /// a manual save of this revision or a later one has completed by the time it would run.
     pub fn autosave(
         &self,
@@ -177,8 +211,26 @@ impl SaveWriter {
             revision,
             reply,
         };
-        if let Some(old) = state.autosave.replace(job) {
+        let same = |a: &AutosaveJob| a.targets(job.workspace.id, &job.show_path);
+        if let Some(pending) = state.forced.iter_mut().find(|a| same(a)) {
+            let old = std::mem::replace(pending, job);
             let _ = old.reply.send(Ok(None));
+        } else if let Some(pending) = state.autosaves.iter_mut().find(|a| same(a)) {
+            let old = std::mem::replace(pending, job);
+            let _ = old.reply.send(Ok(None));
+        } else {
+            if state.autosaves.len() >= MAX_PENDING_TARGETS
+                && let Some(oldest) = state.autosaves.pop_front()
+            {
+                if state.forced.len() >= MAX_FORCED_TARGETS
+                    && let Some(shed) = state.forced.pop_front()
+                {
+                    state.shed += 1;
+                    let _ = shed.reply.send(Ok(None));
+                }
+                state.forced.push_back(oldest);
+            }
+            state.autosaves.push_back(job);
         }
         drop(state);
         self.shared.wake.notify_one();
@@ -201,11 +253,16 @@ impl SaveWriter {
             let _ = reply.send(Err(PersistError::WriterGone));
             return answer;
         }
-        let cancelled = state
-            .autosave
-            .take_if(|a| a.workspace.id == workspace && a.show_path == show_path);
-        if let Some(old) = cancelled {
-            let _ = old.reply.send(Ok(None));
+        // Only this target's pending autosave goes; every other target's stays queued.
+        let State {
+            autosaves, forced, ..
+        } = &mut *state;
+        for queue in [forced, autosaves] {
+            if let Some(i) = queue.iter().position(|a| a.targets(workspace, &show_path))
+                && let Some(old) = queue.remove(i)
+            {
+                let _ = old.reply.send(Ok(None));
+            }
         }
         state.clears.push_back(ClearJob {
             workspace,
@@ -234,15 +291,23 @@ fn next_job(shared: &Shared) -> Option<Next> {
             return Some(Next::Clear(job));
         }
         if state.closing {
-            if let Some(job) = state.autosave.take() {
+            let State {
+                autosaves, forced, ..
+            } = &mut *state;
+            for job in forced.drain(..).chain(autosaves.drain(..)) {
                 let _ = job.reply.send(Ok(None));
             }
             return None;
         }
-        if let Some(job) = state.autosave.take() {
+        if let Some(job) = state
+            .forced
+            .pop_front()
+            .or_else(|| state.autosaves.pop_front())
+        {
             let covered = state
                 .saved
-                .is_some_and(|(id, rev)| id == job.workspace.id && job.revision <= rev);
+                .iter()
+                .any(|&(id, rev)| id == job.workspace.id && job.revision <= rev);
             if covered {
                 let _ = job.reply.send(Ok(None));
                 continue;
@@ -267,11 +332,16 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send)>)
                 let result = save_workspace(dirs, &job.path, &job.workspace, job.now_ms, job.keep);
                 if result.is_ok() {
                     let mut state = shared.lock();
-                    let newest = match state.saved {
-                        Some((id, rev)) if id == job.workspace.id => rev.max(job.revision),
-                        _ => job.revision,
-                    };
-                    state.saved = Some((job.workspace.id, newest));
+                    let id = job.workspace.id;
+                    let newest = match state.saved.iter().position(|&(i, _)| i == id) {
+                        Some(i) => state.saved.remove(i).map_or(0, |(_, rev)| rev),
+                        None => 0,
+                    }
+                    .max(job.revision);
+                    state.saved.push_back((id, newest));
+                    if state.saved.len() > MAX_PENDING_TARGETS {
+                        state.saved.pop_front();
+                    }
                 }
                 let _ = job.reply.send(result);
             }
