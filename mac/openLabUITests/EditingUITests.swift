@@ -45,6 +45,23 @@ final class EditingUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Storm"].waitForExistence(timeout: 10), "undo brings the cue back")
     }
 
+    func testCopyAndPasteDuplicatesACue() {
+        let app = launch()
+        let intro = app.staticTexts.matching(identifier: "Intro")
+        XCTAssertTrue(intro.firstMatch.waitForExistence(timeout: 10))
+        let before = intro.count
+        intro.firstMatch.click()
+        app.typeKey("c", modifierFlags: .command)
+        let copied = NSPredicate { _, _ in NSPasteboard.general.types?.contains(.init("dev.openlab.cue-data")) == true }
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: copied, object: nil)], timeout: 10), .completed)
+        app.typeKey("v", modifierFlags: .command)
+        let more = NSPredicate(format: "count == %d", before + 1)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: more, object: intro)], timeout: 10),
+            .completed, "the pasted copy shows in the list")
+    }
+
     func testEditingKeysDoNothingInShowMode() {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))

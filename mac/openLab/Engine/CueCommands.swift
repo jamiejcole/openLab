@@ -83,6 +83,11 @@ extension Command {
             ]))
     }
 
+    /// `Paste`: several prepared cues (fresh ids; `CueEditor.preparePaste`) in order, one undo step.
+    static func paste(at: JSONValue, cues: [JSONValue]) -> Command {
+        Command(.object(["type": .string("paste"), "at": at, "cues": .array(cues)]))
+    }
+
     static func removeCue(_ id: ModelID) -> Command {
         Command(.object(["type": .string("remove_cue"), "id": .string(id.raw)]))
     }
