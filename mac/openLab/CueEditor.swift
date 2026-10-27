@@ -13,10 +13,18 @@ import AppKit
 /// children; a drop on a group appends to it, on a cue goes after it, never into the cue's own
 /// descendants; the audio cue needs a patch. Undo and redo are the engine's and are not guarded: an
 /// undo can remove an active cue (docs/handoff/m5-protocol-requests.md).
+///
+/// Part 2 (CueEditor+Clipboard.swift; QLab's pages are silent on drops): a Finder drop makes one audio
+/// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;
+/// one file dropped on an idle audio cue replaces its file; a cue dropped on a cue only reorders (targets
+/// are set in the inspector). Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
+/// type (versioned); paste goes where a new cue would, as core's `paste` with the cues prepared like `prepare_paste`. Cmd-D clears
+/// the selected cues' numbers (undoable, no prompt).
 @MainActor
 final class CueEditor {
     let store: WorkspaceStore
-    unowned let cueList: CueListViewController
+    weak var cueList: CueListViewController?
+    var pasteboard: NSPasteboard = .general
     var isLocked: () -> Bool = { false }
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
@@ -106,7 +114,7 @@ final class CueEditor {
 
     // MARK: Actions
 
-    private func begin() async -> Bool {
+    func begin() async -> Bool {
         guard !isLocked() else { return false }
         guard await commitPending() else {
             NSSound.beep()
@@ -115,20 +123,20 @@ final class CueEditor {
         return !isLocked()
     }
 
-    private func selectedNodes() -> [CueNode] { cueList.selectedIDs().compactMap { cueList.node($0) } }
+    func selectedNodes() -> [CueNode] { (cueList?.selectedIDs() ?? []).compactMap { cueList?.node($0) } }
 
     @discardableResult
     func add(_ kind: NewCueKind) async -> ModelID? {
-        guard await begin(), let list = cueList.listID else { return nil }
+        guard await begin(), let list = cueList?.listID else { return nil }
         let id = ModelID(UUID().uuidString.lowercased())
         guard let cue = kind.cueJSON(id: id, patch: store.model?.patches.first) else {
             notify(loc("edit.error.noPatch"))
             return nil
         }
-        let place = Self.insertion(selected: selectedNodes(), roots: cueList.roots)
+        let place = Self.insertion(selected: selectedNodes(), roots: (cueList?.roots ?? []))
         let command = Command.addCue(cue, list: list, parent: place.parent, index: place.index)
         guard report(await store.send(command: command)) else { return nil }
-        cueList.selectAsUser([id])
+        cueList?.selectAsUser([id])
         return id
     }
 
@@ -142,7 +150,7 @@ final class CueEditor {
         }
         // The cue that takes the selection: the one after the last deleted, else the one before the first.
         let gone = Set(nodes.map(\.id))
-        let siblings = nodes[0].parent?.children ?? cueList.roots
+        let siblings = nodes[0].parent?.children ?? (cueList?.roots ?? [])
         let first = siblings.firstIndex { gone.contains($0.id) } ?? 0
         let last = siblings.lastIndex { gone.contains($0.id) } ?? 0
         let after = siblings.dropFirst(last + 1).first { !gone.contains($0.id) }
@@ -150,12 +158,12 @@ final class CueEditor {
         let successor = (after ?? before ?? nodes[0].parent)?.id
         guard let command = Command.transaction(nodes.map { .removeCue($0.id) }) else { return }
         guard report(await store.send(command: command)) else { return }
-        if let successor, cueList.node(successor) != nil { cueList.selectAsUser([successor]) }
+        if let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
     }
 
     func renumberSelection(start: Double, increment: Double) async {
         guard await begin() else { return }
-        let ids = cueList.selectedIDs()
+        let ids = (cueList?.selectedIDs() ?? [])
         guard !ids.isEmpty else { return }
         guard start.isFinite, increment.isFinite, start >= 0, increment > 0 else {
             notify(loc("edit.error.renumberValues"))
@@ -172,7 +180,7 @@ final class CueEditor {
         var commands: [Command] = []
         let ordered = step < 0 ? nodes : nodes.reversed()
         for node in ordered {
-            let siblings = node.parent?.children ?? cueList.roots
+            let siblings = node.parent?.children ?? (cueList?.roots ?? [])
             guard let i = siblings.firstIndex(where: { $0 === node }) else { continue }
             let to = i + step
             guard siblings.indices.contains(to) else { continue }
@@ -192,13 +200,13 @@ final class CueEditor {
 
     /// A drop in the outline (already validated): `ids` go before child `index` of `parent`.
     func move(_ ids: [ModelID], to parent: ModelID?, at index: Int) async {
-        guard await begin(), let list = cueList.listID else { return }
-        let parentNode = parent.flatMap { cueList.node($0) }
+        guard await begin(), let list = cueList?.listID else { return }
+        let parentNode = parent.flatMap { cueList?.node($0) }
         if parent != nil && parentNode == nil { return }
-        let dragged = Self.topLevel(ids.compactMap { cueList.node($0) })
+        let dragged = Self.topLevel(ids.compactMap { cueList?.node($0) })
         guard Self.canDrop(dragged, into: parentNode) else { return }
         let commands = Self.moveCommands(
-            list: list, dragged: dragged, parent: parentNode, index: index, roots: cueList.roots)
+            list: list, dragged: dragged, parent: parentNode, index: index, roots: (cueList?.roots ?? []))
         guard let command = Command.transaction(commands) else { return }
         _ = report(await store.send(command: command))
     }
@@ -217,7 +225,7 @@ final class CueEditor {
     var canRedo: Bool { !isLocked() && store.document?.canRedo == true }
 
     /// True when the engine took the edit; otherwise tells the operator.
-    private func report(_ result: Result<OkBody, EngineError>) -> Bool {
+    func report(_ result: Result<OkBody, EngineError>) -> Bool {
         switch result {
         case .success: return true
         case .failure(let error):
