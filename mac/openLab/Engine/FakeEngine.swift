@@ -27,6 +27,13 @@ final class FakeEngine: EngineTransport {
     var holdFlush = false
     /// Answers every request with an `ok` that does not decode (a changed server, in tests).
     var garbleResults = false
+    /// Answers every `command` with `command_refused` and changes nothing.
+    var refuseCommands = false
+    /// The records `log_tail` answers with (show-log JSON objects), and the `relink` result data.
+    var logTailEntries: [JSONValue] = []
+    var relinkData: JSONValue = .object([
+        "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+    ])
     enum WelcomeFault { case none, silent, garbled }
     /// `silent`: the `welcome` is never sent; `garbled`: it is sent but does not decode.
     var welcomeFault = WelcomeFault.none
@@ -179,11 +186,114 @@ final class FakeEngine: EngineTransport {
         }
         switch message {
         case .hello: fail(c, .badRequest, "second hello", close: false)
-        case .command(let id, _), .transport(let id, _), .undo(let id), .redo(let id): result(c, id)
+        case .transport(let id, let action):
+            result(c, id)
+            if let doc = c.doc { fakeEffect(of: action, doc: doc) }
+        case .command(let id, let command):
+            if refuseCommands { return result(c, id, error: (.commandRefused, "refused by the fake")) }
+            if let doc = c.doc { fakeEdit(doc, command) }
+            result(c, id)
+        case .undo(let id), .redo(let id): result(c, id)
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
         case .provisional(.close(let id, let doc, let discard)): handleClose(id, doc: doc, discard: discard, from: c)
         }
+    }
+
+    /// The transport effects the fake performs, so UI tests can see them land. GO starts the demo
+    /// show's loaded cue (...21); pause, resume, stop and panic move that cue's state. Documents
+    /// without that cue are left alone.
+    private func fakeEffect(of action: TransportAction, doc: ModelID) {
+        let cue = ModelID("00000000-0000-0000-0000-000000000021")
+        switch action {
+        case .go: fakeState(.running, cue, doc: doc)
+        case .pause(cue): fakeState(.paused, cue, doc: doc)
+        case .resume(cue): fakeState(.running, cue, doc: doc)
+        case .stop(cue, _), .hardStop(cue), .panicCue(cue): fakeState(.idle, cue, doc: doc)
+        default: break
+        }
+    }
+
+    private func fakeState(_ state: WireCueState, _ cue: ModelID, doc: ModelID) {
+        guard var s = docs[doc], case .int(let q)? = s["runtime_seq"], "\(s)".contains(cue.raw) else { return }
+        s.set("runtime_seq", .int(q + 1))
+        docs[doc] = s
+        push(
+            #"{"type":"runtime","seq":\#(q + 1),"changes":[{"type":"cue_state","cue":"\#(cue.raw)","state":"\#(state.rawValue)"}]}"#,
+            doc: doc)
+    }
+
+    /// The edits the fake performs so UI tests can see them land: `set_cue_property` (top-level
+    /// fields, `target`) and `set_cue_numbers`. Anything else is only recorded. The workspace
+    /// changes and a `model_changed` goes out, as the engine does before its `result`.
+    private func fakeEdit(_ doc: ModelID, _ command: Command) {
+        guard var s = docs[doc], case .int(let rev)? = s["revision"],
+            var lists = s["workspace"]?["cue_lists"]?.arrayValue
+        else { return }
+        var edits: [(String, (inout JSONValue) -> Void)] = []
+        switch command.json["type"]?.stringValue {
+        case "set_cue_property":
+            guard let id = command.json["id"]?.stringValue, let p = command.json["property"],
+                let type = p["type"]?.stringValue, let value = p["value"]
+            else { return }
+            edits.append(
+                (
+                    id,
+                    { cue in
+                        if type == "target" { cue["kind"]?.set("target", value) } else { cue.set(type, value) }
+                    }
+                ))
+        case "set_cue_numbers":
+            for n in command.json["numbers"]?.arrayValue ?? [] {
+                guard let id = n["id"]?.stringValue, let number = n["number"] else { return }
+                edits.append((id, { $0.set("number", number) }))
+            }
+        default: return
+        }
+        var upserts: [JSONValue] = []
+        for (id, edit) in edits {
+            for li in lists.indices {
+                var cues = lists[li]["cues"]?.arrayValue ?? []
+                guard let hit = Self.edit(id, in: &cues, parent: nil, apply: edit) else { continue }
+                lists[li].set("cues", .array(cues))
+                upserts.append(
+                    .object([
+                        "type": .string("cue"), "list": lists[li]["id"] ?? .null,
+                        "parent": hit.parent.map { .string($0) } ?? .null, "index": .int(Int64(hit.index)),
+                        "cue": hit.cue,
+                    ]))
+            }
+        }
+        guard !upserts.isEmpty else { return }
+        s["workspace"]?.set("cue_lists", .array(lists))
+        s.set("revision", .int(rev + 1))
+        docs[doc] = s
+        push(
+            text(
+                .object([
+                    "type": .string("model_changed"), "revision": .int(rev + 1), "upserts": .array(upserts),
+                    "deletes": .array([]),
+                ])), doc: doc)
+    }
+
+    /// Applies `edit` to the cue `id` anywhere in `cues`; the edited cue (with its children, as the
+    /// engine sends it) and where it sits.
+    private static func edit(
+        _ id: String, in cues: inout [JSONValue], parent: String?, apply edit: (inout JSONValue) -> Void
+    ) -> (cue: JSONValue, parent: String?, index: Int)? {
+        for i in cues.indices {
+            if cues[i]["id"]?.stringValue == id {
+                edit(&cues[i])
+                return (cues[i], parent, i)
+            }
+            if var kids = cues[i]["kind"]?["children"]?.arrayValue,
+                let hit = Self.edit(id, in: &kids, parent: cues[i]["id"]?.stringValue, apply: edit)
+            {
+                cues[i]["kind"]?.set("children", .array(kids))
+                return hit
+            }
+        }
+        return nil
     }
 
     private func handleHello(_ h: Hello, from c: FakeConnection) {
@@ -252,17 +362,15 @@ final class FakeEngine: EngineTransport {
         case .relink:
             result(
                 c, id,
-                ok: .object([
-                    "data": .object([
-                        "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]),
-                        "unmatched": .array([]),
-                    ])
-                ]))
+                ok: .object(["data": relinkData]))
         case .logTail:
             result(
                 c, id,
-                ok: .object(["data": .object(["type": .string("log_tail"), "entries": .array([]), "dropped": .int(0)])])
-            )
+                ok: .object([
+                    "data": .object([
+                        "type": .string("log_tail"), "entries": .array(logTailEntries), "dropped": .int(0),
+                    ])
+                ]))
         case .preshowCheck:
             let summary: JSONValue = .object([
                 "broken_cues": .int(0), "media": .int(0), "patches": .int(0), "network": .int(0),

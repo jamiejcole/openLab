@@ -26,13 +26,13 @@ struct WireVariant: Hashable, Sendable, Decodable {
 typealias WireWarning = WireVariant
 typealias WireProblem = WireVariant
 
-enum WireCueState: String, Hashable, Sendable, Codable {
+enum WireCueState: String, Hashable, Sendable, Codable, CaseIterable {
     case idle, loaded, running, paused, fading, stopping, broken
     case preWaiting = "pre_waiting"
     case postWaiting = "post_waiting"
 }
 
-enum WireBrokenReason: String, Hashable, Sendable, Codable {
+enum WireBrokenReason: String, Hashable, Sendable, Codable, CaseIterable {
     case voiceRejected = "voice_rejected"
     case streamFailed = "stream_failed"
     case deviceLost = "device_lost"
