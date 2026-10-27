@@ -205,6 +205,13 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// Switches output overrides (PB-10) for the whole engine, every open workspace: not saved
+    /// in any show file and gone when the engine restarts, as QLab's Overrides are. The
+    /// `status` message reports them. Answers `ok` with no data.
+    SetOutputOverrides {
+        /// Network cues still run, complete and continue, but send nothing.
+        network_disabled: bool,
+    },
     /// The newest show-log entries the engine holds in memory (DX-02), for a log window opened
     /// after the fact. `max` absent: all of them (at most 1000).
     LogTail {
