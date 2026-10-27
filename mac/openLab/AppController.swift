@@ -24,6 +24,8 @@ final class AppController {
 
     private var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
+    /// How many monitors `installKeyMonitor` has registered (tests: exactly one).
+    private(set) var keyMonitorInstalls = 0
     /// Bounds the waits on the quit and save paths (injected so tests never wait in real time).
     private let scheduler: Scheduler
     private let timeout: Double
@@ -111,6 +113,8 @@ final class AppController {
     /// mid-edit), then the event carries on so the editor or alert still handles it.
     func installKeyMonitor() {
         guard keyMonitor == nil else { return }
+        keyMonitorInstalls += 1
+        // Deliberately also fires while an alert or panel is up: panic must never be blocked by UI.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if Self.isPanicKey(event) { MainActor.assumeIsolated { self?.firePanic() } }
             return event
@@ -214,11 +218,14 @@ final class AppController {
         }
         if isPlaying(store), !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
         guard let discard = await resolveUnsaved(doc) else { return false }
-        switch await session.close(doc: doc, discardChanges: discard) {
-        case .success:
+        switch await bounded({ await self.session.close(doc: doc, discardChanges: discard) }) {
+        case .success?:
             windows.removeValue(forKey: doc)?.window?.close()
-        case .failure(let e):
+        case .failure(let e)?:
             alerts.showError(String(format: loc("error.closeFailed"), describe(e)))
+            return false
+        case nil:
+            alerts.showError(String(format: loc("error.closeFailed"), loc("error.detail.timeout")))
             return false
         }
         showLauncherIfNoWindows()
@@ -230,7 +237,11 @@ final class AppController {
     /// True when the app may quit: the playing confirmation and every dirty workspace's save
     /// prompt were answered without Cancel, and `goodbye { shutdown }` went out.
     func prepareToQuit() async -> Bool {
-        guard !quitting, closing.isEmpty else { return false }
+        guard !quitting else { return false }
+        guard closing.isEmpty else {
+            NSSound.beep()  // never a silent no-op: a close is still being answered
+            return false
+        }
         quitting = true
         defer { quitting = false }
         if engineUnreachable { return alerts.confirmQuitDisconnected() }
