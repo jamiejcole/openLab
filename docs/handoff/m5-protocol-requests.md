@@ -61,3 +61,13 @@ second client can show the same mode. Until then the app does not tell the engin
 ## Undo and redo of an active cue (M5.10a)
 
 Wanted: an `undo` / `redo` that would remove an active cue (running, paused, waiting, fading) should be refused, or need a flag, like the app's own delete guard. Today the engine stops the cue's voice and warns `CueRemoved` (docs/cue-engine.md), and the client cannot predict what an undo does, so Cmd-Z can cut a sound the audience hears.
+
+## Media paths from drops and `Kind` replacement (M5.10b)
+
+The app sends the dropped file's absolute path (forward slashes, NFC) in `AddCue` and in `SetCueProperty { kind }`
+when a file replaces an audio cue's file. Wanted: the engine stores it relative to the show folder when inside it
+(docs/file-format.md §4.3), on `AddCue` and `Kind` alike; the app does not know the show's folder rules.
+Also wanted: a `SetCueProperty` variant for an audio cue's `media` alone, so a replace does not send (and so
+overwrite) the whole kind with the app's copy of it.
+Pasting an audio cue into another workspace keeps its patch id; if that patch does not exist there the cue is
+broken (visible) until fixed. Wanted: `AddCue` could remap or report an unknown patch.

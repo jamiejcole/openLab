@@ -24,6 +24,7 @@
 "menu.edit.delete" = "Delete";
 "menu.cues" = "Cues";
 "menu.cues.new" = "New %@ Cue";
+"menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
 "menu.cues.renumber" = "Renumber Selected Cues...";
 "menu.cues.moveUp" = "Move Selected Cues Up";
 "menu.cues.moveDown" = "Move Selected Cues Down";
@@ -36,6 +37,8 @@
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
+"edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
+"edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
 "edit.error.refused" = "The engine refused the edit: %@";
 "edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 

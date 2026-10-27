@@ -13,10 +13,18 @@ import AppKit
 /// children; a drop on a group appends to it, on a cue goes after it, never into the cue's own
 /// descendants; the audio cue needs a patch. Undo and redo are the engine's and are not guarded: an
 /// undo can remove an active cue (docs/handoff/m5-protocol-requests.md).
+///
+/// Part 2 (CueEditor+Clipboard.swift; QLab's pages are silent on drops): a Finder drop makes one audio
+/// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;
+/// one file dropped on an idle audio cue replaces its file; a cue dropped on a cue only reorders (targets
+/// are set in the inspector). Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
+/// type; paste goes where a new cue would, with fresh ids (targets inside the copy follow). Cmd-D clears
+/// the selected cues' numbers (undoable, no prompt).
 @MainActor
 final class CueEditor {
     let store: WorkspaceStore
     unowned let cueList: CueListViewController
+    var pasteboard: NSPasteboard = .general
     var isLocked: () -> Bool = { false }
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
@@ -106,7 +114,7 @@ final class CueEditor {
 
     // MARK: Actions
 
-    private func begin() async -> Bool {
+    func begin() async -> Bool {
         guard !isLocked() else { return false }
         guard await commitPending() else {
             NSSound.beep()
@@ -115,7 +123,7 @@ final class CueEditor {
         return !isLocked()
     }
 
-    private func selectedNodes() -> [CueNode] { cueList.selectedIDs().compactMap { cueList.node($0) } }
+    func selectedNodes() -> [CueNode] { cueList.selectedIDs().compactMap { cueList.node($0) } }
 
     @discardableResult
     func add(_ kind: NewCueKind) async -> ModelID? {
@@ -217,7 +225,7 @@ final class CueEditor {
     var canRedo: Bool { !isLocked() && store.document?.canRedo == true }
 
     /// True when the engine took the edit; otherwise tells the operator.
-    private func report(_ result: Result<OkBody, EngineError>) -> Bool {
+    func report(_ result: Result<OkBody, EngineError>) -> Bool {
         switch result {
         case .success: return true
         case .failure(let error):
