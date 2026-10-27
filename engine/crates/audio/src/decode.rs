@@ -89,6 +89,12 @@ pub(crate) fn scale_round(x: u64, num: u32, den: u32) -> u64 {
     u64::try_from(v).unwrap_or(u64::MAX)
 }
 
+/// Lowest sample rate a file may have. The resampler's chunk grows with the rate ratio (a 1 Hz
+/// file at 48 kHz needs a 49-million-frame chunk: an out-of-memory found by the decode fuzzer), so
+/// a header rate below telephony's 8 kHz is unplayable rather than resampled. The upper bound is
+/// the mixer's [`MAX_SAMPLE_RATE`].
+pub(crate) const MIN_MEDIA_RATE: u32 = 8_000;
+
 /// Most warnings kept per file; damage beyond that still plays as silence.
 const MAX_WARNINGS: usize = 256;
 /// Longest AAC encoder delay believed, in frames (0.74 s at 44.1 kHz; real encoders use 1024-2624).
@@ -793,8 +799,12 @@ impl Decoder {
             .ok_or_else(|| MediaError::Unsupported("unknown codec".into()))?;
         let rate = params
             .sample_rate
-            .filter(|r| (1..=MAX_SAMPLE_RATE).contains(r))
             .ok_or_else(|| MediaError::Unsupported("sample rate".into()))?;
+        if !(MIN_MEDIA_RATE..=MAX_SAMPLE_RATE).contains(&rate) {
+            return Err(MediaError::Unsupported(format!(
+                "sample rate {rate} Hz outside {MIN_MEDIA_RATE}..={MAX_SAMPLE_RATE} Hz"
+            )));
+        }
         let channels = params
             .channels
             .as_ref()
