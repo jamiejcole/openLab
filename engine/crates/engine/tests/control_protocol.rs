@@ -168,13 +168,15 @@ fn a_disarm_cue_changes_the_model_as_a_runtime_change() {
 }
 
 #[test]
-fn requests_other_than_snapshot_are_not_available_yet() {
+fn relink_is_not_available_yet_and_snapshot_answers() {
     let path = wav(&dc(300, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
     let id1 = s.request_id();
     let r = s.send(ClientMessage::Request {
         id: id1,
-        request: Request::Save,
+        request: Request::Relink {
+            folder: "/media".into(),
+        },
     });
     assert!(matches!(result(&r), Outcome::Error(e) if e.code == ErrorCode::Unsupported));
     let id2 = s.request_id();

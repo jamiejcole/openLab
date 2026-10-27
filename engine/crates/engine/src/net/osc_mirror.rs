@@ -62,6 +62,16 @@ impl Mirror {
         }
     }
 
+    /// The model revision the copy is at.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The last `runtime` seq folded in.
+    pub fn runtime_seq(&self) -> u64 {
+        self.runtime_seq
+    }
+
     pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace.id
     }

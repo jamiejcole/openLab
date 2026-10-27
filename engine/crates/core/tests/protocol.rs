@@ -39,6 +39,10 @@ fn server(m: ServerMessage) -> Sample {
     Sample::Server(Box::new(m))
 }
 
+fn workspace_id(n: u128) -> WorkspaceId {
+    WorkspaceId(uuid::Uuid::from_u128(n))
+}
+
 fn rid(n: u64) -> RequestId {
     RequestId(n)
 }
@@ -160,11 +164,18 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
 
 fn all_requests() -> Vec<(&'static str, Request)> {
     vec![
-        ("new", Request::New),
+        (
+            "new",
+            Request::New {
+                discard_changes: false,
+            },
+        ),
         (
             "open",
             Request::Open {
                 path: "/Users/sam/Shows/Hamlet.openlab".into(),
+                discard_changes: false,
+                recovery: None,
             },
         ),
         ("save", Request::Save),
@@ -174,7 +185,12 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 path: "/Users/sam/Shows/Hamlet 2.openlab".into(),
             },
         ),
-        ("revert", Request::Revert),
+        (
+            "revert",
+            Request::Revert {
+                discard_changes: false,
+            },
+        ),
         (
             "relink",
             Request::Relink {
@@ -183,6 +199,59 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         ("list_devices", Request::ListDevices),
         ("snapshot", Request::Snapshot),
+        (
+            "open_recovery",
+            Request::OpenRecovery {
+                workspace_id: workspace_id(7),
+                path_hash: Some("0123456789abcdef".into()),
+                modified_ms: Some(1_700_000_000_000),
+                discard_changes: true,
+            },
+        ),
+        ("scan_recovery", Request::ScanRecovery),
+    ]
+}
+
+/// Requests with their flags set, beyond the one sample per type of [`all_requests`].
+fn request_variants() -> Vec<(&'static str, Request)> {
+    vec![
+        (
+            "new_discard",
+            Request::New {
+                discard_changes: true,
+            },
+        ),
+        (
+            "open_restore",
+            Request::Open {
+                path: "/Users/sam/Shows/Hamlet.openlab".into(),
+                discard_changes: true,
+                recovery: Some(RecoveryChoice::Restore),
+            },
+        ),
+        (
+            "open_ignore_recovery",
+            Request::Open {
+                path: "/Users/sam/Shows/Hamlet.openlab".into(),
+                discard_changes: false,
+                recovery: Some(RecoveryChoice::Ignore),
+            },
+        ),
+        (
+            "open_recovery_newest",
+            Request::OpenRecovery {
+                workspace_id: workspace_id(7),
+                path_hash: None,
+                modified_ms: None,
+                discard_changes: false,
+            },
+        ),
+        (
+            "revert_discard",
+            Request::Revert {
+                discard_changes: true,
+            },
+        ),
     ]
 }
 
@@ -263,6 +332,12 @@ fn fixtures() -> Vec<(String, Sample)> {
             format!("request_{name}")
         };
         add(&file, client(request(40 + i as u64, req)));
+    }
+    for (i, (name, req)) in request_variants().into_iter().enumerate() {
+        add(
+            &format!("request_{name}"),
+            client(request(60 + i as u64, req)),
+        );
     }
     add("goodbye", client(ClientMessage::Goodbye { shutdown: true }));
 
@@ -486,6 +561,67 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_recovery_offer",
+        server(ServerMessage::Result {
+            id: rid(47),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::RecoveryOffer {
+                    path: "/Users/sam/Shows/Hamlet.openlab".into(),
+                    workspace_name: "Hamlet".into(),
+                    modified_ms: 1_700_000_000_000,
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_recovery_entries",
+        server(ServerMessage::Result {
+            id: rid(48),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::RecoveryEntries {
+                    entries: vec![
+                        RecoveryEntryInfo {
+                            workspace_id: workspace_id(7),
+                            path_hash: Some("0123456789abcdef".into()),
+                            show_name: Some("Hamlet".into()),
+                            modified_ms: Some(1_700_000_000_000),
+                            stale: false,
+                        },
+                        RecoveryEntryInfo {
+                            workspace_id: workspace_id(8),
+                            path_hash: None,
+                            show_name: None,
+                            modified_ms: None,
+                            stale: true,
+                        },
+                    ],
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_not_found",
+        server(ServerMessage::Result {
+            id: rid(50),
+            outcome: Outcome::Error(ErrorBody::new(
+                ErrorCode::NotFound,
+                "cannot open /Users/sam/Shows/Hamlet.openlab: No such file or directory",
+            )),
+        }),
+    );
+    add(
+        "result_unsaved_changes",
+        server(ServerMessage::Result {
+            id: rid(49),
+            outcome: Outcome::Error(ErrorBody::new(
+                ErrorCode::UnsavedChanges,
+                "the workspace has unsaved changes",
+            )),
+        }),
+    );
+    add(
         "error",
         server(ServerMessage::refusal(
             ErrorCode::ProtocolVersionMismatch,
@@ -587,6 +723,88 @@ fn drift_is_detected_by_comparison() {
     assert!(check_fixture("x", Some("{}"), "{}\n").is_err());
 }
 
+/// The M4.4 additions are wire-compatible (PROTOCOL_VERSION stays 1): the unit forms `new` and
+/// `revert` and an `open` without the new fields still decode, with the old meaning.
+#[test]
+fn requests_from_before_the_workspace_flags_still_decode() {
+    let frame = |request: &str| {
+        decode_client(&format!(
+            r#"{{"type":"request","id":1,"request":{request}}}"#
+        ))
+        .unwrap()
+    };
+    assert_eq!(
+        frame(r#"{"type":"new"}"#),
+        request(
+            1,
+            Request::New {
+                discard_changes: false
+            }
+        )
+    );
+    assert_eq!(
+        frame(r#"{"type":"revert"}"#),
+        request(
+            1,
+            Request::Revert {
+                discard_changes: false
+            }
+        )
+    );
+    assert_eq!(
+        frame(r#"{"type":"open","path":"/a.openlab"}"#),
+        request(
+            1,
+            Request::Open {
+                path: "/a.openlab".into(),
+                discard_changes: false,
+                recovery: None
+            }
+        )
+    );
+    // The defaults are not written, so an old engine's reader sees what it always saw.
+    let new = encode_client(&request(
+        1,
+        Request::New {
+            discard_changes: false,
+        },
+    ))
+    .unwrap();
+    assert!(new.contains(r#""request":{"type":"new"}"#), "{new}");
+}
+
+#[test]
+fn relative_paths_are_refused_for_open_and_save_as() {
+    for request in [
+        r#"{"type":"open","path":"show.openlab"}"#,
+        r#"{"type":"open","path":"../show.openlab"}"#,
+        r#"{"type":"save_as","path":"out/show.openlab"}"#,
+    ] {
+        let text = format!(r#"{{"type":"request","id":1,"request":{request}}}"#);
+        assert!(
+            matches!(decode_client(&text), Err(ProtocolError::NotAbsolute { .. })),
+            "{request}"
+        );
+    }
+    assert!(
+        decode_client(r#"{"type":"request","id":1,"request":{"type":"open","path":"/a.openlab"}}"#)
+            .is_ok()
+    );
+}
+
+#[test]
+fn bad_workspace_requests_are_errors_not_panics() {
+    for text in [
+        r#"{"type":"request","id":1,"request":{"type":"open","path":"/a","recovery":"maybe"}}"#,
+        r#"{"type":"request","id":1,"request":{"type":"open","path":"/a","discard_changes":"yes"}}"#,
+        r#"{"type":"request","id":1,"request":{"type":"open_recovery"}}"#,
+        r#"{"type":"request","id":1,"request":{"type":"open_recovery","workspace_id":"nope"}}"#,
+        r#"{"type":"request","id":1,"request":{"type":"new","discard_changes":1}}"#,
+    ] {
+        assert!(decode_client(text).is_err(), "{text}");
+    }
+}
+
 #[test]
 fn every_fixture_decodes_and_re_encodes_byte_for_byte() {
     for (name, sample) in fixtures() {
@@ -669,7 +887,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 18);
-    assert_eq!(all_requests().len(), 8);
+    assert_eq!(all_requests().len(), 10);
 }
 
 #[test]
@@ -1282,7 +1500,7 @@ fn engine_preview_idx(r: PreviewIgnoredReason) -> usize {
     }
 }
 
-const ERROR_CODE_COUNT: usize = 11;
+const ERROR_CODE_COUNT: usize = 12;
 fn error_code_idx(c: ErrorCode) -> usize {
     match c {
         ErrorCode::ProtocolVersionMismatch => 0,
@@ -1292,10 +1510,11 @@ fn error_code_idx(c: ErrorCode) -> usize {
         ErrorCode::CommandRefused => 4,
         ErrorCode::NotFound => 5,
         ErrorCode::NoWorkspace => 6,
-        ErrorCode::Io => 7,
-        ErrorCode::BadShowFile => 8,
-        ErrorCode::Unsupported => 9,
-        ErrorCode::Internal => 10,
+        ErrorCode::UnsavedChanges => 7,
+        ErrorCode::Io => 8,
+        ErrorCode::BadShowFile => 9,
+        ErrorCode::Unsupported => 10,
+        ErrorCode::Internal => 11,
     }
 }
 
@@ -1592,6 +1811,7 @@ fn all_error_codes() -> Vec<ErrorCode> {
         ErrorCode::CommandRefused,
         ErrorCode::NotFound,
         ErrorCode::NoWorkspace,
+        ErrorCode::UnsavedChanges,
         ErrorCode::Io,
         ErrorCode::BadShowFile,
         ErrorCode::Unsupported,
@@ -1946,6 +2166,11 @@ fn arb_path() -> impl Strategy<Value = String> {
     "\\PC{1,40}"
 }
 
+/// A path `open` and `save_as` accept.
+fn arb_abs_path() -> impl Strategy<Value = String> {
+    "/\\PC{0,40}"
+}
+
 fn arb_action() -> impl Strategy<Value = TransportAction> {
     prop_oneof![
         arb_list().prop_map(|list| TransportAction::Go { list }),
@@ -1979,11 +2204,38 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
 
 fn arb_request() -> impl Strategy<Value = Request> {
     prop_oneof![
-        Just(Request::New),
-        arb_path().prop_map(|path| Request::Open { path }),
+        any::<bool>().prop_map(|discard_changes| Request::New { discard_changes }),
+        (
+            arb_abs_path(),
+            any::<bool>(),
+            proptest::option::of(prop_oneof![
+                Just(RecoveryChoice::Restore),
+                Just(RecoveryChoice::Ignore)
+            ])
+        )
+            .prop_map(|(path, discard_changes, recovery)| Request::Open {
+                path,
+                discard_changes,
+                recovery
+            }),
+        (
+            any::<u128>(),
+            proptest::option::of("[0-9a-f]{16}"),
+            proptest::option::of(any::<i64>()),
+            any::<bool>()
+        )
+            .prop_map(|(id, path_hash, modified_ms, discard_changes)| {
+                Request::OpenRecovery {
+                    workspace_id: workspace_id(id),
+                    path_hash,
+                    modified_ms,
+                    discard_changes,
+                }
+            }),
+        Just(Request::ScanRecovery),
         Just(Request::Save),
-        arb_path().prop_map(|path| Request::SaveAs { path }),
-        Just(Request::Revert),
+        arb_abs_path().prop_map(|path| Request::SaveAs { path }),
+        any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
         Just(Request::Snapshot),
