@@ -720,17 +720,46 @@ proptest! {
     }
 }
 
+/// Cases for the properties that hold incremental bookkeeping to its full rebuild: 256 for CI;
+/// `OPENLAB_PROP_CASES=20000 cargo test --release -p openlab-core --test commands_prop` sweeps.
+fn incremental_cases() -> u32 {
+    std::env::var("OPENLAB_PROP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256)
+}
+
+/// The footprint's touched and structural cues, as `CueIndex::reconcile` takes them.
+fn reconcile_sets(
+    fp: &Footprint,
+) -> (
+    std::collections::BTreeSet<CueId>,
+    std::collections::BTreeSet<CueId>,
+) {
+    let structural: std::collections::BTreeSet<CueId> = fp
+        .added
+        .iter()
+        .chain(&fp.removed)
+        .chain(&fp.moved)
+        .copied()
+        .collect();
+    let touched = structural.iter().chain(&fp.edited).copied().collect();
+    (touched, structural)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
     /// A client that starts from the workspace and applies each edit's `model_changed` ends
     /// every step with exactly the engine's workspace: commands (groups moved and deleted with
-    /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01).
+    /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01). Read through a
+    /// cue index that follows the footprints (M4.12c), the changes are the same as the walk's.
     #[test]
     fn model_changes_keep_a_mirror_identical(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         let mut mirror = ws.clone();
         let mut history = History::new();
+        let mut index = CueIndex::build(&ws);
         for p in &sequence {
             let footprint = match p.d % 9 {
                 0 => history.peek_undo().map(Command::footprint),
@@ -749,6 +778,10 @@ proptest! {
             };
             let Some(fp) = changed else { continue };
             let (upserts, deletes) = model_changes(&ws, &fp);
+            let (touched, structural) = reconcile_sets(&fp);
+            index.reconcile(&ws, &touched, &structural, &fp.added);
+            let indexed = model_changes_indexed(&ws, &fp, &index);
+            prop_assert_eq!(indexed, Some((upserts.clone(), deletes.clone())));
             // O(changed): never more than a delete and an upsert per named cue, plus the
             // subtrees of groups that were named.
             let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
@@ -786,10 +819,11 @@ fn random_edit(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
     /// The cue index follows every edit from its footprint alone and equals one built from
-    /// scratch after each (commands, undo, redo, transactions that add, move and remove).
+    /// scratch after each (commands, undo, redo, transactions that add, move and remove), its
+    /// positions included (M4.12c); what it answers about order and lists is the workspace's.
     #[test]
     fn the_cue_index_follows_footprints(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
@@ -797,19 +831,31 @@ proptest! {
         let mut index = CueIndex::build(&ws);
         for p in &sequence {
             let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) else { continue };
-            let structural: std::collections::BTreeSet<CueId> = fp
-                .added
-                .iter()
-                .chain(&fp.removed)
-                .chain(&fp.moved)
-                .copied()
-                .collect();
-            let touched = structural.iter().chain(&fp.edited).copied().collect();
+            let (touched, structural) = reconcile_sets(&fp);
             let change = index.reconcile(&ws, &touched, &structural, &fp.added);
             prop_assert!(matches!(change, IndexChange::Delta(_)));
             prop_assert!(index.matches(&ws), "index differs from a rebuild");
+            for list in &ws.cue_lists {
+                let order = list_positions(&list.cues);
+                prop_assert_eq!(&index.list_order(list.id), &order);
+                for (i, id) in order.iter().enumerate() {
+                    prop_assert_eq!(index.list_of(*id), Some(list.id));
+                    prop_assert_eq!(index.next_in_list(*id), order.get(i + 1).copied());
+                    prop_assert_eq!(index.locate(&ws, *id).map(|c| c.id), Some(*id));
+                }
+            }
         }
     }
+}
+
+/// Every cue of a list, depth first.
+fn list_positions(cues: &[Cue]) -> Vec<CueId> {
+    let mut out = Vec::new();
+    for cue in cues {
+        out.push(cue.id);
+        out.extend(list_positions(cue.children()));
+    }
+    out
 }
 
 fn status_input(ws: &Workspace, p: &Pick) -> Input {
@@ -847,18 +893,30 @@ fn status_input(ws: &Workspace, p: &Pick) -> Input {
                 }
             },
         },
+        // The playhead stands anywhere (M4.12c follows it from footprints), GO walks on from
+        // there, in and out of groups (M2.24 group visits).
+        7 => Input::PlayheadNext { list },
+        8 => Input::PlayheadPrevious { list },
+        9 => Input::SetPlayhead {
+            list,
+            cue: choose(&ids, p.b).filter(|_| !p.d.is_multiple_of(5)),
+        },
+        10 => Input::Go { list },
         _ => Input::Tick,
     }
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
-    /// After any random sequence of commands, undos and redos, mixed with runtime inputs and
-    /// media and patch reports, an engine told only each edit's footprint
+    /// After any random sequence of commands, undos and redos, mixed with runtime inputs,
+    /// playhead moves and media and patch reports, an engine told only each edit's footprint
     /// (`model_changed_cues`) has done exactly what an engine that rebuilds everything
-    /// (`model_changed`) has: the same actions on every call, the same broken cues and group
-    /// warnings, and its bookkeeping equals a from-scratch rebuild (M4.12a).
+    /// (`model_changed`) has: the same actions on every call (playhead moves and group visits
+    /// included), the same playheads, broken cues and group warnings, and its bookkeeping
+    /// equals a from-scratch rebuild (M4.12a). Some edits come two or more to a call, as
+    /// footprints the engine adds up. Following footprints never walks the whole show for the
+    /// chain limit, the playheads or the cues present (M4.12c).
     #[test]
     fn incremental_problems_equal_a_full_rebuild(sequence in picks(80)) {
         let config = EngineConfig::new(48_000, 0, 1).unwrap();
@@ -873,6 +931,9 @@ proptest! {
             prop_assert_eq!(inc.unsignalled_model_changes(), 0);
             inc.verify_problem_cache(ws).map_err(TestCaseError::fail)?;
             prop_assert_eq!(inc.broken_cues(), full.broken_cues());
+            for list in &ws.cue_lists {
+                prop_assert_eq!(inc.playhead(list.id), full.playhead(list.id));
+            }
             for id in all_ids(ws) {
                 prop_assert_eq!(inc.state(id), full.state(id));
                 prop_assert_eq!(inc.has_broken_descendant(id), full.has_broken_descendant(id));
@@ -882,14 +943,161 @@ proptest! {
         inc.model_changed();
         full.model_changed();
         call(&mut inc, &mut full, &ws, Input::Tick)?;
+        let passes = inc.whole_show_passes();
         for p in &sequence {
             if let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) {
                 inc.model_changed_cues(&fp);
                 full.model_changed();
+                if p.b.is_multiple_of(4) {
+                    // The next edit comes before the engine is called.
+                    continue;
+                }
                 call(&mut inc, &mut full, &ws, Input::Tick)?;
             }
             call(&mut inc, &mut full, &ws, status_input(&ws, p))?;
         }
+        call(&mut inc, &mut full, &ws, Input::Tick)?;
+        prop_assert_eq!(inc.whole_show_passes(), passes);
+    }
+}
+
+/// A show where group visits matter (M2.24): groups of every mode that continue (auto-follow,
+/// auto-continue) with timed children, nested groups, and a second list.
+fn visits_show() -> Workspace {
+    let timed = |mut c: Cue, mode: ContinueMode| {
+        c.continue_mode = mode;
+        c
+    };
+    let wait = |n: u128| common::cue(n, CueKind::Wait { duration: 0.01 });
+    let memo = |n: u128| common::cue(n, CueKind::Memo);
+    let grp = |n: u128, mode: GroupMode, children: Vec<Cue>| {
+        common::cue(n, CueKind::Group { mode, children })
+    };
+    let mut ws = base();
+    ws.cue_lists[0].cues = vec![
+        timed(
+            grp(
+                1,
+                GroupMode::StartFirstAndEnter,
+                vec![wait(10), memo(11), memo(12)],
+            ),
+            ContinueMode::AutoFollow,
+        ),
+        memo(2),
+        timed(
+            grp(
+                3,
+                GroupMode::Playlist {
+                    loop_: false,
+                    shuffle: false,
+                },
+                vec![wait(13), wait(14)],
+            ),
+            ContinueMode::AutoContinue,
+        ),
+        wait(4),
+        timed(
+            grp(
+                5,
+                GroupMode::Timeline,
+                vec![
+                    memo(15),
+                    grp(6, GroupMode::StartFirstAndEnter, vec![wait(16), memo(17)]),
+                ],
+            ),
+            ContinueMode::AutoFollow,
+        ),
+        memo(7),
+        wait(8),
+    ];
+    ws.cue_lists[1].cues = vec![memo(20), wait(21)];
+    ws
+}
+
+/// An edit aimed at the playhead (its cue moved into or out of a group, removed, removed and
+/// added again) or any random edit, undo or redo.
+fn edit_near_playhead(
+    ws: &mut Workspace,
+    g: &mut Gen,
+    history: &mut History,
+    p: &Pick,
+    head: Option<CueId>,
+) -> Option<Footprint> {
+    let target = head.filter(|_| !p.c.is_multiple_of(3));
+    let command = match (p.op % 5, target) {
+        (0, Some(id)) => Command::ReparentCue {
+            id,
+            to: position(ws, p.b, p.d),
+        },
+        (1, Some(id)) => Command::RemoveCue { id },
+        (2, Some(id)) => Command::MoveCue {
+            id,
+            index: p.b as usize % 4,
+        },
+        (3, _) => Command::Transaction {
+            commands: readd(ws, g, p)?,
+        },
+        _ => return random_edit(ws, g, history, p),
+    };
+    let fp = command.footprint();
+    history.execute(ws, command).is_ok().then_some(fp)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
+
+    /// Playheads and group visits followed from footprints (M4.12c) do exactly what the full
+    /// rebuild does, on a show built for it: GO into and out of groups that continue while time
+    /// passes, the playhead set anywhere, and edits aimed at the playhead cue and the groups
+    /// around it (moved in and out of groups and between lists, removed, removed and added
+    /// again under its id), undo and redo, some added up before a call.
+    #[test]
+    fn playheads_and_group_visits_follow_footprints(sequence in picks(60)) {
+        let config = EngineConfig::new(1000, 0, 1).unwrap();
+        let mut ws = visits_show();
+        let mut g = Gen { next: 1000 };
+        let mut history = History::new();
+        let (mut inc, mut full) = (CueEngine::new(config), CueEngine::new(config));
+        let mut now = 0;
+        let mut call = |inc: &mut CueEngine, full: &mut CueEngine, ws: &Workspace, input: Input, dt: u64| {
+            now += dt;
+            let (a, b) = (inc.handle(ws, input.clone(), now), full.handle(ws, input, now));
+            prop_assert_eq!(a, b);
+            prop_assert_eq!(inc.unsignalled_model_changes(), 0);
+            for list in &ws.cue_lists {
+                prop_assert_eq!(inc.playhead(list.id), full.playhead(list.id));
+            }
+            Ok(())
+        };
+        inc.model_changed();
+        full.model_changed();
+        call(&mut inc, &mut full, &ws, Input::Tick, 1)?;
+        let passes = inc.whole_show_passes();
+        for p in &sequence {
+            let list = ws.cue_lists[p.a as usize % 2].id;
+            let ids = all_ids(&ws);
+            let dt = u64::from(p.d % 25);
+            match p.c % 6 {
+                0 | 1 => call(&mut inc, &mut full, &ws, Input::Go { list }, dt)?,
+                2 => {
+                    let cue = choose(&ids, p.b);
+                    call(&mut inc, &mut full, &ws, Input::SetPlayhead { list, cue }, dt)?;
+                }
+                3 => call(&mut inc, &mut full, &ws, Input::PlayheadNext { list }, dt)?,
+                _ => {
+                    let head = inc.playhead(list);
+                    if let Some(fp) = edit_near_playhead(&mut ws, &mut g, &mut history, p, head) {
+                        inc.model_changed_cues(&fp);
+                        full.model_changed();
+                        if !p.b.is_multiple_of(5) {
+                            call(&mut inc, &mut full, &ws, Input::Tick, dt)?;
+                        }
+                    }
+                }
+            }
+        }
+        call(&mut inc, &mut full, &ws, Input::Tick, 1)?;
+        prop_assert_eq!(inc.whole_show_passes(), passes);
     }
 }
 
