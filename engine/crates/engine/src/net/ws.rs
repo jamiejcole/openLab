@@ -647,6 +647,18 @@ impl Conn {
                 self.last_seq = s;
                 return self.send_text(&b.text).await;
             }
+            Kind::Snapshot { revision, seq } => {
+                // The requester already has it as its reply (a snapshot from the same
+                // numbering, or a later one); everyone else takes it and restarts its
+                // filters from it, like any snapshot.
+                if revision <= self.last_rev && seq <= self.last_seq {
+                    return Ok(());
+                }
+                self.last_rev = revision;
+                self.last_seq = seq;
+                self.send_text(&b.text).await?;
+                return self.release_held().await;
+            }
             Kind::State | Kind::Lossy => return self.send_text(&b.text).await,
         }
         self.send_text(&b.text).await?;
