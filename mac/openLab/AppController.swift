@@ -60,7 +60,9 @@ final class AppController {
         // A key released while the app is inactive never reaches the monitor: forget held keys.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.heldTriggers = [:] } }
+        ) { [weak self] _ in  // No trigger_released is sent: a cue is never stopped without an observed key release.
+            MainActor.assumeIsolated { self?.heldTriggers = [:] }
+        }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
         launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
@@ -209,12 +211,13 @@ final class AppController {
         return matched
     }
 
-    /// A modal panel or alert, a sheet, or a key window that is not a workspace (the launcher, a
-    /// file panel) keeps its keys. No key window at all (app active, windows behind) still fires.
+    /// Keys stay with a modal panel or alert, a sheet, the launcher and a panel that is not ours
+    /// (file open/save). Monitoring windows such as the Log window, and no key window at all (app
+    /// active, windows behind), still let hotkeys fire.
     private func cueHotkeysBlocked() -> Bool {
         if isModalUp() { return true }
         guard let key = keyWindow() else { return false }
-        return key.attachedSheet != nil || !windows.values.contains { $0.window === key }
+        return key.attachedSheet != nil || key === launcher.window || key is NSPanel
     }
 
     /// The cue hotkeys of `store` that fire: a chord equal to one of its transport keys belongs to
