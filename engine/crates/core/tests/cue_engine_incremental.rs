@@ -860,7 +860,8 @@ fn an_unsignalled_edit_that_moves_cues_is_caught_up_at_the_next_structural_edit_
     // Not signalling an edit is the caller's breach. Release builds trust the signal, so the
     // playhead cue deleted that way stays where it was until the next signalled structural
     // edit (or a GO, which resyncs a playhead whose cue is gone); debug builds catch it at
-    // once and count it.
+    // once on an unsignalled call and count it. A signalled edit is trusted in both builds,
+    // so the structural case below runs the same code in each.
     let config = EngineConfig::new(RATE, 0, 1).unwrap();
     let setup = || {
         let mut ws = workspace(vec![memo(1), memo(2), memo(3)]);
@@ -877,31 +878,47 @@ fn an_unsignalled_edit_that_moves_cues_is_caught_up_at_the_next_structural_edit_
         ws.cue_lists[0].cues.remove(1);
         (ws, engine)
     };
+    let started = |actions: &[Action], cue| {
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::StateChanged { cue: c, .. } if *c == cue))
+    };
+    let ignored = |actions: &[Action]| {
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::GoIgnored { .. }))
+    };
 
-    // The next signalled structural edit.
+    // The next signalled structural edit: the playhead lands where the full rebuild puts it,
+    // on the cue that followed the deleted one, and a GO starts that cue.
     let (mut ws, mut engine) = setup();
+    let added = memo(4);
+    ws.cue_lists[0].cues.push(added.clone());
+    engine.model_changed_cues(&Footprint {
+        added: [added.id].into(),
+        ..Footprint::default()
+    });
+    engine.handle(&ws, Input::Tick, 30);
+    assert_eq!(engine.playhead(list_id(1)), Some(id(3)));
+    let actions = engine.handle(&ws, Input::Go { list: list_id(1) }, 40);
+    assert!(!ignored(&actions));
+    assert!(started(&actions, id(3)));
+    assert_eq!(engine.playhead(list_id(1)), Some(id(4)));
+
+    // A plain tick: debug builds catch it at once and count it; release builds leave the
+    // playhead alone until something resyncs it.
+    let (ws, mut engine) = setup();
     engine.handle(&ws, Input::Tick, 20);
     if cfg!(debug_assertions) {
         assert_eq!(engine.unsignalled_model_changes(), 1);
         assert_eq!(engine.playhead(list_id(1)), Some(id(3)));
     } else {
         assert_eq!(engine.playhead(list_id(1)), Some(id(2)));
-        let added = memo(4);
-        ws.cue_lists[0].cues.push(added.clone());
-        engine.model_changed_cues(&Footprint {
-            added: [added.id].into(),
-            ..Footprint::default()
-        });
-        engine.handle(&ws, Input::Tick, 30);
-        // Caught up: no longer on the deleted cue (where it lands is not promised).
-        assert_ne!(engine.playhead(list_id(1)), Some(id(2)));
     }
 
-    // A GO.
+    // A GO resyncs and starts the next surviving cue.
     let (ws, mut engine) = setup();
-    if !cfg!(debug_assertions) {
-        assert_eq!(engine.playhead(list_id(1)), Some(id(2)));
-    }
-    engine.handle(&ws, Input::Go { list: list_id(1) }, 20);
-    assert_eq!(engine.playhead(list_id(1)), None);
+    let actions = engine.handle(&ws, Input::Go { list: list_id(1) }, 20);
+    assert!(!ignored(&actions));
+    assert!(started(&actions, id(3)));
 }

@@ -314,7 +314,7 @@ impl CueEngine {
                 added,
             } => {
                 if !structural.is_empty() {
-                    self.playheads_before_edit(&structural);
+                    self.playheads_before_edit(cx.ws, &structural);
                 }
                 if !self.update_problems(&touched, &structural, &added, cx) {
                     self.rebuild_problems(cx);

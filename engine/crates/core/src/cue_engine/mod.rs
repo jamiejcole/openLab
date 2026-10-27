@@ -648,12 +648,26 @@ impl CueEngine {
     /// Before the cue index follows an edit that added, removed or moved `structural`: each
     /// playhead that leaves its positions to the index notes what the edit touched around it
     /// (`sync_playheads` places it once the index has followed).
-    pub(super) fn playheads_before_edit(&mut self, structural: &BTreeSet<CueId>) {
+    pub(super) fn playheads_before_edit(&mut self, ws: &Workspace, structural: &BTreeSet<CueId>) {
         let tree = self.problems.tree();
         for (list, playhead) in &mut self.playheads {
             // Only one edit is followed between two passes; one already noted stays.
             if !playhead.keeps_order() && playhead.followed.is_none() {
-                playhead.followed = Some(playhead::followed(tree, *list, playhead.cue, structural));
+                // A playhead cue the edit did not touch but the workspace no longer has was
+                // deleted by an edit nobody signalled (the caller's breach). The footprint
+                // knows nothing of it, so keep the old list order and let the pass compare it
+                // with the list as it stands, as a full rebuild would.
+                let breached = playhead.cue.is_some_and(|c| {
+                    !structural.contains(&c)
+                        && !tree.ancestors(c).any(|g| structural.contains(&g))
+                        && tree.locate(ws, c).is_none()
+                });
+                if breached {
+                    playhead.keep_order(tree.list_order(*list));
+                } else {
+                    playhead.followed =
+                        Some(playhead::followed(tree, *list, playhead.cue, structural));
+                }
             }
         }
     }
