@@ -119,9 +119,30 @@ pub struct VoiceRec {
     held: Option<SampleTime>,
     /// How much later than the engine dated it the voice started (held by its probe).
     delay: u64,
+    /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
+    /// the voice never played (any other rejection is of a resume).
+    start_id: Option<VoiceId>,
 }
 
 impl VoiceRec {
+    /// The failure to report for this voice: `StartFailed` if it never produced any audio (a
+    /// start not yet in the mixer, or a stream that failed before writing a frame), so the cue
+    /// engine skips the cue (M4.14, QLab P5/G2); else `ActionFailed`. A loaded voice that was
+    /// never started stays `ActionFailed` (the cue is loaded, not playing).
+    fn failure(&self, reason: BrokenReason) -> Input {
+        let unplayed = match &self.phase {
+            Phase::Waiting { start, .. } => start.is_some(),
+            // `frames_written` counts frames the disk worker put in the ring, not frames the
+            // mixer played: frames in the ring are about to sound (or have), so a failure after
+            // any was written is taken as during play. A prime fills the ring before the start,
+            // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
+            // handed to a start, so it cannot make an unplayed start look played.
+            Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
+            Phase::Ended => false,
+        };
+        failure(self.cue, self.run, reason, unplayed)
+    }
+
     /// Position in the action on rendered sample `t`, while playing.
     fn position(&self, t: SampleTime) -> Option<u64> {
         if !matches!(self.phase, Phase::Playing) || t < self.start_at {
@@ -418,8 +439,9 @@ impl Voices {
                     return;
                 }
                 Err(PrepError::Failed) => {
+                    // A started voice not yet in the mixer: nothing has played.
                     self.remove(id);
-                    fx.feedback.push(Input::ActionFailed {
+                    fx.feedback.push(Input::StartFailed {
                         cue,
                         run,
                         reason: BrokenReason::StreamFailed,
@@ -455,6 +477,7 @@ impl Voices {
                 r.delay = at - start;
                 let preview = r.preview;
                 let held = r.held.take().is_some();
+                r.start_id = Some(id);
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
                     fx.commands.push((t.max(at), queued(id, q)));
@@ -478,7 +501,7 @@ impl Voices {
             }
             None => {
                 self.remove(id);
-                fx.feedback.push(Input::ActionFailed {
+                fx.feedback.push(Input::StartFailed {
                     cue,
                     run,
                     reason: BrokenReason::VoiceRejected,
@@ -837,11 +860,7 @@ impl Voices {
             };
             if failed {
                 r.stream_failed = true;
-                fx.feedback.push(Input::ActionFailed {
-                    cue: r.cue,
-                    run: r.run,
-                    reason: BrokenReason::StreamFailed,
-                });
+                fx.feedback.push(r.failure(BrokenReason::StreamFailed));
                 if let Some(m) = cue_media(ws, r.cue) {
                     fx.reprobe.push(m);
                 }
@@ -861,11 +880,15 @@ impl Voices {
                     return;
                 };
                 let Some(r) = self.remove(id) else { return };
-                fx.feedback.push(Input::ActionFailed {
-                    cue: r.cue,
-                    run: r.run,
-                    reason: BrokenReason::VoiceRejected,
-                });
+                // A refused start: the voice never played (M4.14). Decided by the id the mixer
+                // refused, not by whether a resume was sent since (a start refused while a
+                // pause and resume were on their way is still a start that never played).
+                fx.feedback.push(failure(
+                    r.cue,
+                    r.run,
+                    BrokenReason::VoiceRejected,
+                    r.start_id == Some(voice),
+                ));
                 // A refused resume leaves the voice paused under its old id: let it go.
                 if voice == id
                     && let Some(old) = r.prev_id
@@ -961,13 +984,17 @@ impl Voices {
             fx.feedback.push(Input::ActionEnded { cue, run, at });
             return;
         }
-        self.remove(id);
+        let gone = self.remove(id);
         if failed {
-            fx.feedback.push(Input::ActionFailed {
-                cue,
-                run,
-                reason: BrokenReason::StreamFailed,
-            });
+            let input = gone.map_or(
+                Input::ActionFailed {
+                    cue,
+                    run,
+                    reason: BrokenReason::StreamFailed,
+                },
+                |r| r.failure(BrokenReason::StreamFailed),
+            );
+            fx.feedback.push(input);
         } else {
             fx.feedback.push(Input::ActionEnded { cue, run, at });
         }
@@ -1005,7 +1032,8 @@ impl Voices {
         if r.listed {
             self.finished(id, at, FinishReason::EndOfStream, fx);
         } else if let Some(r) = self.remove(id) {
-            fx.feedback.push(Input::ActionFailed {
+            // Never listed: the mixer never took its start, so it never played.
+            fx.feedback.push(Input::StartFailed {
                 cue: r.cue,
                 run: r.run,
                 reason: BrokenReason::VoiceRejected,
@@ -1094,7 +1122,8 @@ impl Voices {
             .collect();
         for id in expired {
             if let Some(r) = self.remove(id) {
-                fx.feedback.push(Input::ActionFailed {
+                // A held start never reached the mixer: nothing played.
+                fx.feedback.push(Input::StartFailed {
                     cue: r.cue,
                     run: r.run,
                     reason: BrokenReason::StreamFailed,
@@ -1231,6 +1260,14 @@ pub fn rest_after_loop(table: &[Slice], played: u64) -> Option<u64> {
         })
 }
 
+fn failure(cue: CueId, run: RunId, reason: BrokenReason, unplayed: bool) -> Input {
+    if unplayed {
+        Input::StartFailed { cue, run, reason }
+    } else {
+        Input::ActionFailed { cue, run, reason }
+    }
+}
+
 fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
     VoiceRec {
         cue,
@@ -1252,6 +1289,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         devamp_stop: false,
         held: None,
         delay: 0,
+        start_id: None,
     }
 }
 
