@@ -188,7 +188,7 @@ A destination for Network cues.
 |---|---|---|
 | `id` | UUID | Stable id. Targets, OSC and scripts refer to cues by id, never by number. |
 | `number` | string or `null` | Free text, unique within the workspace when set. |
-| `name` | string | |
+| `name` | string | The name the user typed. Empty means "named after the file": the UI shows `display_name` (the Audio cue's file name with its extension). Assigning or following a file never writes `name` (M2.29c). |
 | `notes` | string | Operator notes. |
 | `color` | `"none"` \| `"red"` \| `"orange"` \| `"green"` \| `"blue"` \| `"purple"` | |
 | `flagged` | bool | Marked for attention. |

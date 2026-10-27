@@ -4,13 +4,16 @@
 //! can call it; nothing else uses it.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use openlab_core::{CueId, CueListId, WorkspaceId};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{CueField, Osc, OscShow, Outcome, Peer, SlipDecoder, decode_packet, encode_message};
+use super::{
+    CueField, Osc, OscShow, Outcome, Peer, SlipDecoder, Target, decode_packet, encode_message,
+};
 
 struct FuzzShow {
     passcode: Option<&'static str>,
@@ -37,6 +40,39 @@ impl OscShow for FuzzShow {
     }
     fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
         (address == "/trigger").then_some(CueId(Uuid::from_u128(3)))
+    }
+    fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
+        self.cue_exists(cue)
+            .then_some(CueListId(Uuid::from_u128(2)))
+    }
+    fn playhead(&self, _list: CueListId) -> Option<CueId> {
+        Some(CueId(Uuid::from_u128(3)))
+    }
+    fn list_name(&self, _list: CueListId) -> Option<String> {
+        Some("list".into())
+    }
+    fn running_cues(&self, _include_paused: bool) -> Vec<CueId> {
+        vec![CueId(Uuid::from_u128(3))]
+    }
+    fn visit_targets(&self, visit: &mut dyn FnMut(Target, &str) -> ControlFlow<()>) {
+        let cue = Target::Cue(CueId(Uuid::from_u128(3)));
+        for (target, number) in [
+            (Target::List(CueListId(Uuid::from_u128(2))), ""),
+            (cue, "1"),
+            (cue, "2.5"),
+            (cue, ""),
+            (cue, "a1b"),
+        ] {
+            if visit(target, number).is_break() {
+                return;
+            }
+        }
+    }
+    fn cue_object(&self, id: CueId) -> Option<Value> {
+        Some(json!({"uniqueID": super::upper(id)}))
+    }
+    fn cue_lists_object(&self) -> Value {
+        json!([{"type": "Cue List"}])
     }
 }
 

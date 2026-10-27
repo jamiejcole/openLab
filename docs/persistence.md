@@ -47,9 +47,20 @@ writer thread: the control thread clones the `Workspace` and calls `SaveWriter::
 The queue is bounded by coalescing, because the disk may be slow or hung while autosave keeps firing:
 
 - one pending manual save per target file (a newer one replaces it; the old answer is `Superseded`);
-- one pending autosave (a newer one replaces it; the old answer is `Ok(None)`);
-- manual saves run before a pending autosave, and an autosave whose revision is not newer than the last
-  durably saved one is dropped (`Ok(None)`), so saved state never gets a recovery file;
+- one pending autosave per recovery target, i.e. per workspace id and show path (the pair that names the
+  recovery file; a newer one replaces only its own target's, the old answer is `Ok(None)`), so several open
+  workspaces never displace each other's autosaves;
+- at most `MAX_PENDING_TARGETS` (16) targets wait in the normal queue; a new target beyond that moves the
+  oldest waiting autosave to a write-through queue that runs first, so the cap itself never costs an
+  autosave. That queue still coalesces per target and is capped at `MAX_FORCED_TARGETS` (32): during a
+  long disk hang, closed workspaces and Save As paths add targets beyond the open ones (8). When it is
+  full the oldest forced autosave is shed (`Ok(None)`, counted by `shed_autosaves()`); a later autosave of
+  a still-open workspace replaces it anyway. Shutdown still discards pending autosaves, so a caller that
+  needs a final autosave (M4.15g) must wait on its reply;
+- manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
+  durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
+- `clear_recovery(workspace, show_path)` runs after the job in flight (the writer is one thread), removes that
+  target's file, and cancels only that target's pending autosave;
 - dropping the writer finishes the running job and pending manual saves, and discards pending
   autosaves.
 
@@ -145,6 +156,18 @@ full Unicode folding.
 
 Non-UTF-8 file names cannot be stored in a JSON show file; they are skipped (and counted) when
 scanning.
+
+## Media watch and follow (M2.25, M2.29)
+
+Design: path first, no file watcher, no bookmarks (opaque per-OS blobs in a cross-platform JSON file, and resolving one can mount or block). Decisions: `docs/handoff/decisions/m2-29.md`.
+
+- **Detection**: the `openlab-watch` thread stats every catalog media file (metadata only), a full pass every `max(3 s, n/1000 s)`, paced in chunks of 64. It sends one batched event list per pass, only when non-empty; an idle show costs control nothing. Control never stats.
+- **Two-pass rule**: Gone is reported on the first pass (a file in the Trash breaks its cues within seconds). Back and Changed are reported only after two identical passes, so a half-copied file is never probed. Back and Changed re-probe the file; an unreadable file becomes `media_unsupported`.
+- **Follow** (macOS, `MNT_LOCAL` volumes only): when the stored path is gone, the file is located by its (device, inode) with `fsgetpath(2)`. Accepted only if it is a regular file, not in a Trash (`.Trash`, `.Trashes`, `$Recycle.Bin`), has the same size and modified time as last seen, and a re-stat gives the same (device, inode). Otherwise the key stays Gone (a file edited and then moved is never followed: never play the wrong file). A symlinked media path is never followed. A case-only rename keeps the stored spelling.
+- **Path first**: if the old path exists again (a new file there), the cue stays on the path; a different file at the path is Changed. A new file at the old path wins over the renamed one.
+- **Follow is outside undo**, like Arm/Disarm: the relink is applied with its inverse discarded, `revision` rises, `model_changed` is sent and the document is dirty. `History::rewrite_media(map)` rewrites the old reference to the new one in the undo and redo stacks, so undo never walks back to a missing file. The catalog keeps the probe and the preload under the new key (no re-probe) and publishes availability for old and new in the same tick, so the cue never shows broken. At most 256 keys follow per tick. One show-log info line per follow.
+- **Hints (planned, M2.29d)**: format_version 3 adds top-level `media_hints` (key = stored `MediaRef` text; volume UUID, file id, size, modified time), advisory and written on every save, so a file moved while the show was closed is found at open. Hints that cannot be resolved on this machine are kept and written back; invalid ones are dropped at load.
+- **Windows and network/FAT volumes**: Gone, Back, Changed and Unreadable by stat only; no follow. Windows file IDs: M2.29f. Following the show file itself when it moves: M2.29g.
 
 ## Relink (WS-03)
 

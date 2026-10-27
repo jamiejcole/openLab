@@ -80,6 +80,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     func go(list: ModelID) async -> Result<OkBody, EngineError> { await transport(.go(list: list)) }
     func panic() async -> Result<OkBody, EngineError> { await transport(.panic) }
+    func goFrom(list: ModelID, cue: ModelID) async -> Result<OkBody, EngineError> {
+        await transport(.goFrom(list: list, cue: cue))
+    }
+    func stopAll() async -> Result<OkBody, EngineError> { await transport(.stopAll) }
+    func hardStopAll() async -> Result<OkBody, EngineError> { await transport(.hardStopAll) }
+    func panicCue(_ cue: ModelID) async -> Result<OkBody, EngineError> { await transport(.panicCue(cue: cue)) }
 
     func send(command: Command) async -> Result<OkBody, EngineError> {
         await client.send { .command(id: $0, command) }
