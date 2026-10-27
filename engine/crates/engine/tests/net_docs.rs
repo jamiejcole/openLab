@@ -231,3 +231,170 @@ async fn a_second_client_gets_the_new_snapshot_and_keeps_receiving_changes() {
     worker.join().unwrap();
     server.stop();
 }
+
+/// A real control loop and server whose first document read blocks until `release` is sent.
+fn stalled_reads(
+    doc_timeout: Duration,
+    snapshot_wait: Duration,
+) -> (
+    WsServer,
+    thread::JoinHandle<()>,
+    std::sync::mpsc::Sender<()>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace(vec![cue(1, CueKind::Memo)]);
+    let mut other = workspace(vec![cue(5, CueKind::Memo)]);
+    other.name = "other".into();
+    let other_path = dir.path().join("other.openlab");
+    std::fs::write(&other_path, save_show(&other).unwrap()).unwrap();
+
+    let (release_tx, release) = std::sync::mpsc::channel::<()>();
+    let release = std::sync::Mutex::new(release);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let hook = openlab_engine::control::DocHook(std::sync::Arc::new(move || {
+        if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let (ctl, _mixer) = Mixer::new(mixer_config()).unwrap();
+    let (inbox_tx, inbox) = crossbeam_channel::unbounded();
+    let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+    let mut c = config(&ws);
+    c.app_dirs = Some(openlab_engine::persist::AppDirs::new(
+        dir.path().join("support"),
+    ));
+    c.doc_hook = Some(hook);
+    c.doc_timeout = doc_timeout;
+    let control = Control::new(ws, ctl, Backend::Offline, c, inbox_tx.clone(), out_tx).unwrap();
+    let worker = thread::spawn(move || runner::run(control, &inbox));
+    let server_config = ServerConfig {
+        snapshot_wait,
+        ..ServerConfig::default()
+    };
+    let server = WsServer::start(inbox_tx, outbound, server_config).unwrap();
+    (server, worker, release_tx, other_path, dir)
+}
+
+fn open_request(id: u64, path: &std::path::Path) -> ClientMessage {
+    ClientMessage::Request {
+        id: RequestId(id),
+        request: Request::Open {
+            path: path.to_string_lossy().into_owned(),
+            discard_changes: false,
+            recovery: None,
+        },
+    }
+}
+
+fn rename_command(id: u64, name: &str) -> ClientMessage {
+    ClientMessage::Command {
+        id: RequestId(id),
+        command: Box::new(Command::SetCueProperty {
+            id: self::id(1),
+            property: CueProperty::Name { value: name.into() },
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_stalled_open_fails_with_io_and_the_requester_keeps_receiving_broadcasts() {
+    let (server, worker, release, other, _dir) =
+        stalled_reads(Duration::from_millis(300), Duration::from_secs(60));
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let (mut a, first) = connect(&server).await;
+        let (mut b, _) = connect(&server).await;
+        send(&mut a, open_request(1, &other)).await;
+        // Once A's snapshot request is answered, its open has been handled (same connection,
+        // same order), so B's edit below cannot get in front of it.
+        send(
+            &mut a,
+            ClientMessage::Request {
+                id: RequestId(9),
+                request: Request::Snapshot,
+            },
+        )
+        .await;
+        assert!(matches!(result_of(&mut a, 9).await, Outcome::Ok(_)));
+        // Another client edits while A's open is stuck in its read.
+        send(&mut b, rename_command(2, "while stuck")).await;
+        assert!(matches!(result_of(&mut b, 2).await, Outcome::Ok(_)));
+        // A's open fails with io once the engine gives up on the read ...
+        match result_of(&mut a, 1).await {
+            Outcome::Error(e) => assert_eq!(e.code, openlab_core::protocol::ErrorCode::Io),
+            other => panic!("{other:?}"),
+        }
+        // ... and A, which was holding broadcasts for it, now gets them.
+        loop {
+            if let ServerMessage::ModelChanged { revision, .. } = next(&mut a).await {
+                assert_eq!(revision, first.revision + 1);
+                break;
+            }
+        }
+        // The next document request works (B's edit is unsaved, so it discards).
+        send(
+            &mut a,
+            ClientMessage::Request {
+                id: RequestId(3),
+                request: Request::New {
+                    discard_changes: true,
+                },
+            },
+        )
+        .await;
+        assert!(matches!(result_of(&mut a, 3).await, Outcome::Ok(_)));
+        let _ = snapshot_next(&mut b).await;
+        send(&mut a, ClientMessage::Goodbye { shutdown: true }).await;
+    })
+    .await
+    .expect("hang");
+    let _ = release.send(());
+    worker.join().unwrap();
+    server.stop();
+}
+
+#[tokio::test]
+async fn a_lost_snapshot_answer_does_not_blind_a_connection_for_good() {
+    // The engine never gives up on the read here; the connection's own bound has to.
+    let (server, worker, release, other, _dir) =
+        stalled_reads(Duration::from_secs(3600), Duration::from_millis(300));
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let (mut a, _) = connect(&server).await;
+        let (mut b, _) = connect(&server).await;
+        send(&mut a, open_request(1, &other)).await;
+        // Once A's snapshot request is answered, its open has been handled (same connection,
+        // same order), so B's edit below cannot get in front of it.
+        send(
+            &mut a,
+            ClientMessage::Request {
+                id: RequestId(9),
+                request: Request::Snapshot,
+            },
+        )
+        .await;
+        assert!(matches!(result_of(&mut a, 9).await, Outcome::Ok(_)));
+        send(&mut b, rename_command(2, "while stuck")).await;
+        assert!(matches!(result_of(&mut b, 2).await, Outcome::Ok(_)));
+        // A stops holding broadcasts and resyncs: it gets a snapshot with B's edit ...
+        let resynced = snapshot_next(&mut a).await;
+        assert_eq!(
+            resynced.workspace.find_cue(id(1)).unwrap().name,
+            "while stuck"
+        );
+        // ... and then B's later edits as ordinary changes.
+        send(&mut b, rename_command(3, "later")).await;
+        loop {
+            if let ServerMessage::ModelChanged { revision, .. } = next(&mut a).await {
+                assert_eq!(revision, resynced.revision + 1);
+                break;
+            }
+        }
+        send(&mut b, ClientMessage::Goodbye { shutdown: true }).await;
+    })
+    .await
+    .expect("hang");
+    let _ = release.send(());
+    worker.join().unwrap();
+    server.stop();
+}

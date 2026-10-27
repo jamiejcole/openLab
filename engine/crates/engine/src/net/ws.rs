@@ -58,6 +58,10 @@ pub struct ServerConfig {
     pub write_timeout: Duration,
     /// How long a `result` waits for the `model_changed` that precedes it.
     pub revision_wait: Duration,
+    /// How long the connection holds broadcasts for a request that answers with a snapshot
+    /// (`open` reads a file; the engine bounds that read itself, so this only covers an answer
+    /// that is lost or very late). After it the hold is dropped and the connection resyncs.
+    pub snapshot_wait: Duration,
     /// Authenticated connections.
     pub max_connections: usize,
     /// Connections still upgrading or waiting to say `hello`.
@@ -75,6 +79,7 @@ impl Default for ServerConfig {
             dead_after: Duration::from_secs(30),
             write_timeout: Duration::from_secs(10),
             revision_wait: Duration::from_secs(2),
+            snapshot_wait: Duration::from_secs(60),
             max_connections: 16,
             max_handshaking: 8,
             refusal_log_interval: Duration::from_secs(10),
@@ -427,7 +432,7 @@ struct Conn {
     /// out, broadcasts wait in the queue: one made after the control loop took the snapshot
     /// must not reach the client before it (the snapshot would then take the client back),
     /// and one made before is filtered against the snapshot's revision and seq.
-    snapshot_waits: Vec<RequestId>,
+    snapshot_waits: Vec<(RequestId, Instant)>,
     /// Results held back for their `model_changed`, in arrival order.
     held: VecDeque<Held>,
     bad_frames: u32,
@@ -533,6 +538,11 @@ impl Conn {
                 .map(|h| h.deadline)
                 .min()
                 .filter(|_| !waiting);
+            let wait_deadline = self
+                .snapshot_waits
+                .iter()
+                .map(|(_, since)| *since + config.snapshot_wait)
+                .min();
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => return Ok(()),
@@ -572,6 +582,9 @@ impl Conn {
                 () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
                     self.release_held().await?;
                 }
+                () = sleep_until(wait_deadline.unwrap_or_else(Instant::now)), if wait_deadline.is_some() => {
+                    self.expire_waits();
+                }
                 _ = ticker.tick() => {
                     if self.inflight < MAX_INFLIGHT
                         && self.last_heard.elapsed() > config.dead_after
@@ -584,8 +597,20 @@ impl Conn {
         }
     }
 
+    /// A snapshot that never came (or came very late): stop holding broadcasts for it. The queue
+    /// may have overflowed meanwhile, so the connection takes a fresh snapshot to be sure.
+    fn expire_waits(&mut self) {
+        let (now, limit) = (Instant::now(), self.shared.config.snapshot_wait);
+        let before = self.snapshot_waits.len();
+        self.snapshot_waits
+            .retain(|(_, since)| now.duration_since(*since) < limit);
+        if self.snapshot_waits.len() != before {
+            self.lagged.store(true, Ordering::Release);
+        }
+    }
+
     fn ask_snapshot(&mut self) -> Result<(), Closed> {
-        self.snapshot_waits.push(INTERNAL_ID);
+        self.snapshot_waits.push((INTERNAL_ID, Instant::now()));
         self.shared
             .inbox
             .send(Inbox::Client {
@@ -701,7 +726,7 @@ impl Conn {
                 return self.release_held().await;
             }
             ServerMessage::Result { id, outcome } => {
-                if let Some(i) = self.snapshot_waits.iter().position(|w| w == id) {
+                if let Some(i) = self.snapshot_waits.iter().position(|(w, _)| w == id) {
                     self.snapshot_waits.swap_remove(i);
                     if *id == INTERNAL_ID {
                         return self.release_held().await;
@@ -782,7 +807,7 @@ impl Conn {
                 }
                 // Before the send: the control loop may answer at once.
                 if answers_with_snapshot(&other) {
-                    self.snapshot_waits.push(id);
+                    self.snapshot_waits.push((id, Instant::now()));
                 }
                 self.inflight += 1;
                 let sent = self.shared.inbox.send(Inbox::Client {

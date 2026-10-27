@@ -567,6 +567,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             outcome: Outcome::Ok(OkBody {
                 revision: None,
                 data: Some(ResultData::RecoveryOffer {
+                    path: "/Users/sam/Shows/Hamlet.openlab".into(),
                     workspace_name: "Hamlet".into(),
                     modified_ms: 1_700_000_000_000,
                 }),
@@ -598,6 +599,16 @@ fn fixtures() -> Vec<(String, Sample)> {
                     ],
                 }),
             }),
+        }),
+    );
+    add(
+        "result_not_found",
+        server(ServerMessage::Result {
+            id: rid(50),
+            outcome: Outcome::Error(ErrorBody::new(
+                ErrorCode::NotFound,
+                "cannot open /Users/sam/Shows/Hamlet.openlab: No such file or directory",
+            )),
         }),
     );
     add(
@@ -760,6 +771,25 @@ fn requests_from_before_the_workspace_flags_still_decode() {
     ))
     .unwrap();
     assert!(new.contains(r#""request":{"type":"new"}"#), "{new}");
+}
+
+#[test]
+fn relative_paths_are_refused_for_open_and_save_as() {
+    for request in [
+        r#"{"type":"open","path":"show.openlab"}"#,
+        r#"{"type":"open","path":"../show.openlab"}"#,
+        r#"{"type":"save_as","path":"out/show.openlab"}"#,
+    ] {
+        let text = format!(r#"{{"type":"request","id":1,"request":{request}}}"#);
+        assert!(
+            matches!(decode_client(&text), Err(ProtocolError::NotAbsolute { .. })),
+            "{request}"
+        );
+    }
+    assert!(
+        decode_client(r#"{"type":"request","id":1,"request":{"type":"open","path":"/a.openlab"}}"#)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -2136,6 +2166,11 @@ fn arb_path() -> impl Strategy<Value = String> {
     "\\PC{1,40}"
 }
 
+/// A path `open` and `save_as` accept.
+fn arb_abs_path() -> impl Strategy<Value = String> {
+    "/\\PC{0,40}"
+}
+
 fn arb_action() -> impl Strategy<Value = TransportAction> {
     prop_oneof![
         arb_list().prop_map(|list| TransportAction::Go { list }),
@@ -2171,7 +2206,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
     prop_oneof![
         any::<bool>().prop_map(|discard_changes| Request::New { discard_changes }),
         (
-            arb_path(),
+            arb_abs_path(),
             any::<bool>(),
             proptest::option::of(prop_oneof![
                 Just(RecoveryChoice::Restore),
@@ -2199,7 +2234,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
             }),
         Just(Request::ScanRecovery),
         Just(Request::Save),
-        arb_path().prop_map(|path| Request::SaveAs { path }),
+        arb_abs_path().prop_map(|path| Request::SaveAs { path }),
         any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),

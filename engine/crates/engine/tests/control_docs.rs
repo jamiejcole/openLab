@@ -19,15 +19,25 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, RecoveryChoice, Request, RequestId, ResultData,
     ServerMessage, Snapshot, WireCueState,
 };
-use openlab_core::{
-    Command, CueKind, CueProperty, MachineSettings, MediaRef, Workspace, load_show, save_show,
-};
+use openlab_core::{Command, CueKind, CueProperty, MediaRef, Workspace, load_show, save_show};
 use openlab_engine::control::offline::OfflineShow;
-use openlab_engine::control::{Inbox, ManualClock, SaveHook, reply_channel};
-use openlab_engine::persist::{JobKind, load_machine_settings};
+use openlab_engine::control::{DocHook, Inbox, ManualClock, SaveHook, reply_channel};
+use openlab_engine::persist::JobKind;
 use show::*;
 
 const T0: i64 = 1_700_000_000_000;
+
+/// Releases a writer held in a test hook when dropped, so a failing assertion does not turn
+/// into a hang in the writer's `Drop` (declare it after the rig: it drops first).
+struct Unblock(mpsc::Sender<()>);
+
+impl Drop for Unblock {
+    fn drop(&mut self) {
+        for _ in 0..16 {
+            let _ = self.0.send(());
+        }
+    }
+}
 
 struct Rig {
     s: OfflineShow,
@@ -36,13 +46,22 @@ struct Rig {
 }
 
 fn rig_with(ws: Workspace, show_path: Option<PathBuf>, hook: Option<SaveHook>) -> Rig {
+    rig_tweak(ws, |c| {
+        c.show_path = show_path;
+        c.save_hook = hook;
+    })
+}
+
+fn rig_tweak(
+    ws: Workspace,
+    tweak: impl FnOnce(&mut openlab_engine::control::ControlConfig),
+) -> Rig {
     let env = env();
     let clock = ManualClock::new(T0);
     let mut c = config(&ws);
     c.app_dirs = Some(env.dirs.clone());
     c.clock = clock.clock();
-    c.show_path = show_path;
-    c.save_hook = hook;
+    tweak(&mut c);
     Rig {
         s: show_with(ws, c),
         env,
@@ -906,9 +925,15 @@ fn recovery_is_offered_on_open_after_an_unclean_exit_and_nothing_changes_until_a
     let replies = request(&mut r.s, open(&path));
     match data(&replies) {
         ResultData::RecoveryOffer {
+            path: offered,
             workspace_name,
             modified_ms,
         } => {
+            assert_eq!(
+                offered,
+                path.to_string_lossy(),
+                "the offer names the open it answers"
+            );
             assert_eq!(workspace_name, "one");
             assert_eq!(modified_ms, 2_000_000);
         }
@@ -1161,54 +1186,6 @@ fn an_edit_made_while_the_file_is_read_is_not_thrown_away() {
 }
 
 #[test]
-fn recent_files_are_recorded_bounded_pruned_and_persisted() {
-    let mut r = rig(memo_ws("one", &[1]));
-    let mut paths = Vec::new();
-    for n in 0..12 {
-        let p = r.env.show_dir().join(format!("show{n}.openlab"));
-        write_show(&p, &memo_ws(&format!("show {n}"), &[1]));
-        ok_result(&request(&mut r.s, open(&p)));
-        paths.push(p);
-    }
-    let recent = r.s.control().recent_files();
-    assert_eq!(recent.len(), 10, "bounded");
-    assert_eq!(recent[0], paths[11].to_string_lossy());
-    assert_eq!(recent[9], paths[2].to_string_lossy());
-    // Reopening an older one moves it to the front, once.
-    ok_result(&request(&mut r.s, open(&paths[5])));
-    let recent = r.s.control().recent_files();
-    assert_eq!(recent[0], paths[5].to_string_lossy());
-    assert_eq!(
-        recent
-            .iter()
-            .filter(|p| **p == paths[5].to_string_lossy())
-            .count(),
-        1
-    );
-    // Persisted in the machine settings (written by the worker: wait for the file).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let saved = loop {
-        let loaded = load_machine_settings(&r.env.dirs);
-        if loaded.settings.recent_files.first().map(String::as_str)
-            == Some(&*paths[5].to_string_lossy())
-            || std::time::Instant::now() > deadline
-        {
-            break loaded;
-        }
-        thread::yield_now();
-    };
-    assert!(saved.warnings.is_empty());
-    assert_eq!(saved.settings.recent_files, r.s.control().recent_files());
-    // The patch mappings the machine already had are kept in the file.
-    assert!(!saved.settings.workspaces.is_empty());
-    // A show deleted from disk drops out on the next read.
-    fs::remove_file(&paths[5]).unwrap();
-    let recent = r.s.control().recent_files();
-    assert_eq!(recent.len(), 9);
-    assert!(!recent.contains(&paths[5].to_string_lossy().into_owned()));
-}
-
-#[test]
 fn save_as_in_another_folder_keeps_relative_media_pointing_at_the_same_files() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -1296,9 +1273,302 @@ fn without_an_application_folder_saving_is_an_io_error_not_a_crash() {
     assert_eq!(s.control().workspace().name, "other");
 }
 
+#[cfg(unix)]
 #[test]
-fn settings_are_left_alone_when_nothing_was_opened() {
-    let r = rig(memo_ws("one", &[1]));
-    assert!(MachineSettings::default().recent_files.is_empty());
-    assert!(!r.env.dirs.settings_path().exists());
+fn opening_a_fifo_is_an_io_error_not_a_hang() {
+    let mut r = rig(memo_ws("keep", &[1]));
+    let fifo = r.env.show_dir().join("pipe.openlab");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // Answered at once (`request` fails the test if the worker does not answer in time), and
+    // the next request is not refused.
+    assert_eq!(error_code(&request(&mut r.s, open(&fifo))), ErrorCode::Io);
+    ok_result(&request(
+        &mut r.s,
+        Request::New {
+            discard_changes: false,
+        },
+    ));
+}
+
+/// A document hook that blocks its first call until released (a read stuck on a stalled
+/// volume); later calls go through.
+fn stall_first_read() -> (DocHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release = Mutex::new(release);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let hook = DocHook(Arc::new(move || {
+        if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    (hook, entered, release_tx)
+}
+
+#[test]
+fn a_stalled_read_times_out_with_io_and_the_next_request_works() {
+    let (hook, entered, release) = stall_first_read();
+    let mut r = rig_tweak(memo_ws("one", &[1]), |c| {
+        c.doc_hook = Some(hook);
+        c.doc_timeout = std::time::Duration::from_secs(20);
+    });
+    let stuck_show = r.env.show_dir().join("stuck.openlab");
+    write_show(&stuck_show, &memo_ws("stuck", &[8]));
+    let other = r.env.show_dir().join("other.openlab");
+    write_show(&other, &memo_ws("other", &[7]));
+    let (tx, mut rx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(1),
+            request: open(&stuck_show),
+        },
+        reply: tx,
+    });
+    entered.recv().unwrap();
+    // Still waiting just short of the timeout; a second request is refused meanwhile.
+    r.clock.advance(19_999);
+    r.s.tick();
+    assert!(rx.try_recv().is_err());
+    let (rtx, mut rrx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(2),
+            request: Request::ScanRecovery,
+        },
+        reply: rtx,
+    });
+    assert!(matches!(
+        rrx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Error(ref e),
+            ..
+        } if e.code == ErrorCode::CommandRefused
+    ));
+    r.clock.advance(1);
+    r.s.tick();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Error(ref e),
+            ..
+        } if e.code == ErrorCode::Io
+    ));
+    assert_eq!(r.s.control().stuck_doc_workers(), 1);
+    // A fresh worker serves what comes next (the shared queue), over the stuck one.
+    ok_result(&request(
+        &mut r.s,
+        Request::New {
+            discard_changes: false,
+        },
+    ));
+    let replies = request(&mut r.s, open(&other));
+    ok_result(&replies);
+    assert_eq!(snapshot(&replies).workspace.name, "other");
+    // The stuck read comes back much later: its answer is stale and changes nothing, and the
+    // worker leaves.
+    release.send(()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while r.s.control().stuck_doc_workers() > 0 && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(r.s.control().stuck_doc_workers(), 0);
+    r.s.tick();
+    assert_eq!(r.s.control().workspace().name, "other");
+    assert!(
+        rx.try_recv().is_err(),
+        "no second answer to the timed-out request"
+    );
+}
+
+#[test]
+fn a_superseded_save_is_answered_with_the_save_that_replaced_it_even_when_the_first_finished() {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release));
+    let entered_tx = Mutex::new(entered_tx);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let mut r = rig_with(memo_ws("one", &[1]), None, Some(hook));
+    let _unblock = Unblock(release_tx.clone());
+    let path = r.env.show_path();
+    let save = |r: &mut Rig| {
+        let (tx, rx) = reply_channel();
+        let id = r.s.request_id();
+        r.s.deliver(Inbox::Client {
+            message: ClientMessage::Request {
+                id,
+                request: Request::SaveAs {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            },
+            reply: tx,
+        });
+        rx
+    };
+    let mut s1 = save(&mut r);
+    entered.recv().unwrap(); // s1 is running
+    // Each save holds an edit the previous one lacks, so only a later save may answer for an
+    // earlier one.
+    let edit = |r: &mut Rig, name: &str| {
+        let (tx, _rx) = reply_channel();
+        let id = r.s.request_id();
+        r.s.deliver(Inbox::Client {
+            message: ClientMessage::Command {
+                id,
+                command: Box::new(Command::SetCueProperty {
+                    id: show::id(1),
+                    property: CueProperty::Name { value: name.into() },
+                }),
+            },
+            reply: tx,
+        });
+    };
+    edit(&mut r, "two");
+    let mut s2 = save(&mut r);
+    edit(&mut r, "three");
+    let mut s3 = save(&mut r); // replaces s2 in the writer's queue
+    release_tx.send(()).unwrap(); // s1 finishes
+    entered.recv().unwrap(); // s3 is running
+    r.s.tick();
+    // s1 is answered; s2 waits for s3 (it is not a failure); s3 is still running.
+    assert!(matches!(
+        s1.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    ));
+    let got = s2.try_recv();
+    assert!(
+        got.is_err(),
+        "s2 waits for the save that replaced it: {got:?}"
+    );
+    assert!(s3.try_recv().is_err());
+    release_tx.send(()).unwrap();
+    r.s.settle_docs();
+    for rx in [&mut s2, &mut s3] {
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn an_autosave_in_flight_cannot_bring_back_edits_the_operator_discarded() {
+    for revert in [true, false] {
+        let (entered_tx, entered) = mpsc::channel::<()>();
+        let (release_tx, release) = mpsc::channel::<()>();
+        let release = Arc::new(Mutex::new(release));
+        let entered_tx = Mutex::new(entered_tx);
+        let hook = SaveHook(Arc::new(move |kind: JobKind| {
+            if kind == JobKind::Autosave {
+                let _ = entered_tx.lock().unwrap().send(());
+                let _ = release.lock().unwrap().recv();
+            }
+        }));
+        let mut r = rig_with(memo_ws("one", &[1]), None, Some(hook));
+        let path = r.env.show_path();
+        ok_result(&request(
+            &mut r.s,
+            Request::SaveAs {
+                path: path.to_string_lossy().into_owned(),
+            },
+        ));
+        rename(&mut r.s, 1, "edited");
+        r.s.tick();
+        r.clock.advance(31_000);
+        r.s.tick();
+        entered.recv().unwrap(); // the autosave of the edit is mid-write
+        let (tx, mut rx) = reply_channel();
+        let id = r.s.request_id();
+        let what = if revert {
+            Request::Revert {
+                discard_changes: true,
+            }
+        } else {
+            Request::New {
+                discard_changes: true,
+            }
+        };
+        r.s.deliver(Inbox::Client {
+            message: ClientMessage::Request { id, request: what },
+            reply: tx,
+        });
+        // The read is answered by the worker; apply it (the writer is still blocked).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut replies = Vec::new();
+        while !replies
+            .iter()
+            .any(|m| matches!(m, ServerMessage::Result { .. }))
+        {
+            r.s.tick();
+            replies.extend(std::iter::from_fn(|| rx.try_recv().ok()));
+            assert!(std::time::Instant::now() < deadline, "no answer");
+            thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+        r.s.settle_docs();
+        // The autosave landed, and the removal ran after it: nothing is left to offer.
+        assert!(
+            names(&r.env.dirs.recovery_dir()).is_empty(),
+            "revert {revert}: {:?}",
+            names(&r.env.dirs.recovery_dir())
+        );
+        if revert {
+            let replies = request(&mut r.s, open(&path));
+            assert!(matches!(outcome(&replies), Outcome::Ok(ok) if ok.data.is_none()));
+        }
+    }
+}
+
+#[test]
+fn reopening_the_same_show_spelled_differently_keeps_the_autosave_just_restored() {
+    let (env, path, id) = crash_with_autosave(saved_rig(memo_ws("one", &[1])));
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    // Restore it, edit on top, then reopen with discard under another spelling of the path.
+    let spelled = format!("{}/./My Show.openlab", r.env.show_dir().display());
+    assert_ne!(spelled, path.to_string_lossy());
+    ok_result(&request(
+        &mut r.s,
+        Request::Open {
+            path: path.to_string_lossy().into_owned(),
+            discard_changes: false,
+            recovery: Some(RecoveryChoice::Restore),
+        },
+    ));
+    let replies = request(
+        &mut r.s,
+        Request::Open {
+            path: spelled,
+            discard_changes: true,
+            recovery: Some(RecoveryChoice::Restore),
+        },
+    );
+    ok_result(&replies);
+    assert_eq!(
+        snapshot(&replies)
+            .workspace
+            .find_cue(id_of(1))
+            .unwrap()
+            .name,
+        "unsaved work"
+    );
+    assert!(
+        r.env.dirs.recovery_path(id, Some(&path)).exists(),
+        "the autosave restored from is not deleted by the discard"
+    );
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Documents (M4.4, docs/control.md "Documents"): new, open, open-recovery, save, save-as,
-//! revert, autosave and the recent-files list.
+//! revert and autosave.
 //!
 //! Nothing here touches the disk on the control thread. Saves and autosaves go to the
 //! [`SaveWriter`] thread (the control thread clones the workspace and polls for the answer each
@@ -14,7 +14,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,20 +26,24 @@ use openlab_core::protocol::{
     RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
-    CueListId, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES, MachineSettings, MediaRef, PatchId,
-    PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due, is_absolute, load_show,
-    portable_ref, relink_command,
+    CueListId, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES, MediaRef, PatchId, PathStyle,
+    Relink, Workspace, WorkspaceId, audio_media, autosave_due, comparison_key, is_absolute,
+    load_show, portable_ref, relink_command, to_portable,
 };
 
 use super::inbox::reply;
 use super::{Control, ControlConfig, ControlError, Inbox, ReplyTx, Scope, notice, ok};
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
-    check_recovery, clear_recovery, media_path, read_text, save_machine_settings, scan_recovery,
+    check_recovery, media_path, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
 const MAX_LOAD_NOTICES: usize = 50;
+/// Document workers abandoned while stuck in a read, at most; beyond this, requests that need
+/// to read a file are refused until one of them comes back (each stuck thread is a leaked
+/// thread, like a stuck probe worker).
+const MAX_STUCK_WORKERS: usize = 4;
 /// The shortest autosave period honoured, whatever the workspace says.
 const MIN_AUTOSAVE_SECS: f64 = 1.0;
 
@@ -109,6 +113,17 @@ impl fmt::Debug for SaveHook {
     }
 }
 
+/// Called on the document worker at the start of each read (tests hold it to simulate a stalled
+/// volume).
+#[derive(Clone)]
+pub struct DocHook(pub Arc<dyn Fn() + Send + Sync>);
+
+impl fmt::Debug for DocHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DocHook")
+    }
+}
+
 /// A workspace the document worker has read, ready to install.
 #[derive(Debug)]
 pub struct Loaded {
@@ -118,6 +133,8 @@ pub struct Loaded {
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
     notices: Vec<WireWarning>,
+    /// A revert: the autosave of the edits just dropped goes (after any write of it in flight).
+    clear_autosave: bool,
 }
 
 #[derive(Debug)]
@@ -129,6 +146,7 @@ pub enum DocAnswer {
     /// An autosave newer than the show file exists and the request did not say what to do.
     Offer {
         ticket: u64,
+        path: String,
         workspace_name: String,
         modified_ms: i64,
     },
@@ -173,12 +191,6 @@ enum DocJob {
     Scan {
         ticket: u64,
     },
-    /// The operator dropped unsaved edits: their autosave must not be offered again.
-    ClearRecovery {
-        workspace: WorkspaceId,
-        path: Option<PathBuf>,
-    },
-    SaveSettings(Box<MachineSettings>),
 }
 
 /// What the request being worked on by the document worker is.
@@ -187,6 +199,8 @@ struct PendingDoc {
     id: RequestId,
     reply: ReplyTx,
     discard: bool,
+    /// When the request was handed to the worker ([`ControlConfig::clock`], milliseconds).
+    started_ms: i64,
 }
 
 struct PendingSave {
@@ -203,13 +217,27 @@ struct PendingSave {
 
 type AutosaveRx = Receiver<Result<Option<PathBuf>, PersistError>>;
 
+type ClearRx = Receiver<Result<(), PersistError>>;
+
 /// Document state of the control loop.
 pub(super) struct Docs {
     writer: Option<SaveWriter>,
-    worker: Sender<DocJob>,
+    jobs: Sender<DocJob>,
+    /// Where new workers take jobs from: every worker shares one queue, so the jobs behind a
+    /// stuck read go to the replacement.
+    queue: crossbeam_channel::Receiver<DocJob>,
+    /// The current worker's "abandoned" flag.
+    worker: Arc<AtomicBool>,
+    /// Abandoned workers still stuck in their read.
+    stuck: Arc<AtomicUsize>,
+    dirs: Option<AppDirs>,
+    inbox: Sender<Inbox>,
+    hook: Option<DocHook>,
+    timeout_ms: i64,
     ticket: u64,
     pending: Option<PendingDoc>,
     saves: Vec<PendingSave>,
+    clears: Vec<ClearRx>,
     autosave: Option<AutosaveRx>,
     autosave_failed: bool,
     /// The revision last handed to the autosave.
@@ -236,19 +264,21 @@ impl Docs {
             (Some(dirs), None) => Some(SaveWriter::spawn(dirs.clone())?),
             (None, _) => None,
         };
-        let (worker, jobs) = crossbeam_channel::unbounded();
-        let dirs = config.app_dirs.clone();
-        // Never joined: a read stuck on a stalled volume must not hang shutdown. The thread ends
-        // once the control loop (the job sender) is gone and its current job is done.
-        thread::Builder::new()
-            .name("openlab-docs".into())
-            .spawn(move || work(&jobs, dirs.as_ref(), &inbox))?;
-        Ok(Self {
+        let (jobs, queue) = crossbeam_channel::unbounded();
+        let mut docs = Self {
             writer,
-            worker,
+            jobs,
+            queue,
+            worker: Arc::new(AtomicBool::new(false)),
+            stuck: Arc::new(AtomicUsize::new(0)),
+            dirs: config.app_dirs.clone(),
+            inbox,
+            hook: config.doc_hook.clone(),
+            timeout_ms: i64::try_from(config.doc_timeout.as_millis()).unwrap_or(i64::MAX),
             ticket: 0,
             pending: None,
             saves: Vec::new(),
+            clears: Vec::new(),
             autosave: None,
             autosave_failed: false,
             autosaved_revision: None,
@@ -257,69 +287,86 @@ impl Docs {
             epoch: 0,
             notices: Vec::new(),
             resend_snapshot: false,
-        })
+        };
+        docs.spawn_worker()?;
+        Ok(docs)
+    }
+
+    /// Starts a worker on the shared queue. Never joined: a read stuck on a stalled volume must
+    /// not hang shutdown; the thread ends once the control loop (the job sender) is gone and
+    /// its current job is done.
+    fn spawn_worker(&mut self) -> std::io::Result<()> {
+        let abandoned = Arc::new(AtomicBool::new(false));
+        self.worker = Arc::clone(&abandoned);
+        let (queue, dirs, inbox, hook, stuck) = (
+            self.queue.clone(),
+            self.dirs.clone(),
+            self.inbox.clone(),
+            self.hook.clone(),
+            Arc::clone(&self.stuck),
+        );
+        thread::Builder::new()
+            .name("openlab-docs".into())
+            .spawn(move || {
+                work(
+                    &queue,
+                    dirs.as_ref(),
+                    &inbox,
+                    hook.as_ref(),
+                    &abandoned,
+                    &stuck,
+                )
+            })
+            .map(|_| ())
     }
 
     /// Requests being worked on (a read, a save): tests wait until it is zero.
     pub(super) fn busy(&self) -> usize {
         usize::from(self.pending.is_some())
             + self.saves.len()
+            + self.clears.len()
             + usize::from(self.autosave.is_some())
     }
 }
 
 // ---- The document worker thread -------------------------------------------------------------
 
-fn work(jobs: &crossbeam_channel::Receiver<DocJob>, dirs: Option<&AppDirs>, inbox: &Sender<Inbox>) {
+fn work(
+    jobs: &crossbeam_channel::Receiver<DocJob>,
+    dirs: Option<&AppDirs>,
+    inbox: &Sender<Inbox>,
+    hook: Option<&DocHook>,
+    abandoned: &AtomicBool,
+    stuck: &AtomicUsize,
+) {
     while let Ok(job) = jobs.recv() {
+        if let Some(hook) = hook {
+            (hook.0)();
+        }
         let answer = match job {
             DocJob::Open {
                 ticket,
                 path,
                 recovery,
-            } => Some(open(ticket, &path, recovery, dirs)),
-            DocJob::Revert { ticket, path } => Some(revert(ticket, &path, dirs)),
+            } => open(ticket, &path, recovery, dirs),
+            DocJob::Revert { ticket, path } => revert(ticket, &path),
             DocJob::OpenRecovery {
                 ticket,
                 workspace,
                 path_hash,
                 modified_ms,
-            } => Some(open_recovery(
-                ticket,
-                workspace,
-                path_hash.as_deref(),
-                modified_ms,
-                dirs,
-            )),
-            DocJob::Scan { ticket } => Some(scan(ticket, dirs)),
-            DocJob::ClearRecovery { workspace, path } => {
-                if let Some(dirs) = dirs
-                    && let Err(e) = clear_recovery(dirs, workspace, path.as_deref())
-                {
-                    let _ = inbox.send(Inbox::Log {
-                        level: LogLevel::Warn,
-                        message: format!(
-                            "could not remove the recovery file of dropped edits: {e}"
-                        ),
-                    });
-                }
-                None
-            }
-            DocJob::SaveSettings(settings) => {
-                if let Some(dirs) = dirs
-                    && let Err(e) = save_machine_settings(dirs, &settings)
-                {
-                    let _ = inbox.send(Inbox::Log {
-                        level: LogLevel::Warn,
-                        message: format!("could not save the recent files list: {e}"),
-                    });
-                }
-                None
-            }
+            } => open_recovery(ticket, workspace, path_hash.as_deref(), modified_ms, dirs),
+            DocJob::Scan { ticket } => scan(ticket, dirs),
         };
-        if let Some(answer) = answer
-            && inbox.send(Inbox::Doc(answer)).is_err()
-        {
+        // The control loop gave up on the request while this was reading: its answer is stale
+        // (it has another ticket), and this thread leaves the work to the replacement.
+        let gone = abandoned.load(Ordering::SeqCst);
+        let sent = inbox.send(Inbox::Doc(answer)).is_ok();
+        if gone {
+            // After the send: a count of zero means the stale answer is already in the inbox.
+            stuck.fetch_sub(1, Ordering::SeqCst);
+        }
+        if !sent || gone {
             break;
         }
     }
@@ -386,6 +433,7 @@ fn open(
                 None => {
                     return DocAnswer::Offer {
                         ticket,
+                        path: path.to_string_lossy().into_owned(),
                         workspace_name: offer.loaded.workspace.name.clone(),
                         modified_ms: offer.recovery_modified_ms,
                     };
@@ -420,19 +468,16 @@ fn open(
             path: Some(path.to_path_buf()),
             dirty,
             notices,
+            clear_autosave: false,
         }),
     }
 }
 
-fn revert(ticket: u64, path: &Path, dirs: Option<&AppDirs>) -> DocAnswer {
+fn revert(ticket: u64, path: &Path) -> DocAnswer {
     let shown = match read_show(path) {
         Ok(shown) => shown,
         Err((code, message)) => return failed(ticket, code, message),
     };
-    // The operator dropped the edits on purpose: their autosave must not come back.
-    if let Some(dirs) = dirs {
-        let _ = clear_recovery(dirs, shown.workspace.id, Some(path));
-    }
     DocAnswer::Loaded {
         ticket,
         loaded: Box::new(Loaded {
@@ -440,6 +485,9 @@ fn revert(ticket: u64, path: &Path, dirs: Option<&AppDirs>) -> DocAnswer {
             workspace: shown.workspace,
             path: Some(path.to_path_buf()),
             dirty: false,
+            // The operator dropped the edits on purpose: their autosave must not come back
+            // (the control loop queues the removal behind any write of it).
+            clear_autosave: true,
         }),
     }
 }
@@ -489,6 +537,7 @@ fn open_recovery(
             workspace: shown.workspace,
             path: None,
             dirty: true,
+            clear_autosave: false,
         }),
     }
 }
@@ -558,6 +607,13 @@ fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> Vec<Relink>
         .collect()
 }
 
+/// Whether two paths name the same file, compared like media paths (case, NFC and `..`
+/// ignored): the same show reopened under another spelling is still the same file.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| comparison_key(&to_portable(&p.to_string_lossy(), PathStyle::host()));
+    key(a) == key(b)
+}
+
 fn folder_of(path: &Path) -> Option<PathBuf> {
     path.parent().map(Path::to_path_buf)
 }
@@ -581,14 +637,14 @@ impl Control {
             },
             Request::SaveAs { path } => self.start_save(id, to, PathBuf::from(path)),
             Request::ScanRecovery => {
-                if !self.doc_gate(id, to, true) {
+                if !self.doc_gate(id, to, true, true) {
                     return;
                 }
                 let ticket = self.next_ticket(id, to, false);
                 self.send_job(DocJob::Scan { ticket }, id, to);
             }
             Request::New { discard_changes } => {
-                if !self.doc_gate(id, to, discard_changes) {
+                if !self.doc_gate(id, to, discard_changes, false) {
                     return;
                 }
                 let workspace = Workspace::new_empty(
@@ -601,6 +657,7 @@ impl Control {
                     path: None,
                     dirty: false,
                     notices: Vec::new(),
+                    clear_autosave: false,
                 };
                 self.install(loaded, discard_changes);
                 self.finish_install(id, to);
@@ -610,7 +667,7 @@ impl Control {
                 discard_changes,
                 recovery,
             } => {
-                if !self.doc_gate(id, to, discard_changes) {
+                if !self.doc_gate(id, to, discard_changes, true) {
                     return;
                 }
                 let ticket = self.next_ticket(id, to, discard_changes);
@@ -627,7 +684,7 @@ impl Control {
                 modified_ms,
                 discard_changes,
             } => {
-                if !self.doc_gate(id, to, discard_changes) {
+                if !self.doc_gate(id, to, discard_changes, true) {
                     return;
                 }
                 let ticket = self.next_ticket(id, to, discard_changes);
@@ -649,7 +706,7 @@ impl Control {
                     );
                     return;
                 };
-                if !self.doc_gate(id, to, discard_changes) {
+                if !self.doc_gate(id, to, discard_changes, true) {
                     return;
                 }
                 let ticket = self.next_ticket(id, to, discard_changes);
@@ -660,14 +717,24 @@ impl Control {
     }
 
     /// Whether a request that replaces the workspace (or reads files) may start: only one at a
-    /// time, and not over unsaved edits unless the request discards them.
-    fn doc_gate(&self, id: RequestId, to: &ReplyTx, discard: bool) -> bool {
+    /// time, and not over unsaved edits unless the request discards them. `reads`: the request
+    /// needs the document worker.
+    fn doc_gate(&self, id: RequestId, to: &ReplyTx, discard: bool, reads: bool) -> bool {
         if self.docs.pending.is_some() {
             fail(
                 to,
                 id,
                 ErrorCode::CommandRefused,
                 "another document request is still being handled",
+            );
+            return false;
+        }
+        if reads && self.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
+            fail(
+                to,
+                id,
+                ErrorCode::Io,
+                "reading files is stuck (a volume has stopped answering); restart openLab",
             );
             return false;
         }
@@ -690,12 +757,13 @@ impl Control {
             id,
             reply: to.clone(),
             discard,
+            started_ms: self.config.clock.now_ms(),
         });
         self.docs.ticket
     }
 
     fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
-        if self.docs.worker.send(job).is_err() {
+        if self.docs.jobs.send(job).is_err() {
             self.docs.pending = None;
             fail(
                 to,
@@ -715,6 +783,7 @@ impl Control {
         match answer {
             DocAnswer::Failed { code, message, .. } => fail(to, id, code, message),
             DocAnswer::Offer {
+                path,
                 workspace_name,
                 modified_ms,
                 ..
@@ -722,6 +791,7 @@ impl Control {
                 to,
                 id,
                 ResultData::RecoveryOffer {
+                    path,
                     workspace_name,
                     modified_ms,
                 },
@@ -800,14 +870,24 @@ impl Control {
             path,
             dirty,
             notices,
+            clear_autosave,
         } = loaded;
-        let same_file = self.ws.id == workspace.id && self.config.show_path == path;
-        if discard && self.is_dirty() && !same_file {
-            let job = DocJob::ClearRecovery {
-                workspace: self.ws.id,
-                path: self.config.show_path.clone(),
+        let same_file = self.ws.id == workspace.id
+            && match (&self.config.show_path, &path) {
+                (Some(a), Some(b)) => same_path(a, b),
+                (None, None) => true,
+                _ => false,
             };
-            let _ = self.docs.worker.send(job);
+        // The autosave of dropped edits goes, after any write of it still in flight (the writer
+        // runs the removal after its current job). Not when the same file is reopened: its
+        // autosave may be the one just restored.
+        if (discard && self.is_dirty() && !same_file) || clear_autosave {
+            let (id, from) = if clear_autosave {
+                (workspace.id, path.clone())
+            } else {
+                (self.ws.id, self.config.show_path.clone())
+            };
+            self.clear_autosave_of(id, from);
         }
         self.stop_everything();
         self.docs.epoch += 1;
@@ -844,8 +924,14 @@ impl Control {
         self.warnings_dirty = false;
         self.refresh_warnings();
         self.mixer.pump();
-        if let Some(path) = self.config.show_path.clone() {
-            self.remember_recent(&path);
+    }
+
+    /// Queues the removal of a workspace's recovery file behind the writer's current job.
+    fn clear_autosave_of(&mut self, workspace: WorkspaceId, show_path: Option<PathBuf>) {
+        if let Some(writer) = &self.docs.writer {
+            self.docs
+                .clears
+                .push(writer.clear_recovery(workspace, show_path));
         }
     }
 
@@ -879,16 +965,6 @@ impl Control {
 
     fn show_dir(&self) -> Option<PathBuf> {
         self.config.show_path.as_deref().and_then(folder_of)
-    }
-
-    fn remember_recent(&mut self, path: &Path) {
-        self.config
-            .machine
-            .push_recent_file(&path.to_string_lossy());
-        let _ = self
-            .docs
-            .worker
-            .send(DocJob::SaveSettings(Box::new(self.config.machine.clone())));
     }
 
     // ---- Saving -----------------------------------------------------------------------------
@@ -943,7 +1019,9 @@ impl Control {
         if self.docs.resend_snapshot && self.out.has_room() {
             self.resend_snapshot();
         }
+        self.check_stalled_read();
         self.poll_saves();
+        self.poll_clears();
         self.poll_autosave();
         self.autosave_if_due();
     }
@@ -952,26 +1030,51 @@ impl Control {
         if self.docs.saves.is_empty() {
             return;
         }
+        // Collect every answer first: a superseded save is answered with the save that replaced
+        // it, which may be later in the list (or already finished).
         let mut waiting = Vec::new();
+        let mut finished = Vec::new();
         for save in std::mem::take(&mut self.docs.saves) {
             match save.rx.try_recv() {
-                Ok(result) => self.save_done(save, result, &mut waiting),
+                Ok(result) => finished.push((save, result)),
                 Err(TryRecvError::Empty) => waiting.push(save),
                 Err(TryRecvError::Disconnected) => {
-                    self.save_done(save, Err(PersistError::WriterGone), &mut waiting);
+                    finished.push((save, Err(PersistError::WriterGone)));
                 }
             }
         }
-        // `save_done` may have queued waiters onto a newer save for the same file.
+        let (superseded, finished): (Vec<_>, Vec<_>) = finished
+            .into_iter()
+            .partition(|(_, r)| matches!(r, Err(PersistError::Superseded)));
+        let mut finished = finished;
+        for (mut old, _) in superseded {
+            // The newest save of the same file that holds at least these edits.
+            let newer = waiting
+                .iter_mut()
+                .map(|p| (p.revision, &mut p.waiters, &p.path))
+                .chain(
+                    finished
+                        .iter_mut()
+                        .map(|(p, _)| (p.revision, &mut p.waiters, &p.path)),
+                )
+                .filter(|(revision, _, path)| *revision >= old.revision && **path == old.path)
+                .max_by_key(|(revision, _, _)| *revision);
+            match newer {
+                Some((_, waiters, _)) => waiters.append(&mut old.waiters),
+                None => {
+                    for (id, to) in &old.waiters {
+                        fail(to, *id, ErrorCode::Internal, "the save was superseded");
+                    }
+                }
+            }
+        }
+        for (save, result) in finished {
+            self.save_done(save, result);
+        }
         self.docs.saves.extend(waiting);
     }
 
-    fn save_done(
-        &mut self,
-        mut save: PendingSave,
-        result: Result<SaveReport, PersistError>,
-        waiting: &mut [PendingSave],
-    ) {
+    fn save_done(&mut self, save: PendingSave, result: Result<SaveReport, PersistError>) {
         match result {
             Ok(report) => {
                 for warning in report.warnings {
@@ -982,22 +1085,6 @@ impl Control {
                 }
                 for (id, to) in &save.waiters {
                     reply(to, ok(*id, None));
-                }
-            }
-            Err(PersistError::Superseded) => {
-                // A newer save of the same file replaced this one before it ran; it holds at
-                // least these edits, so the answer to this request is that save's.
-                let newer = waiting
-                    .iter_mut()
-                    .chain(self.docs.saves.iter_mut())
-                    .find(|p| p.path == save.path);
-                match newer {
-                    Some(newer) => newer.waiters.append(&mut save.waiters),
-                    None => {
-                        for (id, to) in &save.waiters {
-                            fail(to, *id, ErrorCode::Internal, "the save was superseded");
-                        }
-                    }
                 }
             }
             Err(e) => {
@@ -1019,7 +1106,6 @@ impl Control {
             if self.show_dir() != old_dir {
                 self.moved_folder(old_dir.as_deref(), save.rebase, clean_before);
             }
-            self.remember_recent(&save.path);
         }
         if !self.is_dirty() {
             self.docs.dirty_since = None;
@@ -1058,6 +1144,65 @@ impl Control {
         if changed {
             self.resend_snapshot();
         }
+    }
+
+    /// A read that has not answered within the timeout (a volume that stopped answering): the
+    /// request fails with `io`, the worker is abandoned (it ends when its read returns; if it
+    /// never does, it is one leaked thread, bounded by [`MAX_STUCK_WORKERS`]) and a fresh one
+    /// takes over the shared queue.
+    fn check_stalled_read(&mut self) {
+        let Some(pending) = &self.docs.pending else {
+            return;
+        };
+        if self
+            .config
+            .clock
+            .now_ms()
+            .saturating_sub(pending.started_ms)
+            < self.docs.timeout_ms
+        {
+            return;
+        }
+        let Some(pending) = self.docs.pending.take() else {
+            return;
+        };
+        fail(
+            &pending.reply,
+            pending.id,
+            ErrorCode::Io,
+            format!(
+                "reading the file did not finish within {} s; its volume may have stopped answering",
+                self.docs.timeout_ms / 1000
+            ),
+        );
+        self.docs.worker.store(true, Ordering::SeqCst);
+        self.docs.stuck.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = self.docs.spawn_worker() {
+            self.log(
+                LogLevel::Error,
+                format!("could not start a replacement document worker: {e}"),
+            );
+        }
+        self.log(
+            LogLevel::Error,
+            "a document read stalled; its worker was abandoned".to_owned(),
+        );
+    }
+
+    fn poll_clears(&mut self) {
+        let mut waiting = Vec::new();
+        for rx in std::mem::take(&mut self.docs.clears) {
+            match rx.try_recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => self.log(
+                    LogLevel::Warn,
+                    format!("could not remove the recovery file of dropped edits: {e}"),
+                ),
+                Err(TryRecvError::Empty) => waiting.push(rx),
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+        self.docs.clears = waiting;
     }
 
     fn poll_autosave(&mut self) {
@@ -1117,6 +1262,11 @@ impl Control {
         self.docs.last_autosave = Some(now_ms);
     }
 
+    /// Document workers abandoned in a stalled read that have not returned yet.
+    pub fn stuck_doc_workers(&self) -> usize {
+        self.docs.stuck.load(Ordering::SeqCst)
+    }
+
     /// Requests, saves and autosaves still being worked on.
     pub fn docs_busy(&self) -> usize {
         self.docs.busy()
@@ -1133,17 +1283,5 @@ impl Control {
 
     pub fn runtime_seq(&self) -> u64 {
         self.runtime_seq
-    }
-
-    /// The recent files, newest first, without the ones that no longer exist (WS-08): pruned on
-    /// every read, so a deleted show drops out of the list.
-    pub fn recent_files(&self) -> Vec<String> {
-        self.config
-            .machine
-            .recent_files
-            .iter()
-            .filter(|p| Path::new(p).is_file())
-            .cloned()
-            .collect()
     }
 }

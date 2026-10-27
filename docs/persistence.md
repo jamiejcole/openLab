@@ -81,7 +81,7 @@ off and leaves existing ones alone.
 path (a duplicated show, or work from before the first save). They are never offered to this file and
 never touched; the engine reports them as a `recovery_other_copies` notice when the show is opened.
 
-The restore prompt is the protocol's (M4.4): `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore` ([protocol.md](protocol.md) "Replacing the workspace"). Restoring opens the autosave, bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing. `ignore` opens the saved file and leaves the autosave in place (it is offered again next time). `revert`, and `new`/`open` with `discard_changes` over unsaved edits, delete the autosave of the dropped edits. `other_copies` of a recovery check are summed in a `recovery_other_copies` notice in the workspace warnings; an unusable autosave is a `recovery_unusable` notice. Load repairs of the opened show are `load_repair` notices (at most 50, then a summary).
+The restore prompt is the protocol's (M4.4): `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore` ([protocol.md](protocol.md) "Replacing the workspace"). Restoring opens the autosave, bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing. `ignore` opens the saved file and leaves the autosave in place (it is offered again next time). `revert`, and `new`/`open` with `discard_changes` over unsaved edits, remove the autosave of the dropped edits through the writer thread, after any autosave write in flight (the same file reopened is exempt: its autosave may be the one just restored). `other_copies` of a recovery check are summed in a `recovery_other_copies` notice in the workspace warnings; an unusable autosave is a `recovery_unusable` notice. Load repairs of the opened show are `load_repair` notices (at most 50, then a summary).
 
 ### When the show file cannot be loaded
 
@@ -109,7 +109,6 @@ files, so call it off the control thread: the `scan_recovery` request runs it on
 {
   "settings_version": 1,
   "backup_keep": 20,
-  "recent_files": ["/Users/sam/Shows/Hamlet.openlab"],
   "workspaces": {
     "<workspace-id>": {
       "patches": { "<patch-id>": { "device": "Scarlett 18i20", "channels": [4, 5] } }
@@ -127,7 +126,7 @@ warning; `backup_keep` is clamped. The engine keeps a copy of a file that produc
 once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch
 silent and its cues broken, never a crash.
 
-`recent_files` (WS-08) holds native paths, newest first. Loading drops empty, over-long (4096 bytes), NUL-containing and duplicate entries (duplicates compared like media paths) and keeps the first 10, with a warning; a file without the key loads as empty. Writing keeps the other settings. The engine records a show after a successful open or save-as and prunes missing files on read (`Control::recent_files`, and at start); it does not touch the list otherwise. Listing them to the UI is not on the protocol yet (PROGRESS M4.4b).
+**Recent files and open-on-launch (WS-08) are app-side**: the engine keeps no list. (A `recent_files` key written by an earlier build is ignored when the file is loaded; a later write drops it.)
 
 Settings that travel with the show (hotkeys, autosave interval, passcode, …) stay in the show file
 (WS-06); per-cue-type defaults are deferred (REQUIREMENTS §21).
