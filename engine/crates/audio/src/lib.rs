@@ -20,6 +20,7 @@ mod mp4_priming;
 mod negotiate;
 mod offline;
 mod output;
+mod pcm;
 mod plan;
 mod resample;
 mod stream;
