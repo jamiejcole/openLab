@@ -1060,13 +1060,36 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     }
     producer.join().unwrap();
     // It reads again: some logs (what was already on the way), then a fresh snapshot instead
-    // of the lost rest.
+    // of the lost rest. Whether the connection's writes stall at once depends on the OS's
+    // socket buffers: where they keep making progress for a while (Windows loopback), the
+    // connection resyncs while the producer is still sending, so logs made after that resync
+    // (and, if the queue overflows again, further snapshots) follow the first snapshot. All
+    // of that is correct; every snapshot is at revision 5.
     let mut logs = 0;
+    let mut snapshots = 0;
     loop {
         match next(&mut stalled).await.expect("closed") {
             ServerMessage::Log { .. } => logs += 1,
             ServerMessage::Snapshot { snapshot } => {
                 assert_eq!(snapshot.revision, 5);
+                snapshots += 1;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    // Later broadcasts are filtered against the snapshot: 5 is in it, 6 is new.
+    f.out.try_send(changed(5)).unwrap();
+    f.out.try_send(changed(6)).unwrap();
+    loop {
+        match next(&mut stalled).await.expect("closed") {
+            ServerMessage::Log { .. } => logs += 1,
+            ServerMessage::Snapshot { snapshot } => {
+                assert_eq!(snapshot.revision, 5);
+                snapshots += 1;
+            }
+            ServerMessage::ModelChanged { revision, .. } => {
+                assert_eq!(revision, 6, "model_changed 5 was not filtered");
                 break;
             }
             other => panic!("{other:?}"),
@@ -1074,18 +1097,16 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     }
     assert!(
         logs < total,
-        "nothing was dropped: the queue never overflowed"
+        "nothing was dropped: the queue never overflowed ({snapshots} snapshots)"
     );
-    // Later broadcasts are filtered against the snapshot: 5 is in it, 6 is new.
-    f.out.try_send(changed(5)).unwrap();
-    f.out.try_send(changed(6)).unwrap();
-    assert!(matches!(
-        next(&mut stalled).await,
-        Some(ServerMessage::ModelChanged { revision: 6, .. })
-    ));
-    // The server's own snapshot request leaks no result.
+    // The server's own snapshot requests leak no result.
     send(&mut stalled, &go(1)).await;
-    assert_eq!(wait_result(&mut stalled, 1).await.len(), 1);
+    let seen = wait_result(&mut stalled, 1).await;
+    assert!(
+        seen.iter()
+            .all(|m| !matches!(m, ServerMessage::Result { id, .. } if id.0 != 1)),
+        "{seen:?}"
+    );
 }
 
 /// Waits until the server closes a new connection without upgrading it.
