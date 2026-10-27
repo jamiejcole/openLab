@@ -169,7 +169,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
-        outlineView.registerForDraggedTypes([Self.dragType])
+        outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
@@ -574,10 +574,46 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return (node.parent, (siblings.firstIndex { $0 === node } ?? siblings.count - 1) + 1)
     }
 
+    /// What a drop of files from Finder would do.
+    enum FileDrop: Equatable {
+        case replace(ModelID, URL)
+        case insert([URL], ModelID?, Int)
+    }
+
+    var onFileDrop: ((FileDrop) -> Void)?
+
+    /// The file URLs of a drag from Finder (empty for a drag of our own rows).
+    private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
+        guard dragged.isEmpty else { return [] }
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
+    /// What a file drop does, or nil to refuse it: all audio files, nothing in Show Mode. A single
+    /// file dropped on an audio cue's row replaces its file; anything else makes cues where it lands.
+    func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
+        guard !isEditLocked, CueEditor.hasAudioExtensions(urls) else { return nil }
+        if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
+            node.cue.kindType == "audio"
+        {
+            return .replace(node.id, urls[0])
+        }
+        let target = dropTarget(item, index)
+        return .insert(urls, target.parent?.id, target.index)
+    }
+
     func outlineView(
         _ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
+        let files = fileURLs(info)
+        if !files.isEmpty {
+            guard let plan = fileDropPlan(files, item: item, index: index) else { return [] }
+            if case .insert(_, let parent, let at) = plan {
+                outlineView.setDropItem(parent.flatMap { nodes[$0] }, dropChildIndex: at)
+            }
+            return .copy
+        }
         guard !isEditLocked, !dragged.isEmpty else { return [] }
         let target = dropTarget(item, index)
         guard CueEditor.canDrop(dragged, into: target.parent) else { return [] }
@@ -588,6 +624,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineView(
         _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
     ) -> Bool {
+        let files = fileURLs(info)
+        if !files.isEmpty {
+            guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
+            onFileDrop?(plan)
+            return true
+        }
         guard !isEditLocked, !dragged.isEmpty else { return false }
         let target = dropTarget(item, index)
         guard CueEditor.canDrop(dragged, into: target.parent) else { return false }
