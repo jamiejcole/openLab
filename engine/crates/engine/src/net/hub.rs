@@ -109,7 +109,9 @@ impl Hub {
                 revision: snapshot.revision,
                 seq: snapshot.runtime_seq,
             },
-            ServerMessage::Progress { .. } | ServerMessage::Meters { .. } => Kind::Lossy,
+            ServerMessage::Progress { .. }
+            | ServerMessage::Meters { .. }
+            | ServerMessage::Status { .. } => Kind::Lossy,
             _ => Kind::State,
         };
         // Encoded before the lock: a multi-MiB message must not hold up `register`/`unregister`.

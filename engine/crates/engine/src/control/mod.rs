@@ -13,6 +13,7 @@ pub mod devices;
 mod docs;
 mod inbox;
 mod media;
+mod observe;
 pub mod offline;
 mod patches;
 pub mod plan;
@@ -32,8 +33,9 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
-    ErrorCode, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem, Request,
-    ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem, WireWarning,
+    ErrorCode, LogKind, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem,
+    Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem,
+    WireWarning,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
@@ -54,6 +56,7 @@ use devices::{Device, DeviceAnswer, DeviceEvent};
 use docs::Docs;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
+use observe::Observe;
 use patches::Patches;
 use voices::{Effects, Env, Voices};
 
@@ -144,6 +147,13 @@ pub struct ControlConfig {
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
     pub probe_timeout: Duration,
+    /// The show log: its ring always, and the disk writer's sink when the host started one
+    /// (docs/logging.md).
+    pub show_log: crate::diag::ShowLog,
+    /// Send `status` messages (DX-03). `None`: never (offline tests; the host turns it on).
+    pub status: Option<crate::diag::StatusConfig>,
+    /// Process CPU seconds for `status` (tests inject a fake).
+    pub cpu_probe: fn() -> Option<f64>,
 }
 
 impl ControlConfig {
@@ -167,6 +177,9 @@ impl ControlConfig {
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
+            show_log: crate::diag::ShowLog::default(),
+            status: None,
+            cpu_probe: crate::diag::cpu::process_cpu_seconds,
         }
     }
 }
@@ -246,6 +259,8 @@ pub struct Control {
     out_peaks: Vec<f32>,
     meter_ids: Vec<VoiceId>,
     meter_peaks: Vec<f32>,
+    /// Show-log and status bookkeeping (`observe.rs`).
+    observe: Observe,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -294,6 +309,7 @@ impl Control {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
         };
+        let observe = Observe::new(&config);
         let mut control = Self {
             ws,
             history: History::new(),
@@ -332,7 +348,20 @@ impl Control {
             out_peaks: vec![0.0; cue_outputs],
             meter_ids: Vec::new(),
             meter_peaks: Vec::new(),
+            observe,
         };
+        control.record(
+            LogKind::Engine,
+            LogLevel::Info,
+            format!(
+                "openlab-engine {} started, {} Hz, {} frames per block",
+                env!("CARGO_PKG_VERSION"),
+                rate,
+                block
+            ),
+            None,
+            None,
+        );
         let cap = control.mixer.voice_meter_capacity();
         control.meter_ids = vec![VoiceId(0); cap];
         control.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
@@ -365,6 +394,7 @@ impl Control {
             Inbox::Device(answer) => self.device_answer(answer),
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Log { level, message } => self.log(level, message),
+            Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -421,6 +451,7 @@ impl Control {
         }
         self.docs_tick();
         self.health();
+        self.observe_tick();
         self.mixer.pump();
     }
 
@@ -447,6 +478,7 @@ impl Control {
             ClientMessage::Transport { id, action } => {
                 let scope = orphan_scope(&action);
                 let panic = matches!(action, TransportAction::Panic);
+                self.observe_transport(&action);
                 self.feed(transport_input(action), now);
                 // During an outage a panic fade could only play once the device is back, so
                 // it stops everything at once: a second Panic within the fade is a hard stop
@@ -519,6 +551,19 @@ impl Control {
                         }),
                     },
                 ),
+                Request::LogTail { max } => {
+                    let (entries, dropped) = self.log_tail(max);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::LogTail { entries, dropped }),
+                            }),
+                        },
+                    );
+                }
                 Request::Relink { .. } => reply(
                     to,
                     ServerMessage::Result {
@@ -698,7 +743,7 @@ impl Control {
                     attempt,
                     error,
                     retry_in,
-                } => self.log(
+                } => self.log_device(
                     LogLevel::Warn,
                     format!(
                         "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
@@ -706,23 +751,23 @@ impl Control {
                         retry_in.as_secs_f64()
                     ),
                 ),
-                DeviceEvent::Warn(message) => self.log(LogLevel::Warn, message),
+                DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
                 DeviceEvent::Unrecoverable { why } => {
-                    self.log(
+                    self.log_device(
                         LogLevel::Error,
                         format!("audio device \"{name}\": {why}: restart openLab to play sound"),
                     );
                     self.warnings_dirty = true;
                 }
                 DeviceEvent::Unstuck => {
-                    self.log(
+                    self.log_device(
                         LogLevel::Info,
                         format!("audio device \"{name}\": the device thread answers again"),
                     );
                     self.warnings_dirty = true;
                 }
                 DeviceEvent::ListStuck => {
-                    self.log(
+                    self.log_device(
                         LogLevel::Error,
                         "reading the output device list does not finish: hot-plug is not \
                          followed until it does"
@@ -801,7 +846,7 @@ impl Control {
             "audio device \"{name}\" lost ({why}): {failed} cue(s) playing on it stopped; \
              they start again from the beginning with GO once the device is back"
         );
-        self.log(LogLevel::Error, message.clone());
+        self.log_device(LogLevel::Error, message.clone());
         self.runtime(vec![RuntimeChange::Warning {
             warning: notice("device_lost", message, None),
         }]);
@@ -823,7 +868,7 @@ impl Control {
             match self.engine.set_lookahead(b) {
                 Ok(()) => {
                     self.now_floor = self.now();
-                    self.log(
+                    self.log_device(
                         LogLevel::Info,
                         format!(
                             "audio device \"{name}\" reopened with {b}-frame buffers (was {})",
@@ -832,7 +877,7 @@ impl Control {
                     );
                     self.block = b;
                 }
-                Err(e) => self.log(
+                Err(e) => self.log_device(
                     LogLevel::Warn,
                     format!("audio device \"{name}\": {e}; commands may land late"),
                 ),
@@ -842,7 +887,7 @@ impl Control {
         for input in self.sync_patches(false) {
             self.feed(input, now);
         }
-        self.log(LogLevel::Info, format!("audio device \"{name}\" is back"));
+        self.log_device(LogLevel::Info, format!("audio device \"{name}\" is back"));
         self.warnings_dirty = true;
     }
 
@@ -1002,6 +1047,7 @@ impl Control {
             }
         }
         if !changes.is_empty() {
+            self.observe_changes(&changes);
             self.runtime(changes);
         }
         let mut feedback = self.after(fx);
@@ -1037,7 +1083,8 @@ impl Control {
                         cue,
                     },
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.observe_changes(&changes);
             self.runtime(changes);
         }
         feedback
@@ -1088,8 +1135,13 @@ impl Control {
         }
     }
 
+    fn log_device(&mut self, level: LogLevel, message: String) {
+        self.log_kind(LogKind::Device, level, message);
+    }
+
+    /// A message for the show log and every client's `log`.
     fn log(&mut self, level: LogLevel, message: String) {
-        self.out.send(ServerMessage::Log { level, message });
+        self.log_kind(LogKind::Engine, level, message);
     }
 
     /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
@@ -1687,6 +1739,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Revert { .. } => "revert",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
+        Request::LogTail { .. } => "log_tail",
         Request::Snapshot => "snapshot",
     }
 }

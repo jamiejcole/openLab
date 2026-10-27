@@ -71,6 +71,7 @@ The `result` of a transport action means "accepted and handed to the cue engine"
 | `revert` | `discard_changes?` | reload the saved file, dropping edits (clears undo); `snapshot`, `result`; `no_workspace` if never saved, `not_found` / `io` / `bad_show_file` if the saved file cannot be read, `unsaved_changes` while dirty without `discard_changes`, `command_refused` |
 | `relink` | `folder` | relink missing media (WS-03) as one undo step; `result { ok: { revision, data: { type: "relink", relinked, ambiguous: [{cue, candidates}], unmatched } } }`; nothing is guessed between duplicates |
 | `list_devices` | - | `result { ok: { data: { type: "devices", devices: [{name, output_channels}] } } }` |
+| `log_tail` | `max?` | the newest show-log entries the engine holds in memory (at most 1000), oldest first, for a log window opened after the fact (DX-02): `result { ok: { data: { type: "log_tail", entries: [log_entry], dropped } } }`; `max` absent: all. `dropped` counts records the disk writer lost (they are still in `entries` while in memory). Entry fields below |
 | `snapshot` | - | `snapshot`, then `result` |
 
 Paths are never empty, and the paths of `open` and `save_as` must be absolute (`bad_request` on decode): a relative one would resolve against the engine's own working directory. `new` can answer `unsaved_changes` or `command_refused`.
@@ -103,10 +104,19 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 | `runtime` | `seq`, `changes` | cue state changes, event-driven; applied in order |
 | `progress` | `items [{cue, elapsed, remaining}]` | seconds; `remaining` null when there is no end; at most 30 Hz, only while a cue runs |
 | `meters` | `outputs [{patch, peaks}]`, `cues [{cue, peaks}]` | linear peak per channel since the previous message; at most 30 Hz, only while audio plays |
-| `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | |
+| `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | engine notices as they happen, with no time stamp; the timed, structured record of everything (GO, cue starts and stops, triggers, document events) is the show log, fetched with `log_tail` (below) |
+| `status` | `status {cpu_percent, engine_load, xruns, disk, device, log_dropped}` | system health (DX-03), about once a second and early (not faster than every 250 ms) when `xruns`, the disk's health or the device's state change; droppable like `meters`. Below |
 | `warnings` | `warnings [warning]` | workspace-level notices in force (load repairs, damaged media); **replaces** the previous list; empty clears it |
 | `result` | `id`, then `ok {revision?, data?}` or `error {code, message}` | exactly one of `ok` / `error` |
 | `error` | `code`, `message`, `protocol_version` | not tied to a request (see section 2) |
+
+### Show log entries and status (M4.7)
+
+`log_entry` (in `log_tail`): `time_ms` (wall clock, milliseconds since the Unix epoch, UTC), `show_time?` (seconds of audio rendered; absent for engine records that have none), `level`, `kind`, `message` (English, for people), `cue?`, `source?`. `kind` is `go` (a GO, with the cue it starts), `transport` (any other transport action, with the cue it names), `trigger` (a transport action arrived: `source` is `ui` or `osc <ip>`; rate-limited per source, with an `N more input(s) not logged` record), `cue_start`, `cue_stop`, `cue_fail` (a cue broke at run time; the message carries the reason), `device`, `document` (opened, saved, save failed) and `engine` (everything else: warnings, errors, health). The same records, one JSON object per line, are written to the log file ([logging.md](logging.md)); a client may parse them with the same types.
+
+`status`: `cpu_percent` (the engine process's CPU since the previous status, in percent of one core; `null` without a figure), `engine_load` (audio callback time over block time, worst case since the previous status; `null` until the audio thread measures it, which v0.0.1 does not yet), `xruns` (since start), `disk {streams, underrun_frames, healthy}` (`healthy`: no underrun for ten seconds), `device {name?, state, sample_rate, block_frames?, channels, latency_ms?}` (`state`: `ok`, `lost` while the engine tries to reopen it, `failed` when only a restart helps, `absent` for offline rendering) and `log_dropped` (show-log records the disk writer lost). A client that connects gets its first `status` with the next periodic one (within a second). Non-finite numbers are sent as 0.
+
+These are additions: `PROTOCOL_VERSION` stays 1 (no released client). The Swift client (M5) must decode `status` and the `log_tail` result.
 
 ### Snapshot
 

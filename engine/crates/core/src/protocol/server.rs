@@ -26,6 +26,7 @@ pub const SERVER_TYPES: &[&str] = &[
     "progress",
     "meters",
     "log",
+    "status",
     "warnings",
     "result",
     "error",
@@ -71,6 +72,11 @@ pub enum ServerMessage {
     Log {
         level: LogLevel,
         message: String,
+    },
+    /// System health, about once a second and when something changes (DX-03). Lossy like
+    /// `meters`: the next one replaces it.
+    Status {
+        status: Box<SystemStatus>,
     },
     /// The workspace-level notices now in force (load repairs, damaged media, ...). Replaces the
     /// previous list; empty clears it. Show-time warnings come in `runtime`.
@@ -135,6 +141,109 @@ pub enum ResultData {
     RecoveryEntries {
         entries: Vec<RecoveryEntryInfo>,
     },
+    /// Answer to `log_tail`: the newest show-log entries, oldest first.
+    LogTail {
+        entries: Vec<LogEntry>,
+        /// Entries the engine could not write to the log file so far (the disk fell behind).
+        /// They are still in `entries` while they are in the engine's memory.
+        dropped: u64,
+    },
+}
+
+/// One show-log record (DX-02): what the engine writes to its log file, one JSON line each.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LogEntry {
+    /// Wall clock, milliseconds since the Unix epoch (UTC).
+    pub time_ms: i64,
+    /// Show time: seconds of audio rendered since the engine started the device; absent before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_time: Option<f64>,
+    pub level: LogLevel,
+    pub kind: LogKind,
+    pub message: String,
+    /// The cue the record is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue: Option<CueId>,
+    /// For `trigger`: where it came from (`ui`, `osc 192.0.2.7`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// What a show-log record is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogKind {
+    /// A GO, with the cue it starts.
+    Go,
+    /// Any other transport action (stop, pause, panic, playhead moves...).
+    Transport,
+    /// An input arrived from a client or OSC, before it was acted on.
+    Trigger,
+    CueStart,
+    CueStop,
+    /// A cue broke while running or could not start.
+    CueFail,
+    /// Audio device events.
+    Device,
+    /// New, open, save, revert.
+    Document,
+    /// Everything else the engine reports (warnings, errors, health).
+    Engine,
+}
+
+/// The `status` message (DX-03).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemStatus {
+    /// CPU used by the engine process since the previous status, in percent of one core (can
+    /// exceed 100 on several cores); `null` where the platform gives no figure.
+    pub cpu_percent: Option<f64>,
+    /// Audio engine load: time the audio callback takes over the time of its block, worst case
+    /// since the previous status (1.0 = no headroom); `null` until the audio thread measures it.
+    pub engine_load: Option<f64>,
+    /// Output underruns and overruns the device layer reported, since start.
+    pub xruns: u64,
+    pub disk: DiskStatus,
+    pub device: DeviceStatus,
+    /// Show-log records lost since start because the disk could not keep up.
+    pub log_dropped: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskStatus {
+    /// Files streaming from disk now.
+    pub streams: u32,
+    /// Frames of silence played because a stream was not read in time, since start.
+    pub underrun_frames: u64,
+    /// No underrun in the last ten seconds.
+    pub healthy: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeviceStatus {
+    /// The output device the engine plays on; `null` when there is none.
+    pub name: Option<String>,
+    pub state: DeviceState,
+    pub sample_rate: u32,
+    /// Frames per callback, when the host says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_frames: Option<u32>,
+    /// Mixer outputs that reach the device.
+    pub channels: u32,
+    /// Callback to output, from the host's timestamps, when it gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceState {
+    Ok,
+    /// Gone or silent; the engine is trying to reopen it.
+    Lost,
+    /// Will not come back without a restart.
+    Failed,
+    /// No device (offline rendering).
+    Absent,
 }
 
 /// One autosave file found by `scan_recovery`.
@@ -376,6 +485,11 @@ impl ServerMessage {
                     *peak = clean(f64::from(*peak)) as f32;
                 }
             }
+            Self::Status { status } => {
+                status.cpu_percent = status.cpu_percent.map(clean);
+                status.engine_load = status.engine_load.map(clean);
+                status.device.latency_ms = status.device.latency_ms.map(clean);
+            }
             _ => {}
         }
     }
@@ -391,6 +505,7 @@ impl ServerMessage {
             Self::Progress { .. } => "progress",
             Self::Meters { .. } => "meters",
             Self::Log { .. } => "log",
+            Self::Status { .. } => "status",
             Self::Warnings { .. } => "warnings",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
@@ -408,7 +523,9 @@ pub fn decode_server(text: &str) -> Result<ServerMessage, ProtocolError> {
 /// ([`ServerMessage::sanitise`]), so they never fail on a stray value.
 pub fn encode_server(message: &ServerMessage) -> Result<String, ProtocolError> {
     match message {
-        ServerMessage::Progress { .. } | ServerMessage::Meters { .. } => {
+        ServerMessage::Progress { .. }
+        | ServerMessage::Meters { .. }
+        | ServerMessage::Status { .. } => {
             let mut clean = message.clone();
             clean.sanitise();
             encode(&clean, MAX_SERVER_FRAME_BYTES)

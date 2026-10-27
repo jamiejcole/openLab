@@ -5,6 +5,8 @@ import AppKit
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private(set) lazy var mainWindowController = MainWindowController()
+    /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
+    @MainActor private(set) lazy var engineSession = EngineMode.fromLaunchArguments().makeSession()
 
     static func main() {
         let app = NSApplication.shared
@@ -23,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         showMainWindow(nil)
+        engineSession.start()
         NSApp.activate(ignoringOtherApps: true)
     }
 
