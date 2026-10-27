@@ -211,8 +211,19 @@ final class FakeEngine: EngineTransport {
         case .pause(cue): fakeState(.paused, cue, doc: doc)
         case .resume(cue): fakeState(.running, cue, doc: doc)
         case .stop(cue, _), .hardStop(cue), .panicCue(cue): fakeState(.idle, cue, doc: doc)
+        case .preview(let c): fakePreview(c, active: true, doc: doc)
+        case .stopPreview(let c?): fakePreview(c, active: false, doc: doc)
         default: break
         }
+    }
+
+    private func fakePreview(_ cue: ModelID, active: Bool, doc: ModelID) {
+        guard var s = docs[doc], case .int(let q)? = s["runtime_seq"], "\(s)".contains(cue.raw) else { return }
+        s.set("runtime_seq", .int(q + 1))
+        docs[doc] = s
+        push(
+            #"{"type":"runtime","seq":\#(q + 1),"changes":[{"type":"preview","cue":"\#(cue.raw)","active":\#(active)}]}"#,
+            doc: doc)
     }
 
     private func fakeState(_ state: WireCueState, _ cue: ModelID, doc: ModelID) {

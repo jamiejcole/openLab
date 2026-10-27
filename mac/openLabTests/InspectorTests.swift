@@ -295,6 +295,39 @@ final class InspectorTests: XCTestCase {
         XCTAssertNil(vc.nameField.currentEditor(), "editing ended")
     }
 
+    private func previewChanged(_ active: Bool) throws {
+        let message = try ServerMessage.decode(
+            #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[{"type":"preview","cue":"\#(Self.intro)","active":\#(active)}]}"#
+        )
+        XCTAssertEqual(rig.store.receive(message), .applied)
+    }
+
+    func testPreviewButtonFollowsTheRuntimeAndSendsToggles() throws {
+        var sent: [TransportAction] = []
+        vc.onTransport = { sent.append($0) }
+        vc.setSelection([Self.intro])
+        XCTAssertTrue(vc.previewButton.isEnabled)
+        XCTAssertEqual(vc.previewButton.title, loc("inspector.preview"))
+        vc.previewButton.performClick(nil)
+        XCTAssertEqual(sent, [.preview(cue: Self.intro)])
+        try previewChanged(true)
+        XCTAssertEqual(vc.previewButton.title, loc("inspector.stopPreview"))
+        vc.previewButton.performClick(nil)
+        XCTAssertEqual(sent.last, .stopPreview(cue: Self.intro))
+        try previewChanged(false)
+        XCTAssertEqual(vc.previewButton.title, loc("inspector.preview"))
+    }
+
+    func testPreviewButtonIsDisabledForOtherKindsAndShowModeKeepsItUsable() throws {
+        vc.setSelection([Self.fade])
+        XCTAssertFalse(vc.previewButton.isEnabled, "a fade cue cannot be previewed")
+        vc.setSelection([])
+        XCTAssertFalse(vc.previewButton.isEnabled)
+        vc.setSelection([Self.intro])
+        vc.isLocked = true
+        XCTAssertTrue(vc.previewButton.isEnabled, "a preview edits nothing, so Show Mode leaves it")
+    }
+
     func testSelectionFollowsTheCueList() throws {
         let list = CueListViewController(store: rig.store)
         list.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)

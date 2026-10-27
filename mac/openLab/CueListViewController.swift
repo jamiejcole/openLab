@@ -72,6 +72,7 @@ final class CueCell: NSTableCellView {
         case "status":
             images[0].setAccessibilityIdentifier("cue-playhead")
             images[1].setAccessibilityIdentifier("cue-state")
+            images[2].setAccessibilityIdentifier("cue-preview")
         case "name":
             images[0].setAccessibilityIdentifier("cue-type")
             images[1].setAccessibilityIdentifier("cue-colour")
@@ -568,6 +569,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.setImage(
                     1, symbol: symbol, label: style.label, tint: style.tint,
                     tooltip: detail.map { "\(style.label): \($0)" })
+            }
+            // A preview is outside the show, so it has its own mark next to the cue's state.
+            if store.previewing.contains(node.id) {
+                cell.setImage(2, symbol: "headphones", label: loc("cue.previewing"), tint: .systemTeal)
             }
         case "number": text(cue.number ?? "")
         case "name":
