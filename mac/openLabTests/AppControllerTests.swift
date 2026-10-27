@@ -9,6 +9,8 @@ final class ScriptedAlerts: WorkspaceAlerts {
     var closePlaying = true
     var quitPlaying = true
     var quitDisconnected = false
+    var closeShowMode = true
+    var quitShowMode = true
     var saveChoices: [SaveChoice] = []
     private(set) var log: [String] = []
     private(set) var errors: [String] = []
@@ -21,6 +23,16 @@ final class ScriptedAlerts: WorkspaceAlerts {
     func confirmQuitWhilePlaying() -> Bool {
         log.append("quitPlaying")
         return quitPlaying
+    }
+
+    func confirmCloseInShowMode(workspace: String) -> Bool {
+        log.append("closeShowMode")
+        return closeShowMode
+    }
+
+    func confirmQuitInShowMode() -> Bool {
+        log.append("quitShowMode")
+        return quitShowMode
     }
 
     func confirmQuitDisconnected() -> Bool {
@@ -529,6 +541,183 @@ final class AppControllerTests: XCTestCase {
         for entry in menus.transport.items where !entry.isSeparatorItem {
             XCTAssertFalse(entry.title.hasPrefix("menu."), entry.title)
         }
+    }
+
+    // MARK: Show Mode (SM-01, SM-05)
+
+    /// Stops the fixture's running cue so only Show Mode can raise a prompt.
+    private func quiet(_ doc: ModelID) async throws {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        let cue: ModelID = "00000000-0000-0000-0000-00000000000a"
+        engine.push(
+            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"idle"}]}"#,
+            doc: doc)
+        await assertEventually { store.cueStates[cue]?.state == .idle }
+    }
+
+    func testShowModeIsPerWindow() async throws {
+        let second = try await addWorkspace()
+        let first = try XCTUnwrap(app.windows["doc-1"])
+        let other = try XCTUnwrap(app.windows[second])
+        first.setShowMode(true)
+        XCTAssertTrue(first.inspector.isLocked)
+        XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy { !$0.isEnabled })
+        XCTAssertFalse(first.footer.showModeLabel.isHidden)
+        XCTAssertEqual(first.footer.modeSwitch.selectedSegment, 1)
+        XCTAssertFalse(other.isShowMode)
+        XCTAssertFalse(other.inspector.isLocked)
+        XCTAssertTrue(other.footer.showModeLabel.isHidden)
+        first.setShowMode(false)
+        XCTAssertFalse(first.inspector.isLocked)
+        XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy(\.isEnabled))
+        XCTAssertTrue(first.footer.showModeLabel.isHidden)
+    }
+
+    func testFooterSwitchDrivesShowModeAndKeepsTheWorkspaceNameInTheTitle() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let switcher = wc.footer.modeSwitch
+        switcher.selectedSegment = 1
+        _ = switcher.target?.perform(switcher.action, with: switcher)
+        await assertEventually { wc.isShowMode }
+        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Test"))
+        switcher.selectedSegment = 0
+        _ = switcher.target?.perform(switcher.action, with: switcher)
+        await assertEventually { !wc.isShowMode }
+        XCTAssertEqual(wc.window?.title, "Test")
+    }
+
+    func testTransportStillWorksInShowMode() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.setShowMode(true)
+        keyDoc = "doc-1"
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { !transports(go).isEmpty }
+        let result = await app.panicAll()
+        if case .failure = result { XCTFail("panic must work in Show Mode") }
+    }
+
+    func testEditMenuLocksEditingItemsInShowMode() {
+        let edit = MainMenu.make().edit
+        MainMenu.lockEditItems(in: edit, locked: true)
+        let enabled = Dictionary(uniqueKeysWithValues: edit.items.map { ($0.title, $0.isEnabled) })
+        for key in ["menu.edit.undo", "menu.edit.redo", "menu.edit.cut", "menu.edit.paste"] {
+            XCTAssertEqual(enabled[loc(key)], false, key)
+        }
+        XCTAssertEqual(enabled[loc("menu.edit.copy")], true)
+        MainMenu.lockEditItems(in: edit, locked: false)
+        XCTAssertTrue(edit.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
+    }
+
+    func testViewMenuHasQLabsModeKeys() throws {
+        let view = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.view") })
+        XCTAssertEqual(view.items.map(\.keyEquivalent), ["[", "]"])
+        XCTAssertTrue(view.items.allSatisfy { $0.keyEquivalentModifierMask == [.command, .shift] })
+    }
+
+    func testCloseInShowModeAsksOnceAndCancelKeepsTheWindow() async throws {
+        let second = try await addWorkspace()
+        app.windows[second]?.setShowMode(true)
+        alerts.closeShowMode = false
+        let kept = await app.closeWorkspace(second)
+        XCTAssertFalse(kept)
+        XCTAssertEqual(alerts.log, ["closeShowMode"])
+        XCTAssertNotNil(app.windows[second])
+        alerts.closeShowMode = true
+        let closed = await app.closeWorkspace(second)
+        XCTAssertTrue(closed)
+        XCTAssertEqual(alerts.log, ["closeShowMode", "closeShowMode"])
+    }
+
+    func testCloseWhilePlayingInShowModeIsOnePrompt() async throws {
+        app.windows["doc-1"]?.setShowMode(true)
+        alerts.closePlaying = false
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertFalse(closed)
+        XCTAssertEqual(alerts.log, ["closePlaying"])
+    }
+
+    func testQuitInShowModeAsksEvenWhenNothingPlays() async throws {
+        try await quiet("doc-1")
+        app.windows["doc-1"]?.setShowMode(true)
+        alerts.quitShowMode = false
+        let cancelled = await app.prepareToQuit()
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(alerts.log, ["quitShowMode"])
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        alerts.quitShowMode = true
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+    }
+
+    func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
+        app.windows["doc-1"]?.setShowMode(true)
+        alerts.quitPlaying = false
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.log, ["quitPlaying"])
+    }
+
+    func testEnteringShowModeCommitsAValidPendingEditThenLocks() async throws {
+        let wc = try typePendingName("Thunder")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertTrue(engine.received.contains { isCommand($0) }, "the edit was sent first")
+        await assertEventually { wc.inspector.nameField.stringValue == "Thunder" }
+        XCTAssertFalse(wc.inspector.nameField.isEnabled)
+    }
+
+    func testEnteringShowModeWithAnInvalidPendingEditStaysInEditMode() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.fade])
+        wc.inspector.preWaitField.stringValue = "abc"
+        wc.inspector.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
+        await wc.requestShowMode(true)
+        XCTAssertFalse(wc.isShowMode)
+        XCTAssertFalse(wc.inspector.isLocked)
+        XCTAssertEqual(wc.footer.modeSwitch.selectedSegment, 0)
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertFalse(wc.inspector.messageLabel.stringValue.isEmpty, "the field's message shows")
+    }
+
+    func testLockingDropsStaleTextAndShowsTheModelsText() throws {
+        let wc = try typePendingName("Never sent")
+        wc.setShowMode(true)  // bypasses the commit: the safety net in the inspector
+        XCTAssertEqual(wc.inspector.nameField.stringValue, "Intro")
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+    }
+
+    func testRelinkIsRefusedInShowModeAndTheMenuItemIsOff() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let store = wc.store
+        var asked = false
+        app.pickFolderURL = {
+            asked = true
+            return URL(fileURLWithPath: "/m")
+        }
+        wc.setShowMode(true)
+        await app.relinkMedia(on: store)
+        XCTAssertFalse(asked)
+        XCTAssertTrue(relinkRequests().isEmpty)
+        XCTAssertTrue(wc.sidebar.relinkLocked)
+        wc.setShowMode(false)
+        XCTAssertFalse(wc.sidebar.relinkLocked)
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+        ])
+        await app.relinkMedia(on: store)
+        XCTAssertTrue(asked, "Edit Mode relinks as before")
+    }
+
+    func testQuitIdleInEditModeAsksNoConfirmation() async throws {
+        try await quiet("doc-1")
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertFalse(alerts.log.contains("quitShowMode"))
+        XCTAssertFalse(alerts.log.contains("quitPlaying"))
     }
 
     // MARK: Close
