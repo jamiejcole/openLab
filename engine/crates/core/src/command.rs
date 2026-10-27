@@ -281,12 +281,6 @@ pub enum CommandError {
     PatchInUse { patch: PatchId, cue: CueId },
     #[error("network patch {patch} is used by cue {cue}")]
     NetworkPatchInUse { patch: NetworkPatchId, cue: CueId },
-    /// Refused by the engine: patch positions are mixer slots, so patches cannot be inserted,
-    /// removed, moved or resized while any voice is on the device (until M4.15b).
-    #[error(
-        "audio is playing: patches cannot be inserted, removed, moved or resized until it stops"
-    )]
-    PatchPlaying,
     #[error("cue list {0} still has cues")]
     CueListNotEmpty(CueListId),
     #[error("cue list {0} is the only one")]
@@ -426,14 +420,7 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             if matches!(property, CueProperty::Kind { .. }) {
                 return Err(CommandError::NotBatchable);
             }
-            let commands = ids
-                .into_iter()
-                .map(|id| Command::SetCueProperty {
-                    id,
-                    property: property.clone(),
-                })
-                .collect();
-            transaction(ws, commands, restoring)
+            batch_set(ws, ids, &property, restoring)
         }
         Command::SetCueNumbers { numbers } => set_numbers(ws, numbers),
         Command::Renumber {
@@ -776,6 +763,48 @@ fn set_property(
         return Err(CommandError::Internal);
     }
     Ok(Command::SetCueProperty { id, property: old })
+}
+
+/// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.
+/// If a cue is refused, the cues already written get their old values back (in reverse, so a
+/// repeated id also ends as it began). The cost follows the cues touched, not the show; the
+/// workspace is not cloned. The inverse is the same flat list of `SetCueProperty` a
+/// `Transaction` of the sets would give.
+fn batch_set(
+    ws: &mut Workspace,
+    ids: Vec<CueId>,
+    property: &CueProperty,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    let mut undo_steps: Vec<Inverse> = Vec::with_capacity(ids.len());
+    for (index, id) in ids.into_iter().enumerate() {
+        match set_property(ws, id, property.clone(), restoring) {
+            Ok(inverse) => undo_steps.push(inverse),
+            Err(error) => {
+                // Each inverse is a plain write of a value the cue held, so it cannot be
+                // refused; `restoring` skips validation for the same reason.
+                while let Some(step) = undo_steps.pop() {
+                    if let Command::SetCueProperty { id, property } = step {
+                        let _ = set_property(ws, id, property, true);
+                    }
+                }
+                return Err(CommandError::InTransaction {
+                    index,
+                    source: Box::new(error),
+                });
+            }
+        }
+    }
+    undo_steps.reverse();
+    Ok(Command::Transaction {
+        commands: undo_steps
+            .into_iter()
+            .flat_map(|step| match step {
+                Command::Transaction { commands } => commands,
+                other => vec![other],
+            })
+            .collect(),
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

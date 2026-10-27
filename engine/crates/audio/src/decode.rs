@@ -690,17 +690,26 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
 fn check_pcm_header_at<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
     let io = |e: io::Error| MediaError::Io(e.to_string());
     // A container that starts at byte 0 is what symphonia's probe finds first: check it as-is.
-    reject_bad_header(find_chunk_body(r, 0))?;
+    let first = find_chunk_body(r, 0);
+    let found_first = first.is_some();
+    reject_bad_header(first)?;
     r.seek(SeekFrom::Start(0)).map_err(io)?;
     let mut start = [0u8; 12];
-    if r.read_exact(&mut start).is_err()
-        || matches!(&start[..4], b"RIFF" | b"FORM" | b"fLaC" | b"OggS")
-        || &start[4..8] == b"ftyp"
-    {
+    if r.read_exact(&mut start).is_err() {
         return Ok(());
     }
-    // Anything else (an ID3 tag, junk) is scanned past by the probe for a marker: so scan too,
-    // without reading at all for the usual files above.
+    // The probe stops at a start it scores as valid. A RIFF/FORM start only counts when it is a
+    // WAVE/AIFF/AIFC with its `fmt `/`COMM` chunk (just checked): any other start fails scoring
+    // and the probe scans on, as it does past an ID3 tag or junk, so scan too. The usual files
+    // read nothing more.
+    let taken = match &start[..4] {
+        b"RIFF" | b"FORM" => found_first,
+        b"fLaC" | b"OggS" => true,
+        _ => &start[4..8] == b"ftyp",
+    };
+    if taken {
+        return Ok(());
+    }
     let mut head = Vec::new();
     r.seek(SeekFrom::Start(0)).map_err(io)?;
     (&mut *r)
@@ -1853,6 +1862,38 @@ impl FrameSource for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A valid WAV/AIFF/FLAC start is taken by the probe: the pre-check reads only its header,
+    /// not the scan window.
+    #[test]
+    fn valid_container_starts_are_checked_without_the_embedded_header_scan() {
+        struct Counting(io::Cursor<Vec<u8>>, u64);
+        impl Read for Counting {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+                let n = self.0.read(b)?;
+                self.1 = self.1.max(self.0.position());
+                Ok(n)
+            }
+        }
+        impl Seek for Counting {
+            fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
+                self.0.seek(p)
+            }
+        }
+        let mut wav = b"RIFF\x00\x10\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00".to_vec();
+        wav.extend_from_slice(&[0x44, 0xAC, 0, 0, 0x10, 0xB1, 2, 0, 4, 0, 16, 0]);
+        let mut aiff = b"FORM\x00\x00\x10\x00AIFFCOMM\x00\x00\x00\x12".to_vec();
+        aiff.extend_from_slice(&[
+            0, 2, 0, 0, 0, 10, 0, 16, 0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0,
+        ]);
+        for mut bytes in [wav, aiff, b"fLaC\0\0\0\0\0\0\0\0".to_vec()] {
+            // Far longer than the scan window would stop at.
+            bytes.resize(PROBE_SCAN as usize * 2, 0);
+            let mut c = Counting(io::Cursor::new(bytes), 0);
+            check_pcm_header(&mut c).unwrap();
+            assert!(c.1 < 1024, "read up to byte {}", c.1);
+        }
+    }
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
