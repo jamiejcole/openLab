@@ -38,8 +38,32 @@ tell the copies apart: with the hash, each copy has its own backups and its own 
    pre-first-save one) and their moved-aside stale files are removed. This happens only after the rename
    and folder sync succeeded, so a failed save leaves the recovery file in place.
 
-A temp file left by a crash is ignored by the next save (it is not removed: a leftover cannot be told from another process's write in progress). `write_atomic_with` takes a hook called
-after the temp write and after the fsync, for failure-injection tests.
+Details of the replace in step 3:
+
+- **Windows lock retry.** On Windows an antivirus scanner or search indexer can briefly hold the
+  show file, and the rename then fails with a sharing or access error. The rename is retried up to 5
+  times in all, waiting 10, 20, 40 and 80 ms (150 ms at most), only for `PermissionDenied` /
+  `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION`. Any other error fails at
+  once. Other platforms never retry. The rename, the sleep and the policy are injected in tests.
+- **Unix permissions.** The new file gets the old file's permission mode (set on the temp file before
+  the rename), so a `0640` show stays `0640`. Owner and group are not carried over: they are the saving
+  user's.
+- **Symlinks.** If the show path is a symlink, the file it points to is replaced and the link is left
+  alone; the temp file is made beside the target. A link whose target cannot be resolved (dangling,
+  loop) is an error, never replaced by a regular file.
+- **Read-only.** A destination with no write permission bit is refused with a `PermissionDenied`
+  error ("the file is read-only") and left untouched; the backup made for that attempt is removed
+  again.
+- **Not preserved (v0.0.1).** Extended attributes, Finder tags, ACLs and the creation date belong to the
+  old inode and are lost when the file is replaced. Windows alternate data streams likewise.
+- **Leftover temp files.** A `<name>.<pid>-<n>.tmp` left by a crash is not touched by the write that
+  follows it. After a successful save, those beside the show file that belong to another process and
+  whose modification time is at least 60 s older than the file just saved are removed; younger ones may
+  be another instance's write in progress. This process's own temp files and a user's own `.tmp` files
+  (the name must match exactly) are never removed.
+
+`write_atomic_with` takes a hook called after the temp write and after the fsync, for
+failure-injection tests.
 
 Serialising plus the verify-reload costs up to about a second for a large show, so saves run on the
 writer thread: the control thread clones the `Workspace` and calls `SaveWriter::save` /
@@ -58,7 +82,10 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
 Named `YYYYMMDD-HHMMSS-mmm.openlab` in UTC, so names sort in time order
 (`backup_file_name`/`parse_backup_name`). `select_backups_to_delete(names, keep)` keeps the `keep`
 newest. Files whose names are not in that form are never deleted. Two saves in the same millisecond get
-consecutive names. `keep` is `MachineSettings::backup_keep` (default 20, at most 1000); 0 turns backups
+consecutive names. Order is always the time in the file name, never the file's modification time, so a
+clock stepped backwards cannot make the newest backup rotate out first. Rotation also removes backup temp
+files (`<backup name>.<pid>-<n>.tmp`) left by a crash, provided the backup name is not newer than the
+newest finished backup (a newer one may be an instance still writing). `keep` is `MachineSettings::backup_keep` (default 20, at most 1000); 0 turns backups
 off and leaves existing ones alone.
 
 ## Autosave and recovery (NFR-05)
@@ -143,6 +170,11 @@ made relative if it lies inside the show folder. `resolve(media, show_dir)` is t
 on macOS or Windows; folder membership is judged the same way. Case folding is `to_lowercase`, not
 full Unicode folding.
 
+Path parsing rules: exactly two leading slashes are a network share root (`//server/share`); three or
+more are one root (`///x` is `/x`, as POSIX says). A drive-relative `C:foo` is not absolute: it is a
+relative name whose first component is the literal `C:foo`, so it resolves inside the show folder to a
+file that does not exist and the cue shows as missing (it never reads the current directory of drive C).
+
 Non-UTF-8 file names cannot be stored in a JSON show file; they are skipped (and counted) when
 scanning.
 
@@ -150,7 +182,8 @@ scanning.
 
 - `missing_media(workspace, show_dir)` lists Audio cues whose file does not exist.
 - `find_in_folder(workspace, show_dir, folder, limits)` scans `folder` (default: 16 levels deep, 200 000
-  files; symlinked folders are not entered, so links cannot loop) and matches missing files by
+  files, 50 000 folders, 20 s; symlinked folders are not entered, so links cannot loop; the clock is
+  injectable, `scan_folder_with`) and matches missing files by
   normalised file name. The result is a `RelinkPlan`: `matches`, `ambiguous` (several candidates; never
   guessed) and `unmatched`, plus whether a limit truncated the scan. Nothing is changed.
 - `relink_command(workspace, relinks)` turns chosen relinks (a plan's matches, or one the operator picked
