@@ -10,12 +10,17 @@
 //! followed workspace (and an index with duplicate ids) walks every cue as before:
 //! [`PlanChecks::check_all`], the reference the incremental path equals (property-tested in
 //! `media.rs`).
+//!
+//! The same plans give each cue's nominal length, which the cue engine is told when it changes
+//! (`Input::CueLengths`, [`PlanChecks::length_changes`]); only cues whose plan was rebuilt or
+//! dropped are looked at for it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use openlab_core::{Cue, CueId, CueKind, SliceMarker, Workspace};
+use openlab_audio::total_frames;
+use openlab_core::{Cue, CueId, CueKind, SampleTime, SliceMarker, Workspace};
 
 use super::media::{MediaCatalog, PlanChanges, Ready};
 use super::plan::{PlanFailure, PlanSpec, cue_slices};
@@ -29,6 +34,8 @@ struct Entry {
     marks: Vec<(u64, u32)>,
     last: u32,
     error: Option<String>,
+    /// The action's length from the top; `None` if it loops forever or has no plan.
+    length: Option<u64>,
 }
 
 impl Entry {
@@ -66,6 +73,10 @@ pub struct PlanChecks {
     builds: u64,
     examined: u64,
     walks: u64,
+    /// The lengths the cue engine was last told (`length_changes`).
+    told: BTreeMap<CueId, SampleTime>,
+    /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
+    stale: BTreeSet<CueId>,
 }
 
 impl PlanChecks {
@@ -137,6 +148,7 @@ impl PlanChecks {
         self.walks += 1;
         if self.rate != Some(rate) {
             // Every plan depends on the rate.
+            self.stale.extend(self.cues.keys().copied());
             self.cues.clear();
             self.by_key.clear();
             self.errors.clear();
@@ -192,7 +204,9 @@ impl PlanChecks {
         };
         let Some(ready) = media.ready(key) else {
             // Not playable (yet): nothing to check, and the next probe is a new one.
-            tracked.entry = None;
+            if tracked.entry.take().is_some() {
+                self.stale.insert(id);
+            }
             self.errors.remove(&id);
             return;
         };
@@ -200,9 +214,10 @@ impl PlanChecks {
             Some(e) if e.matches(ready, &spec) => e.error.clone(),
             _ => {
                 self.builds += 1;
-                let error = match cue_slices(&spec, &ready.probed.info, rate, 0) {
-                    Ok(_) => None,
-                    Err(PlanFailure::Plan(e)) => Some(e.to_string()),
+                self.stale.insert(id);
+                let (error, length) = match cue_slices(&spec, &ready.probed.info, rate, 0) {
+                    Ok(table) => (None, total_frames(&table)),
+                    Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None),
                 };
                 tracked.entry = Some(Entry {
                     probe: Arc::clone(ready),
@@ -211,6 +226,7 @@ impl PlanChecks {
                     marks: marks(spec.slices),
                     last: spec.last_slice_play_count,
                     error: error.clone(),
+                    length,
                 });
                 error
             }
@@ -227,15 +243,40 @@ impl PlanChecks {
 
     /// Drops everything kept about `id`.
     fn forget(&mut self, id: CueId) {
-        if let Some(old) = self.cues.remove(&id)
-            && let Some(on) = self.by_key.get_mut(&old.key)
-        {
-            on.remove(&id);
-            if on.is_empty() {
-                self.by_key.remove(&old.key);
+        if let Some(old) = self.cues.remove(&id) {
+            self.stale.insert(id);
+            if let Some(on) = self.by_key.get_mut(&old.key) {
+                on.remove(&id);
+                if on.is_empty() {
+                    self.by_key.remove(&old.key);
+                }
             }
         }
         self.errors.remove(&id);
+    }
+
+    /// The nominal lengths that changed since the last call, as of the last `check`: a cue with
+    /// a finite plan now gets its length, one that had a length and has none now (gone, its file
+    /// not probed or not playable, a plan that loops forever or cannot be built) gets `None`.
+    /// In id order. Looks only at the cues whose plan was rebuilt or dropped since the last call.
+    pub fn length_changes(&mut self) -> Vec<(CueId, Option<SampleTime>)> {
+        let mut out = Vec::new();
+        for id in std::mem::take(&mut self.stale) {
+            let now = self
+                .cues
+                .get(&id)
+                .and_then(|t| t.entry.as_ref())
+                .and_then(|e| e.length);
+            if self.told.get(&id).copied() == now {
+                continue;
+            }
+            match now {
+                Some(l) => self.told.insert(id, l),
+                None => self.told.remove(&id),
+            };
+            out.push((id, now));
+        }
+        out
     }
 
     /// Plans built so far (a cost measure for tests).

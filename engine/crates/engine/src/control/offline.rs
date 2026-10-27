@@ -235,6 +235,11 @@ impl OfflineShow {
         let end = self.rendered() + self.block as u64;
         let mut stalls = 0;
         for (handle, needed) in self.control.stream_needs(end) {
+            // A devamp cut the voice published is seen by the disk worker on its next poll, in
+            // real time; the render must not outrun it (live, the loop exit buffer covers it).
+            if !matches!(handle.wait_cut_seen(SETTLE_TIMEOUT), Ok(true) | Err(_)) {
+                stalls += 1;
+            }
             if !matches!(
                 handle.wait_written(needed, SETTLE_TIMEOUT),
                 Ok(true) | Err(_)

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use openlab_core::{Workspace, save_show};
 
+use super::atomic::remove_stale_tmp;
 use super::backup::{Rotation, backup_existing, rotate};
 use super::recovery::clear_recovery;
 use super::{AppDirs, PersistError, Stage, write_atomic_with};
@@ -68,6 +69,9 @@ pub fn save_workspace_with(
         }
         return Err(e);
     }
+
+    // Best effort, and only after the new file is in place: a leftover is clutter, not data.
+    remove_stale_tmp(path);
 
     let rotated = if keep > 0 {
         rotate(dirs, workspace.id, path, keep)

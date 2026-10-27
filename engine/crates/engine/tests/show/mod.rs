@@ -5,6 +5,7 @@
 //! 8 kHz in 64-frame blocks (sample counts stay small and exact).
 
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use openlab_audio::MixerConfig;
@@ -344,23 +345,63 @@ static PROBED_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 /// A probe that records each file it is asked for and blocks while the file is gated (a stalled
 /// volume), then probes it for real.
 pub fn gated_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
-    PROBED.lock().unwrap().push(path.to_path_buf());
+    PROBED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(path.to_path_buf());
     PROBED_CHANGED.notify_all();
-    let mut gated = GATED.lock().unwrap();
+    let mut gated = GATED.lock().unwrap_or_else(PoisonError::into_inner);
     while gated.iter().any(|g| g == path) {
-        gated = GATE_CHANGED.wait(gated).unwrap();
+        gated = GATE_CHANGED
+            .wait(gated)
+            .unwrap_or_else(PoisonError::into_inner);
     }
     drop(gated);
     openlab_audio::probe(path)
 }
 
 pub fn gate(path: &Path) {
-    GATED.lock().unwrap().push(path.to_path_buf());
+    GATED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(path.to_path_buf());
 }
 
 pub fn release(path: &Path) {
-    GATED.lock().unwrap().retain(|g| g != path);
+    GATED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|g| g != path);
     GATE_CHANGED.notify_all();
+}
+
+/// The probe watchdog's clock, moved only by the test: whether a worker counts as stuck must not
+/// depend on how long the machine takes to run it.
+#[derive(Clone)]
+pub struct ProbeTime {
+    base: std::time::Instant,
+    elapsed_ms: std::sync::Arc<AtomicU64>,
+}
+
+impl ProbeTime {
+    pub fn new() -> Self {
+        Self {
+            base: std::time::Instant::now(),
+            elapsed_ms: std::sync::Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn clock(&self) -> openlab_engine::control::ProbeClock {
+        let t = self.clone();
+        openlab_engine::control::ProbeClock::new(move || {
+            t.base + std::time::Duration::from_millis(t.elapsed_ms.load(Ordering::Acquire))
+        })
+    }
+
+    pub fn advance(&self, by: std::time::Duration) {
+        let ms = u64::try_from(by.as_millis()).unwrap();
+        self.elapsed_ms.fetch_add(ms, Ordering::AcqRel);
+    }
 }
 
 /// The order `gated_probe` was asked for these files in (repeats included).
@@ -376,11 +417,18 @@ pub fn probe_order(paths: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Waits (event-driven, bounded) until `gated_probe` has been asked for `n` of these files.
 pub fn wait_probed(paths: &[PathBuf], n: usize) {
-    let mut probed = PROBED.lock().unwrap();
+    let mut probed = PROBED.lock().unwrap_or_else(PoisonError::into_inner);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while probed.iter().filter(|p| paths.contains(p)).count() < n {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
-        assert!(!left.is_zero(), "probes never came");
-        probed = PROBED_CHANGED.wait_timeout(probed, left).unwrap().0;
+        if left.is_zero() {
+            // Let go of the lock first, so this failure does not poison the other tests.
+            drop(probed);
+            panic!("probes never came");
+        }
+        probed = PROBED_CHANGED
+            .wait_timeout(probed, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
     }
 }
