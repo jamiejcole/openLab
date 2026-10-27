@@ -44,7 +44,11 @@ pub fn to_portable(native: &str, style: PathStyle) -> String {
     }
 }
 
-/// True for `/x`, `//server/share`, `C:/x` and a bare `C:/`. `C:x` (drive-relative) is not.
+/// True for `/x`, `//server/share`, `C:/x` and a bare `C:/`. `C:x` (drive-relative) is not: it
+/// is treated as a relative path whose first component is the literal name `C:x`. Joined to a
+/// show folder that is not a file that exists on any platform, so the media shows as missing
+/// instead of resolving against the process's current directory on drive C. Three or more
+/// leading slashes are one root, as POSIX says; only exactly two start a network share.
 pub fn is_absolute(portable: &str) -> bool {
     root_len(portable) > 0
 }
@@ -65,13 +69,12 @@ struct Parts {
 }
 
 fn parse(portable: &str) -> Parts {
-    let (root, rest) = if let Some(rest) = portable.strip_prefix("//") {
-        ("//", rest)
-    } else {
+    let (root, rest) = match portable.strip_prefix("//") {
+        Some(rest) if !rest.starts_with('/') => ("//", rest),
         // `root_len` counts ASCII bytes only, so the split is on a char boundary.
-        portable
+        _ => portable
             .split_at_checked(root_len(portable))
-            .unwrap_or(("", portable))
+            .unwrap_or(("", portable)),
     };
     let absolute = !root.is_empty();
     let mut comps: Vec<String> = Vec::new();
@@ -303,6 +306,35 @@ mod tests {
         assert_eq!(path_hash("/Show/a.openlab").len(), 16);
         // Pinned so file names stay valid across releases.
         assert_eq!(path_hash(""), "cbf29ce484222325");
+    }
+
+    #[test]
+    fn three_or_more_leading_slashes_are_one_root_not_a_share() {
+        for style in [P, W] {
+            assert_eq!(r("///x", None, style), "/x");
+            assert_eq!(r("////x/y", None, style), "/x/y");
+        }
+        assert_eq!(lexical_normalize("///"), "/");
+        assert_eq!(path_hash("///x"), path_hash("/x"));
+        assert_eq!(resolve("///x/y", "/Show"), "/x/y");
+        assert_eq!(r("///Show/a.wav", Some("/Show"), P), "a.wav");
+        // Exactly two slashes remain a share root.
+        assert_eq!(lexical_normalize("//srv/share/a"), "//srv/share/a");
+        assert!(is_absolute("///x"));
+    }
+
+    #[test]
+    fn drive_relative_is_a_relative_name_never_a_drive_root() {
+        assert!(!is_absolute("C:foo"));
+        assert!(!is_absolute("C:"));
+        assert_eq!(lexical_normalize("C:foo/bar"), "C:foo/bar");
+        // It lands inside the show folder as a literal name, not on drive C.
+        assert_eq!(resolve("C:foo", "D:/Show"), "D:/Show/C:foo");
+        assert_eq!(r("C:foo", Some("D:/Show"), W), "C:foo");
+        assert_eq!(r(r"C:foo\bar", Some("D:/Show"), W), "C:foo/bar");
+        assert_eq!(r("C:foo", None, P), "C:foo");
+        // `C:/foo` is still absolute.
+        assert_eq!(r("C:/foo", Some("D:/Show"), W), "C:/foo");
     }
 
     #[test]
