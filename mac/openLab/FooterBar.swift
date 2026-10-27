@@ -6,6 +6,55 @@ enum LayoutArea: CaseIterable {
     case toolbar, masthead, inspector, sidebar
 }
 
+/// The time of day in the footer (PB-12). QLab's window has no clock; a show caller wants one in
+/// view, so it sits in the footer where it never covers a cue. `now` is injectable: tests set a
+/// fixed date and call `refresh()`; the one-second timer runs only while the label is in a window.
+final class WallClockLabel: NSTextField {
+    var now: () -> Date = { Date() }
+    private var timer: Timer?
+
+    /// The user's own time style (12 or 24 hour) with seconds.
+    static func makeFormatter(locale: Locale = .current, timeZone: TimeZone = .current) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = locale
+        f.timeZone = timeZone
+        f.dateStyle = .none
+        f.timeStyle = .medium
+        return f
+    }
+
+    var dateFormatter = WallClockLabel.makeFormatter()
+
+    init() {
+        super.init(frame: .zero)
+        isEditable = false
+        isBordered = false
+        drawsBackground = false
+        font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        textColor = .secondaryLabelColor
+        setAX(AX.wallClock, label: loc("footer.clock.label"))
+        refresh()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func refresh() { stringValue = dateFormatter.string(from: now()) }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        timer?.invalidate()
+        timer = nil
+        guard window != nil else { return }
+        refresh()
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+}
+
 /// Bottom bar: Edit/Show switch (visual only until M5.12), area toggles, status text, settings.
 final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
@@ -14,6 +63,7 @@ final class FooterBar: NSView {
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
         trackingMode: .selectOne, target: nil, action: nil)
     let statusLabel = NSTextField(labelWithString: loc("footer.status.empty"))
+    let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
 
@@ -55,7 +105,7 @@ final class FooterBar: NSView {
         settingsButton.bezelStyle = .texturedRounded
 
         let left = NSStackView(views: [modeSwitch] + [.toolbar, .masthead].compactMap { toggles[$0] })
-        let right = NSStackView(views: [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
+        let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
         let bar = NSStackView(views: [left, statusLabel, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
