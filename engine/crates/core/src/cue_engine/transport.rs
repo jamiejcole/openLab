@@ -65,6 +65,19 @@ impl CueEngine {
         }
     }
 
+    /// A lost device (M4.2g): every active run stops at once, children before their groups, so
+    /// nothing scheduled before the loss starts by itself after the device returns. Loaded cues
+    /// and settled broken cues stay as they are.
+    pub(super) fn device_lost(&mut self, cx: &mut Ctx) {
+        for tree in Self::trees(cx) {
+            for cue in tree.into_iter().rev() {
+                if matches!(self.slots.get(&cue), Some(Slot::Active(_))) {
+                    self.stop_one(cue, None, cx);
+                }
+            }
+        }
+    }
+
     /// One cue's part of a panic ending on `end`: a playing voice fades out to `end` (one already
     /// fading out that ends sooner keeps its fade); a group in its action whose children are
     /// fading out waits for them; anything else stops at once.
