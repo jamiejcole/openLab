@@ -110,7 +110,8 @@ fn notices(msgs: &[ServerMessage]) -> Vec<String> {
         .collect()
 }
 
-/// The last workspace warnings list sent, as notice codes.
+/// The last workspace warnings list sent, as notice codes, without the per-cue `cue_broken`
+/// entries (tests/control_preshow.rs covers those).
 fn workspace_warnings(msgs: &[ServerMessage]) -> Option<Vec<String>> {
     msgs.iter()
         .filter_map(|m| match m {
@@ -118,7 +119,9 @@ fn workspace_warnings(msgs: &[ServerMessage]) -> Option<Vec<String>> {
                 warnings
                     .iter()
                     .filter_map(|w| match w {
-                        WireWarning::Notice { code, .. } => Some(code.clone()),
+                        WireWarning::Notice { code, .. } if code != "cue_broken" => {
+                            Some(code.clone())
+                        }
                         _ => None,
                     })
                     .collect(),
@@ -289,7 +292,11 @@ fn a_device_with_fewer_outputs_than_a_patch_maps_is_warned_about() {
         })
         .next_back()
         .unwrap();
-    let WireWarning::Notice { message, .. } = &warnings[1] else {
+    // Skip the broken cue's own entry.
+    let mut rest = warnings
+        .iter()
+        .filter(|w| !matches!(w, WireWarning::Notice { code, .. } if code == "cue_broken"));
+    let WireWarning::Notice { message, .. } = &rest.nth(1).unwrap() else {
         panic!()
     };
     assert!(message.contains("Main"), "{message}");
