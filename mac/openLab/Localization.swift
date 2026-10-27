@@ -35,6 +35,7 @@ enum AX {
     static let inspectorContinue = "inspector-continue"
     static let inspectorFlagged = "inspector-flagged"
     static let inspectorArmed = "inspector-armed"
+    static let inspectorPreview = "inspector-preview"
     static let inspectorMessage = "inspector-message"
     static let inspectorHotkey = "inspector-hotkey"
     static let inspectorHotkeyClear = "inspector-hotkey-clear"

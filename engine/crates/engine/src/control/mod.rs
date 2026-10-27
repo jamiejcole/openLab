@@ -12,13 +12,17 @@ mod checks;
 pub mod devices;
 mod docs;
 mod inbox;
+mod mapping;
 mod media;
+mod netout;
 mod observe;
 pub mod offline;
 mod patches;
 pub mod plan;
+mod preshow;
 pub mod runner;
 mod voices;
+pub mod watch;
 
 use std::collections::VecDeque;
 use std::hash::{BuildHasher, RandomState};
@@ -33,15 +37,15 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
-    ErrorCode, LogKind, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem,
-    Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem,
-    WireWarning,
+    ErrorCode, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter, PlayheadEntry,
+    ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction,
+    WireProblem, WireWarning,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, model_changes_indexed,
-    seconds_to_samples,
+    MediaStatus, NetworkPatchId, OscArg, PatchResolution, SampleTime, Workspace, model_changes,
+    model_changes_indexed, seconds_to_samples,
 };
 
 pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
@@ -50,6 +54,7 @@ pub use inbox::{
     outbound_channel, reply_channel,
 };
 pub use media::{PROBE_WORKERS, ProbeClock};
+pub use netout::{Destination, LINK_QUEUE, NetAnswer, NetTransport, SystemTransport, Transport};
 
 use crate::persist::AppDirs;
 use checks::PlanChecks;
@@ -57,12 +62,19 @@ use devices::{Device, DeviceAnswer, DeviceEvent};
 use docs::Docs;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
+use netout::{NetOut, SendOutcome};
 use observe::Observe;
 use patches::Patches;
 use voices::{Effects, Env, Voices};
+use watch::{MediaWatch, WatchAnswer, WatchBatch, WatchEvent};
 
 /// The longest the loop sleeps without a reason to wake (ARCHITECTURE §3.2).
 pub const MAX_WAIT: Duration = Duration::from_millis(5);
+/// The longest floor on the wait after a tick that saw sample time standing still (see
+/// [`stall_floor`]): the mixer renders whole blocks, so waiting less for a deadline to enter
+/// the window only spins the loop (a stalled device before the watchdog declares it lost, or
+/// the wake between two callbacks).
+pub const MIN_STALL_WAIT: Duration = Duration::from_millis(1);
 /// Progress and meters go out at most this often (docs/protocol.md §4).
 pub const REPORT_HZ: u64 = 30;
 /// Cues primed from each playhead (ARCHITECTURE §3.5).
@@ -122,6 +134,9 @@ pub struct ControlConfig {
     /// The show file, if saved: relative media references resolve against its folder.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
+    /// False when `machine` is defaults standing in for a settings file that could not be read:
+    /// the engine then keeps default mappings in memory and never writes the file (M4.4c).
+    pub machine_writable: bool,
     /// Devices present, for the offline backend (a device backend plays on its open stream's
     /// device and lists what the host lists).
     pub devices: Vec<DeviceInfo>,
@@ -157,6 +172,11 @@ pub struct ControlConfig {
     pub status: Option<crate::diag::StatusConfig>,
     /// Process CPU seconds for `status` (tests inject a fake).
     pub cpu_probe: fn() -> Option<f64>,
+    /// What Network cues send through and host names are looked up with (tests inject a
+    /// stand-in).
+    pub net: NetTransport,
+    /// The media watch (M2.25): how files are statted, how often, and on which thread.
+    pub watch: watch::WatchConfig,
 }
 
 impl ControlConfig {
@@ -167,6 +187,7 @@ impl ControlConfig {
             seed: entropy_seed(),
             show_path: None,
             machine: MachineSettings::default(),
+            machine_writable: true,
             devices: Vec::new(),
             mixer_patches: 1,
             streamer: StreamerConfig::new(sample_rate),
@@ -184,6 +205,8 @@ impl ControlConfig {
             show_log: crate::diag::ShowLog::default(),
             status: None,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
+            net: NetTransport::default(),
+            watch: watch::WatchConfig::default(),
         }
     }
 }
@@ -222,11 +245,23 @@ pub struct Control {
     mixer: MixerController,
     streamer: DiskStreamer,
     media: MediaCatalog,
+    /// Network cues' output and the look-ups of their hosts (CT-30, PB-10, NFR-07).
+    net: NetOut,
+    watch: MediaWatch,
+    /// Watch batches taken from the inbox, handled at the next tick.
+    watch_batches: Vec<WatchBatch>,
     voices: Voices,
     checks: PlanChecks,
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
     playable: Vec<DeviceInfo>,
+    /// Saves the machine settings when the engine changes them (default patch mappings).
+    settings_writer: Option<crate::persist::SettingsWriter>,
+    /// Patches and devices the default mapping already warned about.
+    mapping_warned:
+        std::collections::HashSet<(openlab_core::WorkspaceId, openlab_core::PatchId, String)>,
+    /// The unwritable-settings warning went out.
+    unwritable_warned: bool,
     out: Outbound,
     docs: Docs,
     backend: Backend,
@@ -238,6 +273,9 @@ pub struct Control {
     /// `now` never goes back: after a reopen with a smaller block it stays at least where it
     /// was.
     now_floor: SampleTime,
+    /// `samples_rendered` at the last tick, and whether that tick saw it unchanged.
+    last_tick_rendered: SampleTime,
+    last_tick_stalled: bool,
     cue_outputs: usize,
     revision: u64,
     saved_revision: u64,
@@ -302,7 +340,9 @@ impl Control {
             .as_ref()
             .and_then(|p| p.parent())
             .map(PathBuf::from);
+        let net = NetOut::new(config.net.clone(), inbox.clone(), config.sample_rate);
         let docs = Docs::new(&config, inbox.clone())?;
+        let watch = MediaWatch::new(&config.watch, inbox.clone())?;
         let media = MediaCatalog::new(
             inbox,
             show_dir,
@@ -317,6 +357,14 @@ impl Control {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
         };
+        // Not essential: without the thread default mappings stay in memory (warned below).
+        let (settings_writer, writer_error) = match &config.app_dirs {
+            Some(dirs) => match crate::persist::SettingsWriter::spawn(dirs.clone()) {
+                Ok(w) => (Some(w), None),
+                Err(e) => (None, Some(e.to_string())),
+            },
+            None => (None, None),
+        };
         let observe = Observe::new(&config);
         let mut control = Self {
             ws,
@@ -325,10 +373,16 @@ impl Control {
             mixer,
             streamer,
             media,
+            net,
+            watch,
+            watch_batches: Vec::new(),
             voices: Voices::new(),
             checks: PlanChecks::default(),
             patches,
             playable,
+            settings_writer,
+            mapping_warned: std::collections::HashSet::new(),
+            unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
             backend,
@@ -336,6 +390,8 @@ impl Control {
             rate,
             block,
             now_floor: 0,
+            last_tick_rendered: 0,
+            last_tick_stalled: false,
             cue_outputs,
             revision: 0,
             saved_revision: 0,
@@ -359,6 +415,17 @@ impl Control {
             meter_peaks: Vec::new(),
             observe,
         };
+        if let Some(e) = writer_error {
+            control.record(
+                LogKind::Engine,
+                LogLevel::Warn,
+                format!(
+                    "could not start the settings writer ({e}); this machine's settings will not be saved"
+                ),
+                None,
+                None,
+            );
+        }
         control.record(
             LogKind::Engine,
             LogLevel::Info,
@@ -401,7 +468,12 @@ impl Control {
             Inbox::Client { message, reply } => return self.client(message, &reply),
             Inbox::Probe(answer) => self.probe_answer(answer),
             Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Net(answer) => self.net_answer(answer),
             Inbox::Doc(answer) => self.doc_answer(answer),
+            Inbox::Watch(WatchAnswer::Batch(batch)) => self.watch_batches.push(batch),
+            Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
+                self.watch.answered(&bucket, healthy);
+            }
             Inbox::Log { level, message } => self.log(level, message),
             Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
             Inbox::Shutdown => return Flow::Shutdown,
@@ -412,8 +484,12 @@ impl Control {
     /// One wake of the loop: feedback from the mixer, the streams and the probes, due
     /// deadlines, priming, reports, then `pump` (ARCHITECTURE §3.2; docs/audio.md: every tick).
     pub fn tick(&mut self) {
+        let rendered = self.mixer.samples_rendered();
+        self.last_tick_stalled = rendered == self.last_tick_rendered;
+        self.last_tick_rendered = rendered;
         self.poll_device();
         let now = self.now();
+        self.watch_events();
         self.flush_media(now);
         let mut fx = Effects::default();
         while let Some(e) = self.mixer.poll_event() {
@@ -445,6 +521,10 @@ impl Control {
                 ),
             );
         }
+        let reports = self.net.tick(now);
+        self.network_reports(reports, now);
+        self.note_lookup_limit();
+        self.supervise_watch();
         self.deliver_deferred(now);
         if self.engine.is_due(now) {
             self.feed(Input::Tick, now);
@@ -459,6 +539,7 @@ impl Control {
             self.refresh_warnings();
         }
         self.docs_tick();
+        self.settings_tick();
         self.health();
         self.observe_tick();
         self.mixer.pump();
@@ -478,7 +559,18 @@ impl Control {
             self.block,
         );
         let secs = frames as f64 / f64::from(self.rate.get());
-        Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
+        let wait = Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()));
+        // A deadline enters the window only when sample time moves, and it moves in whole
+        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
+        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
+        // would spin. The floor is a quarter block at most, so a small device block cannot
+        // slip past the window. The first wake after a tick that saw progress is not floored,
+        // and a message ends any wait at once.
+        if self.last_tick_stalled {
+            wait.max(stall_floor(self.block, self.rate.get()))
+        } else {
+            wait
+        }
     }
 
     fn client(&mut self, message: ClientMessage, to: &ReplyTx) -> Flow {
@@ -500,13 +592,41 @@ impl Control {
                 }
                 reply(to, ok(id, None));
             }
-            ClientMessage::Command { id, command } => {
+            ClientMessage::Command {
+                id,
+                command,
+                coalesce,
+            } => {
+                if coalesce
+                    .as_ref()
+                    .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
+                {
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
+                            )),
+                        },
+                    );
+                    return Flow::Continue;
+                }
+                if let Some(e) = self.patch_layout_conflict(Some(&command), false) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
-                match self.history.execute(&mut self.ws, *command) {
-                    Ok(()) => {
-                        // An empty transaction (or one naming no cue) changed nothing and
-                        // is no undo step: no revision, no `model_changed`, not dirty.
-                        if !footprint.is_empty() {
+                match self
+                    .history
+                    .execute_coalescing(&mut self.ws, *command, coalesce.as_deref())
+                {
+                    Ok(changed) => {
+                        // An empty transaction, or an edit that sets what is already there,
+                        // changed nothing and is no undo step: no revision, no
+                        // `model_changed`, not dirty.
+                        if changed {
                             self.edited(now, &footprint);
                         }
                         reply(to, ok(id, Some(self.revision)));
@@ -524,6 +644,15 @@ impl Control {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
+                let step = if undo {
+                    self.history.peek_undo()
+                } else {
+                    self.history.peek_redo()
+                };
+                if let Some(e) = self.patch_layout_conflict(step, true) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let result = if undo {
                     self.history.undo(&mut self.ws)
                 } else {
@@ -560,6 +689,19 @@ impl Control {
                         }),
                     },
                 ),
+                Request::PreshowCheck => {
+                    let report = self.preshow_report();
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::PreshowCheck(Box::new(report))),
+                            }),
+                        },
+                    );
+                }
                 Request::LogTail { max } => {
                     let (entries, dropped) = self.log_tail(max);
                     reply(
@@ -572,6 +714,18 @@ impl Control {
                             }),
                         },
                     );
+                }
+                Request::SetOutputOverrides { network_disabled } => {
+                    if self.net.disabled() != network_disabled {
+                        self.net.set_disabled(network_disabled);
+                        let text = if network_disabled {
+                            "network output disabled: Network cues send nothing"
+                        } else {
+                            "network output enabled"
+                        };
+                        self.log(LogLevel::Warn, text.to_owned());
+                    }
+                    reply(to, ok(id, None));
                 }
                 Request::Relink { .. } => reply(
                     to,
@@ -590,6 +744,33 @@ impl Control {
             ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
         }
         Flow::Continue
+    }
+
+    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting before the
+    /// end, removing, moving or resizing a patch would re-route or silence a voice on the
+    /// device, whatever cue it belongs to (a show cue, a preview, a stopping tail, an orphan)
+    /// and whatever patch that cue's model names now. So any such edit, undo or redo
+    /// (`Command::changes_patch_layout`, judged on the final state of a transaction) is refused
+    /// while any voice is on the device. Lifted by the stable slot allocator.
+    fn patch_layout_conflict(
+        &self,
+        step: Option<&Command>,
+        restoring: bool,
+    ) -> Option<CommandError> {
+        let step = step?;
+        if self.voices.on_device().is_empty() || !step.changes_patch_layout(&self.ws) {
+            return None;
+        }
+        // A step that would be refused anyway (a patch a cue uses, a bad value) gets that
+        // reason, not this one. The dry run clones the workspace, but only for a patch layout
+        // edit while audio plays.
+        let mut dry = self.ws.clone();
+        let applied = if restoring {
+            dry.apply_restoring(step.clone())
+        } else {
+            dry.apply(step.clone())
+        };
+        applied.is_ok().then_some(CommandError::PatchPlaying)
     }
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
@@ -657,7 +838,13 @@ impl Control {
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        self.engine.model_changed_cues(footprint);
+        // Lists, patches and settings decide which cues are broken and where the playheads are:
+        // the cue-scoped shortcut is only for edits that touched cues alone.
+        if footprint.is_model_wide() {
+            self.engine.model_changed();
+        } else {
+            self.engine.model_changed_cues(footprint);
+        }
         self.revision += 1;
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues (M4.12c). The walk is the fallback.
@@ -680,13 +867,20 @@ impl Control {
     /// reports every patch resolution (a newly opened workspace), else only changes.
     fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.primes_dirty = true;
-        self.sync_patches(all)
+        let mut inputs = self.sync_patches(all);
+        let now = self.now();
+        let reports = self.net.sync(&self.ws.network_patches, all, now);
+        if !reports.is_empty() {
+            inputs.push(Input::NetworkAvailability { patches: reports });
+        }
+        inputs
     }
 
     /// Resolves the patches against the playable devices and brings the mixer's matrices,
     /// output delays and master level up to date. Returns the `Availability` for the patches
     /// whose resolution changed (`all`: every patch).
     fn sync_patches(&mut self, all: bool) -> Vec<Input> {
+        self.map_unmapped_patches();
         let (cmds, changed) = self
             .patches
             .sync(&self.ws, &self.config.machine, &self.playable);
@@ -955,6 +1149,71 @@ impl Control {
         }
     }
 
+    /// The media watch's findings since the last tick, before the probe answers go to the
+    /// engine: a file gone is `Missing` in this tick's `Availability` (its cues are broken
+    /// within the tick); a file back, changed or unreadable is probed again. Batches of an
+    /// older generation (the catalog was reset since) are dropped. Key changes go out first,
+    /// so a reset's new generation is in force.
+    fn watch_events(&mut self) {
+        self.watch.apply(self.media.take_key_changes());
+        if self.watch_batches.is_empty() {
+            return;
+        }
+        for batch in std::mem::take(&mut self.watch_batches) {
+            let Some(events) = self.watch.accept(batch) else {
+                continue;
+            };
+            for event in events {
+                match event {
+                    WatchEvent::Gone { key, id, .. } => {
+                        if let Some(status) = self.media.mark_missing(&key, id) {
+                            self.pending_media.push(status);
+                        }
+                    }
+                    WatchEvent::Back { key, id, .. }
+                    | WatchEvent::Changed { key, id, .. }
+                    | WatchEvent::Unreadable { key, id, .. } => {
+                        self.media.recheck(&key, id);
+                    }
+                }
+            }
+            // Primes of a file gone are dropped; a file probed again near a playhead is
+            // probed first.
+            self.primes_dirty = true;
+            self.warnings_dirty = true;
+        }
+    }
+
+    /// The watch's key changes, watchdog, log entries and notices.
+    fn supervise_watch(&mut self) {
+        self.watch.apply(self.media.take_key_changes());
+        self.watch.supervise();
+        for (level, message) in self.watch.take_logs() {
+            self.log(level, message);
+        }
+        if self.watch.take_notices_changed() {
+            self.warnings_dirty = true;
+        }
+    }
+
+    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
+    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
+    /// found nothing.
+    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
+        self.watch.apply(self.media.take_key_changes());
+        self.watch.manual_pass()
+    }
+
+    /// Watch batches of the current generation taken so far (a cost measure).
+    pub fn watch_batches(&self) -> u64 {
+        self.watch.batches()
+    }
+
+    /// Media watchers abandoned in a stalled stat.
+    pub fn abandoned_watchers(&self) -> usize {
+        self.watch.abandoned()
+    }
+
     /// Hands the probe answers gathered since the last tick to the engine in one
     /// `Availability`, then starts the voices that waited for them.
     fn flush_media(&mut self, now: SampleTime) {
@@ -1055,10 +1314,18 @@ impl Control {
             }
         }
         for action in actions {
-            if let Action::SetArmed { cue, armed: value } = action
-                && set_armed(&mut self.ws, *cue, *value)
-            {
-                armed.push(*cue);
+            match action {
+                Action::SetArmed { cue, armed: value } if set_armed(&mut self.ws, *cue, *value) => {
+                    armed.push(*cue);
+                }
+                Action::SendOsc {
+                    cue,
+                    destination,
+                    address,
+                    args,
+                    ..
+                } => self.send_osc(*cue, *destination, address, args),
+                _ => {}
             }
         }
         if !changes.is_empty() {
@@ -1071,6 +1338,105 @@ impl Control {
             self.document();
         }
         feedback
+    }
+
+    /// A Network cue's turn (CT-30): encodes the message and hands it to its destination's
+    /// worker. Whatever goes wrong is a warning; the cue completes regardless (QLab: a Network
+    /// cue does not wait for, or learn of, delivery).
+    fn send_osc(
+        &mut self,
+        cue: CueId,
+        destination: NetworkPatchId,
+        address: &str,
+        args: &[OscArg],
+    ) {
+        let Some(patch) = self
+            .ws
+            .network_patches
+            .iter()
+            .find(|p| p.id == destination)
+            .cloned()
+        else {
+            // Cannot happen: a cue without its patch has a problem and does not send.
+            self.net_warning(cue, "network patch missing".to_owned());
+            return;
+        };
+        if self.net.disabled() {
+            let label = self.cue_label(cue);
+            self.record(
+                LogKind::Engine,
+                LogLevel::Info,
+                format!(
+                    "{label}: network output is disabled, {address} to {} not sent",
+                    patch.name
+                ),
+                Some(cue),
+                None,
+            );
+            return;
+        }
+        let packet = match netout::packet(address, args, patch.protocol) {
+            Ok(p) => p,
+            Err(e) => return self.net_warning(cue, format!("message not sent: {e}")),
+        };
+        match self.net.send(&patch, cue, packet) {
+            SendOutcome::Queued | SendOutcome::Suppressed => {}
+            SendOutcome::Refused(why) => {
+                self.net_warning(cue, format!("message to {} not sent: {why}", patch.name));
+            }
+        }
+    }
+
+    /// A worker's answer: a failed send is a warning; a look-up goes to the cue engine.
+    fn net_answer(&mut self, answer: NetAnswer) {
+        let now = self.now();
+        match answer {
+            NetAnswer::SendFailed {
+                cue,
+                ref destination,
+                ref reason,
+                ..
+            } => {
+                let message = format!("message to {destination} not sent: {reason}");
+                // A TCP failure also asks for a fresh look-up of the host.
+                let reports = self.net.answer(answer, now);
+                self.network_reports(reports, now);
+                self.net_warning(cue, message);
+            }
+            lookup @ NetAnswer::Lookup { .. } => {
+                let reports = self.net.answer(lookup, now);
+                self.network_reports(reports, now);
+            }
+        }
+        self.note_lookup_limit();
+    }
+
+    fn note_lookup_limit(&mut self) {
+        for note in self.net.take_notes() {
+            self.log(LogLevel::Warn, note);
+        }
+        if self.net.take_limit_note() {
+            self.log(
+                LogLevel::Warn,
+                "host look-ups are stuck; names waiting for one are taken to be reachable until one answers"
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn network_reports(&mut self, patches: netout::Reports, now: SampleTime) {
+        if !patches.is_empty() {
+            self.feed(Input::NetworkAvailability { patches }, now);
+        }
+    }
+
+    /// A show-time notice (`network_send_failed`) for a Network cue, logged and sent to clients.
+    fn net_warning(&mut self, cue: CueId, message: String) {
+        let changes = vec![RuntimeChange::Warning {
+            warning: notice("network_send_failed", message, Some(cue)),
+        }];
+        self.observe_changes(&changes);
+        self.runtime(changes);
     }
 
     /// Sends the mixer commands and notices of `fx`; queues its deferred feedback; returns its
@@ -1395,6 +1761,7 @@ impl Control {
             ));
         }
         self.device_warnings(&mut list);
+        self.watch.notices(&mut list);
         if self.seen.alloc_violations > 0 {
             list.push(notice(
                 "realtime_allocation",
@@ -1585,12 +1952,28 @@ impl Control {
         self.model_change_walks
     }
 
+    /// Network look-ups under way plus messages queued or being sent (the offline driver waits
+    /// for zero).
+    pub fn net_busy(&self) -> usize {
+        self.net.busy()
+    }
+
+    /// PB-10: whether the network output override is on.
+    pub fn network_output_disabled(&self) -> bool {
+        self.net.disabled()
+    }
+
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
 
     pub fn engine(&self) -> &CueEngine {
         &self.engine
+    }
+
+    /// The machine settings in force, including mappings the engine added (M4.4c).
+    pub fn machine(&self) -> &MachineSettings {
+        &self.config.machine
     }
 
     pub fn mixer(&self) -> &MixerController {
@@ -1716,6 +2099,13 @@ fn playable_device(d: &Device) -> DeviceInfo {
     }
 }
 
+/// The shortest wait after a tick that saw no progress: [`MIN_STALL_WAIT`], or a quarter of a
+/// device block when that is shorter.
+pub fn stall_floor(block: u64, rate: u32) -> Duration {
+    let quarter = Duration::from_secs_f64(block as f64 / f64::from(rate.max(1)) / 4.0);
+    MIN_STALL_WAIT.min(quarter)
+}
+
 /// Frames from `rendered` until the loop must tick: when the engine's next deadline enters the
 /// lookahead window (`is_due(rendered + block)`: `deadline < rendered + 2 * block`), or a
 /// deferred report becomes deliverable (`at < rendered + block`). 0 = now.
@@ -1779,7 +2169,9 @@ fn request_name(r: &Request) -> &'static str {
         Request::Revert { .. } => "revert",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
+        Request::PreshowCheck => "preshow_check",
         Request::LogTail { .. } => "log_tail",
+        Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
     }
 }

@@ -70,7 +70,11 @@ fn save_removes_old_leftover_tmp_beside_the_show_only() {
     save_workspace(&env.dirs, &show, &renamed("a"), 1, 20).unwrap();
     let old = dir.join("My Show.openlab.4000000000-0.tmp");
     let young = dir.join("My Show.openlab.4000000000-1.tmp");
-    let own = dir.join(format!("My Show.openlab.{}-9.tmp", std::process::id()));
+    // A counter value no save in this test binary reaches, so the save never meets it.
+    let own = dir.join(format!(
+        "My Show.openlab.{}-999999999.tmp",
+        std::process::id()
+    ));
     let other_show = dir.join("Other.openlab.4000000000-0.tmp");
     let users = dir.join("My Show.openlab.tmp");
     for p in [&old, &young, &own, &other_show, &users] {

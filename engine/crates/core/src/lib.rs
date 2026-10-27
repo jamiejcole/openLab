@@ -9,12 +9,14 @@
 mod backup;
 mod changes;
 mod command;
+mod command_model;
 mod cue;
 mod cue_engine;
 mod cue_index;
 mod history;
 mod media_path;
 mod model;
+mod network;
 pub mod protocol;
 mod recovery;
 mod relink;
@@ -26,12 +28,16 @@ mod validate;
 pub use backup::*;
 pub use changes::*;
 pub use command::*;
+pub use command_model::{
+    MAX_OSC_PASSCODE_BYTES, NetworkPatchProperty, PatchProperty, TransportKey, WorkspaceSetting,
+};
 pub use cue::*;
 pub use cue_engine::*;
 pub use cue_index::*;
 pub use history::*;
 pub use media_path::*;
 pub use model::*;
+pub use network::*;
 pub use recovery::*;
 pub use relink::*;
 pub use settings::*;

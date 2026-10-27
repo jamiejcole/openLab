@@ -517,6 +517,7 @@ fn blank_ids(inputs: Vec<ClientMessage>) -> Vec<ClientMessage> {
             ClientMessage::Command { command, .. } => ClientMessage::Command {
                 id: RequestId(0),
                 command,
+                coalesce: None,
             },
             other => other,
         })

@@ -274,8 +274,18 @@ fn the_control_loop_never_waits_for_the_disk() {
     s.run(BLOCK * 10);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // A writer releases the probe with something unplayable: the waiting start fails.
-    std::fs::write(&fifo, b"not audio").unwrap();
+    // A writer releases the probe with something unplayable: the waiting start fails. Opening
+    // the pipe is the hand-over (it returns once the probe's read end is open). The probe
+    // refuses a pipe at its first seek and closes it without reading, so the bytes below race
+    // with that close and may hit EPIPE: they are only there to be unplayable if read, and the
+    // outcome does not depend on them, so a broken pipe is fine.
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    match std::io::Write::write_all(&mut writer, b"not audio") {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("writing the pipe: {e}"),
+    }
+    drop(writer);
     s.settle_media();
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
@@ -538,6 +548,7 @@ fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
             id: id(cue),
             property: CueProperty::Kind { value: kind },
         }),
+        coalesce: None,
     });
     assert!(replies.iter().any(|m| matches!(
         m,
@@ -674,6 +685,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
                 id: id(1),
                 property: CueProperty::Kind { value: kind },
             }),
+            coalesce: None,
         });
         s.run(BLOCK);
     };
@@ -702,6 +714,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
     s.send(ClientMessage::Command {
         id: remove,
         command: Box::new(Command::RemoveCue { id: id(1) }),
+        coalesce: None,
     });
     s.run(BLOCK);
     assert_eq!(length(&s, 1), None);

@@ -1,0 +1,12 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_network_patch_property",
+    "id": "00000000-0000-0000-0000-000000000004",
+    "property": {
+      "type": "protocol",
+      "value": "tcp"
+    }
+  }
+}

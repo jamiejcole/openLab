@@ -127,7 +127,10 @@ enum Request: Hashable, Sendable, Codable {
     case revert(discardChanges: Bool = false)
     case relink(folder: String)
     case listDevices
+    case preshowCheck
     case logTail(max: UInt32? = nil)
+    /// PB-10: Network cues still run but send nothing. Engine-wide, in memory only.
+    case setOutputOverrides(networkDisabled: Bool)
     case snapshot
 
     /// Replies with a `snapshot`, so the engine holds this connection's broadcasts until the
@@ -166,9 +169,11 @@ enum Request: Hashable, Sendable, Codable {
             return ("revert", f)
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
+        case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
             opt(&f, "max", max)
             return ("log_tail", f)
+        case .setOutputOverrides(let disabled): return ("set_output_overrides", [("network_disabled", disabled)])
         case .snapshot: return ("snapshot", [])
         }
     }
@@ -195,7 +200,10 @@ enum Request: Hashable, Sendable, Codable {
         case "revert": self = .revert(discardChanges: discard)
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
+        case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
+        case "set_output_overrides":
+            self = .setOutputOverrides(networkDisabled: try c.decode(Bool.self, forKey: "network_disabled"))
         case "snapshot": self = .snapshot
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
@@ -205,7 +213,9 @@ enum Request: Hashable, Sendable, Codable {
 
 enum ClientMessage: Hashable, Sendable, Codable {
     case hello(Hello)
-    case command(id: UInt64, Command)
+    /// `coalesce`: edits sent with the same key join one undo step (docs/commands.md "Coalescing");
+    /// absent on the wire when nil.
+    case command(id: UInt64, Command, coalesce: String? = nil)
     case transport(id: UInt64, TransportAction)
     case undo(id: UInt64)
     case redo(id: UInt64)
@@ -217,7 +227,10 @@ enum ClientMessage: Hashable, Sendable, Codable {
     func encode(to encoder: Encoder) throws {
         switch self {
         case .hello(let h): try h.encode(to: encoder)
-        case .command(let id, let cmd): try encodeTagged("command", [("id", id), ("command", cmd)], to: encoder)
+        case .command(let id, let cmd, let coalesce):
+            var fields: Fields = [("id", id), ("command", cmd)]
+            if let coalesce { fields.append(("coalesce", coalesce)) }
+            try encodeTagged("command", fields, to: encoder)
         case .transport(let id, let a): try encodeTagged("transport", [("id", id), ("action", a)], to: encoder)
         case .undo(let id): try encodeTagged("undo", [("id", id)], to: encoder)
         case .redo(let id): try encodeTagged("redo", [("id", id)], to: encoder)
@@ -232,7 +245,10 @@ enum ClientMessage: Hashable, Sendable, Codable {
         func id() throws -> UInt64 { try c.decode(UInt64.self, forKey: "id") }
         switch try c.decode(String.self, forKey: "type") {
         case "hello": self = .hello(try Hello(from: decoder))
-        case "command": self = .command(id: try id(), try c.decode(Command.self, forKey: "command"))
+        case "command":
+            self = .command(
+                id: try id(), try c.decode(Command.self, forKey: "command"),
+                coalesce: try c.decodeIfPresent(String.self, forKey: "coalesce"))
         case "transport": self = .transport(id: try id(), try c.decode(TransportAction.self, forKey: "action"))
         case "undo": self = .undo(id: try id())
         case "redo": self = .redo(id: try id())
