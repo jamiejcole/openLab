@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Combine
 
 /// One open workspace's window and its QLab-style layout: masthead, cue-type row, cue list over
 /// inspector, optional right sidebar, footer. Built in code; it holds only its own store. Close
@@ -16,11 +17,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPauseAll: (() -> Void)?
     var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
+    /// Pause, resume or panic of one cue, from the Active Cues panel.
+    var onCueAction: ((TransportAction) -> Void)? {
+        didSet { sidebar.onCueAction = onCueAction }
+    }
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let cueList: CueListViewController
     let inspector: InspectorViewController
-    let sidebar = SidebarViewController()
+    let sidebar: SidebarViewController
+    private var sub: AnyCancellable?
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
@@ -28,6 +34,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     init(store: WorkspaceStore) {
         self.store = store
         cueList = CueListViewController(store: store)
+        sidebar = SidebarViewController(store: store)
         inspector = InspectorViewController(store: store)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -43,12 +50,26 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
+        // The cue list's own subscription is older, so it has switched lists by the time this runs.
+        sub = store.changes.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncSidebarList() }
+        }
+        sidebar.shownProvider = { [weak self] in self?.cueList.listID }
+        sidebar.onSelectList = { [weak self] id in
+            self?.cueList.showList(id)
+            self?.syncSidebarList()
+        }
+        syncSidebarList()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+    }
+
+    private func syncSidebarList() {
+        sidebar.syncSelection()
     }
 
     private func wire(_ button: NSButton?, _ action: Selector) {

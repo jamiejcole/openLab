@@ -928,6 +928,51 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(app.launcher.window?.isVisible ?? true)
     }
 
+    // MARK: Sidebar
+
+    /// Adds a second list "Second" to `doc` as the engine would.
+    private func addSecondList(_ doc: ModelID) async throws -> ModelID {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        let id: ModelID = "00000000-0000-0000-0000-000000000002"
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue_list","id":"\#(id)","name":"Second","index":1}],"deletes":[]}"#,
+            doc: doc)
+        await assertEventually { store.model?.cueLists.count == 2 }
+        return id
+    }
+
+    func testGoAndPlayheadKeysAddressTheListPickedInTheSidebar() async throws {
+        let second = try await addSecondList("doc-1")
+        keyDoc = "doc-1"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        XCTAssertEqual(wc.cueList.listID, second)
+        _ = await app.goFront()
+        await app.perform(.playheadNext)
+        XCTAssertEqual(transports(.go(list: second)), ["doc-1"])
+        XCTAssertEqual(transports(.playheadNext(list: second)), ["doc-1"])
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+        wc.masthead.goButton.performClick(nil)  // the GO button follows the same list
+        await assertEventually { transports(.go(list: second)).count == 2 }
+    }
+
+    func testActiveCuePanicGoesToTheWindowsOwnWorkspace() async throws {
+        let other = try await addWorkspace()
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+        await assertEventually { wc.sidebar.activeCues.contains(intro) }
+        let row = try XCTUnwrap(wc.sidebar.activeCues.firstIndex(of: intro))
+        let cell = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? ActiveCueCell)
+        cell.panicButton.performClick(nil)
+        await assertEventually { !transports(.panicCue(cue: intro)).isEmpty }
+        XCTAssertEqual(transports(.panicCue(cue: intro)), ["doc-1"])
+        XCTAssertNotEqual(other, "doc-1")
+        cell.pauseButton.performClick(nil)
+        await assertEventually { !transports(.pause(cue: intro)).isEmpty }
+        XCTAssertEqual(transports(.pause(cue: intro)), ["doc-1"])
+    }
+
     // MARK: Helpers
 
     private func find(_ root: NSView, _ id: String) -> NSView? {
