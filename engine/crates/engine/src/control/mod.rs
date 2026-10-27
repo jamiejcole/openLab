@@ -465,6 +465,22 @@ impl Control {
             );
             self.pending_media.extend(stuck);
         }
+        for (volume, stalled) in self.media.take_volume_events() {
+            if stalled {
+                self.log(
+                    LogLevel::Warn,
+                    format!(
+                        "volume \"{volume}\" does not answer; its media files are probed again \
+                         after a wait"
+                    ),
+                );
+            } else {
+                self.log(
+                    LogLevel::Info,
+                    format!("volume \"{volume}\" answers again; its media files are probed"),
+                );
+            }
+        }
         if self.media.take_limit_reached() {
             self.log(
                 LogLevel::Error,
