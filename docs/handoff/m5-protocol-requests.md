@@ -61,3 +61,16 @@ second client can show the same mode. Until then the app does not tell the engin
 ## Undo and redo of an active cue (M5.10a)
 
 Wanted: an `undo` / `redo` that would remove an active cue (running, paused, waiting, fading) should be refused, or need a flag, like the app's own delete guard. Today the engine stops the cue's voice and warns `CueRemoved` (docs/cue-engine.md), and the client cannot predict what an undo does, so Cmd-Z can cut a sound the audience hears.
+
+## Media paths from drops and `Kind` replacement (M5.10b)
+
+The app sends the dropped file's absolute path (forward slashes, NFC) in `AddCue` and in `SetCueProperty { kind }`
+when a file replaces an audio cue's file. Wanted: the engine stores it relative to the show folder when inside it
+(docs/file-format.md §4.3), on `AddCue` and `Kind` alike; the app does not know the show's folder rules.
+Also wanted: a `SetCueProperty` variant for an audio cue's `media` alone, so a replace does not send (and so
+overwrite) the whole kind with the app's copy of it.
+Paste: the wire has only `paste`, which wants cues already prepared (docs/commands.md: `prepare_paste` is a Rust
+function). The app re-implements `prepare_paste` in `CueEditor.preparePaste` (fresh ids, targets follow or clear,
+used numbers cleared, missing patch / network destination becomes the first) from the model it holds, so it can
+drift from core. Wanted: a `paste` form that takes the raw clipboard and runs `prepare_paste` in the engine
+(fresh ids made by the engine), then delete the Swift copy.
