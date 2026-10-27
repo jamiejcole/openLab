@@ -77,6 +77,7 @@ extension FakeEngine {
                 ]),
             ]
         s.set("cue_states", .array(states))
+        s.set("previewing", .array([]))  // the demo show starts with nothing previewing
         return s
     }
 

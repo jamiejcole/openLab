@@ -1,0 +1,25 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_patch_property",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "property": {
+      "type": "outputs",
+      "value": [
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        },
+        {
+          "level_db": 0.0,
+          "mute": false,
+          "delay_ms": 0.0,
+          "polarity_inverted": false
+        }
+      ]
+    }
+  }
+}
