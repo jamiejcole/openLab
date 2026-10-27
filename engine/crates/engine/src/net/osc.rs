@@ -1086,13 +1086,17 @@ impl Actor {
             return;
         }
         let workspace = upper(mirror.workspace_id());
+        let passcode_set = mirror.passcode().is_some_and(|p| !p.is_empty());
         for update in updates {
             let message = update_message(&workspace, update);
             let Some(bytes) = self.osc.encode_update(&message) else {
                 continue;
             };
             for &peer in &subscribers {
-                if self.osc.update_allowed(peer, now, bytes.len()) {
+                if self
+                    .osc
+                    .update_allowed(peer, now, bytes.len(), passcode_set)
+                {
                     self.send(peer, bytes.clone());
                 }
             }

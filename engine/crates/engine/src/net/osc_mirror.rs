@@ -120,10 +120,26 @@ impl Mirror {
     /// Takes the active list over from the copy this one replaces, if it is the same workspace
     /// and the list is still there.
     pub fn inherit_active(&mut self, old: &Mirror) {
-        if old.workspace.id == self.workspace.id
-            && let Some(list) = old.active
-        {
+        if old.workspace.id != self.workspace.id {
+            return;
+        }
+        if let Some(list) = old.active {
             self.set_active(list);
+        }
+        // A playhead move the new copy already holds (it was in the snapshot, so its broadcast
+        // will be skipped as stale): exactly one list moved, so that is where the operator is.
+        let moved: Vec<CueListId> = self
+            .workspace
+            .cue_lists
+            .iter()
+            .map(|l| l.id)
+            .filter(|id| {
+                old.playheads.get(id).copied().flatten()
+                    != self.playheads.get(id).copied().flatten()
+            })
+            .collect();
+        if let [list] = moved.as_slice() {
+            self.set_active(*list);
         }
     }
 
@@ -1192,5 +1208,35 @@ mod tests {
             })
         );
         assert_eq!(locate(&m.workspace, cue_id(99)), None);
+    }
+
+    #[test]
+    fn a_replacement_keeps_the_active_list_or_follows_the_one_playhead_that_moved() {
+        let second = CueListId(Uuid::from_u128(901));
+        // Kept while the list is there.
+        let mut old = two_lists();
+        old.set_active(second);
+        let mut new = two_lists();
+        new.inherit_active(&old);
+        assert_eq!(MirrorShow(&new).active_list(), Some(second));
+        // Another workspace: the first list.
+        let mut other = two_lists();
+        other.workspace.id = WorkspaceId(Uuid::from_u128(77));
+        other.inherit_active(&old);
+        assert_eq!(MirrorShow(&other).active_list(), Some(list_id()));
+        // The snapshot already holds a playhead move in exactly one list: that list is active
+        // (its broadcast will be skipped as stale).
+        let mut old = two_lists();
+        old.set_active(second);
+        let mut new = two_lists();
+        new.playheads.insert(list_id(), Some(cue_id(2)));
+        new.inherit_active(&old);
+        assert_eq!(MirrorShow(&new).active_list(), Some(list_id()));
+        // Two moved: no guess, the old one stays.
+        let mut new = two_lists();
+        new.playheads.insert(list_id(), Some(cue_id(2)));
+        new.playheads.insert(second, Some(cue_id(20)));
+        new.inherit_active(&old);
+        assert_eq!(MirrorShow(&new).active_list(), Some(second));
     }
 }

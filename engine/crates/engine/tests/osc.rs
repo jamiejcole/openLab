@@ -1405,12 +1405,12 @@ fn a_peer_that_may_not_ask_is_sent_nothing_large() {
 
 #[test]
 fn replies_to_one_call_stop_at_a_byte_cap() {
-    let mut show = Show::open();
+    let mut show = Show::with_passcode("s3cret");
     show.props
         .insert((CUE_1, "notes"), json!("n".repeat(60_000)));
     let mut osc = quiet_osc();
-    // A peer that has connected: not held to a byte budget, so only the call's cap applies.
-    connect_status(&mut osc, &show, udp(), T0, "any");
+    // A peer that connected with the passcode: not held to a byte budget, so only the call's cap applies.
+    connect_status(&mut osc, &show, udp(), T0, "s3cret");
     let read = bytes(&msg("/cue/1/notes", vec![]));
     let packet = bundle(&vec![read; 60]);
     let out = osc.handle_datagram(udp(), T0, &packet, &show);
@@ -1503,7 +1503,7 @@ fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_t
     );
     let mut allowed = 0;
     for _ in 0..2000 {
-        if osc.update_allowed(victim, later, 120) {
+        if osc.update_allowed(victim, later, 120, false) {
             allowed += 1;
         }
     }
@@ -1515,14 +1515,73 @@ fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_t
             .len(),
         1
     );
-    assert!(osc.update_allowed(tcp_peer(9), T0, 100_000));
-    // A source that completed /connect (the console) is not held to it.
-    let console = Peer::Udp(ip_n(42));
-    connect_status(&mut osc, &show, console, T0, "x");
-    for _ in 0..50 {
-        assert_eq!(send(&mut osc, &show, console, T0, &ask).replies.len(), 1);
+    assert!(osc.update_allowed(tcp_peer(9), T0, 100_000, false));
+    // With no passcode a `/connect` proves nothing about a datagram's source address: a forged
+    // `/connect` followed by reads (in one bundle, or one datagram after another) leaves the
+    // victim's budget in place, and so do its updates.
+    let forged = Peer::Udp(ip_n(42));
+    let packet = bundle(&[
+        bytes(&msg("/connect", vec![s("x")])),
+        bytes(&ask),
+        bytes(&ask),
+    ]);
+    let mut replies = 0usize;
+    for _ in 0..200 {
+        replies += osc
+            .handle_datagram(forged, T0, &packet, &show)
+            .replies
+            .iter()
+            .filter(|r| r.addr == "/reply/cue/1/notes")
+            .count();
     }
-    assert!(osc.update_allowed(console, T0, 100_000));
+    assert!(osc.is_connected(forged));
+    assert_eq!(replies, 4, "256 KiB of 60 KB replies and no more");
+    let mut allowed = 0;
+    for _ in 0..2000 {
+        allowed += usize::from(osc.update_allowed(forged, T0, 120, false));
+    }
+    assert!(allowed < 2000);
+}
+
+#[test]
+fn with_a_passcode_a_peer_that_connected_is_not_held_to_a_budget() {
+    let mut show = Show::with_passcode("s3cret");
+    show.props.insert((CUE_1, "notes"), json!("n".repeat(1000)));
+    let mut osc = quiet_osc();
+    let console = Peer::Udp(ip_n(43));
+    connect_status(&mut osc, &show, console, T0, "s3cret");
+    for _ in 0..300 {
+        let out = send(&mut osc, &show, console, T0, &msg("/cue/1/notes", vec![]));
+        assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+    }
+    assert!(osc.update_allowed(console, T0, 100_000, true));
+    // The passcode, not the session, is what proves the address: with none set it does not.
+    assert!(!osc.update_allowed(console, T0, 10_000_000, false));
+}
+
+#[test]
+fn empty_cue_numbers_and_trailing_stars_are_charged_and_bounded() {
+    // Unnumbered cues and lists have an empty number; every alternative still has to be set up.
+    let big = Numbered(vec![String::new(); 5000]);
+    let mut osc = quiet_osc();
+    let stars = "*".repeat(100);
+    let elements: Vec<Vec<u8>> = (0..120)
+        .map(|i| {
+            bytes(&msg(
+                &format!("/cue/{{*,**}}{{*,**}}{{*,**}}{{*,**}}{{*,**}}{{*,**}}{stars}Z{i}/name"),
+                vec![],
+            ))
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let out = osc.handle_datagram(udp(), T0, &bundle(&elements), &big);
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    assert_eq!(out.replies.len(), 120);
+    assert!(osc.stats().matches_capped >= 1);
+    // Runs of stars are one star.
+    let mut budget = MATCH_BUDGET;
+    let p = CuePattern::compile("a***b").unwrap();
+    assert_eq!(p.is_match("axxb", &mut budget), Ok(true));
 }
 
 #[test]
