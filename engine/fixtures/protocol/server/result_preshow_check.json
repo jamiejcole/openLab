@@ -1,0 +1,115 @@
+{
+  "type": "result",
+  "id": 49,
+  "ok": {
+    "data": {
+      "type": "preshow_check",
+      "ok": false,
+      "summary": {
+        "broken_cues": 2,
+        "media": 2,
+        "patches": 2,
+        "network": 1,
+        "network_unchecked": 1,
+        "system": 1,
+        "total": 8
+      },
+      "broken_cues": [
+        {
+          "cue": "00000000-0000-0000-0000-00000000000a",
+          "list": "00000000-0000-0000-0000-000000000001",
+          "number": "3",
+          "name": "Storm",
+          "problems": [
+            {
+              "type": "media_missing",
+              "media": "/Shows/storm.wav"
+            }
+          ]
+        },
+        {
+          "cue": "00000000-0000-0000-0000-00000000000b",
+          "list": "00000000-0000-0000-0000-000000000001",
+          "name": "",
+          "problems": [
+            {
+              "type": "media_unsupported",
+              "media": "/Shows/rain.mp3",
+              "reason": "unsupported codec"
+            },
+            {
+              "type": "patch_missing",
+              "patch": "00000000-0000-0000-0000-000000000009"
+            }
+          ]
+        }
+      ],
+      "media": [
+        {
+          "path": "/Shows/rain.mp3",
+          "status": "unsupported",
+          "reason": "unsupported codec",
+          "cues": [
+            "00000000-0000-0000-0000-00000000000b"
+          ]
+        },
+        {
+          "path": "/Shows/storm.wav",
+          "status": "missing",
+          "cues": [
+            "00000000-0000-0000-0000-00000000000a"
+          ]
+        }
+      ],
+      "patches": [
+        {
+          "patch": "00000000-0000-0000-0000-000000000001",
+          "name": "Main",
+          "device": "Scarlett 2i2",
+          "mapped": true,
+          "resolution": {
+            "type": "device_missing",
+            "device": "Scarlett 2i2"
+          },
+          "cues": [
+            "00000000-0000-0000-0000-00000000000a"
+          ]
+        },
+        {
+          "patch": "00000000-0000-0000-0000-000000000009",
+          "mapped": false,
+          "cues": [
+            "00000000-0000-0000-0000-00000000000b"
+          ]
+        }
+      ],
+      "network": [
+        {
+          "patch": "00000000-0000-0000-0000-000000000001",
+          "name": "Lighting",
+          "host": "10.0.0.5",
+          "port": 8000,
+          "protocol": "udp",
+          "status": "not_checked",
+          "cues": [
+            "00000000-0000-0000-0000-00000000000c"
+          ]
+        },
+        {
+          "patch": "00000000-0000-0000-0000-000000000002",
+          "status": "missing",
+          "cues": [
+            "00000000-0000-0000-0000-00000000000d"
+          ]
+        }
+      ],
+      "system": [
+        {
+          "type": "notice",
+          "code": "device_lost",
+          "message": "audio device \"Scarlett 2i2\" is lost"
+        }
+      ]
+    }
+  }
+}

@@ -205,6 +205,9 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// One report of every broken cue, missing file, unmapped device and unreachable target
+    /// (SM-06), from the engine's current state.
+    PreshowCheck,
     /// The newest show-log entries the engine holds in memory (DX-02), for a log window opened
     /// after the fact. `max` absent: all of them (at most 1000).
     LogTail {
