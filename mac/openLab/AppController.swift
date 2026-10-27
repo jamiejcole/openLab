@@ -21,6 +21,9 @@ final class AppController {
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
+    /// A text field or text view is being edited: keys that type must stay with it.
+    var isTextEditing: @MainActor () -> Bool = { (NSApp.keyWindow?.firstResponder as? NSText)?.isEditable == true }
+    let keyMap: KeyMap
 
     private var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
@@ -32,8 +35,12 @@ final class AppController {
     private var closing: Set<ModelID> = []
     private(set) var quitting = false
 
-    init(session: EngineSession, scheduler: Scheduler = SystemScheduler(), timeout: Double = 5) {
+    init(
+        session: EngineSession, keyMap: KeyMap = KeyMap(), scheduler: Scheduler = SystemScheduler(),
+        timeout: Double = 5
+    ) {
         self.session = session
+        self.keyMap = keyMap
         self.scheduler = scheduler
         self.timeout = timeout
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
@@ -53,6 +60,7 @@ final class AppController {
             wc.onCloseRequest = { [weak self] in Task { await self?.closeWorkspace(doc) } }
             wc.onGo = { [weak self] in Task { await self?.go(store) } }
             wc.onPauseAll = { Task { _ = await store.transport(.pauseAll) } }
+            wc.onResumeAll = { Task { _ = await store.transport(.resumeAll) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
             windows[doc] = wc
             if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.window?.title = n.name }
@@ -116,15 +124,26 @@ final class AppController {
         keyMonitorInstalls += 1
         // Deliberately also fires while an alert or panel is up: panic must never be blocked by UI.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if Self.isPanicKey(event) { MainActor.assumeIsolated { self?.firePanic() } }
-            return event
+            let consumed = MainActor.assumeIsolated { self?.handleKeyDown(event) == nil }
+            return consumed ? nil : event
         }
     }
 
-    /// The monitor's body, callable from tests. Always returns the event.
+    /// The monitor's body, callable from tests. Esc always goes on to the responder. A key-map
+    /// chord is taken here (nil: consumed) because a focused table or outline view would otherwise
+    /// swallow Space before the menu's key equivalent sees it; a text field being edited keeps its
+    /// typing keys (`canPerform`).
     func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-        if Self.isPanicKey(event) { firePanic() }
-        return event
+        if Self.isPanicKey(event) {
+            firePanic()
+            return event
+        }
+        guard let key = event.charactersIgnoringModifiers, !key.isEmpty,
+            let command = keyMap.command(for: KeyChord(key, event.modifierFlags)), canPerform(command)
+        else { return event }
+        let isRepeat = event.isARepeat
+        Task { await perform(command, isRepeat: isRepeat) }
+        return nil
     }
 
     private func firePanic() { Task { _ = await panicAll() } }
@@ -153,6 +172,59 @@ final class AppController {
     func pauseAllFront() async -> Result<OkBody, EngineError>? {
         guard let store = frontController?.store else { return nil }
         return await store.transport(.pauseAll)
+    }
+
+    // MARK: Transport commands (menu items and keys)
+
+    /// Whether the menu item for `command` may fire now. Disabled items also let their key through
+    /// to the text field being edited (see `KeyMap` for the precedence rule).
+    func canPerform(_ command: TransportCommand) -> Bool {
+        if command == .panic { return true }
+        guard frontController != nil else { return false }
+        if let chord = keyMap.chord(for: command), chord.typesCharacters, isTextEditing() { return false }
+        return true
+    }
+
+    /// Runs `command` on the key window's workspace (Panic: every workspace). A held key is ignored
+    /// after its first press: a repeating GO would fire cue after cue.
+    func perform(_ command: TransportCommand, isRepeat: Bool = false) async {
+        guard !isRepeat else { return }
+        if command == .panic {
+            _ = await panicAll()
+            return
+        }
+        guard let wc = frontController else { return }
+        let store = wc.store
+        let selected = wc.cueList.selectedIDs()
+        let list = store.model?.cueLists.first?.id
+        switch command {
+        case .go: _ = await go(store)
+        case .pauseAll: await store.transport(.pauseAll)
+        case .resumeAll: await store.transport(.resumeAll)
+        // ponytail: per-cue hard stops until PR #19's `stop_all` lands (PROGRESS M5.11).
+        case .stopAll:
+            for id in activeCues(store) { await store.transport(.hardStop(cue: id)) }
+        case .panic: break
+        case .playheadNext: if let list { await store.transport(.playheadNext(list: list)) }
+        case .playheadPrevious: if let list { await store.transport(.playheadPrevious(list: list)) }
+        case .loadSelected: if let id = selected.last { await store.transport(.load(cue: id, at: 0)) }
+        case .startSelected: for id in selected { await store.transport(.start(cue: id)) }
+        case .stopSelected: for id in selected { await store.transport(.hardStop(cue: id)) }
+        case .resetSelected: for id in selected { await store.transport(.reset(cue: id)) }
+        case .pauseResumeSelected:
+            for id in selected {
+                switch store.cueStates[id]?.state {
+                case .paused?: await store.transport(.resume(cue: id))
+                case .running?, .fading?, .preWaiting?, .postWaiting?: await store.transport(.pause(cue: id))
+                default: break
+                }
+            }
+        }
+    }
+
+    private func activeCues(_ store: WorkspaceStore) -> [ModelID] {
+        let live: Set<WireCueState> = [.running, .fading, .paused, .preWaiting, .postWaiting]
+        return store.cueStates.filter { live.contains($0.value.state) }.keys.sorted { $0.raw < $1.raw }
     }
 
     /// Esc: every workspace, by the engine's app-scope panic.

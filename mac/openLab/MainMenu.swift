@@ -7,11 +7,12 @@ import AppKit
 enum MainMenu {
     struct Menus {
         let bar: NSMenu
+        let transport: NSMenu
         let windows: NSMenu
         let help: NSMenu
     }
 
-    static func make() -> Menus {
+    static func make(keyMap: KeyMap) -> Menus {
         let windows = menu(
             "menu.window",
             [
@@ -22,13 +23,14 @@ enum MainMenu {
             ]
         )
         let help = menu("menu.help", [item("menu.help.openLabHelp", #selector(NSApplication.showHelp(_:)), "?")])
+        let transport = transportMenu(keyMap)
         let bar = NSMenu()
-        for submenu in [appMenu(), fileMenu(), editMenu(), windows, help] {
+        for submenu in [appMenu(), fileMenu(), editMenu(), transport, windows, help] {
             let holder = NSMenuItem()
             holder.submenu = submenu
             bar.addItem(holder)
         }
-        return Menus(bar: bar, windows: windows, help: help)
+        return Menus(bar: bar, transport: transport, windows: windows, help: help)
     }
 
     private static func appMenu() -> NSMenu {
@@ -74,6 +76,31 @@ enum MainMenu {
                 item("menu.edit.selectAll", #selector(NSText.selectAll(_:)), "a"),
             ]
         )
+    }
+
+    /// Items carry their command in `representedObject`; keys come from the key map, so they follow
+    /// a remap (see `applyKeys`). Panic has no key equivalent here: Esc is handled app-wide.
+    private static func transportMenu(_ keyMap: KeyMap) -> NSMenu {
+        var items: [NSMenuItem] = []
+        for command in TransportCommand.allCases {
+            if command == .playheadPrevious || command == .loadSelected { items.append(.separator()) }
+            let entry = item(command.titleKey, #selector(AppDelegate.transportCommand(_:)))
+            entry.representedObject = command.rawValue
+            items.append(entry)
+        }
+        let transport = menu("menu.transport", items)
+        applyKeys(to: transport, keyMap)
+        return transport
+    }
+
+    static func applyKeys(to transport: NSMenu, _ keyMap: KeyMap) {
+        for entry in transport.items {
+            guard let raw = entry.representedObject as? String, let command = TransportCommand(rawValue: raw)
+            else { continue }
+            let chord = keyMap.chord(for: command)
+            entry.keyEquivalent = chord?.key ?? ""
+            entry.keyEquivalentModifierMask = chord?.modifiers ?? []
+        }
     }
 
     private static func menu(_ key: String, _ items: [NSMenuItem]) -> NSMenu {

@@ -3,10 +3,11 @@
 import AppKit
 
 @main
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
     @MainActor private(set) lazy var engineSession = EngineMode.fromLaunchArguments().makeSession()
     @MainActor private(set) lazy var appController = AppController(session: engineSession)
+    @MainActor private var transportMenu: NSMenu?
 
     static func main() {
         let app = NSApplication.shared
@@ -17,7 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
-        let menu = MainMenu.make()
+        let menu = MainMenu.make(keyMap: appController.keyMap)
+        transportMenu = menu.transport
+        appController.keyMap.onChange = { [weak self] in
+            guard let self, let transport = self.transportMenu else { return }
+            MainMenu.applyKeys(to: transport, self.appController.keyMap)
+        }
         NSApp.mainMenu = menu.bar
         NSApp.windowsMenu = menu.windows
         NSApp.helpMenu = menu.help
@@ -51,4 +57,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
+
+    @MainActor @objc func transportCommand(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
+            return
+        }
+        // isARepeat raises on non-key events (a menu click).
+        let event = NSApp.currentEvent
+        let isRepeat = event?.type == .keyDown && event?.isARepeat == true
+        Task { await appController.perform(command, isRepeat: isRepeat) }
+    }
+
+    @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
+            return true
+        }
+        return appController.canPerform(command)
+    }
 }

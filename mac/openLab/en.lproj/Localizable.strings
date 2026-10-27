@@ -22,6 +22,20 @@
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
 
+"menu.transport" = "Transport";
+"menu.transport.go" = "GO";
+"menu.transport.stopAll" = "Stop All";
+"menu.transport.pauseAll" = "Pause All";
+"menu.transport.resumeAll" = "Resume All";
+"menu.transport.panic" = "Panic";
+"menu.transport.playheadPrevious" = "Previous Cue";
+"menu.transport.playheadNext" = "Next Cue";
+"menu.transport.loadSelected" = "Load Selected";
+"menu.transport.startSelected" = "Start Selected";
+"menu.transport.pauseResumeSelected" = "Pause or Resume Selected";
+"menu.transport.stopSelected" = "Stop Selected";
+"menu.transport.resetSelected" = "Reset Selected";
+
 "menu.window" = "Window";
 "menu.window.minimize" = "Minimize";
 "menu.window.zoom" = "Zoom";
