@@ -24,3 +24,14 @@ Defaults to reconcile: a new workspace has `stop_all` = Esc (the app keeps Esc a
 no Stop All key from it) and `playhead_next/previous` = bare Down/Up (the app treats these as "the
 cue selection moves the playhead", as QLab does, and binds no transport key; QLab's own menu keys
 are Shift-Cmd-Down/Up).
+
+## Inspector basics gaps (M5.6)
+
+QLab 5's Basics tab has controls the model has no field for; the inspector omits them until it does:
+
+1. Auto-load and "skip if disarmed" per cue (and a workspace default for auto-load).
+2. A second colour after first start; QLab offers 20 colours, the model has none plus five.
+3. Editing a Wait or Fade cue's duration (the inspector shows it read-only): a duration is inside `kind`, so
+   it needs a `CueProperty` of its own or the app must send a whole `Kind` replacement.
+4. Cue-number edits send `set_cue_numbers`. A "default name" (QLab shows a content-derived name in grey
+   when the name is empty and clearing a name restores it) has no counterpart in the model.

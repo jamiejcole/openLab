@@ -129,6 +129,7 @@
 "problem.network_patch_missing" = "The network patch is missing";
 "problem.started_broken" = "The cue started while broken";
 
+"cue.colour.none" = "None";
 "cue.colour.red" = "Red";
 "cue.colour.orange" = "Orange";
 "cue.colour.green" = "Green";
@@ -139,6 +140,25 @@
 "cue.continue.autoFollow" = "Auto-follow";
 
 "inspector.empty" = "No cue selected";
+"inspector.multiple" = "Multiple cues selected";
+"inspector.tab.basics" = "Basics";
+"inspector.notes" = "Notes";
+"inspector.colour" = "Color";
+"inspector.continue" = "Continue";
+"inspector.continue.do_not_continue" = "Do not continue";
+"inspector.continue.auto_continue" = "Auto-continue";
+"inspector.continue.auto_follow" = "Auto-follow";
+"inspector.flagged" = "Flagged";
+"inspector.armed" = "Armed";
+"inspector.target.missing" = "(missing cue)";
+"inspector.target.notApplicable" = "(not applicable)";
+"inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
+"inspector.invalid.duplicateNumber" = "Another cue already has that number.";
+"inspector.invalid.unknownTarget" = "No cue has that number.";
+"inspector.invalid.selfTarget" = "A cue cannot target itself.";
+"inspector.invalid.notApplicable" = "This cue has no target.";
+"inspector.refused" = "The change was refused: %@";
+"inspector.failed" = "The change could not be sent.";
 
 "transport.reset" = "Reset all";
 "transport.pause" = "Pause all";
