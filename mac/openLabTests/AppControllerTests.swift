@@ -286,19 +286,28 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
     }
 
-    func testStopAllIsDisabledUntilTheEngineHasAtomicStopAll() async throws {
-        keyDoc = "doc-1"
-        XCTAssertFalse(app.canPerform(.stopAll))
+    func testStopAllSendsStopAllToTheKeyWindowsWorkspaceOnly() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        XCTAssertTrue(app.canPerform(.stopAll))
         await app.perform(.stopAll)
-        await settle()
-        XCTAssertTrue(
-            engine.receivedFrom.allSatisfy {
-                if case .transport = $0.message { return false } else { return true }
-            }, "no per-cue stops")
-        // A key bound to it passes through instead of being swallowed.
+        XCTAssertEqual(transports(.stopAll), [second])
+        XCTAssertTrue(transports(.hardStop(cue: "00000000-0000-0000-0000-00000000000a")).isEmpty, "no per-cue loop")
+    }
+
+    func testStopAllKeyFromTheShowsHotkeysDispatches() async throws {
+        keyDoc = "doc-1"
         try await setHotkeys("doc-1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
-        let s = try keyEvent("s")
-        XCTAssertTrue(app.handleKeyDown(s) === s)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually { !transports(.stopAll).isEmpty }
+        XCTAssertEqual(transports(.stopAll), ["doc-1"])
+    }
+
+    func testEscStaysPanicNotStopAll() async throws {
+        keyDoc = "doc-1"
+        _ = app.handleKeyDown(try escEvent())
+        await assertEventually { transports(.panic).count == 1 }
+        XCTAssertTrue(transports(.stopAll).isEmpty)
     }
 
     func testFailedTransportBeepsAndLogsInsteadOfBeingDropped() async throws {

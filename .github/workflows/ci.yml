@@ -2,19 +2,62 @@
 name: CI
 
 on:
+  # PR branches are tested once, through pull_request; pushes are tested only on main.
   push:
+    branches: [main]
   pull_request:
+  # The release perf, CPU-budget and soak gates run here and on main, not on every PR.
+  schedule:
+    - cron: "23 16 * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A new push to a PR replaces its run; runs on main always finish, so every merge gets its gates.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Decides which jobs a change needs. Skipped jobs count as passed for the required
+  # "CI Result" check; anything but a pull request or a push with a known base runs everything.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      engine: ${{ steps.diff.outputs.engine }}
+      mac: ${{ steps.diff.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base=$(git merge-base "$PR_BASE" HEAD) ;;
+            push) base="$PUSH_BEFORE" ;;
+            *) base="" ;;
+          esac
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "engine=true" >> "$GITHUB_OUTPUT"
+            echo "mac=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$base" HEAD)
+          printf '%s\n' "$files"
+          # A CI or Makefile change re-runs everything.
+          if printf '%s\n' "$files" | grep -qE '^(\.github/|Makefile$)'; then all=true; else all=false; fi
+          if [ "$all" = true ] || printf '%s\n' "$files" | grep -q '^engine/'; then echo "engine=true"; else echo "engine=false"; fi >> "$GITHUB_OUTPUT"
+          if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^(mac|engine)/'; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+
   rust:
     name: Rust (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -44,19 +87,31 @@ jobs:
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate
-        if: matrix.os == 'macos-26-intel'
+        if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
         run: cargo test --release --locked -p openlab-audio --test cpu_budget -- --ignored --nocapture
       # NFR-24/NFR-25 proxies (M4.12): a 2,000-cue show opens, edits and idles within budget.
       - name: Performance budget gate
-        if: matrix.os == 'macos-26-intel'
+        if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
         run: cargo test --release --locked -p openlab-engine --test perf -- --ignored --nocapture
       # NFR-09/QA-05: 24 h of a generated show, run by a random operator, in virtual time on the
       # offline driver (about a minute in release); a ten-minute run is in the normal suite.
       - name: Soak test (24 h virtual)
-        if: matrix.os == 'macos-26-intel'
+        if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
         run: cargo test --release --locked -p openlab-engine --test soak -- --ignored --nocapture
+      # NFR-09/QA-05: the same show and operator for three minutes of wall clock against the real
+      # control loop, with real timer wake-ups and a device stand-in rendering in real time
+      # (jitter, xruns, late starts, counts); about four minutes with its final checkpoint.
+      # Nightly and on demand only: its bounds depend on a shared runner's timer, and a noisy
+      # night must not turn a push to main red.
+      - name: Soak test (3 min real time)
+        if: matrix.os == 'macos-26-intel' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          OPENLAB_SOAK_RT_SECS: "180"
+        run: cargo test --release --locked -p openlab-engine --test soak_rt -- --ignored --nocapture
 
   cargo-deny:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -73,6 +128,8 @@ jobs:
 
   fuzz:
     name: Fuzz smoke
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
     env:
       # Pinned so a nightly regression cannot fail unrelated pushes; bump deliberately.
@@ -95,6 +152,9 @@ jobs:
 
   mac:
     name: macOS app
+    needs: changes
+    # The app bundles the engine, so an engine change rebuilds it too.
+    if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
@@ -120,3 +180,18 @@ jobs:
       - run: make test-mac
       - run: make mac
       - run: make verify-bundle
+
+  # The one check branch protection requires: green when every job that ran passed.
+  result:
+    name: CI Result
+    if: always()
+    needs: [changes, rust, cargo-deny, fuzz, mac]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+          done

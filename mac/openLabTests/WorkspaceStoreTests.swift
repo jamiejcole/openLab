@@ -349,6 +349,21 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(kinds, ["go \(list)", "command true", "save", "panic"])
     }
 
+    func testOscApiTransportIntentsSendTheirActions() async throws {
+        let rig = try await connectedRig()
+        for result in [
+            await rig.store.goFrom(list: list, cue: cueA), await rig.store.stopAll(),
+            await rig.store.hardStopAll(), await rig.store.panicCue(cueA),
+        ] {
+            guard case .success = result else { return XCTFail("\(result)") }
+        }
+        let actions = rig.engine.received.compactMap { m -> TransportAction? in
+            if case .transport(_, let a) = m { return a }
+            return nil
+        }
+        XCTAssertEqual(actions, [.goFrom(list: list, cue: cueA), .stopAll, .hardStopAll, .panicCue(cue: cueA)])
+    }
+
     func testEngineRefusalComesBackAsATypedError() async throws {
         let rig = try await connectedRig()
         // A fake that refuses: swap the next result for an error by sending the real thing by hand.

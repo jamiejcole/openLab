@@ -1,0 +1,7 @@
+{
+  "type": "transport",
+  "id": 28,
+  "action": {
+    "type": "stop_all"
+  }
+}
