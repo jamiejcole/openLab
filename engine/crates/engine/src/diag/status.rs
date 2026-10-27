@@ -36,6 +36,7 @@ pub struct Counters {
     pub log_dropped: u64,
     /// Sequence number of the newest show-log record.
     pub log_seq: u64,
+    pub network_output_disabled: bool,
     pub device: DeviceStatus,
     /// Process CPU seconds so far, if the platform says.
     pub cpu_seconds: Option<f64>,
@@ -51,6 +52,7 @@ pub struct Peek<'a> {
     pub underrun_frames: u64,
     pub device_name: Option<&'a str>,
     pub device_state: DeviceState,
+    pub network_output_disabled: bool,
 }
 
 impl<'a> Peek<'a> {
@@ -60,6 +62,7 @@ impl<'a> Peek<'a> {
             underrun_frames: c.underrun_frames,
             device_name: c.device.name.as_deref(),
             device_state: c.device.state,
+            network_output_disabled: c.network_output_disabled,
         }
     }
 }
@@ -71,6 +74,7 @@ struct Discrete {
     underrun_frames: u64,
     healthy: bool,
     device: (Option<String>, DeviceState),
+    network_output_disabled: bool,
 }
 
 impl Discrete {
@@ -80,6 +84,7 @@ impl Discrete {
             underrun_frames: p.underrun_frames,
             healthy,
             device: (p.device_name.map(str::to_owned), p.device_state),
+            network_output_disabled: p.network_output_disabled,
         }
     }
 
@@ -90,6 +95,7 @@ impl Discrete {
             && self.healthy == healthy
             && self.device.0.as_deref() == p.device_name
             && self.device.1 == p.device_state
+            && self.network_output_disabled == p.network_output_disabled
     }
 }
 
@@ -169,6 +175,7 @@ impl StatusReporter {
             device: counters.device.clone(),
             log_dropped: counters.log_dropped,
             log_seq: counters.log_seq,
+            network_output_disabled: counters.network_output_disabled,
         })
     }
 }
@@ -191,6 +198,7 @@ mod tests {
             streams: 2,
             log_dropped: 0,
             log_seq: 0,
+            network_output_disabled: false,
             device: DeviceStatus {
                 name: Some("Dev".into()),
                 state: DeviceState::Ok,
@@ -248,6 +256,20 @@ mod tests {
             None,
             "went back"
         );
+    }
+
+    #[test]
+    fn the_network_override_sends_early_and_is_reported() {
+        let mut r = StatusReporter::new(StatusConfig::default());
+        let mut c = counters();
+        assert!(!poll(&mut r, 0, &c).unwrap().network_output_disabled);
+        c.network_output_disabled = true;
+        assert!(poll(&mut r, 100, &c).is_none(), "inside the gap");
+        let s = poll(&mut r, 250, &c).expect("changed, gap over");
+        assert!(s.network_output_disabled);
+        assert!(poll(&mut r, 600, &c).is_none(), "nothing new since");
+        c.network_output_disabled = false;
+        assert!(!poll(&mut r, 850, &c).unwrap().network_output_disabled);
     }
 
     #[test]

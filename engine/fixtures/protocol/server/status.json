@@ -18,6 +18,7 @@
       "latency_ms": 11.5
     },
     "log_dropped": 0,
-    "log_seq": 42
+    "log_seq": 42,
+    "network_output_disabled": false
   }
 }
