@@ -34,6 +34,9 @@ pub enum Inbox {
     Doc(super::docs::DocAnswer),
     /// A log entry from another thread (the network layer), sent out like the loop's own.
     Log { level: LogLevel, message: String },
+    /// An input from a client or OSC peer is about to arrive: sent by the network layer just
+    /// before it, so the show log shows what triggered a GO and from where (DX-02).
+    Trigger { source: String, detail: String },
     /// Stop the control loop.
     Shutdown,
 }
