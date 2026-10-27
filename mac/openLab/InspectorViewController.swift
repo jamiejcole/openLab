@@ -30,8 +30,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     private(set) var selection: [ModelID] = []
     private var subscription: AnyCancellable?
-    /// Fields whose edit was cancelled with Esc: the end-of-editing that follows must not commit.
-    private var cancelled: Set<InspectorField> = []
+    /// Fields typed in since their last commit or cancel. Only these count as "being edited": a
+    /// focused field the user has not changed takes model updates (after Return, say).
+    private(set) var dirty: Set<InspectorField> = []
+    /// Newest edit number per cue and control; a refusal only reverts when it is still the newest.
+    private var editSeq: [String: Int] = [:]
+    private var inFlight: [Int: Task<Void, Never>] = [:]
+    private var nextTask = 0
+    private var sendFailures = 0
 
     init(store: WorkspaceStore) {
         self.store = store
@@ -206,16 +212,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     // MARK: Showing the model
 
     func setSelection(_ ids: [ModelID]) {
+        // The list re-announces an unchanged selection after model changes; that must not wipe
+        // what the user is typing or the message they are reading.
+        if ids == selection { return }
         selection = ids
         messageLabel.stringValue = ""
-        cancelled = []
+        dirty = []
         render(force: Set(InspectorField.allCases))
     }
 
-    func isEditing(_ f: InspectorField) -> Bool {
-        if f == .notes { return notesView.window?.firstResponder === notesView }
-        return field(f)?.currentEditor() != nil
-    }
+    func isEditing(_ f: InspectorField) -> Bool { dirty.contains(f) }
 
     /// Puts the model's values in the controls. A field being edited keeps its text unless `force`.
     func render(force: Set<InspectorField> = []) {
@@ -266,41 +272,65 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     // MARK: Committing edits
 
     /// Sends the edit for `f` if the text changed; rejects bad input by putting the model's text back.
-    func commit(_ f: InspectorField) {
-        guard let cue, let model = store.model else { return }
+    @discardableResult
+    func commit(_ f: InspectorField) -> Bool {
+        dirty.remove(f)
+        guard let cue, let model = store.model else { return true }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
         switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
         case .failure(let r):
             show(rejection: r)
             render(force: [f])
+            return false
         case .success(nil):
             render(force: [f])
         case .success(let command?):
             messageLabel.stringValue = ""
-            send(command, cue: cue.id, revert: [f])
+            send(command, cue: cue.id, key: "\(f)", revert: [f])
             // Show what will be stored (`90` becomes `01:30.000`) until the model answers.
             if f == .preWait || f == .postWait, let s = InspectorTime.parse(text) {
                 field(f)?.stringValue = InspectorTime.format(s)
             }
         }
+        return true
     }
 
-    /// Esc: drops the edit and shows the model's text.
+    /// Commits every field typed in and not yet committed, then waits for the sends to be answered.
+    /// False when an edit was invalid or refused: the caller (Save, Close, Quit) must not go on.
+    func commitPendingEdits() async -> Bool {
+        var ok = true
+        for f in InspectorField.allCases where dirty.contains(f) { ok = commit(f) && ok }
+        let failuresBefore = sendFailures
+        for task in Array(inFlight.values) { await task.value }
+        return ok && sendFailures == failuresBefore
+    }
+
+    /// Esc: drops the edit and shows the model's text. Nothing is left to commit, so the
+    /// end-of-editing that follows finds the text unchanged.
     func cancel(_ f: InspectorField) {
-        cancelled.insert(f)
+        dirty.remove(f)
         render(force: [f])
     }
 
-    private func send(_ command: Command, cue: ModelID, revert: Set<InspectorField>) {
-        Task { [weak self] in
+    private func send(_ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>) {
+        let seqKey = "\(cue)/\(key)"
+        let n = (editSeq[seqKey] ?? 0) + 1
+        editSeq[seqKey] = n
+        nextTask += 1
+        let taskID = nextTask
+        inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer { inFlight[taskID] = nil }
             if case .failure(let error) = await store.send(command: command) {
+                sendFailures += 1
                 if case .engine(_, let message) = error {
                     messageLabel.stringValue = String(format: loc("inspector.refused"), message)
                 } else {
                     messageLabel.stringValue = loc("inspector.failed")
                 }
-                if selection == [cue] { render(force: revert) }
+                // A newer edit of the same thing is in flight or being typed: it decides what shows.
+                guard selection == [cue], editSeq[seqKey] == n else { return }
+                render(force: revert.subtracting(dirty))
             }
         }
     }
@@ -313,6 +343,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .unknownTarget: key = "inspector.invalid.unknownTarget"
         case .selfTarget: key = "inspector.invalid.selfTarget"
         case .notApplicable: key = "inspector.invalid.notApplicable"
+        case .decimalComma: key = "inspector.invalid.decimalComma"
         }
         messageLabel.stringValue = loc(key)
     }
@@ -323,7 +354,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard let f = inspectorField(of: obj.object) else { return }
-        if cancelled.remove(f) != nil { return }
         commit(f)
     }
 
@@ -336,10 +366,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return true
     }
 
-    func textDidEndEditing(_ notification: Notification) {
-        if cancelled.remove(.notes) != nil { return }
-        commit(.notes)
+    func controlTextDidChange(_ obj: Notification) {
+        if let f = inspectorField(of: obj.object) { dirty.insert(f) }
     }
+
+    func textDidChange(_ notification: Notification) { dirty.insert(.notes) }
+
+    func textDidEndEditing(_ notification: Notification) { commit(.notes) }
 
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
@@ -352,15 +385,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         guard let cue else { return }
         let i = sender.indexOfSelectedItem
         if sender === colourPopup, Self.colours.indices.contains(i) {
-            send(.setProperty(cue.id, .color(Self.colours[i])), cue: cue.id, revert: [])
+            send(.setProperty(cue.id, .color(Self.colours[i])), cue: cue.id, key: "colour", revert: [])
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
-            send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, revert: [])
+            send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, key: "continue", revert: [])
         }
     }
 
     @objc private func checkChanged(_ sender: NSButton) {
         guard let cue else { return }
         let on = sender.state == .on
-        send(.setProperty(cue.id, sender === flaggedCheck ? .flagged(on) : .armed(on)), cue: cue.id, revert: [])
+        send(
+            .setProperty(cue.id, sender === flaggedCheck ? .flagged(on) : .armed(on)), cue: cue.id,
+            key: sender === flaggedCheck ? "flagged" : "armed", revert: [])
     }
 }

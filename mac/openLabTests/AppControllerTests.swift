@@ -286,15 +286,73 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
     }
 
-    func testStopAllHardStopsEveryLiveCueOfTheKeyWorkspaceOnly() async throws {
-        let second = try await addWorkspace()
-        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+    func testStopAllIsDisabledUntilTheEngineHasAtomicStopAll() async throws {
         keyDoc = "doc-1"
+        XCTAssertFalse(app.canPerform(.stopAll))
         await app.perform(.stopAll)
-        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
-        keyDoc = second  // nothing is running there
-        await app.perform(.stopAll)
-        XCTAssertEqual(transports(.hardStop(cue: running)).count, 1)
+        await settle()
+        XCTAssertTrue(
+            engine.receivedFrom.allSatisfy {
+                if case .transport = $0.message { return false } else { return true }
+            }, "no per-cue stops")
+        // A key bound to it passes through instead of being swallowed.
+        try await setHotkeys("doc-1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
+        let s = try keyEvent("s")
+        XCTAssertTrue(app.handleKeyDown(s) === s)
+    }
+
+    func testFailedTransportBeepsAndLogsInsteadOfBeingDropped() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        engine.dropConnections()
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 1)
+        let errors = store.logEntries.filter { $0.level == .error }.map(\.message)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.hasPrefix("Transport command failed") == true, "\(errors)")
+    }
+
+    func testSuccessfulTransportDoesNotBeep() async throws {
+        keyDoc = "doc-1"
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await app.perform(.pauseAll)
+        XCTAssertEqual(beeps, 0)
+    }
+
+    func testPlayheadSendsTheFinalSelectionEvenBeforeTheEchoArrives() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let a: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let b: ModelID = "00000000-0000-0000-0000-00000000000b"  // the playhead already
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        func click(_ id: ModelID) {
+            let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(id))
+            wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        click(a)
+        click(b)  // back on the cue the (not yet moved) playhead is on
+        await assertEventually { !transports(.setPlayhead(list: list, cue: b)).isEmpty }
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: a)).count, 1)
+        XCTAssertEqual(transports(.setPlayhead(list: list, cue: b)).count, 1)
+    }
+
+    func testKeyCacheIsEvictedWhenAWorkspaceCloses() async throws {
+        let second = try await addWorkspace()
+        let before = app.keyCacheCount
+        XCTAssertGreaterThanOrEqual(before, 2)
+        _ = await app.session.close(doc: second, discardChanges: true)
+        await assertEventually { app.windows[second] == nil }
+        XCTAssertEqual(app.keyCacheCount, before - 1)
+    }
+
+    func testHotkeyWarningsAreLoggedWhenTheSettingsArriveNotAtTheFirstKeyPress() async throws {
+        let store = try XCTUnwrap(app.session.stores["doc-1"])
+        let hk = Self.hotkey("x")
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        await assertEventually { store.logEntries.contains { $0.level == .warn } }
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
     }
 
     func testSelectedCueCommandsUseTheSelection() async throws {
@@ -582,6 +640,75 @@ final class AppControllerTests: XCTestCase {
     }
 
     // MARK: Quit
+
+    // MARK: Pending inspector edits
+
+    /// Types a name in the inspector of "doc-1" without committing it.
+    private func typePendingName(_ text: String = "Typed") throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.intro])
+        wc.inspector.nameField.stringValue = text
+        wc.inspector.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.nameField))
+        return wc
+    }
+
+    private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.received.firstIndex(where: match) }
+    private func isCommand(_ m: ClientMessage) -> Bool {
+        if case .command = m { return true } else { return false }
+    }
+
+    func testCloseSendsThePendingEditFirst() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertTrue(closed)
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let close = try XCTUnwrap(index { if case .provisional(.close) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, close)
+    }
+
+    func testSaveFromThePromptSendsThePendingEditBeforeTheSave() async throws {
+        _ = try typePendingName()
+        await makeDirty("doc-1")
+        alerts.saveChoices = [.save]
+        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        _ = await app.closeWorkspace("doc-1")
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let save = try XCTUnwrap(index { if case .request(_, .saveAs) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, save)
+    }
+
+    func testQuitSendsThePendingEditBeforeGoodbye() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]  // the edit made the workspace dirty
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "\(alerts.log) \(alerts.errors)")
+        await assertEventually { self.index { if case .goodbye = $0 { return true } else { return false } } != nil }
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let bye = try XCTUnwrap(index { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, bye)
+    }
+
+    func testInvalidPendingEditStopsCloseAndQuit() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.fade])
+        func typeBadTime() {
+            wc.inspector.preWaitField.stringValue = "abc"
+            wc.inspector.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
+        }
+        typeBadTime()
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(app.windows["doc-1"])
+        typeBadTime()
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, loc("inspector.invalid.time"))
+    }
 
     func testQuitWalksEveryDirtyWorkspaceThenSaysGoodbye() async throws {
         let b = try await addWorkspace()

@@ -61,6 +61,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
 
+    /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
+    /// (Save, Close, Quit) must stop.
+    func commitPendingEdits() async -> Bool { await inspector.commitPendingEdits() }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()
         return false

@@ -12,6 +12,7 @@ enum InspectorField: Hashable, CaseIterable {
 enum InspectorEdit {
     enum Rejection: Error, Equatable {
         case invalidTime
+        case decimalComma
         case duplicateNumber
         case unknownTarget
         case selfTarget
@@ -54,7 +55,10 @@ enum InspectorEdit {
             if let other = model.cue(number: n), other.id != cue.id { return .failure(.duplicateNumber) }
             return .success(.setNumber(cue.id, n))
         case .preWait, .postWait:
-            guard let seconds = InspectorTime.parse(text) else { return .failure(.invalidTime) }
+            guard let seconds = InspectorTime.parse(text) else {
+                let dotted = text.replacingOccurrences(of: ",", with: ".")
+                return .failure(text.contains(",") && InspectorTime.parse(dotted) != nil ? .decimalComma : .invalidTime)
+            }
             if seconds == (cue.raw[field == .preWait ? "pre_wait" : "post_wait"]?.doubleValue ?? 0) {
                 return .success(nil)
             }
