@@ -308,7 +308,7 @@ impl Control {
             .and_then(|p| p.parent())
             .map(PathBuf::from);
         let docs = Docs::new(&config, inbox.clone())?;
-        let watch = MediaWatch::new(&config.watch, config.clock.clone(), inbox.clone())?;
+        let watch = MediaWatch::new(&config.watch, inbox.clone())?;
         let media = MediaCatalog::new(
             inbox,
             show_dir,
@@ -410,7 +410,9 @@ impl Control {
             Inbox::Device(answer) => self.device_answer(answer),
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.watch_batches.push(batch),
-            Inbox::Watch(WatchAnswer::BucketAnswered { bucket }) => self.watch.answered(&bucket),
+            Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
+                self.watch.answered(&bucket, healthy);
+            }
             Inbox::Log { level, message } => self.log(level, message),
             Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
             Inbox::Shutdown => return Flow::Shutdown,

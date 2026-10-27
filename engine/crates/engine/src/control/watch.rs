@@ -21,12 +21,11 @@
 //!
 //! Following a moved file (`locate`, M2.29b) is not done yet: a file that is gone is `Gone`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -184,8 +183,19 @@ pub enum WatchJob {
     Skip {
         bucket: String,
     },
+    /// Watch this volume again. `trial`: it was skipped after an error; the result of its
+    /// next stat is reported in the batch's `volumes`.
     Unskip {
         bucket: String,
+        trial: bool,
+    },
+    /// The catalog's probe of `key` failed: `missing` (no file), the file is taken as gone, so
+    /// a file that appears before the first stat is still reported `Back`; otherwise, while
+    /// the path is unreadable, its return is reported even if the file is unchanged.
+    ProbeFailed {
+        key: String,
+        id: u64,
+        missing: bool,
     },
 }
 
@@ -235,15 +245,20 @@ impl WatchEvent {
 pub struct WatchBatch {
     pub generation: u64,
     pub events: Vec<WatchEvent>,
+    /// Volumes on trial (`Unskip { trial }`) and whether their first stat answered (a file or
+    /// no file) rather than failed.
+    pub volumes: Vec<(String, bool)>,
 }
 
 /// What a watcher sends the control thread.
 #[derive(Debug)]
 pub enum WatchAnswer {
     Batch(WatchBatch),
-    /// An abandoned watcher's stalled stat returned: the volume answers again.
+    /// An abandoned watcher's stalled stat returned (the thread has ended): `healthy` if it
+    /// found a file or no file, not an error.
     BucketAnswered {
         bucket: String,
+        healthy: bool,
     },
 }
 
@@ -268,6 +283,9 @@ struct WatchItem {
     /// A different file seen on the last pass, waiting for a second identical one.
     candidate: Option<Fingerprint>,
     symlink: bool,
+    /// The catalog's probe failed while the path was unreadable: its return is reported even
+    /// with the file unchanged.
+    stale: bool,
 }
 
 /// One file a watcher is to stat.
@@ -288,8 +306,11 @@ pub struct WatchCore {
     /// The last key a chunk of the current pass reached (`None`: a pass starts).
     cursor: Option<String>,
     skip: BTreeSet<String>,
+    /// Volumes whose next stat is reported (`Unskip { trial }`).
+    trial: BTreeSet<String>,
     /// Events of the pass under way.
     pending: Vec<WatchEvent>,
+    volumes: Vec<(String, bool)>,
 }
 
 impl WatchCore {
@@ -307,6 +328,11 @@ impl WatchCore {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Files on this volume are left alone now.
+    pub fn is_skipped(&self, bucket: &str) -> bool {
+        self.skip.contains(bucket)
     }
 
     pub fn apply(&mut self, job: WatchJob) {
@@ -330,6 +356,7 @@ impl WatchCore {
                         seen: None,
                         candidate: None,
                         symlink: false,
+                        stale: false,
                     },
                 );
             }
@@ -339,10 +366,26 @@ impl WatchCore {
                 self.items.remove(&key);
             }
             WatchJob::Skip { bucket } => {
+                self.trial.remove(&bucket);
                 self.skip.insert(bucket);
             }
-            WatchJob::Unskip { bucket } => {
+            WatchJob::Unskip { bucket, trial } => {
                 self.skip.remove(&bucket);
+                if trial {
+                    self.trial.insert(bucket);
+                }
+            }
+            WatchJob::ProbeFailed { key, id, missing } => {
+                if let Some(item) = self.items.get_mut(&key).filter(|i| i.id == id) {
+                    if missing {
+                        // Control already shows it missing: no event, but a file found from
+                        // now on is reported back.
+                        item.state = ItemState::Gone;
+                        item.candidate = None;
+                    } else if item.state == ItemState::Unreadable {
+                        item.stale = true;
+                    }
+                }
             }
         }
     }
@@ -393,6 +436,9 @@ impl WatchCore {
         if item.id != target.id {
             return;
         }
+        if self.trial.remove(&item.bucket) {
+            self.volumes.push((item.bucket.clone(), answers(&stat)));
+        }
         let (key, id) = (target.key.clone(), target.id);
         let event = match stat {
             Ok(st) if st.regular => {
@@ -415,10 +461,15 @@ impl WatchCore {
                         Some(WatchEvent::Changed { key, id, fp })
                     }
                     ItemState::Gone | ItemState::Unreadable if item.candidate == Some(fp) => {
+                        // Unreadable for a while and back unchanged: its re-probe (on
+                        // Unreadable) already read it, unless that probe failed meanwhile.
+                        let report =
+                            item.state == ItemState::Gone || item.seen != Some(fp) || item.stale;
                         item.state = ItemState::Present;
                         item.seen = Some(fp);
                         item.candidate = None;
-                        Some(WatchEvent::Back { key, id, fp })
+                        item.stale = false;
+                        report.then_some(WatchEvent::Back { key, id, fp })
                     }
                     ItemState::Present | ItemState::Gone | ItemState::Unreadable => {
                         // Seen once: it may still be being copied. The next pass decides.
@@ -442,6 +493,7 @@ impl WatchCore {
                     None
                 } else {
                     item.state = ItemState::Unreadable;
+                    item.stale = false;
                     Some(WatchEvent::Unreadable {
                         key,
                         id,
@@ -455,12 +507,13 @@ impl WatchCore {
 
     /// The events of the pass just ended.
     pub fn finish(&mut self) -> Option<WatchBatch> {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.volumes.is_empty() {
             return None;
         }
         Some(WatchBatch {
             generation: self.generation,
             events: std::mem::take(&mut self.pending),
+            volumes: std::mem::take(&mut self.volumes),
         })
     }
 
@@ -473,6 +526,17 @@ impl WatchCore {
             }
         }
         self.finish().map(|b| b.events).unwrap_or_default()
+    }
+}
+
+/// The volume answered: a file, or no file; not an error (a dead share's ETIMEDOUT).
+fn answers(stat: &io::Result<Stat>) -> bool {
+    match stat {
+        Ok(_) => true,
+        Err(e) => matches!(
+            e.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ),
     }
 }
 
@@ -519,6 +583,13 @@ pub struct WatchConfig {
     /// A stat taking longer than this abandons its watcher ([`WATCH_STALL`]).
     pub stall: Duration,
     pub mode: WatchMode,
+    /// Milliseconds for the watchdog and the retry backoff: monotonic (a wall-clock step must
+    /// not abandon a watcher); tests inject a `ManualClock`.
+    pub clock: EpochClock,
+    /// A volume skipped after a stall or an error is tried again after `retry_first`, doubling
+    /// up to `retry_max` while it keeps failing ([`RETRY_FIRST`], [`RETRY_MAX`]).
+    pub retry_first: Duration,
+    pub retry_max: Duration,
 }
 
 impl Default for WatchConfig {
@@ -528,6 +599,9 @@ impl Default for WatchConfig {
             period: MIN_PERIOD,
             stall: WATCH_STALL,
             mode: WatchMode::Thread,
+            clock: monotonic_clock(),
+            retry_first: RETRY_FIRST,
+            retry_max: RETRY_MAX,
         }
     }
 }
@@ -538,20 +612,84 @@ impl fmt::Debug for WatchConfig {
             .field("period", &self.period)
             .field("stall", &self.stall)
             .field("mode", &self.mode)
+            .field("retry_first", &self.retry_first)
+            .field("retry_max", &self.retry_max)
             .finish_non_exhaustive()
     }
+}
+
+/// Milliseconds since the clock was made, from `Instant` (never steps back or jumps).
+pub fn monotonic_clock() -> EpochClock {
+    let start = Instant::now();
+    EpochClock::new(move || i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX))
+}
+
+/// A volume skipped after a stall or an error is tried again after this long, doubling up to
+/// [`RETRY_MAX`] while it keeps failing.
+pub const RETRY_FIRST: Duration = Duration::from_secs(30);
+pub const RETRY_MAX: Duration = Duration::from_secs(300);
+
+fn millis(d: Duration) -> i64 {
+    i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A watcher as the watchdog sees it.
+#[derive(Default)]
+struct Busy {
+    /// The stat under way: its number (each stat has its own) and its volume.
+    stat: Option<(u64, String)>,
+    stats: u64,
+    abandoned: bool,
+}
+
+/// A watcher as the watchdog sees it. The stat under way and the abandonment are read and
+/// changed under one lock, so a stat that returns just as the watchdog fires is either taken
+/// as answered (not abandoned) or reports its volume (abandoned), never neither.
 #[derive(Default)]
 struct WatcherState {
-    /// The stat under way: since when (clock milliseconds) and on which volume.
-    busy: Mutex<Option<(i64, String)>>,
-    abandoned: AtomicBool,
+    busy: Mutex<Busy>,
+}
+
+impl WatcherState {
+    fn abandoned(&self) -> bool {
+        lock(&self.busy).abandoned
+    }
+
+    /// A stat starts; `false` if this watcher was abandoned (it must not stat).
+    fn begin(&self, bucket: &str) -> bool {
+        let mut b = lock(&self.busy);
+        if b.abandoned {
+            return false;
+        }
+        b.stats = b.stats.wrapping_add(1);
+        b.stat = Some((b.stats, bucket.to_owned()));
+        true
+    }
+
+    /// The stat returned; whether the watcher was abandoned meanwhile.
+    fn end(&self) -> bool {
+        let mut b = lock(&self.busy);
+        b.stat = None;
+        b.abandoned
+    }
+
+    /// The watchdog: abandons the watcher if it is still in the very stat the watchdog judged
+    /// stalled (compare and set: a stat that returned meanwhile is not abandoned).
+    fn try_abandon(&self, stalled: &(u64, String)) -> bool {
+        let mut b = lock(&self.busy);
+        if b.stat.as_ref() != Some(stalled) {
+            return false;
+        }
+        b.abandoned = true;
+        true
+    }
+
+    fn current(&self) -> Option<(u64, String)> {
+        lock(&self.busy).stat.clone()
+    }
 }
 
 struct Threaded {
@@ -570,32 +708,48 @@ enum Runner {
     Manual(WatchCore),
 }
 
+/// A volume that stalled or failed: skipped (its files keep their state) until it answers.
+#[derive(Debug)]
+struct Volume {
+    /// When it is tried again (`None`: a watcher is stuck on it, or a trial is under way).
+    retry_at: Option<i64>,
+    /// The next wait before a retry.
+    backoff_ms: i64,
+}
+
 /// The control thread's side of the watch.
 pub struct MediaWatch {
     runner: Runner,
     fs: Arc<dyn WatchFs>,
     period: Duration,
     stall_ms: i64,
+    retry_first_ms: i64,
+    retry_max_ms: i64,
     clock: EpochClock,
     inbox: Sender<Inbox>,
     generation: u64,
-    /// Volumes skipped because a watcher got stuck on them, until it returns.
-    stalled: BTreeSet<String>,
+    /// Volumes skipped because they stalled or failed, until they answer.
+    volumes: BTreeMap<String, Volume>,
+    /// Abandoned watchers whose stat has not returned yet (threads still alive).
     abandoned: usize,
-    /// The watcher is stuck on this volume and no more may be abandoned.
-    stuck: Option<String>,
+    /// The current watcher is stuck in this stat and no more may be abandoned.
+    stuck: Option<(u64, String)>,
+    /// The current watcher's stat as first seen by the watchdog, and when: it is stalled once
+    /// seen in that one stat for the limit. Timed here, not by the watcher, so the watcher
+    /// reads no clock.
+    observed: Option<((u64, String), i64)>,
     /// The watcher ended unexpectedly once and was restarted.
     restarted: bool,
     /// No watcher runs any more.
     dead: bool,
-    /// Batches taken (a cost measure: an unchanged show sends none).
+    /// Batches with events taken (a cost measure: an unchanged show sends none).
     batches: u64,
     logs: Vec<(LogLevel, String)>,
     notices_changed: bool,
 }
 
 impl MediaWatch {
-    pub fn new(config: &WatchConfig, clock: EpochClock, inbox: Sender<Inbox>) -> io::Result<Self> {
+    pub fn new(config: &WatchConfig, inbox: Sender<Inbox>) -> io::Result<Self> {
         let runner = match config.mode {
             WatchMode::Manual => Runner::Manual(WatchCore::new()),
             WatchMode::Thread => {
@@ -614,13 +768,16 @@ impl MediaWatch {
             runner,
             fs: Arc::clone(&config.fs),
             period: config.period,
-            stall_ms: i64::try_from(config.stall.as_millis()).unwrap_or(i64::MAX),
-            clock,
+            stall_ms: millis(config.stall),
+            retry_first_ms: millis(config.retry_first),
+            retry_max_ms: millis(config.retry_max),
+            clock: config.clock.clone(),
             inbox,
             generation: 0,
-            stalled: BTreeSet::new(),
+            volumes: BTreeMap::new(),
             abandoned: 0,
             stuck: None,
+            observed: None,
             restarted: false,
             dead: false,
             batches: 0,
@@ -637,12 +794,11 @@ impl MediaWatch {
             return Ok(());
         };
         let state = Arc::new(WatcherState::default());
-        let (core, jobs, inbox, fs, clock, st, period) = (
+        let (core, jobs, inbox, fs, st, period) = (
             Arc::clone(&t.core),
             t.jobs_rx.clone(),
             self.inbox.clone(),
             Arc::clone(&self.fs),
-            self.clock.clone(),
             Arc::clone(&state),
             self.period,
         );
@@ -654,7 +810,7 @@ impl MediaWatch {
             } else {
                 format!("openlab-watch-{}", t.spawned)
             })
-            .spawn(move || watcher(&core, &jobs, &inbox, fs.as_ref(), &clock, &st, period))?;
+            .spawn(move || watcher(&core, &jobs, &inbox, fs.as_ref(), &st, period))?;
         t.spawned += 1;
         t.current = state;
         t.handle = Some(handle);
@@ -684,29 +840,91 @@ impl MediaWatch {
                 }
                 KeyChange::Watch { key, path, id } => WatchJob::Watch { key, path, id },
                 KeyChange::Unwatch { key } => WatchJob::Unwatch { key },
+                KeyChange::ProbeFailed { key, id, missing } => {
+                    WatchJob::ProbeFailed { key, id, missing }
+                }
             };
             self.send(job);
         }
     }
 
-    /// The events of a batch of the current generation (`None`: an older one, dropped).
+    /// The events of a batch of the current generation (`None`: an older one, dropped). The
+    /// volumes on trial it reports count whatever its generation.
     pub fn accept(&mut self, batch: WatchBatch) -> Option<Vec<WatchEvent>> {
+        for (bucket, healthy) in batch.volumes {
+            self.volume_answered(&bucket, healthy);
+        }
         if batch.generation != self.generation {
             return None;
         }
-        self.batches += 1;
+        if !batch.events.is_empty() {
+            self.batches += 1;
+        }
         Some(batch.events)
     }
 
-    /// An abandoned watcher's stat returned: its volume is watched again.
-    pub fn answered(&mut self, bucket: &str) {
-        if self.stalled.remove(bucket) {
+    /// An abandoned watcher's stat returned (and its thread ended).
+    pub fn answered(&mut self, bucket: &str, healthy: bool) {
+        self.abandoned = self.abandoned.saturating_sub(1);
+        self.volume_answered(bucket, healthy);
+    }
+
+    /// A skipped volume's stat came back: watched again if it answered; else it stays
+    /// skipped and is tried again after the backoff.
+    fn volume_answered(&mut self, bucket: &str, healthy: bool) {
+        let now = self.clock.now_ms();
+        let Some(v) = self.volumes.get_mut(bucket) else {
+            return;
+        };
+        if healthy {
+            self.volumes.remove(bucket);
             self.send(WatchJob::Unskip {
                 bucket: bucket.to_owned(),
+                trial: false,
             });
             self.logs.push((
                 LogLevel::Info,
                 format!("volume \"{bucket}\" answers again; its media files are watched again"),
+            ));
+            self.notices_changed = true;
+            return;
+        }
+        if v.retry_at.is_some() {
+            return;
+        }
+        let wait = v.backoff_ms;
+        v.retry_at = Some(now.saturating_add(wait));
+        v.backoff_ms = wait.saturating_mul(2).min(self.retry_max_ms);
+        self.send(WatchJob::Skip {
+            bucket: bucket.to_owned(),
+        });
+        self.logs.push((
+            LogLevel::Warn,
+            format!(
+                "volume \"{bucket}\" answered with an error; it is tried again in {} s",
+                wait.saturating_add(999) / 1000
+            ),
+        ));
+    }
+
+    /// Skips a volume that stalled (`retry_at` stays `None` until the stuck stat returns).
+    fn skip_stalled(&mut self, bucket: &str) {
+        let fresh = !self.volumes.contains_key(bucket);
+        let v = self.volumes.entry(bucket.to_owned()).or_insert(Volume {
+            retry_at: None,
+            backoff_ms: self.retry_first_ms,
+        });
+        v.retry_at = None;
+        self.send(WatchJob::Skip {
+            bucket: bucket.to_owned(),
+        });
+        if fresh {
+            self.logs.push((
+                LogLevel::Warn,
+                format!(
+                    "volume \"{bucket}\" does not answer; its media files keep their last \
+                     state until it does"
+                ),
             ));
             self.notices_changed = true;
         }
@@ -722,11 +940,13 @@ impl MediaWatch {
         (!events.is_empty()).then(|| WatchBatch {
             generation: core.generation(),
             events,
+            volumes: Vec::new(),
         })
     }
 
     /// The watchdog (every tick): a watcher stuck in one stat past the limit is abandoned and
-    /// replaced by one that skips its volume; a watcher that ended is restarted once.
+    /// replaced by one that skips its volume; skipped volumes are tried again once their wait
+    /// is over; a watcher that ended is restarted once.
     pub fn supervise(&mut self) {
         let Runner::Thread(t) = &mut self.runner else {
             return;
@@ -755,53 +975,65 @@ impl MediaWatch {
             }
             return;
         }
-        let busy = lock(&t.current.busy).clone();
         let now = self.clock.now_ms();
-        match busy {
-            Some((since, bucket)) if now.saturating_sub(since) >= self.stall_ms => {
-                if self.stuck.is_some() {
-                    return;
-                }
-                if self.abandoned >= MAX_ABANDONED_WATCHERS {
-                    self.logs.push((
-                        LogLevel::Error,
-                        format!(
-                            "volume \"{bucket}\" does not answer and {MAX_ABANDONED_WATCHERS} \
-                             media watchers are already stuck: the media watch stops until it \
-                             answers"
-                        ),
-                    ));
-                    self.stuck = Some(bucket);
-                    self.notices_changed = true;
-                    return;
-                }
-                t.current.abandoned.store(true, Ordering::Release);
-                self.abandoned += 1;
-                // Queued before the fresh watcher starts: it skips the volume from its first
-                // chunk.
-                let _ = t.jobs.send(WatchJob::Skip {
-                    bucket: bucket.clone(),
-                });
+        let current = Arc::clone(&t.current);
+        let busy = current.current();
+        if self.observed.as_ref().map(|(b, _)| b) != busy.as_ref() {
+            self.observed = busy.clone().map(|b| (b, now));
+        }
+        let stalled = self
+            .observed
+            .as_ref()
+            .filter(|(_, seen)| now.saturating_sub(*seen) >= self.stall_ms)
+            .map(|(b, _)| b.clone());
+        if let Some(stuck) = self.stuck.clone() {
+            // Stuck with no watcher to spare: once that stat returns, its volume is skipped
+            // like a failing one, so it cannot hold the only watcher again.
+            if busy.as_ref() != Some(&stuck) {
+                self.stuck = None;
+                self.notices_changed = true;
+                let bucket = stuck.1;
+                self.skip_stalled(&bucket);
+                self.volume_answered(&bucket, false);
+            }
+        } else if self.abandoned >= MAX_ABANDONED_WATCHERS {
+            if let Some((stat, bucket)) = stalled {
                 self.logs.push((
-                    LogLevel::Warn,
+                    LogLevel::Error,
                     format!(
-                        "volume \"{bucket}\" does not answer; its media files keep their last \
-                         state until it does"
+                        "volume \"{bucket}\" does not answer and {MAX_ABANDONED_WATCHERS} \
+                         media watchers are already stuck: the media watch stops until it \
+                         answers"
                     ),
                 ));
-                self.stalled.insert(bucket);
+                self.stuck = Some((stat, bucket));
                 self.notices_changed = true;
-                self.restart();
             }
-            _ => {
-                if let Some(bucket) = self.stuck.take() {
-                    self.notices_changed = true;
-                    self.logs.push((
-                        LogLevel::Info,
-                        format!("volume \"{bucket}\" answers again; the media watch goes on"),
-                    ));
-                }
+        } else if let Some(stat) = stalled
+            && current.try_abandon(&stat)
+        {
+            let bucket = stat.1;
+            self.observed = None;
+            self.abandoned += 1;
+            // Queued before the fresh watcher starts: it skips the volume from its first
+            // chunk.
+            self.skip_stalled(&bucket);
+            self.restart();
+        }
+        let due: Vec<String> = self
+            .volumes
+            .iter()
+            .filter(|(_, v)| v.retry_at.is_some_and(|at| now >= at))
+            .map(|(b, _)| b.clone())
+            .collect();
+        for bucket in due {
+            if let Some(v) = self.volumes.get_mut(&bucket) {
+                v.retry_at = None;
             }
+            self.send(WatchJob::Unskip {
+                bucket,
+                trial: true,
+            });
         }
     }
 
@@ -826,9 +1058,10 @@ impl MediaWatch {
         std::mem::take(&mut self.notices_changed)
     }
 
-    /// The workspace-level notices in force.
+    /// The workspace-level notices in force. A volume's notice stands from its first stall
+    /// until it answers, through its retries.
     pub fn notices(&self, list: &mut Vec<WireWarning>) {
-        for bucket in &self.stalled {
+        for bucket in self.volumes.keys() {
             list.push(notice(
                 "media_volume_not_responding",
                 format!(
@@ -838,7 +1071,7 @@ impl MediaWatch {
                 None,
             ));
         }
-        if let Some(bucket) = &self.stuck {
+        if let Some((_, bucket)) = &self.stuck {
             list.push(notice(
                 "media_watch_stopped",
                 format!(
@@ -871,19 +1104,60 @@ impl MediaWatch {
     }
 }
 
+/// What a watcher does next.
+enum Step {
+    Go,
+    /// Abandoned, or control is gone: end the thread.
+    End,
+}
+
+/// Stats `targets` the way the watcher does: jobs taken and the volume's skip checked before
+/// each stat (a volume skipped meanwhile is left at once, not after the chunk), the busy state
+/// around it, then the record.
+fn stat_targets(
+    core: &Mutex<WatchCore>,
+    jobs: &Receiver<WatchJob>,
+    inbox: &Sender<Inbox>,
+    fs: &dyn WatchFs,
+    state: &WatcherState,
+    targets: Vec<Target>,
+) -> Step {
+    for t in targets {
+        if !take_jobs(core, jobs) {
+            return Step::End;
+        }
+        if lock(core).is_skipped(&t.bucket) {
+            continue;
+        }
+        if !state.begin(&t.bucket) {
+            return Step::End;
+        }
+        let stat = fs.stat(&t.path);
+        if state.end() {
+            // A fresh watcher took over and skips this volume until now.
+            let _ = inbox.send(Inbox::Watch(WatchAnswer::BucketAnswered {
+                healthy: answers(&stat),
+                bucket: t.bucket,
+            }));
+            return Step::End;
+        }
+        lock(core).record(&t, stat);
+    }
+    Step::Go
+}
+
 /// The `openlab-watch` thread: chunks of stats paced over the pass, jobs taken between them.
 fn watcher(
     core: &Mutex<WatchCore>,
     jobs: &Receiver<WatchJob>,
     inbox: &Sender<Inbox>,
     fs: &dyn WatchFs,
-    clock: &EpochClock,
     state: &WatcherState,
     period: Duration,
 ) {
-    let abandoned = || state.abandoned.load(Ordering::Acquire);
     loop {
-        if !take_jobs(core, jobs) || abandoned() {
+        // Abandoned: the queue belongs to the fresh watcher now.
+        if state.abandoned() || !take_jobs(core, jobs) {
             return;
         }
         let (chunk, n) = {
@@ -892,23 +1166,10 @@ fn watcher(
         };
         match chunk {
             Some(targets) => {
-                for t in targets {
-                    if abandoned() {
-                        return;
-                    }
-                    *lock(&state.busy) = Some((clock.now_ms(), t.bucket.clone()));
-                    let stat = fs.stat(&t.path);
-                    *lock(&state.busy) = None;
-                    if abandoned() {
-                        // A fresh watcher took over and skips this volume until now.
-                        let _ = inbox.send(Inbox::Watch(WatchAnswer::BucketAnswered {
-                            bucket: t.bucket,
-                        }));
-                        return;
-                    }
-                    lock(core).record(&t, stat);
+                if let Step::End = stat_targets(core, jobs, inbox, fs, state, targets) {
+                    return;
                 }
-                if !wait_jobs(core, jobs, chunk_gap(n, period)) {
+                if state.abandoned() || !wait_jobs(core, jobs, chunk_gap(n, period)) {
                     return;
                 }
             }
@@ -926,6 +1187,23 @@ fn watcher(
             }
         }
     }
+}
+
+/// A whole pass the way the watcher makes it (jobs, skip checks, busy state, locks),
+/// without its pauses: what the release perf gate times.
+#[cfg(any(test, feature = "test-support"))]
+pub fn timed_pass(core: &Mutex<WatchCore>, fs: &dyn WatchFs) {
+    let (_tx, jobs) = crossbeam_channel::unbounded();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let state = WatcherState::default();
+    loop {
+        let chunk = lock(core).next_chunk(CHUNK);
+        let Some(targets) = chunk else { break };
+        if let Step::End = stat_targets(core, &jobs, &inbox, fs, &state, targets) {
+            break;
+        }
+    }
+    lock(core).finish();
 }
 
 /// Applies the jobs queued; `false` once control is gone.
@@ -952,260 +1230,271 @@ fn wait_jobs(core: &Mutex<WatchCore>, jobs: &Receiver<WatchJob>, gap: Duration) 
     }
 }
 
-/// An in-memory file system for tests: files by path with an identity, a size and a modified
-/// time; the Trash; paths that refuse access or hang.
-#[derive(Clone, Default)]
-pub struct FakeFs(Arc<FakeShared>);
+/// Test support (feature `test-support`): not in the shipping engine.
+#[cfg(any(test, feature = "test-support"))]
+pub use fake::{FakeFs, Release};
 
-#[derive(Default)]
-struct FakeShared {
-    state: Mutex<FakeState>,
-    changed: Condvar,
-}
+#[cfg(any(test, feature = "test-support"))]
+mod fake {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Condvar;
 
-#[derive(Default)]
-struct FakeState {
-    files: HashMap<PathBuf, FakeFile>,
-    trash: HashMap<PathBuf, FakeFile>,
-    denied: HashSet<PathBuf>,
-    hung: HashSet<PathBuf>,
-    /// Stats blocked on a hung path now.
-    hanging: HashMap<PathBuf, usize>,
-    next_id: u64,
-    stats: u64,
-}
+    /// An in-memory file system for tests: files by path with an identity, a size and a modified
+    /// time; the Trash; paths that refuse access or hang.
+    #[derive(Clone, Default)]
+    pub struct FakeFs(Arc<FakeShared>);
 
-#[derive(Clone, Copy, Debug)]
-struct FakeFile {
-    dev: u64,
-    ino: u64,
-    size: u64,
-    modified_ms: i64,
-    symlink: bool,
-}
-
-/// A hung path; dropping it (or [`Release::release`]) lets its stats return.
-pub struct Release {
-    fs: FakeFs,
-    path: PathBuf,
-}
-
-impl Release {
-    pub fn release(self) {}
-}
-
-impl Drop for Release {
-    fn drop(&mut self) {
-        lock(&self.fs.0.state).hung.remove(&self.path);
-        self.fs.0.changed.notify_all();
-    }
-}
-
-impl fmt::Debug for FakeFs {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("FakeFs")
-    }
-}
-
-impl FakeFs {
-    pub fn new() -> Self {
-        Self::default()
+    #[derive(Default)]
+    struct FakeShared {
+        state: Mutex<FakeState>,
+        changed: Condvar,
     }
 
-    fn with<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
-        let r = f(&mut lock(&self.0.state));
-        self.0.changed.notify_all();
-        r
+    #[derive(Default)]
+    struct FakeState {
+        files: HashMap<PathBuf, FakeFile>,
+        trash: HashMap<PathBuf, FakeFile>,
+        denied: HashSet<PathBuf>,
+        hung: HashSet<PathBuf>,
+        /// Stats blocked on a hung path now.
+        hanging: HashMap<PathBuf, usize>,
+        next_id: u64,
+        stats: u64,
     }
 
-    /// A new file at `path` on device `dev` (a fresh identity).
-    pub fn put(&self, path: impl AsRef<Path>, dev: u64) {
-        self.with(|s| {
-            s.next_id += 1;
-            let ino = s.next_id;
-            s.files.insert(
-                path.as_ref().to_path_buf(),
-                FakeFile {
-                    dev,
-                    ino,
-                    size: 1000,
-                    modified_ms: 1_000_000,
-                    symlink: false,
-                },
-            );
-        });
+    #[derive(Clone, Copy, Debug)]
+    struct FakeFile {
+        dev: u64,
+        ino: u64,
+        size: u64,
+        modified_ms: i64,
+        symlink: bool,
     }
 
-    pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) {
-        self.with(|s| {
-            if let Some(f) = s.files.remove(from.as_ref()) {
-                s.files.insert(to.as_ref().to_path_buf(), f);
-            }
-        });
+    /// A hung path; dropping it (or [`Release::release`]) lets its stats return.
+    pub struct Release {
+        fs: FakeFs,
+        path: PathBuf,
     }
 
-    pub fn remove(&self, path: impl AsRef<Path>) {
-        self.with(|s| s.files.remove(path.as_ref()));
+    impl Release {
+        pub fn release(self) {}
     }
 
-    /// Moves the file to the Trash (remembering where it was, for [`Self::put_back`]).
-    pub fn trash(&self, path: impl AsRef<Path>) {
-        self.with(|s| {
-            if let Some(f) = s.files.remove(path.as_ref()) {
-                s.trash.insert(path.as_ref().to_path_buf(), f);
-            }
-        });
-    }
-
-    pub fn put_back(&self, path: impl AsRef<Path>) {
-        self.with(|s| {
-            if let Some(f) = s.trash.remove(path.as_ref()) {
-                s.files.insert(path.as_ref().to_path_buf(), f);
-            }
-        });
-    }
-
-    /// Another file takes the place of the one at `path` (a new identity and size).
-    pub fn replace(&self, path: impl AsRef<Path>) {
-        self.with(|s| {
-            s.next_id += 1;
-            let ino = s.next_id;
-            if let Some(f) = s.files.get_mut(path.as_ref()) {
-                f.ino = ino;
-                f.size += 1;
-                f.modified_ms += 1;
-            }
-        });
-    }
-
-    /// The file was written to (a later modified time).
-    pub fn touch(&self, path: impl AsRef<Path>) {
-        self.with(|s| {
-            if let Some(f) = s.files.get_mut(path.as_ref()) {
-                f.modified_ms += 1;
-            }
-        });
-    }
-
-    pub fn set_size(&self, path: impl AsRef<Path>, size: u64) {
-        self.with(|s| {
-            if let Some(f) = s.files.get_mut(path.as_ref()) {
-                f.size = size;
-            }
-        });
-    }
-
-    pub fn set_symlink(&self, path: impl AsRef<Path>, symlink: bool) {
-        self.with(|s| {
-            if let Some(f) = s.files.get_mut(path.as_ref()) {
-                f.symlink = symlink;
-            }
-        });
-    }
-
-    /// Stats of `path` fail with `PermissionDenied`.
-    pub fn deny(&self, path: impl AsRef<Path>) {
-        self.with(|s| s.denied.insert(path.as_ref().to_path_buf()));
-    }
-
-    pub fn allow(&self, path: impl AsRef<Path>) {
-        self.with(|s| s.denied.remove(path.as_ref()));
-    }
-
-    /// Stats of `path` block until the returned [`Release`] goes.
-    pub fn hang(&self, path: impl AsRef<Path>) -> Release {
-        self.with(|s| s.hung.insert(path.as_ref().to_path_buf()));
-        Release {
-            fs: self.clone(),
-            path: path.as_ref().to_path_buf(),
+    impl Drop for Release {
+        fn drop(&mut self) {
+            lock(&self.fs.0.state).hung.remove(&self.path);
+            self.fs.0.changed.notify_all();
         }
     }
 
-    /// Waits (at most `limit`) until a stat is blocked on `path`; whether one is.
-    pub fn wait_hanging(&self, path: impl AsRef<Path>, limit: Duration) -> bool {
-        let deadline = Instant::now() + limit;
-        let mut s = lock(&self.0.state);
-        loop {
-            if s.hanging.get(path.as_ref()).is_some_and(|n| *n > 0) {
-                return true;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            s = self
-                .0
-                .changed
-                .wait_timeout(s, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+    impl fmt::Debug for FakeFs {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("FakeFs")
         }
     }
 
-    /// Waits (at most `limit`) until `n` more stats have been made than `after`; whether they
-    /// were.
-    pub fn wait_stats(&self, after: u64, n: u64, limit: Duration) -> bool {
-        let deadline = Instant::now() + limit;
-        let mut s = lock(&self.0.state);
-        loop {
-            if s.stats >= after.saturating_add(n) {
-                return true;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            s = self
-                .0
-                .changed
-                .wait_timeout(s, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+    impl FakeFs {
+        pub fn new() -> Self {
+            Self::default()
         }
-    }
 
-    /// Stats made so far.
-    pub fn stats(&self) -> u64 {
-        lock(&self.0.state).stats
-    }
-}
-
-impl WatchFs for FakeFs {
-    fn stat(&self, path: &Path) -> io::Result<Stat> {
-        let mut s = lock(&self.0.state);
-        s.stats += 1;
-        if s.hung.contains(path) {
-            *s.hanging.entry(path.to_path_buf()).or_default() += 1;
+        fn with<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
+            let r = f(&mut lock(&self.0.state));
             self.0.changed.notify_all();
-            while s.hung.contains(path) {
+            r
+        }
+
+        /// A new file at `path` on device `dev` (a fresh identity).
+        pub fn put(&self, path: impl AsRef<Path>, dev: u64) {
+            self.with(|s| {
+                s.next_id += 1;
+                let ino = s.next_id;
+                s.files.insert(
+                    path.as_ref().to_path_buf(),
+                    FakeFile {
+                        dev,
+                        ino,
+                        size: 1000,
+                        modified_ms: 1_000_000,
+                        symlink: false,
+                    },
+                );
+            });
+        }
+
+        pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) {
+            self.with(|s| {
+                if let Some(f) = s.files.remove(from.as_ref()) {
+                    s.files.insert(to.as_ref().to_path_buf(), f);
+                }
+            });
+        }
+
+        pub fn remove(&self, path: impl AsRef<Path>) {
+            self.with(|s| s.files.remove(path.as_ref()));
+        }
+
+        /// Moves the file to the Trash (remembering where it was, for [`Self::put_back`]).
+        pub fn trash(&self, path: impl AsRef<Path>) {
+            self.with(|s| {
+                if let Some(f) = s.files.remove(path.as_ref()) {
+                    s.trash.insert(path.as_ref().to_path_buf(), f);
+                }
+            });
+        }
+
+        pub fn put_back(&self, path: impl AsRef<Path>) {
+            self.with(|s| {
+                if let Some(f) = s.trash.remove(path.as_ref()) {
+                    s.files.insert(path.as_ref().to_path_buf(), f);
+                }
+            });
+        }
+
+        /// Another file takes the place of the one at `path` (a new identity and size).
+        pub fn replace(&self, path: impl AsRef<Path>) {
+            self.with(|s| {
+                s.next_id += 1;
+                let ino = s.next_id;
+                if let Some(f) = s.files.get_mut(path.as_ref()) {
+                    f.ino = ino;
+                    f.size += 1;
+                    f.modified_ms += 1;
+                }
+            });
+        }
+
+        /// The file was written to (a later modified time).
+        pub fn touch(&self, path: impl AsRef<Path>) {
+            self.with(|s| {
+                if let Some(f) = s.files.get_mut(path.as_ref()) {
+                    f.modified_ms += 1;
+                }
+            });
+        }
+
+        pub fn set_size(&self, path: impl AsRef<Path>, size: u64) {
+            self.with(|s| {
+                if let Some(f) = s.files.get_mut(path.as_ref()) {
+                    f.size = size;
+                }
+            });
+        }
+
+        pub fn set_symlink(&self, path: impl AsRef<Path>, symlink: bool) {
+            self.with(|s| {
+                if let Some(f) = s.files.get_mut(path.as_ref()) {
+                    f.symlink = symlink;
+                }
+            });
+        }
+
+        /// Stats of `path` fail with `PermissionDenied`.
+        pub fn deny(&self, path: impl AsRef<Path>) {
+            self.with(|s| s.denied.insert(path.as_ref().to_path_buf()));
+        }
+
+        pub fn allow(&self, path: impl AsRef<Path>) {
+            self.with(|s| s.denied.remove(path.as_ref()));
+        }
+
+        /// Stats of `path` block until the returned [`Release`] goes.
+        pub fn hang(&self, path: impl AsRef<Path>) -> Release {
+            self.with(|s| s.hung.insert(path.as_ref().to_path_buf()));
+            Release {
+                fs: self.clone(),
+                path: path.as_ref().to_path_buf(),
+            }
+        }
+
+        /// Waits (at most `limit`) until a stat is blocked on `path`; whether one is.
+        pub fn wait_hanging(&self, path: impl AsRef<Path>, limit: Duration) -> bool {
+            let deadline = Instant::now() + limit;
+            let mut s = lock(&self.0.state);
+            loop {
+                if s.hanging.get(path.as_ref()).is_some_and(|n| *n > 0) {
+                    return true;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
                 s = self
                     .0
                     .changed
-                    .wait(s)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-            if let Some(n) = s.hanging.get_mut(path) {
-                *n = n.saturating_sub(1);
+                    .wait_timeout(s, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
             }
         }
-        self.0.changed.notify_all();
-        if s.denied.contains(path) {
-            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        /// Waits (at most `limit`) until `n` more stats have been made than `after`; whether they
+        /// were.
+        pub fn wait_stats(&self, after: u64, n: u64, limit: Duration) -> bool {
+            let deadline = Instant::now() + limit;
+            let mut s = lock(&self.0.state);
+            loop {
+                if s.stats >= after.saturating_add(n) {
+                    return true;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                s = self
+                    .0
+                    .changed
+                    .wait_timeout(s, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
         }
-        let f = s
-            .files
-            .get(path)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-        Ok(Stat {
-            fp: Fingerprint {
-                dev: f.dev,
-                ino: f.ino,
-                size: f.size,
-                modified_ms: f.modified_ms,
-            },
-            regular: true,
-            symlink: f.symlink,
-        })
+
+        /// Stats made so far.
+        pub fn stats(&self) -> u64 {
+            lock(&self.0.state).stats
+        }
+    }
+
+    impl WatchFs for FakeFs {
+        fn stat(&self, path: &Path) -> io::Result<Stat> {
+            let mut s = lock(&self.0.state);
+            s.stats += 1;
+            if s.hung.contains(path) {
+                *s.hanging.entry(path.to_path_buf()).or_default() += 1;
+                self.0.changed.notify_all();
+                while s.hung.contains(path) {
+                    s = self
+                        .0
+                        .changed
+                        .wait(s)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                if let Some(n) = s.hanging.get_mut(path) {
+                    *n = n.saturating_sub(1);
+                }
+            }
+            self.0.changed.notify_all();
+            if s.denied.contains(path) {
+                return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+            }
+            let f = s
+                .files
+                .get(path)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            Ok(Stat {
+                fp: Fingerprint {
+                    dev: f.dev,
+                    ino: f.ino,
+                    size: f.size,
+                    modified_ms: f.modified_ms,
+                },
+                regular: true,
+                symlink: f.symlink,
+            })
+        }
     }
 }
 
@@ -1340,6 +1629,18 @@ mod tests {
         );
         assert!(core.pass(&fs).is_empty());
         assert!(core.pass(&fs).is_empty());
+        // Readable again, unchanged: the re-probe on Unreadable already read it (one blip,
+        // one re-probe).
+        fs.allow(A);
+        assert!(core.pass(&fs).is_empty());
+        assert!(core.pass(&fs).is_empty());
+        // A different file when it comes back: Back.
+        fs.deny(A);
+        assert!(matches!(
+            &core.pass(&fs)[..],
+            [WatchEvent::Unreadable { .. }]
+        ));
+        fs.replace(A);
         fs.allow(A);
         assert!(core.pass(&fs).is_empty());
         assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Back { .. }]));
@@ -1351,6 +1652,120 @@ mod tests {
         fs.allow(A);
         fs.remove(A);
         assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Gone { .. }]));
+    }
+
+    #[test]
+    fn a_return_after_a_failed_reprobe_is_reported_even_unchanged() {
+        let (mut core, fs) = setup(&[A]);
+        fs.deny(A);
+        assert_eq!(core.pass(&fs).len(), 1);
+        // Its re-probe could not read it either.
+        core.apply(WatchJob::ProbeFailed {
+            key: A.into(),
+            id: 1,
+            missing: false,
+        });
+        fs.allow(A);
+        assert!(core.pass(&fs).is_empty());
+        assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Back { .. }]));
+        // A failed probe of a readable file changes nothing (no re-probe loop on a file that
+        // stats but cannot be decoded).
+        core.apply(WatchJob::ProbeFailed {
+            key: A.into(),
+            id: 1,
+            missing: false,
+        });
+        for _ in 0..3 {
+            assert!(core.pass(&fs).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_file_whose_probe_found_nothing_is_reported_back_however_soon_it_appears() {
+        // Its first stat after the probe failed: still reported (a late-mounting drive).
+        let fs = FakeFs::new();
+        let mut core = WatchCore::new();
+        watch(&mut core, A, 1);
+        core.apply(WatchJob::ProbeFailed {
+            key: A.into(),
+            id: 1,
+            missing: true,
+        });
+        fs.put(A, 1);
+        assert!(core.pass(&fs).is_empty());
+        assert!(matches!(
+            &core.pass(&fs)[..],
+            [WatchEvent::Back { id: 1, .. }]
+        ));
+        // Seen silently on the first pass, then the probe said missing: the same.
+        let (mut core, fs) = setup(&[B]);
+        core.apply(WatchJob::ProbeFailed {
+            key: B.into(),
+            id: 1,
+            missing: true,
+        });
+        assert!(core.pass(&fs).is_empty());
+        assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Back { .. }]));
+        // A failure of an earlier watch of the key changes nothing; still gone: no event.
+        core.apply(WatchJob::ProbeFailed {
+            key: B.into(),
+            id: 99,
+            missing: true,
+        });
+        assert!(core.pass(&fs).is_empty());
+        let fs2 = FakeFs::new();
+        let mut core = WatchCore::new();
+        watch(&mut core, A, 1);
+        core.apply(WatchJob::ProbeFailed {
+            key: A.into(),
+            id: 1,
+            missing: true,
+        });
+        assert!(core.pass(&fs2).is_empty(), "control knows it is missing");
+    }
+
+    #[test]
+    fn a_volume_on_trial_reports_its_first_stat() {
+        let a = "/Volumes/Show/a.wav";
+        let b = "/Volumes/Show/b.wav";
+        let (mut core, fs) = setup(&[a, b]);
+        core.apply(WatchJob::Skip {
+            bucket: "/Volumes/Show".into(),
+        });
+        assert_eq!(core.finish(), None);
+        core.apply(WatchJob::Unskip {
+            bucket: "/Volumes/Show".into(),
+            trial: true,
+        });
+        fs.deny(a);
+        while let Some(chunk) = core.next_chunk(CHUNK) {
+            for t in chunk {
+                let stat = fs.stat(&t.path);
+                core.record(&t, stat);
+            }
+        }
+        let batch = core.finish().unwrap();
+        assert_eq!(batch.volumes, vec![("/Volumes/Show".to_owned(), false)]);
+        assert!(core.pass(&fs).is_empty());
+    }
+
+    #[test]
+    fn abandonment_and_a_returning_stat_never_both_miss() {
+        // The stat returns before the watchdog acts on it: not abandoned.
+        let w = WatcherState::default();
+        assert!(w.begin("/Volumes/A"));
+        let seen = w.current().unwrap();
+        assert!(!w.end());
+        assert!(!w.try_abandon(&seen));
+        // Another stat of the same volume since: not the one judged stalled either.
+        assert!(w.begin("/Volumes/A"));
+        assert!(!w.try_abandon(&seen));
+        // The watchdog first: the returning stat sees it and reports its own volume.
+        let seen = w.current().unwrap();
+        assert!(w.try_abandon(&seen));
+        assert!(w.end());
+        assert!(!w.begin("/Volumes/B"), "an abandoned watcher stats nothing");
+        assert!(w.abandoned());
     }
 
     #[test]
@@ -1447,6 +1862,7 @@ mod tests {
         assert_eq!(ev[0].key(), B);
         core.apply(WatchJob::Unskip {
             bucket: "/Volumes/Show".into(),
+            trial: false,
         });
         let ev = core.pass(&fs);
         assert_eq!(ev.len(), 1);
@@ -1544,10 +1960,40 @@ mod tests {
         let config = WatchConfig {
             fs: Arc::new(fs.clone()),
             mode: WatchMode::Manual,
+            clock: EpochClock::new(|| 0),
             ..WatchConfig::default()
         };
-        let w = MediaWatch::new(&config, EpochClock::new(|| 0), tx).unwrap();
+        let w = MediaWatch::new(&config, tx).unwrap();
         (w, rx, fs)
+    }
+
+    #[test]
+    fn a_failing_volume_waits_30_s_doubling_to_5_min_and_its_notice_stays() {
+        let (mut w, _rx, _fs) = manual();
+        w.skip_stalled("/Volumes/NAS");
+        assert!(w.take_notices_changed());
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            w.volume_answered("/Volumes/NAS", false);
+            waits.push(w.volumes["/Volumes/NAS"].retry_at.unwrap());
+            // Its retry was sent and failed again.
+            w.volumes.get_mut("/Volumes/NAS").unwrap().retry_at = None;
+        }
+        assert_eq!(
+            waits,
+            vec![30_000, 60_000, 120_000, 240_000, 300_000, 300_000]
+        );
+        assert!(!w.take_notices_changed(), "no flapping while it fails");
+        let mut list = Vec::new();
+        w.notices(&mut list);
+        assert_eq!(list.len(), 1);
+        // An answer from another volume changes nothing; its own clears it.
+        w.volume_answered("/Volumes/Other", true);
+        w.volume_answered("/Volumes/NAS", true);
+        assert!(w.take_notices_changed());
+        list.clear();
+        w.notices(&mut list);
+        assert!(list.is_empty());
     }
 
     #[test]
@@ -1595,9 +2041,10 @@ mod tests {
         let config = WatchConfig {
             fs: Arc::new(Panicky),
             period: Duration::from_millis(1),
+            clock: EpochClock::new(|| 0),
             ..WatchConfig::default()
         };
-        let mut w = MediaWatch::new(&config, EpochClock::new(|| 0), tx).unwrap();
+        let mut w = MediaWatch::new(&config, tx).unwrap();
         w.apply(vec![KeyChange::Watch {
             key: A.into(),
             path: A.into(),
