@@ -80,12 +80,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
     @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
     @MainActor @objc func undoEdit(_ sender: Any?) {
-        if let text = textEditor, text.undoManager?.canUndo == true { return text.undoManager?.undo() ?? () }
-        Task { await editor?.undo() }
+        switch CueEditor.textUndo(textEditor, redo: false) {
+        case nil: Task { await editor?.undo() }
+        case false?: NSSound.beep()
+        case true?: break
+        }
     }
     @MainActor @objc func redoEdit(_ sender: Any?) {
-        if let text = textEditor, text.undoManager?.canRedo == true { return text.undoManager?.redo() ?? () }
-        Task { await editor?.redo() }
+        switch CueEditor.textUndo(textEditor, redo: true) {
+        case nil: Task { await editor?.redo() }
+        case false?: NSSound.beep()
+        case true?: break
+        }
     }
 
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
@@ -119,12 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
         }
         if item.action == #selector(undoEdit(_:)) {
-            if textEditor?.undoManager?.canUndo == true { return true }
-            return editor?.canUndo ?? false
+            return textEditor != nil || (editor?.canUndo ?? false)
         }
         if item.action == #selector(redoEdit(_:)) {
-            if textEditor?.undoManager?.canRedo == true { return true }
-            return editor?.canRedo ?? false
+            return textEditor != nil || (editor?.canRedo ?? false)
         }
         if item.action == #selector(relinkMedia(_:)) {
             return appController.frontController.map { !$0.isShowMode } ?? false

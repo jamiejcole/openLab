@@ -327,13 +327,20 @@ final class CueEditingTests: XCTestCase {
         XCTAssertNil(
             wc.cueList.outlineView(
                 wc.cueList.outlineView, pasteboardWriterForItem: try XCTUnwrap(wc.cueList.node(first))))
-        try await Task.sleep(nanoseconds: 0)  // let any stray Task run
+        for _ in 0..<50 { await Task.yield() }  // let any stray Task run
         XCTAssertEqual(log.edits, 0, "nothing reached the engine")
         wc.setShowMode(false)
         XCTAssertFalse(wc.cueList.isEditLocked)
         XCTAssertNotNil(
             wc.cueList.outlineView(
                 wc.cueList.outlineView, pasteboardWriterForItem: try XCTUnwrap(wc.cueList.node(first))))
+    }
+
+    func testTextUndoNeverFallsThroughToTheWorkspace() {
+        XCTAssertNil(CueEditor.textUndo(nil, redo: false), "no text editing: the workspace undoes")
+        let text = NSTextView()  // not in a window, so its undo stack is empty
+        XCTAssertEqual(CueEditor.textUndo(text, redo: false), false)
+        XCTAssertEqual(CueEditor.textUndo(text, redo: true), false)
     }
 
     func testToolbarButtonsAskForTheirKind() throws {
