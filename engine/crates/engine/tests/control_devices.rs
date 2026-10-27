@@ -31,6 +31,7 @@ const DEV_NAME: &str = "Fake 1";
 fn device_config(ws: &Workspace) -> ControlConfig {
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
     let mut machine = MachineSettings::default();
     machine
         .set_patch_mapping(
