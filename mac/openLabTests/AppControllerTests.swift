@@ -171,7 +171,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "w"])
+                \.keyEquivalent), ["n", "o", "", "", "", "w"])
     }
 
     // MARK: Front-window routing
@@ -979,5 +979,89 @@ final class AppControllerTests: XCTestCase {
         if root.accessibilityIdentifier() == id { return root }
         for sub in root.subviews { if let hit = find(sub, id) { return hit } }
         return nil
+    }
+
+    // MARK: Relink missing media (WS-03)
+
+    private func relinkRequests() -> [String] {
+        engine.received.compactMap {
+            if case .request(_, .relink(let folder)) = $0 { return folder }
+            return nil
+        }
+    }
+
+    func testRelinkSendsTheFolderRequestAndReportsTheResult() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(3), "ambiguous": .array([]), "unmatched": .array([]),
+        ])
+        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        await app.relinkMedia(on: store)
+        XCTAssertEqual(relinkRequests(), ["/Volumes/Audio/Hamlet"])
+        // The frame is the documented one (client fixture request_relink.json), apart from the id.
+        let sent = try XCTUnwrap(
+            engine.received.first { if case .request(_, .relink) = $0 { return true } else { return false } })
+        var frame = try XCTUnwrap(JSONValue.parse(try sent.text()))
+        var golden = try Fixtures.json("client", "request_relink")
+        frame.set("id", .int(0))
+        golden.set("id", .int(0))
+        XCTAssertEqual(frame, golden)
+        XCTAssertTrue(alerts.errors.isEmpty, "a clean relink does not interrupt the show")
+        XCTAssertEqual(
+            app.windows[doc]?.footer.noticeLabel.stringValue,
+            AppController.relinkSummary(relinked: 3, ambiguous: 0, unmatched: 0))
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(store.logEntries.last?.level, .info)
+        XCTAssertEqual(store.logEntries.last?.message, "Relinked 3 cue(s).")
+    }
+
+    func testRelinkWithAmbiguousOrUnmatchedCuesIsAWarningNotSuccess() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(1),
+            "ambiguous": .array([
+                .object([
+                    "cue": .string("00000000-0000-0000-0000-00000000000a"), "candidates": .array([.string("a/x.wav")]),
+                ])
+            ]),
+            "unmatched": .array([.string("00000000-0000-0000-0000-00000000000b")]),
+        ])
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: store)
+        let expected = AppController.relinkSummary(relinked: 1, ambiguous: 1, unmatched: 1)
+        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
+        let messages = store.logEntries.map(\.message)
+        XCTAssertTrue(messages.contains(expected))
+        XCTAssertTrue(messages.contains { $0.contains("a/x.wav") && $0.contains("Candidates") }, "\(messages)")
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 3, "summary and one per cue")
+        XCTAssertEqual(app.windows[doc]?.footer.noticeLabel.stringValue, expected)
+    }
+
+    func testCancellingTheFolderPanelSendsNothing() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        app.pickFolderURL = { nil }
+        await app.relinkMedia(on: store)
+        XCTAssertTrue(relinkRequests().isEmpty)
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testFailedRelinkIsShownAndLoggedAsAnError() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        engine.garbleResults = true
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: store)
+        XCTAssertEqual(alerts.errors.count, 1)
+        XCTAssertEqual(store.logEntries.last?.level, .error)
+    }
+
+    func testRelinkButtonInTheWarningsTabRunsTheRelink() async throws {
+        let doc = try XCTUnwrap(app.windows.keys.first)
+        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        try XCTUnwrap(app.windows[doc]).onRelink?()
+        await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
     }
 }
