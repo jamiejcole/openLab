@@ -5,21 +5,42 @@
 //! As in QLab 5 the playhead can stand on any cue of its list, at any depth. Its positions, in
 //! list order, are the cues depth-first (a group, then its children).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::cue::{ContinueMode, Cue, CueKind, GroupMode};
-use crate::model::CueId;
+use crate::cue_index::{CueContainer, CueIndex};
+use crate::model::{CueId, CueListId};
 
 #[derive(Clone, Debug)]
 pub(super) struct Playhead {
     pub cue: Option<CueId>,
-    /// The list's positions when last synced, to find where a deleted cue stood.
-    order: Vec<CueId>,
+    /// The list's positions when last synced, to find where a deleted cue stood. `None` while
+    /// the engine's cue index holds them: it is then in step with what the playhead last saw,
+    /// and an edit is followed from its footprint (M4.12c, see `CueEngine::sync_playheads`).
+    order: Option<Vec<CueId>>,
+    /// What the edit being followed did around the playhead, read from the cue index before
+    /// the index followed the edit.
+    pub followed: Option<Followed>,
     /// The groups around the playhead cue, outermost first, as of the last time the engine
     /// looked (after each move and each edit of the list): entering a group is a group in
     /// this set now that was not before, whether the playhead moved or the list was edited
     /// around it (see `CueEngine::forget_continues`).
     pub around: Vec<CueId>,
+}
+
+/// What an edit did around a playhead whose positions the cue index holds, read from the index
+/// before it follows the edit: enough to place the playhead afterwards as [`Playhead::follow`]
+/// would from the whole list (M4.12c).
+#[derive(Clone, Debug)]
+pub(super) struct Followed {
+    /// The list had no cues.
+    pub was_empty: bool,
+    /// The positions after the playhead cue that the edit added, removed or moved (or that sit
+    /// in a group it did), in order, when the playhead cue or a group around it was one of
+    /// those: the cue may be gone, and these may be gone too.
+    pub maybe: Vec<CueId>,
+    /// The first position after those that the edit did not touch: it is still in the list.
+    pub sure: Option<CueId>,
 }
 
 impl Playhead {
@@ -28,17 +49,33 @@ impl Playhead {
         let order = positions(cues);
         Self {
             cue: order.first().copied(),
-            order,
+            order: Some(order),
+            followed: None,
             around: Vec::new(),
         }
     }
 
-    /// Follows edits to the list. A deleted playhead cue gives way to the first position that
-    /// came after it and still exists (none: past the end); a list that was empty and gains cues stands on its
-    /// first cue. Returns `(the list's cues changed, the playhead moved)`.
-    pub fn sync(&mut self, cues: &[Cue]) -> (bool, bool) {
-        let order = positions(cues);
-        if order == self.order {
+    /// The positions the playhead keeps itself (`None`: the cue index holds them).
+    pub fn take_order(&mut self) -> Option<Vec<CueId>> {
+        self.order.take()
+    }
+
+    pub fn keeps_order(&self) -> bool {
+        self.order.is_some()
+    }
+
+    /// Keeps `order` as the list's positions (the cue index cannot be trusted to hold them).
+    pub fn keep_order(&mut self, order: Vec<CueId>) {
+        self.order = Some(order);
+    }
+
+    /// Follows edits to the list, from `old` (its positions when the playhead last looked) to
+    /// `order` (now). A deleted playhead cue gives way to the first position that came after it
+    /// and still exists (none: past the end); a list that was empty and gains cues stands on
+    /// its first cue. Keeps `order`. Returns `(the list's cues changed, the playhead moved)`.
+    pub fn follow(&mut self, old: &[CueId], order: Vec<CueId>) -> (bool, bool) {
+        if order == old {
+            self.order = Some(order);
             return (false, false);
         }
         let before = self.cue;
@@ -46,17 +83,16 @@ impl Playhead {
             Some(id) if order.contains(&id) => Some(id),
             Some(id) => {
                 let present: HashSet<CueId> = order.iter().copied().collect();
-                self.order
-                    .iter()
+                old.iter()
                     .skip_while(|o| **o != id)
                     .skip(1)
                     .find(|o| present.contains(o))
                     .copied()
             }
-            None if self.order.is_empty() => order.first().copied(),
+            None if old.is_empty() => order.first().copied(),
             None => None,
         };
-        self.order = order;
+        self.order = Some(order);
         (true, before != self.cue)
     }
 
@@ -93,6 +129,40 @@ impl Playhead {
         let id = self.cue?;
         order.iter().position(|c| *c == id)
     }
+}
+
+/// Reads, from `tree` as it stands before following an edit whose added, removed and moved
+/// cues are `structural`, what [`Followed`] needs for the playhead of `list` standing on `cue`.
+/// Costs the touched positions right after the playhead (at most one untouched one), not the
+/// list: a playhead whose cue and groups the edit did not touch is where it was.
+pub(super) fn followed(
+    tree: &CueIndex,
+    list: CueListId,
+    cue: Option<CueId>,
+    structural: &BTreeSet<CueId>,
+) -> Followed {
+    let touched =
+        |c: CueId| structural.contains(&c) || tree.ancestors(c).any(|g| structural.contains(&g));
+    let mut followed = Followed {
+        was_empty: tree.kids(CueContainer::List(list)).is_empty(),
+        maybe: Vec::new(),
+        sure: None,
+    };
+    let Some(cue) = cue.filter(|c| touched(*c)) else {
+        return followed;
+    };
+    let mut at = tree.next_in_list(cue);
+    // Bounded by the cue count, so a damaged index cannot loop.
+    for _ in 0..=tree.len() {
+        let Some(next) = at else { break };
+        if !touched(next) {
+            followed.sure = Some(next);
+            break;
+        }
+        followed.maybe.push(next);
+        at = tree.next_in_list(next);
+    }
+    followed
 }
 
 /// The cues the playhead can stand on, in list order: every cue, depth-first. Iterative, so
