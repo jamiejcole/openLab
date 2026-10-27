@@ -384,9 +384,9 @@ fn verb_of(part: &str) -> Option<Verb> {
 
 /// The right a message needs, judged on its address and argument count alone so that nothing
 /// about the show is looked up before the peer is known to be allowed (docs/osc.md, "Rights").
-/// `None` for `/connect`, `/version` and `/workspaces`, which every peer may send.
+/// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
 ///
-/// - View: every read, `/updates`, `/udpReplyPort`, and writing a cue's `notes`.
+/// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
 /// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
 ///   and `/select`.
 /// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, the cue
@@ -395,10 +395,12 @@ fn verb_of(part: &str) -> Option<Verb> {
 ///   triggers exist.
 pub fn required_right(address: &Address, args: &[OscType]) -> Option<OscRight> {
     Some(match address {
-        Address::Connect | Address::Version | Address::Workspaces => return None,
-        Address::Updates | Address::UdpReplyPort | Address::Query(_) | Address::Unsupported(_) => {
-            OscRight::View
+        // QLab: `/updates` works at any access level; what an update carries is filtered by the
+        // View right when it is sent (`Osc::may_receive_updates`).
+        Address::Connect | Address::Version | Address::Workspaces | Address::Updates => {
+            return None;
         }
+        Address::UdpReplyPort | Address::Query(_) | Address::Unsupported(_) => OscRight::View,
         Address::Select(_) => OscRight::Edit,
         Address::Go
         | Address::Stop
@@ -490,9 +492,19 @@ pub struct Resolved {
     /// The message matched more than [`MAX_MATCHES`] cues, or its patterns used up their budget:
     /// what was found is used, the rest is not.
     pub capped: bool,
+    /// The inputs start a cue through its own OSC trigger address. That needs Control whatever
+    /// the address looks like (a trigger may be shaped like a read), so the caller checks it.
+    pub trigger: bool,
 }
 
 impl Resolved {
+    fn trigger(cue: CueId) -> Self {
+        Self {
+            trigger: true,
+            ..Self::input(TransportAction::Start { cue })
+        }
+    }
+
     fn input(action: TransportAction) -> Self {
         Self {
             inputs: vec![OscInput::Transport(action)],
@@ -570,7 +582,7 @@ pub fn resolve(
 
 fn trigger_or_unknown(show: &dyn OscShow, path: &str) -> Resolved {
     match show.cue_by_osc_trigger(path) {
-        Some(cue) => Resolved::input(TransportAction::Start { cue }),
+        Some(cue) => Resolved::trigger(cue),
         None => Resolved {
             replies: vec![Reply::error()],
             unknown: true,
@@ -718,7 +730,7 @@ fn cue_message(
     if targets.is_empty() {
         // QLab: an error for an address that reaches nothing (the address as asked).
         if let Some(cue) = pattern_trigger(show, parsed, cue) {
-            return Resolved::input(TransportAction::Start { cue });
+            return Resolved::trigger(cue);
         }
         out.replies.push(Reply::error());
         return out;

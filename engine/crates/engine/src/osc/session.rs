@@ -183,10 +183,12 @@ impl Sessions {
     ///   passcodes, as a workspace without a passcode accepted any `/connect`.
     /// - A passcode not in the table: `BadPasscode`, counted towards the lockouts.
     ///
-    /// A peer that connected with a passcode is never disconnected, downgraded by a connect
-    /// without one, or locked out by a later `/connect`, right or wrong: UDP peers are only an IP
-    /// address, so anyone sharing it (or forging it) could otherwise cut a console off mid-show.
-    /// A correct passcode can raise or lower its rights to that row's.
+    /// A peer that connected with a passcode is never disconnected, nor downgraded by a connect
+    /// without one or a wrong one: UDP peers are only an IP address, so anyone sharing it (or
+    /// forging it) could otherwise cut a console off mid-show. Its wrong guesses still count
+    /// towards the lockouts like any peer's, and while locked out its `/connect` is refused
+    /// (it keeps its rights); otherwise it could search the table for a row with more rights
+    /// without limit. A correct passcode can raise or lower its rights to that row's.
     pub fn connect(
         &mut self,
         peer: Peer,
@@ -207,24 +209,22 @@ impl Sessions {
                 matched = Some(row.rights);
             }
         }
-        if current.is_some() {
-            self.touch(peer, now);
-            let Some(rights) = matched else {
-                return ConnectResult::BadPasscode;
-            };
-            if let Some(session) = self.peers.get_mut(&peer) {
-                session.rights = Some(rights);
-            }
-            return ConnectResult::Accepted(rights);
-        }
         // A correct passcode from an address that connected before gets through the lockouts,
         // so an attacker's wrong guesses cannot keep the operator out after a dropped link.
-        let known_and_right = matched.is_some() && self.known.contains(&peer.ip());
+        // Not for a peer that is connected already: it needs no way back in, and the exemption
+        // would let it keep guessing for a row with more rights while locked out.
+        let known_and_right =
+            current.is_none() && matched.is_some() && self.known.contains(&peer.ip());
         if !known_and_right && self.locked_out(peer.ip(), now) {
             return ConnectResult::LockedOut;
         }
         let Some(rights) = matched else {
+            // A connected peer's wrong guess counts too (it stays connected): otherwise it could
+            // search the table for a row with more rights without limit.
             self.record_failure(peer.ip(), now);
+            if current.is_some() {
+                self.touch(peer, now);
+            }
             return ConnectResult::BadPasscode;
         };
         if !self.ensure(peer, now) {

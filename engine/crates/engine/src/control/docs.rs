@@ -612,18 +612,21 @@ fn random_id() -> uuid::Uuid {
     uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-/// A random number for the new workspace's passcode, from the OS.
-fn random_seed() -> u32 {
+/// A random number for the new workspace's passcode, from the OS; `None` if the OS refused.
+fn os_seed() -> Option<u32> {
     let mut bytes = [0u8; 4];
-    if getrandom::fill(&mut bytes).is_err() {
-        // The OS refused: the clock's low bits are as good as a passcode needs to be here (it
-        // protects a show nobody has saved yet, and the operator sees and can change it).
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        return u32::try_from(nanos & u128::from(u32::MAX)).unwrap_or(0);
-    }
-    u32::from_le_bytes(bytes)
+    getrandom::fill(&mut bytes)
+        .is_ok()
+        .then(|| u32::from_le_bytes(bytes))
+}
+
+/// The seed when the OS gave none: the clock's low bits are as good as a passcode needs to be
+/// here (it protects a show nobody has saved yet, and the operator sees and can change it).
+fn clock_seed() -> u32 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    u32::try_from(nanos & u128::from(u32::MAX)).unwrap_or(0)
 }
 
 /// A new workspace (WS-02) with QLab's default OSC access: no rights without a passcode, and one
@@ -695,11 +698,20 @@ impl Control {
                 if !self.doc_gate(id, to, discard_changes, false) {
                     return;
                 }
+                let seed = os_seed().unwrap_or_else(|| {
+                    self.log(
+                        LogLevel::Warn,
+                        "the system random source failed: the new workspace's OSC passcode comes \
+                         from the clock, so it is guessable; change it in the workspace settings"
+                            .to_owned(),
+                    );
+                    clock_seed()
+                });
                 let workspace = new_workspace(
                     WorkspaceId(random_id()),
                     CueListId(random_id()),
                     PatchId(random_id()),
-                    random_seed(),
+                    seed,
                 );
                 let loaded = Loaded {
                     workspace,

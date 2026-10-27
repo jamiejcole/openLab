@@ -15,7 +15,7 @@ mod session;
 
 use std::time::Duration;
 
-use openlab_core::{OscRight, OscRights};
+use openlab_core::{OscAccess, OscRight, OscRights};
 use rosc::OscMessage;
 use serde_json::json;
 
@@ -301,6 +301,15 @@ impl Osc {
             .unwrap_or(show.access().no_passcode)
     }
 
+    /// Whether updates (which carry cue data) may be sent to `peer` now: it needs View, judged
+    /// when each update goes out, so a table edit takes effect on subscribers at once.
+    pub fn may_receive_updates(&self, peer: Peer, access: &OscAccess) -> bool {
+        self.sessions
+            .rights(peer)
+            .unwrap_or(access.no_passcode)
+            .allows(OscRight::View)
+    }
+
     fn may_ask(&self, peer: Peer, show: &dyn OscShow) -> bool {
         self.rights_of(peer, show).allows(OscRight::View)
     }
@@ -395,7 +404,7 @@ impl Osc {
         }
         if required_right(&parsed.address, &message.args).is_some_and(|r| !rights.allows(r)) {
             self.stats.denied += 1;
-            let scope = if matches!(parsed.address, Address::Updates | Address::UdpReplyPort) {
+            let scope = if matches!(parsed.address, Address::UdpReplyPort) {
                 Scope::App
             } else {
                 Scope::Workspace
@@ -417,6 +426,11 @@ impl Osc {
         }
         if resolved.capped {
             self.stats.matches_capped += 1;
+        }
+        if resolved.trigger && !rights.allows(OscRight::Control) {
+            self.stats.denied += 1;
+            self.push_reply(&ask, &Reply::denied().scoped(Scope::Workspace), out);
+            return;
         }
         for input in resolved.inputs {
             if out.inputs.len() >= MAX_INPUTS_PER_CALL {

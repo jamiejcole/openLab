@@ -1137,8 +1137,15 @@ impl Actor {
             return;
         }
         let now = self.now();
-        let subscribers = self.osc.update_subscribers(now);
         let Some(mirror) = &self.mirror else { return };
+        // Updates carry cue data, so only subscribers that may view get them (judged now, so a
+        // table edit takes effect at once).
+        let subscribers: Vec<_> = self
+            .osc
+            .update_subscribers(now)
+            .into_iter()
+            .filter(|&p| self.osc.may_receive_updates(p, mirror.access()))
+            .collect();
         if subscribers.is_empty() {
             return;
         }
