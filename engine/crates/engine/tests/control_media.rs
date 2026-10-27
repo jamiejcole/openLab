@@ -495,3 +495,52 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
     go(&mut s);
     assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
 }
+
+#[test]
+fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
+    // From the plans the loop builds for `bad_plan` (QLab check Q2: a playlist halted by a
+    // broken child times its auto-follow by them).
+    let path = wav(&dc(800, 0.5));
+    let gone = fresh_path("wav");
+    let looping = with_slices(audio(2, &path, 0), &[(secs(400), 1)], 0);
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        looping,
+        audio(3, &gone, 0),
+    ]));
+    s.run(BLOCK);
+    let length = |s: &OfflineShow, n: u128| s.control().engine().nominal_length(id(n));
+    assert_eq!(length(&s, 1), Some(800));
+    // A plan that loops forever, or a file that is not there, has no end.
+    assert_eq!(length(&s, 2), None);
+    assert_eq!(length(&s, 3), None);
+    // A trim changes it.
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { end_time, .. } = &mut kind {
+        *end_time = Some(secs(500));
+    }
+    let edit = s.request_id();
+    s.send(ClientMessage::Command {
+        id: edit,
+        command: Box::new(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::Kind { value: kind },
+        }),
+    });
+    s.run(BLOCK);
+    assert_eq!(length(&s, 1), Some(500));
+    // A removed cue's length is withdrawn.
+    let remove = s.request_id();
+    s.send(ClientMessage::Command {
+        id: remove,
+        command: Box::new(Command::RemoveCue { id: id(1) }),
+    });
+    s.run(BLOCK);
+    assert_eq!(length(&s, 1), None);
+}
