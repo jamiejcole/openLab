@@ -785,59 +785,9 @@ pub(crate) fn apply_model(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Patch slots (M4.2f) and coalescing
+// Coalescing
 
 impl Command {
-    /// Whether applying this command (or undo step) to `ws` would change a patch's mixer slot
-    /// or output count: an insert before the end, a removal, a move, a channel-count or
-    /// outputs change, judged on the final state of a transaction. Patch indices are mixer
-    /// matrix slots until M4.2f (M4.15b) gives patches stable slots, so the engine refuses
-    /// such an edit while any voice is on the device. A dry run on the patches alone, so it
-    /// costs nothing in a big show; `false` for a command that would be refused anyway.
-    pub fn changes_patch_layout(&self, ws: &Workspace) -> bool {
-        let mut parts = Vec::new();
-        self.patch_layout_parts(&mut parts);
-        if parts.is_empty() {
-            return false;
-        }
-        let mut shell = Workspace {
-            id: ws.id,
-            name: String::new(),
-            settings: ws.settings.clone(),
-            patches: ws.patches.clone(),
-            network_patches: Vec::new(),
-            cue_lists: Vec::new(),
-        };
-        for part in parts {
-            if shell.apply(part).is_err() {
-                return false;
-            }
-        }
-        ws.patches.iter().enumerate().any(|(i, before)| {
-            shell.patches.get(i).is_none_or(|after| {
-                (after.id, after.outputs.len()) != (before.id, before.outputs.len())
-            })
-        })
-    }
-
-    fn patch_layout_parts(&self, out: &mut Vec<Command>) {
-        match self {
-            Self::AddPatch { .. } | Self::RemovePatch { .. } | Self::MovePatch { .. } => {
-                out.push(self.clone());
-            }
-            Self::SetPatchProperty {
-                property: PatchProperty::ChannelCount { .. } | PatchProperty::Outputs { .. },
-                ..
-            } => out.push(self.clone()),
-            Self::Transaction { commands } => {
-                for c in commands {
-                    c.patch_layout_parts(out);
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// What value a pure value-setting command sets, as a hashable key (its kind, the item,
     /// and which field of it); `None` for any other command, and for the patch edits that change
     /// the layout. Two commands with equal keys set the same value.
