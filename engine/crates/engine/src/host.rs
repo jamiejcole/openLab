@@ -21,7 +21,7 @@ use crate::control::{
     Backend, Control, ControlConfig, ControlError, Inbox, OUTBOUND_CAPACITY, outbound_channel,
     runner,
 };
-use crate::net::{NetError, ServerConfig, WsServer};
+use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
 use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
 
 /// Frames per device callback asked for: about 5 ms at 48 kHz.
@@ -105,7 +105,12 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     }
     let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     // Port and token are what M4.9 writes to `engine.json`.
-    let server = WsServer::start(inbox_tx.clone(), outbound, ServerConfig::default())?;
+    // OSC (UDP and TCP 53000) shares the runtime; if its port is taken it logs and stays off.
+    let net_config = ServerConfig {
+        osc: Some(OscConfig::default()),
+        ..ServerConfig::default()
+    };
+    let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
     // Runs until the parent closes stdin (or it is not connected) or a client says
     // `goodbye { shutdown }`, which ends the control loop. Process exit policy is M4.9's.
     // Started before the control loop so that a failure leaves nothing running: without it
