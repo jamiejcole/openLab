@@ -12,7 +12,7 @@
 //! it for ever; its file is reported unplayable meanwhile (a late answer still counts). The
 //! abandoned thread is leaked: it ends when its read returns, if it ever does.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, select};
 use openlab_audio::{Media, MediaError, Preloaded, Probed, preload_within};
-use openlab_core::{Cue, CueKind, MediaRef, MediaStatus, Workspace};
+use openlab_core::{
+    Cue, CueId, CueIndex, CueKind, Footprint, IndexChange, MediaRef, MediaStatus, Workspace,
+};
 
 use crate::persist::media_path;
 
@@ -90,6 +92,14 @@ struct Entry {
     urgent: bool,
     /// The watchdog gave up on its job (a late answer still counts).
     timed_out: bool,
+    /// How many cues use the file, and how many of them ask for it to be preloaded.
+    users: usize,
+    preloaders: usize,
+    /// The file is to be preloaded (a cue asks, or its probe advises it): as of the last answer
+    /// or change, so a change of mind is told from a steady state.
+    wants_preload: bool,
+    /// The preload job whose answer counts (0: none); a released preload's late answer is stale.
+    preload_ticket: u64,
     /// Decoded into memory (AUD-05), once the preload job has answered.
     preloaded: Option<Arc<Preloaded>>,
     /// Bytes taken from the workspace preload budget for this file.
@@ -126,6 +136,20 @@ pub struct MediaCatalog {
     show_dir: Option<PathBuf>,
     budget: u64,
     reserved: u64,
+    /// Where the cues are, to follow an edit from its footprint.
+    index: CueIndex,
+    /// What each audio cue with a file contributes to `entries`' counts.
+    uses: HashMap<CueId, Use>,
+    /// Jobs sent to the workers (tests wait for exactly that many answers).
+    #[cfg(test)]
+    jobs: u64,
+}
+
+/// One cue's use of a media file.
+#[derive(Debug, PartialEq, Eq)]
+struct Use {
+    key: String,
+    preload: bool,
 }
 
 impl MediaCatalog {
@@ -156,6 +180,10 @@ impl MediaCatalog {
             show_dir,
             budget: preload_budget,
             reserved: 0,
+            index: CueIndex::default(),
+            uses: HashMap::new(),
+            #[cfg(test)]
+            jobs: 0,
         };
         for _ in 0..PROBE_WORKERS {
             catalog.spawn()?;
@@ -185,34 +213,248 @@ impl MediaCatalog {
         Ok(())
     }
 
-    /// Follows the workspace: probes media references it has not seen and forgets the ones no
-    /// cue uses any more (releasing their preload). Probes go out in workspace order; files
-    /// near a playhead are moved ahead with [`Self::prioritize`].
+    /// Follows the whole workspace (a newly opened one; and the reference [`Self::sync_cues`]
+    /// must equal): probes media references it has not seen, forgets the ones no cue uses any
+    /// more (releasing their preload), and starts or releases the preload of files whose cues
+    /// changed their mind. Probes go out in workspace order; files near a playhead are moved
+    /// ahead with [`Self::prioritize`].
     pub fn sync(&mut self, ws: &Workspace) {
-        // Borrowed keys: an edit in a show of thousands of cues allocates for new files only.
-        let mut used: HashSet<&str> = HashSet::new();
-        let mut order: Vec<&str> = Vec::new();
-        for list in &ws.cue_lists {
-            media_refs(&list.cues, &mut |m| {
-                if used.insert(m) {
-                    order.push(m);
+        let mut uses: HashMap<CueId, Use> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        self.index = CueIndex::build_visiting(ws, |cue| {
+            if let Some((key, preload)) = media_use(cue) {
+                if seen.insert(key.to_owned()) {
+                    order.push(key.to_owned());
                 }
-            });
+                uses.insert(
+                    cue.id,
+                    Use {
+                        key: key.to_owned(),
+                        preload,
+                    },
+                );
+            }
+        });
+        let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+        for u in uses.values() {
+            let n = counts.entry(u.key.as_str()).or_default();
+            n.0 += 1;
+            n.1 += usize::from(u.preload);
         }
         let mut freed = 0;
-        self.entries.retain(|k, e| {
-            let keep = used.contains(k.as_str());
-            if !keep {
-                freed += e.reserved;
+        self.entries.retain(|k, e| match counts.get(k.as_str()) {
+            Some(&(users, preloaders)) => {
+                e.users = users;
+                e.preloaders = preloaders;
+                true
             }
-            keep
+            None => {
+                freed += e.reserved;
+                false
+            }
         });
         self.reserved = self.reserved.saturating_sub(freed);
-        for key in order {
-            if !self.entries.contains_key(key) {
-                self.request(key.to_owned());
+        let mut asked = Vec::new();
+        for key in &order {
+            if !self.entries.contains_key(key.as_str()) {
+                self.request(key.clone());
+                asked.push(key.as_str());
             }
         }
+        for key in asked {
+            if let (Some(e), Some(&(users, preloaders))) =
+                (self.entries.get_mut(key), counts.get(key))
+            {
+                e.users = users;
+                e.preloaders = preloaders;
+            }
+        }
+        let mut keys: Vec<String> = self.entries.keys().cloned().collect();
+        keys.sort_unstable();
+        for key in keys {
+            self.settle_preload(&key);
+        }
+        self.uses = uses;
+    }
+
+    /// Follows an edit from its footprint: the same result as [`Self::sync`], at the cost of the
+    /// cues the edit touched. Cues added, removed, edited or moved are re-read; a file whose
+    /// last cue went is forgotten, one first used now is probed (in workspace order), and a file
+    /// whose cues now ask (or no longer ask) for a preload gets one (or loses it).
+    pub fn sync_cues(&mut self, ws: &Workspace, footprint: &Footprint) {
+        let structural: BTreeSet<CueId> = footprint
+            .added
+            .iter()
+            .chain(&footprint.removed)
+            .chain(&footprint.moved)
+            .copied()
+            .collect();
+        let touched: BTreeSet<CueId> = structural
+            .iter()
+            .chain(&footprint.edited)
+            .copied()
+            .collect();
+        let delta = match self.index.reconcile(ws, &touched, &structural) {
+            IndexChange::Delta(delta) => delta,
+            IndexChange::Rebuilt => return self.sync(ws),
+        };
+        // Files whose counts changed, and uses of files not probed yet.
+        let mut changed: BTreeSet<String> = BTreeSet::new();
+        let mut first_uses: Vec<(CueId, Use)> = Vec::new();
+        for id in &delta.gone {
+            if let Some(old) = self.uses.remove(id) {
+                self.drop_use(old, &mut changed);
+            }
+        }
+        // Each cue once: a cue can be both touched and new.
+        let seen: BTreeSet<CueId> = touched.iter().chain(&delta.fresh).copied().collect();
+        for id in &seen {
+            if !self.index.contains(*id) {
+                continue;
+            }
+            let Some(cue) = self.index.locate(ws, *id) else {
+                // The footprint and the index disagree with the workspace: start over.
+                return self.sync(ws);
+            };
+            let new = media_use(cue);
+            if new == self.uses.get(id).map(|u| (u.key.as_str(), u.preload)) {
+                continue;
+            }
+            if let Some(old) = self.uses.remove(id) {
+                self.drop_use(old, &mut changed);
+            }
+            if let Some((key, preload)) = new {
+                let new = Use {
+                    key: key.to_owned(),
+                    preload,
+                };
+                match self.entries.get_mut(key) {
+                    Some(e) => {
+                        e.users += 1;
+                        e.preloaders += usize::from(preload);
+                        changed.insert(key.to_owned());
+                        self.uses.insert(*id, new);
+                    }
+                    None => first_uses.push((*id, new)),
+                }
+            }
+        }
+        // Files nobody uses now are forgotten; the preload they held goes back.
+        for key in &changed {
+            if self.entries.get(key.as_str()).is_some_and(|e| e.users == 0)
+                && let Some(e) = self.entries.remove(key.as_str())
+            {
+                self.reserved = self.reserved.saturating_sub(e.reserved);
+            }
+        }
+        // New files in workspace order (the order a full sync asks in).
+        first_uses.sort_by_cached_key(|(id, _)| self.index.path(*id));
+        for (id, new) in first_uses {
+            if !self.entries.contains_key(new.key.as_str()) {
+                self.request(new.key.clone());
+            }
+            if let Some(e) = self.entries.get_mut(new.key.as_str()) {
+                e.users += 1;
+                e.preloaders += usize::from(new.preload);
+            }
+            changed.insert(new.key.clone());
+            self.uses.insert(id, new);
+        }
+        // Preloads follow the counts, in the order a full sync settles them.
+        for key in changed {
+            self.settle_preload(&key);
+        }
+    }
+
+    /// One cue stopped using its file.
+    fn drop_use(&mut self, old: Use, changed: &mut BTreeSet<String>) {
+        if let Some(e) = self.entries.get_mut(old.key.as_str()) {
+            e.users = e.users.saturating_sub(1);
+            e.preloaders = e.preloaders.saturating_sub(usize::from(old.preload));
+        }
+        changed.insert(old.key);
+    }
+
+    /// Starts the preload of a probed file some cue now asks for, or releases the one of a file
+    /// no cue (and not its probe) wants any more, so it does not hold budget or memory for
+    /// nothing. Acts on a change of mind only: a file that stays wanted (or unwanted) keeps
+    /// whatever its last attempt came to (preloaded, over budget, failed).
+    fn settle_preload(&mut self, key: &str) {
+        let Some(e) = self.entries.get_mut(key) else {
+            return;
+        };
+        let advised = matches!(&e.probe, Probe::Ready(r) if r.probed.preload_advised());
+        let want = e.preloaders > 0 || advised;
+        if want == e.wants_preload {
+            return;
+        }
+        e.wants_preload = want;
+        // Until it is probed there is nothing to preload: the answer decides.
+        if !matches!(e.probe, Probe::Ready(_)) {
+            return;
+        }
+        if want {
+            self.start_preload(key);
+        } else {
+            self.release_preload(key);
+        }
+    }
+
+    /// Reserves the preload memory for a probed file and sends the job; a file that does not fit
+    /// what is left of the budget streams instead.
+    fn start_preload(&mut self, key: &str) {
+        let Some(e) = self.entries.get_mut(key) else {
+            return;
+        };
+        let Probe::Ready(ready) = &e.probe else {
+            return;
+        };
+        let (path, bytes) = (ready.path.clone(), preload_bytes(&ready.probed));
+        self.reserved = self.reserved.saturating_sub(e.reserved);
+        e.reserved = 0;
+        e.preloaded = None;
+        e.preload_failed = false;
+        e.over_budget = false;
+        if self.reserved.saturating_add(bytes) > self.budget {
+            e.over_budget = true;
+            e.preload_ticket = 0;
+            return;
+        }
+        self.next_ticket += 1;
+        e.preload_ticket = self.next_ticket;
+        self.reserved += bytes;
+        e.reserved = bytes;
+        let job = Job::Preload {
+            key: key.to_owned(),
+            ticket: e.preload_ticket,
+            path,
+            max_bytes: bytes,
+        };
+        if self.low.send(job).is_err() {
+            self.reserved = self.reserved.saturating_sub(bytes);
+            e.reserved = 0;
+            e.preload_ticket = 0;
+        } else {
+            #[cfg(test)]
+            {
+                self.jobs += 1;
+            }
+        }
+    }
+
+    /// Gives back what a preload holds: the budget, the decoded samples (voices playing from
+    /// them keep their own reference) and any answer still to come.
+    fn release_preload(&mut self, key: &str) {
+        let Some(e) = self.entries.get_mut(key) else {
+            return;
+        };
+        self.reserved = self.reserved.saturating_sub(e.reserved);
+        e.reserved = 0;
+        e.preloaded = None;
+        e.over_budget = false;
+        e.preload_failed = false;
+        e.preload_ticket = 0;
     }
 
     /// Puts the probes of `keys` (files cues near a playhead play) ahead of the others.
@@ -265,6 +507,10 @@ impl MediaCatalog {
             // A relative reference in a show that was never saved has no folder to be in.
             None => false,
         };
+        #[cfg(test)]
+        {
+            self.jobs += u64::from(asked);
+        }
         match self.entries.get_mut(&key) {
             Some(e) => {
                 e.ticket = ticket;
@@ -284,6 +530,10 @@ impl MediaCatalog {
                         asking: asked,
                         urgent: false,
                         timed_out: false,
+                        users: 0,
+                        preloaders: 0,
+                        wants_preload: false,
+                        preload_ticket: 0,
                         preloaded: None,
                         reserved: 0,
                         over_budget: false,
@@ -339,12 +589,9 @@ impl MediaCatalog {
     }
 
     /// Takes a worker's answer. Returns the status to report to the cue engine, or `None` for a
-    /// stale answer or a preload. `wants_preload(key, probed)` says whether a cue asks for it.
-    pub fn answer(
-        &mut self,
-        answer: ProbeAnswer,
-        wants_preload: impl Fn(&str, &Probed) -> bool,
-    ) -> Option<(MediaRef, MediaStatus)> {
+    /// stale answer or a preload. A probed file is preloaded if a cue asks (the catalog counts
+    /// them, see [`Self::sync_cues`]) or its probe advises it.
+    pub fn answer(&mut self, answer: ProbeAnswer) -> Option<(MediaRef, MediaStatus)> {
         match answer {
             ProbeAnswer::Probed {
                 key,
@@ -356,47 +603,25 @@ impl MediaCatalog {
                     .get_mut(&key)
                     .filter(|e| e.ticket == ticket && e.asking)?;
                 entry.asking = false;
-                let (probe, status, path) = match result {
-                    Ok((path, probed)) => {
-                        let ready = Ready { path, probed };
-                        let path = ready.path.clone();
-                        (
-                            Probe::Ready(Arc::new(ready)),
-                            MediaStatus::Available,
-                            Some(path),
-                        )
-                    }
-                    Err(e) => {
-                        let status = status_of(&e);
-                        (Probe::Failed, status, None)
-                    }
+                let (probe, status) = match result {
+                    Ok((path, probed)) => (
+                        Probe::Ready(Arc::new(Ready { path, probed })),
+                        MediaStatus::Available,
+                    ),
+                    Err(e) => (Probe::Failed, status_of(&e)),
                 };
+                let ready = matches!(probe, Probe::Ready(_));
                 entry.probe = probe;
                 entry.preloaded = None;
                 self.reserved = self.reserved.saturating_sub(entry.reserved);
                 entry.reserved = 0;
                 entry.over_budget = false;
                 entry.preload_failed = false;
-                if let (Some(path), Probe::Ready(ready)) = (path, &entry.probe)
-                    && wants_preload(&key, &ready.probed)
-                {
-                    let bytes = preload_bytes(&ready.probed);
-                    if self.reserved.saturating_add(bytes) <= self.budget {
-                        self.reserved += bytes;
-                        entry.reserved = bytes;
-                        let job = Job::Preload {
-                            key: key.clone(),
-                            ticket,
-                            path,
-                            max_bytes: bytes,
-                        };
-                        if self.low.send(job).is_err() {
-                            self.reserved -= bytes;
-                            entry.reserved = 0;
-                        }
-                    } else {
-                        entry.over_budget = true;
-                    }
+                entry.preload_ticket = 0;
+                entry.wants_preload = false;
+                if ready {
+                    // The cues' wishes (and the probe's advice) are known: preload if wanted.
+                    self.settle_preload(&key);
                 }
                 Some((MediaRef::new(key), status))
             }
@@ -405,7 +630,11 @@ impl MediaCatalog {
                 ticket,
                 result,
             } => {
-                let entry = self.entries.get_mut(&key).filter(|e| e.ticket == ticket)?;
+                // Only the job in flight counts: a released preload's answer is stale.
+                let entry = self
+                    .entries
+                    .get_mut(&key)
+                    .filter(|e| e.preload_ticket == ticket && ticket != 0)?;
                 match result {
                     Ok(p) => entry.preloaded = Some(p),
                     Err(_) => {
@@ -487,12 +716,15 @@ impl MediaCatalog {
     }
 }
 
-fn media_refs<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a str)) {
-    for c in cues {
-        if let CueKind::Audio { media: Some(m), .. } = &c.kind {
-            f(m.as_str());
-        }
-        media_refs(c.children(), f);
+/// The file an audio cue plays and whether it asks for it to be preloaded.
+fn media_use(cue: &Cue) -> Option<(&str, bool)> {
+    match &cue.kind {
+        CueKind::Audio {
+            media: Some(m),
+            preload,
+            ..
+        } => Some((m.as_str(), *preload)),
+        _ => None,
     }
 }
 
@@ -592,7 +824,7 @@ mod tests {
         cat.request(key.to_owned());
         assert_eq!(cat.pending(), 1);
         let a = answer(&rx);
-        assert!(cat.answer(a, |_, _| false).is_some());
+        assert!(cat.answer(a).is_some());
         let Some(Probe::Ready(first)) = cat.get(key) else {
             panic!("not ready")
         };
@@ -605,7 +837,386 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&first, still));
         let a = answer(&rx);
-        assert!(cat.answer(a, |_, _| false).is_some());
+        assert!(cat.answer(a).is_some());
         assert_eq!(cat.pending(), 0);
+    }
+
+    // ----- following edits from their footprints (M4.12a) and preload changes (M4.12b) -----
+
+    use openlab_core::{Command, CueProperty, GroupMode, History, Position, load_show};
+    use std::collections::BTreeMap;
+
+    /// A mono 32-bit float WAV of 100 frames (400 bytes preloaded).
+    fn write_wav(dir: &Path, name: &str) -> String {
+        let data_len = 100u32 * 4;
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&3u16.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&8000u32.to_le_bytes());
+        v.extend_from_slice(&32_000u32.to_le_bytes());
+        v.extend_from_slice(&4u16.to_le_bytes());
+        v.extend_from_slice(&32u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        v.resize(v.len() + data_len as usize, 0);
+        let path = dir.join(name);
+        std::fs::write(&path, v).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let probe: ProbeFn = openlab_audio::probe;
+        let cat = MediaCatalog::new(tx, None, budget, probe, Duration::from_secs(60)).unwrap();
+        (cat, rx)
+    }
+
+    /// Hands the catalog the answers of every job it has sent, in a fixed order (the two
+    /// workers answer in any order, and the budget goes to whoever is answered first), until
+    /// nothing is in flight: answers can start preloads.
+    fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>, received: &mut u64) {
+        while *received < cat.jobs {
+            let mut round = Vec::new();
+            while *received < cat.jobs {
+                round.push(answer(rx));
+                *received += 1;
+            }
+            round.sort_by_key(|a| match a {
+                ProbeAnswer::Probed { key, .. } => (key.clone(), 0),
+                ProbeAnswer::Preloaded { key, .. } => (key.clone(), 1),
+            });
+            for a in round {
+                cat.answer(a);
+            }
+        }
+    }
+
+    /// Everything the catalog knows about its files, for comparing two catalogs.
+    type View = (
+        u64,
+        BTreeMap<String, (usize, usize, bool, bool, bool, bool, u64, u64, u64)>,
+        BTreeMap<CueId, (String, bool)>,
+    );
+
+    fn view(cat: &MediaCatalog) -> View {
+        let entries = cat
+            .entries
+            .iter()
+            .map(|(k, e)| {
+                (
+                    k.clone(),
+                    (
+                        e.users,
+                        e.preloaders,
+                        e.wants_preload,
+                        e.over_budget,
+                        e.preload_failed,
+                        e.preloaded.is_some(),
+                        e.reserved,
+                        e.ticket,
+                        e.preload_ticket,
+                    ),
+                )
+            })
+            .collect();
+        let uses = cat
+            .uses
+            .iter()
+            .map(|(id, u)| (*id, (u.key.clone(), u.preload)))
+            .collect();
+        (cat.reserved, entries, uses)
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as usize % n.max(1)
+        }
+    }
+
+    fn all_cues(ws: &Workspace) -> Vec<(CueId, bool)> {
+        let mut out = Vec::new();
+        for list in &ws.cue_lists {
+            let mut stack: Vec<&[Cue]> = vec![&list.cues];
+            while let Some(cues) = stack.pop() {
+                for c in cues {
+                    out.push((c.id, matches!(c.kind, CueKind::Group { .. })));
+                    stack.push(c.children());
+                }
+            }
+        }
+        out
+    }
+
+    /// One random edit of `ws` built the way the tests of commands do: always plausible,
+    /// sometimes refused.
+    fn random_command(
+        ws: &Workspace,
+        rng: &mut Rng,
+        template: &Cue,
+        files: &[String],
+        next: &mut u128,
+    ) -> Command {
+        let cues = all_cues(ws);
+        let pick = |rng: &mut Rng| cues[rng.below(cues.len())];
+        let groups: Vec<CueId> = cues.iter().filter(|c| c.1).map(|c| c.0).collect();
+        let position = |rng: &mut Rng| Position {
+            list: ws.cue_lists[rng.below(ws.cue_lists.len())].id,
+            parent: if groups.is_empty() || rng.below(2) == 0 {
+                None
+            } else {
+                Some(groups[rng.below(groups.len())])
+            },
+            index: rng.below(4),
+        };
+        let mut new_cue = |rng: &mut Rng, group: bool| {
+            *next += 1;
+            let mut c = template.clone();
+            c.id = CueId(uuid::Uuid::from_u128(*next));
+            c.number = None;
+            c.kind = if group {
+                *next += 1;
+                let mut inner = template.clone();
+                inner.id = CueId(uuid::Uuid::from_u128(*next));
+                inner.number = None;
+                set_media(
+                    &mut inner,
+                    &files[rng.below(files.len())],
+                    rng.below(2) == 0,
+                );
+                CueKind::Group {
+                    mode: GroupMode::Timeline,
+                    children: vec![inner],
+                }
+            } else {
+                template.kind.clone()
+            };
+            if !group {
+                set_media(&mut c, &files[rng.below(files.len())], rng.below(2) == 0);
+            }
+            c
+        };
+        // An empty show can only be added to.
+        match if cues.is_empty() { 0 } else { rng.below(7) } {
+            0 | 1 => Command::AddCue {
+                at: position(rng),
+                cue: new_cue(rng, false),
+                auto_number: false,
+            },
+            2 => Command::AddCue {
+                at: position(rng),
+                cue: new_cue(rng, true),
+                auto_number: false,
+            },
+            3 => Command::RemoveCue { id: pick(rng).0 },
+            4 => Command::MoveCue {
+                id: pick(rng).0,
+                index: rng.below(4),
+            },
+            5 => Command::ReparentCue {
+                id: pick(rng).0,
+                to: position(rng),
+            },
+            _ => {
+                // Another file and preload setting for a cue (whatever it was).
+                let mut probe = template.clone();
+                set_media(
+                    &mut probe,
+                    &files[rng.below(files.len())],
+                    rng.below(2) == 0,
+                );
+                Command::SetCueProperty {
+                    id: pick(rng).0,
+                    property: CueProperty::Kind { value: probe.kind },
+                }
+            }
+        }
+    }
+
+    fn set_media(cue: &mut Cue, file: &str, want_preload: bool) {
+        if let CueKind::Audio { media, preload, .. } = &mut cue.kind {
+            *media = Some(MediaRef::new(file));
+            *preload = want_preload;
+        }
+    }
+
+    fn template() -> (Workspace, Cue) {
+        let text = include_str!("../../../../fixtures/show/v1-example.openlab");
+        let mut ws = load_show(text).unwrap().workspace;
+        let id = openlab_core::audio_media(&ws)[0].0;
+        let template = ws.find_cue(id).unwrap().clone();
+        for list in &mut ws.cue_lists {
+            list.cues.clear();
+        }
+        (ws, template)
+    }
+
+    /// An engine that follows each edit from its footprint keeps exactly the media catalog a
+    /// full `sync` of the workspace gives: the same files, counts, preload wishes, budget,
+    /// probes and preload jobs asked in the same order (tickets), whatever the edits, undos
+    /// and redos, and as the probe answers come in.
+    #[test]
+    fn following_footprints_equals_a_full_sync_after_any_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..5)
+            .map(|n| write_wav(dir.path(), &format!("f{n}.wav")))
+            .collect();
+        let (base, template) = template();
+        let (mut preloaded, mut over, mut released, mut cleared) = (0, 0, 0, 0);
+        for seed in 1..=30u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            // Room for two of the five files (400 bytes each): the rest are over budget.
+            let (mut inc, rx_inc) = catalog(900);
+            let (mut full, rx_full) = catalog(900);
+            let (mut got_inc, mut got_full) = (0, 0);
+            let (mut ws, mut history, mut next) = (base.clone(), History::new(), 10_000u128);
+            inc.sync(&ws);
+            full.sync(&ws);
+            for step in 0..60 {
+                let footprint = match rng.below(9) {
+                    0 => history
+                        .peek_undo()
+                        .map(openlab_core::Command::footprint)
+                        .filter(|_| history.undo(&mut ws).unwrap_or(false)),
+                    1 => history
+                        .peek_redo()
+                        .map(openlab_core::Command::footprint)
+                        .filter(|_| history.redo(&mut ws).unwrap_or(false)),
+                    _ => {
+                        let command = random_command(&ws, &mut rng, &template, &files, &mut next);
+                        let footprint = command.footprint();
+                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                    }
+                };
+                let Some(footprint) = footprint else { continue };
+                let before = view(&inc);
+                inc.sync_cues(&ws, &footprint);
+                full.sync(&ws);
+                assert!(inc.index.matches(&ws), "seed {seed} step {step}");
+                assert_eq!(view(&inc), view(&full), "seed {seed} step {step}");
+                settle(&mut inc, &rx_inc, &mut got_inc);
+                settle(&mut full, &rx_full, &mut got_full);
+                let after = view(&inc);
+                assert_eq!(after, view(&full), "seed {seed} step {step} after answers");
+                // What the walk is meant to reach.
+                preloaded += after.1.values().filter(|e| e.5).count();
+                over += after.1.values().filter(|e| e.3).count();
+                released += usize::from(before.0 > after.0);
+                cleared += before
+                    .1
+                    .values()
+                    .filter(|e| e.3)
+                    .count()
+                    .saturating_sub(after.1.values().filter(|e| e.3).count());
+            }
+        }
+        assert!(preloaded > 100, "preloads reached: {preloaded}");
+        assert!(over > 20, "over-budget files reached: {over}");
+        assert!(released > 20, "budget given back: {released}");
+        assert!(
+            cleared > 5,
+            "over-budget flags cleared by a release: {cleared}"
+        );
+    }
+
+    #[test]
+    fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_wav(dir.path(), "a.wav");
+        let (mut ws, template) = template();
+        let mut cue = template.clone();
+        set_media(&mut cue, &file, false);
+        let mut other = cue.clone();
+        other.id = CueId(uuid::Uuid::from_u128(10_002));
+        let id = cue.id;
+        ws.cue_lists[0].cues = vec![cue, other];
+        let (mut cat, rx) = catalog(10_000);
+        let mut got = 0;
+        cat.sync(&ws);
+        settle(&mut cat, &rx, &mut got);
+        assert_eq!(cat.preload_reserved(), 0, "nothing asks for a preload");
+        assert!(cat.get(&file).is_some_and(|p| matches!(p, Probe::Ready(_))));
+
+        let set = |ws: &mut Workspace, id: CueId, on: bool| {
+            let mut c = ws.find_cue(id).unwrap().clone();
+            set_media(&mut c, &file, on);
+            let command = Command::SetCueProperty {
+                id,
+                property: CueProperty::Kind { value: c.kind },
+            };
+            let footprint = command.footprint();
+            ws.apply(command).unwrap();
+            footprint
+        };
+        // On: the file is already probed, and is now preloaded (it used to wait for the next
+        // open).
+        let fp = set(&mut ws, id, true);
+        cat.sync_cues(&ws, &fp);
+        assert_eq!(cat.preload_reserved(), 400);
+        settle(&mut cat, &rx, &mut got);
+        assert!(matches!(cat.media(&file), Some((_, Media::Preloaded(_)))));
+        // A second cue asks too; the first stops asking: the file stays preloaded.
+        let other_id = CueId(uuid::Uuid::from_u128(10_002));
+        let fp = set(&mut ws, other_id, true);
+        cat.sync_cues(&ws, &fp);
+        let fp = set(&mut ws, id, false);
+        cat.sync_cues(&ws, &fp);
+        assert_eq!(cat.preload_reserved(), 400);
+        assert!(matches!(cat.media(&file), Some((_, Media::Preloaded(_)))));
+        // The last one stops: the reservation and the samples are released.
+        let fp = set(&mut ws, other_id, false);
+        cat.sync_cues(&ws, &fp);
+        assert_eq!(cat.preload_reserved(), 0);
+        assert!(matches!(cat.media(&file), Some((_, Media::Path(_)))));
+        // And on again: a new preload.
+        let fp = set(&mut ws, id, true);
+        cat.sync_cues(&ws, &fp);
+        assert_eq!(cat.preload_reserved(), 400);
+        settle(&mut cat, &rx, &mut got);
+        assert!(matches!(cat.media(&file), Some((_, Media::Preloaded(_)))));
+    }
+
+    #[test]
+    fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_wav(dir.path(), "a.wav");
+        let (mut ws, template) = template();
+        let mut cue = template.clone();
+        set_media(&mut cue, &file, true);
+        let id = cue.id;
+        ws.cue_lists[0].cues = vec![cue];
+        let (mut cat, rx) = catalog(10_000);
+        let mut got = 0;
+        cat.sync(&ws);
+        // The probe answers, which starts the preload job; before its answer is read, the
+        // cue stops asking.
+        let first = answer(&rx);
+        got += 1;
+        cat.answer(first);
+        assert_eq!(cat.preload_reserved(), 400);
+        let mut c = ws.find_cue(id).unwrap().clone();
+        set_media(&mut c, &file, false);
+        let command = Command::SetCueProperty {
+            id,
+            property: CueProperty::Kind { value: c.kind },
+        };
+        let footprint = command.footprint();
+        ws.apply(command).unwrap();
+        cat.sync_cues(&ws, &footprint);
+        assert_eq!(cat.preload_reserved(), 0);
+        settle(&mut cat, &rx, &mut got);
+        assert!(
+            matches!(cat.media(&file), Some((_, Media::Path(_)))),
+            "the late answer did not bring the samples back"
+        );
+        assert_eq!(cat.preload_reserved(), 0);
     }
 }
