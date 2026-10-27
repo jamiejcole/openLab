@@ -63,6 +63,7 @@ final class AppController {
             wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
+            wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             windows[doc] = wc
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
@@ -170,8 +171,7 @@ final class AppController {
         return windows.values.first { $0.window === key }
     }
 
-    /// GO on the first cue list of the key window's workspace. (The selected list arrives with
-    /// the sidebar, M5.8; full transport routing is M5.11.)
+    /// GO on the list shown in the key window (the sidebar's selection).
     @discardableResult
     func goFront() async -> Result<OkBody, EngineError>? {
         guard let store = frontController?.store else { return nil }
@@ -223,7 +223,7 @@ final class AppController {
         guard let wc = frontController else { return }
         let store = wc.store
         let selected = wc.cueList.selectedIDs()
-        let list = store.model?.cueLists.first?.id
+        let list = wc.cueList.listID  // the list picked in the sidebar
         switch command {
         case .go: _ = await go(store)
         case .pauseAll: await run(.pauseAll, on: store)
@@ -270,7 +270,7 @@ final class AppController {
 
     @discardableResult
     private func go(_ store: WorkspaceStore) async -> Result<OkBody, EngineError>? {
-        guard let list = store.model?.cueLists.first?.id else { return nil }
+        guard let list = windows.values.first(where: { $0.store === store })?.cueList.listID else { return nil }
         return await run(.go(list: list), on: store)
     }
 

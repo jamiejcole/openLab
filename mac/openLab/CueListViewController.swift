@@ -102,7 +102,8 @@ final class CueCell: NSTableCellView {
     }
 }
 
-/// The cue list: an outline of the first cue list of the workspace (the sidebar picks later).
+/// The cue list: an outline of one cue list of the workspace, the one the sidebar picked (the first
+/// until then). Each window has its own view controller, so each has its own selected list.
 /// It mirrors the store's tree in `CueNode`s and applies `StoreChange`s as row inserts, removals,
 /// moves and reloads; it reloads the whole table only for a snapshot or when it has lost sync.
 /// Read-only: editing, drag and drop and transport keys come later (M5.10, M5.11).
@@ -121,6 +122,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     let outlineView: NSOutlineView
     private(set) var roots: [CueNode] = []
     private(set) var listID: ModelID?
+    /// The list the sidebar picked. Once set it stays, so a reorder of lists never switches the view;
+    /// when that list is deleted the first list takes over.
+    private var chosenList: ModelID?
     private var nodes: [ModelID: CueNode] = [:]
     /// Cues that point at a cue, so a rename refreshes their Target cell.
     private var targeters: [ModelID: Set<ModelID>] = [:]
@@ -201,6 +205,20 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
+    /// The list to show: the chosen one while it exists, else the first.
+    private func shownList() -> CueList? {
+        let lists = store.model?.cueLists ?? []
+        return lists.first { $0.id == chosenList } ?? lists.first
+    }
+
+    /// Shows another cue list (the sidebar's selection). Unknown ids are ignored.
+    func showList(_ id: ModelID) {
+        guard id != listID, store.model?.cueLists.contains(where: { $0.id == id }) == true else { return }
+        chosenList = id
+        sentPlayhead = nil
+        rebuild()
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         // Compared with what was last sent, not only what the engine echoed: A, B, A within one
         // round trip must still end on A.
@@ -234,8 +252,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let expanded = Set(nodes.values.filter { $0.isGroup && outlineView.isItemExpanded($0) }.map(\.id))
         nodes = [:]
         targeters = [:]
-        let list = store.model?.cueLists.first
+        let list = shownList()
         listID = list?.id
+        chosenList = list?.id
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
         updatePlayheadAncestors()
         outlineView.reloadData()
@@ -277,7 +296,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func applyModel(upserts: [Upsert], deletes: [Delete]) {
-        guard store.model?.cueLists.first?.id == listID else { return rebuild() }
+        guard shownList()?.id == listID else { return rebuild() }
         guard let listID else { return }
         let selected = selectedIDs()
         let oldAncestors = playheadAncestors
