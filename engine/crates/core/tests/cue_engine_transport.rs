@@ -1089,13 +1089,13 @@ fn a_first_panic_on_a_group_with_only_some_children_fading_fades_the_rest() {
     rig.start(0, 1);
     rig.at(100, Input::PanicCue { cue: id(2) });
     let group = rig.at(300, Input::PanicCue { cue: id(1) });
-    assert_eq!(voice_stops(&group), vec![(id(3), 300, panic_fade(800))]);
+    assert_eq!(voice_stops(&group), vec![(id(3), 300, panic_fade(1000))]);
     assert_eq!(rig.state(3), CueState::Stopping);
     // A press on the group now finds every child fading: a second press.
     let second = rig.at(400, Input::PanicCue { cue: id(1) });
     assert_eq!(
         voice_stops(&second),
-        vec![(id(2), 400, None), (id(3), 400, None)]
+        vec![(id(3), 400, None), (id(2), 400, None)]
     );
 }
 
