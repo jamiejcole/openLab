@@ -32,7 +32,12 @@
 //! - Stepping (`PlayheadNext`/`PlayheadPrevious`) enters only "start first and enter" groups and
 //!   groups the playhead was already inside (Playhead, "Stepping").
 //! - A group shows a warning exactly while a descendant is shown with problems, and its
-//!   `GroupWarningChanged` reports agree, never repeating a value (Broken cues).
+//!   `GroupWarningChanged` reports agree, never repeating a value; with no runtime it then
+//!   reports `broken` (Broken cues; M2.24, QLab check G6). A `broken` cue always has a reason
+//!   to show: problems, a run-time break, or such a descendant.
+//! - Nothing reaches `running` but from pre-waiting, paused or fading: a start always reports
+//!   pre-waiting first, and a child started on its own no longer makes its group run (Groups,
+//!   "A child started on its own"; QLab check G4).
 //! - A running group has a busy child (Groups, "Its action").
 //! - Chain bound: the calls at one `now` start at most `chain_limit` cues between them (Chains
 //!   and the chain bound).
@@ -59,8 +64,9 @@
 //!
 //! `random_groups_play_round_robin` checks random groups against a reference round-robin (Groups,
 //! "Random"): within a cycle no child repeats, and a cycle never opens with the last pick.
-//! `broken_cues_never_auto_follow` covers the auto-follow rule (rule 2) on lists where every
-//! start but the first can only come from a continue. Undo and redo of commands are
+//! `cues_broken_at_run_time_never_auto_follow` covers the auto-follow rule (rule 2) on lists
+//! where every start but the first can only come from a continue: a cue that broke at run time
+//! never auto-follows, while one skipped for static problems does (QLab check P5). Undo and redo of commands are
 //! property-tested in `commands_prop.rs`.
 //!
 //! The case count is CI-friendly (256); set `OPENLAB_PROP_CASES` to run more, e.g.
@@ -160,9 +166,10 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 54] = [
+const OPS: [u8; 55] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
+    30,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -503,13 +510,14 @@ fn pick(ws: &Workspace, a: u8) -> CueId {
 // ----- simulated mixer -----
 
 /// What a voice does, from its cue's id: a loop that plays until devamped or stopped, voices
-/// of fixed lengths (some shorter than a Wait, some outliving most scenarios), and one that
-/// fails part-way.
+/// of fixed lengths (some shorter than a Wait, some outliving most scenarios), one that fails
+/// part-way, and one whose stream fails to open (before it plays anything: `StartFailed`).
 #[derive(Clone, Copy, Debug)]
 enum Flavor {
     Loop,
     Finite(u64),
     FailsAfter { len: u64, after: u64 },
+    FailsAtOpen,
 }
 
 fn flavor(cue: CueId) -> Flavor {
@@ -517,6 +525,7 @@ fn flavor(cue: CueId) -> Flavor {
         0 | 2 | 4 => Flavor::Loop,
         1 => Flavor::Finite(300),
         3 => Flavor::Finite(2500),
+        _ if cue.0.as_u128() % 12 == 11 => Flavor::FailsAtOpen,
         _ => Flavor::FailsAfter {
             len: 1400,
             after: 500,
@@ -743,6 +752,18 @@ impl Voice {
                         self.end_pos = Some(len);
                         self.fail_pos = Some(after);
                     }
+                    Flavor::FailsAtOpen => {
+                        events.push((
+                            at,
+                            Input::StartFailed {
+                                cue: self.cue,
+                                run: self.run,
+                                reason: BrokenReason::StreamFailed,
+                            },
+                        ));
+                        self.dead = true;
+                        return;
+                    }
                 }
                 // Half the voices tell the engine their length ahead (`ActionLength`, as the
                 // binary does for a finite table), half leave the end to the voice's report.
@@ -850,6 +871,20 @@ impl Voice {
                         cue: self.cue,
                         run: self.run,
                         at,
+                    },
+                ));
+                self.dead = true;
+            }
+            Cmd::ForceFail(reason) if !self.started => {
+                // It fails before it played anything (its stream could not open, the mixer
+                // refused its first start): the binary reports that apart (`StartFailed`),
+                // and the voice never existed.
+                events.push((
+                    at,
+                    Input::StartFailed {
+                        cue: self.cue,
+                        run: self.run,
+                        reason,
                     },
                 ));
                 self.dead = true;
@@ -1095,7 +1130,8 @@ struct Run {
     sim: Sim,
     previews: bool,
     dup: bool,
-    /// `broken_cues_never_auto_follow`: the cues that broke so far, and the rule being checked.
+    /// `cues_broken_at_run_time_never_auto_follow`: the cues that broke at run time so far, and
+    /// the rule being checked.
     follow_rule: bool,
     tainted: BTreeSet<CueId>,
     lookahead: u64,
@@ -1119,6 +1155,14 @@ struct Run {
     shown: Vec<Action>,
     /// The last `GroupWarningChanged` of each group (absent: none reported, so no warning).
     group_warnings: BTreeMap<CueId, bool>,
+    /// The playhead of `list` as the reports tell it.
+    ph: Option<CueId>,
+    /// Groups that have been active (or were when the playhead entered them) since the playhead
+    /// last entered them other than by the GO on the group itself: only such a group can have
+    /// fired a continue the playhead may skip when it leaves the group.
+    since_entry: BTreeSet<CueId>,
+    /// The groups around the playhead when last looked at (after each move and each call).
+    ph_around: Vec<CueId>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1159,6 +1203,30 @@ impl Run {
             raw: Vec::new(),
             shown: Vec::new(),
             group_warnings: BTreeMap::new(),
+            ph: None,
+            since_entry: BTreeSet::new(),
+            ph_around: Vec::new(),
+        }
+    }
+
+    /// The playhead is now inside the groups `around` (outermost first), having come from
+    /// `from`: each group it was not in before has been entered and starts a new visit, unless
+    /// it was entered from the group itself or was active (now, or in this call).
+    fn enter(&mut self, around: Vec<CueId>, from: Option<CueId>, active_now: &BTreeSet<CueId>) {
+        let before = std::mem::replace(&mut self.ph_around, around);
+        for &g in &self.ph_around {
+            if before.contains(&g) || from == Some(g) {
+                continue;
+            }
+            let active = active_now.contains(&g)
+                || self.reported.get(&g).is_some_and(|s| {
+                    !matches!(s, CueState::Idle | CueState::Broken | CueState::Loaded)
+                });
+            if active {
+                self.since_entry.insert(g);
+            } else {
+                self.since_entry.remove(&g);
+            }
         }
     }
 
@@ -1212,8 +1280,23 @@ impl Run {
 
         let mut starts = 0usize;
         let mut arm = Vec::new();
+        let ph_before = self.ph;
+        let mut moves = 0usize;
+        // Groups reported active in this call.
+        let mut active_now: BTreeSet<CueId> = BTreeSet::new();
         for action in &actions {
             match action {
+                Action::PlayheadChanged { list, cue } if *list == self.list => {
+                    moves += 1;
+                    let cues = &self.ws.cue_lists[0].cues;
+                    let new = cue.map(|n| groups_around(cues, n)).unwrap_or_default();
+                    // (From the group itself into it: a GO on the group, whose run's continue
+                    // belongs to this visit. Stepping in from the group also lands here, where
+                    // the engine forgets more: this side only checks less.)
+                    let from = self.ph;
+                    self.enter(new, from, &active_now);
+                    self.ph = *cue;
+                }
                 Action::GroupWarningChanged { group, warning } => {
                     let previous = self.group_warnings.insert(*group, *warning);
                     prop_assert_ne!(
@@ -1235,10 +1318,29 @@ impl Run {
                     if *state == CueState::PreWaiting && previous != CueState::Paused {
                         starts += 1;
                     }
+                    // A start reports pre-waiting first; only a resume or the end of a fade
+                    // comes back to running. (A group adopted by a child started on its own went
+                    // from idle to running before M2.24.)
+                    if *state == CueState::Running {
+                        prop_assert!(
+                            matches!(
+                                previous,
+                                CueState::PreWaiting | CueState::Paused | CueState::Fading
+                            ),
+                            "{} went from {:?} to running ({:?})",
+                            cue,
+                            previous,
+                            self.input
+                        );
+                    }
                     // Deadlines in the window are committed; none beyond it.
                     prop_assert!(*at <= horizon, "state change dated {at} after {horizon}");
                     self.reported.insert(*cue, *state);
                     self.seen.insert(*cue);
+                    if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
+                        self.since_entry.insert(*cue);
+                        active_now.insert(*cue);
+                    }
                 }
                 Action::StartVoice { at, .. }
                 | Action::StopVoice { at, .. }
@@ -1287,6 +1389,53 @@ impl Run {
                 self.last_at.insert(after, at);
             }
         }
+        // An edit can put the playhead into a group without moving it (its cue dragged in): the
+        // groups around it are compared with the last ones seen, as the engine does.
+        let around = self
+            .ph
+            .map(|p| groups_around(&self.ws.cue_lists[0].cues, p))
+            .unwrap_or_default();
+        self.enter(around, None, &active_now);
+        // No cue is passed over when a GO leaves a group that fires no continue (Playhead; M2.24
+        // fix rounds 1–2): the group has not been active since the playhead entered it and is
+        // not running now, so its continue targets never fire, and the playhead must stand on
+        // the cue right after the outermost group it leaves.
+        if self.unique_ids()
+            && matches!(self.input, Input::Go { .. })
+            && moves == 1
+            && !actions
+                .iter()
+                .any(|a| matches!(a, Action::GoIgnored { .. }))
+        {
+            let cues = &self.ws.cue_lists[0].cues;
+            let old = ph_before
+                .map(|o| groups_around(cues, o))
+                .unwrap_or_default();
+            let new = self.ph.map(|n| groups_around(cues, n)).unwrap_or_default();
+            let left: Vec<CueId> = old.into_iter().filter(|g| !new.contains(g)).collect();
+            let idle = left.iter().all(|g| {
+                !self.since_entry.contains(g)
+                    && matches!(self.engine.state(*g), CueState::Idle | CueState::Broken)
+            });
+            if let Some(&outer) = left.first()
+                && idle
+            {
+                let positions = CueEngine::playhead_positions(&self.ws, self.list);
+                let mut inside = Vec::new();
+                if let Some(g) = self.ws.find_cue(outer) {
+                    flatten(g.children(), &mut inside);
+                }
+                let at = positions.iter().position(|p| *p == outer).unwrap();
+                let expected = positions.get(at + 1 + inside.len()).copied();
+                prop_assert_eq!(
+                    self.ph,
+                    expected,
+                    "GO left group {} for {:?}, passing over cues",
+                    outer,
+                    self.ph
+                );
+            }
+        }
         // Chain bound: across every call at one `now` (against the largest limit the workspace
         // had at that sample, as edits between those calls can change it).
         let limit = CueEngine::chain_limit(&self.ws);
@@ -1330,14 +1479,16 @@ impl Run {
             }
         }
 
-        // A broken cue never auto-follows (rule 2): in a list where only a cue's own continue
-        // can start the cue after it (no auto-continue, no controls), a start that does not come
-        // from a GO is the previous cue's auto-follow, so that cue must have run to its end.
+        // A cue that broke at run time never auto-follows (rule 2): in a list where only a cue's
+        // own continue can start the cue after it (no auto-continue, no controls), a start that
+        // does not come from a GO is the previous cue's auto-follow, so that cue must have run to
+        // its end or been skipped for static problems (QLab check P5).
         if self.follow_rule {
-            for (id, state) in self.engine.cue_states() {
-                if state == CueState::Broken {
-                    self.tainted.insert(id);
-                }
+            // (A failure before the voice played, `StartFailed`, is a skip: no taint.)
+            if let Input::ActionFailed { cue, .. } = self.input
+                && self.engine.broken_reason(cue).is_some()
+            {
+                self.tainted.insert(cue);
             }
             if !matches!(self.input, Input::Go { .. }) {
                 let cues = &self.ws.cue_lists[0].cues;
@@ -1458,9 +1609,9 @@ impl Run {
             }
             for event in events {
                 let preview = match &event {
-                    Input::ActionEnded { run, .. } | Input::ActionFailed { run, .. } => {
-                        run.0 >= PREVIEW_RUN_BASE
-                    }
+                    Input::ActionEnded { run, .. }
+                    | Input::ActionFailed { run, .. }
+                    | Input::StartFailed { run, .. } => run.0 >= PREVIEW_RUN_BASE,
                     _ => false,
                 };
                 if preview {
@@ -1539,7 +1690,7 @@ impl Run {
             prop_assert_ne!(self.engine.state(id), CueState::Idle);
         }
         // A group shows a warning exactly while a descendant is shown with problems, and the
-        // reports say so (Broken cues: the group is not broken).
+        // reports say so (Broken cues: the group has no problems of its own).
         if self.unique_ids() {
             let broken: BTreeSet<CueId> = self
                 .engine
@@ -1625,8 +1776,22 @@ impl Run {
             // Every runtime is reachable from the reported state, and the other way round
             // (States: idle cues have no runtime).
             match state {
-                CueState::Idle => prop_assert_eq!(run, None, "idle cue {} has a runtime", id),
-                CueState::Broken => {}
+                CueState::Idle => {
+                    prop_assert_eq!(run, None, "idle cue {} has a runtime", id);
+                    // A group with a broken descendant shows as broken (QLab check G6).
+                    prop_assert!(
+                        !self.engine.has_broken_descendant(*id),
+                        "idle group {} has a broken descendant",
+                        id
+                    );
+                }
+                CueState::Broken => prop_assert!(
+                    !self.engine.problems(*id).is_empty()
+                        || self.engine.broken_reason(*id).is_some()
+                        || self.engine.has_broken_descendant(*id),
+                    "cue {} broken with no reason to show",
+                    id
+                ),
                 _ => prop_assert!(run.is_some(), "{:?} cue {} has no runtime", state, id),
             }
             if let Some(run) = run {
@@ -1873,6 +2038,30 @@ impl Run {
                         reason: BrokenReason::StreamFailed,
                     }
                 }
+            }
+            30 => {
+                // Model edit: move a cue into a group (to the end of its children), so the
+                // playhead can find itself inside a group it did not move into.
+                let cues = &self.ws.cue_lists[0].cues;
+                let mut groups = Vec::new();
+                each(cues, &mut |c| {
+                    if matches!(c.kind, CueKind::Group { .. }) {
+                        groups.push(c.id);
+                    }
+                });
+                let into = groups
+                    .get(usize::from(s.b) % groups.len().max(1))
+                    .copied()
+                    .filter(|g| *g != target && !groups_around(cues, *g).contains(&target));
+                if let Some(g) = into
+                    && let Some(c) = take(&mut self.ws.cue_lists[0].cues, target)
+                {
+                    match find_mut(&mut self.ws.cue_lists[0].cues, g).map(|x| &mut x.kind) {
+                        Some(CueKind::Group { children, .. }) => children.push(c),
+                        _ => self.ws.cue_lists[0].cues.push(c),
+                    }
+                }
+                Input::Tick
             }
             29 => {
                 // The key that triggers it is released (second trigger on release).
@@ -2137,7 +2326,8 @@ impl Run {
         if strict {
             for (id, state) in self.engine.cue_states() {
                 prop_assert!(
-                    state == CueState::Broken && broken.contains(&id),
+                    state == CueState::Broken
+                        && (broken.contains(&id) || self.engine.has_broken_descendant(id)),
                     "cue {} {:?} after Reset on every cue",
                     id,
                     state
@@ -2240,7 +2430,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     #[test]
-    fn broken_cues_never_auto_follow(case in follow_case()) {
+    fn cues_broken_at_run_time_never_auto_follow(case in follow_case()) {
         run_with(&case, false, true)?;
     }
 
@@ -2462,7 +2652,8 @@ fn the_generator_reaches_what_the_rules_are_about() {
     let mut runner = TestRunner::deterministic();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     let strategy = case();
-    for _ in 0..400 {
+    // (600 cases: chain-limit cuts are rare and need a cycle in the generated show.)
+    for _ in 0..600 {
         let case = strategy.new_tree(&mut runner).unwrap().current();
         let out = run(&case, true).unwrap_or_else(|e| panic!("{e}"));
         for a in &out.raw {

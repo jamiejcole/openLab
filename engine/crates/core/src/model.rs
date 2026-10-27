@@ -102,6 +102,28 @@ impl Workspace {
             .iter()
             .find_map(|list| find_in(&list.cues, id))
     }
+
+    /// Every cue whose hotkey is `hotkey` (same key and modifiers), in workspace order (lists in
+    /// order, cues depth-first). A press starts all of them: as in QLab 5, cues may share a
+    /// hotkey and that is not a problem (M2.24, QLab check K1). Iterative, so nesting depth
+    /// cannot overflow the stack.
+    pub fn cues_with_hotkey(&self, hotkey: &Hotkey) -> Vec<CueId> {
+        let mut out = Vec::new();
+        for list in &self.cue_lists {
+            let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
+            while let Some(level) = stack.last_mut() {
+                let Some(cue) = level.next() else {
+                    stack.pop();
+                    continue;
+                };
+                if cue.triggers.hotkey.as_ref() == Some(hotkey) {
+                    out.push(cue.id);
+                }
+                stack.push(cue.children().iter());
+            }
+        }
+        out
+    }
 }
 
 fn find_in(cues: &[Cue], id: CueId) -> Option<&Cue> {
