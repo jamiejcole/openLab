@@ -107,7 +107,33 @@ impl OfflineShow {
         let (tx, mut rx) = reply_channel();
         self.pump_inbox();
         let _ = self.control.handle(Inbox::Client { message, reply: tx });
+        // A document request is answered by another thread (the file read, the save).
+        if self.control.docs_busy() > 0 {
+            self.settle_docs();
+        }
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Waits until the document worker and the writer thread have answered everything asked of
+    /// them and the answers are applied (ticking, which is where the control loop collects
+    /// them). Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
+    pub fn settle_docs(&mut self) {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            self.pump_inbox();
+            self.control.tick();
+            if self.control.docs_busy() == 0 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.stalls += 1;
+                break;
+            }
+            // The answer comes from another thread: wait for it rather than spin.
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
     }
 
     /// A transport action with a fresh request id.

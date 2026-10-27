@@ -1,0 +1,12 @@
+{
+  "type": "result",
+  "id": 47,
+  "ok": {
+    "data": {
+      "type": "recovery_offer",
+      "path": "/Users/sam/Shows/Hamlet.openlab",
+      "workspace_name": "Hamlet",
+      "modified_ms": 1700000000000
+    }
+  }
+}

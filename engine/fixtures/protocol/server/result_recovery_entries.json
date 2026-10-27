@@ -1,0 +1,22 @@
+{
+  "type": "result",
+  "id": 48,
+  "ok": {
+    "data": {
+      "type": "recovery_entries",
+      "entries": [
+        {
+          "workspace_id": "00000000-0000-0000-0000-000000000007",
+          "path_hash": "0123456789abcdef",
+          "show_name": "Hamlet",
+          "modified_ms": 1700000000000,
+          "stale": false
+        },
+        {
+          "workspace_id": "00000000-0000-0000-0000-000000000008",
+          "stale": true
+        }
+      ]
+    }
+  }
+}
