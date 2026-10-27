@@ -17,6 +17,7 @@ use openlab_audio::{Mixer, MixerConfig, OfflineRenderer};
 use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportAction};
 use openlab_core::{SampleTime, Workspace};
 
+use super::watch::{WatchAnswer, WatchBatch};
 use super::{
     Backend, Control, ControlConfig, ControlError, Flow, Inbox, OUTBOUND_CAPACITY, OutboundRx,
     outbound_channel, reply_channel,
@@ -130,6 +131,28 @@ impl OfflineShow {
                 break;
             }
             // The answer comes from another thread: wait for it rather than spin.
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
+    }
+
+    /// Waits until every host look-up and queued network message has been handled by its worker
+    /// and the answers are applied. Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
+    pub fn settle_net(&mut self) {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            self.pump_inbox();
+            if self.control.net_busy() == 0 {
+                // A worker reports before it counts itself off, so everything is in by now.
+                self.pump_inbox();
+                self.control.tick();
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.stalls += 1;
+                break;
+            }
             if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
                 let _ = self.control.handle(msg);
             }
@@ -292,6 +315,54 @@ impl OfflineShow {
     pub fn tick(&mut self) {
         self.pump_inbox();
         self.control.tick();
+    }
+
+    /// One media-watch pass (manual mode, `ControlConfig::watch`), its findings handled in a
+    /// tick. Whether the pass found anything.
+    pub fn watch_pass(&mut self) -> bool {
+        let found = match self.watch_pass_batch() {
+            Some(batch) => {
+                let _ = self.control.handle(Inbox::Watch(WatchAnswer::Batch(batch)));
+                true
+            }
+            None => false,
+        };
+        self.control.tick();
+        found
+    }
+
+    /// One media-watch pass whose batch is returned instead of handled (a test hands it in
+    /// later, e.g. after another workspace was opened).
+    pub fn watch_pass_batch(&mut self) -> Option<WatchBatch> {
+        self.pump_inbox();
+        // Key changes since the last tick go to the watch first.
+        self.control.tick();
+        self.control.watch_pass()
+    }
+
+    /// Thread mode: waits (bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`]) for the
+    /// next message from the watch thread, handling everything else that comes meanwhile,
+    /// then ticks. Whether one came.
+    pub fn wait_watch(&mut self) -> bool {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.inbox.recv_timeout(left) {
+                Ok(msg @ Inbox::Watch(_)) => {
+                    let _ = self.control.handle(msg);
+                    self.control.tick();
+                    return true;
+                }
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) => {
+                    self.stalls += 1;
+                    self.control.tick();
+                    return false;
+                }
+            }
+        }
     }
 
     pub fn control_mut(&mut self) -> &mut Control {
