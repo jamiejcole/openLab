@@ -18,7 +18,8 @@ use super::{Control, Flow, Inbox};
 pub struct Wake {
     /// How long the loop asked to sleep ([`Control::wait_hint`]).
     pub wanted: Duration,
-    /// How long it actually waited for the inbox.
+    /// Time from asking to wake; meaningful only when `timed_out` (after a message it includes
+    /// handling the whole burst).
     pub waited: Duration,
     /// The wait ended by timing out rather than by a message: `waited - wanted` is then the
     /// timer's overshoot, the wake jitter.

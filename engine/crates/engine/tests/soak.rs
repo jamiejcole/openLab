@@ -40,7 +40,6 @@
 //! `#[ignore]`d (release only): `cargo test --release -p openlab-engine --test soak --
 //! --ignored --nocapture`; `OPENLAB_SOAK_SEED=<n>` runs another operator (the default seed is
 //! fixed, so CI is repeatable).
-
 //!
 //! The same show and operator run against the real control loop on the wall clock in
 //! `soak_rt.rs` (`#[ignore]`d), for the real-time half of NFR-09/QA-05; the shared parts are in
