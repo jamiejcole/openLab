@@ -5,7 +5,14 @@ import AppKit
 /// Structural edits to the cue list (add, delete, reorder, renumber, undo, redo) for one window.
 /// Every entry point refuses in Show Mode (`isLocked`), commits what is typed in the inspector
 /// first, and sends core's commands through the store; the cue list follows the engine's echo.
-/// Decisions where QLab 5's documentation is silent are listed in docs/mac-editing.md.
+///
+/// Why it behaves this way (QLab 5's shortcuts page gives the keys only; where it is silent the safest
+/// live-show choice is used): a new cue goes after the last selected cue, beside it, never inside a
+/// selected group; delete has no prompt (one undo step) but refuses a cue that is running, paused,
+/// waiting, fading, stopping or previewing, or a group holding one; deleting a group deletes its
+/// children; a drop on a group appends to it, on a cue goes after it, never into the cue's own
+/// descendants; the audio cue needs a patch. Undo and redo are the engine's and are not guarded: an
+/// undo can remove an active cue (docs/handoff/m5-protocol-requests.md).
 @MainActor
 final class CueEditor {
     let store: WorkspaceStore
@@ -21,6 +28,16 @@ final class CueEditor {
     }
 
     // MARK: Pure rules (tested without a window)
+
+    /// Cmd-Z / Shift-Cmd-Z while text is being edited belong to the text, never to the workspace:
+    /// nil when no text is being edited (use the workspace), true when the text undid or redid,
+    /// false when its undo stack is empty (beep).
+    static func textUndo(_ text: NSText?, redo: Bool) -> Bool? {
+        guard let text else { return nil }
+        guard let manager = text.undoManager, redo ? manager.canRedo : manager.canUndo else { return false }
+        if redo { manager.redo() } else { manager.undo() }
+        return true
+    }
 
     /// Where a new cue goes: right after the last selected cue, beside it (a selected group gets
     /// the cue after it, not inside); with nothing selected, at the end of the list.
