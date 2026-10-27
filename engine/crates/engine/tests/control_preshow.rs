@@ -292,6 +292,7 @@ fn removing_a_cue_updates_the_report() {
     s.send(ClientMessage::Command {
         id: rid,
         command: Box::new(Command::RemoveCue { id: id(4) }),
+        coalesce: None,
     });
     s.tick();
     let r = preshow(&mut s);
