@@ -156,6 +156,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var onSelectCue: ((ModelID) -> Void)?
     /// Relink was clicked on a row (the engine relinks by folder, so the row does not matter).
     var onRelink: (() -> Void)?
+    /// Show Mode: relinking rewrites cue media, so the row buttons are off.
+    var relinkLocked = false {
+        didSet {
+            guard relinkLocked != oldValue, isViewLoaded else { return }
+            warningsTable.reloadData()
+        }
+    }
 
     private(set) var transportButtons: [String: NSButton] = [:]
     private(set) var lists: [CueList] = []
@@ -553,6 +560,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.detail.stringValue = w.detail
         cell.detail.isHidden = w.detail.isEmpty
         cell.relinkButton.isHidden = !w.canRelink
+        cell.relinkButton.isEnabled = !relinkLocked
         cell.relinkButton.target = self
         cell.relinkButton.action = #selector(relinkClicked)
         cell.setAccessibilityLabel([w.title, w.detail].filter { !$0.isEmpty }.joined(separator: ". "))

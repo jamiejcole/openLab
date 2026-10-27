@@ -57,6 +57,7 @@ enum AX {
     static let transportPanic = "transport-panic"
     static let footer = "footer"
     static let modeSwitch = "mode-switch"
+    static let showModeLabel = "show-mode-indicator"
     static let statusLabel = "status-label"
     static let statusDetails = "status-details"
     static let footerNotice = "footer-notice"
