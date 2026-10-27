@@ -20,6 +20,10 @@ impl Control {
         let Some(device) = self.playable.first().cloned() else {
             return;
         };
+        // Warnings for patches that are gone (or in another workspace) are forgotten.
+        let (ws_id, patches) = (self.ws.id, &self.ws.patches);
+        self.mapping_warned
+            .retain(|(w, p, _)| *w == ws_id && patches.iter().any(|x| x.id == *p));
         let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
         let mut notes = Vec::new();
         let mut changed = false;
@@ -34,7 +38,10 @@ impl Control {
             }
             let wanted = patch.outputs.len();
             if wanted > have {
-                if self.mapping_warned.insert((patch.id, device.name.clone())) {
+                if self
+                    .mapping_warned
+                    .insert((ws_id, patch.id, device.name.clone()))
+                {
                     notes.push((
                         LogLevel::Warn,
                         format!(
@@ -70,7 +77,10 @@ impl Control {
                     ));
                 }
                 Err(why) => {
-                    if self.mapping_warned.insert((patch.id, device.name.clone())) {
+                    if self
+                        .mapping_warned
+                        .insert((ws_id, patch.id, device.name.clone()))
+                    {
                         notes.push((
                             LogLevel::Warn,
                             format!("patch '{}' could not be mapped: {why}", patch.name),
@@ -82,8 +92,35 @@ impl Control {
         for (level, message) in notes {
             self.log(level, message);
         }
-        if changed && let Some(writer) = &self.settings_writer {
-            writer.save(self.config.machine.clone());
+        if changed {
+            self.save_machine();
+        }
+    }
+
+    /// Hands the machine settings to the writer, unless they are defaults standing in for a file
+    /// that could not be read (the operator's mappings would be lost) or there is no writer.
+    fn save_machine(&mut self) {
+        if !self.config.machine_writable {
+            if !std::mem::replace(&mut self.unwritable_warned, true) {
+                self.log(
+                    LogLevel::Warn,
+                    "settings.json could not be read at start: default mappings are kept in \
+                     memory and the file is left as it is"
+                        .to_owned(),
+                );
+            }
+            return;
+        }
+        let Some(writer) = &self.settings_writer else {
+            return;
+        };
+        if !writer.save(self.config.machine.clone()) {
+            self.settings_writer = None;
+            self.log(
+                LogLevel::Warn,
+                "the settings writer stopped: this machine's settings are no longer saved"
+                    .to_owned(),
+            );
         }
     }
 
