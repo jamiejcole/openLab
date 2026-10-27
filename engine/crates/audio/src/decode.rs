@@ -28,6 +28,7 @@ use symphonia::core::units::{TimeBase, Timestamp};
 
 use crate::mixer::{MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS};
 use crate::mp4_priming::Priming;
+use crate::pcm::PcmSource;
 
 /// Frames decoded and thrown away before a seek target, so decoders with inter-frame state (MP3
 /// bit reservoir, MDCT overlap) are warm when the wanted frame comes out. Covers the packet a
@@ -42,7 +43,7 @@ const SEEK_TRIES: u32 = 4;
 /// the resampler's FFT. Non-finite samples become silence, the rest are clamped.
 pub(crate) const SAMPLE_LIMIT: f32 = 16.0;
 
-fn sanitize_sample(x: f32) -> f32 {
+pub(crate) fn sanitize_sample(x: f32) -> f32 {
     if x.is_finite() {
         x.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
     } else {
@@ -62,7 +63,7 @@ pub struct MediaInfo {
 }
 
 impl MediaInfo {
-    fn new(channels: u16, sample_rate: u32, frames: u64) -> Self {
+    pub(crate) fn new(channels: u16, sample_rate: u32, frames: u64) -> Self {
         let duration = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate));
         MediaInfo {
             channels,
@@ -377,7 +378,16 @@ pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
             seeking: Seeking::Direct,
         }),
         other => contain(|| {
-            let mut d = Decoder::open(other)?;
+            let mut d = match open_media(other)? {
+                Opened::Sym(d) => *d,
+                Opened::Pcm(p) => {
+                    return Ok(Probed {
+                        info: p.info(),
+                        warnings: p.warnings().to_vec(),
+                        seeking: Seeking::Direct,
+                    });
+                }
+            };
             let info = d.exact_info()?;
             let seeking = d.choose_seeking(info.frames)?;
             if seeking == Seeking::FromStart {
@@ -419,7 +429,10 @@ pub fn preload_within(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, Me
 const SAMPLE_BYTES: u64 = std::mem::size_of::<f32>() as u64;
 
 fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
-    let mut d = Decoder::open(media)?;
+    let mut d = match open_media(media)? {
+        Opened::Sym(d) => *d,
+        Opened::Pcm(p) => return decode_all_pcm(p, max_bytes),
+    };
     let ch = d.channels;
     let limit = max_bytes;
     let too_large = |samples: u64| MediaError::TooLarge {
@@ -508,12 +521,106 @@ pub(crate) fn open_source(
 ) -> Result<Box<dyn FrameSource>, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(Box::new(MemorySource { data: p, pos: 0 })),
-        other => {
-            let mut d = Decoder::open(other)?;
-            d.seeking = seeking;
-            Ok(Box::new(d))
-        }
+        other => match open_media(other)? {
+            Opened::Pcm(p) => Ok(Box::new(p)),
+            Opened::Sym(mut d) => {
+                d.seeking = seeking;
+                Ok(d)
+            }
+        },
     }
+}
+
+/// Most channels symphonia is trusted with. Uncompressed WAV and AIFF with more are read by
+/// [`PcmSource`]: symphonia's WAV reader refuses channel counts without a layout it knows (about
+/// 18 to 26 channels, 16 for ambisonic layouts), and the layouts it does know are named
+/// speaker positions, not the plain indexed channels of a 64-output show.
+pub(crate) const NATIVE_MAX_CHANNELS: usize = 8;
+
+enum Opened {
+    Sym(Box<Decoder>),
+    Pcm(PcmSource),
+}
+
+/// Opens `media` with the reader that handles it: [`PcmSource`] for WAV and AIFF with more than
+/// [`NATIVE_MAX_CHANNELS`] channels (up to the voice limit), symphonia for everything else.
+fn open_media(media: Media) -> Result<Opened, MediaError> {
+    match media {
+        Media::Path(path) => {
+            let mut f = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(MediaError::NotFound(path));
+                }
+                Err(e) => return Err(MediaError::Io(e.to_string())),
+            };
+            if is_wide_pcm(&mut f)? {
+                PcmSource::open(Box::new(f)).map(Opened::Pcm)
+            } else {
+                drop(f);
+                Decoder::open(Media::Path(path)).map(|d| Opened::Sym(Box::new(d)))
+            }
+        }
+        Media::Reader(mut inner, ext) => {
+            if is_wide_pcm(&mut inner)? {
+                PcmSource::open(inner).map(Opened::Pcm)
+            } else {
+                Decoder::open(Media::Reader(inner, ext)).map(|d| Opened::Sym(Box::new(d)))
+            }
+        }
+        Media::Preloaded(_) => Decoder::open(media).map(|d| Opened::Sym(Box::new(d))),
+    }
+}
+
+/// Is this a WAV or AIFF header with more channels than [`NATIVE_MAX_CHANNELS`] and at most the
+/// voice limit (and a sample size `check_pcm_header` accepts)? Leaves `r` at the start.
+fn is_wide_pcm<R: Read + Seek + ?Sized>(r: &mut R) -> Result<bool, MediaError> {
+    let found = find_pcm_format(r);
+    r.seek(SeekFrom::Start(0))
+        .map_err(|e| MediaError::Io(e.to_string()))?;
+    // Sample sizes above 64 bits are `check_pcm_header`'s to reject, on symphonia's path.
+    Ok(matches!(found, Some((ch, bits, tag))
+        if (NATIVE_MAX_CHANNELS + 1..=MAX_VOICE_CHANNELS).contains(&usize::from(ch))
+            && bits <= 64
+            // A-law, mu-law, ADPCM and the like stay symphonia's to read or refuse.
+            && matches!(tag, 0 | 1 | 3 | 0xFFFE)))
+}
+
+/// [`decode_all`] for a [`PcmSource`]: its length is known, so the budget is checked up front.
+fn decode_all_pcm(mut p: PcmSource, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
+    let info = p.info();
+    let ch = usize::from(info.channels);
+    let want = info.frames.saturating_mul(ch as u64);
+    if want.saturating_mul(SAMPLE_BYTES) > max_bytes {
+        return Err(MediaError::TooLarge {
+            bytes: want.saturating_mul(SAMPLE_BYTES),
+            limit: max_bytes,
+        });
+    }
+    let want = usize::try_from(want).unwrap_or(usize::MAX);
+    let mut samples: Vec<f32> = Vec::new();
+    samples
+        .try_reserve_exact(want)
+        .map_err(|_| MediaError::TooLarge {
+            bytes: (want as u64).saturating_mul(SAMPLE_BYTES),
+            limit: max_bytes,
+        })?;
+    let mut chunk = vec![0.0; 4096 * ch];
+    loop {
+        let n = p.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        samples.extend_from_slice(chunk.get(..n * ch).unwrap_or_default());
+    }
+    if samples.len() != want {
+        return Err(MediaError::Changed);
+    }
+    Ok(Arc::new(Preloaded {
+        info,
+        samples,
+        warnings: p.warnings().to_vec(),
+    }))
 }
 
 struct MemorySource {
@@ -557,7 +664,7 @@ impl FrameSource for MemorySource {
 
 /// Chunks looked at before giving up on finding a WAV `fmt ` / AIFF `COMM` chunk (symphonia then
 /// decides what the file is).
-const HEADER_CHUNKS: usize = 64;
+pub(crate) const HEADER_CHUNKS: usize = 64;
 
 /// Rejects WAV and AIFF headers whose channel count or sample size is outside what openLab plays,
 /// before symphonia sees them: symphonia 0.6.1 computes `(bits / 8) * channels` in `u16`, which
@@ -568,7 +675,7 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
     r.seek(SeekFrom::Start(0))
         .map_err(|e| MediaError::Io(e.to_string()))?;
     match found {
-        Some((channels, bits))
+        Some((channels, bits, _))
             if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 =>
         {
             Err(MediaError::Corrupt(format!(
@@ -580,8 +687,8 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
 }
 
 /// Channel count and bits per sample from a RIFF/WAVE `fmt ` or AIFF/AIFC `COMM` chunk, if the
-/// stream starts with one of those containers. Read errors count as "not found".
-fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16)> {
+/// and the WAV format tag (0 for AIFF), if the stream starts with one of those containers. Read errors count as "not found".
+fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16, u16)> {
     let mut head = [0u8; 12];
     r.read_exact(&mut head).ok()?;
     let (big_endian, want): (bool, &[u8; 4]) = match (head.get(0..4)?, head.get(8..12)?) {
@@ -613,9 +720,9 @@ fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16)> {
             // WAV fmt: tag, channels, rate(4), byte rate(4), block align, bits.
             // AIFF COMM: channels, frames(4), bits.
             return if big_endian {
-                Some((u16_at(0)?, u16_at(6)?))
+                Some((u16_at(0)?, u16_at(6)?, 0))
             } else {
-                Some((u16_at(2)?, u16_at(14).unwrap_or(0)))
+                Some((u16_at(2)?, u16_at(14).unwrap_or(0), u16_at(0)?))
             };
         }
         // Chunks are padded to an even length.

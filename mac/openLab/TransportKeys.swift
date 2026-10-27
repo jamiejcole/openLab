@@ -28,6 +28,18 @@ struct KeyChord: Hashable, Sendable {
     static let escape = "\u{1B}"
     static let up = String(utf16CodeUnits: [unichar(NSUpArrowFunctionKey)], count: 1)
     static let down = String(utf16CodeUnits: [unichar(NSDownArrowFunctionKey)], count: 1)
+    static let left = String(utf16CodeUnits: [unichar(NSLeftArrowFunctionKey)], count: 1)
+    static let right = String(utf16CodeUnits: [unichar(NSRightArrowFunctionKey)], count: 1)
+
+    /// Show-file key names with no plain character: what `NSEvent` reports for them.
+    static let names: [String: String] = {
+        var n = [
+            "space": " ", "escape": escape, "up": up, "down": down, "left": left, "right": right,
+            "return": "\r", "tab": "\t",
+        ]
+        for i in 1...12 { n["f\(i)"] = String(utf16CodeUnits: [unichar(NSF1FunctionKey + i - 1)], count: 1) }
+        return n
+    }()
 
     /// The chord of a pressed key (`charactersIgnoringModifiers` and the event's modifiers).
     init?(event: NSEvent) {
@@ -36,14 +48,11 @@ struct KeyChord: Hashable, Sendable {
     }
 
     /// A show-file hotkey (`{key, modifiers}`, docs/file-format.md section 5.1): `key` is a
-    /// lower-case name ("space", "escape", "down", "[", "a"). Names with no character form
-    /// (function keys) give nil.
+    /// lower-case name ("space", "escape", "down", "[", "a"). Names the app has no key for
+    /// (F13 and up, media keys) give nil.
     init?(hotkey: JSONValue) {
         guard let name = hotkey["key"]?.stringValue else { return nil }
-        let names = [
-            "space": " ", "escape": Self.escape, "up": Self.up, "down": Self.down, "return": "\r", "tab": "\t",
-        ]
-        guard let key = names[name] ?? (name.count == 1 ? name : nil) else { return nil }
+        guard let key = Self.names[name] ?? (name.count == 1 ? name : nil) else { return nil }
         var mods: NSEvent.ModifierFlags = []
         let flags: [(String, NSEvent.ModifierFlags)] = [
             ("shift", .shift), ("control", .control), ("alt", .option), ("command", .command),
@@ -61,6 +70,10 @@ enum KeyBindError: Error, Equatable {
     case reserved
     case duplicate(of: TransportCommand)
     case cueHotkey
+    /// A menu command (Save, Quit, ...) already owns the chord.
+    case menuKey
+    /// The key has no show-file name (Delete, media keys, ...).
+    case unsupported
 }
 
 /// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
@@ -76,7 +89,9 @@ enum KeyBindError: Error, Equatable {
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
 /// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
-/// show the first field in the order above wins and the later one is dropped with a warning;
+/// show the first transport field wins and the later one is dropped with a warning, and a cue
+/// hotkey on a transport chord is the one that yields (`AppController.keys(for:)`: transport keys
+/// must keep working in a live show);
 /// (3) while a text field is edited, chords that type characters (no Cmd/Ctrl) do not fire.
 struct TransportKeys: Equatable {
     private(set) var chords: [TransportCommand: KeyChord] = [:]
@@ -94,7 +109,7 @@ struct TransportKeys: Equatable {
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    init(settings: JSONValue?, isCueHotkey: (KeyChord) -> Bool = { _ in false }) {
+    init(settings: JSONValue?) {
         let hotkeys = settings?["hotkeys"]
         for (field, command, fallback) in Self.fields {
             var chord = fallback
@@ -109,14 +124,14 @@ struct TransportKeys: Equatable {
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
             if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
-            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+            if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append("hotkeys.\(field): \(Self.describe(error)), no key bound")
                 continue
             }
             chords[command] = chord
         }
         for (command, chord) in Self.fixed {
-            if let error = Self.validate(chord, for: command, in: chords, isCueHotkey: isCueHotkey) {
+            if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append("\(command.rawValue) key: \(Self.describe(error)), no key bound")
             } else {
                 chords[command] = chord
@@ -141,7 +156,7 @@ struct TransportKeys: Equatable {
         return isCueHotkey(chord) ? .cueHotkey : nil
     }
 
-    private static func isBareArrow(_ chord: KeyChord) -> Bool {
+    static func isBareArrow(_ chord: KeyChord) -> Bool {
         (chord.key == KeyChord.up || chord.key == KeyChord.down)
             && chord.modifiers.isDisjoint(with: [.command, .control, .option])
     }
@@ -151,6 +166,8 @@ struct TransportKeys: Equatable {
         case .reserved: return "reserved key"
         case .duplicate(let other): return "same key as \(other.rawValue)"
         case .cueHotkey: return "same key as a cue hotkey"
+        case .menuKey: return "same key as a menu command"
+        case .unsupported: return "unsupported key"
         }
     }
 }

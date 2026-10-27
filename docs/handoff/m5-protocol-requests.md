@@ -35,3 +35,18 @@ QLab 5's Basics tab has controls the model has no field for; the inspector omits
    it needs a `CueProperty` of its own or the app must send a whole `Kind` replacement.
 4. Cue-number edits send `set_cue_numbers`. A "default name" (QLab shows a content-derived name in grey
    when the name is empty and clearing a name restores it) has no counterpart in the model.
+
+## Cue hotkeys (M5.7)
+
+ARCHITECTURE section 6 says a hotkey trigger is app-scope (fires in every open workspace), but the wire has
+no such message. Until it exists the app does the fan-out itself: on a matching key-down it sends
+`transport: start { cue }` to each open workspace's connection for every cue whose `triggers.hotkey`
+matches, and on key-up `transport: trigger_released { cue }` for the cues with `second_trigger_on_release`.
+Wanted: an app-scope message (proposed name `hotkey { key, modifiers, phase: "down" | "up" }`, sendable on
+any connection) that the engine matches against every doc's cue hotkeys, so the engine, not the app, owns
+the matching (the engine also runs OSC triggers) and a held key's release reaches the same cues. The
+Swift name goes in `ProvisionalProtocol.swift` when it is agreed.
+
+Also: the app refuses (at record time) a cue hotkey that equals a transport key, a menu key or another
+cue's hotkey; the engine's `SetCueProperty::Triggers` accepts any of them, so a second client can still
+create the duplicates. Core could warn in `validate`.
