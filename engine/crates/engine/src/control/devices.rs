@@ -34,6 +34,14 @@ pub const STABLE_UP: Duration = Duration::from_secs(5);
 /// How often the device list is read (hot-plug; a device the host stops calling back for
 /// without an error shows as gone from the list).
 pub const DEVICE_POLL: Duration = Duration::from_secs(1);
+/// The least time a running stream may go without a callback before it counts as lost
+/// (M4.2g watchdog); the limit is the longer of this and [`STALL_PERIODS`] buffer periods.
+pub const STALL_MIN: Duration = Duration::from_millis(500);
+/// Buffer periods without a callback that count as a stall, for big buffers.
+pub const STALL_PERIODS: u32 = 20;
+/// Two supervisor samples further apart than this (the Mac slept, the process was suspended)
+/// are no evidence about the stream: the watchdog starts over instead of declaring a stall.
+pub const CLOCK_JUMP: Duration = Duration::from_secs(5);
 /// An open or close the device thread has not finished, or a mixer the host library has not
 /// handed back, after this long makes the device unrecoverable until openLab restarts (a late
 /// answer still counts). Also how long a list read may take before it is reported stuck.
@@ -128,6 +136,8 @@ pub struct StreamInfo {
     pub outputs_dropped: bool,
     /// Frames per callback, if known.
     pub block_frames: Option<u32>,
+    /// The stream's sample rate (sizes the stall limit).
+    pub sample_rate: u32,
     pub monitor: DeviceMonitor,
 }
 
@@ -139,6 +149,7 @@ impl fmt::Debug for StreamInfo {
             .field("channels", &self.channels)
             .field("outputs_dropped", &self.outputs_dropped)
             .field("block_frames", &self.block_frames)
+            .field("sample_rate", &self.sample_rate)
             .finish_non_exhaustive()
     }
 }
@@ -187,6 +198,7 @@ impl OpenStream for CpalStream {
             channels: s.negotiated().mapped,
             outputs_dropped: s.outputs_dropped(),
             block_frames: s.latency().buffer_frames,
+            sample_rate: s.negotiated().sample_rate,
             monitor: s.monitor(),
         }
     }
@@ -356,6 +368,12 @@ pub fn start_with_timeout(
         next_list: now + DEVICE_POLL,
         missing_reads: 0,
         callbacks_at_list: info.monitor.callbacks(),
+        stall: Stall {
+            limit: stall_limit(info.block_frames, info.sample_rate),
+            callbacks: info.monitor.callbacks(),
+            since: now,
+            sampled: now,
+        },
         request,
         stream: Stream::Up,
         info,
@@ -428,6 +446,29 @@ enum Stream {
     Gone,
 }
 
+/// How long a stream of `block_frames` frames per callback at `rate` may go without calling
+/// back: [`STALL_MIN`], or [`STALL_PERIODS`] buffer periods if that is longer.
+pub fn stall_limit(block_frames: Option<u32>, rate: u32) -> Duration {
+    let periods = match block_frames {
+        Some(frames) if frames > 0 && rate > 0 => {
+            Duration::from_secs_f64(f64::from(frames) / f64::from(rate))
+                .saturating_mul(STALL_PERIODS)
+        }
+        _ => Duration::ZERO,
+    };
+    periods.max(STALL_MIN)
+}
+
+/// The stall watchdog's state for the running stream: the callback count when it last moved.
+struct Stall {
+    limit: Duration,
+    callbacks: u64,
+    /// When the count last moved, or the watchdog was armed (the startup grace).
+    since: Instant,
+    /// The previous supervisor sample.
+    sampled: Instant,
+}
+
 /// The current outage.
 struct Outage {
     next_try: Instant,
@@ -475,6 +516,7 @@ pub struct Device {
     missing_reads: u32,
     /// The stream's callback count at the previous list read.
     callbacks_at_list: u64,
+    stall: Stall,
     request: OpenRequest,
     stream: Stream,
     /// The open stream, or the last one while it is down.
@@ -543,8 +585,11 @@ impl Device {
             let errors = self.info.monitor.take_errors();
             if self.info.monitor.needs_reopen() {
                 self.lose(now, describe(&errors), &mut events);
-            } else if let Some(w) = minor(&errors) {
-                events.push(DeviceEvent::Warn(w));
+            } else {
+                if let Some(w) = minor(&errors) {
+                    events.push(DeviceEvent::Warn(w));
+                }
+                self.check_stall(now, &mut events);
             }
             if now.saturating_duration_since(self.up_since) >= STABLE_UP {
                 self.attempts = 0;
@@ -594,6 +639,7 @@ impl Device {
                         self.callbacks_at_list = info.monitor.callbacks();
                         self.missing_reads = 0;
                         self.info = info;
+                        self.arm_stall(now);
                         self.stream = Stream::Up;
                         self.up_since = now;
                         events.push(DeviceEvent::Restored);
@@ -649,6 +695,41 @@ impl Device {
             // Plugged back in: try now rather than at the end of the backoff.
             Some(o) if present && !was_present => o.next_try = o.next_try.min(now),
             _ => {}
+        }
+    }
+
+    /// Starts the stall watchdog over for the stream now up: its limit from the buffer size
+    /// (known once it runs), and a grace of one limit before the first callback is due.
+    fn arm_stall(&mut self, now: Instant) {
+        self.stall = Stall {
+            limit: stall_limit(self.info.block_frames, self.info.sample_rate),
+            callbacks: self.info.monitor.callbacks(),
+            since: now,
+            sampled: now,
+        };
+    }
+
+    /// A running stream whose callback count has not moved for the stall limit, while the
+    /// device is still listed and no error came, is lost like an unplugged one. Only streams
+    /// that are up are checked (not one being closed, reopened or down), and a gap between
+    /// samples beyond [`CLOCK_JUMP`] (sleep/wake) is no evidence: the watchdog starts over.
+    fn check_stall(&mut self, now: Instant, events: &mut Vec<DeviceEvent>) {
+        let gap = now.saturating_duration_since(self.stall.sampled);
+        let callbacks = self.info.monitor.callbacks();
+        if gap > CLOCK_JUMP || callbacks != self.stall.callbacks {
+            self.stall.callbacks = callbacks;
+            self.stall.since = now;
+            self.stall.sampled = now;
+            return;
+        }
+        self.stall.sampled = now;
+        let silent = now.saturating_duration_since(self.stall.since);
+        if silent >= self.stall.limit {
+            let why = format!(
+                "stalled: the stream has not called back for {} ms",
+                silent.as_millis()
+            );
+            self.lose(now, why, events);
         }
     }
 

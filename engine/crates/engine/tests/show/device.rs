@@ -106,6 +106,31 @@ impl Fake {
         }
     }
 
+    /// The open stream stops calling back, with no error and the device still listed (a host
+    /// that hangs): the M4.2g stall watchdog's case.
+    pub fn stall(&self) {
+        self.state.lock().unwrap().rendering = false;
+    }
+
+    /// The stalled stream calls back again.
+    pub fn unstall(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.rendering = s.host.is_some();
+    }
+
+    /// A callback with no frames, as a live device keeps making between the blocks the test
+    /// renders (the stall watchdog counts callbacks, and a wall clock that moves without
+    /// them would look like a hung stream).
+    fn heartbeat(&self) {
+        let mut s = self.state.lock().unwrap();
+        if !s.rendering {
+            return;
+        }
+        if let Some(host) = s.host.as_mut() {
+            host.render(&mut [0.0f32; 0], None);
+        }
+    }
+
     /// Opens block until [`Fake::open_gate`] (a host that takes long to open a device).
     pub fn close_gate(&self) {
         *self.gate.lock().unwrap() = false;
@@ -230,6 +255,7 @@ impl DeviceLayer for FakeLayer {
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
             block_frames: Some(s.block),
+            sample_rate: RATE,
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -352,6 +378,7 @@ impl DeviceShow {
 
     /// Moves the wall clock on (the device policy's only clock).
     pub fn advance(&mut self, d: Duration) {
+        self.fake.heartbeat();
         *self.wall.lock().unwrap() += d;
     }
 

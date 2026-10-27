@@ -1019,3 +1019,169 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
     nothing_starts_after_the_return(s, &[2]);
 }
+
+// ---- M4.2g stall watchdog: a stream that stops calling back with no error, device listed ----
+
+const STALL_STEP: Duration = Duration::from_millis(100);
+
+/// Moves the wall clock `steps` times by `STALL_STEP`, ticking after each (no settling: the
+/// loss itself is what the test looks at).
+fn idle_wall(s: &mut DeviceShow, steps: u32) {
+    for _ in 0..steps {
+        s.advance(STALL_STEP);
+        s.tick();
+    }
+}
+
+#[test]
+fn a_stream_that_stops_calling_back_is_lost_as_stalled_after_the_limit() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    // 400 ms of silence is under the 500 ms limit.
+    idle_wall(&mut s, 4);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    idle_wall(&mut s, 1);
+    s.settle_devices();
+    assert!(s.control().device_down(), "the stalled stream was not lost");
+    let msgs = s.take_outbound();
+    // As an unplug: the cue stops at once, a log and the device_lost notice go out.
+    assert!(broken_device_lost(&msgs, 1));
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("lost") && m.contains("stalled")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert!(notices(&msgs).contains(&"device_lost".to_owned()));
+    assert!(
+        workspace_warnings(&msgs)
+            .unwrap()
+            .contains(&"device_lost".to_owned())
+    );
+}
+
+#[test]
+fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
+    let mut s = running_cue_show();
+    let opens = s.fake.opens();
+    s.fake.stall();
+    idle_wall(&mut s, 5);
+    s.settle_devices();
+    assert!(s.control().device_down());
+    // Still listed, so no hot-plug shortcut: the reopen waits out the backoff (250 ms).
+    s.wait_wall(Duration::from_millis(300), 3);
+    assert!(!s.control().device_down(), "the stream was not reopened");
+    assert_eq!(s.fake.opens(), opens + 1);
+    s.run(BLOCK * 2);
+    // Voices released, cues un-break; nothing resumed by itself.
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let at = start(&mut s, 1);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(first_nonzero(&s.channel(0)[at as usize..]).is_some());
+}
+
+#[test]
+fn callbacks_that_resume_just_before_the_limit_are_not_a_loss() {
+    let mut s = running_cue_show();
+    s.fake.stall();
+    idle_wall(&mut s, 4);
+    s.fake.unstall();
+    s.run(BLOCK);
+    // Silent again: the limit counts from the last callback, not from the first stall.
+    s.fake.stall();
+    idle_wall(&mut s, 4);
+    assert!(!s.control().device_down());
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_wall(&mut s, 20);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+#[test]
+fn a_reopened_stream_gets_a_startup_grace_before_its_first_callback() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    // The device is back and reopened, but the host takes a while to start calling back.
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert!(!s.control().device_down());
+    s.fake.stall();
+    idle_wall(&mut s, 4);
+    assert!(!s.control().device_down(), "lost inside the startup grace");
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_wall(&mut s, 10);
+    assert!(!s.control().device_down());
+    // A stream that never calls back at all is lost once the grace is over.
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.fake.stall();
+    idle_wall(&mut s, 6);
+    s.settle_devices();
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn a_clock_jump_is_no_evidence_of_a_stall() {
+    let mut s = running_cue_show();
+    s.fake.stall();
+    idle_wall(&mut s, 3);
+    // The Mac sleeps: the wall clock leaps a minute between two ticks.
+    s.advance(Duration::from_secs(60));
+    s.tick();
+    s.settle_devices();
+    assert!(!s.control().device_down(), "a clock jump declared a stall");
+    // The watchdog started over at the jump: 400 ms after it is still fine ...
+    idle_wall(&mut s, 4);
+    assert!(!s.control().device_down());
+    // ... and a stream that is really hung is still found after the limit.
+    idle_wall(&mut s, 1);
+    s.settle_devices();
+    assert!(s.control().device_down());
+
+    // A stream that wakes up with the Mac is never lost.
+    let mut s = running_cue_show();
+    s.advance(Duration::from_secs(3600));
+    s.tick();
+    s.run(BLOCK);
+    idle_wall(&mut s, 10);
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_stream_that_is_not_up_is_not_watched() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    let opens = s.fake.opens();
+    // Down (closed by us, waiting for the backoff and the device): silence is not a stall,
+    // and neither is it a second loss or a reopen storm.
+    s.take_outbound();
+    s.wait_wall(Duration::from_millis(200), 2);
+    assert_eq!(s.fake.opens(), opens, "no attempt before the backoff");
+    assert!(
+        logs(&s.take_outbound(), LogLevel::Error)
+            .iter()
+            .all(|m| !m.contains("stalled"))
+    );
+}
+
+#[test]
+fn the_stall_limit_follows_the_buffer_period() {
+    use openlab_engine::control::devices::stall_limit;
+    let ms = Duration::from_millis;
+    // Small buffers: the 500 ms floor.
+    assert_eq!(stall_limit(Some(64), 48_000), ms(500));
+    assert_eq!(stall_limit(None, 48_000), ms(500));
+    assert_eq!(stall_limit(Some(512), 0), ms(500));
+    // Big buffers: 20 periods (4096 frames at 44.1 kHz is 92.9 ms).
+    let big = stall_limit(Some(4096), 44_100);
+    assert!(big > ms(1850) && big < ms(1870), "{big:?}");
+}
