@@ -1035,15 +1035,20 @@ impl Actor {
         }
     }
 
-    /// Sends one encoded OSC message to `peer`: UDP to its address on the reply port, TCP
+    /// Sends one encoded OSC message to `peer`: UDP to its address on the reply port (its own, if it set one with `/udpReplyPort`), TCP
     /// SLIP-framed on its connection. Never waits: a full buffer or queue loses the message
     /// (counted).
     fn send(&mut self, peer: Peer, bytes: Vec<u8>) {
         let sent = match peer {
-            Peer::Udp(ip) => self
-                .udp
-                .try_send_to(&bytes, SocketAddr::new(ip, self.config.reply_port))
-                .is_ok(),
+            Peer::Udp(ip) => {
+                let port = self
+                    .osc
+                    .reply_port(peer, self.now())
+                    .unwrap_or(self.config.reply_port);
+                self.udp
+                    .try_send_to(&bytes, SocketAddr::new(ip, port))
+                    .is_ok()
+            }
             Peer::Tcp { conn, .. } => return self.queue_tcp(conn, slip_encode(&bytes)),
         };
         if !sent {

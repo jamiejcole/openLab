@@ -206,6 +206,7 @@ pub enum Query {
 pub enum Address {
     Connect,
     Updates,
+    UdpReplyPort,
     Version,
     Workspaces,
     Go,
@@ -292,6 +293,7 @@ fn parse_rest(rest: &[&str], prefixed: bool, path: &str) -> Address {
         ["connect"] => Address::Connect,
         // Application-level: not available under `/workspace/{id}`.
         ["updates"] if !prefixed => Address::Updates,
+        ["udpReplyPort"] if !prefixed => Address::UdpReplyPort,
         ["version"] if !prefixed => Address::Version,
         ["workspaces"] if !prefixed => Address::Workspaces,
         ["go"] => Address::Go,
@@ -494,7 +496,7 @@ pub fn app_reply(show: &dyn OscShow, info: &ServerInfo, address: &Address) -> Op
 }
 
 /// Looks cues up and checks arguments for every address except `/connect`, `/updates`,
-/// `/version` and `/workspaces`, which the session logic owns.
+/// `/udpReplyPort`, `/version` and `/workspaces`, which the session logic owns.
 pub fn resolve(
     show: &dyn OscShow,
     parsed: &Parsed,
@@ -505,6 +507,7 @@ pub fn resolve(
     match address {
         Address::Connect
         | Address::Updates
+        | Address::UdpReplyPort
         | Address::Version
         | Address::Workspaces
         | Address::Unsupported(_) => Resolved::error(),
@@ -928,6 +931,14 @@ pub fn passcode_arg(args: &[OscType]) -> Option<String> {
 pub fn updates_arg(args: &[OscType]) -> Option<bool> {
     match args {
         [arg] => flag_arg(arg),
+        _ => None,
+    }
+}
+
+/// The argument of `/udpReplyPort`: one int in 1-65535; `None` for anything else.
+pub fn reply_port_arg(args: &[OscType]) -> Option<u16> {
+    match args {
+        [OscType::Int(port)] => u16::try_from(*port).ok().filter(|p| *p != 0),
         _ => None,
     }
 }
