@@ -40,12 +40,6 @@ fn slice_too_short(seconds: f64) -> bool {
     seconds < MIN_SLICE_SECONDS - 1e-9
 }
 
-/// The play count of a slice made of two slices with counts `a` and `b`: a vamp (0, loop until
-/// devamped) wins, then the larger count, so a loop survives the merge.
-fn merged_plays(a: u32, b: u32) -> u32 {
-    if a == 0 || b == 0 { 0 } else { a.max(b) }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     /// Repaired or left for the cue to show as broken; the workspace still loads.
@@ -107,9 +101,13 @@ pub enum IssueKind {
     /// A second slice marker at `time` was removed.
     DuplicateSlice { time: f64 },
     /// The slice marker at `time` made a slice shorter than [`MIN_SLICE_SECONDS`] (counted from
-    /// the start time or the marker before it, or up to the end time); it was removed, and the
-    /// two slices it separated became one that keeps a vamp (play count 0) or the larger count.
+    /// the start time or the marker before it, or up to the end time) and the slice next to it
+    /// left no room to lengthen it: it was removed, and the merged slice plays as the longer of
+    /// the two did.
     SliceTooShort { time: f64 },
+    /// The slice marker at `from` made a slice shorter than [`MIN_SLICE_SECONDS`]; it was moved
+    /// to `to`, which makes that slice exactly that long, keeping its play count.
+    SliceMoved { from: f64, to: f64 },
     /// Slice markers were out of order; they were sorted.
     SlicesUnsorted,
     /// `count` entries of `field` referred to channels or outputs that do not exist; removed.
@@ -173,6 +171,11 @@ impl fmt::Display for ValidationIssue {
                 write!(f, "slice at {time} s is outside the trim points; removed")
             }
             IssueKind::DuplicateSlice { time } => write!(f, "duplicate slice at {time} s; removed"),
+            IssueKind::SliceMoved { from, to } => write!(
+                f,
+                "slice at {from} s makes a slice shorter than {} ms; moved to {to} s",
+                MIN_SLICE_SECONDS * 1000.0
+            ),
             IssueKind::SliceTooShort { time } => write!(
                 f,
                 "slice at {time} s makes a slice shorter than {} ms; removed",
@@ -620,40 +623,70 @@ impl Checker {
         for time in duplicates {
             self.warn(id, IssueKind::DuplicateSlice { time });
         }
-        // Every slice at least `MIN_SLICE_SECONDS`: a marker too close to the boundary before it
-        // goes and its slice joins the next one, then markers too close to the end time (unknown
-        // without one: the file's length is not in the model) go and the last slice joins the
-        // one before. A merged slice keeps a vamp or a loop of either part (`merged_plays`), so a
-        // Devamp cue aimed at it still has a loop to release.
+        // Every slice at least `MIN_SLICE_SECONDS`, changing the cue as little as possible. A
+        // slice too short is lengthened to exactly that by moving the marker that ends it (later;
+        // for the last slice, the last marker earlier), keeping its play count, so a stutter or
+        // a vamp stays one; only where the slice after (before) it leaves no room are the two
+        // merged, and the merged slice plays as the longer of the two did (the later one on a
+        // tie), so a short loop is never spread over a long neighbour. Without an end time the
+        // last slice cannot be checked (the file's length is not in the model).
+        let mut moved = Vec::new();
         let mut short = Vec::new();
+        let mut marks: Vec<SliceMarker> = std::mem::take(slices);
+        let mut kept: Vec<SliceMarker> = Vec::with_capacity(marks.len());
         let mut prev = start;
-        let mut carried: Option<u32> = None;
-        let mut kept = Vec::with_capacity(slices.len());
-        for mut s in slices.drain(..) {
-            if slice_too_short(s.time - prev) {
-                short.push(s.time);
-                carried = Some(carried.map_or(s.play_count, |c| merged_plays(c, s.play_count)));
-            } else {
-                if let Some(c) = carried.take() {
-                    s.play_count = merged_plays(c, s.play_count);
-                }
+        let mut i = 0;
+        while let Some(&s) = marks.get(i) {
+            i += 1;
+            if !slice_too_short(s.time - prev) {
                 prev = s.time;
                 kept.push(s);
+                continue;
+            }
+            let next = marks.get(i).map(|n| n.time).or(end);
+            let longer = prev + MIN_SLICE_SECONDS;
+            if longer <= MAX_TIME && next.is_none_or(|n| !slice_too_short(n - longer)) {
+                moved.push((s.time, longer));
+                prev = longer;
+                kept.push(SliceMarker { time: longer, ..s });
+                continue;
+            }
+            // No room: merge with the next slice (`next` is known here).
+            let next_len = next.map_or(f64::INFINITY, |n| n - s.time);
+            short.push(s.time);
+            let take_short = s.time - prev > next_len;
+            match marks.get_mut(i) {
+                Some(n) if take_short => n.play_count = s.play_count,
+                Some(_) => {}
+                None if take_short => *last_play_count = s.play_count,
+                None => {}
             }
         }
-        if let Some(c) = carried {
-            *last_play_count = merged_plays(c, *last_play_count);
-        }
         if let Some(end) = end {
-            while let Some(last) = kept.last()
+            while let Some(&last) = kept.last()
                 && slice_too_short(end - last.time)
             {
+                let before = kept.len().checked_sub(2).and_then(|k| kept.get(k));
+                let prev = before.map_or(start, |b| b.time);
+                let earlier = end - MIN_SLICE_SECONDS;
+                if !slice_too_short(earlier - prev) {
+                    moved.push((last.time, earlier));
+                    if let Some(l) = kept.last_mut() {
+                        l.time = earlier;
+                    }
+                    break;
+                }
                 short.push(last.time);
-                *last_play_count = merged_plays(last.play_count, *last_play_count);
+                if last.time - prev > end - last.time {
+                    *last_play_count = last.play_count;
+                }
                 kept.pop();
             }
         }
         *slices = kept;
+        for (from, to) in moved {
+            self.warn(id, IssueKind::SliceMoved { from, to });
+        }
         for time in short {
             self.warn(id, IssueKind::SliceTooShort { time });
         }

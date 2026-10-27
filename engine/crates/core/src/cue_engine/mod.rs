@@ -64,10 +64,11 @@ pub struct CueEngine {
     rng: SplitMix64,
     /// Each random group's round-robin cycle (QLab 5: memory lasts while the engine does).
     random_cycles: BTreeMap<CueId, group::RandomCycle>,
-    /// Groups whose last run has fired its continue (until they start again or are reset): the
-    /// playhead leaving such a group from a child skips its continue targets, which have
-    /// played; leaving a group that has no run and fired none, it stands on the cue right after
-    /// it, so those targets are not lost (see `playhead::after_go`).
+    /// Groups whose run has fired its continue during the playhead's current visit (forgotten
+    /// when they start again, are reset, or the playhead enters them any way but the GO on the
+    /// group: `forget_continues`): the playhead leaving such a group from a child skips its
+    /// continue targets, which have played; leaving a group that has no run and fired none, it
+    /// stands on the cue right after it, so those targets are not lost (`playhead::after_go`).
     continued: BTreeSet<CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
@@ -511,13 +512,16 @@ impl CueEngine {
         for list in &cx.ws.cue_lists {
             match self.playheads.get_mut(&list.id) {
                 Some(playhead) => {
+                    let old = playhead.cue;
                     let (edited, moved) = playhead.sync(&list.cues);
                     changed |= edited;
                     if moved {
+                        let new = playhead.cue;
                         cx.out.push(Action::PlayheadChanged {
                             list: list.id,
-                            cue: playhead.cue,
+                            cue: new,
                         });
+                        self.forget_continues(cx.ws, list.id, old, new, None);
                     }
                 }
                 None => {
@@ -565,13 +569,13 @@ impl CueEngine {
         else {
             return cx.warn(EngineWarning::UnknownList { list });
         };
+        let old = self.playhead(list);
         if let Some(playhead) = self.playheads.get_mut(&list)
             && step(playhead, cues)
         {
-            cx.out.push(Action::PlayheadChanged {
-                list,
-                cue: playhead.cue,
-            });
+            let new = playhead.cue;
+            cx.out.push(Action::PlayheadChanged { list, cue: new });
+            self.forget_continues(cx.ws, list, old, new, None);
         }
     }
 
@@ -611,10 +615,57 @@ impl CueEngine {
     }
 
     fn move_playhead(&mut self, list: CueListId, cue: Option<CueId>, cx: &mut Ctx) {
+        self.move_playhead_after(list, cue, None, cx);
+    }
+
+    /// Moves the playhead; `gone` is the cue a GO started, whose own enter step (into an
+    /// armed "start first and enter" group) is the one way into a group that keeps what the
+    /// group's run fired (see `forget_continues`).
+    fn move_playhead_after(
+        &mut self,
+        list: CueListId,
+        cue: Option<CueId>,
+        gone: Option<CueId>,
+        cx: &mut Ctx,
+    ) {
+        let old = self.playhead(list);
         if let Some(playhead) = self.playheads.get_mut(&list)
             && playhead.set(cue)
         {
             cx.out.push(Action::PlayheadChanged { list, cue });
+            self.forget_continues(cx.ws, list, old, cue, gone);
+        }
+    }
+
+    /// The playhead moved from `old` to `new`: every group it entered (`new` is inside it,
+    /// `old` was not), except by the GO on that group itself (`gone`), forgets that its last
+    /// run fired its continue. That memory belongs to the entry it was made in, so leaving a
+    /// group entered afresh (a jump, stepping, an edit, a GoTo) stands on the cue right after
+    /// it, whatever the group did earlier in the show (see `playhead::after_go`).
+    fn forget_continues(
+        &mut self,
+        ws: &Workspace,
+        list: CueListId,
+        old: Option<CueId>,
+        new: Option<CueId>,
+        gone: Option<CueId>,
+    ) {
+        if self.continued.is_empty() {
+            return;
+        }
+        let Some(cues) = ws.cue_lists.iter().find(|l| l.id == list).map(|l| &l.cues) else {
+            return;
+        };
+        let before = old
+            .map(|id| playhead::groups_around(cues, id))
+            .unwrap_or_default();
+        for group in new
+            .map(|id| playhead::groups_around(cues, id))
+            .unwrap_or_default()
+        {
+            if !before.contains(&group) && Some(group) != gone {
+                self.continued.remove(&group);
+            }
         }
     }
 
@@ -1090,8 +1141,22 @@ impl CueEngine {
                 // problems does at its action start); one that broke while playing never does.
                 let follow = run.follow && unplayed && run.stop_end.is_none();
                 run.stop_end = None;
-                run.follow = false;
                 run.devamp = None;
+                // Paused: a paused show starts nothing, so the skipped action's end, and with it
+                // the follow, is held until the resume (as a deadline on the pause sample, which
+                // the resume moves to the resume sample); a stop or panic cancels it.
+                if let (true, Some(paused), Phase::Action { start, .. }) =
+                    (follow, run.paused_at, run.phase)
+                {
+                    run.phase = Phase::Action {
+                        start,
+                        end: Some(paused),
+                    };
+                    run.length = None;
+                    self.slots.insert(cue, Slot::Active(run));
+                    return self.report(cue, before, cx.now, cx);
+                }
+                run.follow = false;
                 if matches!(run.phase, Phase::Action { .. }) {
                     run.phase = Phase::Done;
                 }
