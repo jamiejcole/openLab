@@ -278,7 +278,7 @@ pub(crate) fn settings_problems(settings: &WorkspaceSettings) -> Vec<ValidationI
     let mut repaired = settings.clone();
     let mut checker = Checker::default();
     checker.settings(&mut repaired);
-    if checker.issues.is_empty() && repaired != *settings {
+    if repaired != *settings {
         checker.warn(None, IssueKind::InvalidValue { field: "settings" });
     }
     checker.issues

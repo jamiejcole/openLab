@@ -20,7 +20,7 @@ pub mod plan;
 pub mod runner;
 mod voices;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -40,8 +40,7 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, PatchId, PatchResolution, SampleTime, Workspace, model_changes,
-    seconds_to_samples,
+    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
 };
 
 pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
@@ -513,7 +512,7 @@ impl Control {
                     );
                     return Flow::Continue;
                 }
-                if let Some(e) = self.patch_slot_conflict(command.patch_slot_floor(&self.ws)) {
+                if let Some(e) = self.patch_layout_conflict(Some(&command)) {
                     reply(to, refused(id, &e));
                     return Flow::Continue;
                 }
@@ -549,9 +548,7 @@ impl Control {
                 } else {
                     self.history.peek_redo()
                 };
-                if let Some(e) =
-                    self.patch_slot_conflict(step.and_then(|c| c.patch_slot_floor(&self.ws)))
-                {
+                if let Some(e) = self.patch_layout_conflict(step) {
                     reply(to, refused(id, &e));
                     return Flow::Continue;
                 }
@@ -623,22 +620,19 @@ impl Control {
         Flow::Continue
     }
 
-    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting, removing or
-    /// moving a patch would re-route a voice playing on a later one. Refuses such an edit
-    /// (`floor`: `Command::patch_slot_floor`) while a cue routed to an affected patch plays or is
-    /// about to start. Undo and redo are held to the same rule.
-    fn patch_slot_conflict(&self, floor: Option<usize>) -> Option<CommandError> {
-        let moving: Vec<PatchId> = self.ws.patches.iter().skip(floor?).map(|p| p.id).collect();
-        let on_device: HashSet<CueId> = self
-            .voices
-            .on_device()
-            .into_iter()
-            .map(|(cue, _)| cue)
-            .collect();
-        first_playing_on(&self.ws, &moving, |cue| {
-            on_device.contains(&cue) || self.engine.state(cue).is_active()
-        })
-        .map(|cue| CommandError::PatchPlaying { cue })
+    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting before the
+    /// end, removing, moving or resizing a patch would re-route or silence a voice on the
+    /// device, whatever cue it belongs to (a show cue, a preview, a stopping tail, an orphan)
+    /// and whatever patch that cue's model names now. So any such edit, undo or redo
+    /// (`Command::changes_patch_layout`, judged on the final state of a transaction) is refused
+    /// while any voice is on the device. Lifted by the stable slot allocator.
+    fn patch_layout_conflict(&self, step: Option<&Command>) -> Option<CommandError> {
+        let step = step?;
+        if self.voices.on_device().is_empty() {
+            return None;
+        }
+        step.changes_patch_layout(&self.ws)
+            .then_some(CommandError::PatchPlaying)
     }
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
@@ -1855,32 +1849,6 @@ fn orphan_scope(action: &TransportAction) -> Option<Scope> {
         } => Some(Scope::Cue(*cue)),
         _ => None,
     }
-}
-
-/// The first Audio cue (workspace order) routed to one of `patches` for which `playing` holds.
-/// Iterative: nesting depth cannot overflow the stack.
-fn first_playing_on(
-    ws: &Workspace,
-    patches: &[PatchId],
-    playing: impl Fn(CueId) -> bool,
-) -> Option<CueId> {
-    for list in &ws.cue_lists {
-        let mut stack = vec![list.cues.iter()];
-        while let Some(level) = stack.last_mut() {
-            let Some(cue) = level.next() else {
-                stack.pop();
-                continue;
-            };
-            if let CueKind::Audio { patch, .. } = &cue.kind
-                && patches.contains(patch)
-                && playing(cue.id)
-            {
-                return Some(cue.id);
-            }
-            stack.push(cue.children().iter());
-        }
-    }
-    None
 }
 
 fn visit_any(cues: &[Cue], id: CueId) -> bool {

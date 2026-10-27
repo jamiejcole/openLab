@@ -2082,11 +2082,7 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
 
 /// One sample of every command that edits more than the cue tree (M1.12), named for its
 /// fixture.
-fn model_commands() -> Vec<(&'static str, Command)> {
-    let hotkey = Hotkey {
-        key: "f1".into(),
-        modifiers: Modifiers::default(),
-    };
+fn model_commands() -> Vec<(String, Command)> {
     let net = NetworkPatch {
         id: net_id(4),
         name: "Lights".into(),
@@ -2095,23 +2091,6 @@ fn model_commands() -> Vec<(&'static str, Command)> {
         protocol: NetworkProtocol::Udp,
     };
     vec![
-        (
-            "set_workspace_setting",
-            Command::SetWorkspaceSetting {
-                setting: WorkspaceSetting::OscPasscode {
-                    value: Some("1234".into()),
-                },
-            },
-        ),
-        (
-            "set_workspace_setting_hotkey",
-            Command::SetWorkspaceSetting {
-                setting: WorkspaceSetting::Hotkey {
-                    key: TransportKey::StopAll,
-                    value: Some(hotkey),
-                },
-            },
-        ),
         (
             "add_patch",
             Command::AddPatch {
@@ -2141,32 +2120,6 @@ fn model_commands() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "set_patch_property",
-            Command::SetPatchProperty {
-                id: patch_id(2),
-                property: PatchProperty::OutputLevel {
-                    output: 1,
-                    value: -3.0,
-                },
-            },
-        ),
-        (
-            "set_patch_property_outputs",
-            Command::SetPatchProperty {
-                id: patch_id(2),
-                property: PatchProperty::Outputs {
-                    value: vec![patch_output(); 2],
-                },
-            },
-        ),
-        (
-            "set_patch_property_channel_count",
-            Command::SetPatchProperty {
-                id: patch_id(2),
-                property: PatchProperty::ChannelCount { value: 6 },
-            },
-        ),
-        (
             "add_network_patch",
             Command::AddNetworkPatch {
                 index: 0,
@@ -2185,15 +2138,6 @@ fn model_commands() -> Vec<(&'static str, Command)> {
             Command::MoveNetworkPatch {
                 id: net_id(4),
                 index: 0,
-            },
-        ),
-        (
-            "set_network_patch_property",
-            Command::SetNetworkPatchProperty {
-                id: net_id(4),
-                property: NetworkPatchProperty::Protocol {
-                    value: NetworkProtocol::Tcp,
-                },
             },
         ),
         (
@@ -2220,6 +2164,94 @@ fn model_commands() -> Vec<(&'static str, Command)> {
             },
         ),
     ]
+    .into_iter()
+    .map(|(name, command)| (name.to_owned(), command))
+    .chain(property_commands())
+    .collect()
+}
+
+/// One sample of every tagged variant of the setting and property enums, named by its tag.
+fn property_commands() -> Vec<(String, Command)> {
+    let settings = [
+        WorkspaceSetting::MinGoInterval { value: 2.0 },
+        WorkspaceSetting::PanicDuration { value: 1.5 },
+        WorkspaceSetting::AutosaveInterval { value: 60.0 },
+        WorkspaceSetting::OscPasscode { value: None },
+        WorkspaceSetting::MasterDb { value: -6.0 },
+        WorkspaceSetting::Hotkey {
+            key: TransportKey::StopAll,
+            value: Some(Hotkey {
+                key: "f1".into(),
+                modifiers: Modifiers::default(),
+            }),
+        },
+        WorkspaceSetting::AutoNumberStart { value: 10.0 },
+        WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
+    ];
+    let properties = [
+        PatchProperty::Name {
+            value: "FOH".into(),
+        },
+        PatchProperty::MasterDb { value: -3.0 },
+        PatchProperty::OutputLevel {
+            output: 1,
+            value: -3.0,
+        },
+        PatchProperty::OutputMute {
+            output: 0,
+            value: true,
+        },
+        PatchProperty::OutputDelay {
+            output: 1,
+            value: 12.5,
+        },
+        PatchProperty::OutputPolarity {
+            output: 0,
+            value: true,
+        },
+        PatchProperty::ChannelCount { value: 6 },
+        PatchProperty::Outputs {
+            value: vec![patch_output(); 2],
+        },
+    ];
+    let network = [
+        NetworkPatchProperty::Name {
+            value: "Lights".into(),
+        },
+        NetworkPatchProperty::Host {
+            value: "192.168.1.9".into(),
+        },
+        NetworkPatchProperty::Port { value: 65535 },
+        NetworkPatchProperty::Protocol {
+            value: NetworkProtocol::Tcp,
+        },
+    ];
+    let mut out = Vec::new();
+    for setting in settings {
+        out.push((
+            format!("set_workspace_setting_{}", tag(&setting)),
+            Command::SetWorkspaceSetting { setting },
+        ));
+    }
+    for property in properties {
+        out.push((
+            format!("set_patch_property_{}", tag(&property)),
+            Command::SetPatchProperty {
+                id: patch_id(2),
+                property,
+            },
+        ));
+    }
+    for property in network {
+        out.push((
+            format!("set_network_patch_property_{}", tag(&property)),
+            Command::SetNetworkPatchProperty {
+                id: net_id(4),
+                property,
+            },
+        ));
+    }
+    out
 }
 
 const MODEL_COMMAND_COUNT: usize = 13;

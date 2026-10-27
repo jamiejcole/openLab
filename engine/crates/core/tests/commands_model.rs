@@ -211,20 +211,6 @@ fn out_of_range_settings_are_refused_whole() {
         WorkspaceSetting::AutoNumberStart { value: -1.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 2_000_000.0 },
-        WorkspaceSetting::Hotkey {
-            key: TransportKey::Go,
-            value: Some(Hotkey {
-                key: "Space".into(),
-                modifiers: Modifiers::default(),
-            }),
-        },
-        WorkspaceSetting::Hotkey {
-            key: TransportKey::Go,
-            value: Some(Hotkey {
-                key: String::new(),
-                modifiers: Modifiers::default(),
-            }),
-        },
     ] {
         assert!(
             matches!(
@@ -1470,84 +1456,291 @@ fn footprints_say_when_an_edit_is_more_than_cues() {
     );
 }
 
-// ---- Patch slots (M4.2f) ----
+// ---- Patch layout (M4.2f) ----
 
 #[test]
-fn patch_slot_floor_is_the_first_patch_whose_slot_changes() {
+fn patch_layout_changes_are_judged_on_the_final_state() {
     let mut ws = workspace(vec![]);
     ws.patches.push(patch(2, 2));
     ws.patches.push(patch(3, 2));
-    let floor = |c: Command| c.patch_slot_floor(&ws);
-    assert_eq!(
-        floor(Command::AddPatch {
+    let changes = |c: Command| c.changes_patch_layout(&ws);
+    assert!(
+        !changes(Command::AddPatch {
             index: 3,
             patch: patch(4, 2)
         }),
-        None,
         "appending moves nothing"
     );
-    assert_eq!(
-        floor(Command::AddPatch {
+    for moved in [
+        Command::AddPatch {
             index: 1,
-            patch: patch(4, 2)
-        }),
-        Some(1)
-    );
-    assert_eq!(
-        floor(Command::RemovePatch {
+            patch: patch(4, 2),
+        },
+        Command::RemovePatch {
             id: patch_id(2),
-            even_if_used: false
-        }),
-        Some(1)
-    );
-    assert_eq!(
-        floor(Command::MovePatch {
+            even_if_used: false,
+        },
+        Command::RemovePatch {
             id: patch_id(3),
-            index: 0
-        }),
-        Some(0)
-    );
-    assert_eq!(
-        floor(Command::MovePatch {
-            id: patch_id(1),
-            index: 2
-        }),
-        Some(0)
-    );
-    assert_eq!(
-        floor(Command::MovePatch {
-            id: patch_id(1),
-            index: 0
-        }),
-        Some(0),
-        "conservative: even a move in place"
-    );
-    assert_eq!(
-        floor(patch_prop(1, PatchProperty::Name { value: "x".into() })),
-        None
-    );
-    assert_eq!(floor(level(-1.0)), None);
-    assert_eq!(
-        floor(Command::Transaction {
-            commands: vec![
-                Command::RemovePatch {
-                    id: patch_id(3),
-                    even_if_used: false
-                },
-                Command::MovePatch {
-                    id: patch_id(2),
-                    index: 0
-                },
-            ]
-        }),
-        Some(0)
-    );
-    // The undo of an append is a removal at the end: it moves nothing but the removed one.
-    assert_eq!(
-        floor(Command::RemovePatch {
+            even_if_used: true,
+        },
+        Command::MovePatch {
             id: patch_id(3),
-            even_if_used: true
+            index: 0,
+        },
+        patch_prop(1, PatchProperty::ChannelCount { value: 4 }),
+        patch_prop(
+            2,
+            PatchProperty::Outputs {
+                value: vec![patch_output()],
+            },
+        ),
+    ] {
+        assert!(changes(moved.clone()), "{moved:?}");
+    }
+    for same in [
+        Command::MovePatch {
+            id: patch_id(1),
+            index: 0,
+        },
+        patch_prop(1, PatchProperty::Name { value: "x".into() }),
+        patch_prop(
+            1,
+            PatchProperty::OutputLevel {
+                output: 0,
+                value: -3.0,
+            },
+        ),
+        patch_prop(1, PatchProperty::ChannelCount { value: 2 }),
+        level(-1.0),
+        Command::RemovePatch {
+            id: patch_id(9),
+            even_if_used: false,
+        },
+    ] {
+        assert!(!changes(same.clone()), "{same:?}");
+    }
+    // An append followed by a move to the front shifts every patch: the step as a whole counts.
+    assert!(changes(Command::Transaction {
+        commands: vec![
+            Command::AddPatch {
+                index: 3,
+                patch: patch(4, 2)
+            },
+            Command::MovePatch {
+                id: patch_id(4),
+                index: 0
+            },
+        ]
+    }));
+    // A removal and a re-add in place of the same patch leaves the layout as it was.
+    assert!(!changes(Command::Transaction {
+        commands: vec![
+            Command::RemovePatch {
+                id: patch_id(3),
+                even_if_used: false
+            },
+            Command::AddPatch {
+                index: 2,
+                patch: patch(3, 2)
+            },
+        ]
+    }));
+}
+
+// ---- Review fixes ----
+
+fn with_bad_hotkey() -> Workspace {
+    let mut ws = workspace(vec![]);
+    ws.settings.hotkeys.go = Some(Hotkey {
+        key: "Space".into(),
+        modifiers: Modifiers::default(),
+    });
+    ws
+}
+
+#[test]
+fn a_warning_the_show_was_loaded_with_does_not_block_settings_or_undo() {
+    let mut ws = with_bad_hotkey();
+    let mut history = History::new();
+    // (a) Another setting is not held up by it.
+    assert!(history.execute(&mut ws, level(-3.0)).unwrap());
+    // (b) Fixing the key and undoing the fix are both accepted.
+    let fix = setting(WorkspaceSetting::Hotkey {
+        key: TransportKey::Go,
+        value: Some(Hotkey {
+            key: "space".into(),
+            modifiers: Modifiers::default(),
         }),
-        Some(2)
+    });
+    assert!(history.execute(&mut ws, fix).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws.settings.hotkeys.go.as_ref().unwrap().key, "Space");
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws.settings.master_db, 0.0);
+    assert!(history.redo(&mut ws).unwrap());
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(ws.settings.hotkeys.go.as_ref().unwrap().key, "space");
+    // What the edit itself introduces is still refused, next to the old warning.
+    let error = refused(
+        &with_bad_hotkey(),
+        setting(WorkspaceSetting::PanicDuration { value: 99.0 }),
+    );
+    assert!(matches!(error, CommandError::InvalidModel(_)));
+    let error = refused(
+        &with_bad_hotkey(),
+        setting(WorkspaceSetting::MasterDb {
+            value: SILENCE_DB - 5.0,
+        }),
+    );
+    assert!(matches!(error, CommandError::InvalidModel(_)));
+}
+
+#[test]
+fn port_zero_is_refused() {
+    let ws = workspace(vec![]);
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::SetNetworkPatchProperty {
+                id: net_id(1),
+                property: NetworkPatchProperty::Port { value: 0 }
+            }
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    let mut zero = net(2);
+    zero.port = 0;
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddNetworkPatch {
+                index: 0,
+                patch: zero
+            }
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    round_trip(
+        &ws,
+        Command::SetNetworkPatchProperty {
+            id: net_id(1),
+            property: NetworkPatchProperty::Port { value: 65535 },
+        },
+    );
+}
+
+/// A multi-cue level drag: one `Kind` per selected cue, at every event.
+fn drag(cues: u128, step: u32) -> Command {
+    Command::Transaction {
+        commands: (1..=cues)
+            .map(|n| {
+                let mut kind = audio();
+                if let CueKind::Audio { levels, .. } = &mut kind {
+                    levels.master_db = -f64::from(step % 50);
+                }
+                Command::SetCueProperty {
+                    id: cue_id(n),
+                    property: CueProperty::Kind { value: kind },
+                }
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_multi_cue_gesture_stays_one_command_per_cue() {
+    let mut ws = workspace((1..=40).map(|n| cue(n, audio())).collect());
+    let before = ws.clone();
+    let mut history = History::new();
+    for step in 1..=600 {
+        history
+            .execute_coalescing(&mut ws, drag(40, step), Some("drag"))
+            .unwrap();
+    }
+    assert_eq!(history.undo_len(), 1);
+    let Some(Command::Transaction { commands }) = history.peek_undo() else {
+        panic!("not a transaction");
+    };
+    assert_eq!(commands.len(), 40);
+    let after = ws.clone();
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+    history.redo(&mut ws).unwrap();
+    assert_eq!(ws, after);
+}
+
+#[test]
+fn a_gesture_that_adds_new_slots_midway_keeps_every_slot_once() {
+    let mut ws = workspace((1..=3).map(|n| cue(n, CueKind::Memo)).collect());
+    let before = ws.clone();
+    let mut history = History::new();
+    let name = |id, v: &str| Command::SetCueProperty {
+        id: cue_id(id),
+        property: CueProperty::Name { value: v.into() },
+    };
+    let steps = [
+        Command::Transaction {
+            commands: vec![name(1, "a"), name(2, "a")],
+        },
+        Command::Transaction {
+            commands: vec![name(2, "b"), name(3, "b")],
+        },
+        Command::Transaction {
+            commands: vec![name(1, "c"), name(3, "c"), level(-1.0)],
+        },
+    ];
+    for step in steps {
+        history
+            .execute_coalescing(&mut ws, step, Some("k"))
+            .unwrap();
+    }
+    let Some(Command::Transaction { commands }) = history.peek_undo() else {
+        panic!("not a transaction");
+    };
+    assert_eq!(commands.len(), 4);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+}
+
+#[test]
+fn a_merged_step_touching_several_lists_keeps_a_client_in_order() {
+    // Add L3, remove L1, add L1 again at the end: one gesture. Undoing and redoing it touches
+    // L1 and L3, and upserting only those two would leave a client with [L3, L2, L1].
+    let mut ws = workspace(vec![]);
+    ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "Second".into(),
+        cues: vec![],
+    });
+    let (mut mirror, mut history) = (ws.clone(), History::new());
+    let steps = [
+        Command::AddCueList {
+            index: 2,
+            id: list_id(3),
+            name: "C".into(),
+        },
+        Command::RemoveCueList { id: list_id(1) },
+        Command::AddCueList {
+            index: 2,
+            id: list_id(1),
+            name: "Main".into(),
+        },
+    ];
+    for step in steps {
+        let footprint = step.footprint();
+        history
+            .execute_coalescing(&mut ws, step, Some("g"))
+            .unwrap();
+        let (upserts, deletes) = model_changes(&ws, &footprint);
+        mirror.apply_changes(&upserts, &deletes).unwrap();
+        assert_eq!(mirror, ws);
+    }
+    assert_eq!(history.undo_len(), 1);
+    mirror_undo_redo(&mut ws, &mut mirror, &mut history, true);
+    mirror_undo_redo(&mut ws, &mut mirror, &mut history, false);
+    assert_eq!(
+        mirror.cue_lists.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![list_id(2), list_id(3), list_id(1)]
     );
 }

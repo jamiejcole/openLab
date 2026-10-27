@@ -786,6 +786,8 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     // `even_if_used`, or the cue was added after): the broken-cue state.
                     | IssueKind::PatchMissing { .. }
                     | IssueKind::NetworkPatchMissing { .. }
+                    // A transport key name is kept as given, like load does (it only warns).
+                    | IssueKind::InvalidHotkey { .. }
             ) && issue.severity == Severity::Warning,
             "command introduced {issue}"
         );
@@ -984,7 +986,12 @@ proptest! {
                 _ => {
                     let Some(command) = build(&ws, &mut g, p.op, p) else { continue };
                     let fp = command.footprint();
-                    history.execute(&mut ws, command).is_ok_and(|changed| changed).then_some(fp)
+                    // Random gesture keys, so undo and redo of merged steps are mirrored too.
+                    let key = [None, Some("a"), Some("a"), Some("b")][(p.a / 3) as usize % 4];
+                    history
+                        .execute_coalescing(&mut ws, command, key)
+                        .is_ok_and(|changed| changed)
+                        .then_some(fp)
                 }
             };
             let Some(fp) = changed else { continue };
@@ -995,7 +1002,11 @@ proptest! {
             // Plus what it names of settings, lists and patches (all of a collection that was
             // reordered: the client sorts it by their indices).
             let part = |touched_len: usize, reordered: bool, all: usize| {
-                if reordered { all } else { touched_len }
+                if reordered || touched_len > 1 {
+                    all + touched_len
+                } else {
+                    touched_len
+                }
             };
             let extra = usize::from(fp.settings)
                 + part(

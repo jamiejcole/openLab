@@ -176,7 +176,16 @@ fn set_setting(ws: &mut Workspace, setting: &WorkspaceSetting) -> Result<Inverse
     let old = setting.current(&ws.settings);
     let mut candidate = ws.settings.clone();
     setting.write(&mut candidate);
-    let issues = settings_problems(&candidate);
+    // Only what this edit introduces is refused: a warning the show was loaded with (a bad
+    // hotkey name is kept and warned about) must not block every other setting, and an inverse
+    // restoring such a value must never be refused. Hotkey names are not repaired by load, so
+    // they round-trip as they are and are not judged here.
+    let existing = settings_problems(&ws.settings);
+    let issues: Vec<_> = settings_problems(&candidate)
+        .into_iter()
+        .filter(|i| !matches!(i.kind, crate::validate::IssueKind::InvalidHotkey { .. }))
+        .filter(|i| !existing.contains(i))
+        .collect();
     if !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
     }
@@ -438,6 +447,7 @@ fn add_network_patch(
         return Err(CommandError::DuplicateNetworkPatchId(patch.id));
     }
     check_index(index, ws.network_patches.len(), true)?;
+    check_port(patch.port)?;
     ws.network_patches.insert(index, patch.clone());
     Ok(Command::RemoveNetworkPatch {
         id: patch.id,
@@ -474,11 +484,21 @@ fn set_network_patch_property(
         .find(|p| p.id == id)
         .ok_or(CommandError::NetworkPatchNotFound(id))?;
     let old = property.current(patch);
+    if let NetworkPatchProperty::Port { value } = property {
+        check_port(*value)?;
+    }
     if old == *property {
         return Ok(no_change());
     }
     property.write(patch);
     Ok(Command::SetNetworkPatchProperty { id, property: old })
+}
+
+fn check_port(port: u16) -> Result<(), CommandError> {
+    if port == 0 {
+        return Err(CommandError::InvalidValue("a port is 1 to 65535"));
+    }
+    Ok(())
 }
 
 fn network_index(ws: &Workspace, id: NetworkPatchId) -> Result<usize, CommandError> {
@@ -647,21 +667,53 @@ pub(crate) fn apply_model(
 // Patch slots (M4.2f) and coalescing
 
 impl Command {
-    /// The lowest index in `Workspace::patches` whose patch this command (or step) removes,
-    /// inserts before or moves, if any. Patch indices are mixer matrix slots until M4.2f
-    /// (M4.15b) gives patches stable slots, so the engine refuses such an edit while a cue
-    /// routed to a patch at or after that index is playing. Conservative inside a transaction:
-    /// positions are read from `ws` as it is before the command.
-    pub fn patch_slot_floor(&self, ws: &Workspace) -> Option<usize> {
-        let at = |id: &PatchId| ws.patches.iter().position(|p| p.id == *id);
-        match self {
-            Self::AddPatch { index, .. } => (*index < ws.patches.len()).then_some(*index),
-            Self::RemovePatch { id, .. } => at(id),
-            Self::MovePatch { id, index } => at(id).map(|from| from.min(*index)),
-            Self::Transaction { commands } => {
-                commands.iter().filter_map(|c| c.patch_slot_floor(ws)).min()
+    /// Whether applying this command (or undo step) to `ws` would change a patch's mixer slot
+    /// or output count: an insert before the end, a removal, a move, a channel-count or
+    /// outputs change, judged on the final state of a transaction. Patch indices are mixer
+    /// matrix slots until M4.2f (M4.15b) gives patches stable slots, so the engine refuses
+    /// such an edit while any voice is on the device. A dry run on the patches alone, so it
+    /// costs nothing in a big show; `false` for a command that would be refused anyway.
+    pub fn changes_patch_layout(&self, ws: &Workspace) -> bool {
+        let mut parts = Vec::new();
+        self.patch_layout_parts(&mut parts);
+        if parts.is_empty() {
+            return false;
+        }
+        let mut shell = Workspace {
+            id: ws.id,
+            name: String::new(),
+            settings: ws.settings.clone(),
+            patches: ws.patches.clone(),
+            network_patches: Vec::new(),
+            cue_lists: Vec::new(),
+        };
+        for part in parts {
+            if shell.apply(part).is_err() {
+                return false;
             }
-            _ => None,
+        }
+        ws.patches.iter().enumerate().any(|(i, before)| {
+            shell.patches.get(i).is_none_or(|after| {
+                (after.id, after.outputs.len()) != (before.id, before.outputs.len())
+            })
+        })
+    }
+
+    fn patch_layout_parts(&self, out: &mut Vec<Command>) {
+        match self {
+            Self::AddPatch { .. } | Self::RemovePatch { .. } | Self::MovePatch { .. } => {
+                out.push(self.clone());
+            }
+            Self::SetPatchProperty {
+                property: PatchProperty::ChannelCount { .. } | PatchProperty::Outputs { .. },
+                ..
+            } => out.push(self.clone()),
+            Self::Transaction { commands } => {
+                for c in commands {
+                    c.patch_layout_parts(out);
+                }
+            }
+            _ => {}
         }
     }
 
