@@ -76,6 +76,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Task { await editor?.add(kind) }
     }
     @MainActor @objc func deleteCues(_ sender: Any?) { Task { await editor?.deleteSelection() } }
+    @MainActor @objc func deleteNumbers(_ sender: Any?) { Task { await editor?.deleteNumbers() } }
+    /// Cut, Copy and Paste: text being edited keeps them; otherwise they act on the cues.
+    @MainActor @objc func copyCues(_ sender: Any?) {
+        if let text = textEditor { return text.copy(sender) }
+        Task { await editor?.copySelection() }
+    }
+    @MainActor @objc func cutCues(_ sender: Any?) {
+        if let text = textEditor { return text.cut(sender) }
+        Task { await editor?.cutSelection() }
+    }
+    @MainActor @objc func pasteCues(_ sender: Any?) {
+        if let text = textEditor { return text.paste(sender) }
+        Task { await editor?.paste() }
+    }
     @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
     @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
     @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
@@ -120,6 +134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             || item.action == #selector(moveCuesUp(_:)) || item.action == #selector(moveCuesDown(_:))
         {
             return appController.frontController.map { !$0.isShowMode } ?? false
+        }
+        if item.action == #selector(copyCues(_:)) || item.action == #selector(cutCues(_:)) {
+            return textEditor != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(pasteCues(_:)) {
+            return textEditor != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
+        }
+        if item.action == #selector(deleteNumbers(_:)) {
+            return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
         }
         if item.action == #selector(deleteCues(_:)) {
             return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
