@@ -466,7 +466,7 @@ final class AppControllerTests: XCTestCase {
         let store = try XCTUnwrap(app.session.stores["doc-1"])
         keyDoc = "doc-1"
         let hk = Self.hotkey("x")
-        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f5","modifiers":{}}}"#)
+        try await setHotkeys("doc-1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f13","modifiers":{}}}"#)
         let keys = app.frontKeys
         XCTAssertEqual(keys.chord(for: .go), KeyChord("x"))
         XCTAssertNil(keys.chord(for: .pauseAll), "the later field loses")
