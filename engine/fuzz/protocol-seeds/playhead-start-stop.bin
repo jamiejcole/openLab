@@ -1,0 +1,52 @@
+{
+  "type": "transport",
+  "id": 14,
+  "action": {
+    "type": "set_playhead",
+    "list": "00000000-0000-0000-0000-000000000001",
+    "cue": "00000000-0000-0000-0000-00000000000a"
+  }
+}
+{
+  "type": "transport",
+  "id": 18,
+  "action": {
+    "type": "start",
+    "cue": "00000000-0000-0000-0000-00000000000a"
+  }
+}
+{
+  "type": "transport",
+  "id": 19,
+  "action": {
+    "type": "stop",
+    "cue": "00000000-0000-0000-0000-00000000000a",
+    "fade_out": {
+      "duration": 2.5,
+      "curve": "linear"
+    }
+  }
+}
+{
+  "type": "transport",
+  "id": 20,
+  "action": {
+    "type": "hard_stop",
+    "cue": "00000000-0000-0000-0000-00000000000a"
+  }
+}
+{
+  "type": "transport",
+  "id": 24,
+  "action": {
+    "type": "reset",
+    "cue": "00000000-0000-0000-0000-00000000000a"
+  }
+}
+{
+  "type": "request",
+  "id": 47,
+  "request": {
+    "type": "snapshot"
+  }
+}

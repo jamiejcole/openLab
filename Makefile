@@ -24,13 +24,18 @@ test-rust:
 # Short fuzz run per target (nightly + cargo-fuzz). Fixtures and fuzz/seeds seed the corpus;
 # crashes land in engine/fuzz/artifacts/.
 fuzz:
-	mkdir -p engine/fuzz/corpus/show_file engine/fuzz/corpus/decode engine/fuzz/corpus/osc
+	mkdir -p engine/fuzz/corpus/show_file engine/fuzz/corpus/decode engine/fuzz/corpus/osc \
+		engine/fuzz/corpus/osc_session engine/fuzz/corpus/protocol
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run show_file fuzz/corpus/show_file fixtures/show fuzz/seeds \
 		-- -max_total_time=$(FUZZ_TIME) -dict=fuzz/show_file.dict
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run decode fuzz/corpus/decode crates/audio/tests/fixtures fuzz/decode-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run osc fuzz/corpus/osc fuzz/osc-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536
+	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run osc_session fuzz/corpus/osc_session fuzz/osc-session-seeds \
+		-- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
+	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
+		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
 
 test-mac: project
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test
