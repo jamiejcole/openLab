@@ -247,6 +247,18 @@ fn with_passcode(code: &str) -> Workspace {
     ws
 }
 
+/// A loopback UDP socket whose receive buffer holds the largest datagram: Windows truncates one
+/// bigger than the buffer, which is smaller than 64 KiB by default.
+fn big_udp() -> UdpSocket {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+    socket.set_recv_buffer_size(1 << 20).unwrap();
+    socket
+        .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+        .unwrap();
+    socket.set_nonblocking(true).unwrap();
+    UdpSocket::from_std(socket.into()).unwrap()
+}
+
 async fn fixture(ws: Workspace) -> Fix {
     fixture_with(ws, |_| {}).await
 }
@@ -257,7 +269,7 @@ async fn fixture_with(ws: Workspace, tune: impl FnOnce(&mut OscConfig)) -> Fix {
 
 /// `hold`: the first snapshot request is not answered until [`Stand::release`].
 async fn fixture_held(ws: Workspace, hold: bool, tune: impl FnOnce(&mut OscConfig)) -> Fix {
-    let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let udp = big_udp();
     let mut osc = OscConfig {
         bind: Ipv4Addr::LOCALHOST.into(),
         port: 0,
@@ -1754,6 +1766,23 @@ async fn large_replies_go_over_udp_up_to_a_datagram_and_over_tcp_beyond() {
     t.send(&msg("/cue/1/notes", vec![])).await;
     let reply = t.recv().await.unwrap();
     assert_eq!(body(&reply)["data"].as_str().unwrap().len(), 100_000);
+}
+
+#[tokio::test]
+async fn a_udp_reply_the_system_cannot_send_is_counted_and_nothing_hangs() {
+    // Port 0 is no destination on any system, so every send fails, as a datagram too big for
+    // the send buffer does on macOS.
+    let f = fixture_with(test_workspace(), |c| c.reply_port = 0).await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    f.wait_stats("the failed send to be counted", |s| s.send_failed == 1)
+        .await;
+    // The server goes on serving: once the peer names a port, it is answered.
+    let target = f.udp.local_addr().unwrap().port();
+    f.udp_send(&msg("/udpReplyPort", vec![OscType::Int(i32::from(target))]))
+        .await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    assert_eq!(f.stats().send_failed, 1);
 }
 
 #[tokio::test]

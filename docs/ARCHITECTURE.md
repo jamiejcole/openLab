@@ -227,6 +227,7 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | assert_no_alloc | RT allocation guard (debug/test; a normal dependency of openlab-audio for the debug device-callback guard, and of openlab-engine for the debug global allocator, M3.21) | BSD-1-Clause |
 | rosc | OSC encode/decode | MIT/Apache-2.0 |
 | tokio, tokio-tungstenite | async networking, WebSocket | MIT |
+| socket2 | OSC UDP socket buffer sizes (macOS refuses a reply larger than its 9216-byte default send buffer; already in the lock file through tokio) | MIT/Apache-2.0 |
 | futures-util (`sink` only) | `StreamExt`/`SinkExt` on the WebSocket stream (M4.3; already in the lock file) | MIT/Apache-2.0 |
 | getrandom | OS CSPRNG for the session token (M4.3; std has none; already in the tree through uuid/tempfile) | MIT/Apache-2.0 |
 | serde, serde_json | serialisation | MIT/Apache-2.0 |
