@@ -231,3 +231,31 @@ fn the_cpu_is_probed_only_when_a_status_goes_out() {
     // One probe per status, never one per tick (200 ticks).
     assert_eq!(CPU_CALLS.load(Ordering::SeqCst), sent);
 }
+
+#[test]
+fn engine_load_is_the_worst_callback_since_the_previous_status() {
+    let clock = ManualClock::new(T0);
+    let mut s = device_show(&clock);
+    s.take_outbound();
+    // Callbacks ran: the status carries a measured load (wall-clock time, so only its range is
+    // checked; the max-and-reset logic is unit-tested in openlab-audio).
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    clock.set(T0 + 1000);
+    s.tick();
+    let [measured] = statuses(s.take_outbound()).try_into().unwrap();
+    let load = measured.engine_load.expect("the callbacks were timed");
+    assert!(load.is_finite() && load >= 0.0, "{load}");
+    // No callback since that status: nothing to report, not a stale figure.
+    clock.set(T0 + 2000);
+    s.tick();
+    let [idle] = statuses(s.take_outbound()).try_into().unwrap();
+    assert_eq!(idle.engine_load, None);
+    // Offline there is no audio callback at all.
+    let (mut offline, clock) = rig(workspace(vec![]));
+    offline.run(BLOCK * 4);
+    clock.set(T0 + 1000);
+    offline.tick();
+    let [status] = statuses(offline.take_outbound()).try_into().unwrap();
+    assert_eq!(status.engine_load, None);
+}

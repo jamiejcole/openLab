@@ -323,6 +323,9 @@ fn no_allocation_on_any_callback_path() {
     assert_eq!(m.alloc_violations(), 0);
     assert_eq!(m.callback_faults(), 0);
     assert_eq!(m.leaked_mixers(), 0);
+    // The callbacks were timed (M4.7a) inside the same no-allocation guard.
+    let load = m.take_engine_load().expect("the callbacks were timed");
+    assert!(load.is_finite() && load >= 0.0, "{load}");
 }
 
 /// Manual: plays 0.5 s of silence on the default output device and gets the mixer back.
