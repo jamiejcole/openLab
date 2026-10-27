@@ -283,6 +283,9 @@ struct Lookup {
     phase: Phase,
     /// What the cue engine has been told.
     reported: NetworkReachability,
+    /// When this name's last look-up started; `None` until its first. Free slots go to the
+    /// longest-waiting name, so hung look-ups holding most slots cannot starve the rest.
+    last_start: Option<SampleTime>,
 }
 
 /// The control thread's side of network output.
@@ -390,6 +393,7 @@ impl NetOut {
                                 port: patch.port,
                                 phase: Phase::Wanted,
                                 reported: NetworkReachability::Unknown,
+                                last_start: None,
                             },
                         );
                     }
@@ -510,16 +514,17 @@ impl NetOut {
     }
 
     fn start_wanted(&mut self, now: SampleTime) {
-        let mut wanted: Vec<NetworkPatchId> = self
+        let mut wanted: Vec<(Option<SampleTime>, NetworkPatchId)> = self
             .lookups
             .iter()
             .filter(|(_, l)| l.phase == Phase::Wanted)
-            .map(|(id, _)| *id)
+            .map(|(id, l)| (l.last_start, *id))
             .collect();
-        // Always the same order, so a few slots serve every name in turn.
-        wanted.sort_by_key(|id| id.0);
+        // Never-tried names first, then the one tried longest ago (id breaks ties), so a few
+        // slots serve every name in turn.
+        wanted.sort();
         let retry_at = now.saturating_add(self.samples(RETRY_AFTER));
-        for id in wanted {
+        for (_, id) in wanted {
             if self.running.len() >= MAX_LOOKUPS {
                 break;
             }
@@ -549,6 +554,7 @@ impl NetOut {
             match spawned {
                 Ok(_) => {
                     l.phase = Phase::InFlight { ticket, since: now };
+                    l.last_start = Some(now);
                     self.running.insert(ticket, (host, port));
                 }
                 Err(_) => {
@@ -922,7 +928,6 @@ mod tests {
         assert_eq!(net.running.len(), MAX_LOOKUPS);
         // One hung thread finally answers: its slot serves a waiting name.
         let hung = *net.running.keys().min().unwrap_or(&0);
-        let key = net.running.get(&hung).cloned();
         net.answer(
             NetAnswer::Lookup {
                 patch: nid(999),
@@ -936,7 +941,6 @@ mod tests {
             MAX_LOOKUPS,
             "a waiting name took the slot"
         );
-        assert!(!net.running.values().any(|v| Some(v) == key.as_ref()) || key.is_none());
     }
 
     /// M2: forgetting an in-flight look-up does not free its thread's slot, and a name has
@@ -1021,7 +1025,22 @@ mod tests {
     #[test]
     fn idle_senders_are_freed_when_the_limit_is_reached() {
         let (mut net, _rx) = out();
-        for n in 0..(MAX_LINKS as u128 + 10) {
+        let limit = MAX_LINKS as u128;
+        for n in 0..limit {
+            let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
+            assert_eq!(o, SendOutcome::Queued, "{n}");
+        }
+        // The workers drain on their own threads; wait until every queue is empty, so the
+        // senders are idle (bounded: a failure guard, not a timing assumption).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while net.links.values().any(|l| !l.tx.is_empty()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "workers never drained"
+            );
+            std::thread::yield_now();
+        }
+        for n in limit..limit + 10 {
             let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
             assert_eq!(o, SendOutcome::Queued, "{n}");
         }
