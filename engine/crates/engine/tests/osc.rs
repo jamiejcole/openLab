@@ -1235,7 +1235,7 @@ fn connect_status(osc: &mut Osc, show: &Show, peer: Peer, now: Duration, code: &
 }
 
 #[test]
-fn a_known_address_reconnects_with_the_right_passcode_through_both_lockouts() {
+fn a_known_address_reconnects_with_the_right_passcode_through_the_global_lockout() {
     let show = Show::with_passcode("s3cret");
     let mut osc = quiet_osc();
     let operator = Peer::Udp(ip_n(1));
@@ -1257,23 +1257,17 @@ fn a_known_address_reconnects_with_the_right_passcode_through_both_lockouts() {
             .inputs
             .is_empty()
     );
-    // Forged wrong passcodes from the operator's own address lock that address out...
-    for _ in 0..MAX_BAD_PASSCODES {
-        assert_eq!(
-            connect_status(&mut osc, &show, operator, later, "x"),
-            "badpass"
-        );
-    }
-    // ...and, spread over many addresses, exhaust the global budget.
+    // Forged wrong passcodes, spread over many addresses, exhaust the global budget.
     for i in 0..GLOBAL_MAX_FAILURES as usize {
         connect_status(&mut osc, &show, Peer::Udp(ip_n(i + 100)), later, "x");
     }
-    // A wrong passcode from the known address is still refused (and not counted further).
+    // A wrong passcode from the known address is still refused.
     assert_eq!(
         connect_status(&mut osc, &show, operator, later, "x"),
         "denied"
     );
-    // The right one gets through both.
+    // The right one gets through the global budget (not through its own address's lockout:
+    // see `a_known_address_gets_past_the_global_budget_but_never_past_its_own_lockout`).
     assert_eq!(
         connect_status(&mut osc, &show, operator, later, "s3cret"),
         "ok"
@@ -3880,6 +3874,93 @@ fn a_peer_connected_with_a_no_rights_row_can_do_nothing() {
         ));
         assert!(!osc.may_receive_updates(peer, show.access()));
     }
+}
+
+#[test]
+fn a_known_address_gets_past_the_global_budget_but_never_past_its_own_lockout() {
+    let show = Show::with_access(table(OscRights::NONE));
+    let mut osc = quiet_osc();
+    let operator = tcp_peer(1);
+    // The operator's address connected once, so it is known.
+    assert_eq!(
+        connect_status(&mut osc, &show, operator, T0, VIEW_ONLY),
+        "ok"
+    );
+    osc.disconnect(operator);
+    // Someone on that address guesses wrong until it is locked out.
+    let other = Peer::Udp(operator.ip());
+    for _ in 0..MAX_BAD_PASSCODES {
+        assert_eq!(
+            connect_status(&mut osc, &show, other, T0, "0000"),
+            "badpass"
+        );
+    }
+    // The right passcode is now refused, and wrong guesses keep counting (and are `denied`).
+    assert_eq!(
+        connect_status(&mut osc, &show, other, T0, EVERYTHING),
+        "denied"
+    );
+    let mid = T0 + Duration::from_secs(20);
+    for _ in 0..MAX_BAD_PASSCODES {
+        assert_eq!(
+            connect_status(&mut osc, &show, other, mid, "0000"),
+            "denied"
+        );
+    }
+    // The second round extended the lockout past the first one's end (T0 + 30 s).
+    let later = T0 + Duration::from_secs(40);
+    assert_eq!(
+        connect_status(&mut osc, &show, other, later, EVERYTHING),
+        "denied"
+    );
+    let after = T0 + Duration::from_secs(51);
+    // After the lockout the right passcode connects.
+    assert_eq!(
+        connect_status(&mut osc, &show, other, after, EVERYTHING),
+        "ok"
+    );
+}
+
+#[test]
+fn forged_subscribers_without_view_cannot_crowd_out_a_console() {
+    let show = Show::with_access(table(OscRights::NONE));
+    let mut osc = quiet_osc();
+    // A console with rights, and a no-passcode subscriber that holds a session.
+    connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY);
+    let on = msg("/updates", vec![OscType::Int(1)]);
+    for n in 0..2000u32 {
+        let forged = Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, (n >> 8) as u8, n as u8, 9)));
+        send(
+            &mut osc,
+            &show,
+            forged,
+            T0 + Duration::from_millis(n.into()),
+            &on,
+        );
+    }
+    assert!(osc.is_connected(udp()));
+    assert!(osc.update_subscribers(T0 + Duration::from_secs(3)).len() <= 65);
+    // And a new console still gets a slot and connects.
+    let newcomer = Peer::Udp(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)));
+    assert_eq!(
+        connect_status(
+            &mut osc,
+            &show,
+            newcomer,
+            T0 + Duration::from_secs(3),
+            EVERYTHING
+        ),
+        "ok"
+    );
+    assert!(osc.is_connected(newcomer));
+    // Where strangers may view, subscribers are ordinary and are not capped.
+    let open = Show::with_access(table(rights(true, false, false)));
+    let mut osc = quiet_osc();
+    for n in 0..200u32 {
+        let peer = Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, 0, 0, n as u8 + 1)));
+        send(&mut osc, &open, peer, T0, &on);
+    }
+    assert_eq!(osc.update_subscribers(T0).len(), 200);
 }
 
 #[test]
