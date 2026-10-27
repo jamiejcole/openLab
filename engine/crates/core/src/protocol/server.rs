@@ -12,7 +12,7 @@ use super::{
 use crate::command::CommandError;
 use crate::cue::Cue;
 use crate::model::{
-    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
+    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace, WorkspaceId,
     WorkspaceSettings,
 };
 
@@ -122,6 +122,36 @@ pub enum ResultData {
         ambiguous: Vec<AmbiguousMatch>,
         unmatched: Vec<CueId>,
     },
+    /// `open` found an autosave newer than the show file and nothing was opened. Send `open`
+    /// again with a `recovery` choice.
+    RecoveryOffer {
+        /// The `path` of the `open` this answers, so a client can match the offer to its request.
+        path: String,
+        workspace_name: String,
+        /// When the autosave was written: milliseconds since the Unix epoch (wall clock, UTC).
+        modified_ms: i64,
+    },
+    /// Answer to `scan_recovery`, newest first.
+    RecoveryEntries {
+        entries: Vec<RecoveryEntryInfo>,
+    },
+}
+
+/// One autosave file found by `scan_recovery`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryEntryInfo {
+    pub workspace_id: WorkspaceId,
+    /// Which show path the autosave is bound to; absent for a workspace that was never saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_hash: Option<String>,
+    /// The workspace's name, when the file could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_name: Option<String>,
+    /// Milliseconds since the Unix epoch (wall clock, UTC), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_ms: Option<i64>,
+    /// Moved aside as not newer than its show file; it may still hold the newest work.
+    pub stale: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +206,9 @@ pub enum ErrorCode {
     NotFound,
     /// A request needs a workspace and none is open, or a save has no path yet.
     NoWorkspace,
+    /// `new`, `open`, `open_recovery` or `revert` would drop unsaved edits and the request did
+    /// not say `discard_changes`.
+    UnsavedChanges,
     /// A file could not be read or written.
     Io,
     /// A show file the engine could not load (damaged, newer format, ...).

@@ -10,7 +10,8 @@ use super::{
 };
 use crate::command::Command;
 use crate::cue::FadeSpec;
-use crate::model::{CueId, CueListId};
+use crate::media_path::{PathStyle, is_absolute, to_portable};
+use crate::model::{CueId, CueListId, WorkspaceId};
 
 /// Every `type` a client may send.
 pub const CLIENT_TYPES: &[&str] = &[
@@ -133,20 +134,55 @@ pub enum TransportAction {
 }
 
 /// Document and device requests. The reply is a `result` with the same id; `new`, `open`,
-/// `revert` and `snapshot` also send a fresh `snapshot` message first.
+/// `open_recovery`, `revert` and `snapshot` also send a fresh `snapshot` message first when they
+/// succeed.
+///
+/// `new`, `open`, `open_recovery` and `revert` replace the open workspace: they stop every
+/// running cue first, and are refused with `unsaved_changes` while the workspace has unsaved
+/// edits unless `discard_changes` is true (the engine never prompts; the UI asks the operator).
+/// A bare `{"type": "new"}` is still accepted: every added field has a default.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    New,
+    New {
+        #[serde(default, skip_serializing_if = "is_false")]
+        discard_changes: bool,
+    },
     Open {
         path: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        discard_changes: bool,
+        /// What to do about an autosave newer than the show file. Absent: nothing is opened and
+        /// the `result` carries a `recovery_offer`; send the request again with a choice.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery: Option<RecoveryChoice>,
     },
+    /// Open the autosave of a show that could not be opened (listed by `scan_recovery`) as an
+    /// untitled, unsaved workspace: saving it has to choose a path (`save_as`).
+    OpenRecovery {
+        workspace_id: WorkspaceId,
+        /// Which file when several autosaves share the workspace id (a duplicated show):
+        /// the `path_hash` of the listed entry. Absent: any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_hash: Option<String>,
+        /// Likewise, the entry's `modified_ms` (a stale file moved aside has its own time).
+        /// Absent: the newest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modified_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        discard_changes: bool,
+    },
+    /// List the autosave files, for a show that cannot be opened.
+    ScanRecovery,
     Save,
     SaveAs {
         path: String,
     },
     /// Reload the saved file, dropping unsaved edits.
-    Revert,
+    Revert {
+        #[serde(default, skip_serializing_if = "is_false")]
+        discard_changes: bool,
+    },
     /// Relink missing media with files found in `folder` (WS-03).
     Relink {
         folder: String,
@@ -154,6 +190,21 @@ pub enum Request {
     ListDevices,
     /// Send the full state again (after a `revision` or `seq` gap).
     Snapshot,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The operator's answer to a recovery offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryChoice {
+    /// Open the autosave (unsaved changes included). The workspace is dirty until saved.
+    Restore,
+    /// Open the show file as saved. The autosave stays where it is and is offered again next
+    /// time, until a save, or the next autosave, replaces it.
+    Ignore,
 }
 
 impl ClientMessage {
@@ -170,11 +221,21 @@ impl ClientMessage {
             },
             Self::Request {
                 request:
-                    Request::Open { path } | Request::SaveAs { path } | Request::Relink { folder: path },
+                    Request::Open { path, .. }
+                    | Request::SaveAs { path }
+                    | Request::Relink { folder: path },
                 ..
             } if path.is_empty() => Err(ProtocolError::OutOfRange {
                 field: "request.path",
             }),
+            Self::Request {
+                request: Request::Open { path, .. } | Request::SaveAs { path },
+                ..
+            } if !is_absolute(&to_portable(path, PathStyle::host())) => {
+                Err(ProtocolError::NotAbsolute {
+                    field: "request.path",
+                })
+            }
             _ => Ok(()),
         }
     }

@@ -21,7 +21,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **NFR-01** `v0.0.1` Playback MUST NOT stop, glitch or crash because of a UI fault, an editing action, a slow disk read, or a malformed input. The playback engine is isolated from UI failure.
 - [ ] **NFR-02** `v0.0.1` The real-time audio path MUST be real-time safe: no memory allocation, locks, blocking I/O, or logging on the audio thread.
 - [ ] **NFR-03** `v0.0.1` Every external input (workspace files, media files, OSC/MIDI/network messages, plugin output, settings) MUST be validated; bad input produces a warning, never a crash or hang.
-- [ ] **NFR-04** `v0.0.1` Saves MUST be atomic (write-temp-then-rename). A crash or power loss during save never corrupts the existing file.
+- [x] **NFR-04** `v0.0.1` Saves MUST be atomic (write-temp-then-rename). A crash or power loss during save never corrupts the existing file.
 - [ ] **NFR-05** `v0.0.1` Autosave to a recovery file at a configurable interval; on launch after an unclean exit, offer to restore.
 - [ ] **NFR-06** `v0.0.1` Keep N rolling timestamped backups of each workspace (configurable, default on).
 - [ ] **NFR-07** `v0.0.1` Missing/unsupported media, missing audio/MIDI devices and unreachable network targets MUST be reported as "broken" cue state before the show, not discovered at GO.
@@ -291,7 +291,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **QA-01** `v0.0.1` Unit tests for all engine logic (cue state machine, scheduling, continue modes, groups, fades, routing math, file format).
 - [ ] **QA-02** `v0.0.1` Scheduler and engine testable against a virtual clock — deterministic, no real-time sleeps in tests.
 - [ ] **QA-03** `v0.0.1` Offline render tests: run cue sequences headlessly, render audio to buffers, assert on sample-level output (timing, levels, fades).
-- [ ] **QA-04** `v0.0.1` Fuzz testing of workspace loader, media decoders, OSC and MIDI parsers.
+- [x] **QA-04** `v0.0.1` Fuzz testing of workspace loader, media decoders, OSC and MIDI parsers. (v0.0.1: loader, decoders, OSC and the protocol are fuzzed in CI; there is no MIDI input in v0.0.1 — TRG-02 is untagged — so the MIDI parser gets its fuzz target when it exists.)
 - [ ] **QA-05** `v0.0.1` Soak tests (24 h continuous random cue playback) with memory/CPU/drift checks.
 - [ ] **QA-06** `v0.0.1` Performance benchmarks with regression gates in CI.
 - [ ] **QA-07** `v0.0.1` CI on macOS (Intel + Apple Silicon) and Windows for every commit; tests must pass to merge.

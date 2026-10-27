@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 49,
+  "request": {
+    "type": "scan_recovery"
+  }
+}

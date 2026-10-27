@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "unsaved_changes",
+  "message": "message",
+  "protocol_version": 1
+}

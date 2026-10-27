@@ -216,6 +216,20 @@ impl MediaCatalog {
         Ok(())
     }
 
+    /// Another workspace replaces the old one (opened, created, reverted), or the show was saved
+    /// in another folder: forgets everything known about the files, resolves relative references
+    /// against `show_dir` from now on, and follows `ws` from scratch ([`Self::sync`]: the cue
+    /// index is rebuilt and every file is probed again). It takes the workspace so the catalog
+    /// can never be left empty. Tickets keep rising, so answers to probes asked before the reset
+    /// find no entry (or a newer ticket) and are ignored.
+    pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
+        self.entries.clear();
+        self.uses.clear();
+        self.reserved = 0;
+        self.show_dir = show_dir;
+        self.sync(ws);
+    }
+
     /// Follows the whole workspace (a newly opened one; and the reference [`Self::sync_cues`]
     /// must equal): probes media references it has not seen, forgets the ones no cue uses any
     /// more (releasing their preload), and starts or releases the preload of files whose cues

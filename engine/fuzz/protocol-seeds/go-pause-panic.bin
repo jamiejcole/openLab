@@ -1,0 +1,29 @@
+{
+  "type": "transport",
+  "id": 10,
+  "action": {
+    "type": "go",
+    "list": "00000000-0000-0000-0000-000000000001"
+  }
+}
+{
+  "type": "transport",
+  "id": 12,
+  "action": {
+    "type": "pause_all"
+  }
+}
+{
+  "type": "transport",
+  "id": 13,
+  "action": {
+    "type": "resume_all"
+  }
+}
+{
+  "type": "transport",
+  "id": 11,
+  "action": {
+    "type": "panic"
+  }
+}
