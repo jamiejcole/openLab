@@ -4,7 +4,6 @@
 //! changes the workspace only through it.
 
 use crate::command::{Command, CommandError, CueProperty, Inverse};
-use crate::command_model::PatchProperty;
 use crate::model::Workspace;
 
 /// The undo and redo stacks. Each entry is the command that reverses one step, so redo needs no
@@ -120,8 +119,8 @@ impl History {
 /// the rest of the chain around it would otherwise see a different state:
 /// - `newer` and `older` are each one command setting the same value (or moving the same item):
 ///   `older` alone is the step.
-/// - `newer` only sets values (cue properties, settings, patch and list names), one command
-///   per item, with no add, remove or move: each of its commands for a value `older` also sets
+/// - `newer` only sets values (cue properties, settings, patch and list names), no two the
+///   same value, with no add, remove or move: each of its commands for a value `older` also sets
 ///   is left out. The values are independent, so `older`, which comes later, wins. This keeps
 ///   a multi-cue level drag at one command per cue however long it runs.
 ///
@@ -151,23 +150,32 @@ fn merge(older: Inverse, newer: Inverse) -> Inverse {
     }
 }
 
-/// Whether every command only sets a value, and no two are about the same item.
+/// Whether every command only sets a value, no two set the same one, and none sets both the
+/// `Kind` and the target or group mode of one cue (a `Kind` replaces those).
 fn only_value_sets(commands: &[Command]) -> bool {
-    let mut items = std::collections::HashSet::new();
-    commands.iter().all(|c| {
-        let item = match c {
-            Command::SetCueProperty { id, .. } => id.0,
-            Command::SetWorkspaceSetting { .. } => uuid::Uuid::nil(),
-            Command::SetPatchProperty {
-                property: PatchProperty::ChannelCount { .. } | PatchProperty::Outputs { .. },
-                ..
-            } => return false,
-            Command::SetPatchProperty { id, .. } => id.0,
-            Command::SetNetworkPatchProperty { id, .. } => id.0,
-            Command::RenameCueList { id, .. } => id.0,
+    let mut keys = std::collections::HashSet::new();
+    let mut kinds = std::collections::HashSet::new();
+    for c in commands {
+        match c.value_key() {
+            Some(key) if keys.insert(key) => {}
             _ => return false,
-        };
-        items.insert(item)
+        }
+        if let Command::SetCueProperty {
+            id,
+            property: CueProperty::Kind { .. },
+        } = c
+        {
+            kinds.insert(*id);
+        }
+    }
+    !commands.iter().any(|c| {
+        matches!(
+            c,
+            Command::SetCueProperty {
+                id,
+                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
+            } if kinds.contains(id)
+        )
     })
 }
 

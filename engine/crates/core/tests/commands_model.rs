@@ -1865,3 +1865,80 @@ fn a_kind_a_later_command_of_the_same_step_needs_is_not_dropped() {
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(ws, before);
 }
+
+#[test]
+fn a_ganged_drag_stays_bounded() {
+    let mut ws = workspace(vec![]);
+    let before = ws.clone();
+    let mut history = History::new();
+    for event in 0..20_000u32 {
+        let db = -f64::from(event % 60);
+        let step = Command::Transaction {
+            commands: vec![
+                patch_prop(
+                    1,
+                    PatchProperty::OutputLevel {
+                        output: 0,
+                        value: db,
+                    },
+                ),
+                patch_prop(
+                    1,
+                    PatchProperty::OutputLevel {
+                        output: 1,
+                        value: db,
+                    },
+                ),
+            ],
+        };
+        history
+            .execute_coalescing(&mut ws, step, Some("gang"))
+            .unwrap();
+    }
+    let Some(Command::Transaction { commands }) = history.peek_undo() else {
+        panic!("not a transaction");
+    };
+    assert!(commands.len() <= 2, "{}", commands.len());
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+    // Two settings at once, too.
+    let mut history = History::new();
+    for event in 0..1000u32 {
+        let step = Command::Transaction {
+            commands: vec![
+                level(-f64::from(event % 50)),
+                setting(WorkspaceSetting::PanicDuration {
+                    value: f64::from(event % 50) / 10.0,
+                }),
+            ],
+        };
+        history
+            .execute_coalescing(&mut ws, step, Some("two"))
+            .unwrap();
+    }
+    assert!(
+        matches!(history.peek_undo(), Some(Command::Transaction { commands }) if commands.len() <= 2)
+    );
+}
+
+#[test]
+fn a_hotkey_being_set_is_judged_on_its_own_value() {
+    // The loaded show already has a bad key on Go; setting Go to another bad one is refused,
+    // while an unrelated setting still is not held up by it.
+    let ws = with_bad_hotkey();
+    for key in ["Space", "Other Bad"] {
+        let error = refused(
+            &ws,
+            setting(WorkspaceSetting::Hotkey {
+                key: TransportKey::Go,
+                value: Some(Hotkey {
+                    key: key.into(),
+                    modifiers: Modifiers::default(),
+                }),
+            }),
+        );
+        assert!(matches!(error, CommandError::InvalidModel(_)), "{key}");
+    }
+    let mut work = ws.clone();
+    assert!(History::new().execute(&mut work, level(-3.0)).unwrap());
+}
