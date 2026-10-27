@@ -52,7 +52,10 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
     };
     let mut osc = Osc::new();
     let udp = Peer::Udp(IpAddr::V4(Ipv4Addr::LOCALHOST));
-    let tcp = Peer::Tcp(1);
+    let tcp = Peer::Tcp {
+        conn: 1,
+        ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+    };
     let mut now = Duration::ZERO;
     let mut outcomes: Vec<Outcome> = Vec::new();
     if mode & 1 == 0 {

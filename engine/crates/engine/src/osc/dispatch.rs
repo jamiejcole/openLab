@@ -105,6 +105,9 @@ pub enum Address {
     /// Not in the API; may still be a cue's own OSC trigger. Holds the address without any
     /// `/workspace/{id}` prefix.
     Other(String),
+    /// Contains pattern characters. Patterns are not expanded; the address (without prefix) may
+    /// still be exactly a cue's OSC trigger, which can therefore contain such characters.
+    Pattern(String),
     /// In the API's shape but not something this build does; the text says why.
     Unsupported(&'static str),
 }
@@ -139,7 +142,7 @@ pub fn parse_address(address: &str) -> Option<Parsed> {
     {
         return Some(Parsed {
             workspace,
-            address: Address::Unsupported("address patterns are not supported"),
+            address: Address::Pattern(format!("/{}", rest.join("/"))),
         });
     }
     let other = || Address::Other(format!("/{}", rest.join("/")));
@@ -255,6 +258,10 @@ pub fn resolve(show: &dyn OscShow, address: &Address, args: &[OscType]) -> Resol
     match address {
         Address::Connect | Address::Updates => Resolved::Unknown,
         Address::Unsupported(why) => Rep(Reply::error(why)),
+        Address::Pattern(path) => match show.cue_by_osc_trigger(path) {
+            Some(cue) => transport(TransportAction::Start { cue }),
+            None => Rep(Reply::error("address patterns are not supported")),
+        },
         Address::Stop => Rep(Reply::error("stop all is not supported; use /panic")),
         Address::Panic => transport(TransportAction::Panic),
         Address::PauseAll => transport(TransportAction::PauseAll),
@@ -440,17 +447,29 @@ pub fn updates_arg(args: &[OscType]) -> Option<bool> {
     }
 }
 
+/// Longest JSON body of a reply. A longer one (a very long note) is replaced by an error reply,
+/// so a reply stays about one unfragmented UDP datagram (1400 bytes fits a 1500-byte MTU with
+/// headers) and a forged source cannot make us send big packets at a victim.
+pub const MAX_REPLY_JSON_BYTES: usize = 1400;
+
 /// A QLab-style reply message: address `/reply` + the address that was asked, one string
 /// argument holding `{"workspace_id", "address", "status", "data"}` as JSON.
 pub fn reply_message(workspace: WorkspaceId, asked: &str, reply: &Reply) -> OscMessage {
-    let body = json!({
-        "workspace_id": workspace.to_string(),
-        "address": asked,
-        "status": reply.status,
-        "data": reply.data,
-    });
+    let build = |status: &str, data: &Value| {
+        json!({
+            "workspace_id": workspace.to_string(),
+            "address": asked,
+            "status": status,
+            "data": data,
+        })
+        .to_string()
+    };
+    let mut body = build(reply.status, &reply.data);
+    if body.len() > MAX_REPLY_JSON_BYTES {
+        body = build(STATUS_ERROR, &json!("reply too large"));
+    }
     OscMessage {
         addr: format!("/reply{asked}"),
-        args: vec![OscType::String(body.to_string())],
+        args: vec![OscType::String(body)],
     }
 }
