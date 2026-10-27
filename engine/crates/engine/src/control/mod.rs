@@ -1477,6 +1477,13 @@ impl Control {
                 .out
                 .send_state(ServerMessage::Warnings { warnings: list });
         }
+        // The plans just checked also give the cues' nominal lengths, which a playlist halted by
+        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist").
+        let lengths = self.checks.length_changes();
+        if !lengths.is_empty() {
+            let now = self.now();
+            self.feed(Input::CueLengths { lengths }, now);
+        }
     }
 
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
