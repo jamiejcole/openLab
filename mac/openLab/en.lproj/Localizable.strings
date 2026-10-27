@@ -170,6 +170,11 @@
 "sidebar.tab.cueLists" = "Cue Lists";
 "sidebar.tab.activeCues" = "Active Cues";
 "sidebar.list.label" = "Cue lists";
+"sidebar.active.label" = "Active cues";
+"activeCue.pause" = "Pause";
+"activeCue.resume" = "Resume";
+"activeCue.panic" = "Panic this cue";
+"footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
 "sidebar.newCart" = "New Cart";
 
