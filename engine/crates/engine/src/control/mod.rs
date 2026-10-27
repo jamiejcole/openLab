@@ -49,7 +49,7 @@ pub use inbox::{
     Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, ProbeAnswer, ReplyRx, ReplyTx,
     outbound_channel, reply_channel,
 };
-pub use media::PROBE_WORKERS;
+pub use media::{PROBE_WORKERS, ProbeClock};
 
 use crate::persist::AppDirs;
 use checks::PlanChecks;
@@ -148,6 +148,8 @@ pub struct ControlConfig {
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
     pub probe_timeout: Duration,
+    /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
+    pub probe_clock: media::ProbeClock,
     /// The show log: its ring always, and the disk writer's sink when the host started one
     /// (docs/logging.md).
     pub show_log: crate::diag::ShowLog,
@@ -178,6 +180,7 @@ impl ControlConfig {
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
+            probe_clock: media::ProbeClock::system(),
             show_log: crate::diag::ShowLog::default(),
             status: None,
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
@@ -306,6 +309,7 @@ impl Control {
             config.preload_budget,
             config.probe,
             config.probe_timeout,
+            config.probe_clock.clone(),
         )?;
         let cue_outputs = mixer.cue_outputs();
         let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
