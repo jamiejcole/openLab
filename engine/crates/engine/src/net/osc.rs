@@ -46,8 +46,7 @@ const MAX_INFLIGHT: usize = 256;
 /// TCP events (data, open, close) waiting for the actor; each connection waits in its own read
 /// loop beyond this, which holds that sender back through TCP.
 const EVENT_QUEUE: usize = 256;
-/// Datagrams waiting for the actor. A queue of their own, and the actor takes from the two
-/// queues in turn: a TCP peer that floods (it waits, holding its place in line) must not make
+/// Datagrams waiting for the actor. A queue of their own, taken first (see `next_input`): a TCP peer that floods (it waits, holding its place in line) must not make
 /// the datagrams of a console find the queue full.
 const UDP_QUEUE: usize = 256;
 /// How long an accepted connection waits for the actor to close an idle one when the table is
@@ -272,12 +271,27 @@ enum Event {
     Evict,
 }
 
-/// The next event from either queue, fairly: with both ready, each is as likely to be taken.
-/// `None`: a queue closed (the sockets' tasks are gone).
+/// Datagrams taken in a row before a TCP event gets a turn.
+const MAX_UDP_STREAK: u32 = 32;
+
+/// The next event from either queue. Datagrams go first: a TCP event is much more work (a
+/// 4 KiB read can hold a hundred messages), so taking the queues in turn left an operator's
+/// datagram waiting behind a whole read of a flooding peer's frames, long enough under load
+/// for it to age out. After [`MAX_UDP_STREAK`] datagrams in a row the queues are taken at
+/// random, so a flood of datagrams (bounded: the queue is 256 and rate-limited by the
+/// kernel's buffer) cannot starve TCP peers. `None`: a queue closed.
 async fn next_input(
     udp: &mut mpsc::Receiver<Event>,
     tcp: &mut mpsc::Receiver<Event>,
+    streak: &mut u32,
 ) -> Option<Event> {
+    if *streak < MAX_UDP_STREAK
+        && let Ok(event) = udp.try_recv()
+    {
+        *streak += 1;
+        return Some(event);
+    }
+    *streak = 0;
     tokio::select! {
         event = udp.recv() => event,
         event = tcp.recv() => event,
@@ -545,6 +559,7 @@ impl Actor {
         let period = self.config.stats_log_interval.max(Duration::from_millis(1));
         let mut ticker = interval_at(Instant::now() + period, period);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut streak = 0u32;
         if !self.ask_snapshot() {
             return;
         }
@@ -580,7 +595,7 @@ impl Actor {
                 // Not while a snapshot is out: a `/cue/5` or a trigger address must not be
                 // resolved against a copy just found to be wrong (it could start the cue that
                 // used to be 5). Input waits, within the age limit.
-                event = next_input(&mut udp, &mut events), if ready && !waiting => match event {
+                event = next_input(&mut udp, &mut events, &mut streak), if ready && !waiting => match event {
                     Some(event) => self.event(event),
                     None => return,
                 },
