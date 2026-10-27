@@ -203,6 +203,7 @@ async fn osc_follows_a_revert_and_an_open() {
                         },
                     ],
                 }),
+                coalesce: None,
             },
             reply: tx,
         })

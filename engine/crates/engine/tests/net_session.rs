@@ -394,6 +394,7 @@ impl Ws {
         self.call(|id| ClientMessage::Command {
             id,
             command: Box::new(command),
+            coalesce: None,
         })
         .await
     }

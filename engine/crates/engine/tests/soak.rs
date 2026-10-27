@@ -747,15 +747,20 @@ impl Soak {
 
     fn command(&mut self, command: Command) -> bool {
         self.remember(format!("block {}: EDIT {command:?}", self.block));
+        let revision = self.s.control().revision();
         let outcome = self.send(|id| ClientMessage::Command {
             id,
             command: Box::new(command),
+            coalesce: None,
         });
         match outcome {
             Outcome::Ok(_) => {
                 self.report.edits_applied += 1;
-                self.undo_depth += 1;
-                self.redo_depth = 0;
+                // An edit that sets what is already there is accepted but is no undo step.
+                if self.s.control().revision() != revision {
+                    self.undo_depth += 1;
+                    self.redo_depth = 0;
+                }
                 true
             }
             Outcome::Error(_) => {

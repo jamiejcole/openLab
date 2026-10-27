@@ -20,7 +20,7 @@ pub mod plan;
 pub mod runner;
 mod voices;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -33,14 +33,15 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
-    ErrorCode, LogKind, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem,
-    Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem,
-    WireWarning,
+    ErrorCode, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter, PlayheadEntry,
+    ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction,
+    WireProblem, WireWarning,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
+    MediaStatus, PatchId, PatchResolution, SampleTime, Workspace, model_changes,
+    seconds_to_samples,
 };
 
 pub use docs::{DocAnswer, DocHook, EpochClock, Loaded, ManualClock, SaveHook};
@@ -491,13 +492,41 @@ impl Control {
                 }
                 reply(to, ok(id, None));
             }
-            ClientMessage::Command { id, command } => {
+            ClientMessage::Command {
+                id,
+                command,
+                coalesce,
+            } => {
+                if coalesce
+                    .as_ref()
+                    .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
+                {
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
+                            )),
+                        },
+                    );
+                    return Flow::Continue;
+                }
+                if let Some(e) = self.patch_slot_conflict(command.patch_slot_floor(&self.ws)) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
-                match self.history.execute(&mut self.ws, *command) {
-                    Ok(()) => {
-                        // An empty transaction (or one naming no cue) changed nothing and
-                        // is no undo step: no revision, no `model_changed`, not dirty.
-                        if !footprint.is_empty() {
+                match self
+                    .history
+                    .execute_coalescing(&mut self.ws, *command, coalesce.as_deref())
+                {
+                    Ok(changed) => {
+                        // An empty transaction, or an edit that sets what is already there,
+                        // changed nothing and is no undo step: no revision, no
+                        // `model_changed`, not dirty.
+                        if changed {
                             self.edited(now, &footprint);
                         }
                         reply(to, ok(id, Some(self.revision)));
@@ -515,6 +544,17 @@ impl Control {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
+                let step = if undo {
+                    self.history.peek_undo()
+                } else {
+                    self.history.peek_redo()
+                };
+                if let Some(e) =
+                    self.patch_slot_conflict(step.and_then(|c| c.patch_slot_floor(&self.ws)))
+                {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let result = if undo {
                     self.history.undo(&mut self.ws)
                 } else {
@@ -583,6 +623,24 @@ impl Control {
         Flow::Continue
     }
 
+    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting, removing or
+    /// moving a patch would re-route a voice playing on a later one. Refuses such an edit
+    /// (`floor`: `Command::patch_slot_floor`) while a cue routed to an affected patch plays or is
+    /// about to start. Undo and redo are held to the same rule.
+    fn patch_slot_conflict(&self, floor: Option<usize>) -> Option<CommandError> {
+        let moving: Vec<PatchId> = self.ws.patches.iter().skip(floor?).map(|p| p.id).collect();
+        let on_device: HashSet<CueId> = self
+            .voices
+            .on_device()
+            .into_iter()
+            .map(|(cue, _)| cue)
+            .collect();
+        first_playing_on(&self.ws, &moving, |cue| {
+            on_device.contains(&cue) || self.engine.state(cue).is_active()
+        })
+        .map(|cue| CommandError::PatchPlaying { cue })
+    }
+
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
     /// longer than the action's known length, after the engine completed the action on its
     /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
@@ -648,7 +706,13 @@ impl Control {
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        self.engine.model_changed_cues(footprint);
+        // Lists, patches and settings decide which cues are broken and where the playheads are:
+        // the cue-scoped shortcut is only for edits that touched cues alone.
+        if footprint.is_model_wide() {
+            self.engine.model_changed();
+        } else {
+            self.engine.model_changed_cues(footprint);
+        }
         self.revision += 1;
         let (upserts, deletes) = model_changes(&self.ws, footprint);
         self.out.send(ServerMessage::ModelChanged {
@@ -1791,6 +1855,32 @@ fn orphan_scope(action: &TransportAction) -> Option<Scope> {
         } => Some(Scope::Cue(*cue)),
         _ => None,
     }
+}
+
+/// The first Audio cue (workspace order) routed to one of `patches` for which `playing` holds.
+/// Iterative: nesting depth cannot overflow the stack.
+fn first_playing_on(
+    ws: &Workspace,
+    patches: &[PatchId],
+    playing: impl Fn(CueId) -> bool,
+) -> Option<CueId> {
+    for list in &ws.cue_lists {
+        let mut stack = vec![list.cues.iter()];
+        while let Some(level) = stack.last_mut() {
+            let Some(cue) = level.next() else {
+                stack.pop();
+                continue;
+            };
+            if let CueKind::Audio { patch, .. } = &cue.kind
+                && patches.contains(patch)
+                && playing(cue.id)
+            {
+                return Some(cue.id);
+            }
+            stack.push(cue.children().iter());
+        }
+    }
+    None
 }
 
 fn visit_any(cues: &[Cue], id: CueId) -> bool {
