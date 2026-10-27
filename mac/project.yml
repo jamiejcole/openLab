@@ -21,6 +21,10 @@ targets:
     platform: macOS
     sources:
       - openLab
+      # The fake engine's welcome snapshot (launch argument `-OpenLabEngine fake`), so the running
+      # app never reads the repo path.
+      - path: ../engine/fixtures/protocol/server/welcome.json
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLab
@@ -44,6 +48,10 @@ targets:
     platform: macOS
     sources:
       - openLabTests
+      # Golden protocol files, copied into the test bundle (tests must not read the repo path).
+      - path: ../engine/fixtures/protocol
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: openLab
     settings:
