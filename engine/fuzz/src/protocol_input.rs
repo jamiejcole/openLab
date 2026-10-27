@@ -52,6 +52,8 @@ fn new_show() -> Result<OfflineShow, String> {
     let ws = workspace()?;
     let mut config = ControlConfig::new(RATE, BLOCK);
     config.seed = 7;
+    // No watch thread per fuzz case.
+    config.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
     config.probe = no_media;
     config.mixer_patches = ws.patches.len().max(1);
     let mixer = MixerConfig {
