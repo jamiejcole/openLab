@@ -328,7 +328,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             node.children = reconcile(node, with: cue.children)
             outlineView.reloadItem(node, reloadChildren: true)
         } else {
-            outlineView.reloadItem(node)
+            node.children.forEach(forget)  // a cue that stopped being a group holds no children
+            node.children = []
+            outlineView.reloadItem(node, reloadChildren: true)
         }
         configureRow(node)
     }
