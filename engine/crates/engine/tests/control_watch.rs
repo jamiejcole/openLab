@@ -244,6 +244,7 @@ fn a_cue_removed_before_the_batch_is_left_alone() {
     s.send(ClientMessage::Command {
         id: rid,
         command: Box::new(openlab_core::Command::RemoveCue { id: id(1) }),
+        coalesce: None,
     });
     s.tick();
     let rid = s.request_id();
