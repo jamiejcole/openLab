@@ -202,7 +202,9 @@ impl Gate {
             || self
                 .show_dir
                 .as_ref()
-                .is_some_and(|d| self.bucket(d).eq_ignore_ascii_case(bucket))
+                // A file in the folder: `bucket_of` calls a path directly inside a mount
+                // folder (a show at the root of a volume) part of `/`.
+                .is_some_and(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
     }
 
     fn stalled(&self, bucket: &str) -> bool {
@@ -2821,12 +2823,17 @@ mod tests {
 
     #[cfg(unix)]
     static WEDGED_SHARE: Hang = Hang::new();
+    #[cfg(unix)]
+    static BURNED: Hang = Hang::new();
 
-    /// The first two probes of the share never return until it is opened, the rest do.
+    /// The first three probes of the share (two stuck, then the trial) hang until it is opened.
     #[cfg(unix)]
     fn wedged_probe(path: &Path) -> Result<Probed, MediaError> {
+        if path.starts_with("/burn") {
+            BURNED.block();
+        }
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        if path.starts_with("/Volumes/wedged") && CALLS.fetch_add(1, Ordering::AcqRel) < 2 {
+        if path.starts_with("/Volumes/wedged") && CALLS.fetch_add(1, Ordering::AcqRel) < 3 {
             WEDGED_SHARE.block();
         }
         fake(path)
@@ -2836,6 +2843,16 @@ mod tests {
     #[test]
     fn files_waiting_on_a_share_that_recovers_are_all_probed_though_stuck_jobs_never_return() {
         let (mut cat, rx, ms) = timed_catalog(wedged_probe);
+        // Over a tech week many workers were abandoned (slow files on the system disk): the
+        // stalled share must still get its trials and its waiting files must still be probed.
+        for round in 0..MAX_ABANDONED_WORKERS / 4 {
+            cat.request(format!("/burn/{round}a.wav"));
+            cat.request(format!("/burn/{round}b.wav"));
+            BURNED.wait_entered(2 * (round + 1));
+            advance(&ms, 31);
+            assert_eq!(cat.watchdog().len(), 2);
+        }
+        assert_eq!(cat.abandoned_workers(), MAX_ABANDONED_WORKERS / 2);
         let share = "/Volumes/wedged";
         cat.request(format!("{share}/a.wav"));
         cat.request(format!("{share}/b.wav"));
@@ -2843,14 +2860,23 @@ mod tests {
         advance(&ms, 31);
         assert_eq!(cat.watchdog().len(), 2);
         assert!(lock(&cat.gate).stalled(share));
-        // Cues keep asking for files on it (the share is back, but the two reads never return).
+        // Cues keep asking for files on it: one goes out as the trial and hangs, the rest wait.
         let rest: Vec<String> = (0..4).map(|i| format!("{share}/c{i}.wav")).collect();
         for k in &rest {
             cat.request(k.clone());
         }
         cat.prioritize(rest.iter().map(String::as_str));
+        WEDGED_SHARE.wait_entered(3);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while lock(&cat.gate).deferred.len() < 3 {
+            assert!(Instant::now() < deadline, "files never deferred");
+            std::thread::yield_now();
+        }
+        // The share answers: the hung reads return, the stall ends, and every waiting file is
+        // probed, however many workers were abandoned before.
+        WEDGED_SHARE.open();
         let mut answered = 0;
-        while answered < rest.len() {
+        while answered < 2 + rest.len() {
             cat.answer(next_answer(&rx));
             answered += 1;
             cat.watchdog();
@@ -2863,6 +2889,54 @@ mod tests {
             cat.take_volume_events(),
             vec![(share.to_owned(), true), (share.to_owned(), false)]
         );
-        WEDGED_SHARE.open();
+        BURNED.open();
+    }
+
+    #[test]
+    fn a_show_at_the_root_of_a_volume_exempts_that_volume() {
+        // `bucket_of` calls a file directly in a mount folder part of `/`; the show's own volume
+        // is still found.
+        for dir in ["/Volumes/SHOW", "/mnt/x", "/media/u/x", "/run/media/u/x"] {
+            let gate = Gate {
+                show_dir: Some(PathBuf::from(dir)),
+                ..Gate::default()
+            };
+            assert!(
+                gate.exempt(&bucket_of(Path::new(&format!("{dir}/a.wav")))),
+                "{dir}"
+            );
+            assert_ne!(
+                bucket_of(Path::new(dir)),
+                bucket_of(&Path::new(dir).join("a")),
+                "{dir}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_catalog_exempts_the_volume_of_the_show_it_was_made_or_reset_with() {
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mk = |dir: Option<&str>| {
+            MediaCatalog::new(
+                tx.clone(),
+                dir.map(PathBuf::from),
+                0,
+                fake,
+                Duration::from_secs(30),
+                ProbeClock::system(),
+            )
+            .unwrap()
+        };
+        let mut cat = mk(Some("/Volumes/ShowDrive"));
+        let exempt = |cat: &MediaCatalog, v: &str| lock(&cat.gate).exempt(v);
+        assert!(exempt(&cat, "/Volumes/ShowDrive"));
+        assert!(!exempt(&cat, "/Volumes/Other"));
+        // Another show, on another volume.
+        cat.reset(Some(PathBuf::from("/Volumes/Other")), &template().0);
+        assert!(exempt(&cat, "/Volumes/Other"));
+        assert!(!exempt(&cat, "/Volumes/ShowDrive"));
+        cat.reset(None, &template().0);
+        assert!(!exempt(&cat, "/Volumes/Other"));
     }
 }
