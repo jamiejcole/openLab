@@ -396,6 +396,146 @@ fn a_dead_volume_does_not_starve_a_healthy_one_with_priming_on() {
     assert!(s.control().abandoned_probe_workers() <= 3);
 }
 
+/// Files this test binary pretends sit on one mounted share (a real mount cannot be made in a
+/// test); everything else is where `bucket_of` puts it.
+static SHARE_FILES: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn on_the_share(path: &std::path::Path) -> String {
+    let listed = SHARE_FILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|p| p == path);
+    if listed {
+        "/Volumes/TestShare".to_owned()
+    } else {
+        openlab_engine::control::watch::bucket_of(path)
+    }
+}
+
+/// A show whose cues 1-4 are on a share where three probes hang (two stuck and given up on,
+/// one a trial in flight) and whose cue 5 is a good file on the same share: its probe waits.
+/// Returns the show and the hanging files.
+#[allow(clippy::unwrap_used)]
+fn share_with_a_hung_trial() -> (OfflineShow, Vec<std::path::PathBuf>) {
+    let hung: Vec<_> = (0..4).map(|_| wav(&dc(200, 0.5))).collect();
+    let good = wav(&dc(200, 0.5));
+    for p in &hung {
+        gate(p);
+    }
+    SHARE_FILES
+        .lock()
+        .unwrap()
+        .extend(hung.iter().cloned().chain([good.clone()]));
+    let mut cues: Vec<_> = hung
+        .iter()
+        .zip(1u128..)
+        .map(|(p, n)| audio(n, p, 0))
+        .collect();
+    cues.push(audio(5, &good, 0));
+    let ws = workspace(cues);
+    let time = ProbeTime::new();
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = time.clock();
+    c.probe_volume = Some(on_the_share);
+    let timeout = c.probe_timeout;
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(&hung, 2);
+    time.advance(timeout + std::time::Duration::from_secs(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.control().abandoned_probe_workers() < 2 {
+        assert!(std::time::Instant::now() < deadline);
+        s.step();
+        std::thread::yield_now();
+    }
+    // The share is stalled: one trial goes to it (and hangs), the good file waits.
+    wait_probed(&hung, 3);
+    (s, hung)
+}
+
+/// A GO on a cue whose probe is deferred behind a stalled share is held like any start whose
+/// probe is not answered (it is not failed early), and plays when the share answers in time.
+#[test]
+fn a_start_on_a_deferred_file_plays_when_the_share_answers_within_the_hold() {
+    let (mut s, hung) = share_with_a_hung_trial();
+    let at = s.now() as usize;
+    start(&mut s, 5);
+    assert!(warnings(&s.take_outbound()).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "probe_wait"
+    )));
+    assert_eq!(s.control().engine().state(id(5)), CueState::Running);
+    for p in &hung {
+        release(p);
+    }
+    s.settle_media();
+    s.run(2000);
+    let first = first_nonzero(&s.channel(0)).unwrap();
+    assert!(first >= at);
+    assert_ne!(s.control().engine().state(id(5)), CueState::Broken);
+}
+
+/// Without an answer the held start fails at the hold limit (probe_timeout), as for any probe
+/// that does not answer.
+#[test]
+fn a_start_on_a_deferred_file_fails_at_the_hold_limit_when_the_share_stays_dead() {
+    let (mut s, hung) = share_with_a_hung_trial();
+    let at = start(&mut s, 5);
+    s.run_until(at + u64::from(RATE) * 5 - 4 * BLOCK);
+    assert_eq!(s.control().engine().state(id(5)), CueState::Running);
+    s.run(BLOCK * 5);
+    assert_eq!(s.control().engine().state(id(5)), CueState::Broken);
+    assert!(warnings(&s.take_outbound()).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "probe_timeout"
+    )));
+    for p in &hung {
+        release(p);
+    }
+}
+
+/// On the system disk nothing is ever held back: two slow probes and a slow third (all given
+/// up on or stuck) leave a short file probed at once, and a GO on it plays.
+#[test]
+fn slow_probes_on_the_system_disk_never_delay_a_short_file() {
+    let slow: Vec<_> = (0..3).map(|_| wav(&dc(200, 0.5))).collect();
+    let short = wav(&dc(200, 0.5));
+    for p in &slow {
+        gate(p);
+    }
+    let mut cues: Vec<_> = slow
+        .iter()
+        .zip(1u128..)
+        .map(|(p, n)| audio(n, p, 0))
+        .collect();
+    cues.push(audio(4, &short, 0));
+    let ws = workspace(cues);
+    let time = ProbeTime::new();
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = time.clock();
+    let timeout = c.probe_timeout;
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(&slow, 2);
+    time.advance(timeout + std::time::Duration::from_secs(1));
+    // Both stuck workers are replaced; the third slow file takes one fresh worker, the short
+    // file another. Only the third slow file is still pending.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.control().probes_pending() > 1 {
+        assert!(std::time::Instant::now() < deadline, "the short file waits");
+        s.step();
+        std::thread::yield_now();
+    }
+    assert_eq!(s.control().abandoned_probe_workers(), 2);
+    let at = start(&mut s, 4);
+    s.run(2000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at as usize));
+    for p in &slow {
+        release(p);
+    }
+}
+
 /// A cue whose stream stalls underruns for its whole planned length, so the engine completes
 /// it on its planned end; then its audio arrives and the voice sounds on as a tail its cue no
 /// longer owns. The stall: one disk worker, held by another cue's stream opening a pipe nobody

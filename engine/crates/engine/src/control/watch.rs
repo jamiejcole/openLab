@@ -1060,7 +1060,7 @@ impl MediaWatch {
 
     /// The volumes skipped now (stalled or failing): the probes defer to them too, so the
     /// watch's notice is the only one.
-    pub fn stalled_volumes(&self) -> impl Iterator<Item = &str> {
+    pub fn stalled_volumes(&self) -> impl Iterator<Item = &str> + Clone {
         self.volumes.keys().map(String::as_str)
     }
 
