@@ -72,6 +72,8 @@ jobs:
       FUZZ_TOOLCHAIN: nightly-2026-10-15
     steps:
       - uses: actions/checkout@v7
+      # The osc target links openlab-engine, which pulls in cpal; ALSA headers are needed to build it on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
