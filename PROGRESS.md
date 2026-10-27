@@ -2,7 +2,7 @@
 
 Current release: **v0.0.1 — basic playback rehearsal (audio only, macOS)**. Scope: requirements tagged `v0.0.1` in [`REQUIREMENTS.md`](REQUIREMENTS.md), limits in §21.
 
-How to use: tasks are ticked by whoever completes them, only when implemented **and tested**. Requirement IDs in brackets link each task to `REQUIREMENTS.md`. New work discovered along the way is added as an unticked task with a note.
+How to use: tasks are ticked by whoever completes them, only when implemented **and tested**. Requirement IDs in brackets link each task to `REQUIREMENTS.md`. New work discovered along the way is added as an unticked task with a note. **Keep task lines short** (id, title, requirement IDs, and at most a pointer such as `— see docs/handoff/tasks/M4.6.md` or a PR): every branch edits this file, so notes appended to a line make every other open PR conflict. Put notes, decisions and numbers in the PR, the task's docs or `docs/handoff/`; tick boxes and add new task lines only.
 
 **Dependency order:** M0 → (M1 → M2) in parallel with M3 → M4 → M5 → M6. M5.1–M5.2 may start once the protocol (M4.1) is defined.
 
