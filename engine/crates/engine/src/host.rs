@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use openlab_audio::{
     DeviceError, MAX_PATCHES, Mixer, MixerConfig, OpenRequest, default_output_device_id,
@@ -18,9 +19,11 @@ use openlab_core::{MAX_SHOW_FILE_BYTES, load_show};
 
 use crate::control::devices::{self, CpalDevices, StartError};
 use crate::control::{
-    Backend, Control, ControlConfig, ControlError, Inbox, OUTBOUND_CAPACITY, outbound_channel,
-    runner,
+    Backend, Control, ControlConfig, ControlError, EpochClock, Inbox, OUTBOUND_CAPACITY,
+    outbound_channel, runner,
 };
+use crate::diag::crash::{self, CrashConfig};
+use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
 use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
 use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
 
@@ -51,8 +54,41 @@ pub enum HostError {
     Thread(std::io::Error),
 }
 
+/// How long shutdown waits for the log writer to write what is queued.
+const LOG_FLUSH_WAIT: Duration = Duration::from_secs(3);
+
 /// Loads the show at `path` and plays it until stdin is closed.
 pub fn run_show(path: &Path) -> Result<(), HostError> {
+    // First, so a crash while starting is captured too. Without an app-support folder the log
+    // keeps its in-memory ring only and there are no crash files (docs/logging.md).
+    let mut show_log = ShowLog::default();
+    let mut log_writer = None;
+    if let Some(dirs) = AppDirs::system() {
+        let clock = EpochClock::system();
+        // An unwritable log folder must not stop the show: the ring still works.
+        if let Ok((sink, writer)) =
+            LogWriter::start(dirs.logs_dir(), LogLimits::default(), clock.clone())
+        {
+            show_log = ShowLog::new(Some(sink));
+            log_writer = Some(writer);
+        }
+        crash::install(CrashConfig {
+            dir: dirs.crash_dir(),
+            version: env!("CARGO_PKG_VERSION"),
+            shared: show_log.shared(),
+            clock,
+        });
+    }
+    let result = run_show_with(path, show_log);
+    // The control loop is gone, so its sink is: the writer writes what is queued and ends. A
+    // disk that hangs must not hold the process up, so the wait is bounded.
+    if let Some(writer) = log_writer {
+        writer.finish(LOG_FLUSH_WAIT);
+    }
+    result
+}
+
+fn run_show_with(path: &Path, show_log: ShowLog) -> Result<(), HostError> {
     let text = read_text(path, MAX_SHOW_FILE_BYTES)?;
     let ws = load_show(&text)?.workspace;
     let devices = output_devices()?;
@@ -100,6 +136,8 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     let mut config = ControlConfig::new(rate, block);
     config.show_path = Some(path.to_path_buf());
     config.mixer_patches = MAX_PATCHES;
+    config.show_log = show_log;
+    config.status = Some(StatusConfig::default());
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
         config.app_dirs = Some(dirs);

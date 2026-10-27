@@ -70,6 +70,16 @@ impl AppDirs {
             .join(format!("{workspace}-{}", files::path_key(show_path)))
     }
 
+    /// The show log files (`openlab.log`, rotated to `openlab.1.log`...).
+    pub fn logs_dir(&self) -> PathBuf {
+        self.root.join("Logs")
+    }
+
+    /// Crash reports, kept on this machine only.
+    pub fn crash_dir(&self) -> PathBuf {
+        self.root.join("Crashes")
+    }
+
     pub fn recovery_dir(&self) -> PathBuf {
         self.root.join("Recovery")
     }

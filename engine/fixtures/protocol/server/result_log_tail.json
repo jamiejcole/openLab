@@ -1,0 +1,79 @@
+{
+  "type": "result",
+  "id": 47,
+  "ok": {
+    "data": {
+      "type": "log_tail",
+      "entries": [
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "go",
+          "message": "message",
+          "cue": "00000000-0000-0000-0000-00000000000a"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "transport",
+          "message": "message"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "trigger",
+          "message": "message",
+          "source": "osc 192.0.2.7"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "cue_start",
+          "message": "message",
+          "cue": "00000000-0000-0000-0000-00000000000a"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "cue_stop",
+          "message": "message",
+          "cue": "00000000-0000-0000-0000-00000000000a"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "error",
+          "kind": "cue_fail",
+          "message": "message",
+          "cue": "00000000-0000-0000-0000-00000000000a"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "device",
+          "message": "message"
+        },
+        {
+          "time_ms": 1700000000123,
+          "level": "info",
+          "kind": "document",
+          "message": "message"
+        },
+        {
+          "time_ms": 1700000000123,
+          "show_time": 12.5,
+          "level": "info",
+          "kind": "engine",
+          "message": "message"
+        }
+      ],
+      "dropped": 2
+    }
+  }
+}
