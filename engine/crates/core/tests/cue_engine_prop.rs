@@ -1798,8 +1798,13 @@ impl Run {
                 prop_assert!(run.0 < PREVIEW_RUN_BASE);
                 prop_assert!(runs.insert(run), "run {:?} belongs to two cues", run);
             }
-            // A running group has a child that is not idle or loaded.
-            if matches!(c.kind, CueKind::Group { .. }) && state == CueState::Running {
+            // A running group has a child that is not idle or loaded, unless it is a playlist
+            // halted by a child that broke while playing, waiting out that child's nominal end
+            // (QLab check Q2).
+            if matches!(c.kind, CueKind::Group { .. })
+                && state == CueState::Running
+                && !self.engine.is_halted(*id)
+            {
                 prop_assert!(
                     c.children().iter().any(|k| !matches!(
                         self.engine.state(k.id),
@@ -2372,6 +2377,22 @@ fn run(case: &Case, previews: bool) -> Result<Outcome, TestCaseError> {
 fn run_with(case: &Case, previews: bool, follow_rule: bool) -> Result<Outcome, TestCaseError> {
     let mut run = Run::new(case, previews);
     run.follow_rule = follow_rule;
+    // The binary tells the nominal length of every Audio cue whose plan ends (`CueLengths`), so
+    // a playlist halted by a child failing while it plays can time its follow (QLab check Q2).
+    let mut lengths = Vec::new();
+    each(&run.ws.cue_lists[0].cues, &mut |c| {
+        if matches!(c.kind, CueKind::Audio { .. }) {
+            let length = match flavor(c.id) {
+                Flavor::Finite(len) | Flavor::FailsAfter { len, .. } => Some(len),
+                Flavor::Loop | Flavor::FailsAtOpen => None,
+            };
+            lengths.push((c.id, length));
+        }
+    });
+    run.call(
+        Input::CueLengths { lengths },
+        Kind::Operator { trigger: false },
+    )?;
     for s in &case.steps {
         run.step(s)?;
     }

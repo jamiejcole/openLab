@@ -9,6 +9,7 @@ mod common;
 
 use common::*;
 use openlab_core::*;
+use proptest::prelude::*;
 
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
 
@@ -895,4 +896,698 @@ fn h1_a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_
     rig.go(300);
     // A fresh visit: G's continue does not fire now, so the playhead stands on 2.
     assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+// ----- M2.27: the QLab checks M2.24 left open (answers 2026-10-27) -----
+
+/// Tells the engine the nominal length of Audio cues, in seconds, as the binary does from its
+/// plans (`None`: unknown or endless).
+fn lengths(rig: &mut Rig, now: SampleTime, of: &[(u128, Option<f64>)]) {
+    let lengths = of
+        .iter()
+        .map(|(n, s)| {
+            (
+                id(*n),
+                s.map(|s| (s * f64::from(RATE)).round() as SampleTime),
+            )
+        })
+        .collect();
+    rig.at(now, Input::CueLengths { lengths });
+}
+
+/// The binary's `ActionLength` for the cue's run, as it sends it when the voice starts.
+fn action_length(rig: &mut Rig, now: SampleTime, n: u128, frames: SampleTime) {
+    let run = rig.engine.run_of(id(n)).unwrap();
+    rig.at(
+        now,
+        Input::ActionLength {
+            cue: id(n),
+            run,
+            frames,
+        },
+    );
+}
+
+fn failed_while_playing(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    let run = rig.engine.run_of(id(n)).unwrap();
+    rig.at(
+        now,
+        Input::ActionFailed {
+            cue: id(n),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    )
+}
+
+fn stop(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    rig.at(
+        now,
+        Input::Stop {
+            cue: id(n),
+            fade_out: None,
+        },
+    )
+}
+
+/// QLab check Q2's setup: an auto-follow playlist of three 10 s sounds (the third given), then
+/// cue 2. GO; the first child plays out, the second starts at 10 s and breaks at 15 s.
+fn q2_rig(third: Cue, third_length: Option<f64>, loop_: bool) -> (Rig, Vec<Action>) {
+    let p = timed(
+        grp(
+            1,
+            GroupMode::Playlist {
+                loop_,
+                shuffle: false,
+            },
+            vec![sound(10), sound(11), third],
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    lengths(
+        &mut rig,
+        0,
+        &[(10, Some(10.0)), (11, Some(10.0)), (12, third_length)],
+    );
+    rig.go(0);
+    action_length(&mut rig, 0, 10, 10_000);
+    let next = rig.tick(10_000);
+    assert_eq!(starts(&next), vec![(id(11), 10_000)]);
+    action_length(&mut rig, 10_000, 11, 10_000);
+    let broke = failed_while_playing(&mut rig, 15_000, 11);
+    (rig, broke)
+}
+
+#[test]
+fn q2_a_playlist_child_that_breaks_while_playing_halts_the_playlist_and_still_follows() {
+    let (mut rig, broke) = q2_rig(sound(12), Some(10.0), false);
+    // QLab: the broken child shows broken and the playlist does not move on.
+    assert_eq!(changes(&broke, 11), vec![(CueState::Broken, 15_000)]);
+    assert!(starts(&broke).is_empty());
+    // The group keeps running to the broken child's nominal end...
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.engine.next_deadline(), Some(20_000));
+    assert!(rig.tick(19_999).is_empty());
+    let end = rig.tick(20_000);
+    // ...then its action is over (it waits for its follow as for a post-wait).
+    assert_eq!(changes(&end, 1), vec![(CueState::PostWaiting, 20_000)]);
+    assert!(starts(&end).is_empty());
+    // The cue after the group starts when the group would have ended had every child played its
+    // nominal length: 30 s after the group's start, on that exact sample.
+    assert_eq!(rig.engine.next_deadline(), Some(30_000));
+    assert!(starts(&rig.tick(29_999)).is_empty());
+    let follow = rig.tick(30_000);
+    assert_eq!(starts(&follow), vec![(id(2), 30_000)]);
+    assert_eq!(changes(&follow, 1), vec![(CueState::Idle, 30_000)]);
+    // The third child never played.
+    assert_eq!(rig.state(12), CueState::Idle);
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn q2_the_broken_childs_end_comes_from_its_nominal_length_when_its_start_did_not_tell() {
+    // No `ActionLength` for the broken child: its nominal length (`CueLengths`) dates its end
+    // from its action start.
+    let p = timed(grp(1, playlist(), vec![sound(10), sound(11)]), 0.0, 0.0, AF);
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    lengths(&mut rig, 0, &[(10, Some(4.0)), (11, Some(3.0))]);
+    rig.go(0);
+    let broke = failed_while_playing(&mut rig, 1000, 10);
+    assert!(starts(&broke).is_empty());
+    assert_eq!(rig.engine.next_deadline(), Some(4000));
+    assert!(changes(&rig.tick(4000), 1).contains(&(CueState::PostWaiting, 4000)));
+    assert_eq!(starts(&rig.tick(7000)), vec![(id(2), 7000)]);
+}
+
+#[test]
+fn q2_the_follow_counts_the_remaining_childrens_pre_waits_and_any_kind_of_child() {
+    // The rest: a Wait with a 2 s pre-wait (2 + 3 s), a disarmed sound (its pre-wait only, 1 s),
+    // a memo (0) and a sound with static problems (skipped: its 0.5 s pre-wait only).
+    let mut disarmed = timed(sound(13), 1.0, 0.0, ContinueMode::DoNotContinue);
+    disarmed.armed = false;
+    let p = timed(
+        grp(
+            1,
+            playlist(),
+            vec![
+                sound(10),
+                timed(wait(12, 3.0), 2.0, 0.0, ContinueMode::DoNotContinue),
+                disarmed,
+                memo(14),
+                timed(broken_sound(15), 0.5, 0.0, ContinueMode::DoNotContinue),
+            ],
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    lengths(&mut rig, 0, &[(10, Some(10.0))]);
+    rig.go(0);
+    action_length(&mut rig, 0, 10, 10_000);
+    failed_while_playing(&mut rig, 2000, 10);
+    rig.tick(10_000);
+    assert_eq!(rig.engine.next_deadline(), Some(16_500));
+    assert_eq!(starts(&rig.tick(16_500)), vec![(id(2), 16_500)]);
+    for n in [12, 13, 14] {
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+}
+
+#[test]
+fn q2_a_remaining_child_with_no_known_end_cancels_the_follow() {
+    // The third child's length is unknown (not probed): the group could never say when it
+    // would have ended, so it does not follow (open question in docs/cue-engine.md).
+    let (mut rig, broke) = q2_rig(sound(12), None, false);
+    assert!(starts(&broke).is_empty());
+    let end = rig.tick(20_000);
+    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 20_000)]);
+    assert!(rig.engine.next_deadline().is_none());
+    assert!(starts(&rig.tick(60_000)).is_empty());
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn q2_a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
+    for mode in [
+        GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        GroupMode::StartFirstAndGoToNext,
+        GroupMode::StartRandom,
+    ] {
+        let inner = grp(12, mode, vec![wait(20, 1.0)]);
+        let (mut rig, _) = q2_rig(inner, None, false);
+        rig.tick(20_000);
+        assert!(rig.engine.next_deadline().is_none(), "{mode:?}");
+    }
+    // A timeline or plain playlist inside has one: its longest child, the sum of its children.
+    for (mode, end) in [
+        (GroupMode::Timeline, 23_000),
+        (
+            GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            25_000,
+        ),
+    ] {
+        let inner = grp(12, mode, vec![wait(20, 2.0), wait(21, 3.0)]);
+        let (mut rig, _) = q2_rig(inner, None, false);
+        rig.tick(20_000);
+        assert_eq!(rig.engine.next_deadline(), Some(end), "{mode:?}");
+    }
+}
+
+#[test]
+fn q2_a_looping_playlist_that_halts_never_follows() {
+    let (mut rig, broke) = q2_rig(sound(12), Some(10.0), true);
+    assert!(starts(&broke).is_empty());
+    let end = rig.tick(20_000);
+    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 20_000)]);
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn q2_stop_or_panic_while_the_halted_playlist_waits_cancels_its_follow() {
+    // During the rest of the broken child, and during the wait for the follow.
+    for at in [17_000, 25_000] {
+        let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+        rig.tick(at.min(20_000));
+        let stopped = stop(&mut rig, at, 1);
+        assert_eq!(changes(&stopped, 1), vec![(CueState::Idle, at)]);
+        assert!(rig.engine.next_deadline().is_none());
+        assert!(starts(&rig.tick(30_000)).is_empty());
+
+        let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+        rig.tick(at.min(20_000));
+        rig.at(at, Input::Panic);
+        assert_eq!(rig.state(1), CueState::Idle);
+        assert!(rig.engine.next_deadline().is_none());
+        assert!(starts(&rig.tick(30_000)).is_empty());
+    }
+}
+
+#[test]
+fn q2_a_pause_while_the_halted_playlist_waits_moves_its_follow_by_the_pause() {
+    let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+    rig.at(17_000, Input::Pause { cue: id(1) });
+    assert!(rig.tick(20_000).is_empty());
+    rig.at(21_000, Input::Resume { cue: id(1) });
+    assert_eq!(rig.engine.next_deadline(), Some(24_000));
+    rig.tick(24_000);
+    rig.at(25_000, Input::Pause { cue: id(1) });
+    rig.at(26_000, Input::Resume { cue: id(1) });
+    assert_eq!(rig.engine.next_deadline(), Some(35_000));
+    assert_eq!(starts(&rig.tick(35_000)), vec![(id(2), 35_000)]);
+}
+
+#[test]
+fn q2_play_next_on_a_halted_playlist_moves_it_on() {
+    // The second trigger "play next" is the operator moving the playlist on: the next child
+    // plays, the halt is over, and as a child broke while playing the group does not follow.
+    let mut p = timed(
+        grp(1, playlist(), vec![sound(10), sound(11), wait(12, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    p.second_trigger = SecondTrigger::PlayNext;
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    lengths(&mut rig, 0, &[(10, Some(10.0)), (11, Some(10.0))]);
+    rig.go(0);
+    action_length(&mut rig, 0, 10, 10_000);
+    failed_while_playing(&mut rig, 5000, 10);
+    let next = rig.start(6000, 1);
+    assert_eq!(starts(&next), vec![(id(11), 6000)]);
+    action_length(&mut rig, 6000, 11, 10_000);
+    rig.tick(16_000);
+    let end = rig.tick(17_000);
+    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 17_000)]);
+    assert!(starts(&end).is_empty());
+}
+
+#[test]
+fn q2_a_shuffled_playlist_times_its_follow_by_the_rest_of_its_pass() {
+    // Lengths 1, 2 and 4 s; the second child of the pass breaks as it starts: the follow comes
+    // after its nominal end plus the third child of the pass, whichever that is.
+    let ms = |n: u128| -> SampleTime {
+        match n {
+            10 => 1000,
+            11 => 2000,
+            _ => 4000,
+        }
+    };
+    let n_of = |c: CueId| (10..13).find(|n| id(*n) == c).unwrap();
+    let mut thirds = Vec::new();
+    for seed in 1..8 {
+        let p = timed(
+            grp(
+                1,
+                GroupMode::Playlist {
+                    loop_: false,
+                    shuffle: true,
+                },
+                vec![sound(10), sound(11), sound(12)],
+            ),
+            0.0,
+            0.0,
+            AF,
+        );
+        let mut rig = Rig::seeded(vec![p, memo(2)], seed);
+        lengths(
+            &mut rig,
+            0,
+            &[(10, Some(1.0)), (11, Some(2.0)), (12, Some(4.0))],
+        );
+        let go = rig.go(0);
+        let first = n_of(starts(&go)[1].0);
+        action_length(&mut rig, 0, first, ms(first));
+        let t = ms(first);
+        let second = n_of(starts(&rig.tick(t))[0].0);
+        let third = (10..13).find(|c| *c != first && *c != second).unwrap();
+        thirds.push(third);
+        action_length(&mut rig, t, second, ms(second));
+        failed_while_playing(&mut rig, t, second);
+        let expected = t + ms(second) + ms(third);
+        rig.tick(t + ms(second));
+        assert_eq!(rig.engine.next_deadline(), Some(expected), "seed {seed}");
+        assert_eq!(starts(&rig.tick(expected)), vec![(id(2), expected)]);
+        assert_eq!(rig.state(third), CueState::Idle);
+    }
+    // The pass order, not the list order, decided which child was left.
+    assert!(thirds.iter().any(|t| *t != 12), "{thirds:?}");
+}
+
+#[test]
+fn q2_a_child_that_fails_before_playing_is_still_skipped_with_lengths_known() {
+    // `StartFailed` (no audio yet) is unchanged: skipped, the playlist moves on at once.
+    let p = timed(
+        grp(1, playlist(), vec![sound(10), wait(11, 0.5)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    lengths(&mut rig, 0, &[(10, Some(10.0))]);
+    rig.go(0);
+    let failed = failed_before_playing(&mut rig, 50, 10);
+    assert_eq!(starts(&failed), vec![(id(11), 50)]);
+    assert_eq!(starts(&rig.tick(550)), vec![(id(2), 550)]);
+}
+
+#[test]
+fn q2_a_single_cue_or_a_timeline_child_that_breaks_while_playing_still_cancels_the_follow() {
+    // Rule 2 is unchanged outside playlists (QLab-confirmed earlier).
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
+    lengths(&mut rig, 0, &[(1, Some(1.0))]);
+    rig.go(0);
+    action_length(&mut rig, 0, 1, 1000);
+    assert!(starts(&failed_while_playing(&mut rig, 500, 1)).is_empty());
+    assert!(starts(&rig.tick(5000)).is_empty());
+
+    let t = timed(
+        grp(1, GroupMode::Timeline, vec![sound(10), wait(11, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![t, memo(2)]);
+    lengths(&mut rig, 0, &[(10, Some(1.0))]);
+    rig.go(0);
+    failed_while_playing(&mut rig, 500, 10);
+    let end = rig.tick(1000);
+    assert_eq!(changes(&end, 1), vec![(CueState::Idle, 1000)]);
+    assert!(starts(&end).is_empty());
+}
+
+// ----- Q4: a playlist played on from a child started on its own -----
+
+fn follow_through_rig(loop_: bool, shuffle: bool) -> Rig {
+    let g = grp(
+        1,
+        GroupMode::Playlist { loop_, shuffle },
+        vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.set_playhead(11);
+    rig
+}
+
+#[test]
+fn q4_follow_through_with_loop_wraps_to_the_first_child_and_keeps_going() {
+    for shuffle in [false, true] {
+        let mut rig = follow_through_rig(true, shuffle);
+        let mut all = rig.go(0);
+        for t in 1..=7 {
+            all.extend(rig.tick(t * 1000));
+        }
+        // List order, also with shuffle on (QLab), round and round; the group never runs.
+        let expected: Vec<(CueId, SampleTime)> = [11, 12, 10, 11, 12, 10, 11, 12]
+            .iter()
+            .zip(0..)
+            .map(|(n, t)| (id(*n), t * 1000))
+            .collect();
+        assert_eq!(starts(&all), expected, "shuffle {shuffle}");
+        assert!(changes(&all, 1).is_empty());
+        assert_eq!(rig.state(2), CueState::Idle);
+        // Stop on the group (it reaches the playing child) ends it.
+        stop(&mut rig, 7500, 1);
+        assert!(rig.engine.next_deadline().is_none());
+        assert!(starts(&rig.tick(9000)).is_empty());
+    }
+}
+
+#[test]
+fn q4_panic_ends_a_looping_follow_through() {
+    let mut rig = follow_through_rig(true, false);
+    rig.go(0);
+    rig.tick(1000);
+    rig.tick(2000);
+    rig.at(2500, Input::Panic);
+    assert!(rig.engine.next_deadline().is_none());
+    assert!(starts(&rig.tick(10_000)).is_empty());
+}
+
+#[test]
+fn q4_follow_through_without_loop_ends_after_the_last_child() {
+    let mut rig = follow_through_rig(false, true);
+    let mut all = rig.go(0);
+    for t in 1..=4 {
+        all.extend(rig.tick(t * 1000));
+    }
+    assert_eq!(starts(&all), vec![(id(11), 0), (id(12), 1000)]);
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn q4_a_looping_follow_through_of_zero_length_children_is_bounded_by_the_chain_budget() {
+    let g = grp(
+        1,
+        GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        vec![memo(10), memo(11)],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    let out = rig.start(0, 10);
+    assert!(
+        warnings(&out)
+            .iter()
+            .any(|w| matches!(w, EngineWarning::ChainLimit { .. })),
+        "{out:?}"
+    );
+    assert!(starts(&out).len() > 2);
+    // Cut, not spinning: nothing left to do.
+    assert!(rig.engine.next_deadline().is_none());
+}
+
+#[test]
+fn q4_a_looping_follow_through_passes_over_children_that_cannot_start_and_wraps() {
+    // A child broken at run time is passed over on every round; the lone playable child plays
+    // round and round.
+    let g = grp(
+        1,
+        GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        vec![sound(10), wait(11, 1.0)],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.start(0, 10);
+    failed_while_playing(&mut rig, 100, 10);
+    // The failure followed through to 11 (the group has no run of its own).
+    assert_eq!(rig.state(11), CueState::Running);
+    let mut all = Vec::new();
+    for t in [1100, 2100, 3100] {
+        all.extend(rig.tick(t));
+    }
+    assert_eq!(
+        starts(&all),
+        vec![(id(11), 1100), (id(11), 2100), (id(11), 3100)]
+    );
+}
+
+// ----- Q2 against a reference: the follow of a halted playlist -----
+
+/// One child of the playlist the property builds: a sound of `len` ms or a Wait of `len` ms,
+/// with a pre-wait, armed or not.
+#[derive(Clone, Debug)]
+struct Kid {
+    sound: bool,
+    len: u64,
+    pre: u64,
+    armed: bool,
+}
+
+/// Plays an auto-follow playlist of `kids` (then cue 2) from a GO at 0, as the binary would:
+/// every voice tells its length as it starts, and child `broken` fails `after` ms into its
+/// action. Returns every action.
+fn play_halted(kids: &[Kid], broken: usize, after: u64) -> (Rig, Vec<Action>) {
+    let children: Vec<Cue> = kids
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let n = 10 + i as u128;
+            let base = if k.sound {
+                sound(n)
+            } else {
+                wait(n, k.len as f64 / 1000.0)
+            };
+            let mut c = timed(
+                base,
+                k.pre as f64 / 1000.0,
+                0.0,
+                ContinueMode::DoNotContinue,
+            );
+            c.armed = k.armed;
+            c
+        })
+        .collect();
+    let p = timed(grp(1, playlist(), children), 0.0, 0.0, AF);
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    let known: Vec<(u128, Option<f64>)> = kids
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| k.sound)
+        .map(|(i, k)| (10 + i as u128, Some(k.len as f64 / 1000.0)))
+        .collect();
+    lengths(&mut rig, 0, &known);
+    let mut all = Vec::new();
+    let mut out = rig.go(0);
+    let mut fail_at = None;
+    for _ in 0..200 {
+        for a in &out {
+            if let Action::StartVoice { cue, at, .. } = a {
+                let i = (10..10 + kids.len() as u128)
+                    .position(|n| id(n) == *cue)
+                    .unwrap();
+                let now = *at;
+                action_length(&mut rig, now, 10 + i as u128, kids[i].len);
+                if i == broken {
+                    fail_at = Some(at + after);
+                }
+            }
+        }
+        all.extend(out);
+        let next = match (rig.engine.next_deadline(), fail_at) {
+            (Some(d), Some(f)) => Some(d.min(f)),
+            (d, f) => d.or(f),
+        };
+        let Some(next) = next else {
+            break;
+        };
+        out = if fail_at == Some(next) {
+            fail_at = None;
+            failed_while_playing(&mut rig, next, 10 + broken as u128)
+        } else {
+            rig.tick(next)
+        };
+    }
+    (rig, all)
+}
+
+fn kid() -> impl Strategy<Value = Kid> {
+    (
+        any::<bool>(),
+        1u64..3000,
+        prop_oneof![0u64..1, 1u64..800],
+        0u8..8,
+    )
+        .prop_map(|(sound, len, pre, armed)| Kid {
+            sound,
+            len,
+            pre,
+            armed: armed != 0,
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// QLab check Q2: whichever child breaks while playing and whatever follows it, the
+    /// playlist starts no further child, its action ends on the broken child's nominal end, and
+    /// the cue after the group starts on the sample the group would have ended on had every
+    /// child played its nominal length (each pre-wait plus each armed child's length).
+    #[test]
+    fn q2_a_halted_playlist_follows_when_its_nominal_run_would_have_ended(
+        mut kids in prop::collection::vec(kid(), 1..6),
+        broken in any::<prop::sample::Index>(),
+        after in any::<prop::sample::Index>(),
+    ) {
+        let b = broken.index(kids.len());
+        kids[b].sound = true;
+        kids[b].armed = true;
+        kids[b].len = kids[b].len.max(2);
+        let after = 1 + after.index(usize::try_from(kids[b].len - 1).unwrap()) as u64;
+        // The reference: the nominal schedule of the whole playlist.
+        let span = |k: &Kid| k.pre + if k.armed { k.len } else { 0 };
+        let action_start: u64 = kids[..b].iter().map(span).sum::<u64>() + kids[b].pre;
+        let end = action_start + kids[b].len;
+        let follow = end + kids[b + 1..].iter().map(span).sum::<u64>();
+
+        let (rig, all) = play_halted(&kids, b, after);
+        let started: Vec<(CueId, SampleTime)> = starts(&all);
+        for later in b + 1..kids.len() {
+            prop_assert!(
+                started.iter().all(|(c, _)| *c != id(10 + later as u128)),
+                "child {later} started after the break: {started:?}"
+            );
+        }
+        prop_assert_eq!(
+            started.iter().copied().filter(|(c, _)| *c == id(2)).collect::<Vec<_>>(),
+            vec![(id(2), follow)]
+        );
+        let group: Vec<(CueState, SampleTime)> = changes(&all, 1);
+        let ended = group
+            .iter()
+            .find(|(s, _)| matches!(s, CueState::PostWaiting | CueState::Idle))
+            .map(|(_, at)| *at);
+        prop_assert_eq!(ended, Some(end), "{:?}", group);
+        prop_assert_eq!(rig.state(1), CueState::Idle);
+        prop_assert!(rig.engine.next_deadline().is_none());
+    }
+}
+
+// ----- Q1, Q3, Q5: QLab-confirmed as openLab had them (regression tests) -----
+
+#[test]
+fn q1_go_on_a_child_or_on_a_stopped_auto_follow_playlist_moves_the_playhead_as_qlab() {
+    let rig_on = |n: u128| {
+        let p = timed(
+            grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
+            0.0,
+            0.0,
+            AF,
+        );
+        let mut rig = Rig::new(vec![p, memo(2), memo(3)]);
+        rig.set_playhead(n);
+        rig
+    };
+    // GO on child 10: 10 then 11 play, the playhead goes to 2, and 2 does not start.
+    let mut rig = rig_on(10);
+    let mut all = rig.go(0);
+    all.extend(rig.tick(1000));
+    all.extend(rig.tick(2000));
+    assert_eq!(starts(&all), vec![(id(10), 0), (id(11), 1000)]);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    assert_eq!(rig.state(2), CueState::Idle);
+    // GO on the playlist: the playhead goes to 3, and 2 auto-follows the group.
+    let mut rig = rig_on(1);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    rig.tick(1000);
+    assert_eq!(starts(&rig.tick(2000)), vec![(id(2), 2000)]);
+    // GO on child 11: only 11 plays (it is the last), the playhead goes to 2.
+    let mut rig = rig_on(11);
+    let mut all = rig.go(0);
+    all.extend(rig.tick(1000));
+    assert_eq!(starts(&all), vec![(id(11), 0)]);
+    assert_eq!(rig.playhead(), Some(id(2)));
+}
+
+#[test]
+fn q3_go_on_a_child_of_a_stopped_random_or_start_first_group_plays_only_that_child() {
+    for mode in [
+        GroupMode::StartRandom,
+        GroupMode::StartFirstAndGoToNext,
+        GroupMode::StartFirstAndEnter,
+    ] {
+        let g = grp(1, mode, vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)]);
+        let mut rig = Rig::new(vec![g, memo(2)]);
+        rig.set_playhead(10);
+        let mut all = rig.go(0);
+        all.extend(rig.tick(1000));
+        assert_eq!(starts(&all), vec![(id(10), 0)], "{mode:?}");
+        assert_eq!(rig.playhead(), Some(id(11)), "{mode:?}");
+        assert_eq!(rig.state(1), CueState::Idle, "{mode:?}");
+    }
+}
+
+#[test]
+fn q5_a_child_that_ends_during_its_playlists_post_wait_does_not_carry_the_playlist_on() {
+    // The playlist runs its children (0–1 s) and then post-waits to 3 s; a child started on
+    // its own at 1.5 s ends at 2 s, inside that post-wait: nothing follows it.
+    let p = timed(
+        grp(1, playlist(), vec![wait(10, 0.5), wait(11, 0.5)]),
+        0.0,
+        3.0,
+        AC,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    rig.go(0);
+    rig.tick(500);
+    rig.tick(1000);
+    assert_eq!(rig.state(1), CueState::PostWaiting);
+    rig.start(1500, 10);
+    let end = rig.tick(2000);
+    assert!(starts(&end).is_empty());
+    assert_eq!(rig.state(11), CueState::Idle);
+    assert_eq!(starts(&rig.tick(3000)), vec![(id(2), 3000)]);
 }
