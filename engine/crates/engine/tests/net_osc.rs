@@ -2364,3 +2364,107 @@ async fn updates_go_only_to_subscribers_that_may_view() {
         format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1))
     );
 }
+
+/// A UDP socket on another loopback address that receives the replies the server sends to that
+/// address (the reply port is the fixture's own).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn udp_from(f: &Fix, last_octet: u8) -> std::net::UdpSocket {
+    let reply_port = f.udp.local_addr().unwrap().port();
+    let socket =
+        std::net::UdpSocket::bind((Ipv4Addr::new(127, 0, 0, last_octet), reply_port)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn send_from(f: &Fix, socket: &std::net::UdpSocket, m: &OscMessage) {
+    socket
+        .send_to(&encode_message(m).unwrap(), f.udp_target())
+        .unwrap();
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn recv_from(socket: &std::net::UdpSocket) -> OscMessage {
+    let mut buf = vec![0u8; 70_000];
+    let (n, _) = socket.recv_from(&mut buf).unwrap();
+    decode_packet(&buf[..n]).unwrap().remove(0)
+}
+
+/// Wrong passcodes from other addresses until the global budget is used up, proved by a
+/// stranger's correct passcode being refused.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn exhaust_the_global_budget(f: &Fix) {
+    let other = udp_from(f, 2);
+    for _ in 0..60 {
+        send_from(f, &other, &msg("/connect", vec![text("0000")]));
+    }
+    let stranger = udp_from(f, 3);
+    send_from(f, &stranger, &msg("/connect", vec![text("4444")]));
+    assert_eq!(status(&recv_from(&stranger)), "denied");
+}
+
+/// Polls until the console on the fixture's own address has lost its session.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+async fn wait_until_the_console_is_disconnected(f: &Fix) {
+    guard("the session to end", async {
+        loop {
+            f.udp_send(&msg("/cue/1/name", vec![])).await;
+            if status(&f.udp_recv().await) == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+// macOS has no 127.0.0.2 by default.
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn a_table_edit_ends_sessions_but_the_known_address_still_passes_the_global_budget() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    f.udp_send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
+    let mut narrowed = rights_table(OscRights::NONE);
+    narrowed.passcodes[3].rights = rights(true, true, false);
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![settings_upsert(narrowed)],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    wait_until_the_console_is_disconnected(&f).await;
+    exhaust_the_global_budget(&f);
+    // The address connected before the edit, so its correct passcode still gets in.
+    f.udp_send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit");
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn opening_another_workspace_forgets_the_known_addresses() {
+    let f = fixture(with_table(rights_table(OscRights::NONE))).await;
+    f.udp_send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "ok:view|edit|control");
+    // Another workspace (another id, the same table) replaces the copy through a snapshot.
+    {
+        let mut guard = f.control.workspace.lock().unwrap();
+        guard.as_mut().unwrap().id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(77));
+    }
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 9,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    wait_until_the_console_is_disconnected(&f).await;
+    exhaust_the_global_budget(&f);
+    f.udp_send(&msg("/connect", vec![text("4444")])).await;
+    assert_eq!(status(&f.udp_recv().await), "denied");
+}
