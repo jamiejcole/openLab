@@ -24,7 +24,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let cueList: CueListViewController
-    let inspector = InspectorViewController()
+    let inspector: InspectorViewController
     let sidebar: SidebarViewController
     private var sub: AnyCancellable?
     let footer = FooterBar()
@@ -35,6 +35,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         self.store = store
         cueList = CueListViewController(store: store)
         sidebar = SidebarViewController(store: store)
+        inspector = InspectorViewController(store: store)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -45,6 +46,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 800, height: 500)
         super.init(window: window)
         window.delegate = self
+        cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
@@ -78,6 +80,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc private func pauseAllClicked() { onPauseAll?() }
     @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
+
+    /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
+    /// (Save, Close, Quit) must stop.
+    func commitPendingEdits() async -> Bool { await inspector.commitPendingEdits() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()

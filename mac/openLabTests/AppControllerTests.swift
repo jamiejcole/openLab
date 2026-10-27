@@ -650,6 +650,75 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Quit
 
+    // MARK: Pending inspector edits
+
+    /// Types a name in the inspector of "doc-1" without committing it.
+    private func typePendingName(_ text: String = "Typed") throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.intro])
+        wc.inspector.nameField.stringValue = text
+        wc.inspector.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.nameField))
+        return wc
+    }
+
+    private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.received.firstIndex(where: match) }
+    private func isCommand(_ m: ClientMessage) -> Bool {
+        if case .command = m { return true } else { return false }
+    }
+
+    func testCloseSendsThePendingEditFirst() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertTrue(closed)
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let close = try XCTUnwrap(index { if case .provisional(.close) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, close)
+    }
+
+    func testSaveFromThePromptSendsThePendingEditBeforeTheSave() async throws {
+        _ = try typePendingName()
+        await makeDirty("doc-1")
+        alerts.saveChoices = [.save]
+        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        _ = await app.closeWorkspace("doc-1")
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let save = try XCTUnwrap(index { if case .request(_, .saveAs) = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, save)
+    }
+
+    func testQuitSendsThePendingEditBeforeGoodbye() async throws {
+        _ = try typePendingName()
+        alerts.saveChoices = [.dontSave]  // the edit made the workspace dirty
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "\(alerts.log) \(alerts.errors)")
+        await assertEventually { self.index { if case .goodbye = $0 { return true } else { return false } } != nil }
+        let edit = try XCTUnwrap(index { self.isCommand($0) })
+        let bye = try XCTUnwrap(index { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertLessThan(edit, bye)
+    }
+
+    func testInvalidPendingEditStopsCloseAndQuit() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.fade])
+        func typeBadTime() {
+            wc.inspector.preWaitField.stringValue = "abc"
+            wc.inspector.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
+        }
+        typeBadTime()
+        let closed = await app.closeWorkspace("doc-1")
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(app.windows["doc-1"])
+        typeBadTime()
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, loc("inspector.invalid.time"))
+    }
+
     func testQuitWalksEveryDirtyWorkspaceThenSaysGoodbye() async throws {
         let b = try await addWorkspace()
         let c = try await addWorkspace()
