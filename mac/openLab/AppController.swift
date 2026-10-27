@@ -94,7 +94,7 @@ final class AppController {
                 case .runtime, .progress, .notices: break
                 }
             }
-            if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.window?.title = n.name }
+            if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.workspaceName = n.name }
             show(doc)
         }
         for doc in windows.keys where stores[doc] == nil { dropWindow(doc) }
@@ -111,8 +111,8 @@ final class AppController {
 
     private func updateTitles(_ list: [WorkspaceInfo]) {
         for info in list {
-            guard let window = windows[info.doc]?.window else { continue }
-            window.title = info.name
+            guard let wc = windows[info.doc], let window = wc.window else { continue }
+            wc.workspaceName = info.name
             window.isDocumentEdited = info.dirty
         }
     }
@@ -360,6 +360,11 @@ final class AppController {
     /// told to the operator and written to the show log; the cues that were fixed leave the
     /// Warnings tab by themselves when the engine reports them playable.
     func relinkMedia(on store: WorkspaceStore) async {
+        // It rewrites the workspace's media paths: an edit, locked in Show Mode (SM-01).
+        if windows.values.contains(where: { $0.store === store && $0.isShowMode }) {
+            NSSound.beep()
+            return
+        }
         guard let folder = pickFolderURL() else { return }
         switch await store.relink(folder: folder.path) {
         case .success(let ok):

@@ -573,17 +573,17 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(first.footer.showModeLabel.isHidden)
     }
 
-    func testFooterSwitchDrivesShowMode() throws {
+    func testFooterSwitchDrivesShowModeAndKeepsTheWorkspaceNameInTheTitle() async throws {
         let wc = try XCTUnwrap(app.windows["doc-1"])
         let switcher = wc.footer.modeSwitch
         switcher.selectedSegment = 1
         _ = switcher.target?.perform(switcher.action, with: switcher)
-        XCTAssertTrue(wc.isShowMode)
-        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), loc("window.main.title")))
+        await assertEventually { wc.isShowMode }
+        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Test"))
         switcher.selectedSegment = 0
         _ = switcher.target?.perform(switcher.action, with: switcher)
-        XCTAssertFalse(wc.isShowMode)
-        XCTAssertEqual(wc.window?.title, loc("window.main.title"))
+        await assertEventually { !wc.isShowMode }
+        XCTAssertEqual(wc.window?.title, "Test")
     }
 
     func testTransportStillWorksInShowMode() async throws {
@@ -657,6 +657,58 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
+    }
+
+    func testEnteringShowModeCommitsAValidPendingEditThenLocks() async throws {
+        let wc = try typePendingName("Thunder")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertTrue(engine.received.contains { isCommand($0) }, "the edit was sent first")
+        await assertEventually { wc.inspector.nameField.stringValue == "Thunder" }
+        XCTAssertFalse(wc.inspector.nameField.isEnabled)
+    }
+
+    func testEnteringShowModeWithAnInvalidPendingEditStaysInEditMode() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        wc.inspector.setSelection([CueListHarness.fade])
+        wc.inspector.preWaitField.stringValue = "abc"
+        wc.inspector.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
+        await wc.requestShowMode(true)
+        XCTAssertFalse(wc.isShowMode)
+        XCTAssertFalse(wc.inspector.isLocked)
+        XCTAssertEqual(wc.footer.modeSwitch.selectedSegment, 0)
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertFalse(wc.inspector.messageLabel.stringValue.isEmpty, "the field's message shows")
+    }
+
+    func testLockingDropsStaleTextAndShowsTheModelsText() throws {
+        let wc = try typePendingName("Never sent")
+        wc.setShowMode(true)  // bypasses the commit: the safety net in the inspector
+        XCTAssertEqual(wc.inspector.nameField.stringValue, "Intro")
+        XCTAssertFalse(engine.received.contains { isCommand($0) })
+    }
+
+    func testRelinkIsRefusedInShowModeAndTheMenuItemIsOff() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let store = wc.store
+        var asked = false
+        app.pickFolderURL = {
+            asked = true
+            return URL(fileURLWithPath: "/m")
+        }
+        wc.setShowMode(true)
+        await app.relinkMedia(on: store)
+        XCTAssertFalse(asked)
+        XCTAssertTrue(relinkRequests().isEmpty)
+        XCTAssertTrue(wc.sidebar.relinkLocked)
+        wc.setShowMode(false)
+        XCTAssertFalse(wc.sidebar.relinkLocked)
+        engine.relinkData = .object([
+            "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+        ])
+        await app.relinkMedia(on: store)
+        XCTAssertTrue(asked, "Edit Mode relinks as before")
     }
 
     func testQuitIdleInEditModeAsksNoConfirmation() async throws {
