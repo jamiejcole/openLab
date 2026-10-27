@@ -506,6 +506,20 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "log_entry",
+        server(ServerMessage::LogEntry {
+            seq: 41,
+            entry: log_entry_sample(LogKind::Trigger),
+        }),
+    );
+    add(
+        "log_entry_document",
+        server(ServerMessage::LogEntry {
+            seq: 42,
+            entry: log_entry_sample(LogKind::Document),
+        }),
+    );
+    add(
         "status",
         server(ServerMessage::Status {
             status: Box::new(status_sample()),
@@ -589,6 +603,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                 data: Some(ResultData::LogTail {
                     entries: all_log_kinds().into_iter().map(log_entry_sample).collect(),
                     dropped: 2,
+                    seq: 1009,
                 }),
             }),
         }),
@@ -1173,6 +1188,35 @@ fn status_is_sanitised_not_refused() {
     assert_eq!(status.cpu_percent, Some(0.0));
     assert_eq!(status.engine_load, Some(0.0));
     assert_eq!(status.device.latency_ms, Some(0.0));
+}
+
+#[test]
+fn a_log_entry_with_a_bad_show_time_is_sent_without_it() {
+    let mut entry = log_entry_sample(LogKind::Go);
+    entry.show_time = Some(f64::NAN);
+    let wire = encode_server(&ServerMessage::LogEntry { seq: 3, entry }).unwrap();
+    let ServerMessage::LogEntry { seq, entry } = decode_server(&wire).unwrap() else {
+        panic!("not a log_entry");
+    };
+    assert_eq!((seq, entry.show_time), (3, None));
+}
+
+#[test]
+fn a_log_tail_result_without_seq_still_decodes() {
+    // Additive field: an answer from before M4.7c reads as seq 0.
+    let text =
+        r#"{"type":"result","id":1,"ok":{"data":{"type":"log_tail","entries":[],"dropped":0}}}"#;
+    let ServerMessage::Result { outcome, .. } = decode_server(text).unwrap() else {
+        panic!("not a result");
+    };
+    let Outcome::Ok(OkBody {
+        data: Some(ResultData::LogTail { seq, .. }),
+        ..
+    }) = outcome
+    else {
+        panic!("not a log_tail");
+    };
+    assert_eq!(seq, 0);
 }
 
 #[test]

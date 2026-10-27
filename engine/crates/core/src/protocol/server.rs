@@ -26,6 +26,7 @@ pub const SERVER_TYPES: &[&str] = &[
     "progress",
     "meters",
     "log",
+    "log_entry",
     "status",
     "warnings",
     "result",
@@ -72,6 +73,13 @@ pub enum ServerMessage {
     Log {
         level: LogLevel,
         message: String,
+    },
+    /// One new show-log record, as it is made (DX-02, M4.7c): for a live log view. Lossy like
+    /// `meters`, and rate-limited: `seq` rises by one per record the engine makes, pushed or
+    /// not, so a gap means records to fetch with `log_tail` (whose `seq` says where it ends).
+    LogEntry {
+        seq: u64,
+        entry: LogEntry,
     },
     /// System health, about once a second and when something changes (DX-03). Lossy like
     /// `meters`: the next one replaces it.
@@ -147,6 +155,11 @@ pub enum ResultData {
         /// Entries the engine could not write to the log file so far (the disk fell behind).
         /// They are still in `entries` while they are in the engine's memory.
         dropped: u64,
+        /// The `seq` of the newest record the engine has made (0: none yet), the last of
+        /// `entries` unless `max` cut them short. A `log_entry` with a `seq` up to this one is
+        /// already covered by this answer.
+        #[serde(default)]
+        seq: u64,
     },
 }
 
@@ -486,6 +499,9 @@ impl ServerMessage {
                     *peak = clean(f64::from(*peak)) as f32;
                 }
             }
+            Self::LogEntry { entry, .. } => {
+                entry.show_time = entry.show_time.filter(|t| t.is_finite());
+            }
             Self::Status { status } => {
                 status.cpu_percent = status.cpu_percent.map(clean);
                 status.engine_load = status.engine_load.map(clean);
@@ -506,6 +522,7 @@ impl ServerMessage {
             Self::Progress { .. } => "progress",
             Self::Meters { .. } => "meters",
             Self::Log { .. } => "log",
+            Self::LogEntry { .. } => "log_entry",
             Self::Status { .. } => "status",
             Self::Warnings { .. } => "warnings",
             Self::Result { .. } => "result",
@@ -526,6 +543,7 @@ pub fn encode_server(message: &ServerMessage) -> Result<String, ProtocolError> {
     match message {
         ServerMessage::Progress { .. }
         | ServerMessage::Meters { .. }
+        | ServerMessage::LogEntry { .. }
         | ServerMessage::Status { .. } => {
             let mut clean = message.clone();
             clean.sanitise();

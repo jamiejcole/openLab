@@ -22,7 +22,11 @@ Trigger records are limited to 5 per source per 10 s (wall clock); the rest are 
 
 Common fields: `time_ms` (wall clock UTC from the control config's `EpochClock`), `show_time` (seconds of audio rendered), `level`, `kind`, `message`. The record type is the protocol's `LogEntry` ([protocol.md](protocol.md)).
 
-Every message the loop used to send as `log` is still sent, unchanged (and now also recorded); the new kinds are only in the log. A client reads recent history with `log_tail`; a live view refreshes it on `runtime`/`log`/`status` messages or on a timer (live push of records is not part of v0.0.1).
+Every message the loop used to send as `log` is still sent, unchanged (and now also recorded); the new kinds are only in the log. A client reads recent history with `log_tail` and follows new records live with `log_entry` (below).
+
+### Live push (M4.7c)
+
+When `ControlConfig::push_log` is set (the host sets it; offline tests leave it off), `Control::record` sends each new record as a `log_entry { seq, entry }` message ([protocol.md](protocol.md)): `seq` is the record's number in this run (`ShowLog` counts them under the ring's lock, and `log_tail` answers with the newest one), so a client joins the tail and the pushes without duplicates and sees any gap. Pushes are lossy (`Outbound::try_lossy`: refused while the outbound channel is half full, like `meters`; the network hub drops them per client on the same rule without marking it lagged) and limited to 200 per 10 s wall-clock window, the trigger records' window. The newest record not delivered is kept and offered again each tick until the budget and the channel allow, so a client learns of a gap without waiting for the next record (a budget hold-back: when the window ends). Lost pushes are not counted in the "clients were not keeping up" notice: that notice is a pushed record too and would report its own loss.
 
 ### In memory
 

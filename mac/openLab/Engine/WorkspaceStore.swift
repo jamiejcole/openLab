@@ -160,8 +160,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
             status = s
-        case .meters, .result, .error, .provisional, .unknown:
-            break  // meters have no consumer yet; the rest belong to the client or session.
+        case .meters, .logEntry, .result, .error, .provisional, .unknown:
+            // Meters and live log records have no consumer yet (the log window reads
+            // `log_tail`); the rest belong to the client or session.
+            break
         }
         return .applied
     }

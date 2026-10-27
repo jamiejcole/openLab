@@ -108,10 +108,24 @@ impl Outbound {
 
     /// Meters and progress: dropped while the channel is half full, to keep room for the rest.
     pub fn send_lossy(&mut self, message: ServerMessage) {
+        if self.try_lossy(message).is_err() {
+            self.lossy_dropped += 1;
+        }
+    }
+
+    /// The rule of [`Outbound::send_lossy`], handing a dropped message back and not counting
+    /// it: for `log_entry`, whose losses the client sees in its `seq` and the caller offers
+    /// again. (Counting them would make the "not keeping up" notice, itself a pushed record,
+    /// report its own loss.)
+    pub fn try_lossy(&mut self, message: ServerMessage) -> Result<(), ServerMessage> {
         let max = self.tx.max_capacity();
         let queued = max.saturating_sub(self.tx.capacity());
-        if queued * 2 >= max || self.offer(message).is_err() {
-            self.lossy_dropped += 1;
+        if queued * 2 >= max {
+            return Err(message);
+        }
+        match self.tx.try_send(message) {
+            Ok(()) | Err(TrySendError::Closed(_)) => Ok(()),
+            Err(TrySendError::Full(m)) => Err(m),
         }
     }
 

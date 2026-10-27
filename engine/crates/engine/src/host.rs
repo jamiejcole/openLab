@@ -169,6 +169,7 @@ fn run_show_with(path: &Path, show_log: ShowLog) -> Result<(), HostError> {
     config.mixer_patches = MAX_PATCHES;
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
+    config.push_log = true;
     if let Some(dirs) = AppDirs::system() {
         config.machine = load_machine_settings(&dirs).settings;
         config.app_dirs = Some(dirs);
