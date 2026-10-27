@@ -438,6 +438,8 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// count (a panic with overflow checks on, as here); contained as a typed error.
 /// `mp4-stts-overflow.m4a`: symphonia 0.6.1's `stts` reader sums sample counts in `u32`; the table
 /// is rejected before symphonia parses it (see `pre_checked_mp4_stts_finding_is_rejected`).
+/// `wav-1hz-resampler-oom.wav`: a 1 Hz sample rate made the resampler size an FFT chunk of tens
+/// of millions of frames per channel (out of memory); rates below 8 kHz are now unplayable.
 /// `flac-damaged-no-checkpoints.flac`: damage in a file too short for a seek checkpoint asked
 /// for checkpoint 0 and underflowed (only with `cfg(fuzzing)`, where symphonia skips FLAC CRCs).
 #[test]
@@ -496,6 +498,65 @@ fn pcm_headers_symphonia_would_overflow_on_are_rejected_first() {
     assert!(header_error(probe_media(reader(a))));
     // Valid headers pass, and the reader is rewound for symphonia.
     assert!(probe_media(reader(aiff(&tone(10, RATE), 2, RATE, Pcm::I24))).is_ok());
+}
+
+/// Sets a canonical WAV's rate field (and byte rate, which nothing checks).
+fn with_rate(mut w: Vec<u8>, rate: u32) -> Vec<u8> {
+    w[24..28].copy_from_slice(&rate.to_le_bytes());
+    w
+}
+
+fn reader(b: Vec<u8>) -> Media {
+    Media::Reader(Box::new(Cursor::new(b)), Some("wav".into()))
+}
+
+/// The fuzz finding probes as unplayable (it used to probe fine and then exhaust memory when the
+/// pipeline built a resampler for 1 Hz to 48 kHz), so nothing is ever sized from its rate.
+#[test]
+fn one_hz_wav_finding_is_unplayable() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings/wav-1hz-resampler-oom.wav");
+    let r = probe(&path);
+    assert!(
+        matches!(&r, Err(MediaError::Unsupported(m)) if m.contains("sample rate 1 Hz")),
+        "{r:?}"
+    );
+    assert!(matches!(
+        preload(Media::Path(path)),
+        Err(MediaError::Unsupported(_))
+    ));
+}
+
+/// Sample rates outside 8 kHz..=384 kHz are unplayable; the bounds themselves play.
+#[test]
+fn sample_rates_outside_the_supported_range_are_unplayable() {
+    for rate in [0, 1, 2, 100, 7_999, 384_001, u32::MAX / 4] {
+        let w = with_rate(wav(&tone(64, 8_000), 2, 8_000, Pcm::I16), rate);
+        let r = probe_media(reader(w));
+        assert!(
+            matches!(r, Err(MediaError::Unsupported(_))),
+            "{rate}: {r:?}"
+        );
+    }
+    for rate in [8_000, 8_001, 44_100, 384_000] {
+        let w = with_rate(wav(&tone(64, 8_000), 2, 8_000, Pcm::I16), rate);
+        let p = probe_media(reader(w)).unwrap();
+        assert_eq!((p.info.sample_rate, p.info.frames), (rate, 64));
+    }
+}
+
+/// The largest channel count at the lowest rate (biggest resampler buffers) and a data chunk that
+/// claims 4 GiB in a tiny file both probe, preload and stream without large allocations.
+#[test]
+fn extreme_header_sizes_stay_bounded() {
+    let w = wav(&tone(2_000, 8_000).repeat(64), 64, 8_000, Pcm::I16);
+    assert_eq!(openlab_audio::fuzz_decode(&w), Ok(()));
+    let mut w = wav(&tone(100, RATE), 2, RATE, Pcm::I16);
+    let data_len = w.len() - 8;
+    w[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+    w[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(w.len() - 44, data_len - 36);
+    assert_eq!(openlab_audio::fuzz_decode(&w), Ok(()));
 }
 
 /// Preload stays within its memory budget: over it is a typed error, never an allocation abort.
