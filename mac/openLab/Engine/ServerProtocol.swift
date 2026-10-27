@@ -275,12 +275,16 @@ struct RecoveryEntryInfo: Hashable, Sendable, Decodable {
 /// The pre-show check (SM-06, NFR-07); Rust: `PreshowReport`. Every list is sorted for display.
 struct PreshowSummary: Hashable, Sendable, Decodable {
     let brokenCues: UInt64
+    /// Missing or unsupported files: causes of broken cues, not counted in `total`.
     let media: UInt64
+    /// Patches with no device that some cue uses (spare patches are listed but not counted); not in `total`.
     let patches: UInt64
     /// Destinations with status `missing`; `networkUnchecked` ones are neither a problem nor known fine.
     let network: UInt64
     let networkUnchecked: UInt64
+    /// `system` entries that are problems (`preload_over_budget` is information and not counted).
     let system: UInt64
+    /// `brokenCues + system`: the problem rows a list shows.
     let total: UInt64
     enum CodingKeys: String, CodingKey {
         case media, patches, network, system, total

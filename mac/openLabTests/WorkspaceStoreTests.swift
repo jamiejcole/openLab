@@ -306,13 +306,21 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(clean.summary.total, 0)
         XCTAssertTrue(rig.engine.received.contains { $0.isPreshowCheck })
 
+        rig.engine.preshowProblems = true
+        guard case .success(let bad) = await rig.store.preshowCheck() else { return XCTFail("sample") }
+        XCTAssertFalse(bad.ok)
+        XCTAssertEqual(bad.summary.total, 2)
+        XCTAssertEqual(bad.brokenCues.map(\.name), ["Storm"])
+        XCTAssertEqual(bad.media.map(\.status), [.missing])
+        XCTAssertEqual(bad.system.count, 1)
+
         guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_preshow_check")),
             case .preshowCheck(let r)? = ok.data
         else { return XCTFail("fixture") }
         XCTAssertFalse(r.ok)
         XCTAssertEqual(r.summary.brokenCues, 2)
         XCTAssertEqual(r.summary.networkUnchecked, 1)
-        XCTAssertEqual(r.summary.total, 8)
+        XCTAssertEqual(r.summary.total, 3)
         XCTAssertEqual(r.brokenCues.map(\.name), ["Storm", ""])
         XCTAssertEqual(r.brokenCues[0].number, "3")
         XCTAssertNil(r.brokenCues[1].number)

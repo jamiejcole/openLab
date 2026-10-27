@@ -160,8 +160,9 @@ pub enum ResultData {
 /// status is the latest probe, `docs/control.md`). Every list is sorted for display.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PreshowReport {
-    /// True when nothing is listed as a problem (`network` entries that are only `not_checked`
-    /// are not problems).
+    /// True when nothing is a problem: no broken cue, no `system` problem, and none of the
+    /// lists below holds a problem. Not problems: `network` entries that are only `not_checked`,
+    /// patches no cue uses, and the informational `preload_over_budget` warning.
     pub ok: bool,
     pub summary: PreshowSummary,
     /// Cues with static problems, in workspace order (lists in order, cues depth-first).
@@ -169,30 +170,36 @@ pub struct PreshowReport {
     /// Media files that are missing or cannot be played, by path.
     pub media: Vec<PreshowMedia>,
     /// Output patches with no device to play on, in workspace order, then patches cues name that
-    /// the workspace does not have, by id.
+    /// the workspace does not have, by id. A patch no cue uses is listed (`cues` is empty) but is
+    /// not counted in the summary and does not fail the check.
     pub patches: Vec<PreshowPatch>,
     /// Network destinations cues use, by name, then destinations cues name that the workspace
     /// does not have, by id.
     pub network: Vec<PreshowTarget>,
     /// The workspace-level warnings in force (device lost or stalled, damaged media, cues whose
-    /// slices cannot play, ...), as in the `warnings` message, minus the `cue_broken` notices
-    /// that `broken_cues` lists; by `code`, then cue, then message.
+    /// slices cannot play, ...), as in the `warnings` message; by `code`, then cue, then message.
+    /// `preload_over_budget` is information: listed, not counted, never a failure.
     pub system: Vec<WireWarning>,
 }
 
-/// How many entries each list of a [`PreshowReport`] has.
+/// How many problems a [`PreshowReport`] holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreshowSummary {
     pub broken_cues: u64,
+    /// Media files missing or unsupported (the cause of broken cues, not counted in `total`).
     pub media: u64,
+    /// Patches with no device that some cue uses (not counted in `total`; unused ones are not
+    /// counted at all).
     pub patches: u64,
     /// Destinations with status `missing` (the problems).
     pub network: u64,
     /// Destinations with status `not_checked`: reachability is not probed, so they are neither
     /// a problem nor known to be fine.
     pub network_unchecked: u64,
+    /// `system` entries that are problems (not `preload_over_budget`).
     pub system: u64,
-    /// `broken_cues + media + patches + network + system`.
+    /// `broken_cues + system`: the problem rows a list shows. Media, patches and destinations
+    /// are the causes of broken cues, already in `broken_cues`.
     pub total: u64,
 }
 
