@@ -115,6 +115,7 @@ enum Request: Hashable, Sendable, Codable {
     case revert(discardChanges: Bool = false)
     case relink(folder: String)
     case listDevices
+    case logTail(max: UInt32? = nil)
     case snapshot
 
     /// Replies with a `snapshot`, so the engine holds this connection's broadcasts until the
@@ -153,6 +154,9 @@ enum Request: Hashable, Sendable, Codable {
             return ("revert", f)
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
+        case .logTail(let max):
+            opt(&f, "max", max)
+            return ("log_tail", f)
         case .snapshot: return ("snapshot", [])
         }
     }
@@ -179,6 +183,7 @@ enum Request: Hashable, Sendable, Codable {
         case "revert": self = .revert(discardChanges: discard)
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
+        case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
         case "snapshot": self = .snapshot
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))

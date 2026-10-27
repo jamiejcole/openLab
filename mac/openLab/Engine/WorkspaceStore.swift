@@ -30,6 +30,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var warnings: [WireWarning] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []
+    /// The latest `status` (system health, DX-03); nil until the first one arrives.
+    @Published private(set) var status: SystemStatus?
     @Published private(set) var logEntries: [LogEntry] = []
     @Published private(set) var connectionState: ConnectionState = .idle
 
@@ -73,6 +75,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func relink(folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder)) }
     }
+    /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
+    func logTail(max: UInt32? = nil) async -> Result<(entries: [ShowLogEntry], dropped: UInt64), EngineError> {
+        switch await client.send({ .request(id: $0, .logTail(max: max)) }) {
+        case .success(let ok):
+            if case .logTail(let entries, let dropped)? = ok.data { return .success((entries, dropped)) }
+            return .failure(.encoding("log_tail result has no log_tail data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
     func listDevices() async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .listDevices) }
     }
@@ -102,6 +114,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .log(let level, let text):
             logEntries.append(LogEntry(level: level, message: text))
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
+        case .status(let s):
+            status = s
         case .meters, .result, .error, .provisional, .unknown:
             break  // meters have no consumer yet; the rest belong to the client or session.
         }
