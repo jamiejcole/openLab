@@ -32,6 +32,8 @@ pub enum Inbox {
     /// The document worker's answer to an open, revert or scan (internal feedback,
     /// docs/control.md "Documents").
     Doc(super::docs::DocAnswer),
+    /// The media watch's findings (internal feedback, docs/control.md "Media watch").
+    Watch(super::watch::WatchAnswer),
     /// A log entry from another thread (the network layer), sent out like the loop's own.
     Log { level: LogLevel, message: String },
     /// An input from a client or OSC peer is about to arrive: sent by the network layer just

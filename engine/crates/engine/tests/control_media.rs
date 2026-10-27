@@ -151,8 +151,18 @@ fn the_control_loop_never_waits_for_the_disk() {
     s.run(BLOCK * 10);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // A writer releases the probe with something unplayable: the waiting start fails.
-    std::fs::write(&fifo, b"not audio").unwrap();
+    // A writer releases the probe with something unplayable: the waiting start fails. Opening
+    // the pipe is the hand-over (it returns once the probe's read end is open). The probe
+    // refuses a pipe at its first seek and closes it without reading, so the bytes below race
+    // with that close and may hit EPIPE: they are only there to be unplayable if read, and the
+    // outcome does not depend on them, so a broken pipe is fine.
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    match std::io::Write::write_all(&mut writer, b"not audio") {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("writing the pipe: {e}"),
+    }
+    drop(writer);
     s.settle_media();
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
