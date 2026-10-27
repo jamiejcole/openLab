@@ -1,0 +1,9 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "move_cue_list",
+    "id": "00000000-0000-0000-0000-000000000005",
+    "index": 0
+  }
+}

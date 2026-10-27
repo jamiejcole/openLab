@@ -33,9 +33,9 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
-    ErrorCode, LogKind, LogLevel, OkBody, Outcome, OutputMeter, PlayheadEntry, ProgressItem,
-    Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, WireProblem,
-    WireWarning,
+    ErrorCode, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter, PlayheadEntry,
+    ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction,
+    WireProblem, WireWarning,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
@@ -500,13 +500,41 @@ impl Control {
                 }
                 reply(to, ok(id, None));
             }
-            ClientMessage::Command { id, command } => {
+            ClientMessage::Command {
+                id,
+                command,
+                coalesce,
+            } => {
+                if coalesce
+                    .as_ref()
+                    .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
+                {
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
+                            )),
+                        },
+                    );
+                    return Flow::Continue;
+                }
+                if let Some(e) = self.patch_layout_conflict(Some(&command), false) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
-                match self.history.execute(&mut self.ws, *command) {
-                    Ok(()) => {
-                        // An empty transaction (or one naming no cue) changed nothing and
-                        // is no undo step: no revision, no `model_changed`, not dirty.
-                        if !footprint.is_empty() {
+                match self
+                    .history
+                    .execute_coalescing(&mut self.ws, *command, coalesce.as_deref())
+                {
+                    Ok(changed) => {
+                        // An empty transaction, or an edit that sets what is already there,
+                        // changed nothing and is no undo step: no revision, no
+                        // `model_changed`, not dirty.
+                        if changed {
                             self.edited(now, &footprint);
                         }
                         reply(to, ok(id, Some(self.revision)));
@@ -524,6 +552,15 @@ impl Control {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
+                let step = if undo {
+                    self.history.peek_undo()
+                } else {
+                    self.history.peek_redo()
+                };
+                if let Some(e) = self.patch_layout_conflict(step, true) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let result = if undo {
                     self.history.undo(&mut self.ws)
                 } else {
@@ -592,6 +629,33 @@ impl Control {
         Flow::Continue
     }
 
+    /// Patch positions are mixer matrix slots (PROGRESS M4.2f/M4.15b): inserting before the
+    /// end, removing, moving or resizing a patch would re-route or silence a voice on the
+    /// device, whatever cue it belongs to (a show cue, a preview, a stopping tail, an orphan)
+    /// and whatever patch that cue's model names now. So any such edit, undo or redo
+    /// (`Command::changes_patch_layout`, judged on the final state of a transaction) is refused
+    /// while any voice is on the device. Lifted by the stable slot allocator.
+    fn patch_layout_conflict(
+        &self,
+        step: Option<&Command>,
+        restoring: bool,
+    ) -> Option<CommandError> {
+        let step = step?;
+        if self.voices.on_device().is_empty() || !step.changes_patch_layout(&self.ws) {
+            return None;
+        }
+        // A step that would be refused anyway (a patch a cue uses, a bad value) gets that
+        // reason, not this one. The dry run clones the workspace, but only for a patch layout
+        // edit while audio plays.
+        let mut dry = self.ws.clone();
+        let applied = if restoring {
+            dry.apply_restoring(step.clone())
+        } else {
+            dry.apply(step.clone())
+        };
+        applied.is_ok().then_some(CommandError::PatchPlaying)
+    }
+
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
     /// longer than the action's known length, after the engine completed the action on its
     /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
@@ -657,7 +721,13 @@ impl Control {
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        self.engine.model_changed_cues(footprint);
+        // Lists, patches and settings decide which cues are broken and where the playheads are:
+        // the cue-scoped shortcut is only for edits that touched cues alone.
+        if footprint.is_model_wide() {
+            self.engine.model_changed();
+        } else {
+            self.engine.model_changed_cues(footprint);
+        }
         self.revision += 1;
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues (M4.12c). The walk is the fallback.

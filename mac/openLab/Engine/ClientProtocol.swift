@@ -205,7 +205,9 @@ enum Request: Hashable, Sendable, Codable {
 
 enum ClientMessage: Hashable, Sendable, Codable {
     case hello(Hello)
-    case command(id: UInt64, Command)
+    /// `coalesce`: edits sent with the same key join one undo step (docs/commands.md "Coalescing");
+    /// absent on the wire when nil.
+    case command(id: UInt64, Command, coalesce: String? = nil)
     case transport(id: UInt64, TransportAction)
     case undo(id: UInt64)
     case redo(id: UInt64)
@@ -217,7 +219,10 @@ enum ClientMessage: Hashable, Sendable, Codable {
     func encode(to encoder: Encoder) throws {
         switch self {
         case .hello(let h): try h.encode(to: encoder)
-        case .command(let id, let cmd): try encodeTagged("command", [("id", id), ("command", cmd)], to: encoder)
+        case .command(let id, let cmd, let coalesce):
+            var fields: Fields = [("id", id), ("command", cmd)]
+            if let coalesce { fields.append(("coalesce", coalesce)) }
+            try encodeTagged("command", fields, to: encoder)
         case .transport(let id, let a): try encodeTagged("transport", [("id", id), ("action", a)], to: encoder)
         case .undo(let id): try encodeTagged("undo", [("id", id)], to: encoder)
         case .redo(let id): try encodeTagged("redo", [("id", id)], to: encoder)
@@ -232,7 +237,10 @@ enum ClientMessage: Hashable, Sendable, Codable {
         func id() throws -> UInt64 { try c.decode(UInt64.self, forKey: "id") }
         switch try c.decode(String.self, forKey: "type") {
         case "hello": self = .hello(try Hello(from: decoder))
-        case "command": self = .command(id: try id(), try c.decode(Command.self, forKey: "command"))
+        case "command":
+            self = .command(
+                id: try id(), try c.decode(Command.self, forKey: "command"),
+                coalesce: try c.decodeIfPresent(String.self, forKey: "coalesce"))
         case "transport": self = .transport(id: try id(), try c.decode(TransportAction.self, forKey: "action"))
         case "undo": self = .undo(id: try id())
         case "redo": self = .redo(id: try id())

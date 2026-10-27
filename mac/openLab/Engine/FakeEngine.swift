@@ -189,7 +189,7 @@ final class FakeEngine: EngineTransport {
         case .transport(let id, let action):
             result(c, id)
             if let doc = c.doc { fakeEffect(of: action, doc: doc) }
-        case .command(let id, let command):
+        case .command(let id, let command, _):
             if refuseCommands { return result(c, id, error: (.commandRefused, "refused by the fake")) }
             if let doc = c.doc { fakeEdit(doc, command) }
             result(c, id)
