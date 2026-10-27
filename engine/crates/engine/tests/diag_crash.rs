@@ -14,6 +14,7 @@ use openlab_core::protocol::{LogEntry, LogKind, LogLevel};
 use openlab_engine::control::EpochClock;
 use openlab_engine::diag::ShowLog;
 use openlab_engine::diag::crash::{self, CrashConfig, MAX_REPORTS};
+use openlab_engine::diag::run_marker::{self, RunInfo, RunMarker};
 
 const DIR: &str = "OPENLAB_CRASH_TEST_DIR";
 const PANICS: &str = "OPENLAB_CRASH_TEST_PANICS";
@@ -126,4 +127,63 @@ fn a_panic_that_repeats_writes_a_few_reports_not_one_per_panic() {
     let dir = tempfile::tempdir().unwrap();
     run_child(dir.path(), MAX_REPORTS + 4);
     assert_eq!(reports(dir.path()).len(), MAX_REPORTS);
+}
+
+const MARKER_DIR: &str = "OPENLAB_MARKER_TEST_DIR";
+const ABORT_CHILD: &str = "the_child_that_aborts";
+
+/// Not a test on its own: with [`MARKER_DIR`] set, marks itself running and aborts, as a
+/// SIGSEGV or an out-of-memory abort would end the engine: no panic hook, no unwinding.
+#[test]
+fn the_child_that_aborts() {
+    let Some(dir) = std::env::var_os(MARKER_DIR) else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let me = RunInfo {
+        pid: std::process::id(),
+        started_ms: T0,
+        version: "9.9.9".into(),
+    };
+    let (marker, _) = RunMarker::start(&dir.join("Running"), &dir.join("Crashes"), &me);
+    assert!(marker.is_some());
+    std::process::abort();
+}
+
+#[test]
+fn an_abort_is_reported_by_the_next_start_with_the_dead_run_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let child = Command::new(exe)
+        .args([ABORT_CHILD, "--exact", "--nocapture", "--test-threads=1"])
+        .env(MARKER_DIR, dir.path())
+        .output()
+        .unwrap();
+    assert!(!child.status.success(), "the child aborted");
+    let log = ShowLog::new(None);
+    let me = RunInfo {
+        pid: std::process::id(),
+        started_ms: T0 + 60_000,
+        version: "9.9.9".into(),
+    };
+    let (marker, previous) = run_marker::begin(
+        &dir.path().join("Running"),
+        &dir.path().join("Crashes"),
+        &me,
+        &log,
+        T0 + 60_000,
+    );
+    let [run] = previous.as_slice() else {
+        panic!("{previous:?}");
+    };
+    let info = run.info.as_ref().expect("the marker named its run");
+    assert_ne!(info.pid, std::process::id());
+    assert_eq!(info.started_ms, T0);
+    let [entry] = log.tail(10).try_into().unwrap();
+    assert!(
+        entry.message.contains(&format!("pid {}", info.pid)),
+        "{}",
+        entry.message
+    );
+    marker.unwrap().finish().unwrap();
 }

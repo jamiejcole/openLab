@@ -7,6 +7,7 @@
 //! keeps it (a cpal stream is not `Send` on every platform); the control thread gets the mixer
 //! controller and decides when (docs/control.md "Devices").
 
+use std::io::Write as _;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -23,6 +24,7 @@ use crate::control::{
     outbound_channel, runner,
 };
 use crate::diag::crash::{self, CrashConfig};
+use crate::diag::run_marker::{self, RunInfo};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
 use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
 use crate::persist::{AppDirs, PersistError, load_machine_settings, read_text};
@@ -63,6 +65,7 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
     // keeps its in-memory ring only and there are no crash files (docs/logging.md).
     let mut show_log = ShowLog::default();
     let mut log_writer = None;
+    let mut run_marker = None;
     if let Some(dirs) = AppDirs::system() {
         let clock = EpochClock::system();
         // An unwritable log folder must not stop the show: the ring still works.
@@ -72,18 +75,46 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
             show_log = ShowLog::new(Some(sink));
             log_writer = Some(writer);
         }
+        let now = clock.now_ms();
         crash::install(CrashConfig {
             dir: dirs.crash_dir(),
             version: env!("CARGO_PKG_VERSION"),
             shared: show_log.shared(),
             clock,
         });
+        // After the log is up, so a leftover from an unclean exit reaches the file too.
+        let me = RunInfo {
+            pid: std::process::id(),
+            started_ms: now,
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        };
+        let (marker, previous) = run_marker::begin(
+            &dirs.run_markers_dir(),
+            &dirs.crash_dir(),
+            &me,
+            &show_log,
+            now,
+        );
+        for run in &previous {
+            // Also on the console, for whoever runs the engine by hand.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "openlab-engine: {}",
+                run.message()
+            );
+        }
+        run_marker = marker;
     }
     let result = run_show_with(path, show_log);
     // The control loop is gone, so its sink is: the writer writes what is queued and ends. A
     // disk that hangs must not hold the process up, so the wait is bounded.
     if let Some(writer) = log_writer {
         writer.finish(LOG_FLUSH_WAIT);
+    }
+    // A controlled end, with or without an error: not an unclean exit. A marker that cannot
+    // be removed is reported (wrongly) at the next start; nothing better to do with it here.
+    if let Some(marker) = run_marker {
+        let _ = marker.finish();
     }
     result
 }

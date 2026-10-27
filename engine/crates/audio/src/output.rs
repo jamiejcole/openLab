@@ -464,9 +464,7 @@ impl OutputHost {
         }
         let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let frames = (out.len() / self.device_channels) as u64;
-        self.shared
-            .worst_load
-            .record(elapsed_ns, frames, self.rate);
+        self.shared.worst_load.record(elapsed_ns, frames, self.rate);
         #[cfg(debug_assertions)]
         {
             let caught = assert_no_alloc::violation_count().wrapping_sub(before);
