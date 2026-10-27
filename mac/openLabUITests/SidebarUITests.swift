@@ -30,7 +30,7 @@ final class SidebarUITests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.checkBoxes["toggle-sidebar"].click()
-        app.segmentedControls["sidebar-tabs"].buttons["Active Cues"].click()
+        app.radioButtons["Active Cues"].click()
         let panics = app.buttons.matching(identifier: "active-cue-panic")
         XCTAssertTrue(count(panics, is: 2), "Intro (running) and Rain (paused)")
 
