@@ -14,6 +14,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// These address this window's own store: a click can land on a window that is not key.
     var onGo: (() -> Void)?
     var onPauseAll: (() -> Void)?
+    var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
@@ -38,11 +39,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         window.contentView = buildContent()
+        window.initialFirstResponder = cueList.outlineView
         window.center()
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
+        wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
     }
 
@@ -53,6 +56,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func goClicked() { onGo?() }
     @objc private func pauseAllClicked() { onPauseAll?() }
+    @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

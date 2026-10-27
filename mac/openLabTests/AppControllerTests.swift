@@ -56,7 +56,8 @@ final class AppControllerTests: XCTestCase {
         engine = FakeEngine(mode: mode, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         let info = engine.info
         let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
-        app = AppController(session: session, scheduler: quitScheduler)
+        app = AppController(
+            session: session, keyMap: KeyMap(store: Self.scratchDefaults()), scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -71,6 +72,13 @@ final class AppControllerTests: XCTestCase {
     override func tearDown() async throws {
         app.closeAllWindows()
         app = nil
+    }
+
+    static func scratchDefaults() -> UserDefaults {
+        let name = "openlab-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name) ?? .standard
+        defaults.removePersistentDomain(forName: name)
+        return defaults
     }
 
     /// A second, clean workspace.
@@ -145,10 +153,13 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testNoRevertInTheMenus() {
-        let titles = MainMenu.make().bar.items.flatMap { $0.submenu?.items.map(\.title) ?? [] }
+        let titles = MainMenu.make(keyMap: KeyMap(store: Self.scratchDefaults())).bar.items.flatMap {
+            $0.submenu?.items.map(\.title) ?? []
+        }
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
-            MainMenu.make().bar.items[1].submenu?.items.map(\.keyEquivalent), ["n", "o", "", "w"])
+            MainMenu.make(keyMap: KeyMap(store: Self.scratchDefaults())).bar.items[1].submenu?.items.map(
+                \.keyEquivalent), ["n", "o", "", "w"])
     }
 
     // MARK: Front-window routing
@@ -227,6 +238,176 @@ final class AppControllerTests: XCTestCase {
         _ = app.handleKeyDown(try escEvent(keyCode: 0))
         await settle()
         XCTAssertTrue(transports(.panic).isEmpty)
+    }
+
+    // MARK: Transport commands
+
+    func testEveryCommandSendsItsMessageToTheKeyWindowsWorkspace() async throws {
+        let second = try await addWorkspace()
+        keyDoc = second
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        for (command, action) in [
+            (TransportCommand.go, TransportAction.go(list: list)), (.pauseAll, .pauseAll), (.resumeAll, .resumeAll),
+            (.playheadNext, .playheadNext(list: list)), (.playheadPrevious, .playheadPrevious(list: list)),
+        ] {
+            await app.perform(command)
+            XCTAssertEqual(transports(action), [second], "\(command)")
+        }
+        keyDoc = "doc-1"
+        await app.perform(.pauseAll)
+        XCTAssertEqual(transports(.pauseAll), [second, "doc-1"])
+    }
+
+    func testResumeAllButtonAddressesItsOwnStore() async throws {
+        let second = try await addWorkspace()
+        keyDoc = "doc-1"
+        app.windows[second]?.sidebar.transportButtons[AX.transportResume]?.performClick(nil)
+        await assertEventually { !transports(.resumeAll).isEmpty }
+        XCTAssertEqual(transports(.resumeAll), [second])
+    }
+
+    func testPanicCommandIsAppScopeAndNeedsNoWorkspaceWindow() async throws {
+        keyDoc = nil
+        XCTAssertTrue(app.canPerform(.panic))
+        XCTAssertFalse(app.canPerform(.go))
+        await app.perform(.panic)
+        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+    }
+
+    func testStopAllHardStopsEveryLiveCueOfTheKeyWorkspaceOnly() async throws {
+        let second = try await addWorkspace()
+        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+        keyDoc = "doc-1"
+        await app.perform(.stopAll)
+        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
+        keyDoc = second  // nothing is running there
+        await app.perform(.stopAll)
+        XCTAssertEqual(transports(.hardStop(cue: running)).count, 1)
+    }
+
+    func testSelectedCueCommandsUseTheSelection() async throws {
+        keyDoc = "doc-1"
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+        wc.cueList.select([running])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [running])
+        await app.perform(.pauseResumeSelected)  // running -> pause
+        await app.perform(.startSelected)
+        await app.perform(.stopSelected)
+        await app.perform(.resetSelected)
+        await app.perform(.loadSelected)
+        XCTAssertEqual(transports(.pause(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.start(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.hardStop(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.reset(cue: running)), ["doc-1"])
+        XCTAssertEqual(transports(.load(cue: running, at: 0)), ["doc-1"])
+        wc.cueList.select([])  // nothing selected: nothing sent
+        await app.perform(.startSelected)
+        XCTAssertEqual(transports(.start(cue: running)).count, 1)
+    }
+
+    func testSelectingByHandMovesThePlayheadButRestoringDoesNot() async throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        let target: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let action = TransportAction.setPlayhead(list: "00000000-0000-0000-0000-000000000001", cue: target)
+        wc.cueList.select([target])  // programmatic: no message
+        await settle()
+        XCTAssertTrue(transports(action).isEmpty)
+        wc.cueList.outlineView.deselectAll(nil)
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(target))
+        wc.cueList.outlineView.selectRowIndexes([row], byExtendingSelection: false)  // as a click does
+        await assertEventually { !transports(action).isEmpty }
+    }
+
+    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() throws {
+        let wc = try XCTUnwrap(app.windows["doc-1"])
+        XCTAssertFalse(wc.masthead.notesView.acceptsFirstResponder)
+        XCTAssertTrue(wc.window?.initialFirstResponder === wc.cueList.outlineView)
+    }
+
+    private func keyEvent(_ chars: String, _ flags: NSEvent.ModifierFlags = [], repeats: Bool = false) throws -> NSEvent
+    {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: repeats, keyCode: 49))
+    }
+
+    func testSpaceKeyDownSendsGoForTheKeyWorkspaceAndIsConsumed() async throws {
+        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
+        keyDoc = "doc-1"
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { !transports(go).isEmpty }
+        XCTAssertEqual(transports(go), ["doc-1"])
+        // Held down: the repeat is consumed but sends nothing.
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)))
+        await settle()
+        XCTAssertEqual(transports(go).count, 1)
+    }
+
+    func testSpaceWhileTypingStaysWithTheTextField() async throws {
+        keyDoc = "doc-1"
+        app.isTextEditing = { true }
+        let event = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(event) === event)
+        await settle()
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testRemappedKeyDispatchesAndTheOldKeyDoesNot() async throws {
+        keyDoc = "doc-1"
+        XCTAssertNil(app.keyMap.bind(.go, to: KeyChord("g")))
+        let old = try keyEvent(" ")
+        XCTAssertTrue(app.handleKeyDown(old) === old)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { !transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty }
+    }
+
+    func testAHeldKeyFiresOnce() async throws {
+        keyDoc = "doc-1"
+        await app.perform(.go, isRepeat: true)
+        XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
+    }
+
+    func testTypingKeepsCharacterKeysButNotCommandChords() async throws {
+        keyDoc = "doc-1"
+        var typing = true
+        app.isTextEditing = { typing }
+        XCTAssertFalse(app.canPerform(.go), "Space types a space")
+        XCTAssertFalse(app.canPerform(.pauseAll))
+        XCTAssertFalse(app.canPerform(.pauseResumeSelected), "P types a p")
+        XCTAssertTrue(app.canPerform(.playheadNext), "Shift-Cmd-Down is not a typing key")
+        XCTAssertTrue(app.canPerform(.panic))
+        typing = false
+        XCTAssertTrue(app.canPerform(.go))
+    }
+
+    func testMenuKeyEquivalentsFollowTheKeyMap() throws {
+        let menus = MainMenu.make(keyMap: app.keyMap)
+        func item(_ c: TransportCommand) -> NSMenuItem? {
+            menus.transport.items.first { $0.representedObject as? String == c.rawValue }
+        }
+        XCTAssertEqual(item(.go)?.keyEquivalent, " ")
+        XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
+        XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+        XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
+        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "")
+        let commands = menus.transport.items.compactMap { $0.representedObject as? String }
+        XCTAssertEqual(commands.count, TransportCommand.allCases.count)
+
+        XCTAssertEqual(app.keyMap.bind(.go, to: KeyChord("g", .command)), nil)
+        MainMenu.applyKeys(to: menus.transport, app.keyMap)
+        XCTAssertEqual(item(.go)?.keyEquivalent, "g")
+        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
+    }
+
+    func testTransportMenuTitlesAreLocalised() {
+        let menus = MainMenu.make(keyMap: app.keyMap)
+        for entry in menus.transport.items where !entry.isSeparatorItem {
+            XCTAssertFalse(entry.title.hasPrefix("menu."), entry.title)
+        }
     }
 
     // MARK: Close

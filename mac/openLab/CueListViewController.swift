@@ -189,9 +189,22 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectedRowIndexes.compactMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
     }
 
+    /// Selecting a cue by hand moves the playhead to it (QLab's default); rebuilds that restore the
+    /// selection must not, so they raise this flag.
+    private var restoringSelection = false
+
     func select(_ ids: [ModelID]) {
+        restoringSelection = true
+        defer { restoringSelection = false }
         let rows = IndexSet(ids.compactMap { nodes[$0] }.map { outlineView.row(forItem: $0) }.filter { $0 >= 0 })
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
+    }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !restoringSelection, !batching, let list = listID, let id = selectedIDs().first,
+            store.playheads[list] != id
+        else { return }
+        Task { await store.transport(.setPlayhead(list: list, cue: id)) }
     }
 
     func isPlayheadRow(_ id: ModelID) -> Bool { listID.flatMap { store.playheads[$0] } == id }
