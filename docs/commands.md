@@ -31,7 +31,7 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 | `MoveCue { id, index }` | Reorder among current siblings. |
 | `ReparentCue { id, to }` | Into another group or cue list, children with it. Not into itself or its descendants. |
 | `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group). |
-| `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. |
+| `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. Applied in place with each cue's old value kept; a refusal writes the old values back, so the cost follows the cues named, not the show. |
 | `SetCueNumbers { numbers }` | Set, clear or swap numbers; uniqueness is judged on the result. |
 | `Renumber { ids, start, increment }` | Numbers `ids` in cue-list order (a group before its children), whatever order `ids` is in. |
 | `Transaction { commands }` | One undo step; if any command is refused, none applies and the error names its index. No nesting; the inverse is flat. Commands that changed nothing add nothing to the inverse. |
