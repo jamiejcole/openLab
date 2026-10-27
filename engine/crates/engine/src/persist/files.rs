@@ -12,6 +12,15 @@ use super::PersistError;
 /// Reads a UTF-8 text file of at most `limit` bytes. Larger files are refused without being
 /// read in full, so a huge or hostile file cannot exhaust memory.
 pub fn read_text(path: &Path, limit: usize) -> Result<String, PersistError> {
+    // Opening a FIFO (or a device) for reading can block for ever: only regular files are read.
+    // `metadata` does not open the file, so it cannot hang on a pipe.
+    let meta = fs::metadata(path).map_err(PersistError::io("open", path))?;
+    if !meta.is_file() {
+        return Err(PersistError::io("open", path)(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
+    }
     let file = File::open(path).map_err(PersistError::io("open", path))?;
     let limit = limit as u64;
     let mut bytes = Vec::new();

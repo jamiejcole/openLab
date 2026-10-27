@@ -1,0 +1,97 @@
+{
+  "type": "command",
+  "id": 1,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000a",
+    "property": {
+      "type": "name",
+      "value": "Storm"
+    }
+  }
+}
+{
+  "type": "undo",
+  "id": 3
+}
+{
+  "type": "redo",
+  "id": 4
+}
+{
+  "type": "command",
+  "id": 2,
+  "command": {
+    "type": "transaction",
+    "commands": [
+      {
+        "type": "add_cue",
+        "at": {
+          "list": "00000000-0000-0000-0000-000000000001",
+          "parent": null,
+          "index": 0
+        },
+        "cue": {
+          "id": "00000000-0000-0000-0000-00000000000a",
+          "number": "1",
+          "name": "Intro",
+          "notes": "",
+          "color": "none",
+          "flagged": false,
+          "armed": true,
+          "pre_wait": 0.0,
+          "post_wait": 0.0,
+          "continue_mode": "do_not_continue",
+          "triggers": {
+            "hotkey": null,
+            "osc": null
+          },
+          "second_trigger": "nothing",
+          "second_trigger_on_release": false,
+          "kind": {
+            "type": "audio",
+            "media": "media/a.wav",
+            "patch": "00000000-0000-0000-0000-000000000001",
+            "start_time": 0.0,
+            "end_time": null,
+            "fade_in": {
+              "duration": 0.0,
+              "curve": "linear"
+            },
+            "fade_out": {
+              "duration": 0.0,
+              "curve": "linear"
+            },
+            "slices": [],
+            "last_slice_play_count": 1,
+            "levels": {
+              "master_db": 0.0,
+              "outputs": [
+                {
+                  "db": 0.0,
+                  "mute": false
+                },
+                {
+                  "db": 0.0,
+                  "mute": false
+                }
+              ],
+              "crosspoints": [],
+              "gangs": []
+            },
+            "preload": false
+          }
+        },
+        "auto_number": true
+      },
+      {
+        "type": "remove_cue",
+        "id": "00000000-0000-0000-0000-00000000000b"
+      }
+    ]
+  }
+}
+{
+  "type": "undo",
+  "id": 3
+}

@@ -26,6 +26,9 @@ pub enum Kind {
     Revision(u64),
     /// `runtime`: stale ones are skipped.
     Seq(u64),
+    /// `snapshot` (a workspace was opened, created or reverted): sent unless the client already
+    /// holds that revision and seq (the requester got it as its reply).
+    Snapshot { revision: u64, seq: u64 },
     /// `document`, `warnings`, `log`: always sent; the latest is the truth.
     State,
     /// `meters`, `progress`: dropped when the client is behind.
@@ -102,6 +105,10 @@ impl Hub {
         let kind = match message {
             ServerMessage::ModelChanged { revision, .. } => Kind::Revision(*revision),
             ServerMessage::Runtime { seq, .. } => Kind::Seq(*seq),
+            ServerMessage::Snapshot { snapshot } => Kind::Snapshot {
+                revision: snapshot.revision,
+                seq: snapshot.runtime_seq,
+            },
             ServerMessage::Progress { .. } | ServerMessage::Meters { .. } => Kind::Lossy,
             _ => Kind::State,
         };
@@ -157,6 +164,8 @@ impl Tap {
             ServerMessage::ModelChanged { .. }
                 | ServerMessage::Runtime { .. }
                 | ServerMessage::Document { .. }
+                // A workspace was opened, created or reverted: nothing else announces it.
+                | ServerMessage::Snapshot { .. }
         ) {
             return;
         }
@@ -259,6 +268,45 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_is_delivered_with_its_revision_and_seq() {
+        use openlab_core::protocol::{DocumentState, Snapshot};
+        use openlab_core::{CueListId, PatchId, Workspace, WorkspaceId};
+        let hub = Hub::default();
+        let mut r = hub.register();
+        let workspace = Workspace::new_empty(
+            WorkspaceId(uuid::Uuid::from_u128(1)),
+            CueListId(uuid::Uuid::from_u128(2)),
+            PatchId(uuid::Uuid::from_u128(3)),
+        );
+        hub.deliver(&ServerMessage::Snapshot {
+            snapshot: Box::new(Snapshot {
+                revision: 9,
+                runtime_seq: 4,
+                document: DocumentState {
+                    path: None,
+                    dirty: false,
+                    can_undo: false,
+                    can_redo: false,
+                },
+                workspace,
+                cue_states: vec![],
+                problems: vec![],
+                group_warnings: vec![],
+                playheads: vec![],
+                previewing: vec![],
+                warnings: vec![],
+            }),
+        });
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Kind::Snapshot {
+                revision: 9,
+                seq: 4
+            }]
+        );
+    }
+
+    #[test]
     fn an_unregistered_client_gets_nothing_more() {
         let hub = Hub::default();
         let mut r = hub.register();
@@ -285,6 +333,31 @@ mod tap_tests {
             },
             rx,
         )
+    }
+
+    fn replacement_snapshot() -> openlab_core::protocol::Snapshot {
+        use openlab_core::{CueListId, PatchId, Workspace, WorkspaceId};
+        openlab_core::protocol::Snapshot {
+            revision: 9,
+            runtime_seq: 4,
+            document: DocumentState {
+                path: None,
+                dirty: false,
+                can_undo: false,
+                can_redo: false,
+            },
+            workspace: Workspace::new_empty(
+                WorkspaceId(uuid::Uuid::from_u128(1)),
+                CueListId(uuid::Uuid::from_u128(2)),
+                PatchId(uuid::Uuid::from_u128(3)),
+            ),
+            cue_states: vec![],
+            problems: vec![],
+            group_warnings: vec![],
+            playheads: vec![],
+            previewing: vec![],
+            warnings: vec![],
+        }
     }
 
     fn runtime(seq: u64) -> ServerMessage {
@@ -320,7 +393,11 @@ mod tap_tests {
             cues: vec![],
         });
         tap.offer(&ServerMessage::Progress { items: vec![] });
-        assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 3);
+        // A workspace replacement is announced by its snapshot alone.
+        tap.offer(&ServerMessage::Snapshot {
+            snapshot: Box::new(replacement_snapshot()),
+        });
+        assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 4);
         assert!(!tap.lagged.load(Ordering::Acquire));
     }
 

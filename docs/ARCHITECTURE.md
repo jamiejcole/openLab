@@ -70,7 +70,7 @@ Keep the crate count at three. Add a module before adding a crate.
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
 
-Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
+Media probes and preloads (which decode whole files) run on a small probe-worker pool (2) that answers through the control inbox, never on the control thread. Opening and closing the output device (which can block in the host's audio system) run on a device thread that owns the stream, and listing on a device-list thread; both answer through the control inbox as well. Reading a show (open, revert, recovery check and scan) runs on a document worker that answers through the inbox too, and saves and autosaves go to the writer thread; the control thread only clones the workspace and polls for the result. The control loop itself (wake rules, voice ids, feedback, reconciliation of lost mixer events) is in [`docs/control.md`](control.md).
 
 ### 3.2 Clock and scheduling (NFR-20/21/22)
 
@@ -201,8 +201,8 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 | Core logic | `cargo test`, `proptest` | state machine, continue modes, groups, control cues, scheduler, commands/undo, migrations |
 | Audio | offline render driver | sample-accurate starts, fade curves, matrix/patch math, loops/devamp, RT-safety (`assert_no_alloc`) |
 | Engine | integration tests over real WebSocket/OSC sockets on localhost | protocol, OSC subset, save/load/recovery, device-loss simulation |
-| Robustness | `cargo-fuzz` (nightly) | show file, OSC, protocol, decoders |
-| Soak / perf | render driver | 24 h accelerated soak; CPU budget (§3.6) |
+| Robustness | `cargo-fuzz` (nightly); the OSC-session and protocol fuzz bodies also run on stable in `cargo test` | show file, OSC (one packet; sessions over time), protocol (decoders and the control loop), media decoders |
+| Soak / perf | render driver | 24 h accelerated soak (`tests/soak.rs`: generated show, random operator, invariants counted in voices/streams/messages, not RSS); CPU budget (§3.6) |
 | Contract | golden fixtures | Rust ↔ Swift protocol parity |
 | macOS UI | XCTest (view logic vs. mock `EngineClient`), XCUITest (real headless engine) | editing flows, show mode, reconnect after engine/UI restart |
 | Sanitizers | ASan/TSan (nightly Rust job; Xcode scheme options for Swift) | memory/thread errors |
@@ -210,7 +210,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 **CI (GitHub Actions)**, every push and PR:
 - Rust: `fmt --check`, `clippy -D warnings`, `test` on macOS arm64, macOS Intel (x86_64, while GitHub offers an Intel runner) and Windows x64; `cargo deny check` (licences must be GPLv3-compatible, advisories).
 - macOS app: `xcodegen` + `xcodebuild test` (unit + UI tests).
-- Perf budget test on the Intel runner. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
+- Perf budget test and the 24 h virtual soak (release, about a minute) on the Intel runner; a ten-virtual-minute soak runs in every `cargo test`. Fuzz smoke (short run per target). Nightly scheduled: long fuzz + sanitizers + accelerated soak.
 - Pin the Xcode version in CI. Xcode 27.1's minimum macOS deployment target is exactly 12.0 — **a future Xcode that drops 12.0 must not be adopted** without a plan for Monterey.
 
 ## 12. Dependencies

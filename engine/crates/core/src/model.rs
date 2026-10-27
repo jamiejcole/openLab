@@ -58,6 +58,44 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// A new, empty workspace (WS-02): one empty cue list and one stereo patch, the defaults of
+    /// docs/file-format.md section 4.2. The ids come from the caller because core draws no
+    /// randomness.
+    pub fn new_empty(id: WorkspaceId, list: CueListId, patch: PatchId) -> Self {
+        let output = PatchOutput {
+            level_db: 0.0,
+            mute: false,
+            delay_ms: 0.0,
+            polarity_inverted: false,
+        };
+        Self {
+            id,
+            name: "Untitled".to_owned(),
+            settings: WorkspaceSettings {
+                min_go_interval: 0.0,
+                panic_duration: 1.0,
+                autosave_interval: 30.0,
+                osc_passcode: None,
+                master_db: 0.0,
+                hotkeys: TransportHotkeys::default(),
+                auto_number_start: 1.0,
+                auto_number_increment: 1.0,
+            },
+            patches: vec![OutputPatch {
+                id: patch,
+                name: "Main Outputs".to_owned(),
+                master_db: 0.0,
+                outputs: vec![output; 2],
+            }],
+            network_patches: Vec::new(),
+            cue_lists: vec![CueList {
+                id: list,
+                name: "Main Cue List".to_owned(),
+                cues: Vec::new(),
+            }],
+        }
+    }
+
     /// Finds a cue by id in any list, at any group depth.
     pub fn find_cue(&self, id: CueId) -> Option<&Cue> {
         self.cue_lists

@@ -62,16 +62,33 @@ The `result` of a transport action means "accepted and handed to the cue engine"
 
 | `request.type` | Fields | Effect and reply |
 |---|---|---|
-| `new` | - | new empty workspace; `snapshot` message, then `result` |
-| `open` | `path` | load a show; `snapshot`, `warnings`, then `result`; errors `io`, `bad_show_file` |
-| `save` | - | save to the current path; `document` update, `result`; `no_workspace` if never saved (use `save_as`) |
-| `save_as` | `path` | |
-| `revert` | - | reload the saved file, dropping edits (clears undo); `snapshot`, `result` |
+| `new` | `discard_changes?` | new empty workspace (one cue list, one stereo patch); `snapshot` message, then `result` |
+| `open` | `path`, `discard_changes?`, `recovery?` | load a show; `snapshot`, `warnings`, then `result`; errors `not_found` (no such file), `io` (unreadable, not a regular file, or the read stalled past the engine's timeout), `bad_show_file`, `unsaved_changes`, `command_refused`. When an autosave is newer than the show file and `recovery` is absent, nothing is opened and the `result` carries `recovery_offer` (below) |
+| `open_recovery` | `workspace_id`, `path_hash?`, `modified_ms?`, `discard_changes?` | open an autosave found by `scan_recovery` as an **untitled, unsaved** workspace (`document.path` null, dirty); `snapshot`, `result`. `path_hash` / `modified_ms` pick one of several autosaves of the same workspace id (the listed entry's values); absent: the newest. Errors `not_found`, `io`, `bad_show_file`, `unsaved_changes`, `command_refused` |
+| `scan_recovery` | - | list **every** recovery file in the engine's recovery folder, including the autosave of a never-saved workspace and files moved aside as stale (`stale: true`; they may hold the newest work): the launch offer after an unclean exit (NFR-05), and what to show when a show cannot be opened: `result { ok: { data: { type: "recovery_entries", entries: [{workspace_id, path_hash?, show_name?, modified_ms?, stale}] } } }`, newest first; `modified_ms` is milliseconds since the Unix epoch (wall clock, UTC); errors `command_refused` |
+| `save` | - | save to the current path; `document` update, `result`; `no_workspace` if never saved (use `save_as`); `io` if the write failed |
+| `save_as` | `path` | save to `path` and make it the workspace's path; `document` update, `result`; `io` if it could not be written; `bad_request` (on decode) if `path` is not absolute |
+| `revert` | `discard_changes?` | reload the saved file, dropping edits (clears undo); `snapshot`, `result`; `no_workspace` if never saved, `not_found` / `io` / `bad_show_file` if the saved file cannot be read, `unsaved_changes` while dirty without `discard_changes`, `command_refused` |
 | `relink` | `folder` | relink missing media (WS-03) as one undo step; `result { ok: { revision, data: { type: "relink", relinked, ambiguous: [{cue, candidates}], unmatched } } }`; nothing is guessed between duplicates |
 | `list_devices` | - | `result { ok: { data: { type: "devices", devices: [{name, output_channels}] } } }` |
 | `snapshot` | - | `snapshot`, then `result` |
 
-Paths are never empty (`bad_request` on decode).
+Paths are never empty, and the paths of `open` and `save_as` must be absolute (`bad_request` on decode): a relative one would resolve against the engine's own working directory. `new` can answer `unsaved_changes` or `command_refused`.
+
+#### Replacing the workspace (M4.4)
+
+`new`, `open`, `open_recovery` and `revert` replace the workspace the engine holds:
+
+- **They stop everything first**: every running cue is hard-stopped (no fade), as if Panic were pressed twice, then the workspace, undo history, cue engine state and media catalog are rebuilt. This is the engine's own choice (QLab closes a workspace by stopping it); the UI should confirm with the operator when cues are running (SM-05) before sending the request.
+- **The engine never prompts.** If the workspace has unsaved edits (`document.dirty`) the request is refused with `unsaved_changes` and nothing changes, unless it says `discard_changes: true`. Discarding also removes the autosave of the dropped edits (ordered after any autosave write in flight, so it is not offered again; not when the same file is reopened, whose autosave may be the one just restored). The UI asks the operator, then repeats the request with the flag.
+- **`recovery`** (`open` only): `restore` opens the autosave (dirty until saved, bound to the show path); `ignore` opens the show file as saved and leaves the autosave in place (it is offered again next time until a save, or the next autosave, replaces it). A `recovery_offer` result (`{ type: "recovery_offer", path, workspace_name, modified_ms }`; `path` is the `path` of the `open` it answers, `modified_ms` is milliseconds since the Unix epoch, wall clock UTC) means the autosave is newer than the show file and nothing was opened or stopped; the UI asks and repeats the `open` with a choice. `discard_changes` is checked before the offer.
+- **A show that cannot be opened** is `bad_show_file` (or `io` when the file cannot be read). The UI then sends `scan_recovery` and may offer `open_recovery` for an entry.
+- **Numbering never restarts.** `revision` and `runtime_seq` keep rising across these requests (a replacement is a new model version: `revision` rises by at least 1). On success the new `snapshot` goes to the requester (before its `result`) **and to every other connected client**; a client treats it as any `snapshot` (replace everything). Workspace-level `warnings` arrive as before, and cue state changes from the stop arrive as `runtime` before the snapshot (clients ignore cue ids they do not hold).
+- Only one such request is handled at a time (the file is read off the control thread); another arriving meanwhile is refused with `command_refused`. A read that has not finished after 20 s (a stalled network volume) answers `io` and later requests are served normally; the requester's connection does not hold broadcasts for it for more than 60 s either (docs/network.md).
+
+Saving: `save` and `save_as` write on a separate thread. The `result` comes when the file is durably written; the new `document` (path, `dirty` false when no edit happened meanwhile) is broadcast before it. A failed write is `io`, the workspace stays dirty and the autosave keeps running. The engine autosaves a dirty workspace every `settings.autosave_interval` seconds to the recovery folder (docs/persistence.md); that is not visible on the protocol.
+
+`PROTOCOL_VERSION` stays **1**: every addition is optional or new. `discard_changes` and `recovery` default to `false` / absent and are not written at those values; `new` and `revert` are now objects with optional fields, but the bare `{"type":"new"}` / `{"type":"revert"}` frames still decode and mean the same. The new request, result and error-code names are additions (an old engine answers an unknown request `type` with `bad_request`). The Swift client (M5) must implement these messages and the `unsaved_changes` / recovery flows.
 
 ## 4. Engine -> client
 
@@ -127,4 +144,4 @@ The `model_changed` for revision N is always sent before the `result` that repor
 
 ### Error codes
 
-`protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace`, `io`, `bad_show_file`, `unsupported`, `internal`.
+`protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.

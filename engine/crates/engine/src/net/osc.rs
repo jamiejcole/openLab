@@ -722,6 +722,19 @@ impl Actor {
 
     /// `false`: the control loop is gone.
     fn broadcast(&mut self, message: ServerMessage) -> bool {
+        // A workspace was opened, created or reverted: the copy is replaced (sessions end if the
+        // workspace or its passcode changed). The stale rule of the WebSocket connections: a
+        // snapshot at or below what the copy holds is the one it already has. This only runs
+        // while no snapshot request of ours is out, so it cannot be a stale answer to one.
+        if let ServerMessage::Snapshot { snapshot } = message {
+            let stale = self.mirror.as_ref().is_some_and(|m| {
+                snapshot.revision <= m.revision() && snapshot.runtime_seq <= m.runtime_seq()
+            });
+            if !stale {
+                self.install(Mirror::from_snapshot(*snapshot));
+            }
+            return true;
+        }
         let Some(mirror) = &mut self.mirror else {
             return true;
         };
