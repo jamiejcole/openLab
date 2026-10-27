@@ -399,7 +399,7 @@ fn leaving_an_entered_group_skips_the_group_continue_chain() {
 }
 
 #[test]
-fn go_inside_an_idle_entered_group_runs_the_group_without_its_continue() {
+fn go_inside_an_idle_entered_group_starts_the_child_alone() {
     let g = timed(grp(1, ENTER, vec![memo(10), wait(11, 1.0)]), 0.0, 0.0, AF);
     let mut rig = Rig::new(vec![g, memo(3)]);
     let go = rig.go(0);
@@ -410,31 +410,38 @@ fn go_inside_an_idle_entered_group_runs_the_group_without_its_continue() {
 
     let go = rig.go(100);
     assert_eq!(running_at(&go, 11), Some(100));
-    assert_eq!(changes(&go, 1), vec![(CueState::Running, 100)]);
+    // The group does not run (M2.24, QLab check G4), so it fires no continue either.
+    assert!(changes(&go, 1).is_empty());
     let tick = rig.tick(1100);
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1100)]);
-    // An adopted group fires no continue.
+    assert_eq!(changes(&tick, 11), vec![(CueState::Idle, 1100)]);
+    assert!(changes(&tick, 1).is_empty());
     assert!(changes(&tick, 3).is_empty());
     // Leaving the group skipped its continue chain (3 is its auto-follow target).
     assert_eq!(rig.playhead(), None);
 }
 
 #[test]
-fn starting_a_child_makes_every_idle_group_around_it_run() {
+fn starting_a_child_leaves_the_idle_groups_around_it_idle() {
+    // M2.24 (QLab check G4): a child started on its own does not make its groups run.
     let inner = grp(2, TIMELINE, vec![wait(20, 1.0)]);
     let outer = timed(grp(1, TIMELINE, vec![inner]), 0.0, 0.0, AF);
     let mut rig = Rig::new(vec![outer, memo(3)]);
     let start = rig.start(0, 20);
-    assert_eq!(changes(&start, 2), vec![(CueState::Running, 0)]);
-    assert_eq!(changes(&start, 1), vec![(CueState::Running, 0)]);
+    assert_eq!(
+        changes(&start, 20),
+        vec![(CueState::PreWaiting, 0), (CueState::Running, 0)]
+    );
+    assert!(changes(&start, 2).is_empty());
+    assert!(changes(&start, 1).is_empty());
     let tick = rig.tick(1000);
-    assert_eq!(changes(&tick, 2), vec![(CueState::Idle, 1000)]);
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1000)]);
+    assert_eq!(changes(&tick, 20), vec![(CueState::Idle, 1000)]);
+    assert!(changes(&tick, 2).is_empty());
+    assert!(changes(&tick, 1).is_empty());
     assert_eq!(rig.state(3), CueState::Idle);
 }
 
 #[test]
-fn a_child_started_while_its_group_post_waits_makes_it_run_again() {
+fn a_child_started_while_its_group_post_waits_leaves_it_post_waiting() {
     let g = timed(
         grp(1, TIMELINE, vec![memo(10), wait(11, 1.0)]),
         0.0,
@@ -446,11 +453,11 @@ fn a_child_started_while_its_group_post_waits_makes_it_run_again() {
     rig.tick(1000);
     assert_eq!(rig.state(1), CueState::PostWaiting);
     let start = rig.start(2000, 11);
-    assert_eq!(changes(&start, 1), vec![(CueState::Running, 2000)]);
-    assert_eq!(
-        changes(&rig.tick(3000), 1),
-        vec![(CueState::PostWaiting, 3000)]
-    );
+    assert_eq!(running_at(&start, 11), Some(2000));
+    assert!(changes(&start, 1).is_empty());
+    let end = rig.tick(3000);
+    assert_eq!(changes(&end, 11), vec![(CueState::Idle, 3000)]);
+    assert!(changes(&end, 1).is_empty());
     // Its own post-wait still triggers the next cue on schedule.
     assert_eq!(running_at(&rig.tick(5000), 2), Some(5000));
 }
@@ -688,20 +695,23 @@ fn go_on_a_timeline_child_starts_only_that_child_and_moves_to_its_sibling() {
     let go = rig.go(0);
     // Children's continue modes are ignored in a timeline: 10's auto-continue starts nothing.
     assert_eq!(starts(&go), vec![(id(10), 0)]);
-    assert_eq!(changes(&go, 1), vec![(CueState::Running, 0)]);
+    // The group does not run (M2.24, QLab check G4).
+    assert!(changes(&go, 1).is_empty());
     assert_eq!(rig.playhead(), Some(id(11)));
     rig.go(100);
     rig.go(200);
     // Past the last child: out of the group, past its continue chain (2 is its auto-follow).
     assert_eq!(rig.playhead(), Some(id(3)));
-    let tick = rig.tick(1100);
-    // Adopted: no auto-follow.
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1100)]);
+    let tick = rig.tick(1200);
+    // It never ran, so it does not auto-follow.
+    assert!(changes(&tick, 1).is_empty());
+    assert_eq!(rig.state(1), CueState::Idle);
     assert_eq!(rig.state(2), CueState::Idle);
 }
 
 #[test]
-fn go_on_a_playlist_child_plays_only_that_child() {
+fn go_on_a_playlist_child_plays_on_through_the_rest_without_the_group_running() {
+    // M2.24 (QLab checks G4, G5).
     let g = grp(
         1,
         playlist(false, false),
@@ -710,10 +720,42 @@ fn go_on_a_playlist_child_plays_only_that_child() {
     let mut rig = Rig::new(vec![g, memo(2)]);
     set_playhead(&mut rig, 10);
     rig.go(0);
-    assert_eq!(rig.playhead(), Some(id(11)));
+    assert_eq!(rig.playhead(), Some(id(2)));
     let tick = rig.tick(1000);
-    assert!(starts(&tick).is_empty());
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 1000)]);
+    assert_eq!(starts(&tick), vec![(id(11), 1000)]);
+    assert!(changes(&tick, 1).is_empty());
+    let end = rig.tick(2000);
+    assert!(starts(&end).is_empty());
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn a_child_of_an_idle_playlist_follows_through_past_children_that_cannot_start() {
+    // A child broken at run time (not reset) is passed over; one with static problems is
+    // skipped as any broken cue, keeping its timing; the chain stops after the last child.
+    let g = grp(
+        1,
+        playlist(true, false),
+        vec![
+            wait(10, 1.0),
+            sound(11),
+            cue(12, CueKind::Start { target: None }),
+            wait(13, 1.0),
+        ],
+    );
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.start(0, 11);
+    rig.failed(100, 11);
+    assert_eq!(rig.state(11), CueState::Broken);
+    rig.start(200, 10);
+    let next = rig.tick(1200);
+    assert!(warnings(&next).contains(&EngineWarning::CueBroken { cue: id(11) }));
+    assert!(warnings(&next).contains(&EngineWarning::CueBroken { cue: id(12) }));
+    assert_eq!(starts(&next), vec![(id(13), 1200)]);
+    // Looping or not, the last child does not wrap.
+    assert!(starts(&rig.tick(2200)).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
+    assert_eq!(rig.state(1), CueState::Broken);
 }
 
 #[test]
@@ -742,10 +784,7 @@ fn go_on_a_cue_inside_an_entered_group_starts_only_that_cue() {
     );
     let go = rig.go(0);
     assert_eq!(starts(&go), vec![(id(20), 0)]);
-    assert_eq!(
-        changes(&go, 2),
-        vec![(CueState::Running, 0), (CueState::Idle, 0)]
-    );
+    assert!(changes(&go, 2).is_empty());
     assert_eq!(rig.playhead(), Some(id(21)));
     rig.go(10);
     assert_eq!(rig.playhead(), Some(id(3)));
@@ -960,7 +999,8 @@ fn pick_run(rig: &mut Rig, count: u64) -> Vec<CueId> {
             let start = rig.start(i * 1000, 1);
             let children = picked(&start, 1);
             assert_eq!(children.len(), 1, "{start:?}");
-            assert_eq!(rig.state(1), CueState::Idle);
+            // (Broken while a child is: M2.24, QLab check G6.)
+            assert!(matches!(rig.state(1), CueState::Idle | CueState::Broken));
             children[0]
         })
         .collect()
@@ -1087,15 +1127,34 @@ fn random_group_with_one_child_always_starts_it() {
 }
 
 #[test]
-fn random_group_ignores_the_chosen_child_continue_mode() {
-    let r = grp(
-        1,
-        RANDOM,
-        vec![timed(memo(10), 0.0, 0.0, AF), timed(memo(11), 0.0, 0.0, AF)],
+fn random_group_chosen_child_continue_mode_applies() {
+    // M2.24 (QLab check G1): the chosen child's auto-follow starts the child after it, every
+    // time it is chosen; the group completes when both are done.
+    let r = timed(
+        grp(
+            1,
+            RANDOM,
+            vec![timed(memo(10), 0.0, 0.0, AF), wait(11, 1.0)],
+        ),
+        0.0,
+        0.0,
+        AF,
     );
-    let mut rig = Rig::new(vec![r]);
-    let start = rig.start(0, 1);
-    assert_eq!(starts(&start).len(), 2);
+    for seed in 0..8 {
+        let mut rig = Rig::seeded(vec![r.clone(), memo(2)], seed);
+        for t in [0, 5000] {
+            let start = rig.start(t, 1);
+            let children = picked(&start, 1);
+            if children.first() == Some(&id(10)) {
+                assert_eq!(children, vec![id(10), id(11)]);
+            } else {
+                assert_eq!(children, vec![id(11)]);
+            }
+            let end = rig.tick(t + 1000);
+            assert_eq!(changes(&end, 1), vec![(CueState::Idle, t + 1000)]);
+            assert_eq!(running_at(&end, 2), Some(t + 1000));
+        }
+    }
 }
 
 // ----- nesting -----

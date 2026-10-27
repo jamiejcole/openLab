@@ -32,7 +32,12 @@
 //! - Stepping (`PlayheadNext`/`PlayheadPrevious`) enters only "start first and enter" groups and
 //!   groups the playhead was already inside (Playhead, "Stepping").
 //! - A group shows a warning exactly while a descendant is shown with problems, and its
-//!   `GroupWarningChanged` reports agree, never repeating a value (Broken cues).
+//!   `GroupWarningChanged` reports agree, never repeating a value; with no runtime it then
+//!   reports `broken` (Broken cues; M2.24, QLab check G6). A `broken` cue always has a reason
+//!   to show: problems, a run-time break, or such a descendant.
+//! - Nothing reaches `running` but from pre-waiting, paused or fading: a start always reports
+//!   pre-waiting first, and a child started on its own no longer makes its group run (Groups,
+//!   "A child started on its own"; QLab check G4).
 //! - A running group has a busy child (Groups, "Its action").
 //! - Chain bound: the calls at one `now` start at most `chain_limit` cues between them (Chains
 //!   and the chain bound).
@@ -59,8 +64,9 @@
 //!
 //! `random_groups_play_round_robin` checks random groups against a reference round-robin (Groups,
 //! "Random"): within a cycle no child repeats, and a cycle never opens with the last pick.
-//! `broken_cues_never_auto_follow` covers the auto-follow rule (rule 2) on lists where every
-//! start but the first can only come from a continue. Undo and redo of commands are
+//! `cues_broken_at_run_time_never_auto_follow` covers the auto-follow rule (rule 2) on lists
+//! where every start but the first can only come from a continue: a cue that broke at run time
+//! never auto-follows, while one skipped for static problems does (QLab check P5). Undo and redo of commands are
 //! property-tested in `commands_prop.rs`.
 //!
 //! The case count is CI-friendly (256); set `OPENLAB_PROP_CASES` to run more, e.g.
@@ -1095,7 +1101,8 @@ struct Run {
     sim: Sim,
     previews: bool,
     dup: bool,
-    /// `broken_cues_never_auto_follow`: the cues that broke so far, and the rule being checked.
+    /// `cues_broken_at_run_time_never_auto_follow`: the cues that broke at run time so far, and
+    /// the rule being checked.
     follow_rule: bool,
     tainted: BTreeSet<CueId>,
     lookahead: u64,
@@ -1235,6 +1242,21 @@ impl Run {
                     if *state == CueState::PreWaiting && previous != CueState::Paused {
                         starts += 1;
                     }
+                    // A start reports pre-waiting first; only a resume or the end of a fade
+                    // comes back to running. (A group adopted by a child started on its own went
+                    // from idle to running before M2.24.)
+                    if *state == CueState::Running {
+                        prop_assert!(
+                            matches!(
+                                previous,
+                                CueState::PreWaiting | CueState::Paused | CueState::Fading
+                            ),
+                            "{} went from {:?} to running ({:?})",
+                            cue,
+                            previous,
+                            self.input
+                        );
+                    }
                     // Deadlines in the window are committed; none beyond it.
                     prop_assert!(*at <= horizon, "state change dated {at} after {horizon}");
                     self.reported.insert(*cue, *state);
@@ -1330,12 +1352,13 @@ impl Run {
             }
         }
 
-        // A broken cue never auto-follows (rule 2): in a list where only a cue's own continue
-        // can start the cue after it (no auto-continue, no controls), a start that does not come
-        // from a GO is the previous cue's auto-follow, so that cue must have run to its end.
+        // A cue that broke at run time never auto-follows (rule 2): in a list where only a cue's
+        // own continue can start the cue after it (no auto-continue, no controls), a start that
+        // does not come from a GO is the previous cue's auto-follow, so that cue must have run to
+        // its end or been skipped for static problems (QLab check P5).
         if self.follow_rule {
-            for (id, state) in self.engine.cue_states() {
-                if state == CueState::Broken {
+            for (id, _) in self.engine.cue_states() {
+                if self.engine.broken_reason(id).is_some() {
                     self.tainted.insert(id);
                 }
             }
@@ -1539,7 +1562,7 @@ impl Run {
             prop_assert_ne!(self.engine.state(id), CueState::Idle);
         }
         // A group shows a warning exactly while a descendant is shown with problems, and the
-        // reports say so (Broken cues: the group is not broken).
+        // reports say so (Broken cues: the group has no problems of its own).
         if self.unique_ids() {
             let broken: BTreeSet<CueId> = self
                 .engine
@@ -1625,8 +1648,22 @@ impl Run {
             // Every runtime is reachable from the reported state, and the other way round
             // (States: idle cues have no runtime).
             match state {
-                CueState::Idle => prop_assert_eq!(run, None, "idle cue {} has a runtime", id),
-                CueState::Broken => {}
+                CueState::Idle => {
+                    prop_assert_eq!(run, None, "idle cue {} has a runtime", id);
+                    // A group with a broken descendant shows as broken (QLab check G6).
+                    prop_assert!(
+                        !self.engine.has_broken_descendant(*id),
+                        "idle group {} has a broken descendant",
+                        id
+                    );
+                }
+                CueState::Broken => prop_assert!(
+                    !self.engine.problems(*id).is_empty()
+                        || self.engine.broken_reason(*id).is_some()
+                        || self.engine.has_broken_descendant(*id),
+                    "cue {} broken with no reason to show",
+                    id
+                ),
                 _ => prop_assert!(run.is_some(), "{:?} cue {} has no runtime", state, id),
             }
             if let Some(run) = run {
@@ -2137,7 +2174,8 @@ impl Run {
         if strict {
             for (id, state) in self.engine.cue_states() {
                 prop_assert!(
-                    state == CueState::Broken && broken.contains(&id),
+                    state == CueState::Broken
+                        && (broken.contains(&id) || self.engine.has_broken_descendant(id)),
                     "cue {} {:?} after Reset on every cue",
                     id,
                     state
@@ -2240,7 +2278,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     #[test]
-    fn broken_cues_never_auto_follow(case in follow_case()) {
+    fn cues_broken_at_run_time_never_auto_follow(case in follow_case()) {
         run_with(&case, false, true)?;
     }
 
@@ -2462,7 +2500,8 @@ fn the_generator_reaches_what_the_rules_are_about() {
     let mut runner = TestRunner::deterministic();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     let strategy = case();
-    for _ in 0..400 {
+    // (600 cases: chain-limit cuts are rare and need a cycle in the generated show.)
+    for _ in 0..600 {
         let case = strategy.new_tree(&mut runner).unwrap().current();
         let out = run(&case, true).unwrap_or_else(|e| panic!("{e}"));
         for a in &out.raw {

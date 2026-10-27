@@ -280,12 +280,12 @@ impl CueEngine {
             .is_some_and(|d| d <= self.config.horizon(now))
     }
 
-    /// The cue's reported state: its runtime's, else `broken` if it has static problems, else
-    /// idle.
+    /// The cue's reported state: its runtime's, else `broken` if it has static problems or is a
+    /// group with a descendant shown with problems (QLab 5), else idle.
     pub fn state(&self, cue: CueId) -> CueState {
         match self.slots.get(&cue) {
             Some(slot) => slot.state(),
-            None if self.has_problems(cue) => CueState::Broken,
+            None if self.has_problems(cue) || self.has_broken_descendant(cue) => CueState::Broken,
             None => CueState::Idle,
         }
     }
@@ -297,7 +297,13 @@ impl CueEngine {
             .iter()
             .map(|(id, slot)| (*id, slot.state()))
             .collect();
-        for (id, _) in self.broken_cues() {
+        let groups = self.problems_below();
+        for id in self
+            .broken_cues()
+            .into_iter()
+            .map(|(id, _)| id)
+            .chain(groups)
+        {
             all.entry(id).or_insert(CueState::Broken);
         }
         all.into_iter()
@@ -722,7 +728,7 @@ impl CueEngine {
         }
         self.slots.insert(cue, Slot::Active(new));
         self.report(cue, before, at, cx);
-        self.adopt_parents(cue, at, cx);
+        self.release_panicking_parents(cue, at, cx);
     }
 
     /// Stops one cue (a group: itself only; `stop_tree` stops its descendants first).
@@ -1191,6 +1197,8 @@ impl CueEngine {
         // A run that broke during its pre-wait, or a cue that has static problems now, skips its
         // action but keeps its timing.
         let problems = self.refuses(cue, cx);
+        // Broke at run time (feedback during its pre-wait): it never auto-follows (rule 2).
+        let failed = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.broken.is_some());
         let broken =
             problems || matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.is_broken());
         let act = match &model.kind {
@@ -1268,7 +1276,9 @@ impl CueEngine {
         };
         run.post_wait = (continue_mode == ContinueMode::AutoContinue)
             .then(|| at.saturating_add(post_wait.saturating_sub(offset)));
-        run.follow = !broken && continue_mode == ContinueMode::AutoFollow;
+        // A cue skipped for static problems follows as a disarmed one does (QLab 5: GO on a
+        // broken auto-follow cue starts the next cue); one that broke at run time does not.
+        run.follow = !failed && continue_mode == ContinueMode::AutoFollow;
         self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
         // The cue is in its action while it acts, so a trigger cycle back to it is ignored.
@@ -1296,8 +1306,10 @@ impl CueEngine {
         if let Some(Slot::Active(run)) = self.slots.get(&cue)
             && run.is_finished()
         {
+            // A run skipped for static problems completed as far as its group is concerned (it
+            // is passed over, as a disarmed cue is); one that broke at run time did not.
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
-            let exit = if run.is_broken() || failed {
+            let exit = if run.broken.is_some() || failed {
                 Exit::Broken
             } else {
                 Exit::Completed

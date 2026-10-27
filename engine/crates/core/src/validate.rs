@@ -28,6 +28,17 @@ pub const MAX_GROUP_DEPTH: usize = 32;
 pub const MAX_DELAY_MS: f64 = 1000.0;
 /// Largest auto-numbering start value and increment.
 pub const MAX_AUTO_NUMBER: f64 = 1_000_000.0;
+/// Shortest slice of an Audio cue, seconds: between its trim points and slice markers, every
+/// slice (and so every loop) is at least this long. QLab 5 refuses a shorter slice or trim in its
+/// editor, and plays a loop of exactly this length (M2.24, QLab check D6).
+pub const MIN_SLICE_SECONDS: f64 = 0.051;
+
+/// Whether a slice of `seconds` is shorter than [`MIN_SLICE_SECONDS`]. With a margin far below
+/// one sample, so that times typed in milliseconds (`1.051 - 1.0`) are not refused for the
+/// rounding of their difference.
+fn slice_too_short(seconds: f64) -> bool {
+    seconds < MIN_SLICE_SECONDS - 1e-9
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -80,12 +91,16 @@ pub enum IssueKind {
     InvalidLevel { field: &'static str },
     /// Some other number was out of range or not finite; it was clamped or reset.
     InvalidValue { field: &'static str },
-    /// An Audio cue's end time was not after its start time; it was cleared (play to end).
+    /// An Audio cue's end time was not at least [`MIN_SLICE_SECONDS`] after its start time; it
+    /// was cleared (play to end).
     InvalidEndTime,
     /// A slice marker at `time` was at or outside the trim points; it was removed.
     SliceOutsideTrim { time: f64 },
     /// A second slice marker at `time` was removed.
     DuplicateSlice { time: f64 },
+    /// The slice marker at `time` made a slice shorter than [`MIN_SLICE_SECONDS`] (counted from
+    /// the start time or the marker before it, or up to the end time); it was removed.
+    SliceTooShort { time: f64 },
     /// Slice markers were out of order; they were sorted.
     SlicesUnsorted,
     /// `count` entries of `field` referred to channels or outputs that do not exist; removed.
@@ -139,11 +154,20 @@ impl fmt::Display for ValidationIssue {
             IssueKind::InvalidTime { field } => write!(f, "{field} out of range; clamped"),
             IssueKind::InvalidLevel { field } => write!(f, "invalid {field}; clamped"),
             IssueKind::InvalidValue { field } => write!(f, "invalid {field}; corrected"),
-            IssueKind::InvalidEndTime => write!(f, "end time not after start time; cleared"),
+            IssueKind::InvalidEndTime => write!(
+                f,
+                "end time less than {} ms after start time; cleared",
+                MIN_SLICE_SECONDS * 1000.0
+            ),
             IssueKind::SliceOutsideTrim { time } => {
                 write!(f, "slice at {time} s is outside the trim points; removed")
             }
             IssueKind::DuplicateSlice { time } => write!(f, "duplicate slice at {time} s; removed"),
+            IssueKind::SliceTooShort { time } => write!(
+                f,
+                "slice at {time} s makes a slice shorter than {} ms; removed",
+                MIN_SLICE_SECONDS * 1000.0
+            ),
             IssueKind::SlicesUnsorted => write!(f, "slices out of order; sorted"),
             IssueKind::IndexOutOfRange { field, count } => {
                 write!(
@@ -484,7 +508,8 @@ impl Checker {
                         end = MAX_TIME;
                         self.warn(id, IssueKind::InvalidTime { field: "end_time" });
                     }
-                    *end_time = (end.is_finite() && end > *start_time).then_some(end);
+                    *end_time =
+                        (end.is_finite() && !slice_too_short(end - *start_time)).then_some(end);
                     if end_time.is_none() {
                         self.warn(id, IssueKind::InvalidEndTime);
                     }
@@ -574,6 +599,31 @@ impl Checker {
         });
         for time in duplicates {
             self.warn(id, IssueKind::DuplicateSlice { time });
+        }
+        // Every slice at least `MIN_SLICE_SECONDS`: a marker too close to the boundary before it
+        // goes (its slice joins the next one), then markers too close to the end time (unknown
+        // without one: the file's length is not in the model).
+        let mut short = Vec::new();
+        let mut prev = start;
+        slices.retain(|s| {
+            let keep = !slice_too_short(s.time - prev);
+            if keep {
+                prev = s.time;
+            } else {
+                short.push(s.time);
+            }
+            keep
+        });
+        if let Some(end) = end {
+            while let Some(last) = slices.last()
+                && slice_too_short(end - last.time)
+            {
+                short.push(last.time);
+                slices.pop();
+            }
+        }
+        for time in short {
+            self.warn(id, IssueKind::SliceTooShort { time });
         }
     }
 

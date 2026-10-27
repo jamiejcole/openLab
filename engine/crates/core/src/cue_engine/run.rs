@@ -104,9 +104,9 @@ pub(super) struct Run {
     /// schedule; once nothing is pending the slot becomes [`Slot::Broken`].
     pub broken: Option<BrokenReason>,
     /// Started (or reached its action) while the cue had static problems (`CueProblem`): its
-    /// action is skipped and it never follows, as for a broken run, but its auto-continue keeps
-    /// its schedule. Once nothing is pending the slot is removed (the problems, not the run,
-    /// make it report `broken` then).
+    /// action is skipped, as for a disarmed cue, and its continue (auto-continue or auto-follow)
+    /// keeps its schedule (QLab 5). Once nothing is pending the slot is removed (the problems,
+    /// not the run, make it report `broken` then).
     pub static_broken: bool,
     /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
     /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
@@ -166,7 +166,8 @@ pub(super) struct FadeRun {
 pub(super) enum Exit {
     /// The action completed and nothing is pending.
     Completed,
-    /// It broke (a group: a child broke during its run).
+    /// It broke at run time (a group: a child broke at run time during its run). A run skipped
+    /// for static problems is `Completed`: its group passes over it.
     Broken,
     /// Stopped, reset or deleted.
     Stopped,
@@ -176,12 +177,9 @@ pub(super) enum Exit {
 /// runtime that is not idle, loaded or settled broken).
 #[derive(Clone, Debug, Default)]
 pub(super) struct GroupRun {
-    /// Running because a child was started on its own while the group was idle: it tracks its
-    /// children but starts none and fires no continue.
-    pub adopted: bool,
     /// Stopping with a fade: ends when its last busy child has stopped.
     pub stopping: bool,
-    /// A child broke during this run, so the group does not auto-follow.
+    /// A child broke at run time during this run, so the group does not auto-follow.
     pub failed: bool,
     /// A Devamp cue asked this playlist to finish its current child and then complete: the
     /// Devamp cue, and whether it starts the cue after it then.

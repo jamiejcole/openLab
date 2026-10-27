@@ -500,8 +500,10 @@ pub enum Action {
         problems: Vec<CueProblem>,
     },
     /// A group gained or lost a descendant (any depth) shown with static problems: `warning`
-    /// is the new `CueEngine::has_broken_descendant`. The group itself is not broken (QLab 5
-    /// shows a warning on it). Also sent, with `false`, once for a deleted group that had one.
+    /// is the new `CueEngine::has_broken_descendant`. It is why the group shows as broken (QLab 5;
+    /// a group with no runtime reports the state `broken` meanwhile) although it has no problems
+    /// of its own and still starts. Also sent, with `false`, once for a deleted group that had
+    /// one.
     GroupWarningChanged {
         group: CueId,
         warning: bool,
@@ -559,7 +561,7 @@ pub enum EngineWarning {
     /// Start/GO/continue on a cue that is already active (pre-waiting, running, post-waiting,
     /// fading or stopping) did nothing; `state` is the state it was in. Its second-trigger option
     /// is `nothing`, or it is `play_next`/`play_previous` and the playlist was not playing a
-    /// child it could move on from (not in its action, stopping, adopted or devamped).
+    /// child it could move on from (not in its action, stopping or devamped).
     TriggerIgnored {
         cue: CueId,
         state: CueState,
