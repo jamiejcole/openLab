@@ -200,7 +200,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
+    /// Told of every selection change (the inspector follows it).
+    var onSelectionChange: (([ModelID]) -> Void)?
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        onSelectionChange?(selectedIDs())
         guard !restoringSelection, !batching, let list = listID, let id = selectedIDs().first,
             store.playheads[list] != id
         else { return }
