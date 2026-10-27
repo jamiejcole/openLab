@@ -883,7 +883,7 @@ impl Actor {
             if stale {
                 self.listener.inputs_dropped += 1;
             } else {
-                self.forward(input);
+                self.forward(peer, input);
             }
         }
         for reply in &outcome.replies {
@@ -893,15 +893,24 @@ impl Actor {
         }
     }
 
-    fn forward(&mut self, input: OscInput) {
+    fn forward(&mut self, peer: Peer, input: OscInput) {
         if self.inflight.len() >= MAX_INFLIGHT {
             self.listener.inputs_dropped += 1;
             return;
         }
         let id = self.next_id();
         self.inflight.insert(id);
+        let message = input.into_client_message(id);
+        let ip = match peer {
+            Peer::Udp(ip) | Peer::Tcp { ip, .. } => ip,
+        };
+        // Just before the input, so the show log says where a GO came from (DX-02).
+        let _ = self.inbox.send(Inbox::Trigger {
+            source: format!("osc {ip}"),
+            detail: super::describe(&message),
+        });
         let sent = self.inbox.send(Inbox::Client {
-            message: input.into_client_message(id),
+            message,
             reply: self.reply_tx.clone(),
         });
         if sent.is_err() {
