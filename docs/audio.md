@@ -386,7 +386,7 @@ Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `
 - `OutputStream` drops its stream before the slot, so dropping it without `close` frees the mixer on the dropping thread, never on the audio thread.
 - The push cannot fail (one host per slot). If it ever did, the mixer would be leaked, not freed, and counted in `leaked_mixers`.
 
-**Outage semantics (mechanism only).** While no stream runs, nothing calls the mixer, so `samples_rendered`, the master clock, is frozen, and every sample-time deadline waits with it. After a reopen, voices continue from the frame where they were cut off, and commands dated during the outage apply in the first block. Whether that is what the show should do is the engine's policy (ARCHITECTURE §3.5; the control loop's grace period and broken cues: docs/control.md, Devices). The controller can stop voices before reopening if the policy wants silence.
+**Outage semantics (mechanism only).** While no stream runs, nothing calls the mixer, so `samples_rendered`, the master clock, is frozen, and every sample-time deadline waits with it. After a reopen, voices continue from the frame where they were cut off, and commands dated during the outage apply in the first block. What the show does is the engine's policy (ARCHITECTURE §3.5, M4.2g: the control loop stops every voice on the lost device at once, dated on the first sample after the outage, so none continues after a reopen; docs/control.md, Devices). The frozen clock is kept: the engine plays on one device, so no other time base exists.
 
 **Reopen backoff.** `reopen_delay_ms(attempt)` gives 250, 500, 1000, 2000 and then 4000 ms for every later attempt. The engine owns the clock, the attempts and the user warning (docs/control.md, Devices).
 
