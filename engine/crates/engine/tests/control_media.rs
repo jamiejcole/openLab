@@ -329,6 +329,8 @@ fn files_near_the_playhead_are_probed_first() {
     let ws = workspace(cues);
     let mut c = config(&ws);
     c.probe = gated_probe;
+    // The watchdog's clock stands still: no worker is ever counted stuck here.
+    c.probe_clock = ProbeTime::new().clock();
     c.prime_cues = 1;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     // Both workers are stuck on the first files of the workspace.
@@ -360,6 +362,8 @@ fn a_start_held_by_its_probe_fails_after_five_seconds() {
     let ws = workspace(vec![held, audio(2, &next, 1)]);
     let mut c = config(&ws);
     c.probe = gated_probe;
+    // The hold limit is sample time; the watchdog's clock stands still, so only the limit fails it.
+    c.probe_clock = ProbeTime::new().clock();
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     let at = go(&mut s);
     // Told at once that it waits.
@@ -400,14 +404,24 @@ fn a_stuck_probe_worker_is_replaced() {
         audio(2, &stuck[1], 0),
         audio(3, &fine, 0),
     ]);
+    let time = ProbeTime::new();
     let mut c = config(&ws);
     c.probe = gated_probe;
-    c.probe_timeout = std::time::Duration::ZERO;
+    c.probe_clock = time.clock();
+    // No priming: it would queue the stuck files again ahead of the third for the fresh workers.
+    c.prime_cues = 0;
+    let timeout = c.probe_timeout;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(&stuck, 2);
-    // The watchdog gives up on both stuck workers; the third file is probed by a fresh one.
+    // Both workers have been on their file since the clock's start; not stuck until the timeout.
+    time.advance(timeout - std::time::Duration::from_secs(1));
+    s.tick();
+    assert_eq!(s.control().abandoned_probe_workers(), 0);
+    // The watchdog gives up on both stuck workers; the third file is probed by a fresh one,
+    // which has been on its file for no time at all, so it is not given up on.
+    time.advance(std::time::Duration::from_secs(2));
     s.settle_media();
-    assert!(s.control().abandoned_probe_workers() >= 2);
+    assert_eq!(s.control().abandoned_probe_workers(), 2);
     assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
     for n in 1..=2 {
         assert!(matches!(
