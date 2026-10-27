@@ -262,7 +262,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ## 16. Diagnostics & Logging
 - [ ] **DX-01** `v0.0.1` Warnings panel listing every broken cue and system problem, click-through to the cue.
 - [ ] **DX-02** `v0.0.1` Show log: timestamped record of every GO, cue start/stop, trigger received, error — viewable in-app and written to disk.
-- [ ] **DX-03** `v0.0.1` System status: CPU, audio engine load, disk read health, xrun count, device status.
+- [x] **DX-03** `v0.0.1` System status: CPU, audio engine load, disk read health, xrun count, device status.
 - [ ] **DX-04** `v0.0.1` Crash reports captured locally (with workspace path and last log lines); sending is opt-in.
 - [ ] **DX-05** Diagnostic bundle export (logs, settings, system info) for bug reports.
 

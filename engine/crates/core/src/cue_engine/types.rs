@@ -313,6 +313,8 @@ pub enum CueProblem {
     TargetWrongKind {
         target: CueId,
     },
+    /// A Fade cue that sets no level to fade (QLab: "No parameters set to fade").
+    NothingToFade,
     /// An Audio cue with no media file.
     NoMedia,
     MediaMissing {
@@ -363,6 +365,7 @@ impl fmt::Display for CueProblem {
             Self::TargetWrongKind { target } => {
                 write!(f, "target {target} is the wrong kind of cue")
             }
+            Self::NothingToFade => write!(f, "no levels set to fade"),
             Self::NoMedia => write!(f, "no media file"),
             Self::MediaMissing { media } => write!(f, "media file {} not found", media.as_str()),
             Self::MediaUnsupported { media, reason } => {

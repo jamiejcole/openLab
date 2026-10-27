@@ -41,24 +41,44 @@ pub use settings::{
 };
 pub use writer::{JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, SaveWriter};
 
-/// `<app-support>/openLab`.
+/// `<app-support>/openLab`, and where the logs and crash reports go.
 #[derive(Clone, Debug)]
 pub struct AppDirs {
     root: PathBuf,
+    /// `<root>/Logs`, or `~/Library/Logs/openLab` on macOS ([`AppDirs::system`]).
+    logs: PathBuf,
+    /// `<root>/Crashes`, or `~/Library/Logs/openLab/Crashes` on macOS.
+    crashes: PathBuf,
 }
 
 impl AppDirs {
     /// `app_support` is the platform's application-support folder (or a temp dir in tests).
+    /// Logs and crash reports go under it (`Logs`, `Crashes`).
     pub fn new(app_support: impl AsRef<Path>) -> Self {
+        let root = app_support.as_ref().join("openLab");
         Self {
-            root: app_support.as_ref().join("openLab"),
+            logs: root.join("Logs"),
+            crashes: root.join("Crashes"),
+            root,
         }
     }
 
     /// `~/Library/Application Support` on macOS, `%APPDATA%` on Windows. `None` if the
-    /// platform does not say.
+    /// platform does not say. On macOS the logs and crash reports go to
+    /// `~/Library/Logs/openLab`, where Console.app and people look for them (M4.7c).
     pub fn system() -> Option<Self> {
-        dirs::data_dir().map(Self::new)
+        dirs::data_dir().map(|data| Self::layout(data, dirs::home_dir(), cfg!(target_os = "macos")))
+    }
+
+    /// [`AppDirs::system`]'s layout for a platform, from its folders.
+    fn layout(app_support: PathBuf, home: Option<PathBuf>, macos: bool) -> Self {
+        let mut dirs = Self::new(app_support);
+        if macos && let Some(home) = home {
+            let logs = home.join("Library").join("Logs").join("openLab");
+            dirs.crashes = logs.join("Crashes");
+            dirs.logs = logs;
+        }
+        dirs
     }
 
     pub fn settings_path(&self) -> PathBuf {
@@ -75,12 +95,19 @@ impl AppDirs {
 
     /// The show log files (`openlab.log`, rotated to `openlab.1.log`...).
     pub fn logs_dir(&self) -> PathBuf {
-        self.root.join("Logs")
+        self.logs.clone()
     }
 
-    /// Crash reports, kept on this machine only.
+    /// Crash reports, kept on this machine only: `Crashes` beside the log files' folder on
+    /// macOS (`~/Library/Logs/openLab/Crashes`), `<root>/Crashes` elsewhere.
     pub fn crash_dir(&self) -> PathBuf {
-        self.root.join("Crashes")
+        self.crashes.clone()
+    }
+
+    /// One "running" marker per live engine process (`diag::run_marker`); a leftover means a
+    /// run ended without a clean shutdown.
+    pub fn run_markers_dir(&self) -> PathBuf {
+        self.root.join("Running")
     }
 
     pub fn recovery_dir(&self) -> PathBuf {
@@ -132,5 +159,49 @@ impl PersistError {
     pub(crate) fn io(op: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
         let path = path.to_path_buf();
         move |source| Self::Io { op, path, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_keeps_logs_and_crash_reports_under_library_logs() {
+        let support = PathBuf::from("/Users/a/Library/Application Support");
+        let home = PathBuf::from("/Users/a");
+        let mac = AppDirs::layout(support.clone(), Some(home.clone()), true);
+        assert_eq!(
+            mac.logs_dir(),
+            home.join("Library").join("Logs").join("openLab")
+        );
+        assert_eq!(
+            mac.crash_dir(),
+            home.join("Library")
+                .join("Logs")
+                .join("openLab")
+                .join("Crashes")
+        );
+        // Everything else stays under Application Support.
+        let root = support.join("openLab");
+        assert_eq!(mac.settings_path(), root.join("settings.json"));
+        assert_eq!(mac.recovery_dir(), root.join("Recovery"));
+        assert_eq!(mac.run_markers_dir(), root.join("Running"));
+    }
+
+    #[test]
+    fn other_platforms_and_tests_keep_everything_under_app_support() {
+        let support = PathBuf::from("/data");
+        let root = support.join("openLab");
+        for dirs in [
+            AppDirs::layout(support.clone(), Some(PathBuf::from("/home/a")), false),
+            // macOS without a home folder: the app-support layout, not a relative path.
+            AppDirs::layout(support.clone(), None, true),
+            AppDirs::new(&support),
+        ] {
+            assert_eq!(dirs.logs_dir(), root.join("Logs"));
+            assert_eq!(dirs.crash_dir(), root.join("Crashes"));
+            assert_eq!(dirs.run_markers_dir(), root.join("Running"));
+        }
     }
 }

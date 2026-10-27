@@ -244,6 +244,9 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let disk: DiskStatus
     let device: DeviceStatus
     let logDropped: UInt64
+    /// The newest show-log record's `seq`; above the last `log_entry` received means a push was
+    /// lost. 0 when absent (an engine from before the field).
+    let logSeq: UInt64
     /// PB-10: the network output override is on, so Network cues send nothing.
     let networkOutputDisabled: Bool
     enum CodingKeys: String, CodingKey {
@@ -251,7 +254,20 @@ struct SystemStatus: Hashable, Sendable, Decodable {
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
+        case logSeq = "log_seq"
         case networkOutputDisabled = "network_output_disabled"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cpuPercent = try c.decodeIfPresent(Double.self, forKey: .cpuPercent)
+        engineLoad = try c.decodeIfPresent(Double.self, forKey: .engineLoad)
+        xruns = try c.decode(UInt64.self, forKey: .xruns)
+        disk = try c.decode(DiskStatus.self, forKey: .disk)
+        device = try c.decode(DeviceStatus.self, forKey: .device)
+        logDropped = try c.decode(UInt64.self, forKey: .logDropped)
+        logSeq = try c.decodeIfPresent(UInt64.self, forKey: .logSeq) ?? 0
+        networkOutputDisabled = try c.decodeIfPresent(Bool.self, forKey: .networkOutputDisabled) ?? false
     }
 }
 
@@ -411,6 +427,9 @@ enum ServerMessage: Sendable, Decodable {
     case progress([ProgressItem])
     case meters(outputs: [OutputMeter], cues: [CueMeter])
     case log(LogLevel, String)
+    /// One new show-log record (M4.7c). Lossy and rate-limited: a gap in `seq` means records to
+    /// read with `log_tail`.
+    case logEntry(seq: UInt64, ShowLogEntry)
     case status(SystemStatus)
     case warnings([WireWarning])
     case result(id: UInt64, Outcome)
@@ -441,6 +460,7 @@ enum ServerMessage: Sendable, Decodable {
         case "progress": self = .progress(try d("items"))
         case "meters": self = .meters(outputs: try d("outputs"), cues: try d("cues"))
         case "log": self = .log(try d("level"), try d("message"))
+        case "log_entry": self = .logEntry(seq: try d("seq"), try d("entry"))
         case "status": self = .status(try d("status"))
         case "warnings": self = .warnings(try d("warnings"))
         case "result":

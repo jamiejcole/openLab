@@ -50,6 +50,8 @@ struct Facts {
     /// Network cues: what is wrong with the destination and the message, and whether the
     /// destination's host name has to resolve.
     network: Option<NetworkFacts>,
+    /// Fade cues: the fade sets no level, so there is nothing to fade (QLab F4).
+    nothing_to_fade: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -770,7 +772,8 @@ impl CueEngine {
     }
 }
 
-/// A cue's problems in their order: target, media, patch or device, network destination.
+/// A cue's problems in their order: target, nothing to fade, media, patch or device, network
+/// destination.
 fn combine(
     f: &Facts,
     media: &BTreeMap<String, MediaStatus>,
@@ -778,6 +781,9 @@ fn combine(
     network: &BTreeMap<NetworkPatchId, String>,
 ) -> Vec<CueProblem> {
     let mut found: Vec<CueProblem> = f.target.iter().cloned().collect();
+    if f.nothing_to_fade {
+        found.push(CueProblem::NothingToFade);
+    }
     if let Some(a) = &f.audio {
         match &a.media {
             None => found.push(CueProblem::NoMedia),
@@ -994,9 +1000,14 @@ fn facts_of<'w>(
         }
         _ => None,
     };
-    (target.is_some() || audio.is_some() || network.is_some()).then_some(Facts {
+    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, .. }
+        if levels.master_db.is_none()
+            && levels.output_db.iter().all(Option::is_none)
+            && levels.crosspoints.is_empty());
+    (target.is_some() || audio.is_some() || network.is_some() || nothing_to_fade).then_some(Facts {
         target,
         audio,
         network,
+        nothing_to_fade,
     })
 }

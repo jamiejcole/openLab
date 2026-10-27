@@ -1021,6 +1021,443 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
     nothing_starts_after_the_return(s, &[2]);
 }
 
+// ---- M4.2g stall watchdog: a stream that stops calling back with no error, device listed ----
+//
+// Two stages (docs/control.md "Devices"): a `device_stalled` warning after 500 ms of silence
+// (nothing stops), a loss after 3 s. The supervisor samples every tick; these tests tick every
+// 25 ms of the injected clock, as the real loop's 5 ms is finer still.
+
+const STALL_STEP_MS: u64 = 25;
+
+/// Moves the wall clock by `ms` in 25 ms steps, ticking after each (no settling: the loss
+/// itself is what the test looks at).
+fn idle_ms(s: &mut DeviceShow, ms: u64) {
+    for _ in 0..ms / STALL_STEP_MS {
+        s.advance(Duration::from_millis(STALL_STEP_MS));
+        s.tick();
+    }
+}
+
+fn stalled_warning(msgs: &[ServerMessage]) -> Option<bool> {
+    workspace_warnings(msgs).map(|w| w.contains(&"device_stalled".to_owned()))
+}
+
+#[test]
+fn a_silent_stream_is_warned_about_at_500_ms_and_lost_as_stalled_at_3_s() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    idle_ms(&mut s, 450);
+    assert_eq!(stalled_warning(&s.take_outbound()), None);
+    idle_ms(&mut s, 100);
+    // The first stage: a warning and a log, and nothing stops.
+    let msgs = s.take_outbound();
+    assert_eq!(stalled_warning(&msgs), Some(true), "{msgs:?}");
+    assert!(
+        logs(&msgs, LogLevel::Warn)
+            .iter()
+            .any(|m| m.contains("no audio callback"))
+    );
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    idle_ms(&mut s, 2300);
+    assert!(!s.control().device_down(), "lost before the loss limit");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.take_outbound();
+    idle_ms(&mut s, 300);
+    s.settle_devices();
+    assert!(s.control().device_down(), "the hung stream was not lost");
+    let msgs = s.take_outbound();
+    // As an unplug: the cue stops at once, a log and the device_lost notice go out.
+    assert!(broken_device_lost(&msgs, 1));
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("lost") && m.contains("stalled")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert!(notices(&msgs).contains(&"device_lost".to_owned()));
+    // The loss replaces the warning.
+    assert_eq!(
+        workspace_warnings(&msgs),
+        Some(vec!["device_lost".to_owned()])
+    );
+}
+
+#[test]
+fn a_600_ms_pause_is_warned_about_and_then_forgotten_and_the_show_goes_on() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+    s.fake.unstall();
+    s.run(BLOCK * 2);
+    // The warning stays until callbacks have run steadily for one warning limit.
+    idle_ms(&mut s, 400);
+    assert_ne!(stalled_warning(&s.take_outbound()), Some(false));
+    idle_ms(&mut s, 200);
+    let msgs = s.take_outbound();
+    assert_eq!(stalled_warning(&msgs), Some(false), "the warning stayed");
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains("callbacks resumed"))
+    );
+    idle_ms(&mut s, 5000);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    // A second pause starts from the new last callback.
+    s.fake.stall();
+    idle_ms(&mut s, 2500);
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 1000);
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn callbacks_that_resume_just_before_the_loss_limit_are_not_a_loss() {
+    let mut s = running_cue_show();
+    s.fake.stall();
+    idle_ms(&mut s, 2900);
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 2000);
+    assert!(!s.control().device_down());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+#[test]
+fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
+    let mut s = running_cue_show();
+    let opens = s.fake.opens();
+    s.fake.stall();
+    idle_ms(&mut s, 3100);
+    s.settle_devices();
+    assert!(s.control().device_down());
+    // Still listed, so no hot-plug shortcut: the reopen waits out the backoff (250 ms).
+    s.wait_wall(Duration::from_millis(300), 3);
+    assert!(!s.control().device_down(), "the stream was not reopened");
+    assert_eq!(s.fake.opens(), opens + 1);
+    s.run(BLOCK * 2);
+    // Voices released, cues un-break; nothing resumed by itself.
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let at = start(&mut s, 1);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(first_nonzero(&s.channel(0)[at as usize..]).is_some());
+}
+
+#[test]
+fn a_reopened_stream_gets_one_loss_limit_for_its_first_callback() {
+    let mut s = running_cue_show();
+    lose(&mut s);
+    // The host takes a long while to start calling back after the reopen.
+    s.fake.silent_next_open();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert!(!s.control().device_down());
+    s.take_outbound();
+    idle_ms(&mut s, 1500);
+    assert!(!s.control().device_down(), "lost inside the startup grace");
+    assert_ne!(stalled_warning(&s.take_outbound()), Some(true));
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 5000);
+    assert!(!s.control().device_down());
+
+    // A stream that never calls back at all is lost once the grace is over.
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.silent_next_open();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.take_outbound();
+    idle_ms(&mut s, 3500);
+    s.settle_devices();
+    // Lost (and, the host being fine on the next open, already reopened).
+    assert!(
+        logs(&s.take_outbound(), LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("stalled"))
+    );
+}
+
+#[test]
+fn a_process_freeze_is_no_evidence_of_a_stall() {
+    // Both threads stop together for 2 s (and 60 s, an hour): the supervisor wakes first, finds
+    // the count unchanged, and must not take that for silence it watched.
+    for freeze in [2, 60, 3600] {
+        let mut s = running_cue_show();
+        s.take_outbound();
+        s.fake.stall();
+        idle_ms(&mut s, 100);
+        s.advance(Duration::from_secs(freeze));
+        s.tick();
+        s.settle_devices();
+        assert!(
+            !s.control().device_down(),
+            "a {freeze} s freeze was a stall"
+        );
+        assert_eq!(stalled_warning(&s.take_outbound()), None);
+        // The window started over at the freeze: a hang is still found, after its own time.
+        idle_ms(&mut s, 2900);
+        assert!(!s.control().device_down());
+        idle_ms(&mut s, 300);
+        s.settle_devices();
+        assert!(s.control().device_down());
+    }
+    // A live stream is untouched by it.
+    let mut s = running_cue_show();
+    s.advance(Duration::from_secs(3600));
+    s.tick();
+    s.run(BLOCK);
+    idle_ms(&mut s, 1000);
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_sparse_supervisor_cannot_declare_a_stall() {
+    // Ticks 200 ms apart (a starved control thread) never add up to a watched silence.
+    let mut s = running_cue_show();
+    s.fake.stall();
+    for _ in 0..40 {
+        s.advance(Duration::from_millis(200));
+        s.tick();
+    }
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_sleep_gives_the_stream_one_loss_limit_to_wake_up() {
+    // The monotonic clock stops while the Mac sleeps (macOS `Instant`); the sleep-counting
+    // clock does not. The device is quiet for 2 s before and takes its time after the wake.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    idle_ms(&mut s, 2000);
+    s.sleep(Duration::from_secs(60));
+    idle_ms(&mut s, 2900);
+    assert!(
+        !s.control().device_down(),
+        "lost inside the post-wake grace"
+    );
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+    s.fake.unstall();
+    s.run(BLOCK);
+    idle_ms(&mut s, 5000);
+    assert!(!s.control().device_down());
+
+    // A device that never wakes is found after the grace.
+    let mut s = running_cue_show();
+    s.fake.stall();
+    s.sleep(Duration::from_secs(60));
+    idle_ms(&mut s, 3200);
+    s.settle_devices();
+    assert!(s.control().device_down());
+}
+
+#[test]
+fn a_stream_that_is_not_up_is_not_watched() {
+    // Closing: the host still holds the callback, the mixer is polled for.
+    let mut s = running_cue_show();
+    s.fake.hold_on_close(true);
+    lose(&mut s);
+    let opens = s.fake.opens();
+    s.take_outbound();
+    idle_ms(&mut s, 5000);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    assert!(
+        logs(&msgs, LogLevel::Warn)
+            .iter()
+            .all(|m| !m.contains("no audio callback"))
+    );
+    assert_eq!(s.fake.opens(), opens, "no reopen while the mixer is held");
+    s.fake.drop_held();
+
+    // Opening: an open that takes long.
+    let mut s = running_cue_show();
+    lose(&mut s);
+    s.fake.close_gate();
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    idle_ms(&mut s, 1100);
+    s.take_outbound();
+    idle_ms(&mut s, 5000);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    s.fake.open_gate();
+    s.settle_devices();
+    assert!(!s.control().device_down());
+}
+
+#[test]
+fn a_device_missing_from_the_list_is_reported_as_unlisted_not_stalled() {
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.unplug(DEV, false);
+    s.wait_wall(Duration::from_secs(2), 2);
+    assert!(s.control().device_down());
+    let errors = logs(&s.take_outbound(), LogLevel::Error);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("no longer listed"), "{errors:?}");
+}
+
+#[test]
+fn the_stall_limits_follow_the_buffer_period() {
+    use openlab_engine::control::devices::{stall_limit, stall_loss_limit};
+    let ms = Duration::from_millis;
+    // Small buffers: the floors.
+    assert_eq!(stall_limit(Some(64), 48_000), ms(500));
+    assert_eq!(stall_limit(None, 48_000), ms(500));
+    assert_eq!(stall_limit(Some(512), 0), ms(500));
+    assert_eq!(stall_loss_limit(Some(64), 48_000), ms(3000));
+    assert_eq!(stall_loss_limit(None, 48_000), ms(3000));
+    // Big buffers: 20 and 50 periods (4096 frames at 44.1 kHz is 92.9 ms).
+    let warn = stall_limit(Some(4096), 44_100);
+    assert!(warn > ms(1850) && warn < ms(1870), "{warn:?}");
+    let loss = stall_loss_limit(Some(4096), 44_100);
+    assert!(loss > ms(4640) && loss < ms(4650), "{loss:?}");
+}
+
+/// Like [`idle_ms`], but stops at the tick that loses the device. The reopen starts 250 ms of
+/// the injected clock later, and the device thread answers it in real time: a loop that only
+/// looked after the whole span could find the device already back (a race that showed on
+/// Windows runners). With `settle`, the device thread's answers are awaited after every tick,
+/// the fastest it can be.
+fn idle_ms_until_down(s: &mut DeviceShow, ms: u64, settle: bool) -> bool {
+    for _ in 0..ms / STALL_STEP_MS {
+        s.advance(Duration::from_millis(STALL_STEP_MS));
+        s.tick();
+        if settle {
+            s.wait_devices();
+        }
+        if s.control().device_down() {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn a_device_that_stutters_is_lost_as_intermittent_with_bounded_logs() {
+    stutter_until_lost(false);
+}
+
+#[test]
+fn the_stutter_loss_does_not_depend_on_how_fast_the_device_thread_answers() {
+    stutter_until_lost(true);
+}
+
+fn stutter_until_lost(settle: bool) {
+    // A callback every 525 ms: never a 3 s silence, but silent almost all the time.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    let mut msgs = Vec::new();
+    let mut rounds = 0;
+    while !s.control().device_down() && rounds < 60 {
+        s.fake.stall();
+        if idle_ms_until_down(&mut s, 525, settle) {
+            break;
+        }
+        s.fake.unstall();
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+        rounds += 1;
+    }
+    msgs.extend(s.take_outbound());
+    assert!(
+        s.control().device_down(),
+        "a stuttering device was never lost"
+    );
+    assert!(rounds <= 20, "lost only after {rounds} stutters (~10 s)");
+    let warns = logs(&msgs, LogLevel::Warn)
+        .into_iter()
+        .filter(|m| m.contains("no audio callback"))
+        .count();
+    assert!(warns <= 1, "{warns} stall warnings logged");
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .all(|m| !m.contains("callbacks resumed")),
+        "the warning flickered"
+    );
+    let broadcasts = msgs
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::Warnings { .. }))
+        .count();
+    assert!(broadcasts <= 3, "{broadcasts} warnings broadcasts");
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("intermittent")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+}
+
+#[test]
+fn repeated_short_stalls_are_logged_at_most_every_10_s_with_a_count() {
+    // 600 ms stalls every 2.1 s: warned each time, never lost (29% silent).
+    let mut s = running_cue_show();
+    s.take_outbound();
+    let mut msgs = Vec::new();
+    for _ in 0..6 {
+        s.fake.stall();
+        idle_ms(&mut s, 600);
+        s.fake.unstall();
+        s.run(BLOCK);
+        idle_ms(&mut s, 1500);
+        msgs.extend(s.take_outbound());
+    }
+    assert!(!s.control().device_down());
+    let warns: Vec<String> = logs(&msgs, LogLevel::Warn)
+        .into_iter()
+        .filter(|m| m.contains("no audio callback"))
+        .collect();
+    assert_eq!(warns.len(), 2, "{warns:?}");
+    assert!(warns[1].contains("4 more stall(s)"), "{warns:?}");
+}
+
+#[test]
+fn a_stage_needs_ten_samples_of_watched_silence() {
+    // Ticks 100 ms apart (the longest allowed gap): 500 ms of silence is only five samples.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    for _ in 0..9 {
+        s.advance(Duration::from_millis(100));
+        s.tick();
+    }
+    assert_eq!(stalled_warning(&s.take_outbound()), None);
+    s.advance(Duration::from_millis(100));
+    s.tick();
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+}
+
+#[test]
+fn a_patch_left_unmapped_by_a_small_device_is_mapped_when_a_bigger_one_is_back() {
+    let ws = workspace(vec![]);
+    let mut c = device_config(&ws);
+    c.machine = MachineSettings::default();
+    let mut s = DeviceShow::new(ws.clone(), vec![listed(DEV, DEV_NAME, 1)], c);
+    let msgs = s.take_outbound();
+    assert_eq!(logs(&msgs, LogLevel::Warn).len(), 1);
+    assert_eq!(s.control().machine().patch_mapping(ws.id, patch_id()), None);
+    lose(&mut s);
+    replug(&mut s);
+    let m = s
+        .control()
+        .machine()
+        .patch_mapping(ws.id, patch_id())
+        .cloned()
+        .expect("mapped on the bigger device");
+    assert_eq!((m.device.as_str(), m.channels), (DEV_NAME, vec![0, 1]));
+}
+
 #[test]
 fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
     let mut s = device_show(workspace(vec![]));
@@ -1056,24 +1493,4 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
             .iter()
             .any(|l| l.contains("mapped patch 'Main Outputs' to Fake 1 outputs 1\u{2013}2"))
     );
-}
-
-#[test]
-fn a_patch_left_unmapped_by_a_small_device_is_mapped_when_a_bigger_one_is_back() {
-    let ws = workspace(vec![]);
-    let mut c = device_config(&ws);
-    c.machine = MachineSettings::default();
-    let mut s = DeviceShow::new(ws.clone(), vec![listed(DEV, DEV_NAME, 1)], c);
-    let msgs = s.take_outbound();
-    assert_eq!(logs(&msgs, LogLevel::Warn).len(), 1);
-    assert_eq!(s.control().machine().patch_mapping(ws.id, patch_id()), None);
-    lose(&mut s);
-    replug(&mut s);
-    let m = s
-        .control()
-        .machine()
-        .patch_mapping(ws.id, patch_id())
-        .cloned()
-        .expect("mapped on the bigger device");
-    assert_eq!((m.device.as_str(), m.channels), (DEV_NAME, vec![0, 1]));
 }
