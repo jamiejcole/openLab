@@ -16,6 +16,25 @@ pub use osc::{OscConfig, OscListenerStats, OscPorts};
 pub use token::{constant_time_eq, generate_token};
 pub use ws::{ServerConfig, WsServer};
 
+/// What a client message asks for, for the show log: `transport go`, `request save`, `command`.
+/// From the wire form, so new messages and actions need no change here.
+pub(crate) fn describe(message: &openlab_core::protocol::ClientMessage) -> String {
+    let value = serde_json::to_value(message).unwrap_or_default();
+    let field = |v: &serde_json::Value, key: &str| {
+        v.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let mut text = field(&value, "type").unwrap_or_else(|| "message".to_owned());
+    // The tagged payload of a transport action or a request.
+    let inner = value.get("action").or_else(|| value.get("request"));
+    if let Some(name) = inner.and_then(|v| field(v, "type")) {
+        text.push(' ');
+        text.push_str(&name);
+    }
+    text
+}
+
 /// Why the server could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {

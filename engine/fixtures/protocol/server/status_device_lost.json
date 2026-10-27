@@ -1,0 +1,20 @@
+{
+  "type": "status",
+  "status": {
+    "cpu_percent": null,
+    "engine_load": null,
+    "xruns": 1,
+    "disk": {
+      "streams": 3,
+      "underrun_frames": 0,
+      "healthy": false
+    },
+    "device": {
+      "name": null,
+      "state": "lost",
+      "sample_rate": 48000,
+      "channels": 2
+    },
+    "log_dropped": 0
+  }
+}
