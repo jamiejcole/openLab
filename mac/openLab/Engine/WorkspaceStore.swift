@@ -73,7 +73,18 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         self.client = client
         if ownsDelegate { client.delegate = self }
         connectionState = client.state
-        stateSub = client.$state.sink { [weak self] in self?.connectionState = $0 }
+        stateSub = client.$state.sink { [weak self] state in
+            self?.connectionState = state
+            if state != .connected { self?.clearPreviewing() }
+        }
+    }
+
+    /// A dropped connection leaves nothing known to be previewing (the next snapshot says what is).
+    private func clearPreviewing() {
+        guard !previewing.isEmpty else { return }
+        let old = previewing
+        previewing = []
+        changes.send(.runtime(cues: old, playheads: []))
     }
 
     // MARK: Intents (all go through the client)

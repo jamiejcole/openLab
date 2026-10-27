@@ -76,7 +76,7 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord(KeyChord.down)), .reserved)
         XCTAssertEqual(validate(KeyChord(" ")), .duplicate(of: .go))
         XCTAssertEqual(validate(KeyChord("[")), .duplicate(of: .pauseAll))
-        XCTAssertEqual(validate(KeyChord("p")), .duplicate(of: .pauseResumeSelected))
+        XCTAssertNil(validate(KeyChord("p")), "a fixed app default (L, P, V) yields to a cue hotkey")
         XCTAssertEqual(validate(KeyChord("\u{7F}")), .unsupported)
         XCTAssertEqual(validate(KeyChord("q", [.command]), menu: [KeyChord("q", [.command])]), .menuKey)
     }
@@ -416,6 +416,23 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertTrue(app.handleKeyDown(e) === e)
         await settle()
         XCTAssertTrue(sent(.start(cue: intro)).isEmpty)
+    }
+
+    func testFixedDefaultKeysYieldToACueHotkey() async throws {
+        keyDoc = "doc-1"
+        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        for key in ["v", "l"] {
+            _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
+            await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
+            XCTAssertNil(app.handleKeyDown(try event(key)), "\(key) fires the cue")
+            await assertEventually { !sent(.start(cue: intro)).isEmpty }
+            XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .loadSelected))
+            XCTAssertTrue(
+                first.logEntries.contains { $0.level == .warn && $0.message.contains("yields to a cue hotkey") })
+        }
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2, "once each")
+        _ = app.frontKeys
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2)
     }
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {
