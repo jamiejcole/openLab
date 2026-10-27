@@ -462,6 +462,30 @@ final class AppControllerTests: XCTestCase {
         _ = await closeTask.value
     }
 
+    func testHungCloseTimesOutClearsTheGuardAndALaterQuitProceeds() async throws {
+        let second = try await addWorkspace()
+        engine.holdResults = true
+        let task = Task { await app.closeWorkspace(second) }
+        await assertEventually { closeMessages().count == 1 }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let closed = await task.value
+        XCTAssertFalse(closed)
+        XCTAssertEqual(alerts.errors.count, 1)
+
+        engine.holdResults = false
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        engine.releaseResults()
+    }
+
+    func testKeyMonitorIsInstalledOnce() {
+        app.installKeyMonitor()
+        app.installKeyMonitor()
+        XCTAssertEqual(app.keyMonitorInstalls, 1)
+    }
+
     func testReconnectDoesNotDuplicateWindows() async throws {
         let before = try XCTUnwrap(app.windows["doc-1"])
         await disconnect()
