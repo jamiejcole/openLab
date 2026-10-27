@@ -422,6 +422,7 @@ impl CueEngine {
                 self.availability(Vec::new(), vec![(patch, resolution)], cx);
             }
             Input::Availability { media, patches } => self.availability(media, patches, cx),
+            Input::DeviceLost => self.device_lost(cx),
         }
     }
 

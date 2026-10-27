@@ -1158,6 +1158,27 @@ fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
 }
 
 #[test]
+fn device_lost_stops_every_other_active_run_and_cancels_what_it_scheduled() {
+    // M4.2g: a memo with an auto-continue and a pre-waiting cue are not audio runs the binary
+    // can fail; `DeviceLost` stops them, so neither fires after the device returns.
+    let mut rig = Rig::new(vec![
+        timed(memo(1), 0.0, 1.0, AC),
+        memo(2),
+        timed(memo(3), 5.0, 0.0, ContinueMode::DoNotContinue),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 3);
+    assert_eq!(rig.state(1), CueState::PostWaiting);
+    assert_eq!(rig.state(3), CueState::PreWaiting);
+    let stopped = rig.at(100, Input::DeviceLost);
+    assert_eq!(changes(&stopped, 1), vec![(CueState::Idle, 100)]);
+    assert_eq!(changes(&stopped, 3), vec![(CueState::Idle, 100)]);
+    let later = rig.tick(1_000_000);
+    assert!(starts(&later).is_empty(), "{later:?}");
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
 fn a_device_lost_break_without_any_patch_status_stays_until_reset() {
     let mut rig = Rig::new(vec![sound(1)]);
     rig.start(0, 1);
