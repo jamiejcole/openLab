@@ -152,12 +152,23 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
         2 | 3 => {
             let mut kind = audio();
             if let CueKind::Audio {
-                levels, start_time, ..
+                levels,
+                start_time,
+                media,
+                patch,
+                preload,
+                ..
             } = &mut kind
             {
                 levels.master_db = level(p.b);
                 levels.outputs = vec![out(level(p.c)); (p.d % 4) as usize];
                 *start_time = time(p.d / 4);
+                // A few files, two patches and some preloads, so the media and patch
+                // bookkeeping has something to tell apart.
+                *media =
+                    (!p.c.is_multiple_of(13)).then(|| MediaRef::new(MEDIA[(p.b / 5) as usize % 4]));
+                *patch = patch_id(1 + u128::from(p.c / 3 % 2));
+                *preload = (p.c / 7).is_multiple_of(2);
             }
             kind
         }
@@ -282,6 +293,123 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
     }
 }
 
+/// Every id under `cue` (itself first), in order.
+fn subtree(cue: &Cue) -> Vec<CueId> {
+    let mut out = vec![cue.id];
+    for c in cue.children() {
+        out.extend(subtree(c));
+    }
+    out
+}
+
+/// `cue` and every cue below it.
+fn flat(cue: &Cue) -> Vec<&Cue> {
+    let mut out = vec![cue];
+    for c in cue.children() {
+        out.extend(flat(c));
+    }
+    out
+}
+
+/// How deep the groups below `cue` nest (a plain cue is 0, a group of plain cues 1).
+fn depth(cue: &Cue) -> usize {
+    cue.children()
+        .iter()
+        .map(|c| 1 + depth(c))
+        .max()
+        .unwrap_or(0)
+}
+
+/// A copy of `cue` with the same ids and other content: some descendants get another kind,
+/// another descendant cue under a group's id, or a group of their own.
+fn rewrite(cue: &Cue, ws: &Workspace, g: &mut Gen, p: &Pick, salt: u32) -> Cue {
+    let mut out = cue.clone();
+    if let CueKind::Group { children, .. } = &mut out.kind {
+        for (i, child) in children.iter_mut().enumerate() {
+            let pick =
+                p.a.wrapping_add(salt.wrapping_mul(7))
+                    .wrapping_add(i as u32 * 3)
+                    % 5;
+            let rewritten = rewrite(child, ws, g, p, salt + 1);
+            *child = match (pick, &rewritten.kind) {
+                (0, _) => rewritten,
+                (1 | 2, CueKind::Group { .. }) => rewritten,
+                (1, _) => common::cue(rewritten.id.0.as_u128(), kind(ws, p)),
+                // The same id, now a group around a new cue.
+                (3, _) => common::cue(
+                    rewritten.id.0.as_u128(),
+                    group(vec![common::cue(g.fresh().0.as_u128(), kind(ws, p))]),
+                ),
+                // A fresh cue where it was, the old id gone.
+                _ => common::cue(g.fresh().0.as_u128(), kind(ws, p)),
+            };
+        }
+    }
+    out
+}
+
+/// A transaction that removes a cue and adds back a cue with its id (anywhere): a group with
+/// other children, a plain cue, a copy of the removed cue (what undoing a removal does), a
+/// nested group that reuses the old descendants' ids with other content, or the old subtree
+/// rewritten in place (same ids, changed kinds). The index, the problem bookkeeping and the
+/// media catalog must treat the whole subtree as new.
+fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
+    let ids = all_ids(ws);
+    // Half of the time a group (a nested one when there is one), where the shapes are.
+    let groups: Vec<CueId> = ids
+        .iter()
+        .copied()
+        .filter(|&i| ws.find_cue(i).is_some_and(|c| depth(c) >= 1))
+        .collect();
+    let deep: Vec<CueId> = groups
+        .iter()
+        .copied()
+        .filter(|&i| ws.find_cue(i).is_some_and(|c| depth(c) >= 2))
+        .collect();
+    let id = match p.b % 5 {
+        3 | 4 => choose(&deep, p.a).or_else(|| choose(&groups, p.a)),
+        _ => None,
+    }
+    .or_else(|| choose(&ids, p.a))?;
+    let old = ws.find_cue(id)?;
+    let mut evolving = ws.clone();
+    let remove = Command::RemoveCue { id };
+    evolving.apply(remove.clone()).ok()?;
+    let reuse = subtree(old);
+    let new = match p.b % 5 {
+        0 => {
+            let kids = (0..p.c % 3)
+                .map(|_| common::cue(g.fresh().0.as_u128(), kind(&evolving, p)))
+                .collect();
+            common::cue(id.0.as_u128(), group(kids))
+        }
+        1 => common::cue(id.0.as_u128(), kind(&evolving, p)),
+        2 => old.clone(),
+        3 => {
+            // group id { group (old id) { leaf (old id), leaf } }: two levels, ids kept.
+            let mut pick = |n: usize| reuse.get(n).copied().unwrap_or_else(|| g.fresh());
+            let (inner, leaf) = (pick(1), pick(2));
+            let leaf = common::cue(leaf.0.as_u128(), kind(&evolving, p));
+            let other = common::cue(g.fresh().0.as_u128(), kind(&evolving, p));
+            common::cue(
+                id.0.as_u128(),
+                group(vec![common::cue(
+                    inner.0.as_u128(),
+                    group(vec![leaf, other]),
+                )]),
+            )
+        }
+        _ => rewrite(old, &evolving, g, p, 0),
+    };
+    let add = Command::AddCue {
+        at: position(&evolving, p.c, p.d),
+        cue: new,
+        auto_number: false,
+    };
+    evolving.apply(add.clone()).ok()?;
+    Some(vec![remove, add])
+}
+
 /// Operations 0–10 are the commands; 100 + n is `SetCueProperty` with property variant n.
 fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     let ids = all_ids(ws);
@@ -358,6 +486,11 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             increment: [1.0, 5.0, 0.1, 0.0, f64::INFINITY, 0.5][p.d as usize % 6],
         },
         10 => {
+            if p.d % 4 == 3
+                && let Some(commands) = readd(ws, g, p)
+            {
+                return Some(Command::Transaction { commands });
+            }
             // Each inner command is built against the workspace the earlier ones leave, so a
             // cue added in the transaction can be edited, moved or removed later in it. Inner
             // commands that would be refused are left out (the whole transaction would be).
@@ -398,8 +531,11 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     })
 }
 
+const MEDIA: [&str; 4] = ["media/a.wav", "media/b.wav", "media/c.wav", "media/d.wav"];
+
 fn base() -> Workspace {
     let mut ws = workspace(vec![]);
+    ws.patches.push(patch(2, 2));
     // A second list, so positions, moves between lists and mirrors of both are exercised.
     ws.cue_lists.push(CueList {
         id: list_id(2),
@@ -624,6 +760,139 @@ proptest! {
     }
 }
 
+/// One random edit (a command, or an undo or redo of the last) applied to `ws`; returns its
+/// footprint when something changed. The same choice as the mirror test makes.
+fn random_edit(
+    ws: &mut Workspace,
+    g: &mut Gen,
+    history: &mut History,
+    p: &Pick,
+) -> Option<Footprint> {
+    match p.d % 9 {
+        0 => {
+            let fp = history.peek_undo().map(Command::footprint)?;
+            history.undo(ws).unwrap().then_some(fp)
+        }
+        1 => {
+            let fp = history.peek_redo().map(Command::footprint)?;
+            history.redo(ws).unwrap().then_some(fp)
+        }
+        _ => {
+            let command = build(ws, g, p.op, p)?;
+            let fp = command.footprint();
+            history.execute(ws, command).is_ok().then_some(fp)
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The cue index follows every edit from its footprint alone and equals one built from
+    /// scratch after each (commands, undo, redo, transactions that add, move and remove).
+    #[test]
+    fn the_cue_index_follows_footprints(sequence in picks(80)) {
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let mut history = History::new();
+        let mut index = CueIndex::build(&ws);
+        for p in &sequence {
+            let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) else { continue };
+            let structural: std::collections::BTreeSet<CueId> = fp
+                .added
+                .iter()
+                .chain(&fp.removed)
+                .chain(&fp.moved)
+                .copied()
+                .collect();
+            let touched = structural.iter().chain(&fp.edited).copied().collect();
+            let change = index.reconcile(&ws, &touched, &structural, &fp.added);
+            prop_assert!(matches!(change, IndexChange::Delta(_)));
+            prop_assert!(index.matches(&ws), "index differs from a rebuild");
+        }
+    }
+}
+
+fn status_input(ws: &Workspace, p: &Pick) -> Input {
+    let ids = all_ids(ws);
+    let list = ws.cue_lists[p.a as usize % ws.cue_lists.len()].id;
+    match p.c % 12 {
+        0 | 1 => Input::Start {
+            cue: choose(&ids, p.a).unwrap_or(cue_id(1)),
+        },
+        2 => Input::Stop {
+            cue: choose(&ids, p.a).unwrap_or(cue_id(1)),
+            fade_out: None,
+        },
+        3 => Input::Go { list },
+        4 | 5 => Input::MediaStatus {
+            media: MediaRef::new(MEDIA[p.b as usize % 4]),
+            status: [
+                MediaStatus::Missing,
+                MediaStatus::Available,
+                MediaStatus::Unsupported {
+                    reason: "no".into(),
+                },
+                MediaStatus::Unknown,
+            ][p.d as usize % 4]
+                .clone(),
+        },
+        6 => Input::PatchStatus {
+            patch: patch_id(1 + u128::from(p.b % 2)),
+            resolution: if p.d.is_multiple_of(2) {
+                PatchResolution::Unmapped
+            } else {
+                PatchResolution::Mapped {
+                    device: "d".into(),
+                    channels: vec![0, 1],
+                }
+            },
+        },
+        _ => Input::Tick,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// After any random sequence of commands, undos and redos, mixed with runtime inputs and
+    /// media and patch reports, an engine told only each edit's footprint
+    /// (`model_changed_cues`) has done exactly what an engine that rebuilds everything
+    /// (`model_changed`) has: the same actions on every call, the same broken cues and group
+    /// warnings, and its bookkeeping equals a from-scratch rebuild (M4.12a).
+    #[test]
+    fn incremental_problems_equal_a_full_rebuild(sequence in picks(80)) {
+        let config = EngineConfig::new(48_000, 0, 1).unwrap();
+        let (mut ws, mut g) = (base(), Gen { next: 1000 });
+        let mut history = History::new();
+        let (mut inc, mut full) = (CueEngine::new(config), CueEngine::new(config));
+        let mut now = 0;
+        let mut call = |inc: &mut CueEngine, full: &mut CueEngine, ws: &Workspace, input: Input| {
+            now += 480;
+            let (a, b) = (inc.handle(ws, input.clone(), now), full.handle(ws, input, now));
+            prop_assert_eq!(a, b);
+            prop_assert_eq!(inc.unsignalled_model_changes(), 0);
+            inc.verify_problem_cache(ws).map_err(TestCaseError::fail)?;
+            prop_assert_eq!(inc.broken_cues(), full.broken_cues());
+            for id in all_ids(ws) {
+                prop_assert_eq!(inc.state(id), full.state(id));
+                prop_assert_eq!(inc.has_broken_descendant(id), full.has_broken_descendant(id));
+            }
+            Ok(())
+        };
+        inc.model_changed();
+        full.model_changed();
+        call(&mut inc, &mut full, &ws, Input::Tick)?;
+        for p in &sequence {
+            if let Some(fp) = random_edit(&mut ws, &mut g, &mut history, p) {
+                inc.model_changed_cues(&fp);
+                full.model_changed();
+                call(&mut inc, &mut full, &ws, Input::Tick)?;
+            }
+            call(&mut inc, &mut full, &ws, status_input(&ws, p))?;
+        }
+    }
+}
+
 /// The property tests above mean nothing if nearly every random command is refused: check that
 /// each command succeeds often enough on the same generator.
 #[test]
@@ -640,6 +909,7 @@ fn the_generator_exercises_every_command() {
     let mut applied: HashMap<u8, usize> = HashMap::new();
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
+    let mut readded = 0;
     for _ in 0..20 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
@@ -656,6 +926,12 @@ fn the_generator_exercises_every_command() {
             if let Command::Transaction { commands } = &command {
                 // An inner command that touches a cue an earlier one added.
                 let mut added = std::collections::HashSet::new();
+                if let [Command::RemoveCue { id: a }, Command::AddCue { cue, .. }] =
+                    commands.as_slice()
+                    && cue.id == *a
+                {
+                    readded += 1;
+                }
                 for inner in commands {
                     let fp = inner.footprint();
                     if fp
@@ -689,6 +965,10 @@ fn the_generator_exercises_every_command() {
         dependent >= 5,
         "only {dependent} transactions with dependent commands"
     );
+    assert!(
+        readded >= 5,
+        "only {readded} transactions re-adding a removed id"
+    );
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)
     for op in [0u8, 2, 4, 5, 6, 7, 8, 9] {
@@ -697,4 +977,68 @@ fn the_generator_exercises_every_command() {
             "op {op} never refused"
         );
     }
+}
+
+/// `readd` makes the shapes that are hard to follow: groups two deep that keep descendant ids
+/// with other content, and ids that change from group to plain cue and back.
+#[test]
+fn readd_reuses_descendant_ids_with_changed_content_and_nests() {
+    let nested = |n: u128| {
+        common::cue(
+            n,
+            group(vec![
+                common::cue(n + 1, group(vec![common::cue(n + 2, CueKind::Memo)])),
+                common::cue(n + 3, CueKind::Memo),
+            ]),
+        )
+    };
+    let ws = common::workspace(vec![nested(10), nested(20), common::cue(1, CueKind::Memo)]);
+    let mut g = Gen { next: 5000 };
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 16) as u32
+    };
+    let (mut nested_kept, mut changed_kept, mut to_plain, mut applied) = (0, 0, 0, 0);
+    for _ in 0..600 {
+        let p = Pick {
+            op: 10,
+            a: next(),
+            b: next(),
+            c: next(),
+            d: next(),
+        };
+        let Some(commands) = readd(&ws, &mut g, &p) else {
+            continue;
+        };
+        let [Command::RemoveCue { id }, Command::AddCue { cue, .. }] = commands.as_slice() else {
+            panic!("not a re-add");
+        };
+        assert_eq!(cue.id, *id);
+        applied += 1;
+        let Some(old) = ws.find_cue(*id) else {
+            continue;
+        };
+        let before: std::collections::HashMap<CueId, &Cue> =
+            flat(old).into_iter().map(|c| (c.id, c)).collect();
+        let kept: Vec<&Cue> = flat(cue)
+            .into_iter()
+            .filter(|c| c.id != *id && before.contains_key(&c.id))
+            .collect();
+        nested_kept += usize::from(depth(cue) >= 2 && !kept.is_empty());
+        changed_kept += usize::from(kept.iter().any(|c| before[&c.id].kind != c.kind));
+        to_plain += usize::from(depth(old) >= 1 && depth(cue) == 0);
+    }
+    assert!(applied > 100, "only {applied} re-adds apply");
+    assert!(
+        nested_kept >= 20,
+        "nested re-adds keeping ids: {nested_kept}"
+    );
+    assert!(
+        changed_kept >= 20,
+        "kept ids with other content: {changed_kept}"
+    );
+    assert!(to_plain >= 5, "groups re-added as plain cues: {to_plain}");
 }
