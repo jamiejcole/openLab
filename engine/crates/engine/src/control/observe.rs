@@ -392,8 +392,13 @@ impl Control {
             log_dropped: self.config.show_log.dropped(),
             device,
             cpu_seconds: (self.config.cpu_probe)(),
-            // Needs a render-time measurement on the audio thread (PROGRESS M4.7a).
-            engine_load: None,
+            // Worst callback since the previous status (read-and-reset; this is its only
+            // reader). Offline there is no audio callback to time.
+            engine_load: self
+                .backend
+                .device()
+                .and_then(|d| d.info().monitor.take_engine_load())
+                .filter(|l| l.is_finite()),
         }
     }
 

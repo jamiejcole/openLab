@@ -43,7 +43,7 @@ The engine does not use the `tracing` crate for this: records are structured val
 | Field | Source |
 |---|---|
 | `cpu_percent` | process CPU seconds (`diag::cpu`: `/proc/self/stat` on Linux, `getrusage` on macOS, `GetProcessTimes` on Windows) differenced over the wall time since the previous status. The macOS and Windows calls are two small `extern` declarations with `// SAFETY:` comments (no new dependency); only CI exercises them. |
-| `engine_load` | `null`. Render time over block time needs a timer in the audio callback, which M4.7 may not change: PROGRESS M4.7a. |
+| `engine_load` | the worst audio callback since the previous status: render time over the block's duration (`DeviceMonitor::take_engine_load`, measured in `OutputHost::render`, M4.7a; docs/audio.md). `null` when no callback ran since the previous status (device lost) and offline. 1.0 means a callback took its whole block. |
 | `xruns` | `MixerController::xruns()` |
 | `disk.streams` | `DiskStreamer::open_streams()` |
 | `disk.underrun_frames`, `disk.healthy` | `MixerController::underrun_frames()`; unhealthy for ten seconds after any rise |

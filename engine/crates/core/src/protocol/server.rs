@@ -198,7 +198,8 @@ pub struct SystemStatus {
     /// exceed 100 on several cores); `null` where the platform gives no figure.
     pub cpu_percent: Option<f64>,
     /// Audio engine load: time the audio callback takes over the time of its block, worst case
-    /// since the previous status (1.0 = no headroom); `null` until the audio thread measures it.
+    /// since the previous status (1.0 = no headroom); `null` when no callback ran since then
+    /// (device lost) and for offline rendering.
     pub engine_load: Option<f64>,
     /// Output underruns and overruns the device layer reported, since start.
     pub xruns: u64,
