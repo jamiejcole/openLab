@@ -138,6 +138,33 @@ fn a_refused_command_sends_no_model_changed() {
 }
 
 #[test]
+fn an_empty_transaction_changes_nothing() {
+    let mut s = show(workspace(vec![cue(1, CueKind::Memo)]));
+    let mut mirror = Mirror::new(&s);
+    let (revision, dirty) = (
+        s.control().revision(),
+        s.control().snapshot().document.dirty,
+    );
+    command(&mut s, Command::Transaction { commands: vec![] });
+    let out = s.take_outbound();
+    assert!(
+        !out.iter().any(|m| matches!(
+            m,
+            ServerMessage::ModelChanged { .. } | ServerMessage::Document { .. }
+        )),
+        "sent {out:?}"
+    );
+    assert_eq!(s.control().revision(), revision);
+    assert_eq!(s.control().snapshot().document.dirty, dirty);
+    assert!(!s.control().snapshot().document.can_undo);
+    assert_eq!(mirror.catch_up(&mut s), 0);
+    // The next real edit is the very next revision.
+    command(&mut s, rename(1, "one"));
+    assert_eq!(mirror.catch_up(&mut s), 1);
+    assert_eq!(mirror.revision, revision + 1);
+}
+
+#[test]
 fn a_runtime_arm_change_is_sent_as_an_upsert_of_that_cue() {
     let path = wav(&dc(300, 0.5));
     let disarm = cue(
