@@ -4,6 +4,7 @@
 //! binary in `main.rs` wires them together.
 
 pub mod control;
+pub mod diag;
 pub mod host;
 pub mod net;
 pub mod osc;
