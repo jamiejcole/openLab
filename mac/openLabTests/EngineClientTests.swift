@@ -322,14 +322,117 @@ final class EngineClientTests: XCTestCase {
         client.stop()
     }
 
-    func testLaunchArgumentSelectsTheEngine() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
-        XCTAssertEqual(EngineMode.fromLaunchArguments(defaults), .real)
-        defaults.set("fake", forKey: "OpenLabEngine")
-        XCTAssertEqual(EngineMode.fromLaunchArguments(defaults), .fake(.multi))
-        defaults.set("fake-single", forKey: "OpenLabEngine")
-        XCTAssertEqual(EngineMode.fromLaunchArguments(defaults), .fake(.single))
-        defaults.set("nonsense", forKey: "OpenLabEngine")
-        XCTAssertEqual(EngineMode.fromLaunchArguments(defaults), .real)
+    func testLaunchArgumentSelectsTheEngine() {
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab"]), .real)
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake"]), .fake(.multi))
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake-single"]), .fake(.single))
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"]), .real)
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"]), .real)
     }
+
+    // MARK: Review fixes
+
+    func testStopThenStartKeepsTheNewConnectionWhenTheOldOneClosesLate() async throws {
+        let engine = FakeEngine(mode: .single, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
+        let transport = LateCloseTransport(engine: engine)
+        let token = engine.token
+        let client = EngineClient(
+            transport: transport, infoProvider: { .success(EngineConnectionInfo(port: 1, token: token, pid: 1)) },
+            scheduler: ManualScheduler(), handshakeScheduler: ManualScheduler())
+        client.start()
+        await assertEventually { client.state == .connected }
+        client.stop()
+        client.start()
+        await assertEventually { client.state == .connected }
+        transport.releaseLate()  // the first run's receive now throws and its cleanup runs
+        await settle()
+        XCTAssertEqual(client.state, .connected)
+        let result = await client.send { .undo(id: $0) }
+        XCTAssertEqual(result.isSuccess, true, "the new connection must survive the old run's cleanup")
+    }
+
+    func testUndecodableResultFailsItsRequestAndFreesTheSnapshotGate() async throws {
+        let rig = try Rig()
+        _ = await rig.connect()
+        rig.engine.garbleResults = true
+        let first = await rig.client.send { .request(id: $0, .snapshot) }
+        guard case .failure(.encoding) = first else { return XCTFail("\(first)") }
+        rig.engine.garbleResults = false
+        let second = await rig.client.send { .request(id: $0, .snapshot) }
+        XCTAssertEqual(second.isSuccess, true, "the gate must not stay set")
+        XCTAssertEqual(rig.client.state, .connected)
+    }
+
+    func testUndecodableWelcomeFailsTheAttemptAndRetries() async throws {
+        let rig = try Rig()
+        rig.engine.welcomeFault = .garbled
+        rig.client.start()
+        await assertEventually { rig.client.state == .retrying(.transport("undecodable frame before welcome")) }
+        rig.engine.welcomeFault = .none
+        await rig.scheduler.fire()
+        await assertEventually { rig.client.state == .connected }
+    }
+
+    func testMissingWelcomeTimesOutAndRetries() async throws {
+        let rig = try Rig()
+        rig.engine.welcomeFault = .silent
+        rig.client.start()
+        await assertEventually { await rig.handshakeScheduler.waitingCount == 1 }
+        let asked = await rig.handshakeScheduler.requested
+        XCTAssertEqual(asked, [ReconnectPolicy().handshakeTimeout])
+        await rig.handshakeScheduler.fire()
+        await assertEventually { rig.client.state == .retrying(.transport("no welcome")) }
+        rig.engine.welcomeFault = .none
+        await rig.scheduler.fire()
+        await assertEventually { rig.client.state == .connected }
+        // The first attempt's timer was cancelled by the welcome and must not drop this connection.
+        await rig.handshakeScheduler.fire()
+        await settle()
+        XCTAssertEqual(rig.client.state, .connected)
+    }
+
+    func testSnapshotRequestAnsweredWithErrorFreesTheGate() async throws {
+        let rig = try Rig(mode: .multi)  // unbound: `snapshot` is refused with no_workspace
+        _ = await rig.connect()
+        for _ in 0..<2 {
+            let r = await rig.client.send { .request(id: $0, .snapshot) }
+            XCTAssertEqual(r, .failure(.engine(code: .noWorkspace, message: "unbound")))
+        }
+        XCTAssertEqual(rig.engine.requestCount { $0 == .snapshot }, 2)
+    }
+
+    func testDropWhileASnapshotIsOutAllowsExactlyOneOnTheNewConnection() async throws {
+        let rig = try Rig()
+        _ = await rig.connect()
+        rig.engine.holdResults = true
+        rig.client.requestSnapshot()
+        rig.engine.dropConnections()
+        await assertEventually { rig.client.state == .retrying(.lost) }
+        await rig.scheduler.fire()
+        await assertEventually { rig.client.state == .connected }
+        rig.client.requestSnapshot()
+        rig.client.requestSnapshot()
+        XCTAssertEqual(rig.engine.requestCount { $0 == .snapshot }, 2, "one before the drop, one after")
+    }
+
+    func testBoundClientOfAClosedWorkspaceStopsReconnecting() async throws {
+        let rig = try Rig(mode: .multi, workspace: "no-such-doc")
+        rig.client.start()
+        let failed = ConnectionState.failed(.engine(code: .noWorkspace, message: "no such workspace"))
+        await assertEventually { rig.client.state == failed }
+        await settle()
+        let asked = await rig.scheduler.requested
+        XCTAssertTrue(asked.isEmpty)
+        XCTAssertEqual(rig.engine.connectCount, 1)
+    }
+
+    func testWebSocketTaskAllowsLargeFrames() throws {
+        let task = try WebSocketTransport().makeTask(info: EngineConnectionInfo(port: 1, token: "t", pid: 1))
+        XCTAssertEqual(task.maximumMessageSize, maxServerFrameBytes)
+        XCTAssertGreaterThanOrEqual(task.maximumMessageSize, 32 * 1024 * 1024)
+    }
+}
+
+extension Result {
+    fileprivate var isSuccess: Bool { if case .success = self { return true } else { return false } }
 }

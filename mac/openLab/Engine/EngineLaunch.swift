@@ -8,12 +8,20 @@ enum EngineMode: Equatable {
     case real
     case fake(FakeEngine.Mode)
 
-    static func fromLaunchArguments(_ defaults: UserDefaults = .standard) -> EngineMode {
-        switch defaults.string(forKey: "OpenLabEngine") {
-        case "fake": return .fake(.multi)
-        case "fake-single": return .fake(.single)
-        default: return .real
-        }
+    /// Only the process arguments are read (never a persisted default), and only in Debug builds:
+    /// a shipping app cannot be switched to the fake engine. (The fake and its welcome.json stay
+    /// in the Release bundle: gating the XcodeGen sources per configuration is not worth it.)
+    static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> EngineMode {
+        #if DEBUG
+            guard let i = arguments.firstIndex(of: "-OpenLabEngine"), i + 1 < arguments.count else { return .real }
+            switch arguments[i + 1] {
+            case "fake": return .fake(.multi)
+            case "fake-single": return .fake(.single)
+            default: return .real
+            }
+        #else
+            return .real
+        #endif
     }
 
     @MainActor

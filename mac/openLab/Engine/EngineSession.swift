@@ -114,7 +114,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     // MARK: Delegate for the unbound connection
 
-    var revision: UInt64 { singleStore?.revision ?? 0 }
+    /// No workspace on this connection means no revision to be behind (never triggers a resync).
+    var revision: UInt64 { singleStore?.revision ?? .max }
 
     func engineClient(_ client: EngineClient, didReceive message: ServerMessage) -> ApplyOutcome {
         switch message {
