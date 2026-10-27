@@ -60,14 +60,10 @@ jobs:
     if: needs.changes.outputs.engine == 'true'
     strategy:
       fail-fast: false
+      # macOS Intel runs on main, nightly and on demand only: Windows covers x86-64 code on PRs, the
+      # app job builds and checks the universal bundle, and the Intel queue was the longest wait.
       matrix:
-        include:
-          - name: macOS arm64
-            os: macos-26
-          - name: macOS Intel
-            os: macos-26-intel
-          - name: Windows x64
-            os: windows-2025
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours.
     timeout-minutes: 30
