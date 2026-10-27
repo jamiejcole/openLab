@@ -38,6 +38,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
     let armedCheck = NSButton(checkboxWithTitle: loc("inspector.armed"), target: nil, action: nil)
     let messageLabel = NSTextField(labelWithString: "")
+    /// Preview / Stop Preview of the selected audio cue. M5.8 (Time & Loops tab) should host it.
+    let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
+    /// Sends a transport action (set by the window controller).
+    var onTransport: ((TransportAction) -> Void)?
+    private var connectionSub: AnyCancellable?
 
     /// Show Mode (SM-01): every control is read-only and every edit path refuses, so a stray key
     /// or click during a performance cannot change the show.
@@ -127,6 +132,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         continuePopup.setAX(AX.inspectorContinue)
         flaggedCheck.setAX(AX.inspectorFlagged)
         armedCheck.setAX(AX.inspectorArmed)
+        previewButton.setAX(AX.inspectorPreview)
+        previewButton.target = self
+        previewButton.action = #selector(previewClicked)
         messageLabel.setAX(AX.inspectorMessage)
         messageLabel.textColor = .systemRed
         messageLabel.lineBreakMode = .byTruncatingTail
@@ -186,7 +194,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         targetField.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
-        let right = column([row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
+        let right = column(
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
@@ -220,8 +229,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         subscription = store.changes.sink { [weak self] change in
             switch change {
             case .reset, .model: MainActor.assumeIsolated { self?.render() }
-            case .runtime, .progress, .notices: break
+            case .runtime: MainActor.assumeIsolated { self?.updatePreviewButton() }
+            case .progress, .notices: break
             }
+        }
+        connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
+            MainActor.assumeIsolated { self?.updatePreviewButton(connected: state == .connected) }
         }
         render()
     }
@@ -379,7 +392,21 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: second) ?? 0)
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
+        updatePreviewButton()
         if isLocked { applyLock() }
+    }
+
+    /// Show Mode does not lock it: a preview plays outside the show and edits nothing (QLab's docs
+    /// do not say; the safe reading is that the operator can still audition).
+    func updatePreviewButton(connected: Bool? = nil) {
+        let active = cue.map { store.previewing.contains($0.id) } ?? false
+        previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
+        previewButton.isEnabled = cue?.kindType == "audio" && (connected ?? (store.connectionState == .connected))
+    }
+
+    @objc private func previewClicked() {
+        guard let id = cue?.id else { return }
+        onTransport?(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id))
     }
 
     private var lockedControls: [NSControl] {

@@ -10,7 +10,8 @@ mod show;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
-use std::net::{TcpListener, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -80,6 +81,12 @@ fn show_of(
 #[derive(Default)]
 struct Fake {
     sent: Mutex<Vec<(Destination, Vec<u8>)>>,
+    /// The addresses `send` was given with each message.
+    given: Mutex<Vec<Vec<SocketAddr>>>,
+    /// What a look-up of a name returns; empty: an address on 127.0.0.1.
+    addrs: Mutex<Vec<SocketAddr>>,
+    /// The transport's clock, moved by hand.
+    clock: AtomicU64,
     fail_sends: Mutex<Option<String>>,
     names: Mutex<HashMap<String, Result<(), String>>>,
     lookups: Mutex<Vec<String>>,
@@ -121,7 +128,11 @@ impl Fake {
 }
 
 impl Transport for Fake {
-    fn send(&self, to: &Destination, packet: &[u8]) -> Result<(), String> {
+    fn now_ms(&self) -> u64 {
+        self.clock.load(Ordering::SeqCst)
+    }
+
+    fn send(&self, to: &Destination, resolved: &[SocketAddr], packet: &[u8]) -> Result<(), String> {
         if let Some(gate) = self.gate.lock().unwrap().as_ref() {
             let _ = gate.entered.send(());
             // Failure guard: a test that forgets to release does not hang forever.
@@ -130,6 +141,7 @@ impl Transport for Fake {
         if let Some(why) = self.fail_sends.lock().unwrap().clone() {
             return Err(why);
         }
+        self.given.lock().unwrap().push(resolved.to_vec());
         self.sent
             .lock()
             .unwrap()
@@ -137,14 +149,20 @@ impl Transport for Fake {
         Ok(())
     }
 
-    fn resolve(&self, host: &str, _: u16) -> Result<(), String> {
+    fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
         self.lookups.lock().unwrap().push(host.to_owned());
         self.names
             .lock()
             .unwrap()
             .get(host)
             .cloned()
-            .unwrap_or(Ok(()))
+            .unwrap_or(Ok(()))?;
+        let set = self.addrs.lock().unwrap().clone();
+        Ok(if set.is_empty() {
+            vec![SocketAddr::from(([127, 0, 0, 1], port))]
+        } else {
+            set
+        })
     }
 }
 
@@ -578,4 +596,78 @@ fn a_full_queue_refuses_messages_with_a_warning_instead_of_blocking() {
     }
     s.settle_net();
     assert_eq!(fake.sent().len(), LINK_QUEUE + 1);
+}
+
+#[test]
+fn the_addresses_a_look_up_found_are_used_for_sending_not_looked_up_again() {
+    let fake = Arc::new(Fake::default());
+    let v6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 9000));
+    let v4 = SocketAddr::from(([127, 0, 0, 1], 9000));
+    *fake.addrs.lock().unwrap() = vec![v6, v4];
+    let mut s = show_of(
+        vec![osc(1, "/a", vec![]), osc(2, "/b", vec![])],
+        patch("lights.local", 9000, NetworkProtocol::Udp),
+        Some(Arc::clone(&fake)),
+    );
+    go(&mut s);
+    go(&mut s);
+    s.run(256);
+    s.settle_net();
+    // Both messages went with what the one look-up found, the resolver's order intact (the
+    // system transport then puts IPv4 first: `prefer_ipv4`).
+    assert_eq!(
+        *fake.given.lock().unwrap(),
+        vec![vec![v6, v4], vec![v6, v4]]
+    );
+    assert_eq!(fake.lookups(), 1);
+}
+
+#[test]
+fn a_message_that_waited_too_long_for_its_destination_is_dropped() {
+    let fake = Arc::new(Fake::default());
+    let (entered, release) = fake.hold();
+    let mut s = show_of(
+        vec![osc(1, "/first", vec![]), osc(2, "/second", vec![])],
+        patch("127.0.0.1", 9000, NetworkProtocol::Udp),
+        Some(Arc::clone(&fake)),
+    );
+    go(&mut s);
+    entered.recv_timeout(GUARD).unwrap();
+    go(&mut s);
+    // The destination was stuck for two seconds.
+    fake.clock.store(2000, Ordering::SeqCst);
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    s.run(256);
+    s.settle_net();
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1.starts_with(b"/first\0"));
+    let seen = notices(&s.take_outbound());
+    assert!(
+        seen.iter()
+            .any(|(code, m)| code == "network_send_failed" && m.contains("destination too late")),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn turning_the_override_on_stops_messages_already_queued() {
+    let fake = Arc::new(Fake::default());
+    let (entered, release) = fake.hold();
+    let mut s = show_of(
+        vec![osc(1, "/first", vec![]), osc(2, "/second", vec![])],
+        patch("127.0.0.1", 9000, NetworkProtocol::Udp),
+        Some(Arc::clone(&fake)),
+    );
+    go(&mut s);
+    entered.recv_timeout(GUARD).unwrap();
+    go(&mut s);
+    override_request(&mut s, true);
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    s.settle_net();
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 1, "only the one already being sent: {sent:?}");
+    assert!(sent[0].1.starts_with(b"/first\0"));
 }

@@ -1,0 +1,9 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "rename_cue_list",
+    "id": "00000000-0000-0000-0000-000000000005",
+    "name": "Act 2"
+  }
+}

@@ -16,9 +16,9 @@
 //! Dependencies between cues (docs/cue-engine.md, "Broken cues"): a cue's problems come from its
 //! own content, from the existence and kind of its target (a fade, stop, devamp, ... names
 //! another cue; `can_target` reads the target's kind and a group's mode), and from the patch
-//! and network patch id sets. So an edit refreshes, besides the cues it touched and the cues it
+//! and the network patches (id, host and port: cue facts depend on them). So an edit refreshes, besides the cues it touched and the cues it
 //! added (with a group's descendants), every cue that targets a touched, added or removed cue
-//! (`by_target`); patch changes are not in a footprint and rebuild everything. Group warnings
+//! (`by_target`); an edit that changes the patches or network patches (any difference) rebuilds everything. Group warnings
 //! (`below`) are recounted for the groups around every cue that was added, removed, moved or
 //! changed whether it is shown with problems.
 
@@ -86,7 +86,8 @@ struct ModelFacts {
     target_of: HashMap<CueId, CueId>,
     /// The patch ids `facts` were computed against (a change rebuilds everything).
     patch_ids: Vec<PatchId>,
-    network_ids: Vec<NetworkPatchId>,
+    /// The network patches `facts` were computed against (any change rebuilds everything).
+    network_patches: Vec<NetworkPatch>,
 }
 
 /// What the model changed since the problems were last brought up to date.
@@ -386,11 +387,7 @@ impl CueEngine {
             .iter()
             .map(|p| p.id)
             .eq(model.patch_ids.iter().copied())
-            && ws
-                .network_patches
-                .iter()
-                .map(|p| p.id)
-                .eq(model.network_ids.iter().copied());
+            && ws.network_patches == model.network_patches;
         if !same_patches {
             return false;
         }
@@ -617,7 +614,10 @@ impl CueEngine {
             ("by_target", fresh.by_target == m.by_target),
             ("target_of", fresh.target_of == m.target_of),
             ("patch_ids", fresh.patch_ids == m.patch_ids),
-            ("network_ids", fresh.network_ids == m.network_ids),
+            (
+                "network_patches",
+                fresh.network_patches == m.network_patches,
+            ),
         ]
         .into_iter()
         .find(|(_, same)| !same);
@@ -833,7 +833,7 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     let mut out = ModelFacts {
         tree,
         patch_ids: ws.patches.iter().map(|p| p.id).collect(),
-        network_ids: ws.network_patches.iter().map(|p| p.id).collect(),
+        network_patches: ws.network_patches.clone(),
         ..ModelFacts::default()
     };
     for cue in order {

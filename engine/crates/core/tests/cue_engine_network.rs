@@ -400,3 +400,20 @@ fn editing_the_patch_host_rebuilds_the_problems() {
     rig.at(2, Input::Tick);
     assert!(rig.problems(1).is_empty());
 }
+
+/// L1: an incremental update (`model_changed_cues`) notices a network patch whose host or port
+/// changed although its id did not.
+#[test]
+fn an_incremental_edit_notices_a_changed_network_patch() {
+    let mut rig = Rig::new(vec![network(1), memo(2)]);
+    assert!(rig.problems(1).is_empty());
+    rig.ws.network_patches[0].port = 0;
+    rig.engine.model_changed_cues(&Footprint::edited([id(2)]));
+    rig.last = Some(rig.ws.clone());
+    rig.engine.handle(&rig.ws, Input::Tick, 1);
+    rig.engine.verify_problem_cache(&rig.ws).unwrap();
+    assert!(matches!(
+        rig.problems(1).as_slice(),
+        [CueProblem::NetworkHostInvalid { .. }]
+    ));
+}
