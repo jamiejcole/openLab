@@ -38,6 +38,21 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
     let armedCheck = NSButton(checkboxWithTitle: loc("inspector.armed"), target: nil, action: nil)
     let messageLabel = NSTextField(labelWithString: "")
+    /// Preview / Stop Preview of the selected audio cue. M5.8 (Time & Loops tab) should host it.
+    let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
+    /// Sends a transport action (set by the window controller).
+    var onTransport: ((TransportAction) -> Void)?
+    private var connectionSub: AnyCancellable?
+
+    /// Show Mode (SM-01): every control is read-only and every edit path refuses, so a stray key
+    /// or click during a performance cannot change the show.
+    var isLocked = false {
+        didSet {
+            guard isLocked != oldValue else { return }
+            applyLock()
+            if !isLocked { render() }
+        }
+    }
 
     private(set) var selection: [ModelID] = []
     private var subscription: AnyCancellable?
@@ -117,6 +132,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         continuePopup.setAX(AX.inspectorContinue)
         flaggedCheck.setAX(AX.inspectorFlagged)
         armedCheck.setAX(AX.inspectorArmed)
+        previewButton.setAX(AX.inspectorPreview)
+        previewButton.target = self
+        previewButton.action = #selector(previewClicked)
         messageLabel.setAX(AX.inspectorMessage)
         messageLabel.textColor = .systemRed
         messageLabel.lineBreakMode = .byTruncatingTail
@@ -176,7 +194,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         targetField.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
-        let right = column([row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
+        let right = column(
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
@@ -210,8 +229,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         subscription = store.changes.sink { [weak self] change in
             switch change {
             case .reset, .model: MainActor.assumeIsolated { self?.render() }
-            case .runtime, .progress, .notices: break
+            case .runtime: MainActor.assumeIsolated { self?.updatePreviewButton() }
+            case .progress, .notices: break
             }
+        }
+        connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
+            MainActor.assumeIsolated { self?.updatePreviewButton(connected: state == .connected) }
         }
         render()
     }
@@ -266,7 +289,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// it was sent. The other trigger fields are kept.
     @discardableResult
     func record(_ chord: KeyChord) -> Bool {
-        guard let cue = cueForEdit, let model = store.model else { return false }
+        guard !isLocked, let cue = cueForEdit, let model = store.model else { return false }
         if let error = HotkeyRules.validate(
             chord, for: cue.id, in: model, keys: transportKeys?() ?? TransportKeys(settings: model.settings),
             menuChords: menuChords())
@@ -280,7 +303,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     @objc func clearHotkey() {
-        guard let cue = cueForEdit, cue.raw["triggers"]?["hotkey"].map({ $0 != .null }) == true else { return }
+        guard !isLocked, let cue = cueForEdit, cue.raw["triggers"]?["hotkey"].map({ $0 != .null }) == true else {
+            return
+        }
         messageLabel.stringValue = ""
         send(InspectorEdit.setTriggers(cue, hotkey: .some(nil)), cue: cue.id, key: "hotkey", revert: [])
     }
@@ -367,6 +392,42 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: second) ?? 0)
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
+        updatePreviewButton()
+        if isLocked { applyLock() }
+    }
+
+    /// Show Mode does not lock it: a preview plays outside the show and edits nothing (QLab's docs
+    /// do not say; the safe reading is that the operator can still audition).
+    func updatePreviewButton(connected: Bool? = nil) {
+        let active = cue.map { store.previewing.contains($0.id) } ?? false
+        previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
+        previewButton.isEnabled = cue?.kindType == "audio" && (connected ?? (store.connectionState == .connected))
+    }
+
+    @objc private func previewClicked() {
+        guard let id = cue?.id else { return }
+        onTransport?(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id))
+    }
+
+    private var lockedControls: [NSControl] {
+        [
+            numberField, nameField, preWaitField, postWaitField, targetField, oscField, hotkeyField, hotkeyClear,
+            secondTriggerPopup, onReleaseCheck, colourPopup, continuePopup, flaggedCheck, armedCheck,
+        ]
+    }
+
+    private func applyLock() {
+        _ = view
+        // Callers commit first (`WorkspaceWindowController.requestShowMode`); text still dirty here
+        // is dropped and the model's text put back, never left on screen as if saved.
+        let stale = dirty
+        if isLocked {
+            dirty = []
+            view.window?.makeFirstResponder(nil)
+        }
+        for c in lockedControls { c.isEnabled = !isLocked }
+        notesView.isEditable = !isLocked
+        if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
     // MARK: Committing edits
@@ -375,7 +436,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     @discardableResult
     func commit(_ f: InspectorField) -> Bool {
         dirty.remove(f)
-        guard let cue = cueForEdit, let model = store.model else { return true }
+        guard !isLocked, let cue = cueForEdit, let model = store.model else { return true }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
         switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
         case .failure(let r):
@@ -413,6 +474,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     private func send(_ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>) {
+        guard !isLocked else { return }
         let seqKey = "\(cue)/\(key)"
         let n = (editSeq[seqKey] ?? 0) + 1
         editSeq[seqKey] = n
@@ -493,7 +555,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     @objc private func popupChanged(_ sender: NSPopUpButton) {
-        guard let cue else { return }
+        guard !isLocked, let cue else { return }
         let i = sender.indexOfSelectedItem
         if sender === colourPopup, Self.colours.indices.contains(i) {
             send(.setProperty(cue.id, .color(Self.colours[i])), cue: cue.id, key: "colour", revert: [])
@@ -506,7 +568,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     @objc private func checkChanged(_ sender: NSButton) {
-        guard let cue else { return }
+        guard !isLocked, let cue else { return }
         let on = sender.state == .on
         if sender === onReleaseCheck {
             send(.setProperty(cue.id, .secondTriggerOnRelease(on)), cue: cue.id, key: "release", revert: [])

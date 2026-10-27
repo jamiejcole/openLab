@@ -30,8 +30,11 @@ final class AppController {
     /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
     var keyCacheCount: Int { keyCache.count }
     private var keySubs: [ModelID: AnyCancellable] = [:]
-    private var keyCache: [ObjectIdentifier: (settings: JSONValue?, shadowed: Set<KeyChord>, keys: TransportKeys)] =
-        [:]
+    private var keyCache:
+        [ObjectIdentifier: (
+            settings: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>, keys: TransportKeys
+        )] =
+            [:]
     /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).
     var isRecordingKey: @MainActor () -> Bool = { NSApp.keyWindow?.firstResponder is HotkeyRecorder }
     /// Menu-bar keys outside the Transport menu; a cue hotkey on one never fires (Cmd-Q stays Quit).
@@ -94,7 +97,7 @@ final class AppController {
                 case .runtime, .progress, .notices: break
                 }
             }
-            if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.window?.title = n.name }
+            if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.workspaceName = n.name }
             show(doc)
         }
         for doc in windows.keys where stores[doc] == nil { dropWindow(doc) }
@@ -111,8 +114,8 @@ final class AppController {
 
     private func updateTitles(_ list: [WorkspaceInfo]) {
         for info in list {
-            guard let window = windows[info.doc]?.window else { continue }
-            window.title = info.name
+            guard let wc = windows[info.doc], let window = wc.window else { continue }
+            wc.workspaceName = info.name
             window.isDocumentEdited = info.dirty
         }
     }
@@ -269,14 +272,17 @@ final class AppController {
         let id = ObjectIdentifier(store)
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
         let cached = keyCache[id]
+        let same = cached?.settings == settings && cached?.cueChords == cueChords
         let keys =
-            cached?.settings == settings
-            ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
-        // Transport keys win over cue hotkeys: a cue hotkey on a transport chord does not fire.
+            same
+            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
+            : TransportKeys(settings: settings, cueChords: cueChords)
+        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
+        // fixed app defaults (L, P, V) already yielded to cue hotkeys inside `TransportKeys`.
         let shadowed = cueChords.intersection(keys.chords.values)
-        if let cached, cached.settings == settings, cached.shadowed == shadowed { return cached.keys }
-        keyCache[id] = (settings, shadowed, keys)
-        if cached?.settings != settings || cached == nil {
+        if let cached, same, cached.shadowed == shadowed { return cached.keys }
+        keyCache[id] = (settings, cueChords, shadowed, keys)
+        if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {
@@ -324,6 +330,11 @@ final class AppController {
         case .startSelected: for id in selected { await run(.start(cue: id), on: store) }
         case .stopSelected: for id in selected { await run(.hardStop(cue: id), on: store) }
         case .resetSelected: for id in selected { await run(.reset(cue: id), on: store) }
+        case .previewSelected:
+            // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
+            for id in selected where store.model?.cue(id)?.kindType == "audio" {
+                await run(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id), on: store)
+            }
         case .pauseResumeSelected:
             for id in selected {
                 switch store.cueStates[id]?.state {
@@ -360,6 +371,11 @@ final class AppController {
     /// told to the operator and written to the show log; the cues that were fixed leave the
     /// Warnings tab by themselves when the engine reports them playable.
     func relinkMedia(on store: WorkspaceStore) async {
+        // It rewrites the workspace's media paths: an edit, locked in Show Mode (SM-01).
+        if windows.values.contains(where: { $0.store === store && $0.isShowMode }) {
+            NSSound.beep()
+            return
+        }
         guard let folder = pickFolderURL() else { return }
         switch await store.relink(folder: folder.path) {
         case .success(let ok):
@@ -459,7 +475,12 @@ final class AppController {
             NSSound.beep()
             return false
         }
-        if isPlaying(store), !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
+        // One prompt: playing outranks Show Mode (QLab asks before closing a workspace in Show Mode).
+        if isPlaying(store) {
+            if !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
+        } else if windows[doc]?.isShowMode == true, !alerts.confirmCloseInShowMode(workspace: name(of: doc)) {
+            return false
+        }
         guard let discard = await resolveUnsaved(doc) else { return false }
         switch await bounded({ await self.session.close(doc: doc, discardChanges: discard) }) {
         case .success?:
@@ -491,7 +512,11 @@ final class AppController {
         for doc in Array(windows.keys) {
             if await !commitEdits(doc) { return false }
         }
-        if session.stores.values.contains(where: isPlaying), !alerts.confirmQuitWhilePlaying() { return false }
+        if session.stores.values.contains(where: isPlaying) {
+            if !alerts.confirmQuitWhilePlaying() { return false }
+        } else if windows.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
+            return false
+        }
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
             if await resolveUnsaved(info.doc) == nil { return false }
