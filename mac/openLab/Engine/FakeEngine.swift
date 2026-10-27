@@ -34,6 +34,50 @@ final class FakeEngine: EngineTransport {
     var relinkData: JSONValue = .object([
         "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
     ])
+
+    private static let allClearReport: JSONValue = .object([
+        "type": .string("preshow_check"), "ok": .bool(true),
+        "summary": .object([
+            "broken_cues": .int(0), "media": .int(0), "patches": .int(0), "network": .int(0),
+            "network_unchecked": .int(0), "system": .int(0), "total": .int(0),
+        ]),
+        "broken_cues": .array([]), "media": .array([]), "patches": .array([]),
+        "network": .array([]), "system": .array([]),
+    ])
+
+    /// One cue with a missing file and one lost device: `total` is 2 (the cue and the system entry).
+    private static let sampleReportWithProblems: JSONValue = {
+        let cue = "00000000-0000-0000-0000-00000000000a"
+        let list = "00000000-0000-0000-0000-000000000001"
+        let path = "/Shows/storm.wav"
+        return .object([
+            "type": .string("preshow_check"), "ok": .bool(false),
+            "summary": .object([
+                "broken_cues": .int(1), "media": .int(1), "patches": .int(0), "network": .int(0),
+                "network_unchecked": .int(0), "system": .int(1), "total": .int(2),
+            ]),
+            "broken_cues": .array([
+                .object([
+                    "cue": .string(cue), "list": .string(list), "number": .string("3"), "name": .string("Storm"),
+                    "problems": .array([.object(["type": .string("media_missing"), "media": .string(path)])]),
+                ])
+            ]),
+            "media": .array([
+                .object(["path": .string(path), "status": .string("missing"), "cues": .array([.string(cue)])])
+            ]),
+            "patches": .array([]), "network": .array([]),
+            "system": .array([
+                .object([
+                    "type": .string("notice"), "code": .string("device_lost"),
+                    "message": .string("audio device \"Fake Output\" is lost"),
+                ])
+            ]),
+        ])
+    }()
+
+    /// `preshow_check` answers a sample report with problems (a broken cue, its missing file, a lost
+    /// device) instead of the all-clear.
+    var preshowProblems = false
     enum WelcomeFault { case none, silent, garbled }
     /// `silent`: the `welcome` is never sent; `garbled`: it is sent but does not decode.
     var welcomeFault = WelcomeFault.none
@@ -383,6 +427,8 @@ final class FakeEngine: EngineTransport {
                         "type": .string("log_tail"), "entries": .array(logTailEntries), "dropped": .int(0),
                     ])
                 ]))
+        case .preshowCheck:
+            result(c, id, ok: .object(["data": preshowProblems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
