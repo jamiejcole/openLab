@@ -57,7 +57,8 @@ Details of the replace in step 3:
 - **Not preserved (v0.0.1).** Extended attributes, Finder tags, ACLs and the creation date belong to the
   old inode and are lost when the file is replaced. Windows alternate data streams likewise.
 - **Leftover temp files.** A `<name>.<pid>-<n>.tmp` left by a crash is not touched by the write that
-  follows it. After a successful save, those beside the show file that belong to another process and
+  follows it; if its name is the one a write would use (a leftover of an earlier process with the
+  same pid), the write takes the next `<n>`, up to 16 names, rather than failing. After a successful save, those beside the show file that belong to another process and
   whose modification time is at least 60 s older than the file just saved are removed; younger ones may
   be another instance's write in progress. This process's own temp files and a user's own `.tmp` files
   (the name must match exactly) are never removed.
