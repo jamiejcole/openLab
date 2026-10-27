@@ -1975,7 +1975,7 @@ fn preshow_report_sample() -> PreshowReport {
             network: 1,
             network_unchecked: 1,
             system: 1,
-            total: 8,
+            total: 3,
         },
         broken_cues: vec![
             PreshowCue {

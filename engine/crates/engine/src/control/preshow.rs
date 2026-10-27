@@ -17,8 +17,9 @@ use openlab_core::{
 
 use super::Control;
 
-/// The notice code the warnings feed gives a broken cue (one per cue, with the cue id).
-pub(super) const CUE_BROKEN: &str = "cue_broken";
+/// The system warning that is information, not a problem: the file is streamed instead of
+/// preloaded and plays fine. Listed in `system`, not counted, never makes the check fail.
+const INFO_CODE: &str = "preload_over_budget";
 
 impl Control {
     /// The report, from the current state. Brings the warnings up to date first so the two
@@ -84,6 +85,7 @@ impl Control {
 
         let uses = Uses::of(ws);
         let mut patches = Vec::new();
+        let mut used_patches = 0u64;
         for patch in &ws.patches {
             let resolution = self.patches.resolution(patch.id);
             if matches!(resolution, Some(PatchResolution::Mapped { .. })) {
@@ -96,13 +98,16 @@ impl Control {
                 ) => Some(device.clone()),
                 _ => None,
             };
+            let cues = uses.patch.get(&patch.id).cloned().unwrap_or_default();
+            // A spare patch nothing plays on is listed, not a problem for this show.
+            used_patches += u64::from(!cues.is_empty());
             patches.push(PreshowPatch {
                 patch: patch.id,
                 name: Some(patch.name.clone()),
                 device,
                 mapped: !matches!(resolution, None | Some(PatchResolution::Unmapped)),
                 resolution: resolution.map(WireResolution::from),
-                cues: uses.patch.get(&patch.id).cloned().unwrap_or_default(),
+                cues,
             });
         }
         // A deleted patch some cue still names, which is only in the cues' problems.
@@ -110,6 +115,7 @@ impl Control {
             if ws.patches.iter().any(|p| p.id == patch) {
                 continue;
             }
+            used_patches += 1;
             patches.push(PreshowPatch {
                 patch,
                 name: None,
@@ -148,12 +154,7 @@ impl Control {
             }
         }
 
-        let mut system: Vec<WireWarning> = self
-            .warnings
-            .iter()
-            .filter(|w| !matches!(w, WireWarning::Notice { code, .. } if code == CUE_BROKEN))
-            .cloned()
-            .collect();
+        let mut system: Vec<WireWarning> = self.warnings.to_vec();
         system.sort_by(|a, b| notice_key(a).cmp(&notice_key(b)));
 
         let unchecked = network
@@ -161,22 +162,24 @@ impl Control {
             .filter(|t| t.status == PreshowTargetStatus::NotChecked)
             .count() as u64;
         let network_problems = network.len() as u64 - unchecked;
-        let mut summary = PreshowSummary {
+        let system_problems = system.iter().filter(|w| !is_info(w)).count() as u64;
+        let summary = PreshowSummary {
             broken_cues: broken_cues.len() as u64,
             media: media.len() as u64,
-            patches: patches.len() as u64,
+            patches: used_patches,
             network: network_problems,
             network_unchecked: unchecked,
-            system: system.len() as u64,
-            total: 0,
+            system: system_problems,
+            // Media, patches and destinations are causes of broken cues, already counted there.
+            total: broken_cues.len() as u64 + system_problems,
         };
-        summary.total = summary.broken_cues
-            + summary.media
-            + summary.patches
-            + summary.network
-            + summary.system;
+        // The causes are checked too, in case one is ever listed without a broken cue.
+        let ok = summary.total == 0
+            && summary.media == 0
+            && summary.patches == 0
+            && summary.network == 0;
         PreshowReport {
-            ok: summary.total == 0,
+            ok,
             summary,
             broken_cues,
             media,
@@ -185,6 +188,10 @@ impl Control {
             system,
         }
     }
+}
+
+fn is_info(w: &WireWarning) -> bool {
+    matches!(w, WireWarning::Notice { code, .. } if code == INFO_CODE)
 }
 
 /// Sort key of a system warning: its code, its cue, then its text.

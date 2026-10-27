@@ -669,8 +669,6 @@ impl Control {
     fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
         self.engine.model_changed_cues(footprint);
         self.revision += 1;
-        // A removed cue reports no `ProblemsChanged`, but leaves the broken-cue entries.
-        self.warnings_dirty = true;
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues (M4.12c). The walk is the fallback.
         self.media.sync_cues(&self.ws, footprint);
@@ -1063,9 +1061,6 @@ impl Control {
                 if matches!(action, Action::PlayheadChanged { .. }) {
                     self.primes_dirty = true;
                 }
-                if matches!(action, Action::ProblemsChanged { .. }) {
-                    self.warnings_dirty = true;
-                }
                 self.voices.apply(action, &mut env, &mut fx);
             }
         }
@@ -1375,12 +1370,6 @@ impl Control {
     /// slices cannot play, audio-thread allocations. Sent when the list changes.
     fn refresh_warnings(&mut self) {
         let mut list = self.docs.notices.clone();
-        // One entry per broken cue, with its id for click-through (DX-01); the details are the
-        // snapshot's `problems` and the pre-show check.
-        for (cue, problems) in self.engine.broken_cues() {
-            let why: Vec<String> = problems.iter().map(ToString::to_string).collect();
-            list.push(notice(preshow::CUE_BROKEN, why.join("; "), Some(cue)));
-        }
         let mut damaged: Vec<(&str, usize)> = self.media.damaged().collect();
         damaged.sort_unstable();
         for (path, n) in damaged {
