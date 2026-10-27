@@ -1,0 +1,903 @@
+{
+  "format_version": 3,
+  "workspace": {
+    "id": "0b5e0000-0000-4000-8000-000000000001",
+    "name": "Example Show",
+    "settings": {
+      "min_go_interval": 0.5,
+      "panic_duration": 3.0,
+      "autosave_interval": 30.0,
+      "osc_passcode": "1234",
+      "master_db": -2.0,
+      "hotkeys": {
+        "go": {
+          "key": "space",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "stop_all": {
+          "key": "escape",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "pause_all": null,
+        "resume_all": {
+          "key": "]",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "playhead_next": {
+          "key": "down",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "playhead_previous": {
+          "key": "up",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        }
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 0.5
+    },
+    "patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main PA",
+        "master_db": 0.0,
+        "outputs": [
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "delay_ms": 0.0,
+            "polarity_inverted": false
+          },
+          {
+            "level_db": -1.5,
+            "mute": false,
+            "delay_ms": 2.5,
+            "polarity_inverted": true
+          }
+        ]
+      }
+    ],
+    "network_patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Lighting desk",
+        "host": "192.168.1.20",
+        "port": 53000,
+        "protocol": "udp"
+      }
+    ],
+    "cue_lists": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "number": "1",
+            "name": "House open",
+            "notes": "",
+            "color": "purple",
+            "flagged": true,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "number": "2",
+            "name": "Preshow music",
+            "notes": "Loops until the house is called.",
+            "color": "green",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "auto_continue",
+            "triggers": {
+              "hotkey": {
+                "key": "p",
+                "modifiers": {
+                  "shift": true,
+                  "control": false,
+                  "alt": false,
+                  "command": true
+                }
+              },
+              "osc": "/preshow"
+            },
+            "second_trigger": "panic",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/preshow.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 1.5,
+              "end_time": 182.25,
+              "fade_in": {
+                "duration": 2.0,
+                "curve": "s_curve"
+              },
+              "fade_out": {
+                "duration": 4.0,
+                "curve": "equal_power"
+              },
+              "slices": [
+                {
+                  "time": 30.0,
+                  "play_count": 1
+                },
+                {
+                  "time": 60.0,
+                  "play_count": 0
+                }
+              ],
+              "last_slice_play_count": 1,
+              "levels": {
+                "master_db": -6.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": -3.0,
+                    "mute": true
+                  }
+                ],
+                "crosspoints": [
+                  {
+                    "input": 0,
+                    "output": 0,
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "input": 1,
+                    "output": 1,
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "gangs": [
+                  [
+                    0,
+                    1
+                  ]
+                ]
+              },
+              "preload": true
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000003",
+            "number": "3",
+            "name": "Fade preshow",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 1.0,
+            "post_wait": 0.5,
+            "continue_mode": "auto_follow",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "fade",
+              "target": "00000000-0000-0000-0000-000000000002",
+              "duration": 5.0,
+              "curve": "logarithmic",
+              "levels": {
+                "master_db": -120.0,
+                "output_db": [
+                  null,
+                  -10.0
+                ],
+                "crosspoints": [
+                  {
+                    "input": 0,
+                    "output": 1,
+                    "db": -20.0
+                  }
+                ]
+              },
+              "stop_target_when_done": true
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000004",
+            "number": "4",
+            "name": "Storm",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "timeline"
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "number": "4.1",
+                  "name": "Thunder",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "audio",
+                    "media": "/Volumes/Show/sfx/thunder.aif",
+                    "patch": "00000000-0000-0000-0000-000000000001",
+                    "start_time": 0.0,
+                    "end_time": null,
+                    "fade_in": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "fade_out": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "slices": [],
+                    "last_slice_play_count": 1,
+                    "levels": {
+                      "master_db": 0.0,
+                      "outputs": [
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        },
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        }
+                      ],
+                      "crosspoints": [],
+                      "gangs": []
+                    },
+                    "preload": false
+                  }
+                },
+                {
+                  "id": "00000000-0000-0000-0000-00000000000c",
+                  "number": "4.2",
+                  "name": "Lightning",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.25,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "network",
+                    "destination": "00000000-0000-0000-0000-000000000001",
+                    "address": "/lx/go",
+                    "args": [
+                      {
+                        "type": "int",
+                        "value": 12
+                      },
+                      {
+                        "type": "float",
+                        "value": 0.5
+                      },
+                      {
+                        "type": "string",
+                        "value": "flash"
+                      },
+                      {
+                        "type": "bool",
+                        "value": true
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "number": null,
+                  "name": "Hold",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "wait",
+                    "duration": 2.5
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000005",
+            "number": "5",
+            "name": "Start storm",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "start",
+              "target": "00000000-0000-0000-0000-000000000004"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000006",
+            "number": "6",
+            "name": "Stop preshow",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "stop",
+              "target": "00000000-0000-0000-0000-000000000002",
+              "fade_out": {
+                "duration": 1.0,
+                "curve": "exponential"
+              }
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000007",
+            "number": "7",
+            "name": "Pause preshow",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "pause",
+              "target": "00000000-0000-0000-0000-000000000002"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000008",
+            "number": "8",
+            "name": "Cue up preshow",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "load",
+              "target": "00000000-0000-0000-0000-000000000002",
+              "load_to_time": 10.5
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000009",
+            "number": "9",
+            "name": "Reset preshow",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "reset",
+              "target": "00000000-0000-0000-0000-000000000002"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000000a",
+            "number": "10",
+            "name": "Leave loop",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "devamp",
+              "target": "00000000-0000-0000-0000-000000000002",
+              "start_next_cue": true,
+              "stop_target_when_slice_ends": false,
+              "devamp_mode": "looping_cue"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000000e",
+            "number": "11",
+            "name": "Back to top",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "go_to",
+              "target": "00000000-0000-0000-0000-000000000001",
+              "then_go": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000000f",
+            "number": "12",
+            "name": "Arm storm",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "arm",
+              "target": "00000000-0000-0000-0000-000000000004"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000010",
+            "number": "13",
+            "name": "Disarm storm",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "disarm",
+              "target": "00000000-0000-0000-0000-000000000004"
+            }
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "name": "Sound effects",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-000000000014",
+            "number": null,
+            "name": "Walk-in playlist",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "play_next",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "playlist",
+                "loop": true,
+                "shuffle": false
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-000000000015",
+                  "number": null,
+                  "name": "Track 1",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "audio",
+                    "media": "media/walkin/01.mp3",
+                    "patch": "00000000-0000-0000-0000-000000000001",
+                    "start_time": 0.0,
+                    "end_time": null,
+                    "fade_in": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "fade_out": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "slices": [],
+                    "last_slice_play_count": 1,
+                    "levels": {
+                      "master_db": 0.0,
+                      "outputs": [
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        },
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        }
+                      ],
+                      "crosspoints": [],
+                      "gangs": []
+                    },
+                    "preload": false
+                  }
+                },
+                {
+                  "id": "00000000-0000-0000-0000-000000000016",
+                  "number": null,
+                  "name": "Track 2",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "audio",
+                    "media": "media/walkin/02.mp3",
+                    "patch": "00000000-0000-0000-0000-000000000001",
+                    "start_time": 0.0,
+                    "end_time": null,
+                    "fade_in": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "fade_out": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "slices": [],
+                    "last_slice_play_count": 1,
+                    "levels": {
+                      "master_db": 0.0,
+                      "outputs": [
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        },
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        }
+                      ],
+                      "crosspoints": [],
+                      "gangs": []
+                    },
+                    "preload": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000017",
+            "number": null,
+            "name": "Doorbell",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "hard_stop_and_restart",
+            "second_trigger_on_release": true,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "start_random"
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-000000000018",
+                  "number": null,
+                  "name": "Bell A",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "audio",
+                    "media": "media/a.wav",
+                    "patch": "00000000-0000-0000-0000-000000000001",
+                    "start_time": 0.0,
+                    "end_time": null,
+                    "fade_in": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "fade_out": {
+                      "duration": 0.0,
+                      "curve": "linear"
+                    },
+                    "slices": [],
+                    "last_slice_play_count": 1,
+                    "levels": {
+                      "master_db": 0.0,
+                      "outputs": [
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        },
+                        {
+                          "db": 0.0,
+                          "mute": false
+                        }
+                      ],
+                      "crosspoints": [],
+                      "gangs": []
+                    },
+                    "preload": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000019",
+            "number": null,
+            "name": "Scene change",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "start_first_and_enter"
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-00000000001a",
+                  "number": null,
+                  "name": "Note",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "memo"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000001b",
+            "number": null,
+            "name": "Sequence",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "start_first_and_go_to_next"
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-00000000001c",
+                  "number": null,
+                  "name": "Pause",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "wait",
+                    "duration": 1.0
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

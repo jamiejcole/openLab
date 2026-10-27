@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Fade cues (CT-10, audio levels): an absolute fade of the target's levels over the cue's
-//! duration, as `Ramp` actions the mixer carries out. Rules: `docs/cue-engine.md`, "Fade cues".
+//! Fade cues (CT-10, audio levels): a fade of the target's levels over the cue's duration, as
+//! `Ramp` actions the mixer carries out: absolute for an audio cue, relative for the audio cues
+//! in a group (QLab check F2). Rules: `docs/cue-engine.md`, "Fade cues".
 
 use std::collections::BTreeSet;
 
-use crate::cue::{Cue, CueKind};
+use crate::cue::{Cue, CueKind, MAX_DB};
 use crate::model::CueId;
 
 use super::group;
@@ -17,7 +18,9 @@ use super::{Ctx, CueEngine};
 
 impl CueEngine {
     /// The action of Fade cue `cue` started on `at`: every playing audio cue it targets ramps
-    /// from its current levels to the fade's, ending when the fade's action ends.
+    /// from its current levels to the fade's, ending when the fade's action ends. A group
+    /// target's audio cues move by the fade's levels instead (relative: each level's gain is
+    /// multiplied by the fade's, i.e. its dB are added), as QLab does (check F2, M2.28).
     pub(super) fn fade_begin(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(CueKind::Fade {
@@ -47,6 +50,7 @@ impl CueEngine {
         let Some(target_model) = ws.find_cue(target) else {
             return cx.warn(EngineWarning::TargetMissing { cue, target });
         };
+        let relative = matches!(target_model.kind, CueKind::Group { .. });
         let candidates: Vec<&Cue> = match &target_model.kind {
             CueKind::Audio { .. } => vec![target_model],
             // A group fades the audio cues inside it (any depth) that are playing now.
@@ -100,6 +104,7 @@ impl CueEngine {
                 first,
                 self.config.sample_rate().get(),
             );
+            let mut moved = false;
             for &(param, gain) in &wanted {
                 let from = run
                     .levels
@@ -107,6 +112,18 @@ impl CueEngine {
                     .map(|l| l.value(start))
                     .or_else(|| level::model_gain(base, param))
                     .unwrap_or(0.0);
+                // Relative: the level moves by the fade's dB from where it is now (so a silent
+                // level stays silent and is left alone), never above the loudest level a cue
+                // may have.
+                let gain = if relative {
+                    if from == 0.0 {
+                        continue;
+                    }
+                    (from * gain).min(level::db_to_gain(MAX_DB))
+                } else {
+                    gain
+                };
+                moved = true;
                 cx.out.push(Action::Ramp {
                     cue: c.id,
                     run: run.run,
@@ -134,7 +151,7 @@ impl CueEngine {
                     gain,
                 });
             }
-            if frames > 0 && !wanted.is_empty() {
+            if frames > 0 && moved {
                 run.faders.insert(cue);
             }
             self.report(c.id, before, at, cx);

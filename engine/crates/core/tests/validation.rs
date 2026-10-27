@@ -190,6 +190,7 @@ fn wrong_target_kind_warns() {
                 target: Some(cue_id(2)),
                 start_next_cue: false,
                 stop_target_when_slice_ends: false,
+                devamp_mode: DevampMode::CurrentSlice,
             },
         ),
     ]);
@@ -798,6 +799,7 @@ fn devamp_may_target_a_playlist_group() {
                 target: Some(cue_id(1)),
                 start_next_cue: true,
                 stop_target_when_slice_ends: false,
+                devamp_mode: DevampMode::CurrentSlice,
             },
         ),
     ]);

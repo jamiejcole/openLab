@@ -202,6 +202,8 @@ impl From<GoIgnoredReason> for WireGoIgnored {
 pub enum WirePreviewIgnored {
     NotAudio,
     AlreadyPreviewing,
+    Disarmed,
+    NothingToPreview,
 }
 
 impl From<PreviewIgnoredReason> for WirePreviewIgnored {
@@ -209,6 +211,8 @@ impl From<PreviewIgnoredReason> for WirePreviewIgnored {
         match reason {
             PreviewIgnoredReason::NotAudio => Self::NotAudio,
             PreviewIgnoredReason::AlreadyPreviewing => Self::AlreadyPreviewing,
+            PreviewIgnoredReason::Disarmed => Self::Disarmed,
+            PreviewIgnoredReason::NothingToPreview => Self::NothingToPreview,
         }
     }
 }

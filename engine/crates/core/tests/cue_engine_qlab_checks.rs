@@ -319,6 +319,7 @@ fn d5_go_on_a_devamp_with_start_next_moves_the_playhead_onto_that_cue() {
             target: Some(id(1)),
             start_next_cue: true,
             stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
         },
     );
     let mut rig = Rig::new(vec![sound(1), devamp, sound(3), memo(4)]);

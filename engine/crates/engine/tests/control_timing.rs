@@ -184,6 +184,7 @@ fn auto_follow_after_a_devamp_comes_on_the_exact_end_sample() {
             target: Some(id(1)),
             start_next_cue: false,
             stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
         },
     );
     let mut s = show(workspace(vec![c1, audio(2, &b, 1), devamp]));

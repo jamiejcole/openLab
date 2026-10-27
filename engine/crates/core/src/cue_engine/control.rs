@@ -4,7 +4,7 @@
 //! Disarm act on their target as the operator would, at their action start. Rules:
 //! `docs/cue-engine.md`, "Control cues".
 
-use crate::cue::{Cue, CueKind, GroupMode};
+use crate::cue::{Cue, CueKind, DevampMode, GroupMode};
 use crate::model::{CueId, CueListId};
 use crate::tree;
 
@@ -13,6 +13,17 @@ use super::run::{DevampWait, Phase, Run, Slot, Voice};
 use super::time::SampleTime;
 use super::types::{Action, EngineWarning, GoIgnoredReason, RunId};
 use super::{Ctx, CueEngine};
+
+/// What a devamp is asked to do: a Devamp cue's settings, or the second trigger `devamp`
+/// (no next cue, no stop, the current slice).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DevampOrder {
+    /// Start the cue after the Devamp cue when the loop is left.
+    pub start_next: bool,
+    /// Stop the target when the slice ends, instead of playing on.
+    pub stop: bool,
+    pub mode: DevampMode,
+}
 
 impl CueEngine {
     /// The action of control cue `cue` starts on `at`: it acts on its target. A missing target
@@ -48,12 +59,16 @@ impl CueEngine {
             CueKind::Devamp {
                 start_next_cue,
                 stop_target_when_slice_ends,
+                devamp_mode,
                 ..
             } => self.devamp(
                 Some(cue),
                 target,
-                *start_next_cue,
-                *stop_target_when_slice_ends,
+                DevampOrder {
+                    start_next: *start_next_cue,
+                    stop: *stop_target_when_slice_ends,
+                    mode: *devamp_mode,
+                },
                 at,
                 cx,
             ),
@@ -211,16 +226,22 @@ impl CueEngine {
     /// Devamp: an audio target's voice leaves its loop (the audio side answers); a looping
     /// playlist finishes its current child and then completes. `by` is the Devamp cue, or `None`
     /// for the target's own second trigger, which warns only `DevampIgnored` when there is
-    /// nothing to devamp (QLab: it then does nothing).
+    /// nothing to devamp (QLab: it then does nothing). In the mode "devamp looping cue" an audio
+    /// target with slice markers has no loop of its own to leave (all its loops are slices'):
+    /// the devamp does nothing but warn `DevampIgnored` (QLab check D7).
     pub(super) fn devamp(
         &mut self,
         by: Option<CueId>,
         target: CueId,
-        start_next: bool,
-        stop: bool,
+        order: DevampOrder,
         at: SampleTime,
         cx: &mut Ctx,
     ) {
+        let DevampOrder {
+            start_next,
+            stop,
+            mode,
+        } = order;
         let Some(model) = cx.ws.find_cue(target) else {
             return;
         };
@@ -235,7 +256,10 @@ impl CueEngine {
         });
         let by = by.unwrap_or(target);
         match &model.kind {
-            CueKind::Audio { .. } => {
+            CueKind::Audio { slices, .. } => {
+                if mode == DevampMode::LoopingCue && !slices.is_empty() {
+                    return cx.warn(EngineWarning::DevampIgnored { cue: target });
+                }
                 let now = cx.now;
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);

@@ -26,7 +26,7 @@ Pages read (base `https://qlab.app/docs/v5/`): fundamentals/group-cues, fundamen
 | Pending devamp re-sent after a pause of its target | yes | silent about pause | keep | decided unconfirmed |
 | Devamp of a non-looping playlist / audio cue | ignored / whatever the mixer answers | silent ("If that slice is looping, playback exits the loop and continues on to the next slice") | keep | decided unconfirmed |
 | Fade of a non-running target | warns, runs its duration, no effect | silent (only: the live position indicator needs the cue loaded or running; audio/fading-audio/) | keep | decided unconfirmed |
-| Fade of a group | absolute, per child audio cue | silent on groups; "absolute fades supersede relative ones" | keep | decided unconfirmed (absolute part confirmed) |
+| Fade of a group | absolute, per child audio cue | silent on groups; "absolute fades supersede relative ones" | changed in M2.28: relative (each child moves by the fade's dB) | settled by user checks (F2) |
 | Fade on a paused target | applies | silent | keep | decided unconfirmed |
 | "Stop target when done" | stops the target when the fade ends | "the target cue will stop once the fade is complete" | keep | confirmed by docs |
 | Fade with nothing to fade + stop | cannot happen (broken) | n/a | moved to M2.26 earlier | settled by user checks (F4) |
@@ -54,13 +54,13 @@ Pages read (base `https://qlab.app/docs/v5/`): fundamentals/group-cues, fundamen
 | Point | openLab | QLab docs | Decision | Status |
 |---|---|---|---|---|
 | Cue kinds that can be auditioned | audio only (v0.0.1 has no video) | audible output of "Audio, Mic, Video, and Camera cues" can be previewed (tools/auditioning-cues/) | keep | confirmed by docs (scope-limited) |
-| Group / Fade preview | not previewable | silent | keep | decided unconfirmed |
-| Disarmed cues | allowed | silent | keep | decided unconfirmed |
+| Group / Fade preview | not previewable | silent | changed in M2.28: a group previews its armed audio cues (Fade still not) | settled by user checks (V1) |
+| Disarmed cues | allowed | silent | changed in M2.28: refused (`disarmed`) | settled by user checks (V2) |
 | Second Preview of a previewing cue | ignored (UI toggles with StopPreview) | silent | keep | decided unconfirmed |
 | Several previews at once | any number, one per cue | previewing several cues "will start the selected cue or cues through normal outputs" | keep | confirmed by docs |
 | Pre-waits, auto-continue, auto-follow | skipped / ignored | Preview skips pre-waits and ignores auto-continues and auto-follows | keep | confirmed by docs |
-| Panic stops previews (hard) | yes | silent | keep | decided unconfirmed |
-| Pause All leaves previews | yes | silent | keep | decided unconfirmed |
+| Panic stops previews (hard) | yes | silent | changed in M2.28: a playing preview fades over the panic time, a second Panic or a paused preview stops at once | settled by user checks (V4, V6) |
+| Pause All leaves previews | yes | silent | changed in M2.28: Pause All pauses them, Resume All resumes them | settled by user checks (V4) |
 | StopPreview fade | 50 ms | silent | keep | decided unconfirmed |
 | Start position | the cue's own start | silent | keep | decided unconfirmed |
 | Show's fade-ins in a preview | the cue's own levels and fades | silent | keep | decided unconfirmed |
@@ -80,3 +80,5 @@ Pages read (base `https://qlab.app/docs/v5/`): fundamentals/group-cues, fundamen
 ## Counts
 
 Rows: 49 (confirmed by docs 9, settled by user checks 7 (one row mixed), decided unconfirmed 33). Code changes: 0. Filed tasks: 0.
+
+M2.28 (second batch of QLab checks) changed five rows above; its own decisions are in [m2-28.md](m2-28.md).

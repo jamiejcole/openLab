@@ -10,7 +10,7 @@ use crate::model::Workspace;
 use crate::validate::{Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -138,6 +138,7 @@ pub fn migrate(mut document: Value, from: u32) -> Result<Value, LoadError> {
         document = match version {
             0 => v0_to_v1(document),
             1 => v1_to_v2(document),
+            2 => v2_to_v3(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -167,8 +168,36 @@ fn v0_to_v1(mut document: Value) -> Result<Value, String> {
 
 /// v2 added each cue's `second_trigger` and `second_trigger_on_release` (M2.14). A v1 reader
 /// ignored unknown keys, so every v1 cue meant the defaults: they are written over anything a
-/// hand edit may have put there. Iterative, so deep nesting cannot overflow the stack.
-fn v1_to_v2(mut document: Value) -> Result<Value, String> {
+/// hand edit may have put there.
+fn v1_to_v2(document: Value) -> Result<Value, String> {
+    upgrade_cues(document, 2, |cue| {
+        cue.insert("second_trigger".into(), "nothing".into());
+        cue.insert("second_trigger_on_release".into(), false.into());
+    })
+}
+
+/// v3 added each Devamp cue's `devamp_mode` (M2.28, QLab check D7). A v2 Devamp cue left
+/// whatever loop was playing, which is the mode `current_slice` ("Devamp currently looping
+/// slice"); a v2 reader ignored unknown keys, so it is written over anything a hand edit put
+/// there.
+fn v2_to_v3(document: Value) -> Result<Value, String> {
+    upgrade_cues(document, 3, |cue| {
+        if let Some(Value::Object(kind)) = cue.get_mut("kind")
+            && kind.get("type").and_then(Value::as_str) == Some("devamp")
+        {
+            kind.insert("devamp_mode".into(), "current_slice".into());
+        }
+    })
+}
+
+/// Applies `upgrade` to every cue object of the document (any depth) and sets its
+/// `format_version` to `to`. Iterative, so deep nesting cannot overflow the stack. Anything
+/// that is not shaped like a cue is left for the model parse to refuse.
+fn upgrade_cues(
+    mut document: Value,
+    to: u32,
+    mut upgrade: impl FnMut(&mut serde_json::Map<String, Value>),
+) -> Result<Value, String> {
     let root = document
         .as_object_mut()
         .ok_or("top level is not an object")?;
@@ -184,13 +213,11 @@ fn v1_to_v2(mut document: Value) -> Result<Value, String> {
             }
         }
     }
-    // Anything that is not shaped like a cue is left for the model parse to refuse.
     while let Some(cue) = stack.pop() {
         let Some(cue) = cue.as_object_mut() else {
             continue;
         };
-        cue.insert("second_trigger".into(), "nothing".into());
-        cue.insert("second_trigger_on_release".into(), false.into());
+        upgrade(cue);
         if let Some(Value::Array(children)) = cue
             .get_mut("kind")
             .and_then(|kind| kind.get_mut("children"))
@@ -198,6 +225,6 @@ fn v1_to_v2(mut document: Value) -> Result<Value, String> {
             stack.extend(children.iter_mut());
         }
     }
-    root.insert("format_version".into(), 2.into());
+    root.insert("format_version".into(), to.into());
     Ok(document)
 }
