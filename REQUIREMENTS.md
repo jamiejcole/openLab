@@ -291,7 +291,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **QA-01** `v0.0.1` Unit tests for all engine logic (cue state machine, scheduling, continue modes, groups, fades, routing math, file format).
 - [ ] **QA-02** `v0.0.1` Scheduler and engine testable against a virtual clock — deterministic, no real-time sleeps in tests.
 - [ ] **QA-03** `v0.0.1` Offline render tests: run cue sequences headlessly, render audio to buffers, assert on sample-level output (timing, levels, fades).
-- [ ] **QA-04** `v0.0.1` Fuzz testing of workspace loader, media decoders, OSC and MIDI parsers.
+- [x] **QA-04** `v0.0.1` Fuzz testing of workspace loader, media decoders, OSC and MIDI parsers. (v0.0.1: loader, decoders, OSC and the protocol are fuzzed in CI; there is no MIDI input in v0.0.1 — TRG-02 is untagged — so the MIDI parser gets its fuzz target when it exists.)
 - [ ] **QA-05** `v0.0.1` Soak tests (24 h continuous random cue playback) with memory/CPU/drift checks.
 - [ ] **QA-06** `v0.0.1` Performance benchmarks with regression gates in CI.
 - [ ] **QA-07** `v0.0.1` CI on macOS (Intel + Apple Silicon) and Windows for every commit; tests must pass to merge.
