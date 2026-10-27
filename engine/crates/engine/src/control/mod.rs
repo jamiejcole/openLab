@@ -752,21 +752,30 @@ impl Control {
                     ),
                 ),
                 DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
-                DeviceEvent::Stalled { ms } => {
-                    self.log_device(
-                        LogLevel::Warn,
-                        format!(
-                            "audio device \"{name}\": no audio callback for {ms} ms; the \
-                             device is treated as lost if it stays silent"
-                        ),
-                    );
+                DeviceEvent::Stalled { ms, log } => {
+                    if let Some(earlier) = log {
+                        let more = if earlier > 0 {
+                            format!(" ({earlier} more stall(s) since the last notice)")
+                        } else {
+                            String::new()
+                        };
+                        self.log_device(
+                            LogLevel::Warn,
+                            format!(
+                                "audio device \"{name}\": no audio callback for {ms} ms; the \
+                                 device is treated as lost if it stays silent{more}"
+                            ),
+                        );
+                    }
                     self.warnings_dirty = true;
                 }
-                DeviceEvent::StallCleared => {
-                    self.log_device(
-                        LogLevel::Info,
-                        format!("audio device \"{name}\": audio callbacks resumed"),
-                    );
+                DeviceEvent::StallCleared { log } => {
+                    if log {
+                        self.log_device(
+                            LogLevel::Info,
+                            format!("audio device \"{name}\": audio callbacks resumed"),
+                        );
+                    }
                     self.warnings_dirty = true;
                 }
                 DeviceEvent::Unrecoverable { why } => {

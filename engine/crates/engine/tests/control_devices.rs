@@ -1093,6 +1093,10 @@ fn a_600_ms_pause_is_warned_about_and_then_forgotten_and_the_show_goes_on() {
     assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
     s.fake.unstall();
     s.run(BLOCK * 2);
+    // The warning stays until callbacks have run steadily for one warning limit.
+    idle_ms(&mut s, 400);
+    assert_ne!(stalled_warning(&s.take_outbound()), Some(false));
+    idle_ms(&mut s, 200);
     let msgs = s.take_outbound();
     assert_eq!(stalled_warning(&msgs), Some(false), "the warning stayed");
     assert!(
@@ -1316,4 +1320,92 @@ fn the_stall_limits_follow_the_buffer_period() {
     assert!(warn > ms(1850) && warn < ms(1870), "{warn:?}");
     let loss = stall_loss_limit(Some(4096), 44_100);
     assert!(loss > ms(4640) && loss < ms(4650), "{loss:?}");
+}
+
+#[test]
+fn a_device_that_stutters_is_lost_as_intermittent_with_bounded_logs() {
+    // A callback every 525 ms: never a 3 s silence, but silent almost all the time.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    let mut msgs = Vec::new();
+    let mut rounds = 0;
+    while !s.control().device_down() && rounds < 60 {
+        s.fake.stall();
+        idle_ms(&mut s, 525);
+        if s.control().device_down() {
+            break;
+        }
+        s.fake.unstall();
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+        rounds += 1;
+    }
+    msgs.extend(s.take_outbound());
+    assert!(
+        s.control().device_down(),
+        "a stuttering device was never lost"
+    );
+    assert!(rounds <= 20, "lost only after {rounds} stutters (~10 s)");
+    let warns = logs(&msgs, LogLevel::Warn)
+        .into_iter()
+        .filter(|m| m.contains("no audio callback"))
+        .count();
+    assert!(warns <= 1, "{warns} stall warnings logged");
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .all(|m| !m.contains("callbacks resumed")),
+        "the warning flickered"
+    );
+    let broadcasts = msgs
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::Warnings { .. }))
+        .count();
+    assert!(broadcasts <= 3, "{broadcasts} warnings broadcasts");
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("intermittent")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+}
+
+#[test]
+fn repeated_short_stalls_are_logged_at_most_every_10_s_with_a_count() {
+    // 600 ms stalls every 2.1 s: warned each time, never lost (29% silent).
+    let mut s = running_cue_show();
+    s.take_outbound();
+    let mut msgs = Vec::new();
+    for _ in 0..6 {
+        s.fake.stall();
+        idle_ms(&mut s, 600);
+        s.fake.unstall();
+        s.run(BLOCK);
+        idle_ms(&mut s, 1500);
+        msgs.extend(s.take_outbound());
+    }
+    assert!(!s.control().device_down());
+    let warns: Vec<String> = logs(&msgs, LogLevel::Warn)
+        .into_iter()
+        .filter(|m| m.contains("no audio callback"))
+        .collect();
+    assert_eq!(warns.len(), 2, "{warns:?}");
+    assert!(warns[1].contains("4 more stall(s)"), "{warns:?}");
+}
+
+#[test]
+fn a_stage_needs_ten_samples_of_watched_silence() {
+    // Ticks 100 ms apart (the longest allowed gap): 500 ms of silence is only five samples.
+    let mut s = running_cue_show();
+    s.take_outbound();
+    s.fake.stall();
+    for _ in 0..9 {
+        s.advance(Duration::from_millis(100));
+        s.tick();
+    }
+    assert_eq!(stalled_warning(&s.take_outbound()), None);
+    s.advance(Duration::from_millis(100));
+    s.tick();
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
 }

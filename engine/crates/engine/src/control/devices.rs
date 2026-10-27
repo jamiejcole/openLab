@@ -47,6 +47,14 @@ pub const STALL_LOSS_PERIODS: u32 = 50;
 /// Supervisor samples inside the silent window before either stage may fire: only silence the
 /// supervisor watched at its normal cadence counts.
 pub const STALL_MIN_SAMPLES: u32 = 10;
+/// The warning goes only after callbacks have run without a silence of the warning limit for
+/// one warning limit (a device that stutters keeps it up).
+/// At most one stall warn log per this long, with the number of stalls since.
+pub const STALL_LOG_EVERY: Duration = Duration::from_secs(10);
+/// Sliding window of watched time over which a mostly silent stream is a loss.
+pub const STALL_WINDOW: Duration = Duration::from_secs(10);
+/// The window needs this much watched time before it can declare a loss.
+pub const STALL_WINDOW_MIN: Duration = Duration::from_secs(8);
 /// The least gap between two supervisor samples that is no evidence (the process was frozen,
 /// the thread starved); the bound is the longer of this and an eighth of the warning limit.
 pub const STALL_MAX_GAP: Duration = Duration::from_millis(100);
@@ -501,6 +509,66 @@ struct Stall {
     quiet_until: Option<Instant>,
     /// The warning is up.
     warned: bool,
+    /// Since when callbacks have run without a silence of `warn_limit` (the warning clears
+    /// once that has lasted `warn_limit`).
+    steady_since: Option<Instant>,
+    /// The raise of the warning that is up was logged (its clearing is logged too).
+    warn_logged: bool,
+    /// Stall warnings raised since the last one logged.
+    unlogged: u32,
+    last_warn_log: Option<Instant>,
+    window: Window,
+}
+
+/// Watched time and watched silence over the last [`STALL_WINDOW`], in one-second buckets.
+struct Window {
+    start: Instant,
+    idx: usize,
+    watched: [u64; 10],
+    silent: [u64; 10],
+}
+
+impl Window {
+    fn new(now: Instant) -> Self {
+        Window {
+            start: now,
+            idx: 0,
+            watched: [0; 10],
+            silent: [0; 10],
+        }
+    }
+
+    fn add(&mut self, now: Instant, gap: Duration, silent: bool) {
+        let bucket = Duration::from_secs(1);
+        if now.saturating_duration_since(self.start) >= STALL_WINDOW {
+            *self = Window::new(now);
+        }
+        while now.saturating_duration_since(self.start) >= bucket {
+            self.idx = (self.idx + 1) % self.watched.len();
+            if let (Some(w), Some(sl)) = (
+                self.watched.get_mut(self.idx),
+                self.silent.get_mut(self.idx),
+            ) {
+                *w = 0;
+                *sl = 0;
+            }
+            self.start += bucket;
+        }
+        let micros = u64::try_from(gap.as_micros()).unwrap_or(u64::MAX);
+        if let Some(w) = self.watched.get_mut(self.idx) {
+            *w = w.saturating_add(micros);
+        }
+        if silent && let Some(sl) = self.silent.get_mut(self.idx) {
+            *sl = sl.saturating_add(micros);
+        }
+    }
+
+    /// (watched, silent) over the window.
+    fn totals(&self) -> (Duration, Duration) {
+        let sum =
+            |a: &[u64; 10]| Duration::from_micros(a.iter().fold(0u64, |t, v| t.saturating_add(*v)));
+        (sum(&self.watched), sum(&self.silent))
+    }
 }
 
 impl Stall {
@@ -516,6 +584,11 @@ impl Stall {
             sampled_sys: sys,
             quiet_until: Some(now + loss_limit),
             warned: false,
+            steady_since: None,
+            warn_logged: false,
+            unlogged: 0,
+            last_warn_log: None,
+            window: Window::new(now),
         }
     }
 }
@@ -534,9 +607,12 @@ pub enum DeviceEvent {
     Restored,
     /// The stream has not called back for `ms` ms (first stage of the stall watchdog): a
     /// warning, nothing stops.
-    Stalled { ms: u64 },
+    /// `log`: the number of earlier stall warnings not logged, when this one is (at most one
+    /// log per [`STALL_LOG_EVERY`]).
+    Stalled { ms: u64, log: Option<u32> },
     /// The stalled stream calls back again.
-    StallCleared,
+    /// `log`: the raise was logged, so is this.
+    StallCleared { log: bool },
     /// The device list changed.
     ListChanged,
     /// A reopen attempt failed; the next one is in `retry_in`.
@@ -789,15 +865,28 @@ impl Device {
         let sys_gap = sys.duration_since(st.sampled_sys).unwrap_or(Duration::ZERO);
         st.sampled = now;
         st.sampled_sys = sys;
-        if callbacks != st.callbacks {
+        let moved = callbacks != st.callbacks;
+        // The warning of a stream that has run steadily for one warning limit goes: a device
+        // that stutters (a callback every 0.5 s) keeps it up instead of flickering.
+        if st.warned
+            && let Some(since) = st.steady_since
+            && now.saturating_duration_since(since) >= st.warn_limit
+            && now.saturating_duration_since(st.since) < st.warn_limit
+        {
+            st.warned = false;
+            st.steady_since = None;
+            events.push(DeviceEvent::StallCleared {
+                log: std::mem::take(&mut st.warn_logged),
+            });
+        }
+        if moved {
             st.callbacks = callbacks;
             st.since = now;
             st.samples = 0;
             st.quiet_until = None;
-            if std::mem::take(&mut st.warned) {
-                events.push(DeviceEvent::StallCleared);
+            if st.warned && st.steady_since.is_none() {
+                st.steady_since = Some(now);
             }
-            return;
         }
         if sys_gap > gap.saturating_add(SLEEP_SLACK) {
             st.since = now;
@@ -810,26 +899,50 @@ impl Device {
             st.samples = 0;
             return;
         }
+        let quiet = st.quiet_until.is_some_and(|q| now < q);
+        if !quiet {
+            st.window.add(now, gap, !moved);
+            let (watched, silent) = st.window.totals();
+            if watched >= STALL_WINDOW_MIN && silent * 2 >= watched {
+                let why = format!(
+                    "stalled (intermittent): no callback for {:.1} s of the last {:.1} s watched",
+                    silent.as_secs_f64(),
+                    watched.as_secs_f64()
+                );
+                self.lose(now, why, events);
+                return;
+            }
+        }
+        if moved {
+            return;
+        }
         st.samples = st.samples.saturating_add(1);
-        if st.quiet_until.is_some_and(|q| now < q) || st.samples < STALL_MIN_SAMPLES {
+        if quiet || st.samples < STALL_MIN_SAMPLES {
             return;
         }
         let silent = now.saturating_duration_since(st.since);
         let ms = u64::try_from(silent.as_millis()).unwrap_or(u64::MAX);
+        if silent >= st.warn_limit {
+            st.steady_since = None;
+        }
         if silent >= st.loss_limit {
-            // The list may already say why it went quiet.
-            let why = if self.listed.iter().any(|d| d.id == self.info.device_id) {
-                format!("stalled: the stream has not called back for {ms} ms")
-            } else {
-                format!(
-                    "{} is no longer listed, and the stream has not called back for {ms} ms",
-                    self.info.name
-                )
-            };
+            let why = format!("stalled: the stream has not called back for {ms} ms");
             self.lose(now, why, events);
         } else if silent >= st.warn_limit && !st.warned {
             st.warned = true;
-            events.push(DeviceEvent::Stalled { ms });
+            let due = st
+                .last_warn_log
+                .is_none_or(|t| now.saturating_duration_since(t) >= STALL_LOG_EVERY);
+            let log = if due {
+                st.last_warn_log = Some(now);
+                st.warn_logged = true;
+                Some(std::mem::take(&mut st.unlogged))
+            } else {
+                st.warn_logged = false;
+                st.unlogged = st.unlogged.saturating_add(1);
+                None
+            };
+            events.push(DeviceEvent::Stalled { ms, log });
         }
     }
 

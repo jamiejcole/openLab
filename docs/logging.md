@@ -50,6 +50,8 @@ The engine does not use the `tracing` crate for this: records are structured val
 | `device` | the open stream's name, rate, block and channels, the host's callback latency, and its state (`ok`, `lost`, `failed`; `absent` offline) |
 | `log_dropped` | the log sink's drop count |
 
+While the stall watchdog's first stage is up (`device_stalled`, docs/control.md "Devices") `status.device.state` stays `ok`: the stall is a workspace warning and a `warn` log only, until the stream is lost (`lost`) or recovers.
+
 `status` travels the lossy path like `meters`: dropped first when the outbound channel is half full, the next one replaces it.
 
 ## Crash reports (DX-04)
