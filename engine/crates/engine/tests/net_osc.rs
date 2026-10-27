@@ -45,6 +45,8 @@ struct Stand {
     workspace: Mutex<Option<Workspace>>,
     seen: Mutex<Vec<ClientMessage>>,
     logs: Mutex<Vec<String>>,
+    /// `Inbox::Trigger` (source, detail) pairs, in arrival order.
+    triggers: Mutex<Vec<(String, String)>>,
     /// While set, transports and commands are not answered.
     mute: std::sync::atomic::AtomicBool,
     /// While set, snapshot answers wait for [`Stand::release`].
@@ -190,6 +192,10 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
             }
             Inbox::Log { message, .. } => {
                 c.logs.lock().unwrap().push(message);
+                c.changed.notify_one();
+            }
+            Inbox::Trigger { source, detail } => {
+                c.triggers.lock().unwrap().push((source, detail));
                 c.changed.notify_one();
             }
             _ => break,
@@ -514,6 +520,20 @@ async fn go_over_udp_reaches_control() {
             id: RequestId(0),
             action: TransportAction::Start { cue: id(2) },
         }
+    );
+}
+
+#[tokio::test]
+async fn an_osc_input_is_announced_to_control_with_its_source_before_the_input() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("/go", |seen| seen.iter().any(is_input))
+        .await;
+    // Sent just before the input on the same channel: already there when the input is.
+    assert_eq!(
+        *f.control.triggers.lock().unwrap(),
+        vec![("osc 127.0.0.1".to_owned(), "transport go".to_owned())]
     );
 }
 

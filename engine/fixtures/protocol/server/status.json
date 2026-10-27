@@ -1,0 +1,22 @@
+{
+  "type": "status",
+  "status": {
+    "cpu_percent": 7.5,
+    "engine_load": 0.12,
+    "xruns": 1,
+    "disk": {
+      "streams": 3,
+      "underrun_frames": 0,
+      "healthy": true
+    },
+    "device": {
+      "name": "Scarlett 2i2",
+      "state": "ok",
+      "sample_rate": 48000,
+      "block_frames": 256,
+      "channels": 2,
+      "latency_ms": 11.5
+    },
+    "log_dropped": 0
+  }
+}

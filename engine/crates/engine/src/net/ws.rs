@@ -799,6 +799,15 @@ impl Conn {
                     self.snapshot_waits.push((id, Instant::now()));
                 }
                 self.inflight += 1;
+                // Edits and requests are the UI's own business; a transport action is a
+                // trigger the show log records (DX-02). The hotkey/UI split is not visible on
+                // the wire: both arrive as `ui`.
+                if matches!(other, ClientMessage::Transport { .. }) {
+                    let _ = self.shared.inbox.send(Inbox::Trigger {
+                        source: "ui".to_owned(),
+                        detail: super::describe(&other),
+                    });
+                }
                 let sent = self.shared.inbox.send(Inbox::Client {
                     message: other,
                     reply: self.reply_tx.clone(),
