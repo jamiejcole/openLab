@@ -278,6 +278,8 @@ fn a_stuck_probe_worker_is_replaced() {
     let mut c = config(&ws);
     c.probe = gated_probe;
     c.probe_clock = time.clock();
+    // No priming: it would queue the stuck files again ahead of the third for the fresh workers.
+    c.prime_cues = 0;
     let timeout = c.probe_timeout;
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(&stuck, 2);
