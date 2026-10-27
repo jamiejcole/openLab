@@ -827,6 +827,17 @@ impl Control {
             ProbeAnswer::Probed { key, .. } => Some(key.clone()),
             ProbeAnswer::Preloaded { .. } => None,
         };
+        if let ProbeAnswer::Preloaded { key, .. } = &answer {
+            // A preload that lands changes what a stream of the file reads: primes built from
+            // the file before it are rebuilt from memory, before the operator's GO needs them.
+            let was = self.media.is_preloaded(key);
+            let key = key.clone();
+            self.media.answer(answer);
+            if self.media.is_preloaded(&key) != was {
+                self.primes_dirty = true;
+            }
+            return;
+        }
         if let Some(status) = self.media.answer(answer) {
             self.pending_media.push(status);
             if let Some(key) = key {
@@ -1474,6 +1485,16 @@ impl Control {
     /// Streams the disk workers have open.
     pub fn open_streams(&self) -> usize {
         self.streamer.open_streams()
+    }
+
+    /// Starts that used a primed stream (not a cold start).
+    pub fn prime_hits(&self) -> u64 {
+        self.voices.prime_hits()
+    }
+
+    /// Whether the cue's primed stream reads preloaded samples.
+    pub fn primed_from_memory(&self, cue: CueId) -> bool {
+        self.voices.primed_from_memory(cue)
     }
 
     /// Cues with a primed stream.

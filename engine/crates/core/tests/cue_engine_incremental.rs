@@ -355,6 +355,59 @@ fn a_group_removed_and_added_again_under_its_id_is_followed_with_its_new_childre
     assert!(broken_ids(&twin).is_empty());
 }
 
+fn readd(twin: &mut Twin, new: Cue) {
+    twin.edit(Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: new.id },
+            Command::AddCue {
+                at: Position {
+                    list: list_id(1),
+                    parent: None,
+                    index: 0,
+                },
+                cue: new,
+                auto_number: false,
+            },
+        ],
+    });
+}
+
+#[test]
+fn a_re_added_group_with_a_nested_group_is_new_all_the_way_down() {
+    // Group 10 { group 11 { fade 12 without a target } }; the same ids come back with a
+    // different fade below.
+    let mut twin = Twin::new(vec![
+        cue(10, group(vec![cue(11, group(vec![cue(12, fade(99))]))])),
+        cue(1, CueKind::Memo),
+    ]);
+    assert_eq!(broken_ids(&twin), vec![id(12)]);
+    readd(
+        &mut twin,
+        cue(10, group(vec![cue(11, group(vec![cue(13, fade(98))]))])),
+    );
+    assert_eq!(broken_ids(&twin), vec![id(13)]);
+    twin.undo();
+    assert_eq!(broken_ids(&twin), vec![id(12)]);
+}
+
+#[test]
+fn a_re_added_group_whose_child_keeps_its_id_but_not_its_content_is_followed() {
+    // Fade 11 targets audio cue 1; the group comes back with fade 11 aimed at a missing cue.
+    let mut twin = Twin::new(vec![
+        cue(10, group(vec![cue(11, fade(1))])),
+        sound(1, "media/a.wav"),
+    ]);
+    assert!(broken_ids(&twin).is_empty());
+    readd(&mut twin, cue(10, group(vec![cue(11, fade(98))])));
+    assert_eq!(broken_ids(&twin), vec![id(11)]);
+    assert_eq!(
+        twin.problems(11),
+        vec![CueProblem::TargetMissing { target: id(98) }]
+    );
+    twin.undo();
+    assert!(broken_ids(&twin).is_empty());
+}
+
 #[test]
 fn an_edit_costs_what_it_touched() {
     // 2,000 audio cues, and a fade on cue 1,500.

@@ -140,9 +140,9 @@ pub struct MediaCatalog {
     index: CueIndex,
     /// What each audio cue with a file contributes to `entries`' counts.
     uses: HashMap<CueId, Use>,
-    /// Jobs sent to the workers (tests wait for exactly that many answers).
     /// Cues the catalog has read from the workspace (a full pass reads all, an edit its own).
     cues_read: u64,
+    /// Jobs sent to the workers (tests wait for exactly that many answers).
     #[cfg(test)]
     jobs: u64,
 }
@@ -301,7 +301,10 @@ impl MediaCatalog {
             .chain(&footprint.edited)
             .copied()
             .collect();
-        let delta = match self.index.reconcile(ws, &touched, &structural) {
+        let delta = match self
+            .index
+            .reconcile(ws, &touched, &structural, &footprint.added)
+        {
             IndexChange::Delta(delta) => delta,
             IndexChange::Rebuilt => return self.sync(ws),
         };
@@ -1172,9 +1175,15 @@ mod tests {
     }
 
     /// A group removed and added again under its id in one edit: the new group's file is
-    /// probed and counted, the old one's is forgotten (with its preload).
+    /// probed and counted, the old one's is forgotten (with its preload), whether the child
+    /// has a new id or keeps its own with another file.
     #[test]
     fn a_group_replaced_under_its_id_moves_its_files_users_to_the_new_children() {
+        replaced_group(false);
+        replaced_group(true);
+    }
+
+    fn replaced_group(same_child_id: bool) {
         let dir = tempfile::tempdir().unwrap();
         let (old_file, new_file) = (
             write_wav(dir.path(), "old.wav"),
@@ -1184,7 +1193,9 @@ mod tests {
         let mut old_child = template.clone();
         set_media(&mut old_child, &old_file, true);
         let mut new_child = template.clone();
-        new_child.id = CueId(uuid::Uuid::from_u128(10_003));
+        if !same_child_id {
+            new_child.id = CueId(uuid::Uuid::from_u128(10_003));
+        }
         set_media(&mut new_child, &new_file, true);
         let group = |id: u128, child: Cue| Cue {
             id: CueId(uuid::Uuid::from_u128(id)),

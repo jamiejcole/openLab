@@ -376,7 +376,11 @@ fn probe_answers_do_not_rescan_the_workspace() {
     s.settle_media();
     // Opening read every cue once; the thousands of probe answers read none.
     let opened = s.control().media_cues_read();
-    assert!(opened >= 2_000, "the open reads the cues: {opened}");
+    let cues = count(&big_workspace().cue_lists[0].cues) as u64;
+    assert!(
+        (cues..=cues + 1).contains(&opened),
+        "the open reads each cue once, and its probe answers none: {opened} for {cues} cues"
+    );
     s.run(BLOCK * 4);
     assert_eq!(s.control().media_cues_read(), opened, "answers read no cue");
     // An edit that adds a file that wants preloading: its answer sees the new model.
