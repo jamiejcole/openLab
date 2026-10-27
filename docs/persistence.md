@@ -47,9 +47,16 @@ writer thread: the control thread clones the `Workspace` and calls `SaveWriter::
 The queue is bounded by coalescing, because the disk may be slow or hung while autosave keeps firing:
 
 - one pending manual save per target file (a newer one replaces it; the old answer is `Superseded`);
-- one pending autosave (a newer one replaces it; the old answer is `Ok(None)`);
-- manual saves run before a pending autosave, and an autosave whose revision is not newer than the last
-  durably saved one is dropped (`Ok(None)`), so saved state never gets a recovery file;
+- one pending autosave per recovery target, i.e. per workspace id and show path (the pair that names the
+  recovery file; a newer one replaces only its own target's, the old answer is `Ok(None)`), so several open
+  workspaces never displace each other's autosaves;
+- at most `MAX_PENDING_TARGETS` (16) targets wait in the normal queue; a new target beyond that moves the
+  oldest waiting autosave to a write-through queue that runs first. It is written, never dropped, and still
+  coalesces per target. The total is bounded by the distinct targets in use, at most the open workspaces (8);
+- manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
+  durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
+- `clear_recovery(workspace, show_path)` runs after the job in flight (the writer is one thread), removes that
+  target's file, and cancels only that target's pending autosave;
 - dropping the writer finishes the running job and pending manual saves, and discards pending
   autosaves.
 
