@@ -4,7 +4,7 @@ import AppKit
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var mainWindow: NSWindow?
+    @MainActor private(set) lazy var mainWindowController = MainWindowController()
 
     static func main() {
         let app = NSApplication.shared
@@ -22,18 +22,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = NSLocalizedString("window.main.title", comment: "Main window title")
-        window.identifier = NSUserInterfaceItemIdentifier("main-window")
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        mainWindow = window
+        showMainWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// A show must survive an accidental window close: never quit, and bring the window back.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow(nil)
+        return false
+    }
+
+    @MainActor @objc func showMainWindow(_ sender: Any?) {
+        guard let window = mainWindowController.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 }

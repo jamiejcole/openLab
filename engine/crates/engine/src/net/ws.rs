@@ -28,6 +28,8 @@ use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
 
 use super::NetError;
 use super::hub::{self, Broadcast, Hub, Kind};
+use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
+use super::refusals::Refusals;
 use super::token::{constant_time_eq, generate_token};
 use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
 
@@ -65,6 +67,8 @@ pub struct ServerConfig {
     /// Refused connections are logged at most this often (with a count), so a process that
     /// keeps knocking cannot flood the log.
     pub refusal_log_interval: Duration,
+    /// The OSC listeners (docs/osc.md), on this server's runtime. `None`: no OSC.
+    pub osc: Option<OscConfig>,
 }
 
 impl Default for ServerConfig {
@@ -78,6 +82,7 @@ impl Default for ServerConfig {
             max_connections: 16,
             max_handshaking: 8,
             refusal_log_interval: Duration::from_secs(10),
+            osc: None,
         }
     }
 }
@@ -98,6 +103,7 @@ pub struct WsServer {
     token: String,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
+    osc: Option<osc::Running>,
 }
 
 impl std::fmt::Debug for WsServer {
@@ -130,6 +136,33 @@ impl WsServer {
             .enable_time()
             .build()
             .map_err(NetError::Runtime)?;
+        // OSC is optional and must never keep the engine from starting: a port in use (another
+        // QLab-compatible app) is a warning in the log, and the UI protocol still works.
+        let osc_bound = config
+            .osc
+            .clone()
+            .and_then(|osc_config| match osc::bind(&osc_config) {
+                Ok(bound) => Some((bound, osc_config)),
+                Err(e) => {
+                    let _ = inbox.send(Inbox::Log {
+                        level: LogLevel::Warn,
+                        message: format!(
+                            "OSC server is off: could not listen on {}:{}: {e}",
+                            osc_config.bind, osc_config.port
+                        ),
+                    });
+                    None
+                }
+            });
+        let (osc, tap) = match osc_bound {
+            Some((bound, osc_config)) => {
+                match osc::start(&runtime, bound, osc_config, inbox.clone()) {
+                    Some((running, tap)) => (Some(running), Some(tap)),
+                    None => (None, None),
+                }
+            }
+            None => (None, None),
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
         let shared = Arc::new(Shared {
             token: token.clone(),
@@ -140,7 +173,7 @@ impl WsServer {
             config,
             shutdown: shutdown_rx,
         });
-        runtime.spawn(hub::distribute(shared.hub.clone(), outbound));
+        runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap));
         let accept_shared = shared.clone();
         runtime.spawn(async move {
             if let Ok(listener) = TcpListener::from_std(listener) {
@@ -152,11 +185,22 @@ impl WsServer {
             token,
             shutdown,
             runtime: Mutex::new(Some(runtime)),
+            osc,
         })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The OSC sockets' ports; `None` if OSC is off or could not bind.
+    pub fn osc_ports(&self) -> Option<OscPorts> {
+        self.osc.as_ref().map(|o| o.ports)
+    }
+
+    /// What the OSC listeners dropped, refused or answered; `None` if OSC is off.
+    pub fn osc_stats(&self) -> Option<OscListenerStats> {
+        self.osc.as_ref().map(osc::Running::stats)
     }
 
     /// The token a client must present in `hello` (written to `engine.json` by M4.9).
@@ -184,64 +228,9 @@ impl Drop for WsServer {
     }
 }
 
-/// Counts refused connections and logs them at most once per `refusal_log_interval`, so a UI
-/// that cannot connect (every slot held by something else) can be diagnosed. Refusals inside
-/// the interval are logged, with their count, once it has passed.
-struct Refusals {
-    interval: Duration,
-    count: u64,
-    limit: &'static str,
-    last_log: Option<Instant>,
-}
-
-impl Refusals {
-    fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            count: 0,
-            limit: "",
-            last_log: None,
-        }
-    }
-
-    fn refused(&mut self, inbox: &Sender<Inbox>, limit: &'static str) {
-        self.count += 1;
-        self.limit = limit;
-        if self.due().is_some_and(|t| t <= Instant::now()) {
-            self.flush(inbox);
-        }
-    }
-
-    /// When the pending count may be logged; `None` if nothing is pending.
-    fn due(&self) -> Option<Instant> {
-        if self.count == 0 {
-            return None;
-        }
-        Some(match self.last_log {
-            Some(t) => t + self.interval,
-            None => Instant::now(),
-        })
-    }
-
-    fn flush(&mut self, inbox: &Sender<Inbox>) {
-        if self.count == 0 {
-            return;
-        }
-        let _ = inbox.send(Inbox::Log {
-            level: LogLevel::Warn,
-            message: format!(
-                "UI server refused {} connection(s): {}",
-                self.count, self.limit
-            ),
-        });
-        self.count = 0;
-        self.last_log = Some(Instant::now());
-    }
-}
-
 async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
     let mut shutdown = shared.shutdown.clone();
-    let mut refusals = Refusals::new(shared.config.refusal_log_interval);
+    let mut refusals = Refusals::new("UI server", shared.config.refusal_log_interval);
     loop {
         let due = refusals.due();
         let accepted = tokio::select! {
