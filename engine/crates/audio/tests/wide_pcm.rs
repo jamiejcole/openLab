@@ -69,13 +69,14 @@ fn wav_of_64_channels_decodes_sample_exactly_in_every_format() {
 
 #[test]
 fn aiff_of_64_channels_decodes_sample_exactly_in_every_format() {
-    let cases: [(Fmt, Option<&[u8; 4]>); 10] = [
+    let cases: [(Fmt, Option<&[u8; 4]>); 11] = [
         (Fmt::I8, None),
         (Fmt::I16, None),
         (Fmt::I24, None),
         (Fmt::I32, None),
         (Fmt::I16, Some(b"NONE")),
         (Fmt::I16, Some(b"sowt")),
+        (Fmt::I16, Some(b"twos")),
         (Fmt::I24, Some(b"in24")),
         (Fmt::I32, Some(b"in32")),
         (Fmt::F32, Some(b"fl32")),
@@ -357,10 +358,7 @@ fn bad_wide_wav_headers_are_typed_errors() {
         Err(MediaError::Unsupported(_))
     ));
     // ADPCM-style tag with 64 channels.
-    assert!(matches!(
-        probe_media(patch(20, &2u16.to_le_bytes())),
-        Err(MediaError::Unsupported(_))
-    ));
+    assert!(probe_media(patch(20, &2u16.to_le_bytes())).is_err());
     // An empty data chunk, and a skipped chunk that claims more than the file holds.
     let data = find(&base, b"data");
     assert!(corrupt(probe_media(patch(data + 4, &0u32.to_le_bytes()))));
@@ -390,7 +388,10 @@ fn bad_wide_wav_headers_are_typed_errors() {
     let ext = wav64(Header::Extensible(0));
     let mut bad_guid = ext.clone();
     bad_guid[50] ^= 0xff;
-    assert!(corrupt(probe_media(reader(bad_guid))));
+    assert!(matches!(
+        probe_media(reader(bad_guid)),
+        Err(MediaError::Unsupported(_))
+    ));
     let mut bad_valid = ext;
     bad_valid[38..40].copy_from_slice(&32u16.to_le_bytes());
     assert!(corrupt(probe_media(reader(bad_valid))));
@@ -517,4 +518,34 @@ fn wide_fuzz_seeds_are_playable() {
         assert!(probed.warnings.is_empty(), "{name}");
         fuzz_decode(&bytes).unwrap();
     }
+}
+
+/// Ambisonic B-format sub-GUIDs (PCM and float) play like plain PCM and float, at 9 to 18
+/// channels (where symphonia used to read them) and beyond.
+#[test]
+fn ambisonic_b_format_extensible_files_decode() {
+    for (fmt, tag) in [(Fmt::I24, 1u8), (Fmt::F32, 3)] {
+        for ch in [16u16, 25] {
+            let want = fmt.samples(30, usize::from(ch));
+            let mut b = wide::wav(&want, ch, RATE, fmt, Header::Extensible(0));
+            // fmt body at 20; sub-format GUID at 44: tag, then the ambisonic tail.
+            let guid = [
+                tag, 0, 0, 0, 0x21, 0x07, 0xd3, 0x11, 0x86, 0x44, 0xc8, 0xc1, 0xca, 0, 0, 0,
+            ];
+            b[44..60].copy_from_slice(&guid);
+            assert_decodes(&b, ch, 30, &want, &format!("ambisonic {fmt:?} {ch}"));
+        }
+    }
+}
+
+/// Non-PCM format tags with 9 or more channels stay on symphonia's path, not our error.
+#[test]
+fn wide_non_pcm_wav_tags_are_left_to_symphonia() {
+    let mut b = wav64(Header::Plain);
+    b[20..22].copy_from_slice(&6u16.to_le_bytes());
+    let r = probe_media(reader(b));
+    assert!(
+        !matches!(&r, Err(MediaError::Unsupported(m)) if m.starts_with("WAV format tag")),
+        "{r:?}"
+    );
 }
