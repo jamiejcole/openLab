@@ -394,6 +394,7 @@ fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
             id: id(cue),
             property: CueProperty::Kind { value: kind },
         }),
+        coalesce: None,
     });
     assert!(replies.iter().any(|m| matches!(
         m,

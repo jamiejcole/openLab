@@ -1155,7 +1155,7 @@ mod tests {
                     _ => {
                         let command = random_command(&ws, &mut rng, &template, &files, &mut next);
                         let footprint = command.footprint();
-                        history.execute(&mut ws, command).ok().map(|()| footprint)
+                        history.execute(&mut ws, command).ok().map(|_| footprint)
                     }
                 };
                 let Some(footprint) = footprint else { continue };
