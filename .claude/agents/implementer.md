@@ -25,7 +25,8 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 ## Before reporting done
 - `make lint` passes. `make test-rust` passes (and `make test` if Swift or the protocol changed). Paste the summary lines.
 - Self-review your diff (`git diff`) as a hostile reviewer would: panics, RT violations, races, untested branches, ARCHITECTURE drift. Fix what you find.
-- Tick completed tasks in `PROGRESS.md`; tick requirements in `REQUIREMENTS.md` only when fully satisfied within the release scope.
+- Then ask what the adversarial reviewer will ask, and answer each with a test: what happens **during a live show** if this misbehaves (does a cue become broken, get skipped, play late or stop)? What does a hostile or broken input do (OSC/network peers, damaged or huge media, slow/hung disks, devices that vanish)? What happens on Windows and on a slow 2014 Mac with an HDD? Which failure can't be detected, and is it at least logged?
+- Tick completed tasks in `PROGRESS.md` (tick only; keep lines one line — no notes appended, see CLAUDE.md); tick requirements in `REQUIREMENTS.md` only when fully satisfied within the release scope.
 - Commit with plain `git commit -m "<area>: <imperative summary>"`. Logical commits. **Never add Co-authored-by or any AI-attribution trailer.** Do not push.
 
 ## Report
