@@ -394,6 +394,14 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         c.pre_wait = f64::from(s.pre) * 0.5;
         c.post_wait = f64::from(s.post) * 0.5;
         c.continue_mode = mode(s.mode);
+        // Some auto-continue sounds wait long, so a failure while they play (or a device
+        // loss) often finds the continue still pending (M4.2h).
+        if c.continue_mode == ContinueMode::AutoContinue
+            && matches!(c.kind, CueKind::Audio { .. })
+            && s.flag
+        {
+            c.post_wait += 3.0;
+        }
         c.armed = s.armed;
         c.second_trigger = second_trigger(s.second);
         c.second_trigger_on_release = s.release;
@@ -1885,6 +1893,15 @@ impl Run {
         Ok(())
     }
 
+    /// An audio cue with an auto-continue and a post-wait: its continue is pending while it runs.
+    fn auto_continues_later(&self, id: CueId) -> bool {
+        self.ws.find_cue(id).is_some_and(|c| {
+            matches!(c.kind, CueKind::Audio { .. })
+                && c.continue_mode == ContinueMode::AutoContinue
+                && c.post_wait > 0.0
+        })
+    }
+
     /// Applies a step's input and checks the rules that depend on what it was.
     fn step(&mut self, s: &Step) -> Check {
         self.move_to(self.now + s.dt)?;
@@ -2095,15 +2112,42 @@ impl Run {
                     .collect();
                 let operator = Kind::Operator { trigger: false };
                 if s.b.is_multiple_of(3) {
-                    let pending = live.iter().find(|(id, _)| {
-                        self.ws.find_cue(*id).is_some_and(|c| {
-                            c.continue_mode == ContinueMode::AutoContinue && c.post_wait > 0.0
-                        })
-                    });
-                    if let Some(&(cue, run)) = pending {
+                    let pending = live
+                        .iter()
+                        .copied()
+                        .find(|(id, _)| self.auto_continues_later(*id));
+                    // Nothing playing yet: start such a sound (a failure during its pre-wait
+                    // leaves the same broken run with its continue pending).
+                    let pending = match pending {
+                        Some(p) => Some(p),
+                        None => {
+                            let mut sounds = Vec::new();
+                            each(&self.ws.cue_lists[0].cues, &mut |c| {
+                                sounds.push(c.id);
+                            });
+                            let idle = sounds.into_iter().find(|id| {
+                                self.auto_continues_later(*id)
+                                    && self.engine.state(*id) == CueState::Idle
+                            });
+                            match idle {
+                                Some(cue) => {
+                                    let start = Input::Start { cue };
+                                    self.call(start, Kind::Operator { trigger: true })?;
+                                    self.engine.run_of(cue).map(|run| (cue, run))
+                                }
+                                None => None,
+                            }
+                        }
+                    };
+                    if let Some((cue, run)) = pending {
                         let reason = BrokenReason::StreamFailed;
                         self.call(Input::ActionFailed { cue, run, reason }, operator)?;
-                        if self.engine.state(cue) == CueState::Broken {
+                        // Only a run that is still active (it prints as `broken: Some`; a
+                        // settled slot does not) is what the device loss must cancel.
+                        let dump = format!("{:?}", self.engine);
+                        if self.engine.state(cue) == CueState::Broken
+                            && dump.contains("broken: Some(")
+                        {
                             self.lost.push("broken run");
                         }
                     }
