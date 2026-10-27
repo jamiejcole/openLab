@@ -738,3 +738,43 @@ fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
     s.run(4000);
     assert!(s.channel(1).iter().all(|&v| v == 0.0), "c2 never plays");
 }
+
+/// M4.11b: a start held by its probe that then finds nothing left to play (loaded past the end)
+/// ends on the sample it is released on, so its successor starts there with no `late_start`.
+#[test]
+fn a_held_start_loaded_past_the_end_starts_its_successor_on_release() {
+    let path = wav(&dc(200, 0.5));
+    let next = wav(&dc(200, 0.5));
+    gate(&path);
+    let mut held = audio(1, &path, 0);
+    held.continue_mode = ContinueMode::AutoFollow;
+    let ws = workspace(vec![held, audio(2, &next, 1)]);
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = ProbeTime::new().clock();
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: secs(100_000),
+    });
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(BLOCK * 10);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    release(&path);
+    s.settle_media();
+    s.run(2000);
+    let msgs = s.take_outbound();
+    assert!(
+        !warnings(&msgs)
+            .iter()
+            .any(|w| matches!(w, WireWarning::LateStart { .. })),
+        "{:?}",
+        warnings(&msgs)
+    );
+    assert!(
+        first_nonzero(&s.channel(1)).is_some(),
+        "the successor played"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    run_until_idle(&mut s, id(2), 2000);
+}

@@ -71,7 +71,7 @@ Each run segment gets its own mixer `VoiceId`, allocated by the loop and **never
 |---|---|
 | `LoadVoice { run, offset }` | slice table, `prepare` (or wait for the probe); kept as the run's stream |
 | `UnloadVoice` | the stream is dropped (cancelled) |
-| `StartVoice { run, at, offset }` | the loaded stream, else the cue's primed one (offset 0), else a fresh `prepare`; `VoiceStart` with the model's levels; `StartVoice` at `at`; for a finite table, `Input::ActionLength { frames: offset + table frames (+ delay if held) }` back to the engine, which then owns the end as a deadline (auto-follow and playlist moves on the exact end sample; docs/cue-engine.md) |
+| `StartVoice { run, at, offset }` | the loaded stream, else the cue's primed one (offset 0), else a fresh `prepare`; `VoiceStart` with the model's levels; `StartVoice` at `at`; for a finite table, `Input::ActionLength { frames: offset + table frames (+ delay if held) }` back to the engine, which then owns the end as a deadline (auto-follow and playlist moves on the exact end sample; docs/cue-engine.md); an offset at or past the end of the table is an empty plan: nothing plays and `ActionLength { frames: offset (+ delay if held) }` ends the action on its start sample (M4.11b) |
 | `StopVoice { at, fade }` | mixer `StopVoice` (fade with the curve); the record goes with the `VoiceFinished` |
 | `PauseVoice { at }` | mixer `PauseVoice` (native pause, M3.18: position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer `ResumeVoice { voice: old, new_id }` re-keys the voice to a fresh id for the fresh run |
