@@ -133,6 +133,8 @@ impl Mirror {
             .cue_lists
             .iter()
             .map(|l| l.id)
+            // Only lists in both copies: a new list is not a playhead that moved.
+            .filter(|id| old.workspace.cue_lists.iter().any(|l| l.id == *id))
             .filter(|id| {
                 old.playheads.get(id).copied().flatten()
                     != self.playheads.get(id).copied().flatten()
@@ -1231,6 +1233,12 @@ mod tests {
         let mut new = two_lists();
         new.playheads.insert(list_id(), Some(cue_id(2)));
         new.inherit_active(&old);
+        assert_eq!(MirrorShow(&new).active_list(), Some(list_id()));
+        // A list that is new in the replacing copy is not a playhead that moved.
+        let mut single = mirror(2);
+        single.set_active(list_id());
+        let mut new = two_lists();
+        new.inherit_active(&single);
         assert_eq!(MirrorShow(&new).active_list(), Some(list_id()));
         // Two moved: no guess, the old one stays.
         let mut new = two_lists();

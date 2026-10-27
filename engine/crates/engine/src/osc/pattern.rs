@@ -12,7 +12,7 @@ pub const MAX_ALTERNATIVES: usize = 64;
 pub const MAX_MATCH_CHARS: usize = 256;
 /// Steps one datagram or stream read may spend matching, over all its messages, cues and
 /// alternatives. A step is one character-against-token comparison (a `[..]` class costs one per
-/// range, plus one), roughly 5 ns, so this is about 5 ms of work however many messages the read
+/// range, plus one), roughly 5 to 10 ns, so this is about 5 to 10 ms of work however many messages the read
 /// holds.
 pub const MATCH_BUDGET: u64 = 1_000_000;
 
@@ -29,6 +29,8 @@ pub enum PatternError {
     Nested,
     #[error("more than {MAX_ALTERNATIVES} alternatives")]
     TooManyAlternatives,
+    #[error("the work budget was spent")]
+    Budget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +71,19 @@ pub struct BudgetSpent;
 
 impl CuePattern {
     pub fn compile(pattern: &str) -> Result<Self, PatternError> {
+        let mut unlimited = u64::MAX;
+        Self::compile_within(pattern, &mut unlimited)
+    }
+
+    /// As [`CuePattern::compile`], charging the expansion (every token added to every
+    /// alternative) to `budget`: `Err(Budget)` once it is spent.
+    pub fn compile_within(pattern: &str, budget: &mut u64) -> Result<Self, PatternError> {
+        let spend = |budget: &mut u64, n: usize| {
+            *budget = budget
+                .checked_sub(u64::try_from(n).unwrap_or(u64::MAX).max(1))
+                .ok_or(PatternError::Budget)?;
+            Ok::<(), PatternError>(())
+        };
         let mut alternatives: Vec<Vec<Tok>> = vec![Vec::new()];
         let mut chars = pattern.chars().peekable();
         while let Some(c) = chars.next() {
@@ -94,6 +109,7 @@ impl CuePattern {
                     let mut product = Vec::with_capacity(alternatives.len() * options.len());
                     for prefix in &alternatives {
                         for option in &options {
+                            spend(budget, prefix.len() + option.len())?;
                             let mut next = prefix.clone();
                             next.extend(option.iter().cloned());
                             product.push(next);
@@ -104,6 +120,7 @@ impl CuePattern {
                 '}' => return Err(PatternError::Nested),
                 other => {
                     let tok = simple_token(other, &mut chars)?;
+                    spend(budget, alternatives.len())?;
                     for alternative in &mut alternatives {
                         alternative.push(tok.clone());
                     }
@@ -113,6 +130,7 @@ impl CuePattern {
         // Runs of `*` mean one `*`: the scan over them is then never longer than the pattern
         // needs, whatever the alternatives expanded to.
         for alternative in &mut alternatives {
+            spend(budget, alternative.len())?;
             alternative.dedup_by(|a, b| *a == Tok::Star && *b == Tok::Star);
         }
         Ok(Self { alternatives })

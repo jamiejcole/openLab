@@ -1422,7 +1422,9 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
 #[tokio::test]
 async fn a_tcp_peer_that_never_reads_is_closed_and_stalls_nobody() {
     let mut ws = test_workspace();
-    ws.cue_lists[0].cues[0].notes = "x".repeat(1200);
+    // Large replies, so that the kernel's buffers and our pending cap fill after a few hundred
+    // reads even on a busy machine.
+    ws.cue_lists[0].cues[0].notes = "x".repeat(20_000);
     let f = fixture_with(ws, |c| c.write_timeout = Duration::from_millis(200)).await;
     // A small receive buffer, so that a few MB of replies are more than the two sockets hold
     // (the server drops replies it cannot queue: the queue is what it can hold, not the flood).
@@ -1446,8 +1448,14 @@ async fn a_tcp_peer_that_never_reads_is_closed_and_stalls_nobody() {
     // The actor answers far faster than the writer drains, so most replies are dropped at the
     // queue (at most 16 per read, and 256 queued); enough get through only if the flood is
     // large: the server's send buffer alone can take a few MB.
-    for _ in 0..8000 {
-        // The server may close the connection part-way: that is what is being tested.
+    f.wait_stats("the connection to be registered", |s| {
+        s.tcp_connections == 1
+    })
+    .await;
+    // Ask until the server's buffers and queue are full (the writer is then stuck for
+    // `write_timeout` and closes the connection). A bounded flood: each reply is built whether or
+    // not it can be queued, so an endless one would only keep the server busy.
+    for _ in 0..40 {
         if !a.try_write_all(&burst).await {
             break;
         }

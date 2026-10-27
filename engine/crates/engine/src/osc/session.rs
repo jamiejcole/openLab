@@ -341,15 +341,12 @@ impl Sessions {
                 let (burst, rate) = k.limits();
                 refilled(b.tokens, b.updated, now, burst, rate) < burst
             });
+            // Only a refilled bucket may go (the retain above dropped them): evicting one that
+            // is still depleted would hand its IP a fresh burst, and cycling forged addresses
+            // would then remove the budget. A new address finding the table full of depleted
+            // buckets is sent nothing until one refills (a few seconds).
             if self.budgets.len() >= MAX_TRACKED_IPS {
-                let oldest = self
-                    .budgets
-                    .iter()
-                    .min_by_key(|(_, b)| b.updated)
-                    .map(|(k, _)| *k);
-                if let Some(oldest) = oldest {
-                    self.budgets.remove(&oldest);
-                }
+                return false;
             }
         }
         let bucket = self.budgets.entry(key).or_insert(Bucket {

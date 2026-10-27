@@ -471,7 +471,11 @@ impl Osc {
     /// peer that may not ask a per-source-IP byte budget (a forged source address must not turn
     /// us into an amplifier). Dropped replies are counted.
     fn push_reply(&mut self, ask: &Asked<'_>, reply: &Reply, out: &mut Outcome) {
-        if out.replies.len() >= MAX_REPLIES_PER_CALL {
+        // Checked before the reply is built: once a call is at a cap the rest of a flood costs
+        // nothing.
+        if out.replies.len() >= MAX_REPLIES_PER_CALL
+            || self.call_reply_bytes >= MAX_REPLY_BYTES_PER_CALL
+        {
             self.stats.replies_dropped += 1;
             return;
         }

@@ -13,7 +13,7 @@ use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use super::pattern::{CuePattern, has_pattern_chars};
+use super::pattern::{CuePattern, PatternError, has_pattern_chars};
 
 /// Longest address accepted.
 pub const MAX_ADDRESS_BYTES: usize = 256;
@@ -660,8 +660,12 @@ fn cue_message(
                 .collect()
         }
         CueRef::Selected | CueRef::Playhead | CueRef::Active => Vec::new(),
-        CueRef::Pattern(pattern) => match CuePattern::compile(pattern) {
+        CueRef::Pattern(pattern) => match CuePattern::compile_within(pattern, budget) {
             Ok(pattern) => matching(show, &pattern, budget, &mut out),
+            Err(PatternError::Budget) => {
+                out.capped = true;
+                Vec::new()
+            }
             Err(_) => Vec::new(),
         },
     };

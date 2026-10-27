@@ -940,4 +940,6 @@ fn go_from_into_a_groups_child_clears_the_visit_memory_as_set_playhead_then_go_d
     };
     let by_set = scenario(false);
     assert_eq!(scenario(true), by_set);
+    // Child 12 starts; 2 already played in this visit and is passed over: the playhead stands on 3.
+    assert_eq!(by_set, (vec![(id(12), 1100)], Some(id(3))));
 }
