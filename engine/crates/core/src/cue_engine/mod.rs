@@ -530,18 +530,21 @@ impl CueEngine {
         if !cx.ws.cue_lists.iter().any(|l| l.id == list) {
             return ignored(GoIgnoredReason::UnknownList, cx);
         }
-        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
-        // A clock that went backwards (device restart) never blocks GO.
-        if let Some(last) = self.last_go
-            && cx.now >= last
-            && cx.now - last < interval
-        {
+        if self.double_go(cx) {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
         if let Err(reason) = self.go_on(list, cx.now, cx) {
             return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
+    }
+
+    /// Whether a GO now is within `min_go_interval` of the last one. A clock that went backwards
+    /// (device restart) never blocks GO.
+    fn double_go(&self, cx: &Ctx) -> bool {
+        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
+        self.last_go
+            .is_some_and(|last| cx.now >= last && cx.now - last < interval)
     }
 
     /// GO from `cue`: only if the playhead can rest there.
@@ -557,6 +560,13 @@ impl CueEngine {
         };
         if !playhead::positions(cues).contains(&cue) {
             return cx.warn(EngineWarning::NotInList { list, cue });
+        }
+        // A GO that double-GO protection would refuse leaves the playhead where it was.
+        if self.double_go(cx) {
+            return cx.out.push(Action::GoIgnored {
+                list,
+                reason: GoIgnoredReason::DoubleGo,
+            });
         }
         self.move_playhead(list, Some(cue), cx);
         self.go(list, cx);

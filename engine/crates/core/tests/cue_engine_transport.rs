@@ -1095,3 +1095,33 @@ fn go_from_moves_the_playhead_then_goes_and_does_nothing_for_a_cue_it_cannot_res
     }
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
 }
+
+#[test]
+fn a_refused_go_from_leaves_the_playhead_where_it_was() {
+    let mut rig = Rig::new(vec![sound(1), sound(2), sound(3)]);
+    rig.ws.settings.min_go_interval = 1.0;
+    let from = |rig: &mut Rig, now, n| {
+        rig.at(
+            now,
+            Input::GoFrom {
+                list: list_id(1),
+                cue: id(n),
+            },
+        )
+    };
+    assert_eq!(voice_starts(&from(&mut rig, 0, 2)), vec![(id(2), 0)]);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    // Within the double-GO interval: refused, and the playhead is not moved to cue 1.
+    let out = from(&mut rig, 100, 1);
+    assert!(voice_starts(&out).is_empty());
+    assert!(out.iter().any(|a| matches!(
+        a,
+        Action::GoIgnored {
+            reason: GoIgnoredReason::DoubleGo,
+            ..
+        }
+    )));
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    // After the interval it works.
+    assert_eq!(voice_starts(&from(&mut rig, 2000, 1)), vec![(id(1), 2000)]);
+}

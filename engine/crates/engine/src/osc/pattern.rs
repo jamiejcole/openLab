@@ -110,6 +110,11 @@ impl CuePattern {
                 }
             }
         }
+        // Runs of `*` mean one `*`: the scan over them is then never longer than the pattern
+        // needs, whatever the alternatives expanded to.
+        for alternative in &mut alternatives {
+            alternative.dedup_by(|a, b| *a == Tok::Star && *b == Tok::Star);
+        }
         Ok(Self { alternatives })
     }
 
@@ -177,6 +182,10 @@ fn simple_token(
 
 /// Whole-text match with `*` backtracking to the last star only: O(tokens x text).
 fn glob(tokens: &[Tok], text: &[char], budget: &mut u64) -> Result<bool, BudgetSpent> {
+    // Every call costs its tokens, even for a text it never reads (an empty number still scans
+    // the trailing stars).
+    let setup = 1 + u64::try_from(tokens.len()).unwrap_or(u64::MAX);
+    *budget = budget.checked_sub(setup).ok_or(BudgetSpent)?;
     let (mut t, mut s) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
     while s < text.len() {

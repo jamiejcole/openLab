@@ -443,8 +443,14 @@ impl Osc {
     /// its connection, and a UDP peer that completed `/connect` is not held to a budget; a UDP
     /// peer that has not (a subscription needs no passcode when none is set) shares the byte
     /// budget of its replies, so a forged `/updates 1` cannot aim more than that at a victim.
-    pub fn update_allowed(&mut self, peer: Peer, now: Duration, len: usize) -> bool {
-        if matches!(peer, Peer::Tcp { .. }) || self.sessions.is_connected(peer) {
+    pub fn update_allowed(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        len: usize,
+        passcode_set: bool,
+    ) -> bool {
+        if matches!(peer, Peer::Tcp { .. }) || (passcode_set && self.sessions.is_connected(peer)) {
             return true;
         }
         let cost = u64::try_from(len)
@@ -488,7 +494,9 @@ impl Osc {
             return;
         }
         self.call_reply_bytes += size;
-        if matches!(ask.peer, Peer::Udp(_)) && !ask.connected {
+        // With no passcode a `/connect` proves nothing about a datagram's source address, so only a
+        // peer that connected with a real passcode is let off the budget.
+        if matches!(ask.peer, Peer::Udp(_)) && !(ask.connected && ask.passcode_set) {
             let kind = if ask.passcode_set {
                 Budget::Strict
             } else {
