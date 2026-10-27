@@ -287,11 +287,30 @@ fn an_edit_rebuilds_only_what_it_changed() {
     let path = show_file(&big_workspace());
     let (mut s, _) = open(&path);
     assert!(s.control().plan_builds() >= 1, "the show has slice cues");
+    s.tick();
+    let passes = s.control().engine().whole_show_passes();
+    let walks = s.control().plan_walks();
     for (name, edit) in edits(s.control().workspace()) {
         s.take_outbound();
         let before = s.control().plan_builds();
+        let examined = s.control().plan_cues_examined();
+        let fp = edit.footprint();
+        let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
         let replies = command(&mut s, edit);
         s.tick();
+        // M4.12c: what is left per edit follows the edit too. The slice-plan checks look at
+        // the cues it named (a removed group's children with it), `model_changed` is read
+        // through the cue index, and the cue engine counts cues and places playheads without
+        // walking the show.
+        let looked = s.control().plan_cues_examined() - examined;
+        // (The group removed last holds the cue added to it first.)
+        assert!(
+            looked as usize <= named + PER_GROUP as usize + 1,
+            "{name}: {looked} cues looked at"
+        );
+        assert_eq!(s.control().plan_walks(), walks, "{name}");
+        assert_eq!(s.control().model_change_walks(), 0, "{name}");
+        assert_eq!(s.control().engine().whole_show_passes(), passes, "{name}");
         assert!(
             replies.iter().any(|m| matches!(
                 m,
@@ -383,6 +402,7 @@ fn probe_answers_do_not_rescan_the_workspace() {
         (cues..=cues + 1).contains(&opened),
         "the open reads each cue once, and its probe answers none: {opened} for {cues} cues"
     );
+    let walks = s.control().plan_walks();
     s.run(BLOCK * 4);
     assert_eq!(s.control().media_cues_read(), opened, "answers read no cue");
     // An edit that adds a file that wants preloading: its answer sees the new model.
@@ -413,6 +433,8 @@ fn probe_answers_do_not_rescan_the_workspace() {
         s.control().preload_reserved() > 0,
         "the new cue is preloaded"
     );
+    // Nor do the slice-plan checks walk the show for the edit or its answer (M4.12c).
+    assert_eq!(s.control().plan_walks(), walks);
 }
 
 /// Best of `runs` (the gate passes as soon as one run is under budget, as in cpu_budget).
