@@ -323,7 +323,8 @@ fn no_allocation_on_any_callback_path() {
     assert_eq!(m.alloc_violations(), 0);
     assert_eq!(m.callback_faults(), 0);
     assert_eq!(m.leaked_mixers(), 0);
-    // The callbacks were timed (M4.7a) inside the same no-allocation guard.
+    // The callbacks were timed (M4.7a). An allocation in the timing itself is caught by the
+    // unit test `an_allocation_in_the_timing_is_counted_in_debug`.
     let load = m.take_engine_load().expect("the callbacks were timed");
     assert!(load.is_finite() && load >= 0.0, "{load}");
 }

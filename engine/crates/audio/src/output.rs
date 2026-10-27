@@ -407,6 +407,10 @@ pub struct OutputHost {
     slot: Producer<Parts>,
     #[cfg(test)]
     panic_next: bool,
+    #[cfg(test)]
+    alloc_while_timing: bool,
+    #[cfg(test)]
+    panic_while_timing: bool,
 }
 
 impl OutputHost {
@@ -430,6 +434,10 @@ impl OutputHost {
             slot,
             #[cfg(test)]
             panic_next: false,
+            #[cfg(test)]
+            alloc_while_timing: false,
+            #[cfg(test)]
+            panic_while_timing: false,
         };
         let link = HostLink {
             returned,
@@ -447,25 +455,35 @@ impl OutputHost {
     /// debug builds it runs under `assert_no_alloc` (M3.12). Never panics: a panic outside the
     /// mixer's own guard leaves the buffer silent and counts a callback fault.
     pub fn render<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
-        // RT: reading the monotonic clock is the one exception to "no syscalls" in the callback
-        // (ARCHITECTURE §3.4). `Instant::now` neither allocates nor locks, and it does not enter
-        // the kernel on the platforms we ship: `clock_gettime(CLOCK_UPTIME_RAW)` on macOS reads
-        // the commpage (`mach_absolute_time`), `QueryPerformanceCounter` on Windows reads the
-        // TSC, and Linux's `clock_gettime` is served by the vDSO. Two reads per callback, tens of
-        // ns for the pair (the CPU budget gate reports it), against a block of at least 1.3 ms
-        // (64 frames at 48 kHz).
-        let started = Instant::now();
+        let frames = (out.len() / self.device_channels) as u64;
         #[cfg(debug_assertions)]
         let before = assert_no_alloc::violation_count();
-        let result =
-            no_alloc_in_debug(|| catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time))));
-        if result.is_err() {
+        // The timing runs inside the no-allocation guard, so debug builds count an allocation
+        // in it, and inside its own catch_unwind (std's `Instant::now` panics if the clock
+        // fails), so a panic never reaches the host's thread.
+        let result = no_alloc_in_debug(|| {
+            catch_unwind(AssertUnwindSafe(|| {
+                // RT: reading the monotonic clock is the one exception to "no syscalls" in the
+                // callback (ARCHITECTURE §3.4). `Instant::now` neither allocates nor locks, and
+                // normally does not enter the kernel: `clock_gettime(CLOCK_UPTIME_RAW)` on macOS
+                // reads the commpage (`mach_absolute_time`), `QueryPerformanceCounter` on
+                // Windows normally reads the TSC (a kernel-mediated timer on hardware without an
+                // invariant TSC and on some VMs), and Linux's `clock_gettime` is served by the
+                // vDSO. Two reads per callback, tens of ns for the pair (the CPU budget gate
+                // reports it), against a block of at least 1.3 ms (64 frames at 48 kHz).
+                let started = Instant::now();
+                let rendered = catch_unwind(AssertUnwindSafe(|| self.render_inner(out, time)));
+                #[cfg(test)]
+                self.test_fault_while_timing();
+                let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                self.shared.worst_load.record(elapsed_ns, frames, self.rate);
+                rendered
+            }))
+        });
+        if !matches!(result, Ok(Ok(()))) {
             out.fill(S::SILENCE);
             self.shared.callback_faults.fetch_add(1, Ordering::Relaxed);
         }
-        let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let frames = (out.len() / self.device_channels) as u64;
-        self.shared.worst_load.record(elapsed_ns, frames, self.rate);
         #[cfg(debug_assertions)]
         {
             let caught = assert_no_alloc::violation_count().wrapping_sub(before);
@@ -481,6 +499,16 @@ impl OutputHost {
     /// buffer is left as the host gave it (cpal pre-fills silence).
     pub fn reject_buffer(&self) {
         self.shared.count(HostError::BadBuffer);
+    }
+
+    #[cfg(test)]
+    fn test_fault_while_timing(&mut self) {
+        if std::mem::take(&mut self.alloc_while_timing) {
+            std::hint::black_box(Vec::<u8>::with_capacity(16));
+        }
+        if std::mem::take(&mut self.panic_while_timing) {
+            panic!("injected timing fault");
+        }
     }
 
     fn render_inner<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
@@ -728,6 +756,40 @@ mod tests {
         // An empty buffer has no duration: not a measurement.
         host.render::<f32>(&mut [], None);
         assert_eq!(m.take_engine_load(), None);
+    }
+
+    #[test]
+    fn an_allocation_in_the_timing_is_counted_in_debug() {
+        let (_ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut host, link) = OutputHost::new(mixer, 2);
+        host.alloc_while_timing = true;
+        let mut buf = vec![0.0f32; 2 * 64];
+        host.render(&mut buf, None);
+        let m = link.monitor();
+        if cfg!(debug_assertions) {
+            assert!(m.alloc_violations() > 0, "the guard covers the timing");
+        }
+        assert_eq!(m.callback_faults(), 0);
+        assert!(m.take_engine_load().is_some());
+    }
+
+    #[test]
+    fn a_panic_in_the_timing_is_caught_and_counts_a_fault() {
+        let (ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut host, mut link) = OutputHost::new(mixer, 2);
+        host.panic_while_timing = true;
+        let mut buf = [0.5f32; 20];
+        host.render(&mut buf, None);
+        assert!(buf.iter().all(|x| *x == 0.0));
+        let m = link.monitor();
+        assert_eq!(m.callback_faults(), 1);
+        // The next callback renders and is timed normally.
+        host.render(&mut buf, None);
+        assert_eq!(m.callback_faults(), 1);
+        assert_eq!(ctl.samples_rendered(), 20);
+        assert!(m.take_engine_load().is_some());
+        drop(host);
+        assert!(link.take_mixer().is_some());
     }
 
     #[test]
