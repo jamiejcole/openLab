@@ -564,6 +564,7 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .revert: result(c, id)
+        case .setOutputOverrides: result(c, id)
         case .scanRecovery:
             result(c, id, ok: .object(["data": .object(["type": .string("recovery_entries"), "entries": .array([])])]))
         case .relink:
