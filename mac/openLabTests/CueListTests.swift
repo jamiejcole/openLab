@@ -312,6 +312,17 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    func testACueThatStopsBeingAGroupLosesItsChildren() async throws {
+        let h = try await H()
+        let memo = FakeEngine.cueJSON(
+            id: H.group.raw, number: "2", name: "Act One", kind: .object(["type": .string("memo")]))
+        try h.change(upserts: [try H.upsertJSON(memo, index: 2)])
+        XCTAssertEqual(h.vc.node(H.group)?.children.count, 0)
+        XCTAssertNil(h.vc.node(H.rain))
+        XCTAssertEqual(h.vc.nodeCount, 3)
+        XCTAssertFalse(h.spy.isExpandable(try XCTUnwrap(h.vc.node(H.group))))
+    }
+
     func testChildUpsertUnderAnExpandedGroupInsertsOneRow() async throws {
         let h = try await H()
         h.spy.expandItem(try XCTUnwrap(h.vc.node(H.group)))
