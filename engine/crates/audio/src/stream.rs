@@ -144,6 +144,9 @@ struct Status {
     written: u64,
     /// Devamp cuts made: the loop's stale frames are cut off and the continuation is queued.
     cuts: u64,
+    /// The latest cut (voice frame) the worker has looked at: made, or waiting for the write
+    /// cursor to reach its boundary.
+    cut_seen: Option<u64>,
     /// Damage met while streaming, each once (see `StreamHandle::warnings`).
     warnings: Vec<MediaWarning>,
     /// Ring position where the latest devamp's continuation starts.
@@ -176,6 +179,7 @@ impl Shared {
 #[derive(Debug)]
 pub struct StreamHandle {
     shared: Arc<Shared>,
+    link: Arc<StreamLink>,
     wake: Sender<Msg>,
 }
 
@@ -232,6 +236,19 @@ impl StreamHandle {
 
     // The `wait_*` helpers block (with a timeout): for I/O helper threads and tests, never the
     // control thread (ARCHITECTURE §3.1).
+
+    /// Blocks until the worker has looked at the latest devamp cut the voice published (made, or
+    /// waiting for the write cursor to reach its boundary); at once if there is none. The
+    /// worker notices a cut on its next poll, in real time, so a driver that renders faster than
+    /// real time (the offline render) must wait for it before rendering on: live, the loop exit
+    /// buffer covers that latency, but it is measured in rendered frames.
+    pub fn wait_cut_seen(&self, timeout: Duration) -> Result<bool, MediaError> {
+        self.wait(timeout, |s| {
+            self.link
+                .cut_requested()
+                .is_none_or(|(d, _)| s.cut_seen == Some(d))
+        })
+    }
 
     /// Blocks until at least `n` devamp cuts are made.
     pub fn wait_cuts(&self, n: u64, timeout: Duration) -> Result<bool, MediaError> {
@@ -501,8 +518,12 @@ impl DiskStreamer {
                 source,
                 channels: info.channels,
                 slices,
+                handle: StreamHandle {
+                    shared,
+                    link: Arc::clone(&link),
+                    wake,
+                },
                 link,
-                handle: StreamHandle { shared, wake },
             },
         ))
     }
@@ -994,6 +1015,9 @@ impl Task {
             }
             _ => self.jump(target, d, uses_exit),
         }
+        // After the cut (or its wait for the cursor), so a driver that waits for this renders
+        // on only once the voice can follow it.
+        self.shared.update(|s| s.cut_seen = Some(d));
         Ok(())
     }
 
@@ -1746,6 +1770,33 @@ mod tests {
         assert_eq!(&out[..3_000], &want[..]);
         assert!(out[3_000..].iter().all(|&s| s == 0.0));
         assert_eq!(ctl.underrun_frames(), 0);
+    }
+
+    /// A driver that renders faster than the worker polls waits for it to see the cut before
+    /// rendering on (the offline render; flaked `devamp_leaves_the_loop_and_the_cue_ends`).
+    #[test]
+    fn a_driver_can_wait_for_the_worker_to_see_a_cut() {
+        let pre = crate::decode::Preloaded::from_samples(1, 48_000, (0..3_000).map(mark).collect());
+        let plays = [Plays::Infinite, Plays::Times(1)];
+        let slices = crate::plan(0..3_000, &[1_000], &plays, 0).unwrap();
+        let (_d, mut t, p) = hand_task(StreamerConfig::new(48_000), pre, slices);
+        for _ in 0..3 {
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        let (mut ctl, mut r) = mixer();
+        let h = play(&mut ctl, p);
+        let none = Duration::ZERO;
+        let mut out = Vec::new();
+        render_to(&mut r, &mut out, 100, None);
+        // No cut asked yet: nothing to wait for.
+        assert_eq!(h.wait_cut_seen(none), Ok(true));
+        devamp(&mut ctl, 100);
+        render_to(&mut r, &mut out, 164, None);
+        // Asked, and the worker has not polled: rendering on would outrun it.
+        assert_eq!(h.wait_cut_seen(none), Ok(false));
+        assert!(matches!(t.step(), Progress::Worked));
+        assert_eq!(h.wait_cut_seen(none), Ok(true));
+        assert_eq!(h.cuts(), 1);
     }
 
     /// L-R5: a devamp while the voice still waits for the disk's answer to the previous cut (it
