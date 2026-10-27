@@ -26,6 +26,11 @@ final class CueToolbarView: NSView {
 
     private(set) var segmentedControls: [NSSegmentedControl] = []
 
+    /// Show Mode (SM-01): adding cues is locked.
+    var isLocked = false {
+        didSet { for c in segmentedControls { c.isEnabled = !isLocked } }
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         setAX(AX.cueToolbar)
