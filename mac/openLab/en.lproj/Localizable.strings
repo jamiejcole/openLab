@@ -149,6 +149,9 @@
 "problem.patch_missing" = "The output patch is missing";
 "problem.device_unavailable" = "The output device is unavailable";
 "problem.network_patch_missing" = "The network patch is missing";
+"problem.network_host_invalid" = "The network destination cannot be used";
+"problem.network_host_unresolved" = "The network host cannot be found";
+"problem.network_message_invalid" = "The OSC message cannot be sent";
 "problem.started_broken" = "The cue started while broken";
 
 "cue.colour.none" = "None";
@@ -264,6 +267,9 @@
 "problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
+"problem.network_host_invalid" = "Network patch {patch} cannot be used: {reason}.";
+"problem.network_host_unresolved" = "The host of network patch {patch} cannot be found: {reason}.";
+"problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
 
 "warning.unknown" = "Unrecognised warning: {type}";
