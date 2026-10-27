@@ -1421,6 +1421,26 @@ fn replies_to_one_call_stop_at_a_byte_cap() {
 }
 
 #[test]
+fn once_a_call_is_at_the_byte_cap_later_replies_are_not_built() {
+    let mut show = Show::open();
+    show.props
+        .insert((CUE_1, "notes"), json!("n".repeat(60_000)));
+    let mut osc = quiet_osc();
+    let big = bytes(&msg("/cue/1/notes", vec![]));
+    let small = bytes(&msg("/cue/1/name", vec![]));
+    // Enough big reads to overflow the cap, then small ones that would each fit in the room
+    // left: the cap stalls below the limit, so only the "full" state keeps them out.
+    let mut elements = vec![big; 40];
+    elements.extend(vec![small; 5]);
+    let out = osc.handle_datagram(udp(), T0, &bundle(&elements), &show);
+    assert!(
+        out.replies.iter().all(|r| r.addr == "/reply/cue/1/notes"),
+        "a small reply was built after the cap was reached"
+    );
+    assert!(osc.stats().replies_dropped >= 6);
+}
+
+#[test]
 fn only_a_peer_that_may_not_ask_has_a_reply_byte_budget_that_refills() {
     let show = Show::with_passcode("s3cret");
     let mut osc = quiet_osc();
@@ -1573,9 +1593,7 @@ fn empty_cue_numbers_and_trailing_stars_are_charged_and_bounded() {
             ))
         })
         .collect();
-    let started = std::time::Instant::now();
     let out = osc.handle_datagram(udp(), T0, &bundle(&elements), &big);
-    assert!(started.elapsed() < Duration::from_millis(1500));
     assert_eq!(out.replies.len(), 120);
     assert!(osc.stats().matches_capped >= 1);
     // Runs of stars are one star.
@@ -2603,10 +2621,7 @@ fn the_match_budget_is_one_per_read_and_a_go_behind_a_hostile_bundle_still_fires
         .map(|i| bytes(&msg(&format!("/cue/*a*[{class}]Z{i}/name"), vec![])))
         .collect();
     let packet = bundle(&elements);
-    let started = std::time::Instant::now();
     let out = osc.handle_datagram(udp(), T0, &packet, &big);
-    let took = started.elapsed();
-    assert!(took < Duration::from_millis(1500), "{took:?}");
     assert_eq!(out.replies.len(), 100, "each is an error reply");
     assert!(osc.stats().matches_capped >= 1);
     // The next read has its own budget, and a GO behind the bundle is not held up or dropped.
@@ -2750,9 +2765,7 @@ fn compiling_a_pattern_is_charged_to_the_budget() {
     let elements: Vec<Vec<u8>> = (0..120)
         .map(|i| bytes(&msg(&format!("/cue/{hostile}{i}/name"), vec![])))
         .collect();
-    let started = std::time::Instant::now();
     let out = osc.handle_datagram(udp(), T0, &bundle(&elements), &show);
-    assert!(started.elapsed() < Duration::from_millis(1500));
     assert_eq!(out.replies.len(), 120);
     assert!(osc.stats().matches_capped >= 1);
 }

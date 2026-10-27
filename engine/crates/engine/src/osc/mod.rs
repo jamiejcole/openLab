@@ -521,6 +521,9 @@ impl Osc {
                 _ => n,
             });
         if self.call_reply_bytes.saturating_add(size) > MAX_REPLY_BYTES_PER_CALL {
+            // The call is full from here on: the early check above must stop later replies
+            // (even small ones) before they are built.
+            self.call_reply_bytes = MAX_REPLY_BYTES_PER_CALL;
             self.stats.replies_dropped += 1;
             return;
         }
