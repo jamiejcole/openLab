@@ -447,7 +447,15 @@ fn a_cue_playing_from_a_preload_keeps_playing_when_the_preload_is_released() {
     let mut s = show(workspace(vec![c]));
     assert_eq!(s.control().preload_reserved(), 800_000);
     s.settle_media();
+    // GO starts from the prime, and the prime reads the preloaded samples.
+    s.run(BLOCK);
+    assert!(s.control().primed_from_memory(id(1)));
     let at = go(&mut s) as usize;
+    assert_eq!(
+        s.control().prime_hits(),
+        1,
+        "a primed start, not a cold one"
+    );
     s.run(BLOCK * 8);
     set_preload(&mut s, 1, false);
     assert_eq!(s.control().preload_reserved(), 0);
@@ -460,4 +468,29 @@ fn a_cue_playing_from_a_preload_keeps_playing_when_the_preload_is_released() {
         ch[at..at + 4000].iter().all(|&v| v == 0.5),
         "the voice kept its samples"
     );
+}
+
+#[test]
+fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
+    // Regression: a preload answer did not dirty the primes, so a stream primed from the file
+    // before the preload landed was stale (its source differs) and GO cold-started the cue.
+    let path = wav(&dc(2_000_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.settle_media();
+    assert_eq!(s.control().primed(), vec![id(1)]);
+    assert!(!s.control().primed_from_memory(id(1)));
+    // Switching preload on starts the job. A tick that does not read inboxes primes again
+    // while the job is out: the prime is from the file, whenever the job answers.
+    set_preload(&mut s, 1, true);
+    s.tick();
+    assert!(!s.control().primed_from_memory(id(1)));
+    s.settle_media();
+    s.run(BLOCK);
+    assert!(
+        s.control().primed_from_memory(id(1)),
+        "re-primed from the preload before GO"
+    );
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
 }

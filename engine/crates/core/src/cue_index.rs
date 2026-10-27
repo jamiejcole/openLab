@@ -240,11 +240,18 @@ impl CueIndex {
     /// sibling order is only re-read around these). Cost: the touched cues and the sibling lists
     /// of the structural ones, plus one scan of the cue ids when one of them cannot be found
     /// where the index had it.
+    ///
+    /// `added` is the part of `structural` that was added (the top of each added subtree). An
+    /// added subtree is new as a whole: a cue in it that had been in the index (removed and
+    /// added again with the same id, alone or inside another group, as a group or not) is
+    /// reported gone and fresh, with every descendant of the old cue and of the new one,
+    /// whether or not the ids are the same.
     pub fn reconcile(
         &mut self,
         ws: &Workspace,
         touched: &BTreeSet<CueId>,
         structural: &BTreeSet<CueId>,
+        added: &BTreeSet<CueId>,
     ) -> IndexChange {
         if self.duplicates
             || !ws
@@ -269,6 +276,43 @@ impl CueIndex {
         scan(ws, &mut missing, &mut located);
         // What is still missing is not in the workspace.
         let absent = missing;
+
+        // Cues in an added subtree that the index already has were removed and added again:
+        // forget where they were, so they are placed (fresh) like any new cue, and report them
+        // gone too. The walk covers everything the old tops held, not just the re-added ids.
+        let mut delta = IndexDelta::default();
+        let mut new_ids: HashSet<CueId> = HashSet::new();
+        for top in added {
+            if let Some(&(_, cue)) = located.get(top) {
+                subtree_ids(cue, &mut new_ids);
+            }
+        }
+        let mut purged_from: Vec<CueContainer> = Vec::new();
+        if !new_ids.is_empty() {
+            let mut seen: HashSet<CueId> = HashSet::new();
+            let mut stack: Vec<CueId> = structural
+                .iter()
+                .filter(|id| self.place.contains_key(id))
+                .copied()
+                .collect();
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                if new_ids.contains(&id)
+                    && let Some(old) = self.place.remove(&id)
+                {
+                    if let CueContainer::Group(g) = old {
+                        delta.former_parents.insert(g);
+                    }
+                    purged_from.push(old);
+                    delta.gone.push(id);
+                }
+                if let Some(kids) = self.kids.get(&CueContainer::Group(id)) {
+                    stack.extend(kids.iter().copied());
+                }
+            }
+        }
 
         let mut queued: HashSet<CueContainer> = HashSet::new();
         let mut work: Vec<CueContainer> = Vec::new();
@@ -300,8 +344,10 @@ impl CueIndex {
                 enqueue(old, &mut work);
             }
         }
+        for old in purged_from {
+            enqueue(old, &mut work);
+        }
 
-        let mut delta = IndexDelta::default();
         // Cues a container no longer lists, to be gone unless another container took them.
         let mut left: Vec<(CueId, CueContainer)> = Vec::new();
         while let Some(container) = work.pop() {
@@ -348,7 +394,9 @@ impl CueIndex {
                 match self.place.insert(cue.id, container) {
                     None => {
                         delta.fresh.push(cue.id);
-                        if matches!(cue.kind, CueKind::Group { .. }) {
+                        if matches!(cue.kind, CueKind::Group { .. })
+                            || self.kids.contains_key(&CueContainer::Group(cue.id))
+                        {
                             enqueue(CueContainer::Group(cue.id), &mut work);
                         }
                     }
@@ -408,6 +456,15 @@ impl CueIndex {
         // A group that is itself gone is not somewhere cues can have left.
         delta.former_parents.retain(|g| self.place.contains_key(g));
         IndexChange::Delta(delta)
+    }
+}
+
+/// The ids of `cue` and of everything below it.
+fn subtree_ids(cue: &Cue, out: &mut HashSet<CueId>) {
+    let mut stack = vec![cue];
+    while let Some(c) = stack.pop() {
+        out.insert(c.id);
+        stack.extend(c.children());
     }
 }
 

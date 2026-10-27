@@ -87,6 +87,8 @@ enum Pending {
     Cues {
         touched: BTreeSet<CueId>,
         structural: BTreeSet<CueId>,
+        /// The part of `structural` that was added (the top of each added subtree).
+        added: BTreeSet<CueId>,
     },
 }
 
@@ -158,27 +160,31 @@ impl CueEngine {
     /// pending full rebuild stays one.
     pub(super) fn mark_problems_changed(&mut self, footprint: &Footprint) {
         let pending = &mut self.problems.pending;
-        let (touched, structural) = match pending {
+        let (touched, structural, added) = match pending {
             Pending::All => return,
             Pending::Clean => {
                 *pending = Pending::Cues {
                     touched: BTreeSet::new(),
                     structural: BTreeSet::new(),
+                    added: BTreeSet::new(),
                 };
                 let Pending::Cues {
                     touched,
                     structural,
+                    added,
                 } = pending
                 else {
                     return;
                 };
-                (touched, structural)
+                (touched, structural, added)
             }
             Pending::Cues {
                 touched,
                 structural,
-            } => (touched, structural),
+                added,
+            } => (touched, structural, added),
         };
+        added.extend(footprint.added.iter().copied());
         let moved = footprint
             .added
             .iter()
@@ -291,8 +297,9 @@ impl CueEngine {
             Pending::Cues {
                 touched,
                 structural,
+                added,
             } => {
-                if !self.update_problems(&touched, &structural, cx) {
+                if !self.update_problems(&touched, &structural, &added, cx) {
                     self.rebuild_problems(cx);
                 }
             }
@@ -326,6 +333,7 @@ impl CueEngine {
         &mut self,
         touched: &BTreeSet<CueId>,
         structural: &BTreeSet<CueId>,
+        added: &BTreeSet<CueId>,
         cx: &mut Ctx,
     ) -> bool {
         let ws = cx.ws;
@@ -343,7 +351,7 @@ impl CueEngine {
         if !same_patches {
             return false;
         }
-        let delta = match model.tree.reconcile(ws, touched, structural) {
+        let delta = match model.tree.reconcile(ws, touched, structural, added) {
             IndexChange::Delta(delta) => delta,
             IndexChange::Rebuilt => return false,
         };

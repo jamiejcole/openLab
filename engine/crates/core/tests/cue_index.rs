@@ -39,7 +39,7 @@ fn follow(index: &mut CueIndex, ws: &Workspace, command: &Command) -> IndexDelta
         .copied()
         .collect();
     let touched = structural.iter().chain(&fp.edited).copied().collect();
-    let IndexChange::Delta(delta) = index.reconcile(ws, &touched, &structural) else {
+    let IndexChange::Delta(delta) = index.reconcile(ws, &touched, &structural, &fp.added) else {
         panic!("rebuilt");
     };
     assert!(index.matches(ws));
@@ -189,7 +189,7 @@ fn a_footprint_that_names_a_moved_cue_only_as_edited_is_still_followed() {
     })
     .unwrap();
     let touched = BTreeSet::from([id(5)]);
-    let change = index.reconcile(&ws, &touched, &BTreeSet::new());
+    let change = index.reconcile(&ws, &touched, &BTreeSet::new(), &BTreeSet::new());
     assert!(matches!(change, IndexChange::Delta(_)));
     assert!(index.matches(&ws));
 }
@@ -205,7 +205,7 @@ fn duplicate_ids_are_flagged_and_always_rebuilt() {
     assert_eq!(index.ranks().len(), 2);
     let touched = BTreeSet::from([id(1)]);
     assert_eq!(
-        index.reconcile(&ws, &touched, &touched),
+        index.reconcile(&ws, &touched, &touched, &BTreeSet::new()),
         IndexChange::Rebuilt
     );
     // A cue under itself is no loop either.
@@ -243,8 +243,10 @@ fn a_cue_removed_and_added_again_under_its_id_gets_its_new_kids_and_loses_the_ol
         let delta = replace(&mut ws, &mut index, pos(None, 1), new);
         let mut gone = delta.gone.clone();
         gone.sort();
-        assert_eq!(gone, vec![id(3), id(4), id(5)]);
-        assert_eq!(delta.fresh.len(), kids.len());
+        assert_eq!(gone, vec![id(2), id(3), id(4), id(5)]);
+        // The re-added cue is new too, with whatever it holds now.
+        assert!(delta.fresh.contains(&id(2)));
+        assert_eq!(delta.fresh.len(), kids.len() + 1);
         for kid in kids {
             assert!(index.contains(id(kid)));
         }
@@ -259,7 +261,51 @@ fn a_cue_removed_and_added_again_under_its_id_gets_its_new_kids_and_loses_the_ol
         pos(None, 0),
         cue(1, group(vec![memo(9)])),
     );
-    assert_eq!(delta.fresh, vec![id(9)]);
+    let mut fresh = delta.fresh.clone();
+    fresh.sort();
+    assert_eq!(fresh, vec![id(1), id(9)]);
+}
+
+#[test]
+fn a_re_added_group_is_new_all_the_way_down_even_where_ids_are_kept() {
+    // Nested: group 2 { 3, group 4 { 5 } } becomes group 2 { 3, group 4 { 7 } }.
+    let mut ws = sample();
+    let mut index = CueIndex::build(&ws);
+    let new = cue(2, group(vec![memo(3), cue(4, group(vec![memo(7)]))]));
+    let delta = replace(&mut ws, &mut index, pos(None, 1), new);
+    let mut gone = delta.gone.clone();
+    gone.sort();
+    let mut fresh = delta.fresh.clone();
+    fresh.sort();
+    assert_eq!(gone, vec![id(2), id(3), id(4), id(5)]);
+    assert_eq!(fresh, vec![id(2), id(3), id(4), id(7)]);
+    assert!(!index.contains(id(5)) && index.contains(id(7)));
+    // The very same ids and shape: every cue is still reported new (its content may differ).
+    let new = cue(2, group(vec![memo(3), cue(4, group(vec![memo(7)]))]));
+    let delta = replace(&mut ws, &mut index, pos(None, 1), new);
+    assert_eq!(delta.fresh.len(), 4);
+    assert_eq!(delta.gone.len(), 4);
+}
+
+#[test]
+fn an_added_group_that_holds_ids_removed_in_the_same_edit_takes_them_as_new() {
+    // Group 2 { 3, group 4 { 5 } } removed; group 8 { 5 } added: 5 changes container.
+    let mut ws = sample();
+    let mut index = CueIndex::build(&ws);
+    let command = Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: id(2) },
+            Command::AddCue {
+                at: pos(None, 1),
+                cue: cue(8, group(vec![memo(5)])),
+                auto_number: false,
+            },
+        ],
+    };
+    ws.apply(command.clone()).unwrap();
+    let delta = follow(&mut index, &ws, &command);
+    assert!(delta.gone.contains(&id(5)) && delta.fresh.contains(&id(5)));
+    assert!(delta.fresh.contains(&id(8)));
 }
 
 #[test]
@@ -272,7 +318,7 @@ fn a_changed_set_of_cue_lists_rebuilds() {
         cues: vec![memo(10)],
     });
     assert_eq!(
-        index.reconcile(&ws, &BTreeSet::new(), &BTreeSet::new()),
+        index.reconcile(&ws, &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new()),
         IndexChange::Rebuilt
     );
     assert!(index.matches(&ws));

@@ -127,8 +127,8 @@ impl OfflineShow {
         }
     }
 
-    /// Waits until every probe and preload has answered (or was given up on by the watchdog) and the
-    /// answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
+    /// Waits until every probe and preload has answered (or was given up on by the watchdog)
+    /// and the answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
     pub fn settle_media(&mut self) {
         let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
         // `probes_pending` scans every probe entry: ask once per batch of answers, not once

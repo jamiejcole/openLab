@@ -293,17 +293,90 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
     }
 }
 
-/// Operations 0–10 are the commands; 100 + n is `SetCueProperty` with property variant n.
-/// A transaction that removes a cue and adds a cue with the same id back (anywhere): as a
-/// group with other children, as a plain cue, or as a copy of the removed one (what undoing a
-/// removal does). The index and the problem bookkeeping must not keep the old cue's place.
+/// Every id under `cue` (itself first), in order.
+fn subtree(cue: &Cue) -> Vec<CueId> {
+    let mut out = vec![cue.id];
+    for c in cue.children() {
+        out.extend(subtree(c));
+    }
+    out
+}
+
+/// `cue` and every cue below it.
+fn flat(cue: &Cue) -> Vec<&Cue> {
+    let mut out = vec![cue];
+    for c in cue.children() {
+        out.extend(flat(c));
+    }
+    out
+}
+
+/// How deep the groups below `cue` nest (a plain cue is 0, a group of plain cues 1).
+fn depth(cue: &Cue) -> usize {
+    cue.children()
+        .iter()
+        .map(|c| 1 + depth(c))
+        .max()
+        .unwrap_or(0)
+}
+
+/// A copy of `cue` with the same ids and other content: some descendants get another kind,
+/// another descendant cue under a group's id, or a group of their own.
+fn rewrite(cue: &Cue, ws: &Workspace, g: &mut Gen, p: &Pick, salt: u32) -> Cue {
+    let mut out = cue.clone();
+    if let CueKind::Group { children, .. } = &mut out.kind {
+        for (i, child) in children.iter_mut().enumerate() {
+            let pick =
+                p.a.wrapping_add(salt.wrapping_mul(7))
+                    .wrapping_add(i as u32 * 3)
+                    % 5;
+            let rewritten = rewrite(child, ws, g, p, salt + 1);
+            *child = match (pick, &rewritten.kind) {
+                (0, _) => rewritten,
+                (1 | 2, CueKind::Group { .. }) => rewritten,
+                (1, _) => common::cue(rewritten.id.0.as_u128(), kind(ws, p)),
+                // The same id, now a group around a new cue.
+                (3, _) => common::cue(
+                    rewritten.id.0.as_u128(),
+                    group(vec![common::cue(g.fresh().0.as_u128(), kind(ws, p))]),
+                ),
+                // A fresh cue where it was, the old id gone.
+                _ => common::cue(g.fresh().0.as_u128(), kind(ws, p)),
+            };
+        }
+    }
+    out
+}
+
+/// A transaction that removes a cue and adds back a cue with its id (anywhere): a group with
+/// other children, a plain cue, a copy of the removed cue (what undoing a removal does), a
+/// nested group that reuses the old descendants' ids with other content, or the old subtree
+/// rewritten in place (same ids, changed kinds). The index, the problem bookkeeping and the
+/// media catalog must treat the whole subtree as new.
 fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
     let ids = all_ids(ws);
-    let id = choose(&ids, p.a)?;
+    // Half of the time a group (a nested one when there is one), where the shapes are.
+    let groups: Vec<CueId> = ids
+        .iter()
+        .copied()
+        .filter(|&i| ws.find_cue(i).is_some_and(|c| depth(c) >= 1))
+        .collect();
+    let deep: Vec<CueId> = groups
+        .iter()
+        .copied()
+        .filter(|&i| ws.find_cue(i).is_some_and(|c| depth(c) >= 2))
+        .collect();
+    let id = match p.b % 5 {
+        3 | 4 => choose(&deep, p.a).or_else(|| choose(&groups, p.a)),
+        _ => None,
+    }
+    .or_else(|| choose(&ids, p.a))?;
+    let old = ws.find_cue(id)?;
     let mut evolving = ws.clone();
     let remove = Command::RemoveCue { id };
     evolving.apply(remove.clone()).ok()?;
-    let new = match p.b % 3 {
+    let reuse = subtree(old);
+    let new = match p.b % 5 {
         0 => {
             let kids = (0..p.c % 3)
                 .map(|_| common::cue(g.fresh().0.as_u128(), kind(&evolving, p)))
@@ -311,7 +384,22 @@ fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
             common::cue(id.0.as_u128(), group(kids))
         }
         1 => common::cue(id.0.as_u128(), kind(&evolving, p)),
-        _ => ws.find_cue(id)?.clone(),
+        2 => old.clone(),
+        3 => {
+            // group id { group (old id) { leaf (old id), leaf } }: two levels, ids kept.
+            let mut pick = |n: usize| reuse.get(n).copied().unwrap_or_else(|| g.fresh());
+            let (inner, leaf) = (pick(1), pick(2));
+            let leaf = common::cue(leaf.0.as_u128(), kind(&evolving, p));
+            let other = common::cue(g.fresh().0.as_u128(), kind(&evolving, p));
+            common::cue(
+                id.0.as_u128(),
+                group(vec![common::cue(
+                    inner.0.as_u128(),
+                    group(vec![leaf, other]),
+                )]),
+            )
+        }
+        _ => rewrite(old, &evolving, g, p, 0),
     };
     let add = Command::AddCue {
         at: position(&evolving, p.c, p.d),
@@ -322,6 +410,7 @@ fn readd(ws: &Workspace, g: &mut Gen, p: &Pick) -> Option<Vec<Command>> {
     Some(vec![remove, add])
 }
 
+/// Operations 0–10 are the commands; 100 + n is `SetCueProperty` with property variant n.
 fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
     let ids = all_ids(ws);
     let id = choose(&ids, p.a);
@@ -716,7 +805,7 @@ proptest! {
                 .copied()
                 .collect();
             let touched = structural.iter().chain(&fp.edited).copied().collect();
-            let change = index.reconcile(&ws, &touched, &structural);
+            let change = index.reconcile(&ws, &touched, &structural, &fp.added);
             prop_assert!(matches!(change, IndexChange::Delta(_)));
             prop_assert!(index.matches(&ws), "index differs from a rebuild");
         }
@@ -888,4 +977,68 @@ fn the_generator_exercises_every_command() {
             "op {op} never refused"
         );
     }
+}
+
+/// `readd` makes the shapes that are hard to follow: groups two deep that keep descendant ids
+/// with other content, and ids that change from group to plain cue and back.
+#[test]
+fn readd_reuses_descendant_ids_with_changed_content_and_nests() {
+    let nested = |n: u128| {
+        common::cue(
+            n,
+            group(vec![
+                common::cue(n + 1, group(vec![common::cue(n + 2, CueKind::Memo)])),
+                common::cue(n + 3, CueKind::Memo),
+            ]),
+        )
+    };
+    let ws = common::workspace(vec![nested(10), nested(20), common::cue(1, CueKind::Memo)]);
+    let mut g = Gen { next: 5000 };
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 16) as u32
+    };
+    let (mut nested_kept, mut changed_kept, mut to_plain, mut applied) = (0, 0, 0, 0);
+    for _ in 0..600 {
+        let p = Pick {
+            op: 10,
+            a: next(),
+            b: next(),
+            c: next(),
+            d: next(),
+        };
+        let Some(commands) = readd(&ws, &mut g, &p) else {
+            continue;
+        };
+        let [Command::RemoveCue { id }, Command::AddCue { cue, .. }] = commands.as_slice() else {
+            panic!("not a re-add");
+        };
+        assert_eq!(cue.id, *id);
+        applied += 1;
+        let Some(old) = ws.find_cue(*id) else {
+            continue;
+        };
+        let before: std::collections::HashMap<CueId, &Cue> =
+            flat(old).into_iter().map(|c| (c.id, c)).collect();
+        let kept: Vec<&Cue> = flat(cue)
+            .into_iter()
+            .filter(|c| c.id != *id && before.contains_key(&c.id))
+            .collect();
+        nested_kept += usize::from(depth(cue) >= 2 && !kept.is_empty());
+        changed_kept += usize::from(kept.iter().any(|c| before[&c.id].kind != c.kind));
+        to_plain += usize::from(depth(old) >= 1 && depth(cue) == 0);
+    }
+    assert!(applied > 100, "only {applied} re-adds apply");
+    assert!(
+        nested_kept >= 20,
+        "nested re-adds keeping ids: {nested_kept}"
+    );
+    assert!(
+        changed_kept >= 20,
+        "kept ids with other content: {changed_kept}"
+    );
+    assert!(to_plain >= 5, "groups re-added as plain cues: {to_plain}");
 }
