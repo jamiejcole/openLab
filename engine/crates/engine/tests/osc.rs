@@ -1744,7 +1744,8 @@ fn connect_says_ok_and_the_rights_granted_and_a_wrong_passcode_is_ok_badpass() {
             "address": format!("/workspace/{}/connect", ws()),
         })
     );
-    // 1234 sent as an integer is accepted like the string.
+    // 1234 sent as a number never matches (QLab sends the passcode as a string, and a leading
+    // zero would be lost); it is a wrong passcode.
     let by_int = send(
         &mut osc,
         &show,
@@ -1752,10 +1753,7 @@ fn connect_says_ok_and_the_rights_granted_and_a_wrong_passcode_is_ok_badpass() {
         T0,
         &msg("/connect", vec![OscType::Int(1234)]),
     );
-    assert_eq!(
-        reply_json(&by_int.replies[0])["data"],
-        "ok:view|edit|control"
-    );
+    assert_eq!(reply_json(&by_int.replies[0])["data"], "badpass");
     // With no passcode set the grant is the same.
     let open = Show::open();
     let out = send(&mut osc, &open, udp(), T0, &msg("/connect", vec![]));
@@ -3838,13 +3836,68 @@ fn a_trigger_shaped_like_a_read_still_needs_control() {
         let mut osc = quiet_osc();
         let out = send(&mut osc, &show, peer, T0, &trigger);
         assert!(out.inputs.is_empty(), "{out:?}");
-        assert!(was_denied(&out), "{out:?}");
+        // The same `error` as a read of a cue that does not exist, so a peer without Control
+        // cannot tell a trigger from a missing cue.
+        let missing = send(&mut osc, &show, peer, T0, &msg("/cue/qq*/name", vec![]));
+        assert_eq!(out.replies.len(), 1, "{out:?}");
+        assert_eq!(
+            reply_json(&out.replies[0])["status"],
+            reply_json(&missing.replies[0])["status"]
+        );
+        assert_eq!(reply_json(&out.replies[0])["status"], "error");
     }
     // With Control it starts the cue.
     let mut osc = quiet_osc();
     connect_status(&mut osc, &show, udp(), T0, VIEW_CONTROL);
     let out = send(&mut osc, &show, udp(), T0, &trigger);
     assert_eq!(out.inputs.len(), 1);
+}
+
+#[test]
+fn a_correct_passcode_does_not_reset_the_count_of_wrong_ones() {
+    // 4 wrong, 1 right, repeated: the 5th wrong in total locks the address out.
+    let show = Show::with_access(table(OscRights::NONE));
+    let mut osc = quiet_osc();
+    for _ in 0..4 {
+        assert_eq!(
+            connect_status(&mut osc, &show, udp(), T0, "0000"),
+            "badpass"
+        );
+    }
+    assert_eq!(connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY), "ok");
+    assert_eq!(
+        connect_status(&mut osc, &show, udp(), T0, "0000"),
+        "badpass"
+    );
+    // That was the fifth: the address is locked out, the right passcode included.
+    assert_eq!(connect_status(&mut osc, &show, udp(), T0, "0000"), "denied");
+    assert_eq!(
+        connect_status(&mut osc, &show, udp(), T0, EVERYTHING),
+        "denied"
+    );
+}
+
+#[test]
+fn ending_sessions_keeps_the_known_addresses_and_a_reset_forgets_them() {
+    let show = Show::with_access(table(OscRights::NONE));
+    let mut osc = quiet_osc();
+    connect_status(&mut osc, &show, udp(), T0, EVERYTHING);
+    assert_eq!(osc.known_ips(), 1);
+    osc.end_sessions();
+    assert!(!osc.is_connected(udp()));
+    assert_eq!(osc.known_ips(), 1);
+    osc.reset_sessions();
+    assert_eq!(osc.known_ips(), 0);
+}
+
+#[test]
+fn a_new_workspaces_passcode_never_starts_with_zero() {
+    for seed in [0, 7, 999, 8999, 9000, 9999, 10_000, u32::MAX] {
+        let access = OscAccess::new_workspace(seed);
+        let code = &access.passcodes[0].passcode;
+        assert_eq!(code.len(), 4, "{seed}");
+        assert!(!code.starts_with('0') && code.bytes().all(|b| b.is_ascii_digit()));
+    }
 }
 
 #[test]
@@ -4000,7 +4053,7 @@ fn connect_replies_with_the_rights_of_the_passcode_given() {
         let reply = reply_json(&out.replies[0]);
         assert_eq!(reply["status"], "ok");
         assert_eq!(reply["data"], expected);
-        // An integer argument is the same passcode as its text.
+        // A number never matches, whatever its digits.
         let out = send(
             &mut osc,
             &show,
@@ -4008,7 +4061,7 @@ fn connect_replies_with_the_rights_of_the_passcode_given() {
             T0,
             &msg("/connect", vec![OscType::Int(passcode.parse().unwrap())]),
         );
-        assert_eq!(reply_json(&out.replies[0])["data"], expected);
+        assert_eq!(reply_json(&out.replies[0])["data"], "badpass");
     }
 }
 

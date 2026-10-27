@@ -979,8 +979,8 @@ pub fn passcode_arg(args: &[OscType]) -> Option<String> {
     match args {
         [] => None,
         [OscType::String(s)] => Some(s.clone()),
-        [OscType::Int(i)] => Some(i.to_string()),
-        [OscType::Long(i)] => Some(i.to_string()),
+        // Numbers never match: a passcode with a leading zero cannot be told from a shorter one,
+        // and QLab sends the passcode as a string.
         _ => Some(String::new()),
     }
 }

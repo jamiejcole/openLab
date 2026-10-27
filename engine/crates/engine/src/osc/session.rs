@@ -43,7 +43,8 @@ pub const MAX_PEERS: usize = 1024;
 /// A UDP peer silent this long is forgotten (there is no disconnect on UDP): its `/connect` and
 /// its update subscription end, as in QLab 5 (measured: gone after 60 s of silence).
 pub const UDP_IDLE: Duration = Duration::from_secs(60);
-/// Wrong passcodes from one IP, while not connected, before that IP is locked out.
+/// Wrong passcodes from one IP (connected or not; a correct one does not reset the count)
+/// before that IP is locked out.
 pub const MAX_BAD_PASSCODES: u32 = 5;
 /// How long a lockout lasts; attempts during it are refused without being checked.
 pub const LOCKOUT: Duration = Duration::from_secs(30);
@@ -53,7 +54,7 @@ pub const LOCKOUT: Duration = Duration::from_secs(30);
 pub const GLOBAL_MAX_FAILURES: u32 = 50;
 pub const GLOBAL_WINDOW: Duration = Duration::from_secs(60);
 /// Addresses remembered as having connected. A correct passcode from one of them passes the
-/// lockouts above.
+/// global lockout above, never its own address's.
 pub const MAX_KNOWN_IPS: usize = 64;
 
 /// Sessions held by peers that have no rights (a bare `/updates` or `/udpReplyPort`). Past this
@@ -249,7 +250,6 @@ impl Sessions {
         if !self.ensure(peer, now) {
             return ConnectResult::TableFull;
         }
-        self.failures.remove(&peer.ip());
         self.remember(peer.ip());
         if let Some(session) = self.peers.get_mut(&peer) {
             session.rights = Some(rights);
@@ -381,6 +381,12 @@ impl Sessions {
     pub fn clear(&mut self) {
         self.peers.clear();
         self.known.clear();
+    }
+
+    /// Ends every session but keeps the known addresses (the passcode table changed: consoles
+    /// must connect again, and the global budget must not lock them out meanwhile).
+    pub fn end_all(&mut self) {
+        self.peers.clear();
     }
 
     /// How many addresses are remembered as having connected.

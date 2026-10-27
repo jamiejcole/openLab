@@ -210,6 +210,12 @@ impl Osc {
         self.sessions.clear();
     }
 
+    /// Drops every `/connect` and subscription but keeps the known addresses (the passcode
+    /// table changed within the same workspace).
+    pub fn end_sessions(&mut self) {
+        self.sessions.end_all();
+    }
+
     /// Handles one UDP datagram from `peer` (`now` is monotonic time since the engine started).
     pub fn handle_datagram(
         &mut self,
@@ -430,8 +436,10 @@ impl Osc {
             self.stats.matches_capped += 1;
         }
         if resolved.trigger && !rights.allows(OscRight::Control) {
-            self.stats.denied += 1;
-            self.push_reply(&ask, &Reply::denied().scoped(Scope::Workspace), out);
+            // The same `error` as an address nothing answers to, so a peer without Control
+            // cannot tell a trigger from a missing cue.
+            self.stats.rejected += 1;
+            self.push_reply(&ask, &Reply::error(), out);
             return;
         }
         for input in resolved.inputs {
