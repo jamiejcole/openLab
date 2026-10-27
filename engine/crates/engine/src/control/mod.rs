@@ -10,6 +10,7 @@
 
 mod checks;
 pub mod devices;
+mod docs;
 mod inbox;
 mod media;
 pub mod offline;
@@ -40,14 +41,17 @@ use openlab_core::{
     MediaStatus, PatchResolution, SampleTime, Workspace, model_changes, seconds_to_samples,
 };
 
+pub use docs::{DocAnswer, EpochClock, Loaded, ManualClock, SaveHook};
 pub use inbox::{
     Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, ProbeAnswer, ReplyRx, ReplyTx,
     outbound_channel, reply_channel,
 };
 pub use media::PROBE_WORKERS;
 
+use crate::persist::AppDirs;
 use checks::PlanChecks;
 use devices::{DEVICE_LOSS_GRACE, Device, DeviceAnswer, DeviceEvent};
+use docs::Docs;
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
 use patches::Patches;
@@ -122,6 +126,13 @@ pub struct ControlConfig {
     pub preload_budget: u64,
     pub prime_cues: usize,
     pub max_primes: usize,
+    /// Where backups, autosaves and the settings file live. `None`: nothing can be saved
+    /// (saves answer `io`), autosave and recovery are off.
+    pub app_dirs: Option<AppDirs>,
+    /// Wall-clock milliseconds for backup names and autosave pacing (tests inject one).
+    pub clock: EpochClock,
+    /// Called on the writer thread before each save (tests only).
+    pub save_hook: Option<SaveHook>,
     /// How files are probed (tests inject a stand-in).
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
@@ -140,6 +151,9 @@ impl ControlConfig {
             mixer_patches: 1,
             streamer: StreamerConfig::new(sample_rate),
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
+            app_dirs: None,
+            clock: EpochClock::system(),
+            save_hook: None,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
@@ -189,6 +203,7 @@ pub struct Control {
     /// outlasted its grace period).
     playable: Vec<DeviceInfo>,
     out: Outbound,
+    docs: Docs,
     backend: Backend,
     config: ControlConfig,
     rate: NonZeroU32,
@@ -261,6 +276,7 @@ impl Control {
             .as_ref()
             .and_then(|p| p.parent())
             .map(PathBuf::from);
+        let docs = Docs::new(&config, inbox.clone())?;
         let media = MediaCatalog::new(
             inbox,
             show_dir,
@@ -286,6 +302,7 @@ impl Control {
             patches,
             playable,
             out: Outbound::new(outbound),
+            docs,
             backend,
             config,
             rate,
@@ -343,6 +360,7 @@ impl Control {
             Inbox::Client { message, reply } => return self.client(message, &reply),
             Inbox::Probe(answer) => self.probe_answer(answer),
             Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Log { level, message } => self.log(level, message),
             Inbox::Shutdown => return Flow::Shutdown,
         }
@@ -398,6 +416,7 @@ impl Control {
             self.warnings_dirty = false;
             self.refresh_warnings();
         }
+        self.docs_tick();
         self.health();
         self.mixer.pump();
     }
@@ -497,8 +516,7 @@ impl Control {
                         }),
                     },
                 ),
-                // Documents are M4.4.
-                _ => reply(
+                Request::Relink { .. } => reply(
                     to,
                     ServerMessage::Result {
                         id,
@@ -508,6 +526,7 @@ impl Control {
                         )),
                     },
                 ),
+                request => self.doc_request(id, request, to),
             },
             ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
             // The network layer handles the handshake and closing (M4.3).
@@ -1254,7 +1273,7 @@ impl Control {
     /// The workspace-level notices in force: damaged media, preloads over budget, cues whose
     /// slices cannot play, audio-thread allocations. Sent when the list changes.
     fn refresh_warnings(&mut self) {
-        let mut list = Vec::new();
+        let mut list = self.docs.notices.clone();
         let mut damaged: Vec<(&str, usize)> = self.media.damaged().collect();
         damaged.sort_unstable();
         for (path, n) in damaged {

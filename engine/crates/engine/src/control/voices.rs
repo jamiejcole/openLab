@@ -1113,6 +1113,17 @@ impl Voices {
         self.recs.is_empty() && self.by_run.is_empty() && self.aliases.is_empty()
     }
 
+    /// Forgets every voice, alias and prime (a new workspace replaces the engine they belong
+    /// to). The mixer is stopped separately; its late events find no record and are ignored. Ids
+    /// are never reused, so they cannot be taken for the new workspace's voices.
+    pub fn forget_all(&mut self) {
+        self.recs.clear();
+        self.by_run.clear();
+        self.aliases.clear();
+        self.primes.clear();
+        self.gone.clear();
+    }
+
     /// Lets go of every primed stream (a panic, shutdown).
     pub fn clear_primes(&mut self) {
         self.primes.clear();
