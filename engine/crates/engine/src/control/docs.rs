@@ -14,7 +14,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -217,6 +217,16 @@ struct PendingSave {
 
 type AutosaveRx = Receiver<Result<Option<PathBuf>, PersistError>>;
 
+/// What the control loop and one document worker tell each other.
+#[derive(Default)]
+struct WorkerFlags {
+    /// The control loop gave up on the worker's read: it leaves once the read returns.
+    abandoned: AtomicBool,
+    /// The worker is inside a job (set before the read, cleared once its answer is in the
+    /// inbox): a timeout while it is not means the answer is on its way, not that it is stuck.
+    busy: AtomicBool,
+}
+
 type ClearRx = Receiver<Result<(), PersistError>>;
 
 /// Document state of the control loop.
@@ -226,8 +236,10 @@ pub(super) struct Docs {
     /// Where new workers take jobs from: every worker shares one queue, so the jobs behind a
     /// stuck read go to the replacement.
     queue: crossbeam_channel::Receiver<DocJob>,
-    /// The current worker's "abandoned" flag.
-    worker: Arc<AtomicBool>,
+    /// The current worker's flags.
+    worker: Arc<WorkerFlags>,
+    /// Answers the workers have put in the inbox, ever (tests wait on it).
+    answered: Arc<AtomicU64>,
     /// Abandoned workers still stuck in their read.
     stuck: Arc<AtomicUsize>,
     dirs: Option<AppDirs>,
@@ -269,7 +281,8 @@ impl Docs {
             writer,
             jobs,
             queue,
-            worker: Arc::new(AtomicBool::new(false)),
+            worker: Arc::new(WorkerFlags::default()),
+            answered: Arc::new(AtomicU64::new(0)),
             stuck: Arc::new(AtomicUsize::new(0)),
             dirs: config.app_dirs.clone(),
             inbox,
@@ -296,8 +309,8 @@ impl Docs {
     /// not hang shutdown; the thread ends once the control loop (the job sender) is gone and
     /// its current job is done.
     fn spawn_worker(&mut self) -> std::io::Result<()> {
-        let abandoned = Arc::new(AtomicBool::new(false));
-        self.worker = Arc::clone(&abandoned);
+        let flags = Arc::new(WorkerFlags::default());
+        self.worker = Arc::clone(&flags);
         let (queue, dirs, inbox, hook, stuck) = (
             self.queue.clone(),
             self.dirs.clone(),
@@ -305,6 +318,7 @@ impl Docs {
             self.hook.clone(),
             Arc::clone(&self.stuck),
         );
+        let answered = Arc::clone(&self.answered);
         thread::Builder::new()
             .name("openlab-docs".into())
             .spawn(move || {
@@ -313,8 +327,9 @@ impl Docs {
                     dirs.as_ref(),
                     &inbox,
                     hook.as_ref(),
-                    &abandoned,
+                    &flags,
                     &stuck,
+                    &answered,
                 )
             })
             .map(|_| ())
@@ -336,10 +351,12 @@ fn work(
     dirs: Option<&AppDirs>,
     inbox: &Sender<Inbox>,
     hook: Option<&DocHook>,
-    abandoned: &AtomicBool,
+    flags: &WorkerFlags,
     stuck: &AtomicUsize,
+    answered: &AtomicU64,
 ) {
     while let Ok(job) = jobs.recv() {
+        flags.busy.store(true, Ordering::SeqCst);
         if let Some(hook) = hook {
             (hook.0)();
         }
@@ -360,8 +377,10 @@ fn work(
         };
         // The control loop gave up on the request while this was reading: its answer is stale
         // (it has another ticket), and this thread leaves the work to the replacement.
-        let gone = abandoned.load(Ordering::SeqCst);
+        let gone = flags.abandoned.load(Ordering::SeqCst);
         let sent = inbox.send(Inbox::Doc(answer)).is_ok();
+        answered.fetch_add(1, Ordering::SeqCst);
+        flags.busy.store(false, Ordering::SeqCst);
         if gone {
             // After the send: a count of zero means the stale answer is already in the inbox.
             stuck.fetch_sub(1, Ordering::SeqCst);
@@ -734,7 +753,7 @@ impl Control {
                 to,
                 id,
                 ErrorCode::Io,
-                "reading files is stuck (a volume has stopped answering); restart openLab",
+                "reading files is stuck: a volume has stopped answering. Try again when it answers, or restart openLab",
             );
             return false;
         }
@@ -903,7 +922,7 @@ impl Control {
         self.history = History::new();
         self.checks = super::checks::PlanChecks::default();
         self.config.show_path = path;
-        self.media.reset(self.show_dir());
+        self.media.reset(self.show_dir(), &self.ws);
         self.docs.notices = notices;
         self.revision += 1;
         self.saved_revision = if dirty {
@@ -1126,7 +1145,7 @@ impl Control {
                 changed = self.ws.apply(command).is_ok();
             }
         }
-        self.media.reset(self.show_dir());
+        self.media.reset(self.show_dir(), &self.ws);
         if changed {
             self.history = History::new();
             self.revision += 1;
@@ -1163,6 +1182,19 @@ impl Control {
         {
             return;
         }
+        // The worker has answered and the answer is in the inbox, not yet applied: it is not
+        // stuck. Leave the request to that answer.
+        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
+        let elapsed = self
+            .config
+            .clock
+            .now_ms()
+            .saturating_sub(pending.started_ms);
+        if !self.docs.worker.busy.load(Ordering::SeqCst)
+            && elapsed < self.docs.timeout_ms.saturating_mul(2)
+        {
+            return;
+        }
         let Some(pending) = self.docs.pending.take() else {
             return;
         };
@@ -1175,7 +1207,7 @@ impl Control {
                 self.docs.timeout_ms / 1000
             ),
         );
-        self.docs.worker.store(true, Ordering::SeqCst);
+        self.docs.worker.abandoned.store(true, Ordering::SeqCst);
         self.docs.stuck.fetch_add(1, Ordering::SeqCst);
         if let Err(e) = self.docs.spawn_worker() {
             self.log(
@@ -1260,6 +1292,11 @@ impl Control {
         self.docs.autosave = Some(rx);
         self.docs.autosaved_revision = Some(self.revision);
         self.docs.last_autosave = Some(now_ms);
+    }
+
+    /// Answers the document workers have posted so far (tests wait for one to be in the inbox).
+    pub fn doc_answers_posted(&self) -> u64 {
+        self.docs.answered.load(Ordering::SeqCst)
     }
 
     /// Document workers abandoned in a stalled read that have not returned yet.
