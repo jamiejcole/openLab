@@ -12,7 +12,7 @@ use std::thread;
 
 use common::*;
 use openlab_core::Workspace;
-use openlab_engine::persist::{JobKind, PersistError, SaveReport, SaveWriter};
+use openlab_engine::persist::{JobKind, MAX_PENDING_TARGETS, PersistError, SaveReport, SaveWriter};
 
 struct Gate {
     writer: SaveWriter,
@@ -193,4 +193,145 @@ fn queue_stays_bounded_under_a_stuck_disk() {
     gate.release.send(()).unwrap();
     first.recv().unwrap().unwrap();
     assert!(answers[1999].recv().unwrap().unwrap().is_some());
+}
+
+fn target(env: &Env, n: u64) -> (Workspace, Option<std::path::PathBuf>) {
+    let mut ws = named(&format!("w{n}"));
+    ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(u128::from(n)));
+    (ws, Some(env.show_dir().join(format!("T{n}.openlab"))))
+}
+
+#[test]
+fn autosaves_of_different_targets_are_both_written() {
+    let env = env();
+    let gate = gated(&env);
+    let first = occupy(&gate, &env);
+    let (a, pa) = target(&env, 1);
+    let (b, pb) = target(&env, 2);
+    let ra = gate.writer.autosave(a, pa, 2);
+    let rb = gate.writer.autosave(b, pb, 2);
+    assert!(ra.try_recv().is_err() && rb.try_recv().is_err());
+    for _ in 0..3 {
+        gate.release.send(()).unwrap();
+    }
+    first.recv().unwrap().unwrap();
+    assert!(ra.recv().unwrap().unwrap().unwrap().exists());
+    assert!(rb.recv().unwrap().unwrap().unwrap().exists());
+}
+
+#[test]
+fn a_newer_autosave_replaces_only_its_own_target() {
+    let env = env();
+    let gate = gated(&env);
+    let first = occupy(&gate, &env);
+    let (a, pa) = target(&env, 1);
+    let (b, pb) = target(&env, 2);
+    let mut a2 = a.clone();
+    a2.name = "a-new".into();
+    let ra = gate.writer.autosave(a, pa.clone(), 2);
+    let rb = gate.writer.autosave(b, pb, 2);
+    let ra2 = gate.writer.autosave(a2, pa, 3);
+    assert!(matches!(ra.try_recv().unwrap(), Ok(None)));
+    assert!(rb.try_recv().is_err());
+    for _ in 0..3 {
+        gate.release.send(()).unwrap();
+    }
+    first.recv().unwrap().unwrap();
+    assert!(rb.recv().unwrap().unwrap().is_some());
+    let path = ra2.recv().unwrap().unwrap().unwrap();
+    assert!(std::fs::read_to_string(path).unwrap().contains("a-new"));
+}
+
+#[test]
+fn clear_for_one_target_leaves_another_targets_pending_and_in_flight_autosaves() {
+    let env = env();
+    let gate = gated(&env);
+    let (a, pa) = target(&env, 1);
+    let (b, pb) = target(&env, 2);
+    let (c, pc) = target(&env, 3);
+    // B is in flight (stuck in the hook), A and C are pending, then A's is cleared.
+    let rb = gate.writer.autosave(b.clone(), pb.clone(), 2);
+    assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+    let ra = gate.writer.autosave(a.clone(), pa.clone(), 2);
+    let rc = gate.writer.autosave(c.clone(), pc.clone(), 2);
+    let clear = gate.writer.clear_recovery(a.id, pa.clone());
+    assert!(matches!(ra.try_recv().unwrap(), Ok(None)));
+    for _ in 0..2 {
+        gate.release.send(()).unwrap();
+    }
+    assert!(rb.recv().unwrap().unwrap().is_some());
+    assert!(rc.recv().unwrap().unwrap().is_some());
+    clear.recv().unwrap().unwrap();
+    assert!(!env.dirs.recovery_path(a.id, pa.as_deref()).exists());
+    assert!(env.dirs.recovery_path(b.id, pb.as_deref()).exists());
+    assert!(env.dirs.recovery_path(c.id, pc.as_deref()).exists());
+}
+
+#[test]
+fn clear_runs_after_the_in_flight_write_of_its_own_target() {
+    let env = env();
+    let gate = gated(&env);
+    let (a, pa) = target(&env, 1);
+    let ra = gate.writer.autosave(a.clone(), pa.clone(), 2);
+    assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
+    let clear = gate.writer.clear_recovery(a.id, pa.clone());
+    // The in-flight write is not cancelled; it finishes and is then removed.
+    gate.release.send(()).unwrap();
+    assert!(ra.recv().unwrap().unwrap().is_some());
+    clear.recv().unwrap().unwrap();
+    assert!(!env.dirs.recovery_path(a.id, pa.as_deref()).exists());
+}
+
+#[test]
+fn a_manual_save_of_one_workspace_does_not_cover_anothers_autosave() {
+    let env = env();
+    let gate = gated(&env);
+    let first = occupy(&gate, &env);
+    let (a, pa) = target(&env, 1);
+    let (b, _) = target(&env, 2);
+    let ra = gate.writer.autosave(a.clone(), pa.clone(), 5);
+    let save = gate
+        .writer
+        .save(b, env.show_dir().join("B.openlab"), 2, 20, 9);
+    for _ in 0..3 {
+        gate.release.send(()).unwrap();
+    }
+    first.recv().unwrap().unwrap();
+    save.recv().unwrap().unwrap();
+    assert!(ra.recv().unwrap().unwrap().is_some());
+    assert!(env.dirs.recovery_path(a.id, pa.as_deref()).exists());
+}
+
+#[test]
+fn targets_beyond_the_cap_are_written_through_not_dropped() {
+    let env = env();
+    let gate = gated(&env);
+    let first = occupy(&gate, &env);
+    let n = MAX_PENDING_TARGETS as u64 + 3;
+    let answers: Vec<_> = (1..=n)
+        .map(|i| {
+            let (w, p) = target(&env, i);
+            gate.writer.autosave(w, p, 2)
+        })
+        .collect();
+    // Nothing was dropped on arrival.
+    assert!(answers.iter().all(|a| a.try_recv().is_err()));
+    for _ in 0..=n {
+        gate.release.send(()).unwrap();
+    }
+    first.recv().unwrap().unwrap();
+    for a in &answers {
+        assert!(a.recv().unwrap().unwrap().is_some());
+    }
+    // Overflowed targets still coalesce with themselves.
+    let (w, p) = target(&env, 1);
+    gate.release.send(()).unwrap();
+    assert!(
+        gate.writer
+            .autosave(w, p, 3)
+            .recv()
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
 }
