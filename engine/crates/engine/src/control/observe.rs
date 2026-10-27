@@ -14,10 +14,28 @@ use openlab_core::protocol::{
 use openlab_core::{CueId, CueListId};
 
 use super::{Control, ControlConfig};
-use crate::diag::{Counters, StatusReporter};
+use crate::diag::{Counters, Peek, StatusReporter};
 
 /// Entries `log_tail` returns when the request names no limit: the whole ring.
 const TAIL_ALL: usize = usize::MAX;
+
+/// The "fell behind the disk" notice is sent at most this often (wall clock): while the writer
+/// is stuck every record is refused, the notice included, so it must not answer itself.
+const DROP_NOTE_GAP_MS: i64 = 10_000;
+/// Trigger records per source per window; the rest are counted and summarised (a chatty
+/// controller must not flush the GO history out of the 1000-entry ring).
+const TRIGGER_WINDOW_MS: i64 = 10_000;
+const TRIGGERS_LOGGED_PER_WINDOW: u32 = 5;
+/// Sources tracked at once; more share one entry.
+const MAX_TRIGGER_SOURCES: usize = 256;
+const OTHER_SOURCES: &str = "other sources";
+
+/// One source's trigger records in the current window.
+struct TriggerWindow {
+    start_ms: i64,
+    logged: u32,
+    suppressed: u64,
+}
 
 /// State of the observers, kept in [`Control`].
 pub(super) struct Observe {
@@ -26,6 +44,9 @@ pub(super) struct Observe {
     status: Option<StatusReporter>,
     /// `log_dropped` already reported to the log.
     seen_log_dropped: u64,
+    /// When the "fell behind" notice was last logged.
+    last_drop_note_ms: Option<i64>,
+    triggers: HashMap<String, TriggerWindow>,
     /// The workspace path last told to the crash hook.
     path: Option<PathBuf>,
 }
@@ -36,6 +57,8 @@ impl Observe {
             states: HashMap::new(),
             status: config.status.map(StatusReporter::new),
             seen_log_dropped: 0,
+            last_drop_note_ms: None,
+            triggers: HashMap::new(),
             path: None,
         }
     }
@@ -44,6 +67,13 @@ impl Observe {
     pub(super) fn reset(&mut self) {
         self.states.clear();
     }
+}
+
+/// True when `then` is at least `gap` ms before `now`; a clock that went back counts as long
+/// enough (it must not silence a notice).
+fn elapsed(now: i64, then: i64, gap: i64) -> bool {
+    let d = now.saturating_sub(then);
+    d < 0 || d >= gap
 }
 
 impl Control {
@@ -119,7 +149,67 @@ impl Control {
     /// An input reached the control thread from a client or OSC peer (sent by the network
     /// layer just before the input itself, on the same channel, so the order holds).
     pub(super) fn observe_trigger(&mut self, source: String, detail: String) {
-        self.record(LogKind::Trigger, LogLevel::Info, detail, None, Some(source));
+        let now = self.config.clock.now_ms();
+        let key = if self.observe.triggers.contains_key(&source)
+            || self.observe.triggers.len() < MAX_TRIGGER_SOURCES
+        {
+            source
+        } else {
+            OTHER_SOURCES.to_owned()
+        };
+        let window = self
+            .observe
+            .triggers
+            .entry(key.clone())
+            .or_insert(TriggerWindow {
+                start_ms: now,
+                logged: 0,
+                suppressed: 0,
+            });
+        let mut summary = 0;
+        if elapsed(now, window.start_ms, TRIGGER_WINDOW_MS) {
+            summary = std::mem::take(&mut window.suppressed);
+            window.start_ms = now;
+            window.logged = 0;
+        }
+        let log_it = window.logged < TRIGGERS_LOGGED_PER_WINDOW;
+        if log_it {
+            window.logged += 1;
+        } else {
+            window.suppressed += 1;
+        }
+        self.note_suppressed(&key, summary);
+        if log_it {
+            self.record(LogKind::Trigger, LogLevel::Info, detail, None, Some(key));
+        }
+    }
+
+    fn note_suppressed(&mut self, source: &str, suppressed: u64) {
+        if suppressed > 0 {
+            self.record(
+                LogKind::Trigger,
+                LogLevel::Info,
+                format!("{suppressed} more input(s) not logged (too many too fast)"),
+                None,
+                Some(source.to_owned()),
+            );
+        }
+    }
+
+    /// Summarises and forgets the sources whose window is over.
+    fn flush_trigger_windows(&mut self, now: i64) {
+        let over: Vec<String> = self
+            .observe
+            .triggers
+            .iter()
+            .filter(|(_, w)| elapsed(now, w.start_ms, TRIGGER_WINDOW_MS))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in over {
+            if let Some(w) = self.observe.triggers.remove(&key) {
+                self.note_suppressed(&key, w.suppressed);
+            }
+        }
     }
 
     /// Cue state changes and warnings the engine produced: starts, stops and failures.
@@ -221,26 +311,35 @@ impl Control {
                     .map(|p| p.to_string_lossy().into_owned()),
             );
         }
+        let now = self.config.clock.now_ms();
+        self.flush_trigger_windows(now);
         let lost = self.config.show_log.dropped();
-        if lost > self.observe.seen_log_dropped {
-            self.observe.seen_log_dropped = lost;
+        if lost > self.observe.seen_log_dropped
+            && self
+                .observe
+                .last_drop_note_ms
+                .is_none_or(|at| elapsed(now, at, DROP_NOTE_GAP_MS))
+        {
+            let more = lost - self.observe.seen_log_dropped;
+            self.observe.last_drop_note_ms = Some(now);
             self.log(
                 LogLevel::Warn,
                 format!(
-                    "the show log fell behind the disk: {lost} record(s) not written so far \
-                     (still available to log_tail)"
+                    "the show log fell behind the disk: {more} more record(s) not written \
+                     ({lost} so far; still available to log_tail)"
                 ),
             );
+            // The notice is a record too, and a full queue refuses it: count it as seen, or
+            // it would be reported again on the next tick, and so on.
+            self.observe.seen_log_dropped = self.config.show_log.dropped();
         }
-        if self.observe.status.is_some() {
-            let counters = self.status_counters();
-            let now = self.config.clock.now_ms();
-            if let Some(status) = self
-                .observe
-                .status
-                .as_mut()
-                .and_then(|s| s.poll(now, &counters))
-            {
+        // Taken out so the counters can borrow `self` while the reporter decides.
+        if let Some(mut reporter) = self.observe.status.take() {
+            // Counters are gathered only when a status is due: the CPU probe is a syscall or a
+            // file read, and the device name a copy.
+            let status = reporter.poll(now, &self.status_peek(), || self.status_counters());
+            self.observe.status = Some(reporter);
+            if let Some(status) = status {
                 let mut message = ServerMessage::Status {
                     status: Box::new(status),
                 };
@@ -250,19 +349,27 @@ impl Control {
         }
     }
 
+    /// What decides whether a status is due: atomics and borrowed fields, no copies.
+    fn status_peek(&self) -> Peek<'_> {
+        let (device_name, device_state) = match self.backend.device() {
+            Some(d) => (Some(d.info().name.as_str()), wire_device_state(d)),
+            None => (None, DeviceState::Absent),
+        };
+        Peek {
+            xruns: self.mixer.xruns(),
+            underrun_frames: self.mixer.underrun_frames(),
+            device_name,
+            device_state,
+        }
+    }
+
     fn status_counters(&self) -> Counters {
         let device = match self.backend.device() {
             Some(d) => {
                 let info = d.info();
                 DeviceStatus {
                     name: Some(info.name.clone()),
-                    state: if d.unrecoverable().is_some() {
-                        DeviceState::Failed
-                    } else if d.is_down() {
-                        DeviceState::Lost
-                    } else {
-                        DeviceState::Ok
-                    },
+                    state: wire_device_state(d),
                     sample_rate: self.rate.get(),
                     block_frames: info.block_frames,
                     channels: u32::from(info.channels),
@@ -293,5 +400,15 @@ impl Control {
     /// The show log, for tests and the host.
     pub fn show_log(&self) -> &crate::diag::ShowLog {
         &self.config.show_log
+    }
+}
+
+fn wire_device_state(d: &super::devices::Device) -> DeviceState {
+    if d.unrecoverable().is_some() {
+        DeviceState::Failed
+    } else if d.is_down() {
+        DeviceState::Lost
+    } else {
+        DeviceState::Ok
     }
 }

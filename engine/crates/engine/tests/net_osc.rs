@@ -538,6 +538,23 @@ async fn an_osc_input_is_announced_to_control_with_its_source_before_the_input()
 }
 
 #[tokio::test]
+async fn an_osc_edit_is_not_announced_as_a_trigger() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/cue/1/name", vec![text("Renamed")])).await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("both inputs", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 2
+        })
+        .await;
+    // Only the transport is a trigger; the edit would otherwise fill the log (DX-02).
+    assert_eq!(
+        *f.control.triggers.lock().unwrap(),
+        vec![("osc 127.0.0.1".to_owned(), "transport go".to_owned())]
+    );
+}
+
+#[tokio::test]
 async fn request_ids_are_reserved() {
     let f = fixture(test_workspace()).await;
     f.udp_send(&msg("/go", vec![])).await;

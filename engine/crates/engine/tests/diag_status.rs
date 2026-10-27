@@ -202,3 +202,32 @@ fn status_names_the_device_and_reports_its_loss_and_the_log_records_it() {
         .unwrap_or_else(|| panic!("{log:#?}"));
     assert!(lost.message.contains("lost"), "{}", lost.message);
 }
+
+/// Calls of [`counting_cpu`].
+static CPU_CALLS: AtomicU64 = AtomicU64::new(0);
+
+fn counting_cpu() -> Option<f64> {
+    CPU_CALLS.fetch_add(1, Ordering::SeqCst);
+    Some(0.0)
+}
+
+#[test]
+fn the_cpu_is_probed_only_when_a_status_goes_out() {
+    let ws = workspace(vec![]);
+    let clock = ManualClock::new(T0);
+    let mut c = config(&ws);
+    c.clock = clock.clock();
+    c.status = Some(StatusConfig::default());
+    c.cpu_probe = counting_cpu;
+    let mut s = show_with(ws, c);
+    let mut sent = 0;
+    for ms in (50..=10_000).step_by(50) {
+        clock.set(T0 + ms);
+        s.tick();
+        sent += statuses(s.take_outbound()).len() as u64;
+    }
+    // The first was sent while the show was built, then one a second.
+    assert_eq!(sent, 11);
+    // One probe per status, never one per tick (200 ticks).
+    assert_eq!(CPU_CALLS.load(Ordering::SeqCst), sent);
+}

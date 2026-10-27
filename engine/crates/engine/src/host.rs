@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use openlab_audio::{
     DeviceError, MAX_PATCHES, Mixer, MixerConfig, OpenRequest, default_output_device_id,
@@ -53,6 +54,9 @@ pub enum HostError {
     Thread(std::io::Error),
 }
 
+/// How long shutdown waits for the log writer to write what is queued.
+const LOG_FLUSH_WAIT: Duration = Duration::from_secs(3);
+
 /// Loads the show at `path` and plays it until stdin is closed.
 pub fn run_show(path: &Path) -> Result<(), HostError> {
     // First, so a crash while starting is captured too. Without an app-support folder the log
@@ -76,9 +80,10 @@ pub fn run_show(path: &Path) -> Result<(), HostError> {
         });
     }
     let result = run_show_with(path, show_log);
-    // The control loop is gone, so its sink is: the writer writes what is queued and ends.
+    // The control loop is gone, so its sink is: the writer writes what is queued and ends. A
+    // disk that hangs must not hold the process up, so the wait is bounded.
     if let Some(writer) = log_writer {
-        writer.finish();
+        writer.finish(LOG_FLUSH_WAIT);
     }
     result
 }

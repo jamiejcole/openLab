@@ -277,6 +277,8 @@ fn log_tail_answers_the_newest_entries_oldest_first_and_all_without_a_limit() {
     assert_eq!(tail(&mut s, Some(0)).0.len(), 0);
     // The ring is bounded: a flood keeps the newest.
     for n in 0..2500 {
+        // A new rate-limit window each time, so every one is recorded.
+        clock.set(T0 + 100_000 + n * 20_000);
         s.deliver(Inbox::Trigger {
             source: "ui".into(),
             detail: format!("flood{n}"),
@@ -291,7 +293,7 @@ fn log_tail_answers_the_newest_entries_oldest_first_and_all_without_a_limit() {
 fn a_stuck_disk_writer_drops_and_counts_while_control_keeps_running() {
     let path = wav(&dc(800, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
-    let (mut c, _) = timed(&ws);
+    let (mut c, clock) = timed(&ws);
     // A writer that never reads: two lines fit, the rest are lost.
     let (sink, _stuck) = LogSink::detached(2);
     c.show_log = ShowLog::new(Some(sink));
@@ -299,6 +301,8 @@ fn a_stuck_disk_writer_drops_and_counts_while_control_keeps_running() {
     s.take_outbound();
     let at = go(&mut s) as usize;
     for n in 0..50 {
+        // A new rate-limit window each time, so every one is recorded.
+        clock.set(T0 + n * 20_000);
         s.deliver(Inbox::Trigger {
             source: "ui".into(),
             detail: format!("t{n}"),
@@ -326,6 +330,119 @@ fn a_stuck_disk_writer_drops_and_counts_while_control_keeps_running() {
 }
 
 #[test]
+fn a_flood_of_triggers_from_one_source_is_bounded_and_summarised_and_gos_are_kept() {
+    let path = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]);
+    let (c, clock) = timed(&ws);
+    let mut s = show_with(ws, c);
+    for n in 0..500 {
+        s.deliver(Inbox::Trigger {
+            source: "osc 10.0.0.9".into(),
+            detail: format!("transport go {n}"),
+        });
+    }
+    // Another source is not held back by the first one's flood.
+    s.deliver(Inbox::Trigger {
+        source: "ui".into(),
+        detail: "transport go".into(),
+    });
+    go(&mut s);
+    let from = |log: &[LogEntry], who: &str| {
+        log.iter()
+            .filter(|e| e.kind == LogKind::Trigger && e.source.as_deref() == Some(who))
+            .count()
+    };
+    let log = events(&mut s);
+    assert_eq!(from(&log, "osc 10.0.0.9"), 5, "the first few, no more");
+    assert_eq!(from(&log, "ui"), 1);
+    assert!(
+        log.iter().any(|e| e.kind == LogKind::Go),
+        "GO is not limited"
+    );
+    // The window ends: the next input from the source says how many were left out.
+    clock.advance(10_000);
+    s.deliver(Inbox::Trigger {
+        source: "osc 10.0.0.9".into(),
+        detail: "transport go".into(),
+    });
+    let log = events(&mut s);
+    let summary = log
+        .iter()
+        .find(|e| e.message.contains("495 more input(s) not logged"))
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    assert_eq!(summary.source.as_deref(), Some("osc 10.0.0.9"));
+    assert_eq!(from(&log, "osc 10.0.0.9"), 5 + 1 + 1);
+}
+
+#[test]
+fn a_source_that_goes_quiet_still_gets_its_suppressed_summary() {
+    let path = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let (c, clock) = timed(&ws);
+    let mut s = show_with(ws, c);
+    for _ in 0..8 {
+        s.deliver(Inbox::Trigger {
+            source: "osc 10.0.0.9".into(),
+            detail: "transport go".into(),
+        });
+    }
+    clock.advance(10_000);
+    s.tick();
+    let log = events(&mut s);
+    assert!(
+        log.iter()
+            .any(|e| e.message.contains("3 more input(s) not logged")),
+        "{log:#?}"
+    );
+}
+
+/// The "fell behind" notice is itself a record a full queue refuses: it must not feed itself.
+#[test]
+fn the_fell_behind_notice_does_not_repeat_itself_while_the_writer_is_stuck() {
+    let path = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let (mut c, clock) = timed(&ws);
+    let (sink, _stuck) = LogSink::detached(2);
+    c.show_log = ShowLog::new(Some(sink));
+    let mut s = show_with(ws, c);
+    s.take_outbound();
+    let notices = |s: &mut OfflineShow| {
+        s.take_outbound()
+            .iter()
+            .filter(|m| {
+                matches!(m, ServerMessage::Log { message, .. } if message.contains("fell behind"))
+            })
+            .count()
+    };
+    for n in 0..10 {
+        s.deliver(Inbox::Trigger {
+            source: "ui".into(),
+            detail: format!("t{n}"),
+        });
+    }
+    // Many control ticks with the queue still full: one notice, not one per tick.
+    s.run(48_000 * 5);
+    assert_eq!(notices(&mut s), 1);
+    // Ten seconds later, still stuck and still losing records: one more, not a stream.
+    clock.advance(11_000);
+    s.deliver(Inbox::Trigger {
+        source: "ui".into(),
+        detail: "again".into(),
+    });
+    s.run(48_000 * 5);
+    assert_eq!(notices(&mut s), 1);
+    let (entries, _) = tail(&mut s, None);
+    let in_ring = entries
+        .iter()
+        .filter(|e| e.message.contains("fell behind"))
+        .count();
+    assert_eq!(
+        in_ring, 2,
+        "the ring keeps the history, not a flood of notices"
+    );
+}
+
+#[test]
 fn records_reach_the_log_file_as_json_lines_in_order() {
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("Logs");
@@ -346,7 +463,7 @@ fn records_reach_the_log_file_as_json_lines_in_order() {
     assert_eq!(dropped, 0);
     // Stopping the control loop ends the writer after it has written what is queued.
     drop(s);
-    writer.finish();
+    assert!(writer.finish(std::time::Duration::from_secs(30)));
     let text = std::fs::read_to_string(logs.join("openlab.log")).unwrap();
     let on_disk: Vec<LogEntry> = text
         .lines()
