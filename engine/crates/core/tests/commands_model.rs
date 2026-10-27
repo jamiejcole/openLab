@@ -1744,3 +1744,124 @@ fn a_merged_step_touching_several_lists_keeps_a_client_in_order() {
         vec![list_id(2), list_id(3), list_id(1)]
     );
 }
+
+#[test]
+fn a_new_invalid_transport_hotkey_is_refused_but_an_undo_may_restore_one() {
+    for key in ["Not A Key", "Space", ""] {
+        let error = refused(
+            &workspace(vec![]),
+            setting(WorkspaceSetting::Hotkey {
+                key: TransportKey::Go,
+                value: Some(Hotkey {
+                    key: key.into(),
+                    modifiers: Modifiers::default(),
+                }),
+            }),
+        );
+        assert!(matches!(error, CommandError::InvalidModel(_)), "{key:?}");
+    }
+    // (b) of the settings case again: undo restores the bad loaded key.
+    let mut ws = with_bad_hotkey();
+    let mut history = History::new();
+    let fix = setting(WorkspaceSetting::Hotkey {
+        key: TransportKey::Go,
+        value: Some(Hotkey {
+            key: "space".into(),
+            modifiers: Modifiers::default(),
+        }),
+    });
+    history.execute(&mut ws, fix).unwrap();
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(history.redo(&mut ws).unwrap());
+}
+
+#[test]
+fn undo_is_not_stuck_on_a_cue_trigger_warning_the_show_was_loaded_with() {
+    let hotkey = |key: &str| Triggers {
+        hotkey: Some(Hotkey {
+            key: key.into(),
+            modifiers: Modifiers::default(),
+        }),
+        osc: None,
+    };
+    let mut loaded = cue(1, CueKind::Memo);
+    loaded.triggers = hotkey("Space");
+    let mut ws = workspace(vec![loaded]);
+    let before = ws.clone();
+    let mut history = History::new();
+    let set = |t: Triggers| Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Triggers { value: t },
+    };
+    history.execute(&mut ws, set(hotkey("space"))).unwrap();
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+    assert!(history.redo(&mut ws).unwrap());
+    // Setting a new bad name is still refused.
+    assert!(history.execute(&mut ws, set(hotkey("Bad Key"))).is_err());
+}
+
+fn order(ws: &Workspace) -> Vec<CueId> {
+    ws.cue_lists[0].cues.iter().map(|c| c.id).collect()
+}
+
+#[test]
+fn a_multi_move_step_after_a_single_move_undoes_to_the_start() {
+    let mut ws = workspace((1..=5).map(|n| cue(n, CueKind::Memo)).collect());
+    let before = ws.clone();
+    let mut history = History::new();
+    let mv = |id, index| Command::MoveCue {
+        id: cue_id(id),
+        index,
+    };
+    let steps = [
+        mv(3, 0),
+        Command::Transaction {
+            commands: vec![mv(4, 0), mv(3, 4)],
+        },
+    ];
+    for step in steps {
+        history
+            .execute_coalescing(&mut ws, step, Some("g"))
+            .unwrap();
+    }
+    history.undo(&mut ws).unwrap();
+    assert_eq!(order(&ws), order(&before));
+    assert_eq!(ws, before);
+}
+
+#[test]
+fn a_kind_a_later_command_of_the_same_step_needs_is_not_dropped() {
+    let mut start = cue(1, CueKind::Memo);
+    start.kind = CueKind::Start {
+        target: Some(cue_id(10)),
+    };
+    let mut ws = workspace(vec![start, cue(10, CueKind::Memo), cue(11, CueKind::Memo)]);
+    let before = ws.clone();
+    let mut history = History::new();
+    let kind = |k: CueKind| Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Kind { value: k },
+    };
+    let target = |t: u128| Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Target {
+            value: Some(cue_id(t)),
+        },
+    };
+    let steps = [
+        kind(CueKind::Start {
+            target: Some(cue_id(11)),
+        }),
+        Command::Transaction {
+            commands: vec![target(12), kind(CueKind::Memo)],
+        },
+    ];
+    for step in steps {
+        history
+            .execute_coalescing(&mut ws, step, Some("g"))
+            .unwrap();
+    }
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+}

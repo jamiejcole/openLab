@@ -322,17 +322,31 @@ impl Workspace {
     /// workspace is exactly as it was.
     pub fn apply(&mut self, command: Command) -> Result<Inverse, CommandError> {
         match command {
-            Command::Transaction { commands } => transaction(self, commands),
-            other => single(self, other),
+            Command::Transaction { commands } => transaction(self, commands, false),
+            other => single(self, other, false),
+        }
+    }
+
+    /// Applies an undo or redo step. It puts back a state the workspace had, so it is not
+    /// refused for a value problem that state already had when the show was loaded (a hotkey
+    /// name load only warns about): an undo must never get stuck on one.
+    pub fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
+        match command {
+            Command::Transaction { commands } => transaction(self, commands, true),
+            other => single(self, other, true),
         }
     }
 }
 
-fn transaction(ws: &mut Workspace, commands: Vec<Command>) -> Result<Inverse, CommandError> {
+fn transaction(
+    ws: &mut Workspace,
+    commands: Vec<Command>,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
     let snapshot = ws.clone();
     let mut undo_steps = Vec::with_capacity(commands.len());
     for (index, command) in commands.into_iter().enumerate() {
-        match single(ws, command) {
+        match single(ws, command, restoring) {
             Ok(inverse) => undo_steps.push(inverse),
             Err(error) => {
                 *ws = snapshot;
@@ -357,7 +371,7 @@ fn transaction(ws: &mut Workspace, commands: Vec<Command>) -> Result<Inverse, Co
 }
 
 /// Everything except a plain transaction. Each arm is atomic.
-fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError> {
+fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inverse, CommandError> {
     match command {
         Command::AddCue {
             at,
@@ -407,7 +421,7 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
             }
             Ok(Command::ReparentCue { id, to: from })
         }
-        Command::SetCueProperty { id, property } => set_property(ws, id, property),
+        Command::SetCueProperty { id, property } => set_property(ws, id, property, restoring),
         Command::BatchSet { ids, property } => {
             if matches!(property, CueProperty::Kind { .. }) {
                 return Err(CommandError::NotBatchable);
@@ -419,7 +433,7 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
                     property: property.clone(),
                 })
                 .collect();
-            transaction(ws, commands)
+            transaction(ws, commands, restoring)
         }
         Command::SetCueNumbers { numbers } => set_numbers(ws, numbers),
         Command::Renumber {
@@ -428,7 +442,7 @@ fn single(ws: &mut Workspace, command: Command) -> Result<Inverse, CommandError>
             increment,
         } => renumber(ws, &ids, start, increment),
         Command::Transaction { .. } => Err(CommandError::NestedTransaction),
-        other => apply_model(ws, &other).unwrap_or(Err(CommandError::Internal)),
+        other => apply_model(ws, &other, restoring).unwrap_or(Err(CommandError::Internal)),
     }
 }
 
@@ -717,6 +731,7 @@ fn set_property(
     ws: &mut Workspace,
     id: CueId,
     property: CueProperty,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     let path = find_path(ws, id).ok_or(CommandError::CueNotFound(id))?;
     let cue = cue_at(ws, &path).ok_or(CommandError::Internal)?;
@@ -740,7 +755,17 @@ fn set_property(
             | CueProperty::Triggers { .. }
     ) {
         property.write(&mut probe);
-        refuse(subtree_issues(ws, &[probe], path.indices.len()))?;
+        if !restoring {
+            // Only what the new value introduces: the old one may carry a warning from load.
+            let mut was = blank_cue(id);
+            old.write(&mut was);
+            let existing = subtree_issues(ws, &[was], path.indices.len());
+            let issues = subtree_issues(ws, &[probe], path.indices.len())
+                .into_iter()
+                .filter(|i| !existing.contains(i))
+                .collect();
+            refuse(issues)?;
+        }
     }
 
     if old == property {

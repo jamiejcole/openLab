@@ -4,6 +4,7 @@
 //! changes the workspace only through it.
 
 use crate::command::{Command, CommandError, CueProperty, Inverse};
+use crate::command_model::PatchProperty;
 use crate::model::Workspace;
 
 /// The undo and redo stacks. Each entry is the command that reverses one step, so redo needs no
@@ -113,53 +114,66 @@ impl History {
     }
 }
 
-/// One step that undoes `older` and `newer` (the step of the edit after it). `newer` is undone
-/// first. A step of `newer` that sets a single value `older` also sets is left out: `older`
-/// comes later and puts that value back to what it was before the gesture. So a gesture's step
-/// holds one command per value however long it runs. Chains stay flat, as in a transaction.
+/// One step that undoes `older` and `newer` (the step of the edit after it), `newer` first.
+///
+/// Dropping a command of `newer` is only done where it is provably redundant, because applying
+/// the rest of the chain around it would otherwise see a different state:
+/// - `newer` and `older` are each one command setting the same value (or moving the same item):
+///   `older` alone is the step.
+/// - `newer` only sets values (cue properties, settings, patch and list names), one command
+///   per item, with no add, remove or move: each of its commands for a value `older` also sets
+///   is left out. The values are independent, so `older`, which comes later, wins. This keeps
+///   a multi-cue level drag at one command per cue however long it runs.
+///
+/// Anything else is chained flat, which is always right.
 fn merge(older: Inverse, newer: Inverse) -> Inverse {
     let flat = |step: Inverse| match step {
         Command::Transaction { commands } => commands,
         other => vec![other],
     };
-    let older = flat(older);
-    let mut commands: Vec<Command> = flat(newer)
+    let (older, newer) = (flat(older), flat(newer));
+    if let ([a], [b]) = (older.as_slice(), newer.as_slice())
+        && a.same_slot(b)
+    {
+        return a.clone();
+    }
+    let droppable = only_value_sets(&newer);
+    let mut commands: Vec<Command> = newer
         .into_iter()
         .filter(|step| {
-            !older
-                .iter()
-                .any(|o| o.same_slot(step) && independent(step, &older))
+            !(droppable && older.iter().any(|o| o.same_slot(step)) && kind_is_safe(step, &older))
         })
         .collect();
-    if commands.is_empty() && older.len() == 1 {
-        return older
-            .into_iter()
-            .next()
-            .unwrap_or(Command::Transaction { commands: vec![] });
-    }
     commands.extend(older);
-    if commands.len() == 1 {
-        return commands
-            .pop()
-            .unwrap_or(Command::Transaction { commands: vec![] });
+    match <[Command; 1]>::try_from(commands) {
+        Ok([only]) => only,
+        Err(commands) => Command::Transaction { commands },
     }
-    Command::Transaction { commands }
 }
 
-/// Whether dropping `step` is safe. A `Kind` replaces a cue's target and group mode too, so
-/// dropping a `Kind` step is only safe if no step of the chain sets one of those on that cue.
-fn independent(step: &Command, chain: &[Command]) -> bool {
-    // A move depends on the other positions in its container: it may only be dropped when the
-    // older step is that one move alone.
-    if matches!(
-        step,
-        Command::MoveCue { .. }
-            | Command::MovePatch { .. }
-            | Command::MoveNetworkPatch { .. }
-            | Command::MoveCueList { .. }
-    ) {
-        return chain.len() == 1;
-    }
+/// Whether every command only sets a value, and no two are about the same item.
+fn only_value_sets(commands: &[Command]) -> bool {
+    let mut items = std::collections::HashSet::new();
+    commands.iter().all(|c| {
+        let item = match c {
+            Command::SetCueProperty { id, .. } => id.0,
+            Command::SetWorkspaceSetting { .. } => uuid::Uuid::nil(),
+            Command::SetPatchProperty {
+                property: PatchProperty::ChannelCount { .. } | PatchProperty::Outputs { .. },
+                ..
+            } => return false,
+            Command::SetPatchProperty { id, .. } => id.0,
+            Command::SetNetworkPatchProperty { id, .. } => id.0,
+            Command::RenameCueList { id, .. } => id.0,
+            _ => return false,
+        };
+        items.insert(item)
+    })
+}
+
+/// A `Kind` replaces a cue's target and group mode too: it may only be dropped if the older
+/// chain, which then runs on the state before it, sets neither on that cue.
+fn kind_is_safe(step: &Command, older: &[Command]) -> bool {
     let Command::SetCueProperty {
         id,
         property: CueProperty::Kind { .. },
@@ -167,7 +181,7 @@ fn independent(step: &Command, chain: &[Command]) -> bool {
     else {
         return true;
     };
-    !chain.iter().any(|c| {
+    !older.iter().any(|c| {
         matches!(
             c,
             Command::SetCueProperty {
@@ -192,7 +206,7 @@ fn step(
         return Ok(false);
     };
     // Applying consumes the command, so keep a copy to put back if it is refused.
-    match workspace.apply(command.clone()) {
+    match workspace.apply_restoring(command.clone()) {
         Ok(reverse) => {
             to.push(reverse);
             Ok(true)

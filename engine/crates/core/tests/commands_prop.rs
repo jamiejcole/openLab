@@ -47,7 +47,7 @@ fn cases(default: u32) -> u32 {
 }
 
 /// Operations 0-10 edit the cue tree; 11 and up edit settings, patches and cue lists.
-const OPS: u8 = 24;
+const OPS: u8 = 25;
 
 struct Gen {
     next: u128,
@@ -732,6 +732,49 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             id: id?,
             property: property(ws, op - 100, p),
         },
+        24 => {
+            // The multi-select gesture: several moves, or a Target and a Kind of one cue, in one
+            // command. Each is built against what the earlier ones leave.
+            let mut evolving = ws.clone();
+            let mut commands = Vec::new();
+            for n in 0..2 + p.c % 2 {
+                let pick = p.a.wrapping_add(n * 17);
+                let candidate = match p.b % 3 {
+                    0 | 1 => {
+                        let id = choose(&all_ids(&evolving), pick);
+                        id.and_then(|id| {
+                            Some(Command::MoveCue {
+                                id,
+                                index: (p.d.wrapping_add(n) as usize)
+                                    % (siblings_of(&evolving, id)? + 1),
+                            })
+                        })
+                    }
+                    _ => {
+                        let id = choose(&all_ids(&evolving), p.a)?;
+                        Some(if n % 2 == 0 {
+                            Command::SetCueProperty {
+                                id,
+                                property: property(&evolving, 9, p),
+                            }
+                        } else {
+                            Command::SetCueProperty {
+                                id,
+                                property: CueProperty::Kind {
+                                    value: kind(&evolving, p),
+                                },
+                            }
+                        })
+                    }
+                };
+                if let Some(command) = candidate
+                    && evolving.apply(command.clone()).is_ok()
+                {
+                    commands.push(command);
+                }
+            }
+            Command::Transaction { commands }
+        }
         _ => return build_model(ws, op, p),
     })
 }
@@ -1191,7 +1234,7 @@ fn the_generator_exercises_every_command() {
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
     let mut readded = 0;
-    for _ in 0..60 {
+    for _ in 0..90 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
             let p = Pick {

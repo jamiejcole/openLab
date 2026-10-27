@@ -582,3 +582,20 @@ fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
     assert_eq!(mirror.catch_up(&mut s), 1);
     assert_eq!(s.control().workspace(), &after);
 }
+
+#[test]
+fn a_refusal_for_another_reason_wins_over_the_playing_guard() {
+    let mut s = playing_show();
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    let replies = send(
+        &mut s,
+        Command::RemovePatch {
+            id: patch_id(),
+            even_if_used: false,
+        },
+        None,
+    );
+    let message = refusal(&replies).expect("refused");
+    assert!(message.contains("is used by cue"), "{message}");
+}
