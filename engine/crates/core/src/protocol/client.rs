@@ -188,6 +188,12 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// The newest show-log entries the engine holds in memory (DX-02), for a log window opened
+    /// after the fact. `max` absent: all of them (at most 1000).
+    LogTail {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<u32>,
+    },
     /// Send the full state again (after a `revision` or `seq` gap).
     Snapshot,
 }
