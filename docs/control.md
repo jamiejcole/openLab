@@ -110,6 +110,8 @@ Mixer events, stream state and probe answers become cue-engine inputs:
 
 ## Documents (M4.4)
 
+> Superseded by M4.15: the engine will hold several workspaces, `revert` goes and `close` arrives (ARCHITECTURE §3.1, §3.5, §6). This section describes the one-workspace behaviour the code still has until M4.15f/g land.
+
 New, open, open-recovery, save, save-as, revert, and autosave (`control/docs.rs`; contract: [protocol.md](protocol.md) "Replacing the workspace", file work: [persistence.md](persistence.md)). One workspace is open at a time (REQUIREMENTS §21); `Close` is the UI's (quit, or `new`).
 
 - **Nothing blocks the control thread.** A save or autosave is a clone of the workspace handed to `SaveWriter` (tagged with the revision); the loop polls the answer channel on every tick (`docs_tick`) and answers the request when the file is written (`save`/`save_as` results come after the data is durable; a `document` broadcast with the new path and dirty flag goes first). Several saves of one file in flight collapse in the writer (the older answer is `Superseded`); the loop collects every answer first and then answers the older request with the outcome of the newest save of that file whose revision is at least its own (a save that finished meanwhile counts if it holds the same edits). A failed write is `io`; nothing about the workspace changes (still dirty, same path). A save that finishes after another workspace was installed only answers its request (`epoch`).
