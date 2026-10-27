@@ -377,6 +377,7 @@ impl CueEngine {
         match input {
             Input::Tick => {}
             Input::Go { list } => self.go(list, cx),
+            Input::GoFrom { list, cue } => self.go_from(list, cue, cx),
             Input::Start { cue } => {
                 if self.known(cue, cx) {
                     self.start(cue, cx.now, cx);
@@ -431,6 +432,12 @@ impl CueEngine {
             Input::Preview { cue } => self.preview(cue, cx),
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
+            Input::StopAll => self.stop_all(cx),
+            Input::PanicCue { cue } => {
+                if self.known(cue, cx) {
+                    self.panic_tree(cue, cx);
+                }
+            }
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
             Input::MediaStatus { media, status } => {
@@ -547,18 +554,46 @@ impl CueEngine {
         if !cx.ws.cue_lists.iter().any(|l| l.id == list) {
             return ignored(GoIgnoredReason::UnknownList, cx);
         }
-        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
-        // A clock that went backwards (device restart) never blocks GO.
-        if let Some(last) = self.last_go
-            && cx.now >= last
-            && cx.now - last < interval
-        {
+        if self.double_go(cx) {
             return ignored(GoIgnoredReason::DoubleGo, cx);
         }
         if let Err(reason) = self.go_on(list, cx.now, cx) {
             return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
+    }
+
+    /// Whether a GO now is within `min_go_interval` of the last one. A clock that went backwards
+    /// (device restart) never blocks GO.
+    fn double_go(&self, cx: &Ctx) -> bool {
+        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
+        self.last_go
+            .is_some_and(|last| cx.now >= last && cx.now - last < interval)
+    }
+
+    /// GO from `cue`: only if the playhead can rest there.
+    fn go_from(&mut self, list: CueListId, cue: CueId, cx: &mut Ctx) {
+        let Some(cues) = cx
+            .ws
+            .cue_lists
+            .iter()
+            .find(|l| l.id == list)
+            .map(|l| &l.cues)
+        else {
+            return cx.warn(EngineWarning::UnknownList { list });
+        };
+        if !playhead::positions(cues).contains(&cue) {
+            return cx.warn(EngineWarning::NotInList { list, cue });
+        }
+        // A GO that double-GO protection would refuse leaves the playhead where it was.
+        if self.double_go(cx) {
+            return cx.out.push(Action::GoIgnored {
+                list,
+                reason: GoIgnoredReason::DoubleGo,
+            });
+        }
+        self.move_playhead(list, Some(cue), cx);
+        self.go(list, cx);
     }
 
     fn navigate(&mut self, list: CueListId, cx: &mut Ctx, step: fn(&mut Playhead, &[Cue]) -> bool) {

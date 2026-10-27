@@ -213,7 +213,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **NET-02** `v0.0.1` OSC passcode / access control for the API.
 - [ ] **NET-03** Web-based remote (phone/tablet browser) served by openLab: GO, Stop, playhead, active cues, notes. No app install required.
 - [ ] **NET-04** `low` Bitfocus Companion module.
-- [ ] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
+- [x] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
 
 ---
 

@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 /// Who sent a message. A UDP peer is its IP address (the source port changes per sender
-/// socket, and replies go to the fixed port 53001); a TCP peer is the connection, with the
+/// socket, and replies go to port 53001 unless the peer set another with `/udpReplyPort`); a TCP peer is the connection, with the
 /// remote address so failures count per machine, not per connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Peer {
@@ -38,8 +38,9 @@ impl Peer {
 /// subscribers must not push out a real console): a full table refuses newcomers until idle
 /// UDP peers expire or TCP connections close.
 pub const MAX_PEERS: usize = 1024;
-/// A UDP peer silent this long is forgotten (there is no disconnect on UDP).
-pub const UDP_IDLE: Duration = Duration::from_secs(10 * 60);
+/// A UDP peer silent this long is forgotten (there is no disconnect on UDP): its `/connect` and
+/// its update subscription end, as in QLab 5 (measured: gone after 60 s of silence).
+pub const UDP_IDLE: Duration = Duration::from_secs(60);
 /// Wrong passcodes from one IP, while not connected, before that IP is locked out.
 pub const MAX_BAD_PASSCODES: u32 = 5;
 /// How long a lockout lasts; attempts during it are refused without being checked.
@@ -58,6 +59,31 @@ pub const MAX_TRACKED_IPS: usize = 1024;
 /// traffic a forged source address can make us send to a victim.
 pub const REPLY_BURST_BYTES: u64 = 16 * 1024;
 pub const REPLY_BYTES_PER_SEC: u64 = 8 * 1024;
+/// The budget of a UDP source that has not completed `/connect` when no passcode is set (so it
+/// may ask and may be sent large replies, but has not proved the source address is its own): 256
+/// KiB at once, which is four full datagrams (65507 bytes), then 64 KiB/s, about one more full
+/// datagram a second or a few hundred updates. Sustained reflection at a forged victim is held to
+/// that rate, and a 60 KB notes read still works.
+pub const OPEN_REPLY_BURST_BYTES: u64 = 256 * 1024;
+pub const OPEN_REPLY_BYTES_PER_SEC: u64 = 64 * 1024;
+
+/// Which reply budget a UDP source is held to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Budget {
+    /// A passcode is set and the source has not connected: it is only sent small refusals.
+    Strict,
+    /// No passcode is set and the source has not connected.
+    Open,
+}
+
+impl Budget {
+    fn limits(self) -> (u64, u64) {
+        match self {
+            Self::Strict => (REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC),
+            Self::Open => (OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectResult {
@@ -74,6 +100,9 @@ pub enum ConnectResult {
 struct Session {
     connected: bool,
     updates: bool,
+    /// Where `/udpReplyPort` sent this UDP peer's replies and updates; `None`: the server default.
+    /// Lives in the session, so it goes with it (idle expiry, `clear`).
+    reply_port: Option<u16>,
     last_seen: Duration,
 }
 
@@ -96,7 +125,7 @@ pub struct Sessions {
     failures: HashMap<IpAddr, Failures>,
     global_start: Duration,
     global_count: u32,
-    budgets: HashMap<IpAddr, Bucket>,
+    budgets: HashMap<(IpAddr, Budget), Bucket>,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
 }
@@ -110,9 +139,18 @@ impl Sessions {
         self.peers.is_empty()
     }
 
-    /// Notes that `peer` sent something (keeps a UDP peer from idling out).
+    /// Notes that `peer` sent something. A UDP peer that had been silent for [`UDP_IDLE`] is
+    /// forgotten first (so this packet finds it unconnected and unsubscribed); anything sent
+    /// within the window keeps it.
     pub fn touch(&mut self, peer: Peer, now: Duration) {
-        if let Some(session) = self.peers.get_mut(&peer) {
+        let idle = matches!(peer, Peer::Udp(_))
+            && self
+                .peers
+                .get(&peer)
+                .is_some_and(|s| now.saturating_sub(s.last_seen) >= UDP_IDLE);
+        if idle {
+            self.peers.remove(&peer);
+        } else if let Some(session) = self.peers.get_mut(&peer) {
             session.last_seen = now;
         }
     }
@@ -229,7 +267,7 @@ impl Sessions {
             if let Some(session) = self.peers.get_mut(&peer) {
                 session.updates = false;
                 session.last_seen = now;
-                if !session.connected {
+                if !session.connected && session.reply_port.is_none() {
                     self.peers.remove(&peer);
                 }
             }
@@ -245,11 +283,37 @@ impl Sessions {
         true
     }
 
-    /// Peers that asked for updates, in no particular order.
-    pub fn update_subscribers(&self) -> Vec<Peer> {
+    /// `/udpReplyPort`: replies and updates to the UDP peer go to `port` from now on, until its
+    /// session lapses. Returns false if the peer could not be given state (table full).
+    pub fn set_reply_port(&mut self, peer: Peer, now: Duration, port: u16) -> bool {
+        if !self.ensure(peer, now) {
+            return false;
+        }
+        if let Some(session) = self.peers.get_mut(&peer) {
+            session.reply_port = Some(port);
+            session.last_seen = now;
+        }
+        true
+    }
+
+    /// The port set with `/udpReplyPort` for `peer`, if its session is still alive at `now`.
+    pub fn reply_port(&self, peer: Peer, now: Duration) -> Option<u16> {
+        let session = self.peers.get(&peer)?;
+        if matches!(peer, Peer::Udp(_)) && now.saturating_sub(session.last_seen) >= UDP_IDLE {
+            return None;
+        }
+        session.reply_port
+    }
+
+    /// Peers that asked for updates, in no particular order. A UDP peer silent for
+    /// [`UDP_IDLE`] is not one, even before the next sweep removes it.
+    pub fn update_subscribers(&self, now: Duration) -> Vec<Peer> {
         self.peers
             .iter()
-            .filter(|(_, s)| s.updates)
+            .filter(|(p, s)| {
+                s.updates
+                    && (matches!(p, Peer::Tcp { .. }) || now.saturating_sub(s.last_seen) < UDP_IDLE)
+            })
             .map(|(p, _)| *p)
             .collect()
     }
@@ -280,32 +344,41 @@ impl Sessions {
         self.failures.retain(|_, f| {
             f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
         });
-        self.budgets
-            .retain(|_, b| refilled(b.tokens, b.updated, now) < REPLY_BURST_BYTES);
+        self.budgets.retain(|(_, kind), b| {
+            let (burst, rate) = kind.limits();
+            refilled(b.tokens, b.updated, now, burst, rate) < burst
+        });
     }
 
     /// Takes `bytes` from the reply budget of the UDP source `ip`; false if it has less left
     /// (the reply must then not be sent).
-    pub fn spend_reply_bytes(&mut self, ip: IpAddr, now: Duration, bytes: u64) -> bool {
-        if !self.budgets.contains_key(&ip) && self.budgets.len() >= MAX_TRACKED_IPS {
-            self.budgets
-                .retain(|_, b| refilled(b.tokens, b.updated, now) < REPLY_BURST_BYTES);
+    pub fn spend_reply_bytes(
+        &mut self,
+        ip: IpAddr,
+        kind: Budget,
+        now: Duration,
+        bytes: u64,
+    ) -> bool {
+        let (burst, rate) = kind.limits();
+        let key = (ip, kind);
+        if !self.budgets.contains_key(&key) && self.budgets.len() >= MAX_TRACKED_IPS {
+            self.budgets.retain(|(_, k), b| {
+                let (burst, rate) = k.limits();
+                refilled(b.tokens, b.updated, now, burst, rate) < burst
+            });
+            // Only a refilled bucket may go (the retain above dropped them): evicting one that
+            // is still depleted would hand its IP a fresh burst, and cycling forged addresses
+            // would then remove the budget. A new address finding the table full of depleted
+            // buckets is sent nothing until one refills (a few seconds).
             if self.budgets.len() >= MAX_TRACKED_IPS {
-                let oldest = self
-                    .budgets
-                    .iter()
-                    .min_by_key(|(_, b)| b.updated)
-                    .map(|(k, _)| *k);
-                if let Some(oldest) = oldest {
-                    self.budgets.remove(&oldest);
-                }
+                return false;
             }
         }
-        let bucket = self.budgets.entry(ip).or_insert(Bucket {
-            tokens: REPLY_BURST_BYTES,
+        let bucket = self.budgets.entry(key).or_insert(Bucket {
+            tokens: burst,
             updated: now,
         });
-        let available = refilled(bucket.tokens, bucket.updated, now);
+        let available = refilled(bucket.tokens, bucket.updated, now, burst, rate);
         bucket.updated = now;
         if available >= bytes {
             bucket.tokens = available - bytes;
@@ -328,6 +401,7 @@ impl Sessions {
             Session {
                 connected: false,
                 updates: false,
+                reply_port: None,
                 last_seen: now,
             },
         );
@@ -336,11 +410,11 @@ impl Sessions {
 }
 
 /// Tokens after refilling for the time since `updated`, capped at the burst size.
-fn refilled(tokens: u64, updated: Duration, now: Duration) -> u64 {
+fn refilled(tokens: u64, updated: Duration, now: Duration, burst: u64, rate: u64) -> u64 {
     let elapsed_ms = u64::try_from(now.saturating_sub(updated).as_millis()).unwrap_or(u64::MAX);
     tokens
-        .saturating_add(elapsed_ms.saturating_mul(REPLY_BYTES_PER_SEC) / 1000)
-        .min(REPLY_BURST_BYTES)
+        .saturating_add(elapsed_ms.saturating_mul(rate) / 1000)
+        .min(burst)
 }
 
 /// Compares every byte of the longer string against the shorter one padded with zeros, so the

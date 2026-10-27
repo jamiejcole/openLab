@@ -896,3 +896,50 @@ fn h1_a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_
     // A fresh visit: G's continue does not fire now, so the playhead stands on 2.
     assert_eq!(rig.playhead(), Some(id(2)));
 }
+
+#[test]
+fn go_from_into_a_groups_child_clears_the_visit_memory_as_set_playhead_then_go_does() {
+    // PR #15's group visits: a group whose continue fired is remembered for the playhead's visit.
+    // `GoFrom` (OSC `/go "3"`) moves the playhead through the same code as `SetPlayhead`, so the
+    // result must be the same as `SetPlayhead` then `Go`.
+    let scenario = |from: bool| {
+        let g = timed(
+            grp(
+                1,
+                GroupMode::StartFirstAndEnter,
+                vec![wait(10, 1.0), memo(11), memo(12)],
+            ),
+            0.0,
+            0.0,
+            AF,
+        );
+        let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
+        rig.go(0);
+        assert_eq!(rig.playhead(), Some(id(11)));
+        // The group's continue fires (2 starts) while the playhead is inside it.
+        assert!(starts(&rig.tick(1000)).contains(&(id(2), 1000)));
+        let out = if from {
+            rig.at(
+                1100,
+                Input::GoFrom {
+                    list: list(),
+                    cue: id(12),
+                },
+            )
+        } else {
+            rig.at(
+                1100,
+                Input::SetPlayhead {
+                    list: list(),
+                    cue: Some(id(12)),
+                },
+            );
+            rig.go(1100)
+        };
+        (starts(&out), rig.playhead())
+    };
+    let by_set = scenario(false);
+    assert_eq!(scenario(true), by_set);
+    // Child 12 starts; 2 already played in this visit and is passed over: the playhead stands on 3.
+    assert_eq!(by_set, (vec![(id(12), 1100)], Some(id(3))));
+}
