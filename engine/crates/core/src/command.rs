@@ -300,12 +300,6 @@ pub enum CommandError {
     PatchInUse { patch: PatchId, cue: CueId },
     #[error("network patch {patch} is used by cue {cue}")]
     NetworkPatchInUse { patch: NetworkPatchId, cue: CueId },
-    /// Refused by the engine: patch positions are mixer slots, so patches cannot be inserted,
-    /// removed, moved or resized while any voice is on the device (until M4.15b).
-    #[error(
-        "audio is playing: patches cannot be inserted, removed, moved or resized until it stops"
-    )]
-    PatchPlaying,
     #[error("cue list {0} still has cues")]
     CueListNotEmpty(CueListId),
     #[error("cue list {0} is the only one")]

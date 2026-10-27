@@ -943,6 +943,26 @@ fn s4_play_previous_on_the_first_child_of_a_shuffled_playlist_stops_it() {
     assert!(playing(&rig).is_empty());
 }
 
+/// A workspace with duplicate ids (a load error, but the engine must stay consistent): an audio
+/// cue inside a group with the group's own id is not previewed, so an id is never both a group's
+/// preview and an audio preview, and a repeated child id gets one preview, not a lost voice.
+#[test]
+fn v1_a_group_preview_skips_children_with_the_groups_or_a_repeated_id() {
+    let mut rig = Rig::new(vec![grp(
+        6,
+        GroupMode::Timeline,
+        vec![sound(6), sound(11), sound(11), sound(12)],
+    )]);
+    let out = rig.preview(0, 6);
+    let started: Vec<CueId> = preview_starts(&out).iter().map(|p| p.0).collect();
+    assert_eq!(started, vec![id(11), id(12)]);
+    assert!(rig.engine.is_previewing(id(6)));
+    assert_eq!(rig.engine.preview_run(id(6)), None);
+    let out = rig.at(100, Input::StopPreview { cue: Some(id(6)) });
+    assert_eq!(preview_stops(&out).len(), 2);
+    assert_eq!(rig.engine.previewing().count(), 0);
+}
+
 /// "Devamp looping cue" aimed at a sliced cue that is not running says the target is not
 /// running, as the other mode does, before it looks at the slices.
 #[test]

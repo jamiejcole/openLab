@@ -97,8 +97,10 @@ impl CueEngine {
         }
         let mut started = BTreeSet::new();
         for child in self.previewable_children(model) {
-            // Being previewed on its own already: it stays its own preview.
-            if self.is_previewing(child) {
+            // Being previewed on its own already (or met before here): it stays one preview.
+            // A child with the group's own id, which only a workspace with duplicate ids has (a
+            // load error), is skipped too: an id is never both a group's and an audio preview.
+            if child == cue || self.is_previewing(child) {
                 continue;
             }
             if self.refuses(child, cx) {
