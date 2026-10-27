@@ -138,6 +138,43 @@ final class TriggersTabTests: XCTestCase {
         }
     }
 
+    // MARK: Show Mode (SM-01)
+
+    func testLockedInspectorBlocksEveryEditPathAndUnlockRestores() async {
+        let before = rig.engine.received.count
+        vc.isLocked = true
+        let controls: [NSControl] = [
+            vc.numberField, vc.nameField, vc.preWaitField, vc.postWaitField, vc.oscField, vc.hotkeyField,
+            vc.hotkeyClear, vc.secondTriggerPopup, vc.onReleaseCheck, vc.colourPopup, vc.continuePopup,
+            vc.flaggedCheck, vc.armedCheck,
+        ]
+        XCTAssertTrue(controls.allSatisfy { !$0.isEnabled })
+        XCTAssertFalse(vc.notesView.isEditable)
+        XCTAssertFalse(vc.hotkeyField.acceptsFirstResponder, "the recorder cannot take focus")
+
+        XCTAssertFalse(vc.record(KeyChord("k", [.command, .shift])))
+        vc.clearHotkey()
+        vc.nameField.stringValue = "Changed"
+        vc.commit(.name)
+        vc.colourPopup.selectItem(at: 2)
+        _ = vc.colourPopup.target?.perform(vc.colourPopup.action, with: vc.colourPopup)
+        vc.flaggedCheck.state = .on
+        _ = vc.flaggedCheck.target?.perform(vc.flaggedCheck.action, with: vc.flaggedCheck)
+        await settle()
+        XCTAssertEqual(rig.engine.received.count, before, "nothing reached the engine")
+
+        // A re-render while locked keeps the controls locked.
+        vc.render(force: Set(InspectorField.allCases))
+        XCTAssertFalse(vc.nameField.isEnabled)
+
+        vc.isLocked = false
+        XCTAssertTrue(vc.nameField.isEnabled)
+        XCTAssertTrue(vc.notesView.isEditable)
+        XCTAssertFalse(vc.hotkeyClear.isEnabled, "no hotkey yet: Clear stays off as in Edit Mode")
+        XCTAssertTrue(vc.record(KeyChord("k", [.command, .shift])))
+        await assertEventually { vc.hotkeyField.stringValue == "⇧⌘K" }
+    }
+
     func testTabExistsAfterBasics() {
         XCTAssertEqual(
             vc.tabView.tabViewItems.map(\.label), [loc("inspector.tab.basics"), loc("inspector.tab.triggers")])
