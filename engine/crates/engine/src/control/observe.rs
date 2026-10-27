@@ -26,6 +26,12 @@ const DROP_NOTE_GAP_MS: i64 = 10_000;
 /// controller must not flush the GO history out of the 1000-entry ring).
 const TRIGGER_WINDOW_MS: i64 = 10_000;
 const TRIGGERS_LOGGED_PER_WINDOW: u32 = 5;
+/// Live `log_entry` pushes per window (M4.7c), on the same 10 s wall-clock window as the
+/// trigger records: a burst (a GO that starts a hundred cues) goes out whole, a flood is cut
+/// to 20 a second on average. A record over the budget is not pushed (the client sees the gap
+/// in `seq` and reads `log_tail`); the newest one held back is pushed when the window ends.
+const LOG_PUSH_WINDOW_MS: i64 = TRIGGER_WINDOW_MS;
+const LOG_PUSHES_PER_WINDOW: u32 = 200;
 /// Sources tracked at once; more share one entry.
 const MAX_TRIGGER_SOURCES: usize = 256;
 const OTHER_SOURCES: &str = "other sources";
@@ -49,6 +55,11 @@ pub(super) struct Observe {
     triggers: HashMap<String, TriggerWindow>,
     /// The workspace path last told to the crash hook.
     path: Option<PathBuf>,
+    /// The `log_entry` budget: (window start, pushes in it).
+    push_window: Option<(i64, u32)>,
+    /// The newest `log_entry` not delivered (over the budget, or the channel was too full);
+    /// offered again each tick until a newer one goes out.
+    unsent: Option<ServerMessage>,
 }
 
 impl Observe {
@@ -60,6 +71,8 @@ impl Observe {
             last_drop_note_ms: None,
             triggers: HashMap::new(),
             path: None,
+            push_window: None,
+            unsent: None,
         }
     }
 
@@ -82,7 +95,8 @@ impl Control {
         self.mixer.samples_rendered() as f64 / f64::from(self.rate.get())
     }
 
-    /// Adds a record to the show log (ring and disk) without sending it to the clients.
+    /// Adds a record to the show log (ring and disk) and, when the host asked for it, offers it
+    /// to the clients as a `log_entry` (lossy, rate-limited).
     pub(super) fn record(
         &mut self,
         kind: LogKind,
@@ -100,7 +114,43 @@ impl Control {
             cue,
             source,
         };
-        self.config.show_log.record(entry);
+        if !self.config.push_log {
+            self.config.show_log.record(entry);
+            return;
+        }
+        let (seq, entry) = self.config.show_log.record_copy(entry);
+        let now = self.config.clock.now_ms();
+        self.push(now, ServerMessage::LogEntry { seq, entry });
+    }
+
+    /// Offers a `log_entry` within the window's budget. Only a delivered push spends from it:
+    /// a client that is not keeping up must not use up the budget of the records after it.
+    /// What is not delivered is kept as the newest unsent (an older one is superseded).
+    fn push(&mut self, now: i64, message: ServerMessage) {
+        let (start, pushed) = match self.observe.push_window {
+            Some((start, n)) if !elapsed(now, start, LOG_PUSH_WINDOW_MS) => (start, n),
+            _ => (now, 0),
+        };
+        self.observe.push_window = Some((start, pushed));
+        if pushed >= LOG_PUSHES_PER_WINDOW {
+            self.observe.unsent = Some(message);
+            return;
+        }
+        match self.out.try_lossy(message) {
+            Ok(()) => {
+                self.observe.push_window = Some((start, pushed + 1));
+                self.observe.unsent = None;
+            }
+            Err(message) => self.observe.unsent = Some(message),
+        }
+    }
+
+    /// Once a tick: the newest record not yet delivered, once the budget and the channel allow,
+    /// so a client learns of a gap without waiting for the next record.
+    fn flush_log_push(&mut self, now: i64) {
+        if let Some(message) = self.observe.unsent.take() {
+            self.push(now, message);
+        }
     }
 
     /// `cue 5 "Storm"`, for log lines.
@@ -290,13 +340,12 @@ impl Control {
         self.out.send(ServerMessage::Log { level, message });
     }
 
-    /// The entries `log_tail` answers with, and the records the disk writer lost.
-    pub(super) fn log_tail(&self, max: Option<u32>) -> (Vec<LogEntry>, u64) {
+    /// The entries `log_tail` answers with, the records the disk writer lost, and the `seq`
+    /// of the newest record.
+    pub(super) fn log_tail(&self, max: Option<u32>) -> (Vec<LogEntry>, u64, u64) {
         let max = max.map_or(TAIL_ALL, |m| usize::try_from(m).unwrap_or(TAIL_ALL));
-        (
-            self.config.show_log.tail(max),
-            self.config.show_log.dropped(),
-        )
+        let (entries, seq) = self.config.show_log.tail_seq(max);
+        (entries, self.config.show_log.dropped(), seq)
     }
 
     /// Once per tick: the crash hook's workspace path, a note when log records were lost, and
@@ -313,6 +362,7 @@ impl Control {
         }
         let now = self.config.clock.now_ms();
         self.flush_trigger_windows(now);
+        self.flush_log_push(now);
         let lost = self.config.show_log.dropped();
         if lost > self.observe.seen_log_dropped
             && self
@@ -391,11 +441,17 @@ impl Control {
             underrun_frames: self.mixer.underrun_frames(),
             streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
             log_dropped: self.config.show_log.dropped(),
+            log_seq: self.config.show_log.seq(),
             network_output_disabled: self.net.disabled(),
             device,
             cpu_seconds: (self.config.cpu_probe)(),
-            // Needs a render-time measurement on the audio thread (PROGRESS M4.7a).
-            engine_load: None,
+            // Worst callback since the previous status (read-and-reset; this is its only
+            // reader). Offline there is no audio callback to time.
+            engine_load: self
+                .backend
+                .device()
+                .and_then(|d| d.info().monitor.take_engine_load())
+                .filter(|l| l.is_finite()),
         }
     }
 
