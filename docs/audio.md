@@ -378,7 +378,7 @@ Three modules. Only `device.rs` uses cpal (0.18, Apache-2.0); it is behind the `
 | Xrun | `Xrun` | the mixer's `xruns` and `host_xruns()`, not an error count |
 | anything else | `Other` | counted |
 
-`DeviceMonitor::take_errors()` reads and resets the counts, so the control thread sees each report exactly once. **Single consumer:** every clone shares the counts, so one owner (the engine's control loop) takes them and passes them on; a second poller would steal reports. `needs_reopen()` and the other getters do not reset anything and may be read from anywhere. `HostError::needs_reopen()` is the rule (Lost, Invalidated, Rerouted). Some hosts just stop calling back on unplug. `callbacks()`, and `samples_rendered` standing still, show that, and the engine's watchdog decides what it means.
+`DeviceMonitor::take_errors()` reads and resets the counts, so the control thread sees each report exactly once. **Single consumer:** every clone shares the counts, so one owner (the engine's control loop) takes them and passes them on; a second poller would steal reports. `needs_reopen()` and the other getters do not reset anything and may be read from anywhere. `HostError::needs_reopen()` is the rule (Lost, Invalidated, Rerouted). Some hosts just stop calling back on unplug. `callbacks()`, and `samples_rendered` standing still, show that, and the engine's stall watchdog (docs/control.md, Devices) decides what it means: a warning after max(500 ms, 20 buffer periods) without a callback, a loss after max(3 s, 50 periods). The callback counter is the one relaxed `fetch_add` the callback already makes.
 
 **Mixer handoff.**
 

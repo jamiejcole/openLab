@@ -55,6 +55,8 @@ The engine does not use the `tracing` crate for this: records are structured val
 | `log_dropped` | the log sink's drop count |
 | `log_seq` | `ShowLog::seq()`: the newest record's number, as in `log_entry` and `log_tail` (0: none yet) |
 
+While the stall watchdog's first stage is up (`device_stalled`, docs/control.md "Devices") `status.device.state` stays `ok`: the stall is a workspace warning and a `warn` log only, until the stream is lost (`lost`) or recovers.
+
 `status` travels the lossy path like `meters`: dropped first when the outbound channel is half full, the next one replaces it.
 
 ## Crash reports (DX-04)
