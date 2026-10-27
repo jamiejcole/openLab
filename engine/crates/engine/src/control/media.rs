@@ -180,8 +180,14 @@ impl PlanChanges {
 pub enum KeyChange {
     /// Everything was forgotten (the catalog was reset).
     Reset,
-    Watch { key: String, path: PathBuf, id: u64 },
-    Unwatch { key: String },
+    Watch {
+        key: String,
+        path: PathBuf,
+        id: u64,
+    },
+    Unwatch {
+        key: String,
+    },
 }
 
 /// One cue's use of a media file.
@@ -315,8 +321,7 @@ impl MediaCatalog {
             }
             None => {
                 freed += e.reserved;
-                self.key_changes
-                    .push(KeyChange::Unwatch { key: k.clone() });
+                self.key_changes.push(KeyChange::Unwatch { key: k.clone() });
                 false
             }
         });
@@ -1178,7 +1183,11 @@ mod tests {
         assert!(cat.take_plan_changes().keys.contains(&a));
         let late = answer(&rx);
         got += 1;
-        assert_eq!(cat.answer(late), None, "the answer of a probe before the loss");
+        assert_eq!(
+            cat.answer(late),
+            None,
+            "the answer of a probe before the loss"
+        );
         assert!(matches!(cat.get(&a), Some(Probe::Failed)));
         // Back: probed afresh, and preloaded again.
         assert!(cat.recheck(&a, id));

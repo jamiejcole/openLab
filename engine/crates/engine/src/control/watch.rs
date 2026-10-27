@@ -167,14 +167,26 @@ pub fn bucket_of(path: &Path) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WatchJob {
     /// The catalog was reset: forget every file; batches carry `generation` from now on.
-    Reset { generation: u64 },
+    Reset {
+        generation: u64,
+    },
     /// Watch `key` at `path`; `id` comes back in its events (a key watched again gets a new id,
     /// so control can tell an event of its earlier watch).
-    Watch { key: String, path: PathBuf, id: u64 },
-    Unwatch { key: String },
+    Watch {
+        key: String,
+        path: PathBuf,
+        id: u64,
+    },
+    Unwatch {
+        key: String,
+    },
     /// Leave the files on this volume alone (it stopped answering); they keep their state.
-    Skip { bucket: String },
-    Unskip { bucket: String },
+    Skip {
+        bucket: String,
+    },
+    Unskip {
+        bucket: String,
+    },
 }
 
 /// What a pass found out about one file.
@@ -183,9 +195,17 @@ pub enum WatchEvent {
     /// No file at the path (reported on the first pass that sees it gone).
     Gone { key: String, id: u64, trashed: bool },
     /// A file is at the path again, the same on two passes in a row.
-    Back { key: String, id: u64, fp: Fingerprint },
+    Back {
+        key: String,
+        id: u64,
+        fp: Fingerprint,
+    },
     /// Another file (or the file changed) at the path, the same on two passes in a row.
-    Changed { key: String, id: u64, fp: Fingerprint },
+    Changed {
+        key: String,
+        id: u64,
+        fp: Fingerprint,
+    },
     /// The path cannot be examined (permissions, an I/O error).
     Unreadable { key: String, id: u64, error: String },
 }
@@ -222,7 +242,9 @@ pub struct WatchBatch {
 pub enum WatchAnswer {
     Batch(WatchBatch),
     /// An abandoned watcher's stalled stat returned: the volume answers again.
-    BucketAnswered { bucket: String },
+    BucketAnswered {
+        bucket: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -656,7 +678,9 @@ impl MediaWatch {
             let job = match change {
                 KeyChange::Reset => {
                     self.generation += 1;
-                    WatchJob::Reset { generation: self.generation }
+                    WatchJob::Reset {
+                        generation: self.generation,
+                    }
                 }
                 KeyChange::Watch { key, path, id } => WatchJob::Watch { key, path, id },
                 KeyChange::Unwatch { key } => WatchJob::Unwatch { key },
@@ -1320,7 +1344,10 @@ mod tests {
         assert!(core.pass(&fs).is_empty());
         assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Back { .. }]));
         fs.deny(A);
-        assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Unreadable { .. }]));
+        assert!(matches!(
+            &core.pass(&fs)[..],
+            [WatchEvent::Unreadable { .. }]
+        ));
         fs.allow(A);
         fs.remove(A);
         assert!(matches!(&core.pass(&fs)[..], [WatchEvent::Gone { .. }]));
@@ -1482,10 +1509,7 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(bucket_of(Path::new(r"D:\show\a.wav")), "D:");
-            assert_eq!(
-                bucket_of(Path::new(r"\\nas\share\a.wav")),
-                r"\\nas\share"
-            );
+            assert_eq!(bucket_of(Path::new(r"\\nas\share\a.wav")), r"\\nas\share");
         }
     }
 
@@ -1583,7 +1607,10 @@ mod tests {
         w.supervise();
         assert!(!w.dead);
         let logs = w.take_logs();
-        assert!(logs.iter().any(|(l, m)| *l == LogLevel::Error && m.contains("restarted")));
+        assert!(
+            logs.iter()
+                .any(|(l, m)| *l == LogLevel::Error && m.contains("restarted"))
+        );
         let mut list = Vec::new();
         w.notices(&mut list);
         assert!(list.is_empty());
@@ -1591,7 +1618,9 @@ mod tests {
         w.supervise();
         assert!(w.take_notices_changed());
         w.notices(&mut list);
-        assert!(matches!(&list[..], [WireWarning::Notice { code, .. }] if code == "media_watch_stopped"));
+        assert!(
+            matches!(&list[..], [WireWarning::Notice { code, .. }] if code == "media_watch_stopped")
+        );
         // Nothing more happens.
         w.supervise();
         assert!(w.take_logs().iter().any(|(l, _)| *l == LogLevel::Error));

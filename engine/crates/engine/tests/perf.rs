@@ -553,6 +553,37 @@ fn performance_budgets() {
         ratio(rename4, rename1) < MAX_SCALING,
         "an edit is super-linear"
     );
+    watch_budget();
+}
+
+/// M2.25: the media watch thread may take at most 0.5% of a core with 2,000 files. Ten whole
+/// passes over 2,000 real files are timed on this thread: a pass is nothing but those stats
+/// (the watch thread adds only its pauses), so the wall time bounds its CPU time. Ten passes
+/// take at least ten periods ([`MIN_PERIOD`]).
+fn watch_budget() {
+    use openlab_engine::control::watch::{MIN_PERIOD, RealFs, WatchCore, WatchJob};
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = WatchCore::new();
+    for n in 0..2000u64 {
+        let path = dir.path().join(format!("{n:04}.wav"));
+        std::fs::write(&path, b"RIFF").unwrap();
+        core.apply(WatchJob::Watch {
+            key: path.to_string_lossy().into_owned(),
+            path,
+            id: n + 1,
+        });
+    }
+    assert!(core.pass(&RealFs).is_empty());
+    let took = best(3, || {
+        let t = Instant::now();
+        for _ in 0..10 {
+            assert!(core.pass(&RealFs).is_empty());
+        }
+        t.elapsed()
+    });
+    let limit = (MIN_PERIOD * 10).mul_f64(0.005) / HEADROOM;
+    eprintln!("watch: 10 passes over 2,000 files {took:?} (limit {limit:?})");
+    assert!(took < limit, "watch passes {took:?} over {limit:?}");
 }
 
 fn ratio(a: Duration, b: Duration) -> f64 {
