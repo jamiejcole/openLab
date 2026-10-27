@@ -19,12 +19,16 @@ pub use codec::{
     DecodeError, EncodeError, MAX_ARRAY_DEPTH, MAX_BUNDLE_DEPTH, MAX_MESSAGES_PER_PACKET,
     MAX_PACKET_BYTES, SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode,
 };
+pub use dispatch::MAX_REPLY_JSON_BYTES;
 pub use dispatch::{
     Address, CueField, CueRef, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, OscInput, OscShow, Parsed,
     PlayheadTarget, Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Verb, parse_address,
     reply_message, resolve,
 };
-pub use session::{ConnectResult, LOCKOUT, MAX_BAD_PASSCODES, MAX_PEERS, Peer, Sessions, UDP_IDLE};
+pub use session::{
+    ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES, MAX_PEERS, Peer,
+    REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
+};
 
 /// The UDP port QLab listens on, and so do we (UDP and TCP).
 pub const OSC_PORT: u16 = 53000;
@@ -55,7 +59,14 @@ pub struct OscStats {
     pub denied: u64,
     /// Messages answered with an error reply (bad cue, bad argument, unsupported).
     pub rejected: u64,
+    /// Replies not sent: over the per-call cap, or not encodable.
+    pub replies_dropped: u64,
+    /// Replies not sent to a UDP source that used up its byte budget.
+    pub replies_throttled: u64,
 }
+
+/// Most replies from one datagram or one stream read.
+pub const MAX_REPLIES_PER_CALL: usize = 16;
 
 /// What handling some bytes produced.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -179,23 +190,23 @@ impl Osc {
             return;
         }
         let passcode = show.passcode().filter(|p| !p.is_empty());
-        let reply = |out: &mut Outcome, reply: Reply| {
-            out.replies
-                .push(reply_message(workspace, &message.addr, &reply));
+        let reply = |this: &mut Self, out: &mut Outcome, reply: Reply| {
+            let message = reply_message(workspace, &message.addr, &reply);
+            this.push_reply(peer, now, message, out);
         };
 
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
             let result = reply_for_connect(self.sessions.connect(peer, now, passcode, given));
-            reply(out, result);
+            reply(self, out, result);
             return;
         }
         if passcode.is_some() && !self.sessions.is_connected(peer) {
             self.stats.denied += 1;
             // No reply to an unauthenticated UDP source: its address may be forged, and the
             // reply would go to someone else. (`/connect` above does answer.)
-            if matches!(peer, Peer::Tcp(_)) {
-                reply(out, Reply::denied());
+            if matches!(peer, Peer::Tcp { .. }) {
+                reply(self, out, Reply::denied());
             }
             return;
         }
@@ -212,7 +223,7 @@ impl Osc {
                         Reply::error("too many peers")
                     }
                 };
-                reply(out, result);
+                reply(self, out, result);
             }
             address => match resolve(show, &address, &message.args) {
                 Resolved::Input(input) => out.inputs.push(input),
@@ -220,11 +231,36 @@ impl Osc {
                     if r.status == STATUS_ERROR {
                         self.stats.rejected += 1;
                     }
-                    reply(out, r);
+                    reply(self, out, r);
                 }
                 Resolved::Unknown => self.stats.unknown_address += 1,
             },
         }
+    }
+
+    /// Queues a reply unless a cap says no: at most [`MAX_REPLIES_PER_CALL`] per datagram or
+    /// stream read, and for UDP peers a per-source-IP byte budget (a forged source address must
+    /// not turn us into an amplifier). Dropped replies are counted.
+    fn push_reply(&mut self, peer: Peer, now: Duration, message: OscMessage, out: &mut Outcome) {
+        if out.replies.len() >= MAX_REPLIES_PER_CALL {
+            self.stats.replies_dropped += 1;
+            return;
+        }
+        if matches!(peer, Peer::Udp(_)) {
+            let Ok(bytes) = encode_message(&message) else {
+                self.stats.replies_dropped += 1;
+                return;
+            };
+            // Plus the IP and UDP headers.
+            let cost = u64::try_from(bytes.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(28);
+            if !self.sessions.spend_reply_bytes(peer.ip(), now, cost) {
+                self.stats.replies_throttled += 1;
+                return;
+            }
+        }
+        out.replies.push(message);
     }
 }
 

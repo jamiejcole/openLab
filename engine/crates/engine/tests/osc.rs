@@ -11,9 +11,10 @@ use std::time::Duration;
 use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
 use openlab_core::{Command, CueId, CueListId, CueProperty, NumberAssignment, WorkspaceId};
 use openlab_engine::osc::{
-    CueField, DecodeError, LOCKOUT, MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH,
-    MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS, Osc, OscInput, OscShow, Outcome, Peer,
-    SlipDecoder, SlipEvent, UDP_IDLE, decode_packet, encode_message, parse_address, slip_encode,
+    CueField, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_ARRAY_DEPTH,
+    MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
+    MAX_REPLIES_PER_CALL, MAX_REPLY_JSON_BYTES, Osc, OscInput, OscShow, Outcome, Peer, SlipDecoder,
+    SlipEvent, UDP_IDLE, decode_packet, encode_message, parse_address, slip_encode,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -90,8 +91,28 @@ impl OscShow for Show {
         self.props.get(&(id, key)).cloned()
     }
     fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        (address == "/lights/blackout").then_some(TRIGGERED)
+        matches!(address, "/lights/blackout" | "/fx/all*").then_some(TRIGGERED)
     }
+}
+
+fn tcp_at(conn: u64, last_octet: u8) -> Peer {
+    Peer::Tcp {
+        conn,
+        ip: IpAddr::V4(Ipv4Addr::new(10, 0, 9, last_octet)),
+    }
+}
+
+fn tcp_peer(conn: u64) -> Peer {
+    tcp_at(conn, 1)
+}
+
+fn ip_n(i: usize) -> IpAddr {
+    IpAddr::V4(Ipv4Addr::new(
+        10,
+        1,
+        u8::try_from(i / 256).unwrap(),
+        u8::try_from(i % 256).unwrap(),
+    ))
 }
 
 fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
@@ -548,7 +569,7 @@ fn without_a_passcode_nothing_needs_connect_and_connect_is_accepted() {
 fn with_a_passcode_everything_but_connect_is_denied_until_connected() {
     let show = Show::with_passcode("s3cret");
     let mut osc = Osc::new();
-    let tcp = Peer::Tcp(1);
+    let tcp = tcp_peer(1);
     // TCP peers are told; UDP peers (possibly forged) are not.
     let out = send(&mut osc, &show, tcp, T0, &msg("/go", vec![]));
     assert!(out.inputs.is_empty());
@@ -664,29 +685,48 @@ fn repeated_wrong_passcodes_lock_the_peer_out_for_a_while() {
 }
 
 #[test]
-fn a_wrong_passcode_disconnects_a_connected_peer_and_reset_forgets_everyone() {
+fn a_wrong_passcode_never_drops_a_connected_peer_and_reset_forgets_everyone() {
     let show = Show::with_passcode("s3cret");
     let mut osc = Osc::new();
+    let console = udp();
     send(
         &mut osc,
         &show,
-        udp(),
+        console,
         T0,
         &msg("/connect", vec![s("s3cret")]),
-    );
-    send(&mut osc, &show, udp(), T0, &msg("/connect", vec![s("bad")]));
-    assert!(
-        send(&mut osc, &show, udp(), T0, &msg("/go", vec![]))
-            .inputs
-            .is_empty()
     );
     send(
         &mut osc,
         &show,
-        udp(),
+        console,
+        T0,
+        &msg("/updates", vec![OscType::Int(1)]),
+    );
+    // Many bad /connects from the same address (a forger, or someone behind the same NAT):
+    // the console stays connected and subscribed, and is not locked out.
+    for _ in 0..MAX_BAD_PASSCODES * 3 {
+        let out = send(
+            &mut osc,
+            &show,
+            console,
+            T0,
+            &msg("/connect", vec![s("bad")]),
+        );
+        assert_eq!(reply_json(&out.replies[0])["data"], "badpass");
+        let out = send(&mut osc, &show, console, T0, &msg("/go", vec![]));
+        assert_eq!(out.inputs.len(), 1);
+    }
+    assert_eq!(osc.update_subscribers(), vec![console]);
+    // And it can still re-send the right passcode.
+    let out = send(
+        &mut osc,
+        &show,
+        console,
         T0,
         &msg("/connect", vec![s("s3cret")]),
     );
+    assert_eq!(reply_json(&out.replies[0])["status"], "ok");
     osc.reset_sessions();
     assert!(
         send(&mut osc, &show, udp(), T0, &msg("/go", vec![]))
@@ -701,7 +741,7 @@ fn a_wrong_passcode_disconnects_a_connected_peer_and_reset_forgets_everyone() {
 fn updates_toggle_the_subscription() {
     let show = Show::open();
     let mut osc = Osc::new();
-    let tcp = Peer::Tcp(5);
+    let tcp = tcp_peer(5);
     let out = send(
         &mut osc,
         &show,
@@ -719,7 +759,7 @@ fn updates_toggle_the_subscription() {
         &msg("/updates", vec![OscType::Bool(true)]),
     );
     let mut subs = osc.update_subscribers();
-    subs.sort_by_key(|p| matches!(p, Peer::Tcp(_)));
+    subs.sort_by_key(|p| matches!(p, Peer::Tcp { .. }));
     assert_eq!(subs, vec![udp(), tcp]);
     send(
         &mut osc,
@@ -730,7 +770,7 @@ fn updates_toggle_the_subscription() {
     );
     assert_eq!(osc.update_subscribers(), vec![udp()]);
     // Unsubscribing a peer that never subscribed creates nothing.
-    let stranger = Peer::Tcp(77);
+    let stranger = tcp_peer(77);
     let out = send(
         &mut osc,
         &show,
@@ -772,7 +812,7 @@ fn bad_updates_arguments_are_errors() {
 fn a_silent_udp_peer_stops_getting_updates_but_a_tcp_one_does_not() {
     let show = Show::open();
     let mut osc = Osc::new();
-    let tcp = Peer::Tcp(1);
+    let tcp = tcp_peer(1);
     send(
         &mut osc,
         &show,
@@ -814,41 +854,252 @@ fn a_udp_peer_that_keeps_talking_is_not_expired() {
 }
 
 #[test]
-fn a_full_peer_table_drops_the_longest_silent_udp_peer() {
+fn a_flood_of_spoofed_subscribers_cannot_evict_a_subscribed_console() {
     let show = Show::open();
     let mut osc = Osc::new();
-    let addr = |i: usize| {
-        Peer::Udp(IpAddr::V4(Ipv4Addr::new(
-            10,
-            1,
-            u8::try_from(i / 256).unwrap(),
-            u8::try_from(i % 256).unwrap(),
-        )))
-    };
-    for i in 0..MAX_PEERS {
+    let sub = [OscType::Int(1)];
+    // The console subscribes first, so it is the longest silent peer.
+    let console = Peer::Udp(ip_n(0));
+    send(&mut osc, &show, console, T0, &msg("/updates", sub.to_vec()));
+    for i in 1..MAX_PEERS {
         let now = T0 + Duration::from_millis(u64::try_from(i).unwrap());
         send(
             &mut osc,
             &show,
-            addr(i),
+            Peer::Udp(ip_n(i)),
             now,
-            &msg("/updates", vec![OscType::Int(1)]),
+            &msg("/updates", sub.to_vec()),
         );
     }
     assert_eq!(osc.update_subscribers().len(), MAX_PEERS);
-    let newcomer = addr(MAX_PEERS);
+    // More spoofed sources are refused, not let in at the console's expense.
+    let later = T0 + Duration::from_secs(5);
+    for i in MAX_PEERS..MAX_PEERS + 50 {
+        let out = send(
+            &mut osc,
+            &show,
+            Peer::Udp(ip_n(i)),
+            later,
+            &msg("/updates", sub.to_vec()),
+        );
+        assert_eq!(reply_json(&out.replies[0])["status"], "error");
+    }
+    let subs = osc.update_subscribers();
+    assert_eq!(subs.len(), MAX_PEERS);
+    assert!(subs.contains(&console));
+    // The console keeps talking, so it outlives the silent flood; then there is room again.
+    let mut now = later;
+    for _ in 0..3 {
+        now += UDP_IDLE / 2;
+        send(&mut osc, &show, console, now, &msg("/go", vec![]));
+    }
     let out = send(
         &mut osc,
         &show,
-        newcomer,
-        T0 + Duration::from_secs(1),
-        &msg("/updates", vec![OscType::Int(1)]),
+        Peer::Udp(ip_n(MAX_PEERS + 100)),
+        now,
+        &msg("/updates", sub.to_vec()),
     );
     assert_eq!(reply_json(&out.replies[0])["status"], "ok");
-    let subs = osc.update_subscribers();
-    assert_eq!(subs.len(), MAX_PEERS);
-    assert!(subs.contains(&newcomer));
-    assert!(!subs.contains(&addr(0)));
+    assert!(osc.update_subscribers().contains(&console));
+}
+
+#[test]
+fn wrong_passcodes_from_one_ip_lock_it_out_even_over_new_tcp_connections() {
+    let show = Show::with_passcode("s3cret");
+    let mut osc = Osc::new();
+    for conn in 0..u64::from(MAX_BAD_PASSCODES) {
+        let out = send(
+            &mut osc,
+            &show,
+            tcp_at(conn, 5),
+            T0,
+            &msg("/connect", vec![s("x")]),
+        );
+        assert_eq!(reply_json(&out.replies[0])["data"], "badpass");
+    }
+    // A fresh connection from the same machine is still locked out, even with the right code.
+    let out = send(
+        &mut osc,
+        &show,
+        tcp_at(100, 5),
+        T0,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "denied");
+    // Another machine is not.
+    let out = send(
+        &mut osc,
+        &show,
+        tcp_at(101, 6),
+        T0,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+    // After the lockout the first machine may try again.
+    let out = send(
+        &mut osc,
+        &show,
+        tcp_at(102, 5),
+        T0 + LOCKOUT,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+}
+
+#[test]
+fn rotating_source_addresses_hits_the_global_failure_budget() {
+    let show = Show::with_passcode("s3cret");
+    let mut osc = Osc::new();
+    let console = udp();
+    send(
+        &mut osc,
+        &show,
+        console,
+        T0,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    // One wrong guess from each of many addresses: none is locked out by itself.
+    for i in 0..GLOBAL_MAX_FAILURES as usize {
+        let out = send(
+            &mut osc,
+            &show,
+            Peer::Udp(ip_n(i + 10)),
+            T0,
+            &msg("/connect", vec![s("x")]),
+        );
+        assert_eq!(reply_json(&out.replies[0])["data"], "badpass", "guess {i}");
+    }
+    // Now every new /connect is refused, even a right one from a fresh address...
+    let fresh = Peer::Udp(ip_n(999));
+    let out = send(
+        &mut osc,
+        &show,
+        fresh,
+        T0,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "denied");
+    // ...but the connected console is unaffected,
+    assert_eq!(
+        send(&mut osc, &show, console, T0, &msg("/go", vec![]))
+            .inputs
+            .len(),
+        1
+    );
+    // and when the window has passed new connections work again.
+    let out = send(
+        &mut osc,
+        &show,
+        fresh,
+        T0 + GLOBAL_WINDOW,
+        &msg("/connect", vec![s("s3cret")]),
+    );
+    assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+}
+
+#[test]
+fn passcodes_of_other_lengths_do_not_match() {
+    let show = Show::with_passcode("s3cret");
+    let mut osc = Osc::new();
+    for wrong in ["s3cre", "s3crets", "", "S3CRET"] {
+        let out = send(&mut osc, &show, udp(), T0, &msg("/connect", vec![s(wrong)]));
+        assert_eq!(reply_json(&out.replies[0])["data"], "badpass", "{wrong:?}");
+    }
+}
+
+#[test]
+fn replies_per_call_are_capped() {
+    let show = Show::open();
+    let mut osc = Osc::new();
+    let read = bytes(&msg("/cue/1/name", vec![]));
+    let packet = bundle(&vec![read; MAX_REPLIES_PER_CALL + 20]);
+    let out = osc.handle_datagram(udp(), T0, &packet, &show);
+    assert_eq!(out.replies.len(), MAX_REPLIES_PER_CALL);
+    assert_eq!(osc.stats().replies_dropped, 20);
+    // The same over a stream read of many small frames (a TCP peer is not byte-budgeted).
+    let mut data = Vec::new();
+    for _ in 0..MAX_REPLIES_PER_CALL + 5 {
+        data.extend(slip_encode(&bytes(&msg("/cue/1/name", vec![]))));
+    }
+    let mut decoder = SlipDecoder::default();
+    let out = osc.handle_stream(tcp_peer(1), T0, &mut decoder, &data, &show);
+    assert_eq!(out.replies.len(), MAX_REPLIES_PER_CALL);
+    assert_eq!(osc.stats().replies_dropped, 25);
+}
+
+#[test]
+fn an_oversize_reply_becomes_an_error_reply() {
+    let mut show = Show::open();
+    show.props
+        .insert((CUE_1, "notes"), json!("n".repeat(MAX_REPLY_JSON_BYTES)));
+    let mut osc = Osc::new();
+    let out = send(&mut osc, &show, udp(), T0, &msg("/cue/1/notes", vec![]));
+    let [reply] = out.replies.as_slice() else {
+        panic!("{out:?}")
+    };
+    let body = reply_json(reply);
+    assert_eq!(body["status"], "error");
+    assert_eq!(body["data"], "reply too large");
+    let OscType::String(text) = &reply.args[0] else {
+        panic!()
+    };
+    assert!(text.len() <= MAX_REPLY_JSON_BYTES);
+    // A note that fits is sent whole.
+    show.props.insert((CUE_1, "notes"), json!("n".repeat(500)));
+    let out = send(&mut osc, &show, udp(), T0, &msg("/cue/1/notes", vec![]));
+    assert_eq!(reply_json(&out.replies[0])["status"], "ok");
+}
+
+#[test]
+fn a_udp_source_has_a_reply_byte_budget_that_refills() {
+    let mut show = Show::open();
+    show.props.insert((CUE_1, "notes"), json!("n".repeat(1000)));
+    let mut osc = Osc::new();
+    let victim = udp();
+    let mut sent = 0usize;
+    let mut asks = 0;
+    while sent < 200 {
+        let out = send(&mut osc, &show, victim, T0, &msg("/cue/1/notes", vec![]));
+        sent += out.replies.len();
+        asks += 1;
+        if out.replies.is_empty() {
+            break;
+        }
+        assert!(asks < 100, "the budget never ran out");
+    }
+    // About 16 KiB of ~1.1 KB replies, then nothing.
+    assert!((10..=16).contains(&sent), "{sent} replies sent");
+    assert!(osc.stats().replies_throttled >= 1);
+    // Another source has its own budget.
+    let other = Peer::Udp(ip_n(77));
+    assert_eq!(
+        send(&mut osc, &show, other, T0, &msg("/cue/1/notes", vec![]))
+            .replies
+            .len(),
+        1
+    );
+    // Time refills it.
+    let later = T0 + Duration::from_secs(2);
+    assert_eq!(
+        send(&mut osc, &show, victim, later, &msg("/cue/1/notes", vec![]))
+            .replies
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_cue_trigger_may_contain_pattern_characters() {
+    let show = Show::open();
+    let mut osc = Osc::new();
+    assert_eq!(
+        one_input(&mut osc, &show, "/fx/all*", vec![]),
+        transport(TransportAction::Start { cue: TRIGGERED })
+    );
+    // An address with pattern characters that is no trigger is still refused.
+    let out = send(&mut osc, &show, udp(), T0, &msg("/fx/some*", vec![]));
+    assert_eq!(reply_json(&out.replies[0])["status"], "error");
 }
 
 #[test]
@@ -859,7 +1110,7 @@ fn a_table_full_of_tcp_peers_refuses_a_new_peer_politely() {
         send(
             &mut osc,
             &show,
-            Peer::Tcp(i as u64),
+            tcp_peer(i as u64),
             T0,
             &msg("/updates", vec![OscType::Int(1)]),
         );
@@ -977,7 +1228,7 @@ fn a_tcp_stream_dispatches_and_counts_oversize_and_garbage() {
     let show = Show::open();
     let mut osc = Osc::new();
     let mut decoder = SlipDecoder::new(MAX_PACKET_BYTES);
-    let tcp = Peer::Tcp(1);
+    let tcp = tcp_peer(1);
     let mut data = slip_encode(&bytes(&msg("/go", vec![])));
     data.extend(slip_encode(&bytes(&msg("/cue/1/name", vec![]))));
     data.extend(slip_encode(b"this is not osc"));
@@ -1221,7 +1472,7 @@ proptest! {
         let mut osc = Osc::new();
         let mut decoder = SlipDecoder::new(256);
         for part in data.chunks(chunk) {
-            let _ = osc.handle_stream(Peer::Tcp(1), T0, &mut decoder, part, &show);
+            let _ = osc.handle_stream(tcp_peer(1), T0, &mut decoder, part, &show);
         }
     }
 

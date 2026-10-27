@@ -19,15 +19,18 @@ The address space follows QLab 5's OSC dictionary, so existing remotes keep work
 | Messages in one packet | 128 | whole packet dropped, malformed |
 | Array nesting in type tags | 4 levels | message dropped, malformed |
 | Address | 256 bytes, 8 `/`-separated parts, no empty part (one trailing `/` is allowed) | dropped, counted as `bad_address` |
-| Peers with state | 1024 | the longest-silent UDP peer is dropped to make room; if only TCP peers are left, the newcomer's `/connect` or `/updates` gets an error reply |
+| Peers with a session (connected or subscribed) | 1024 | a full table refuses newcomers (their `/connect` or `/updates` gets an error reply) until idle UDP peers expire or TCP connections close; existing peers are never evicted, so a flood of forged sources cannot push out a real console |
+| Replies per datagram or stream read | 16 | the rest are dropped, counted as `replies_dropped` |
+| Reply JSON body | 1400 bytes | replaced by an `error` reply with data `"reply too large"` (keeps a reply near one unfragmented UDP datagram) |
+| Reply bytes to one UDP source IP | 16 KiB burst, refilling 8 KiB/s (headers counted) | further replies dropped, counted as `replies_throttled` |
 
 Bundle time tags are ignored: every message runs when it arrives, in bundle order. Bundles are flattened.
 
-Malformed or oversize input never reaches the engine. It is dropped and counted (`OscStats`: `packets`, `messages`, `malformed`, `oversize_frames`, `bad_address`, `unknown_address`, `wrong_workspace`, `denied`, `rejected`).
+Malformed or oversize input never reaches the engine. It is dropped and counted (`OscStats`: `packets`, `messages`, `malformed`, `oversize_frames`, `bad_address`, `unknown_address`, `wrong_workspace`, `denied`, `rejected`, `replies_dropped`, `replies_throttled`).
 
 ## Addresses
 
-Every address may be prefixed with `/workspace/{id}`, where `{id}` is the open workspace's id (compared case-insensitively). A message for another id is ignored, with no reply (counted as `wrong_workspace`). Address matching is exact and case-sensitive. **Wildcards and alternatives (`* ? [ ] { }`) are not expanded**; such an address gets an error reply.
+Every address may be prefixed with `/workspace/{id}`, where `{id}` is the open workspace's id (compared case-insensitively). A message for another id is ignored, with no reply (counted as `wrong_workspace`). Address matching is exact and case-sensitive. **Wildcards and alternatives (`* ? [ ] { }`) are not expanded**; such an address gets an error reply, unless it is exactly a cue's OSC trigger address (the trigger is looked up first, so trigger addresses may contain those characters).
 
 Each accepted message becomes the same input the UI sends (`docs/protocol.md`); OSC adds no engine behaviour. "The list" below is the active cue list.
 
@@ -66,9 +69,11 @@ Not implemented: `/cue/{number}/panic`, level and time properties beyond pre-wai
 - **No passcode set** (none, or empty): no message needs `/connect`. `/connect` with any argument is accepted.
 - **Passcode set**: every message except `/connect` is refused until the peer has sent `/connect` with the right passcode (one string argument; a missing or non-string argument counts as wrong). Refused messages get a `denied` reply over TCP and **no reply over UDP** (the source address of a datagram may be forged); both are counted as `denied`. The refusal comes before any cue lookup, so nothing about the show leaks.
 - `/connect` forms: `/connect` and `/workspace/{id}/connect`.
-- A wrong passcode on a peer that was connected disconnects it. After 5 wrong passcodes in a row a peer is locked out for 30 s: `/connect` during the lockout is answered `denied` without checking the passcode.
+- A wrong `/connect` from a peer that is already connected is answered `badpass` and changes nothing: it neither disconnects the peer nor counts toward a lockout (a UDP peer is only an IP address, so anyone sharing or forging it could otherwise cut a console off mid-show).
+- Failures are counted per remote IP address, for TCP too (reconnecting does not reset them). After 5 wrong passcodes from one IP, while not connected, that IP is locked out for 30 s: `/connect` during the lockout is answered `denied` without checking the passcode. Across all IPs together, 50 wrong passcodes in 60 s make every new `/connect` get `denied` until the window ends (so rotating forged source addresses does not give unlimited guesses). Peers already connected are unaffected by either.
 - A UDP peer's connection and update subscription end after 10 minutes without any packet from it; a TCP peer's end when the connection closes. The runtime clears all of them when the passcode changes or another workspace opens.
-- The passcode is compared without stopping at the first differing byte. It travels in clear text: this is access control for a trusted show network, not security against an attacker on the wire.
+- The passcode comparison does not stop at the first differing byte (its time depends on the longer string, not on where they differ; it does not hide whether the lengths are equal). It travels in clear text: this is access control for a trusted show network, not security against an attacker on the wire.
+- **Without a passcode, OSC is for trusted networks only.** Any host can then get replies and subscribe to updates, and a forged UDP source address can direct our replies at someone else. The caps above (replies per read, reply size, per-IP byte budget) bound that, but do not remove it. Set a passcode on any network you do not control. The update fan-out (M4.5a) must apply the same per-IP budget.
 - Permission levels (view, edit, control) are not implemented: a connected peer may do everything the API offers.
 
 ## Updates (NET-05)
@@ -89,6 +94,8 @@ A reply is an OSC message to the sender whose address is `/reply` followed by th
 - `/updates`: `ok` with data `"ok"`, or `error`.
 - a property read (`/cue/{number}/{property}` with no argument): `ok` with the value as JSON (string, number or boolean), or `error` if the cue has no such property.
 - anything refused: `error` with a short text in `data` (no such cue, bad argument, no cue list, unsupported address, wildcard) or `denied` (TCP only, see above).
+
+Every reply carries the workspace id, as QLab's do, including `denied` ones to peers that have not connected.
 
 Successful actions (`/go`, `/cue/1/start`, property writes, ...) get no reply.
 
