@@ -85,6 +85,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// The pre-show check (SM-06): one report of what would keep the show from running.
+    func preshowCheck() async -> Result<PreshowReport, EngineError> {
+        switch await client.send({ .request(id: $0, .preshowCheck) }) {
+        case .success(let ok):
+            if case .preshowCheck(let report)? = ok.data { return .success(report) }
+            return .failure(.encoding("preshow_check result has no preshow_check data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
     func listDevices() async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .listDevices) }
     }
