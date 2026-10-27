@@ -33,6 +33,10 @@
 "menu.transport.loadSelected" = "Load Selected";
 "menu.transport.startSelected" = "Start Selected";
 "menu.transport.pauseResumeSelected" = "Pause or Resume Selected";
+"menu.transport.previewSelected" = "Preview or Stop Preview Selected";
+"inspector.preview" = "Preview";
+"inspector.stopPreview" = "Stop Preview";
+"cue.previewing" = "Previewing";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 

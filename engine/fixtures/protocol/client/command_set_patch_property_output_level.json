@@ -1,0 +1,13 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_patch_property",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "property": {
+      "type": "output_level",
+      "output": 1,
+      "value": -3.0
+    }
+  }
+}

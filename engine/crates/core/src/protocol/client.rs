@@ -13,6 +13,9 @@ use crate::cue::FadeSpec;
 use crate::media_path::{PathStyle, is_absolute, to_portable};
 use crate::model::{CueId, CueListId, WorkspaceId};
 
+/// Longest `coalesce` key of a `command`, bytes.
+pub const MAX_COALESCE_KEY: usize = 128;
+
 /// Every `type` a client may send.
 pub const CLIENT_TYPES: &[&str] = &[
     "hello",
@@ -38,9 +41,15 @@ pub enum ClientMessage {
         client_name: String,
     },
     /// A model edit. `command` is core's [`Command`], with its own wire format.
+    ///
+    /// `coalesce` joins this edit to the previous one in a single undo step when both carry the
+    /// same key and nothing else happened between (a fader drag sends many edits, one gesture).
+    /// A fresh key per gesture; at most [`MAX_COALESCE_KEY`] bytes (longer is refused).
     Command {
         id: RequestId,
         command: Box<Command>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coalesce: Option<String>,
     },
     Transport {
         id: RequestId,
@@ -212,6 +221,9 @@ pub enum Request {
         /// Network cues still run, complete and continue, but send nothing.
         network_disabled: bool,
     },
+    /// One report of every broken cue, missing file, unmapped device and unreachable target
+    /// (SM-06), from the engine's current state.
+    PreshowCheck,
     /// The newest show-log entries the engine holds in memory (DX-02), for a log window opened
     /// after the fact. `max` absent: all of them (at most 1000).
     LogTail {

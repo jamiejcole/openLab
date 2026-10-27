@@ -4,23 +4,33 @@
 //! look-ups of their hosts. Nothing here blocks the control thread. Each destination has a
 //! worker thread with a small bounded queue, so a slow or dead one delays only its own
 //! messages; a message that cannot be queued, or fails to send, comes back as a
-//! [`NetAnswer::SendFailed`] and becomes a log entry and a warning, never a stall.
+//! [`NetAnswer::SendFailed`] and becomes a log entry and a warning, never a stall. A message
+//! that waited longer than [`MAX_MESSAGE_AGE_MS`] for its destination is dropped, not sent: a
+//! lighting cue that arrives seconds late, after the operator has moved on, is worse than none.
 //!
 //! Host names are looked up (name resolution only, nothing is sent to the host) when a
 //! workspace opens or its network patches change, so a name that does not resolve breaks the
-//! cues that use it before GO. A failed look-up is repeated every [`RETRY_AFTER`], because a
-//! network that was not up yet when the show opened must not leave its cues broken for good.
-//! There is no probing of the destination itself: UDP has no way to know, and QLab does not
-//! either.
+//! cues that use it before GO; the addresses found are what the sender then uses. A failed
+//! look-up is repeated every [`RETRY_AFTER`], because a network that was not up yet when the
+//! show opened must not leave its cues broken for good. The retry and the look-up timeout run
+//! on sample time, which stands still while the audio device is down, so during an outage a
+//! failed name is retried only once audio is back (Network cues do not need audio, but the
+//! control loop's clock is the audio clock). There is no probing of the destination itself:
+//! UDP has no way to know, and QLab does not either.
+//!
+//! Look-up threads are bounded: at most [`MAX_LOOKUPS`] are alive at once, counting those that
+//! timed out or whose name was forgotten until they answer, and at most one per (host, port).
+//! If hung look-ups fill every slot, the names waiting for one are reported `Unknown` (their
+//! cues are not broken on a guess) and [`NetOut::take_limit_note`] says so once.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
 use openlab_core::{
@@ -34,19 +44,19 @@ use crate::osc::{encode_message, slip_encode};
 
 /// Messages queued for one destination before more are refused.
 pub const LINK_QUEUE: usize = 32;
-/// Destinations with a worker thread at once.
+/// Destinations with a worker thread at once; an idle one (empty queue) is dropped to make room.
 pub const MAX_LINKS: usize = 64;
 /// Host names followed at once; a show with more than this many named patches has the rest
 /// taken to be reachable (no look-up, no problem).
 pub const MAX_TRACKED: usize = 256;
-/// Host look-ups under way at once.
+/// Host look-up threads alive at once (including ones that timed out or were forgotten).
 pub const MAX_LOOKUPS: usize = 8;
 /// A failed look-up is repeated after this long (sample time).
 pub const RETRY_AFTER: Duration = Duration::from_secs(10);
-/// A look-up that has not answered by then counts as failed, and its thread is given up on.
+/// A look-up that has not answered by then counts as failed (its thread is not waited for).
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
-/// Given-up look-up threads after which no more are started.
-pub const MAX_ABANDONED: usize = 16;
+/// A queued message older than this when its turn comes is dropped (milliseconds).
+pub const MAX_MESSAGE_AGE_MS: u64 = 1000;
 /// TCP connect and write time limit.
 pub const TCP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -78,13 +88,26 @@ impl fmt::Display for Destination {
     }
 }
 
-/// The two things done on the network, replaceable in tests. Both block, and only ever run on
+/// The things done on the network, replaceable in tests. All block, and only ever run on
 /// worker threads.
 pub trait Transport: Send + Sync {
     /// Delivers one packet (UDP: a datagram; TCP: connects and writes the SLIP frame).
-    fn send(&self, to: &Destination, packet: &[u8]) -> Result<(), String>;
-    /// Whether `host` has an address: a name look-up only.
-    fn resolve(&self, host: &str, port: u16) -> Result<(), String>;
+    /// `resolved` is what the last successful look-up of the host found, empty if there is
+    /// none (an IP address, or a name not looked up yet): then the sender resolves it itself.
+    fn send(&self, to: &Destination, resolved: &[SocketAddr], packet: &[u8]) -> Result<(), String>;
+    /// The addresses of `host`: a name look-up only.
+    fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, String>;
+    /// Milliseconds on a monotonic clock; only differences matter. The age of a queued
+    /// message is measured on it (tests move it by hand).
+    fn now_ms(&self) -> u64 {
+        monotonic_ms()
+    }
+}
+
+fn monotonic_ms() -> u64 {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let base = BASE.get_or_init(Instant::now);
+    u64::try_from(base.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The real network.
@@ -131,9 +154,23 @@ fn addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     }
 }
 
+/// IPv4 addresses first, each family in the resolver's order. Most OSC receivers bind IPv4
+/// only, and on macOS a name such as `localhost` can resolve to `::1` first, which a UDP
+/// sender would never learn was the wrong choice (QLab's behaviour here is unverified).
+pub fn prefer_ipv4(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let (v4, v6): (Vec<SocketAddr>, Vec<SocketAddr>) =
+        addrs.iter().copied().partition(SocketAddr::is_ipv4);
+    v4.into_iter().chain(v6).collect()
+}
+
 impl Transport for SystemTransport {
-    fn send(&self, to: &Destination, packet: &[u8]) -> Result<(), String> {
-        let found = addresses(&to.host, to.port)?;
+    fn send(&self, to: &Destination, resolved: &[SocketAddr], packet: &[u8]) -> Result<(), String> {
+        let found = if resolved.is_empty() {
+            addresses(&to.host, to.port)?
+        } else {
+            resolved.to_vec()
+        };
+        let found = prefer_ipv4(&found);
         match to.protocol {
             NetworkProtocol::Udp => {
                 let first = found.first().ok_or("the host has no address")?;
@@ -164,8 +201,8 @@ impl Transport for SystemTransport {
         }
     }
 
-    fn resolve(&self, host: &str, port: u16) -> Result<(), String> {
-        addresses(host, port).map(|_| ())
+    fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+        addresses(host, port)
     }
 }
 
@@ -198,7 +235,7 @@ pub enum NetAnswer {
     Lookup {
         patch: NetworkPatchId,
         ticket: u64,
-        result: Result<(), String>,
+        result: Result<Vec<SocketAddr>, String>,
     },
 }
 
@@ -216,7 +253,10 @@ pub enum SendOutcome {
 struct Job {
     cue: CueId,
     packet: Vec<u8>,
+    queued_ms: u64,
 }
+
+type Resolved = Arc<Mutex<Vec<SocketAddr>>>;
 
 struct Link {
     to: Destination,
@@ -231,7 +271,7 @@ enum Phase {
         ticket: u64,
         since: SampleTime,
     },
-    /// Answered; looked up again at `retry_at` if set.
+    /// Answered or timed out; looked up again at `retry_at` if set.
     Idle {
         retry_at: Option<SampleTime>,
     },
@@ -250,11 +290,16 @@ pub struct NetOut {
     transport: Arc<dyn Transport>,
     inbox: Sender<Inbox>,
     rate: u64,
-    disabled: bool,
+    /// Shared with the workers, so turning the override on also stops what is queued.
+    disabled: Arc<AtomicBool>,
     links: HashMap<NetworkPatchId, Link>,
+    /// The addresses the last successful look-up of each patch's host found.
+    resolved: HashMap<NetworkPatchId, Resolved>,
     lookups: HashMap<NetworkPatchId, Lookup>,
-    in_flight: usize,
-    abandoned: usize,
+    /// Look-up threads that have not answered yet, by ticket: the bound on threads.
+    running: HashMap<u64, (String, u16)>,
+    limit_hit: bool,
+    limit_note: bool,
     next_ticket: u64,
     /// Messages queued or being sent; a worker counts one off after it has reported any
     /// failure, so zero means every answer is already in the inbox (the offline driver waits
@@ -271,11 +316,13 @@ impl NetOut {
             transport: transport.0,
             inbox,
             rate: u64::from(sample_rate.max(1)),
-            disabled: false,
+            disabled: Arc::new(AtomicBool::new(false)),
             links: HashMap::new(),
+            resolved: HashMap::new(),
             lookups: HashMap::new(),
-            in_flight: 0,
-            abandoned: 0,
+            running: HashMap::new(),
+            limit_hit: false,
+            limit_note: false,
             next_ticket: 0,
             outstanding: Arc::new(AtomicUsize::new(0)),
         }
@@ -283,16 +330,24 @@ impl NetOut {
 
     /// Look-ups under way plus messages queued or being sent.
     pub fn busy(&self) -> usize {
-        self.in_flight + self.outstanding.load(Ordering::SeqCst)
+        self.running.len() + self.outstanding.load(Ordering::SeqCst)
     }
 
     /// PB-10: whether Network cues send nothing. Runtime state of the engine, never saved.
     pub fn disabled(&self) -> bool {
-        self.disabled
+        self.disabled.load(Ordering::SeqCst)
     }
 
+    /// Turning it on also stops messages already queued: their workers check it before they
+    /// send.
     pub fn set_disabled(&mut self, disabled: bool) {
-        self.disabled = disabled;
+        self.disabled.store(disabled, Ordering::SeqCst);
+    }
+
+    /// True once each time every look-up slot was found taken by hung look-ups (the caller
+    /// logs it).
+    pub fn take_limit_note(&mut self) -> bool {
+        std::mem::take(&mut self.limit_note)
     }
 
     fn samples(&self, d: Duration) -> SampleTime {
@@ -316,6 +371,7 @@ impl NetOut {
             self.forget(id, &mut out);
         }
         self.links.retain(|id, _| keep.contains(id));
+        self.resolved.retain(|id, _| keep.contains(id));
         for patch in patches {
             let named = matches!(check_endpoint(&patch.host, patch.port), Ok(HostKind::Name));
             match self.lookups.get(&patch.id) {
@@ -341,17 +397,20 @@ impl NetOut {
             }
         }
         self.start_wanted(now);
+        out.extend(self.relieve());
         out
     }
 
+    /// Drops a patch's look-up state. A look-up thread still running for it stays counted in
+    /// `running` until it answers.
     fn forget(&mut self, id: NetworkPatchId, out: &mut Reports) {
-        if let Some(l) = self.lookups.remove(&id) {
-            if matches!(l.phase, Phase::InFlight { .. }) {
-                self.in_flight = self.in_flight.saturating_sub(1);
-            }
-            if l.reported != NetworkReachability::Unknown {
-                out.push((id, NetworkReachability::Unknown));
-            }
+        if let Some(r) = self.resolved.get(&id) {
+            r.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        }
+        if let Some(l) = self.lookups.remove(&id)
+            && l.reported != NetworkReachability::Unknown
+        {
+            out.push((id, NetworkReachability::Unknown));
         }
     }
 
@@ -365,21 +424,32 @@ impl NetOut {
         else {
             return Vec::new();
         };
+        // The thread is gone, whatever it was for: its slot is free again.
+        self.running.remove(&ticket);
         let retry = now.saturating_add(self.samples(RETRY_AFTER));
-        let Some(l) = self.lookups.get_mut(&patch) else {
-            return Vec::new();
-        };
+        let mut out = Reports::new();
         // An answer of a look-up that was replaced or given up on is not about this one.
-        if !matches!(l.phase, Phase::InFlight { ticket: t, .. } if t == ticket) {
-            return Vec::new();
+        if let Some(l) = self.lookups.get_mut(&patch)
+            && matches!(l.phase, Phase::InFlight { ticket: t, .. } if t == ticket)
+        {
+            let (reached, retry_at) = match result {
+                Ok(addrs) => {
+                    self.resolved
+                        .entry(patch)
+                        .or_default()
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone_from(&addrs);
+                    (NetworkReachability::Resolved, None)
+                }
+                Err(reason) => (NetworkReachability::Unresolved { reason }, Some(retry)),
+            };
+            l.phase = Phase::Idle { retry_at };
+            out.extend(Self::changed(l, patch, reached));
         }
-        self.in_flight = self.in_flight.saturating_sub(1);
-        let (reached, retry_at) = match result {
-            Ok(()) => (NetworkReachability::Resolved, None),
-            Err(reason) => (NetworkReachability::Unresolved { reason }, Some(retry)),
-        };
-        l.phase = Phase::Idle { retry_at };
-        Self::changed(l, patch, reached)
+        self.start_wanted(now);
+        out.extend(self.relieve());
+        out
     }
 
     fn changed(l: &mut Lookup, patch: NetworkPatchId, now: NetworkReachability) -> Reports {
@@ -395,12 +465,10 @@ impl NetOut {
         let timeout = self.samples(LOOKUP_TIMEOUT);
         let retry = now.saturating_add(self.samples(RETRY_AFTER));
         let mut out = Reports::new();
-        let mut freed = 0;
         for (id, l) in &mut self.lookups {
             match l.phase {
                 Phase::InFlight { since, .. } if now.saturating_sub(since) >= timeout => {
-                    freed += 1;
-                    self.abandoned += 1;
+                    // The thread is not waited for, but it stays counted in `running`.
                     l.phase = Phase::Idle {
                         retry_at: Some(retry),
                     };
@@ -416,15 +484,32 @@ impl NetOut {
                 _ => {}
             }
         }
-        self.in_flight = self.in_flight.saturating_sub(freed);
         self.start_wanted(now);
+        out.extend(self.relieve());
+        out
+    }
+
+    /// With every slot taken by look-ups that never answered, the names that wait for a slot
+    /// are not known to be bad: report them `Unknown` instead of leaving them broken.
+    fn relieve(&mut self) -> Reports {
+        if self.running.len() < MAX_LOOKUPS {
+            self.limit_hit = false;
+            return Vec::new();
+        }
+        let mut out = Reports::new();
+        for (id, l) in &mut self.lookups {
+            if l.phase == Phase::Wanted {
+                out.extend(Self::changed(l, *id, NetworkReachability::Unknown));
+            }
+        }
+        if !self.limit_hit && !out.is_empty() {
+            self.limit_hit = true;
+            self.limit_note = true;
+        }
         out
     }
 
     fn start_wanted(&mut self, now: SampleTime) {
-        if self.abandoned >= MAX_ABANDONED {
-            return;
-        }
         let mut wanted: Vec<NetworkPatchId> = self
             .lookups
             .iter()
@@ -435,21 +520,26 @@ impl NetOut {
         wanted.sort_by_key(|id| id.0);
         let retry_at = now.saturating_add(self.samples(RETRY_AFTER));
         for id in wanted {
-            if self.in_flight >= MAX_LOOKUPS {
+            if self.running.len() >= MAX_LOOKUPS {
                 break;
             }
-            self.next_ticket = self.next_ticket.wrapping_add(1);
-            let ticket = self.next_ticket;
             let Some(l) = self.lookups.get_mut(&id) else {
                 continue;
             };
             let (host, port) = (l.host.clone(), l.port);
+            // One live thread per name: a second would only wait on the same resolver.
+            if self.running.values().any(|(h, p)| *h == host && *p == port) {
+                continue;
+            }
+            self.next_ticket = self.next_ticket.wrapping_add(1);
+            let ticket = self.next_ticket;
             let transport = Arc::clone(&self.transport);
             let inbox = self.inbox.clone();
+            let name = host.clone();
             let spawned = thread::Builder::new()
                 .name("openlab-net-lookup".into())
                 .spawn(move || {
-                    let result = transport.resolve(&host, port);
+                    let result = transport.resolve(&name, port);
                     let _ = inbox.send(Inbox::Net(NetAnswer::Lookup {
                         patch: id,
                         ticket,
@@ -459,7 +549,7 @@ impl NetOut {
             match spawned {
                 Ok(_) => {
                     l.phase = Phase::InFlight { ticket, since: now };
-                    self.in_flight += 1;
+                    self.running.insert(ticket, (host, port));
                 }
                 Err(_) => {
                     l.phase = Phase::Idle {
@@ -472,26 +562,46 @@ impl NetOut {
 
     /// Hands a message to its destination's worker.
     pub fn send(&mut self, patch: &NetworkPatch, cue: CueId, packet: Vec<u8>) -> SendOutcome {
-        if self.disabled {
+        if self.disabled() {
             return SendOutcome::Suppressed;
         }
         let to = Destination::of(patch);
         if self.links.get(&patch.id).is_none_or(|l| l.to != to) {
-            if self.links.len() >= MAX_LINKS && !self.links.contains_key(&patch.id) {
-                return SendOutcome::Refused("too many network destinations".to_owned());
+            self.links.remove(&patch.id);
+            if self.links.len() >= MAX_LINKS {
+                // Free a sender with nothing queued; its worker ends after any message it is
+                // sending now.
+                let idle = self
+                    .links
+                    .iter()
+                    .find(|(_, l)| l.tx.is_empty())
+                    .map(|(id, _)| *id);
+                match idle {
+                    Some(id) => {
+                        self.links.remove(&id);
+                    }
+                    None => {
+                        return SendOutcome::Refused("too many network destinations".to_owned());
+                    }
+                }
             }
-            match self.spawn_link(to) {
+            match self.spawn_link(patch.id, to) {
                 Ok(link) => {
                     self.links.insert(patch.id, link);
                 }
                 Err(e) => return SendOutcome::Refused(format!("could not start a sender: {e}")),
             }
         }
+        let queued_ms = self.transport.now_ms();
         let Some(link) = self.links.get(&patch.id) else {
             return SendOutcome::Refused("no sender".to_owned());
         };
         self.outstanding.fetch_add(1, Ordering::SeqCst);
-        match link.tx.try_send(Job { cue, packet }) {
+        match link.tx.try_send(Job {
+            cue,
+            packet,
+            queued_ms,
+        }) {
             Ok(()) => SendOutcome::Queued,
             Err(TrySendError::Full(_)) => {
                 self.outstanding.fetch_sub(1, Ordering::SeqCst);
@@ -506,19 +616,33 @@ impl NetOut {
         }
     }
 
-    fn spawn_link(&self, to: Destination) -> std::io::Result<Link> {
+    fn spawn_link(&mut self, patch: NetworkPatchId, to: Destination) -> std::io::Result<Link> {
         let (tx, rx) = bounded::<Job>(LINK_QUEUE);
         let transport = Arc::clone(&self.transport);
         let inbox = self.inbox.clone();
         let dest = to.clone();
         let outstanding = Arc::clone(&self.outstanding);
+        let disabled = Arc::clone(&self.disabled);
+        let resolved = Arc::clone(self.resolved.entry(patch).or_default());
         thread::Builder::new()
             .name("openlab-net-send".into())
             .spawn(move || {
                 // Ends when the control thread drops the link (a destination that changed, or
                 // shutdown), after sending what is queued.
                 while let Ok(job) = rx.recv() {
-                    if let Err(reason) = transport.send(&dest, &job.packet) {
+                    let outcome = if disabled.load(Ordering::SeqCst) {
+                        Ok(())
+                    } else if transport.now_ms().saturating_sub(job.queued_ms) > MAX_MESSAGE_AGE_MS
+                    {
+                        Err("destination too late".to_owned())
+                    } else {
+                        let found = resolved
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clone();
+                        transport.send(&dest, &found, &job.packet)
+                    };
+                    if let Err(reason) = outcome {
                         let _ = inbox.send(Inbox::Net(NetAnswer::SendFailed {
                             cue: job.cue,
                             destination: dest.to_string(),
@@ -578,24 +702,44 @@ mod tests {
         }
     }
 
-    struct Fake(Mutex<Vec<(String, Result<(), String>)>>);
+    struct Fake;
     impl Transport for Fake {
-        fn send(&self, _: &Destination, _: &[u8]) -> Result<(), String> {
+        fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
             Ok(())
         }
-        fn resolve(&self, host: &str, _: u16) -> Result<(), String> {
-            self.0
-                .lock()
-                .map_err(|_| "poisoned".to_owned())?
-                .push((host.to_owned(), Ok(())));
-            Ok(())
+        fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
+            Ok(vec![])
         }
     }
 
     fn out() -> (NetOut, crossbeam_channel::Receiver<Inbox>) {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let t = NetTransport(Arc::new(Fake(Mutex::new(Vec::new()))));
-        (NetOut::new(t, tx, 1000), rx)
+        (NetOut::new(NetTransport(Arc::new(Fake)), tx, 1000), rx)
+    }
+
+    /// The ticket of `patch`'s look-up in flight.
+    fn ticket(net: &NetOut, n: u128) -> u64 {
+        match net.lookups.get(&nid(n)).map(|l| &l.phase) {
+            Some(Phase::InFlight { ticket, .. }) => *ticket,
+            other => panic!("not in flight: {other:?}"),
+        }
+    }
+
+    fn fail(net: &mut NetOut, n: u128, t: u64, now: SampleTime) -> Reports {
+        net.answer(
+            NetAnswer::Lookup {
+                patch: nid(n),
+                ticket: t,
+                result: Err("no such host".into()),
+            },
+            now,
+        )
+    }
+
+    fn unresolved(reason: &str) -> NetworkReachability {
+        NetworkReachability::Unresolved {
+            reason: reason.into(),
+        }
     }
 
     #[test]
@@ -607,7 +751,6 @@ mod tests {
             OscArg::Bool { value: true },
         ];
         let udp = packet("/a/b", &args, NetworkProtocol::Udp).unwrap_or_default();
-        // /a/b, ,ifsT, 1, 0.5, "hi" padded.
         let want: Vec<u8> = [
             &b"/a/b\0\0\0\0"[..],
             b",ifsT\0\0\0",
@@ -647,6 +790,17 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_comes_first_when_the_resolver_returns_both() {
+        let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, 9000));
+        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, 9000));
+        let v4b = SocketAddr::from((Ipv4Addr::new(10, 0, 0, 1), 9000));
+        assert_eq!(prefer_ipv4(&[v6, v4]), vec![v4, v6]);
+        assert_eq!(prefer_ipv4(&[v6, v4, v4b]), vec![v4, v4b, v6]);
+        assert_eq!(prefer_ipv4(&[v6]), vec![v6]);
+        assert!(prefer_ipv4(&[]).is_empty());
+    }
+
+    #[test]
     fn sync_looks_up_names_only_and_reports_changes() {
         let (mut net, _rx) = out();
         let patches = [
@@ -654,81 +808,179 @@ mod tests {
             patch(2, "10.0.0.2"),
             patch(3, "bad host"),
         ];
-        // Nothing to report before an answer; only the name is looked up.
         assert!(
             net.sync(&patches, true, 0)
                 .iter()
                 .all(|(id, r)| { *id == nid(1) && *r == NetworkReachability::Unknown })
         );
         assert_eq!(net.lookups.len(), 1);
-        assert_eq!(net.in_flight, 1);
-        let Some(Phase::InFlight { ticket, .. }) = net.lookups.get(&nid(1)).map(|l| &l.phase)
-        else {
-            panic!("not in flight");
-        };
-        let ticket = *ticket;
-        let failed = NetAnswer::Lookup {
-            patch: nid(1),
-            ticket,
-            result: Err("no such host".into()),
-        };
+        assert_eq!(net.running.len(), 1);
+        let t = ticket(&net, 1);
         assert_eq!(
-            net.answer(failed, 100),
-            vec![(
-                nid(1),
-                NetworkReachability::Unresolved {
-                    reason: "no such host".into()
-                }
-            )]
+            fail(&mut net, 1, t, 100),
+            vec![(nid(1), unresolved("no such host"))]
         );
-        assert_eq!(net.in_flight, 0);
-        // The same failure again is no news; a stale ticket is ignored.
+        assert_eq!(net.running.len(), 0);
+        // A stale ticket is ignored.
         let stale = NetAnswer::Lookup {
             patch: nid(1),
-            ticket: ticket + 99,
-            result: Ok(()),
+            ticket: t + 99,
+            result: Ok(vec![]),
         };
         assert!(net.answer(stale, 101).is_empty());
         // Retried after RETRY_AFTER (10 s = 10_000 samples at 1 kHz), not before.
         assert!(net.tick(9_000).is_empty());
-        assert_eq!(net.in_flight, 0);
+        assert_eq!(net.running.len(), 0);
         net.tick(10_100);
-        assert_eq!(net.in_flight, 1);
+        assert_eq!(net.running.len(), 1);
     }
 
+    /// H1: look-ups that time out and answer late free their slots, so a slow resolver does not
+    /// end look-ups for the rest of the session.
     #[test]
-    fn a_look_up_that_never_answers_is_given_up_on() {
+    fn a_slow_resolver_times_out_retries_and_recovers() {
         let (mut net, _rx) = out();
         net.sync(&[patch(1, "lights.local")], false, 0);
-        assert_eq!(net.in_flight, 1);
-        assert!(net.tick(19_000).is_empty());
-        let reports = net.tick(20_000);
-        assert!(matches!(
-            reports.as_slice(),
-            [(_, NetworkReachability::Unresolved { .. })]
-        ));
-        assert_eq!(net.in_flight, 0);
-        assert_eq!(net.abandoned, 1);
+        let mut now = 0;
+        let mut tickets = Vec::new();
+        // Far more tries than the old give-up limit; each thread answers only after its
+        // timeout, as a resolver slower than 20 s would.
+        for _ in 0..40 {
+            tickets.push(ticket_or_none(&net));
+            now += 20_000;
+            let r = net.tick(now);
+            assert!(
+                matches!(
+                    r.as_slice(),
+                    [] | [(_, NetworkReachability::Unresolved { .. })]
+                ),
+                "{r:?}"
+            );
+            // The thread finally answers (failed), after its timeout.
+            if let Some(t) = tickets.last().copied().flatten() {
+                fail(&mut net, 1, t, now);
+            }
+            now += 10_000;
+            net.tick(now);
+        }
+        assert!(net.running.len() <= 1, "{}", net.running.len());
+        // The resolver recovers: the next try resolves and the name is mended.
+        let t = loop {
+            if let Some(Phase::InFlight { ticket, .. }) = net.lookups.get(&nid(1)).map(|l| &l.phase)
+            {
+                break *ticket;
+            }
+            now += 1_000;
+            net.tick(now);
+        };
+        let r = net.answer(
+            NetAnswer::Lookup {
+                patch: nid(1),
+                ticket: t,
+                result: Ok(vec![]),
+            },
+            now,
+        );
+        assert_eq!(r, vec![(nid(1), NetworkReachability::Resolved)]);
+    }
+
+    fn ticket_or_none(net: &NetOut) -> Option<u64> {
+        match net.lookups.get(&nid(1)).map(|l| &l.phase) {
+            Some(Phase::InFlight { ticket, .. }) => Some(*ticket),
+            _ => None,
+        }
+    }
+
+    /// H1: when hung look-ups fill every slot, waiting names are `Unknown`, not broken, the
+    /// limit is noted once, and look-ups resume when a thread answers.
+    #[test]
+    fn hung_look_ups_filling_every_slot_do_not_break_cues() {
+        let (mut net, _rx) = out();
+        let names: Vec<NetworkPatch> = (1..=12).map(|n| patch(n, &format!("h{n}.local"))).collect();
+        net.sync(&names, false, 0);
+        assert_eq!(net.running.len(), MAX_LOOKUPS);
+        // Every started look-up times out and none answers.
+        let r = net.tick(20_000);
+        assert_eq!(
+            r.iter()
+                .filter(|(_, v)| matches!(v, NetworkReachability::Unresolved { .. }))
+                .count(),
+            MAX_LOOKUPS
+        );
+        // 10 s later they are due again, but all slots are held by the hung threads: the
+        // names waiting are reported Unknown (mended), and the limit is noted once.
+        let r = net.tick(30_000);
+        assert_eq!(
+            r.iter()
+                .filter(|(_, v)| *v == NetworkReachability::Unknown)
+                .count(),
+            MAX_LOOKUPS
+        );
+        assert!(net.take_limit_note());
+        net.tick(31_000);
+        assert!(!net.take_limit_note(), "noted once");
+        assert_eq!(net.running.len(), MAX_LOOKUPS);
+        // One hung thread finally answers: its slot serves a waiting name.
+        let hung = *net.running.keys().min().unwrap_or(&0);
+        let key = net.running.get(&hung).cloned();
+        net.answer(
+            NetAnswer::Lookup {
+                patch: nid(999),
+                ticket: hung,
+                result: Err("late".into()),
+            },
+            32_000,
+        );
+        assert_eq!(
+            net.running.len(),
+            MAX_LOOKUPS,
+            "a waiting name took the slot"
+        );
+        assert!(!net.running.values().any(|v| Some(v) == key.as_ref()) || key.is_none());
+    }
+
+    /// M2: forgetting an in-flight look-up does not free its thread's slot, and a name has
+    /// at most one live thread.
+    #[test]
+    fn rapid_forget_and_restart_cannot_pile_up_threads() {
+        let (mut net, _rx) = out();
+        let names: Vec<NetworkPatch> = (1..=8).map(|n| patch(n, &format!("h{n}.local"))).collect();
+        for round in 0..50 {
+            net.sync(&names, false, round);
+            net.sync(&[], false, round);
+        }
+        assert!(net.running.len() <= MAX_LOOKUPS, "{}", net.running.len());
+        // The same name restarted while its old thread runs does not get a second one.
+        let (mut net, _rx) = out();
+        net.sync(&[patch(1, "a.local")], false, 0);
+        net.sync(&[], false, 1);
+        net.sync(&[patch(1, "a.local")], false, 2);
+        assert_eq!(net.running.len(), 1);
+        assert!(
+            net.lookups
+                .get(&nid(1))
+                .is_some_and(|l| l.phase == Phase::Wanted)
+        );
+        // Its old thread answers: the name is looked up again.
+        let old = *net.running.keys().next().unwrap_or(&0);
+        net.answer(
+            NetAnswer::Lookup {
+                patch: nid(1),
+                ticket: old,
+                result: Ok(vec![]),
+            },
+            3,
+        );
+        assert_eq!(net.running.len(), 1);
+        assert_ne!(*net.running.keys().next().unwrap_or(&0), old);
     }
 
     #[test]
     fn removing_or_editing_a_patch_clears_its_state() {
         let (mut net, _rx) = out();
         net.sync(&[patch(1, "lights.local")], false, 0);
-        let Some(Phase::InFlight { ticket, .. }) = net.lookups.get(&nid(1)).map(|l| &l.phase)
-        else {
-            panic!("not in flight");
-        };
-        let ticket = *ticket;
-        net.answer(
-            NetAnswer::Lookup {
-                patch: nid(1),
-                ticket,
-                result: Err("x".into()),
-            },
-            0,
-        );
-        // Edited to an address: nothing to look up, and the engine hears it is fine again.
+        let t = ticket(&net, 1);
+        fail(&mut net, 1, t, 0);
         let r = net.sync(&[patch(1, "10.0.0.1")], false, 1);
         assert_eq!(r, vec![(nid(1), NetworkReachability::Unknown)]);
         assert!(net.lookups.is_empty());
@@ -738,19 +990,21 @@ mod tests {
     fn a_show_with_very_many_named_patches_follows_a_bounded_number() {
         let (mut net, _rx) = out();
         let patches: Vec<NetworkPatch> = (0..(MAX_TRACKED as u128 + 50))
-            .map(|n| patch(n + 1, "a.local"))
+            .map(|n| patch(n + 1, &format!("a{n}.local")))
             .collect();
         net.sync(&patches, false, 0);
         assert_eq!(net.lookups.len(), MAX_TRACKED);
-        assert!(net.in_flight <= MAX_LOOKUPS);
+        assert!(net.running.len() <= MAX_LOOKUPS);
     }
 
     #[test]
     fn at_most_max_lookups_run_at_once() {
         let (mut net, _rx) = out();
-        let patches: Vec<NetworkPatch> = (0..20).map(|n| patch(n + 1, "a.local")).collect();
+        let patches: Vec<NetworkPatch> = (0..20)
+            .map(|n| patch(n + 1, &format!("a{n}.local")))
+            .collect();
         net.sync(&patches, false, 0);
-        assert_eq!(net.in_flight, MAX_LOOKUPS);
+        assert_eq!(net.running.len(), MAX_LOOKUPS);
     }
 
     #[test]
@@ -761,5 +1015,16 @@ mod tests {
         let o = net.send(&patch(1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
         assert_eq!(o, SendOutcome::Suppressed);
         assert!(net.links.is_empty());
+    }
+
+    /// L2: an idle sender is dropped to make room once MAX_LINKS is reached.
+    #[test]
+    fn idle_senders_are_freed_when_the_limit_is_reached() {
+        let (mut net, _rx) = out();
+        for n in 0..(MAX_LINKS as u128 + 10) {
+            let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
+            assert_eq!(o, SendOutcome::Queued, "{n}");
+        }
+        assert!(net.links.len() <= MAX_LINKS);
     }
 }

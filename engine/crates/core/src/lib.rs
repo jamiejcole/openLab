@@ -9,6 +9,7 @@
 mod backup;
 mod changes;
 mod command;
+mod command_model;
 mod cue;
 mod cue_engine;
 mod cue_index;
@@ -27,6 +28,9 @@ mod validate;
 pub use backup::*;
 pub use changes::*;
 pub use command::*;
+pub use command_model::{
+    MAX_OSC_PASSCODE_BYTES, NetworkPatchProperty, PatchProperty, TransportKey, WorkspaceSetting,
+};
 pub use cue::*;
 pub use cue_engine::*;
 pub use cue_index::*;
