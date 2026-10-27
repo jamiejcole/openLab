@@ -5,8 +5,9 @@
 //! that must know a cue's container, its ancestors and workspace order.
 //!
 //! An edit names the cues it touched ([`crate::Footprint`]); [`CueIndex::reconcile`] reads only
-//! those cues (and the sibling lists they moved between) out of the new workspace, so its cost
-//! follows the edit, not the show. A cue is found by walking its recorded ancestors and checking
+//! those cues (and the sibling lists they moved between) out of the new workspace, so it reads
+//! the edit's cues and their sibling lists, not the whole show (a lookup still scans the
+//! sibling list at each level of the path, so a flat list of n cues costs O(n); M4.12c). A cue is found by walking its recorded ancestors and checking
 //! each step against the workspace (so a stale record can never give a wrong answer); only a
 //! cue the index cannot place that way (it moved, or is gone) costs one allocation-free scan of
 //! the cue ids. [`CueIndex::build`] is the reference: after any edit the reconciled index equals
@@ -284,7 +285,13 @@ impl CueIndex {
                     enqueue(old, &mut work);
                 }
             }
-            if before.is_none() && matches!(cue.kind, CueKind::Group { .. }) {
+            // A structural id may be a different cue than the index knew (removed and added
+            // again in one edit, as a group, or no longer one): its kids are re-read whenever
+            // it is a group now or held kids before.
+            if (before.is_none() || structural.contains(&id))
+                && (matches!(cue.kind, CueKind::Group { .. })
+                    || self.kids.contains_key(&CueContainer::Group(id)))
+            {
                 enqueue(CueContainer::Group(id), &mut work);
             }
         }
