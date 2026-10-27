@@ -2,13 +2,16 @@
 
 //! Which audio cues' slices cannot be played with their file (`bad_plan` warnings), kept per
 //! cue and recomputed only when the cue's trims and markers or its file's probe change: an edit
-//! of one cue in a show of thousands builds one plan, not thousands (docs/control.md).
+//! of one cue in a show of thousands builds one plan, not thousands (docs/control.md). The same
+//! plans give each cue's nominal length, which the cue engine is told when it changes
+//! (`Input::CueLengths`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use openlab_core::{Cue, CueId, CueKind, SliceMarker, Workspace};
+use openlab_audio::total_frames;
+use openlab_core::{Cue, CueId, CueKind, SampleTime, SliceMarker, Workspace};
 
 use super::media::MediaCatalog;
 use super::plan::{PlanFailure, PlanSpec, cue_slices};
@@ -20,6 +23,8 @@ struct Entry {
     marks: Vec<(u64, u32)>,
     last: u32,
     error: Option<String>,
+    /// The action's length from the top; `None` if it loops forever or has no plan.
+    length: Option<u64>,
     /// The pass that last saw the cue.
     pass: u64,
 }
@@ -44,6 +49,8 @@ pub struct PlanChecks {
     cache: HashMap<CueId, Entry>,
     pass: u64,
     builds: u64,
+    /// The lengths the cue engine was last told (`length_changes`).
+    told: BTreeMap<CueId, SampleTime>,
 }
 
 impl PlanChecks {
@@ -102,9 +109,9 @@ impl PlanChecks {
                 }
                 _ => {
                     self.builds += 1;
-                    let error = match cue_slices(&spec, &ready.probed.info, rate, 0) {
-                        Ok(_) => None,
-                        Err(PlanFailure::Plan(e)) => Some(e.to_string()),
+                    let (error, length) = match cue_slices(&spec, &ready.probed.info, rate, 0) {
+                        Ok(table) => (None, total_frames(&table)),
+                        Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None),
                     };
                     self.cache.insert(
                         c.id,
@@ -115,6 +122,7 @@ impl PlanChecks {
                             marks: marks(slices),
                             last: *last_slice_play_count,
                             error: error.clone(),
+                            length,
                             pass,
                         },
                     );
@@ -125,6 +133,32 @@ impl PlanChecks {
                 out.push((c.id, e));
             }
         }
+    }
+
+    /// The nominal lengths that changed since the last call, as of the last `check`: a cue with
+    /// a finite plan now gets its length, one that had a length and has none now (gone, its file
+    /// not probed or not playable, a plan that loops forever or cannot be built) gets `None`.
+    /// In id order.
+    pub fn length_changes(&mut self) -> Vec<(CueId, Option<SampleTime>)> {
+        let now: BTreeMap<CueId, SampleTime> = self
+            .cache
+            .iter()
+            .filter_map(|(id, e)| e.length.map(|l| (*id, l)))
+            .collect();
+        let mut out: Vec<(CueId, Option<SampleTime>)> = self
+            .told
+            .keys()
+            .filter(|id| !now.contains_key(id))
+            .map(|id| (*id, None))
+            .collect();
+        out.extend(
+            now.iter()
+                .filter(|(id, l)| self.told.get(id) != Some(l))
+                .map(|(id, l)| (*id, Some(*l))),
+        );
+        out.sort_by_key(|(id, _)| *id);
+        self.told = now;
+        out
     }
 
     /// Plans built so far (a cost measure for tests).
