@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
-use openlab_core::{CueId, CueListId, WorkspaceId};
+use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
     CueField, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder, decode_packet,
     encode_message,
@@ -41,15 +41,15 @@ const MAX_RECORDS: usize = 256;
 const PEERS: u8 = 6;
 
 struct Show {
-    passcode: Option<&'static str>,
+    access: OscAccess,
 }
 
 impl OscShow for Show {
     fn workspace_id(&self) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(1))
     }
-    fn passcode(&self) -> Option<&str> {
-        self.passcode
+    fn access(&self) -> &OscAccess {
+        &self.access
     }
     fn active_list(&self) -> Option<CueListId> {
         Some(CueListId(Uuid::from_u128(2)))
@@ -100,11 +100,23 @@ pub fn run(data: &[u8]) -> Result<(), String> {
     let Some((&config, rest)) = data.split_first() else {
         return Ok(());
     };
+    // With the bit set, peers without a passcode have no rights and one passcode has all.
     let show = Show {
-        passcode: (config & 1 != 0).then_some(PASSCODE),
+        access: if config & 1 != 0 {
+            OscAccess {
+                no_passcode: OscRights::NONE,
+                passcodes: vec![OscPasscode {
+                    passcode: PASSCODE.to_owned(),
+                    rights: OscRights::ALL,
+                }],
+            }
+        } else {
+            OscAccess::default()
+        },
     };
     // Without the passcode's bytes anywhere in the input, nobody can have connected.
-    let locked_out_for_good = show.passcode.is_some() && !contains(rest, PASSCODE.as_bytes());
+    let locked_out_for_good =
+        show.access.requires_passcode() && !contains(rest, PASSCODE.as_bytes());
     let mut osc = Osc::new();
     let mut decoders: HashMap<u8, SlipDecoder> = HashMap::new();
     let mut now = Duration::ZERO;
@@ -167,7 +179,12 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                 };
                 for subscriber in osc.update_subscribers(now) {
                     if let Some(bytes) = osc.encode_update(&update)
-                        && osc.update_allowed(subscriber, now, bytes.len(), show.passcode.is_some())
+                        && osc.update_allowed(
+                            subscriber,
+                            now,
+                            bytes.len(),
+                            show.access.requires_passcode(),
+                        )
                         && decode_packet(&bytes).is_err()
                     {
                         return Err("an update did not decode".into());
@@ -178,8 +195,12 @@ pub fn run(data: &[u8]) -> Result<(), String> {
         if osc.known_ips() > MAX_KNOWN_IPS || osc.update_subscribers(now).len() > MAX_PEERS {
             return Err("a table grew past its bound".into());
         }
+        // `/updates` works at any access level, but a subscriber that may not view is sent nothing.
         if locked_out_for_good
-            && (!osc.update_subscribers(now).is_empty()
+            && (osc
+                .update_subscribers(now)
+                .into_iter()
+                .any(|p| osc.may_receive_updates(p, &show.access))
                 || (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))))
         {
             return Err("a peer got a session without the passcode".into());

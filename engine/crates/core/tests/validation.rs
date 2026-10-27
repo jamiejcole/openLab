@@ -1075,3 +1075,196 @@ fn issues_render_as_readable_text() {
         "{text}"
     );
 }
+
+// ---- OSC passcode table (M4.5c) ----
+
+fn row(passcode: &str, view: bool, edit: bool, control: bool) -> OscPasscode {
+    OscPasscode {
+        passcode: passcode.into(),
+        rights: OscRights {
+            view,
+            edit,
+            control,
+        },
+    }
+}
+
+fn access_issues(access: OscAccess) -> (OscAccess, Vec<ValidationIssue>) {
+    let mut ws = workspace(vec![]);
+    ws.settings.osc_access = access;
+    let issues = repair(&mut ws);
+    (ws.settings.osc_access, issues)
+}
+
+fn no_cue(kind: IssueKind) -> ValidationIssue {
+    issue(Severity::Warning, None, kind)
+}
+
+#[test]
+fn a_good_table_has_no_issues() {
+    let table = OscAccess {
+        no_passcode: OscRights {
+            view: true,
+            edit: false,
+            control: false,
+        },
+        passcodes: vec![
+            row("1234", true, true, true),
+            row("0000", true, false, false),
+        ],
+    };
+    let (kept, issues) = access_issues(table.clone());
+    assert_eq!(kept, table);
+    assert_eq!(issues, vec![]);
+    // Nothing granted at all is a legal table (nobody can connect).
+    let (_, issues) = access_issues(OscAccess {
+        no_passcode: OscRights::NONE,
+        passcodes: vec![],
+    });
+    assert_eq!(issues, vec![]);
+}
+
+#[test]
+fn edit_or_control_without_view_are_cleared_with_a_warning() {
+    let (kept, issues) = access_issues(OscAccess {
+        no_passcode: OscRights {
+            view: false,
+            edit: true,
+            control: true,
+        },
+        passcodes: vec![row("1", true, true, true), row("2", false, false, true)],
+    });
+    assert_eq!(kept.no_passcode, OscRights::NONE);
+    assert_eq!(kept.passcodes[1].rights, OscRights::NONE);
+    assert_eq!(kept.passcodes[0].rights, OscRights::ALL);
+    assert_eq!(
+        issues,
+        vec![
+            no_cue(IssueKind::OscRightsNeedView { row: None }),
+            no_cue(IssueKind::OscRightsNeedView { row: Some(1) }),
+        ]
+    );
+}
+
+#[test]
+fn duplicate_empty_and_oversize_passcodes_are_dropped_the_first_duplicate_stays() {
+    let long = "9".repeat(MAX_OSC_PASSCODE_BYTES + 1);
+    let (kept, issues) = access_issues(OscAccess {
+        no_passcode: OscRights::NONE,
+        passcodes: vec![
+            row("1111", true, false, false),
+            row("", true, true, true),
+            row("1111", true, true, true),
+            row(&long, true, true, true),
+            row("2222", true, true, false),
+        ],
+    });
+    let passcodes: Vec<_> = kept.passcodes.iter().map(|p| p.passcode.as_str()).collect();
+    assert_eq!(passcodes, ["1111", "2222"]);
+    // The kept duplicate is the first, with its own (smaller) rights.
+    assert_eq!(kept.passcodes[0].rights.text(), "view");
+    assert_eq!(
+        issues,
+        vec![
+            no_cue(IssueKind::OscPasscodeDropped {
+                row: 1,
+                reason: "it is empty"
+            }),
+            no_cue(IssueKind::OscPasscodeDropped {
+                row: 2,
+                reason: "it repeats an earlier row"
+            }),
+            no_cue(IssueKind::OscPasscodeDropped {
+                row: 3,
+                reason: "it is too long"
+            }),
+        ]
+    );
+    // The warning text never contains a passcode.
+    for i in &issues {
+        assert!(!i.to_string().contains("1111"));
+    }
+}
+
+#[test]
+fn rows_past_the_table_limit_are_dropped() {
+    let rows: Vec<_> = (0..MAX_OSC_PASSCODES + 3)
+        .map(|n| row(&format!("{n}"), true, false, false))
+        .collect();
+    let (kept, issues) = access_issues(OscAccess {
+        no_passcode: OscRights::NONE,
+        passcodes: rows,
+    });
+    assert_eq!(kept.passcodes.len(), MAX_OSC_PASSCODES);
+    assert_eq!(kept.passcodes[0].passcode, "0");
+    assert_eq!(issues.len(), 3);
+    assert!(issues.iter().all(|i| matches!(
+        i.kind,
+        IssueKind::OscPasscodeDropped {
+            reason: "the table is full",
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_passcode_that_is_not_digits_is_kept_with_a_warning() {
+    let (kept, issues) = access_issues(OscAccess {
+        no_passcode: OscRights::NONE,
+        passcodes: vec![
+            row("1234", true, true, true),
+            row("hunter2", true, true, true),
+        ],
+    });
+    // Dropping it would silently change who can connect.
+    assert_eq!(kept.passcodes.len(), 2);
+    assert_eq!(
+        issues,
+        vec![no_cue(IssueKind::OscPasscodeNotDigits { row: 1 })]
+    );
+    assert!(!issues[0].to_string().contains("hunter2"));
+}
+
+#[test]
+fn a_repaired_table_loads_back_unchanged_and_never_refuses_the_file() {
+    let mut ws = workspace(vec![]);
+    ws.settings.osc_access = OscAccess {
+        no_passcode: OscRights {
+            view: false,
+            edit: true,
+            control: false,
+        },
+        passcodes: vec![row("7", false, true, false), row("7", true, true, true)],
+    };
+    repair(&mut ws);
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(loaded.workspace, ws);
+    assert_eq!(loaded.warnings, vec![]);
+}
+
+#[test]
+fn a_hostile_file_table_loads_with_warnings() {
+    // Through the real loader: a v4 file with a broken table loads, repaired.
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&workspace(vec![]))).unwrap();
+    doc["workspace"]["settings"]["osc_access"] = serde_json::json!({
+        "no_passcode": {"view": false, "edit": true, "control": false},
+        "passcodes": [
+            {"passcode": "1", "rights": {"view": true, "edit": false, "control": false}},
+            {"passcode": "1", "rights": {"view": true, "edit": true, "control": true}},
+            {"passcode": "", "rights": {"view": true, "edit": false, "control": false}},
+        ],
+    });
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(loaded.workspace.settings.osc_access.passcodes.len(), 1);
+    assert_eq!(
+        loaded.workspace.settings.osc_access.no_passcode,
+        OscRights::NONE
+    );
+    assert_eq!(loaded.warnings.len(), 3);
+    // A table with a missing part is a model error, not a crash.
+    doc["workspace"]["settings"]["osc_access"] = serde_json::json!({"passcodes": []});
+    assert!(matches!(
+        load_show(&doc.to_string()),
+        Err(LoadError::Model(_))
+    ));
+}

@@ -16,7 +16,14 @@
         "min_go_interval": 0.0,
         "panic_duration": 5.0,
         "autosave_interval": 30.0,
-        "osc_passcode": null,
+        "osc_access": {
+          "no_passcode": {
+            "view": true,
+            "edit": true,
+            "control": true
+          },
+          "passcodes": []
+        },
         "master_db": 0.0,
         "hotkeys": {
           "go": {

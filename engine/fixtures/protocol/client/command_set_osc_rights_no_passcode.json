@@ -1,0 +1,15 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_osc_rights",
+    "target": {
+      "type": "no_passcode"
+    },
+    "rights": {
+      "view": false,
+      "edit": false,
+      "control": false
+    }
+  }
+}

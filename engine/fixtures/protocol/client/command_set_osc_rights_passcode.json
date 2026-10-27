@@ -1,0 +1,16 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_osc_rights",
+    "target": {
+      "type": "passcode",
+      "passcode": "4821"
+    },
+    "rights": {
+      "view": true,
+      "edit": true,
+      "control": true
+    }
+  }
+}
