@@ -675,7 +675,7 @@ impl Control {
         self.device_events(events);
     }
 
-    /// The device policy (docs/control.md "Devices", PROGRESS M3.22).
+    /// The device policy (docs/control.md "Devices", PROGRESS M4.2g).
     fn device_events(&mut self, events: Vec<DeviceEvent>) {
         let name = self
             .backend
@@ -745,7 +745,31 @@ impl Control {
         for input in self.sync_patches(false) {
             self.feed(input, now);
         }
-        let runs = self.voices.on_device();
+        let mut runs = self.voices.on_device();
+        // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
+        // the device too: nothing scheduled before the outage may start by itself after it.
+        // Control, Fade and group cues are not routed to it and keep their schedule (a group
+        // follows its children through their `ActionFailed`).
+        for (cue, state) in self.engine.cue_states() {
+            if matches!(
+                state,
+                CueState::PreWaiting
+                    | CueState::Running
+                    | CueState::Paused
+                    | CueState::PostWaiting
+                    | CueState::Fading
+                    | CueState::Stopping
+            ) && let Some(run) = self.engine.run_of(cue)
+                && matches!(
+                    self.ws.find_cue(cue).map(|c| &c.kind),
+                    Some(CueKind::Audio { .. })
+                )
+                && !runs.contains(&(cue, run))
+            {
+                runs.push((cue, run));
+            }
+        }
+        runs.sort();
         let failed = runs.len();
         for (cue, run) in runs {
             self.feed(

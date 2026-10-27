@@ -1119,11 +1119,23 @@ fn a_device_lost_break_clears_when_its_patch_is_mapped_again() {
 }
 
 #[test]
-fn a_device_lost_run_settles_idle_if_its_device_came_back_meanwhile() {
-    // Its auto-continue was pending when it broke; the device returned before it fired.
-    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 1.0, AC), memo(2)]);
+fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
+    // M4.2g: a lost device ends the run for good, as QLab: its pending auto-continue never
+    // fires, and neither does the pre-wait of a run that had not started its action.
+    let mut rig = Rig::new(vec![
+        timed(sound(1), 0.0, 1.0, AC),
+        memo(2),
+        timed(
+            sound_of(3, "media/a.wav", 1),
+            5.0,
+            0.0,
+            ContinueMode::DoNotContinue,
+        ),
+    ]);
     rig.device(0, 1, mapped());
     rig.go(0);
+    rig.start(0, 3);
+    assert_eq!(rig.state(3), CueState::PreWaiting);
     rig.device(
         100,
         1,
@@ -1132,12 +1144,17 @@ fn a_device_lost_run_settles_idle_if_its_device_came_back_meanwhile() {
         },
     );
     lose_device(&mut rig, 100, 1);
+    lose_device(&mut rig, 100, 3);
     assert_eq!(rig.state(1), CueState::Broken);
-    // Back before the continue: no state change yet (the run is pending).
-    assert!(changes(&rig.device(200, 1, mapped()), 1).is_empty());
-    let fired = rig.tick(1000);
-    assert_eq!(starts(&fired), vec![(id(2), 1000)]);
-    assert_eq!(changes(&fired, 1), vec![(CueState::Idle, 1000)]);
+    assert_eq!(rig.state(3), CueState::Broken);
+    // Back: both settle idle at once, and nothing they scheduled fires.
+    let back = rig.device(200, 1, mapped());
+    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 200)]);
+    assert_eq!(changes(&back, 3), vec![(CueState::Idle, 200)]);
+    let later = rig.tick(100_000);
+    assert!(starts(&later).is_empty(), "{later:?}");
+    assert!(voice_starts(&later).is_empty());
+    assert_eq!(rig.state(2), CueState::Idle);
 }
 
 #[test]
