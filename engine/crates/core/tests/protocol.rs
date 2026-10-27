@@ -209,6 +209,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             },
         ),
         ("scan_recovery", Request::ScanRecovery),
+        ("log_tail", Request::LogTail { max: None }),
     ]
 }
 
@@ -252,6 +253,7 @@ fn request_variants() -> Vec<(&'static str, Request)> {
                 discard_changes: true,
             },
         ),
+        ("log_tail_max", Request::LogTail { max: Some(50) }),
     ]
 }
 
@@ -493,6 +495,30 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "status",
+        server(ServerMessage::Status {
+            status: Box::new(status_sample()),
+        }),
+    );
+    let mut lost = status_sample();
+    lost.cpu_percent = None;
+    lost.engine_load = None;
+    lost.disk.healthy = false;
+    lost.device = DeviceStatus {
+        name: None,
+        state: DeviceState::Lost,
+        sample_rate: 48_000,
+        block_frames: None,
+        channels: 2,
+        latency_ms: None,
+    };
+    add(
+        "status_device_lost",
+        server(ServerMessage::Status {
+            status: Box::new(lost),
+        }),
+    );
+    add(
         "warnings",
         server(ServerMessage::Warnings {
             warnings: vec![
@@ -539,6 +565,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
                     }],
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_log_tail",
+        server(ServerMessage::Result {
+            id: rid(47),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::LogTail {
+                    entries: all_log_kinds().into_iter().map(log_entry_sample).collect(),
+                    dropped: 2,
                 }),
             }),
         }),
@@ -887,7 +926,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 18);
-    assert_eq!(all_requests().len(), 10);
+    assert_eq!(all_requests().len(), 11);
 }
 
 #[test]
@@ -1101,6 +1140,24 @@ fn oversized_frames_are_refused_before_parsing() {
         encode_client(&big),
         Err(ProtocolError::TooLarge { .. })
     ));
+}
+
+#[test]
+fn status_is_sanitised_not_refused() {
+    let mut bad = status_sample();
+    bad.cpu_percent = Some(f64::NAN);
+    bad.engine_load = Some(f64::INFINITY);
+    bad.device.latency_ms = Some(-1.0);
+    let wire = encode_server(&ServerMessage::Status {
+        status: Box::new(bad),
+    })
+    .unwrap();
+    let ServerMessage::Status { status } = decode_server(&wire).unwrap() else {
+        panic!("not a status");
+    };
+    assert_eq!(status.cpu_percent, Some(0.0));
+    assert_eq!(status.engine_load, Some(0.0));
+    assert_eq!(status.device.latency_ms, Some(0.0));
 }
 
 #[test]
@@ -1819,6 +1876,77 @@ fn all_error_codes() -> Vec<ErrorCode> {
     ]
 }
 
+fn all_log_kinds() -> [LogKind; 9] {
+    [
+        LogKind::Go,
+        LogKind::Transport,
+        LogKind::Trigger,
+        LogKind::CueStart,
+        LogKind::CueStop,
+        LogKind::CueFail,
+        LogKind::Device,
+        LogKind::Document,
+        LogKind::Engine,
+    ]
+}
+
+const LOG_KIND_COUNT: usize = 9;
+fn log_kind_idx(k: LogKind) -> usize {
+    match k {
+        LogKind::Go => 0,
+        LogKind::Transport => 1,
+        LogKind::Trigger => 2,
+        LogKind::CueStart => 3,
+        LogKind::CueStop => 4,
+        LogKind::CueFail => 5,
+        LogKind::Device => 6,
+        LogKind::Document => 7,
+        LogKind::Engine => 8,
+    }
+}
+
+fn log_entry_sample(kind: LogKind) -> LogEntry {
+    let with_cue = matches!(
+        kind,
+        LogKind::Go | LogKind::CueStart | LogKind::CueStop | LogKind::CueFail
+    );
+    LogEntry {
+        time_ms: 1_700_000_000_123,
+        show_time: (kind != LogKind::Document).then_some(12.5),
+        level: if kind == LogKind::CueFail {
+            LogLevel::Error
+        } else {
+            LogLevel::Info
+        },
+        kind,
+        message: "message".into(),
+        cue: with_cue.then(|| cue_id(10)),
+        source: (kind == LogKind::Trigger).then(|| "osc 192.0.2.7".to_owned()),
+    }
+}
+
+fn status_sample() -> SystemStatus {
+    SystemStatus {
+        cpu_percent: Some(7.5),
+        engine_load: Some(0.12),
+        xruns: 1,
+        disk: DiskStatus {
+            streams: 3,
+            underrun_frames: 0,
+            healthy: true,
+        },
+        device: DeviceStatus {
+            name: Some("Scarlett 2i2".into()),
+            state: DeviceState::Ok,
+            sample_rate: 48_000,
+            block_frames: Some(256),
+            channels: 2,
+            latency_ms: Some(11.5),
+        },
+        log_dropped: 0,
+    }
+}
+
 fn all_log_levels() -> [LogLevel; 4] {
     [
         LogLevel::Error,
@@ -1953,6 +2081,11 @@ fn every_nested_enum_variant_has_a_fixture_sample() {
         "ErrorCode",
         all_error_codes().into_iter().map(error_code_idx),
         ERROR_CODE_COUNT,
+    );
+    assert_covered(
+        "LogKind",
+        all_log_kinds().into_iter().map(log_kind_idx),
+        LOG_KIND_COUNT,
     );
     assert_covered(
         "LogLevel",
@@ -2238,6 +2371,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
+        proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
     ]
 }
