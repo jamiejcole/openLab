@@ -241,7 +241,7 @@ mod tests {
         });
         assert_eq!(seq, RING_CAPACITY as u64 + 3);
         // The copy is the record as stored: cut, and without the bad time.
-        assert_eq!(log.tail(1), [copy.clone()]);
+        assert_eq!(log.tail(1), std::slice::from_ref(&copy));
         assert!(copy.message.ends_with("...") && copy.show_time.is_none());
     }
 

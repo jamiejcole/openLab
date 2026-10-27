@@ -119,33 +119,37 @@ impl Control {
             return;
         }
         let (seq, entry) = self.config.show_log.record_copy(entry);
-        let message = ServerMessage::LogEntry { seq, entry };
         let now = self.config.clock.now_ms();
-        if self.take_push(now) {
-            self.observe.unsent = self.out.try_lossy(message).err();
-        } else {
-            self.observe.unsent = Some(message);
-        }
+        self.push(now, ServerMessage::LogEntry { seq, entry });
     }
 
-    /// One push from the window's budget, if any is left.
-    fn take_push(&mut self, now: i64) -> bool {
-        let window = match self.observe.push_window {
+    /// Offers a `log_entry` within the window's budget. Only a delivered push spends from it:
+    /// a client that is not keeping up must not use up the budget of the records after it.
+    /// What is not delivered is kept as the newest unsent (an older one is superseded).
+    fn push(&mut self, now: i64, message: ServerMessage) {
+        let (start, pushed) = match self.observe.push_window {
             Some((start, n)) if !elapsed(now, start, LOG_PUSH_WINDOW_MS) => (start, n),
             _ => (now, 0),
         };
-        let allowed = window.1 < LOG_PUSHES_PER_WINDOW;
-        self.observe.push_window = Some((window.0, window.1 + u32::from(allowed)));
-        allowed
+        self.observe.push_window = Some((start, pushed));
+        if pushed >= LOG_PUSHES_PER_WINDOW {
+            self.observe.unsent = Some(message);
+            return;
+        }
+        match self.out.try_lossy(message) {
+            Ok(()) => {
+                self.observe.push_window = Some((start, pushed + 1));
+                self.observe.unsent = None;
+            }
+            Err(message) => self.observe.unsent = Some(message),
+        }
     }
 
     /// Once a tick: the newest record not yet delivered, once the budget and the channel allow,
     /// so a client learns of a gap without waiting for the next record.
     fn flush_log_push(&mut self, now: i64) {
-        if self.observe.unsent.is_some() && self.take_push(now) {
-            if let Some(message) = self.observe.unsent.take() {
-                self.observe.unsent = self.out.try_lossy(message).err();
-            }
+        if let Some(message) = self.observe.unsent.take() {
+            self.push(now, message);
         }
     }
 
