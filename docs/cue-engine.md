@@ -317,6 +317,10 @@ Problems that keep a cue from running are found **before it is triggered** (NFR-
 - **Pre-show** (NFR-07, M4.8): `broken_cues()` lists every cue shown with problems and its problems, in workspace order (lists in order, cues depth-first). Breaks at run time are not static and are in `broken_reason(cue)` / `cue_states()`.
 - `CueProblem` implements `Display` with an English sentence for logs; the UI localises from the variant (CUE-06 "human-readable").
 
+## Display name (M2.29c, QLab check R2)
+
+`display_name(cue)` (core, `Cue::display_name`) is the name a UI shows: the stored `name` if it is not empty; otherwise, for an Audio cue with media, the file name **with its extension** (the last `/`-separated component of the stored `MediaRef`, as stored: no case or Unicode-form change; a backslash is a file-name character); otherwise empty. Assigning or relinking a file never writes `name`, so a cue the user named keeps its name when the file is renamed, and an unnamed cue follows the file (see [persistence.md](persistence.md) "Media watch and follow"). OSC `/cue/{n}/name` still returns the stored name. Shared fixture `engine/fixtures/display_name.json` (Rust test `display_name.rs`; the Swift test comes with the app part of M2.29c).
+
 ## Panic (PB-03)
 
 `Input::Panic` stops everything, as QLab's Panic: every cue of every list, at every depth.
