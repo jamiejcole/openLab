@@ -44,7 +44,7 @@ The top level of every file is:
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "workspace": { … }
 }
 ```
@@ -64,7 +64,8 @@ The top level of every file is:
 |---|---|---|
 | 0 | pre-release | Development format. Identical to v1 except the workspace's cue lists were stored under `"lists"`. Exists so the migration chain is exercised from day one. |
 | 1 | v0.0.1 (development) | Identical to v2 except that cues had no `second_trigger` and `second_trigger_on_release`. Upgrading gives every cue, at every depth, `"nothing"` and `false` (a v1 reader ignored those keys, so a hand-added value is replaced by the default). |
-| 2 | v0.0.1 | Current. Adds the per-cue second-trigger settings (§5.1). |
+| 2 | v0.0.1 (development) | Identical to v3 except that Devamp cues had no `devamp_mode`. Upgrading gives every Devamp cue, at every depth, `"current_slice"`, which is what a v2 Devamp cue did (it left whatever loop was playing); a hand-added value is replaced. Also, in v2 a Fade aimed at a Group set each child's levels to its values; from v3 it moves them by its values (QLab check F2). No upgrade can keep the old meaning (it depends on each child's level when the Fade runs), so loading a v0–v2 file warns once for every Fade cue whose target is a Group (`GroupFadeNowRelative`, shown as a load notice on that cue) and leaves the cue as it is; saving writes v3, after which the warning is gone. Old-version fixture: `v2-example.openlab`. |
+| 3 | v0.0.1 | Current. Adds the Devamp cue's `devamp_mode` (§5.3, M2.28). |
 
 ## 3. Loading, validation and refusal
 
@@ -100,6 +101,8 @@ cue, and the cue shows as broken where it cannot run.
 | More than 64 cue outputs; a crosspoint or gang naming channel or output 64 or more; Fade levels naming output or channel 64 or more | Warning; those entries are removed |
 | The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
 | A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
+| A Fade cue aimed at a Group, in a file older than version 3 | Warning (`GroupFadeNowRelative`); kept: such a Fade now moves each child relative to its level (see §2, version 2) |
+| A cue hotkey that is one of the workspace's transport keys (`settings.hotkeys`, e.g. Space = GO) | Warning (`HotkeyUsedByWorkspace`, QLab 5's "Hotkey used by workspace"); kept, but the workspace action wins and the key never starts the cue (M2.28) |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
@@ -233,16 +236,16 @@ Option on macOS).
 | `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. An output is in at most one gang. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |
 
-**`fade`** — moves a target's levels to new values.
+**`fade`** — moves a target's levels: an Audio cue's **to** its values (absolute), each audio cue in a Group **by** them (relative: the Fade's dB is added to each child's current level, capped at +12 dB; since version 3, M2.28, as in QLab 5).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `target` | target | An Audio or Group cue (fading a group fades its children). |
+| `target` | target | An Audio or Group cue (fading a group moves each audio cue in it, at any depth, relative to its own level). |
 | `duration` | seconds | |
 | `curve` | curve | |
 | `levels.master_db` | level or `null` | `null` = leave the master alone. |
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
-| `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db`; others are left alone. Mutes are never changed by a fade. |
+| `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db` (by it, for a Group target; a silent crosspoint stays silent); others are left alone. Mutes are never changed by a fade. |
 | `stop_target_when_done` | bool | Stop the target when the fade completes. |
 
 **`group`** — contains cues.
@@ -261,7 +264,7 @@ Option on macOS).
 | `pause` | `target` | Pauses the target. |
 | `load` | `target`, `load_to_time` (seconds) | Loads the target, cued to `load_to_time`. |
 | `reset` | `target` | Returns the target to its saved state. |
-| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool) | Leaves the target's current loop at the end of the loop; optionally starts the next cue, or stops the target instead of continuing. Target must be an Audio cue. |
+| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`, since version 3) | Leaves the target's current loop at the end of the loop; optionally starts the next cue, or stops the target instead of continuing. `current_slice` (QLab's "Devamp currently looping slice") leaves whatever loop is playing; `looping_cue` ("Devamp looping cue") leaves only the cue's own loop (a cue without slice markers looping as a whole) and does nothing on a cue with slice markers. See [cue-engine.md](cue-engine.md#devamp-ct-16). Target must be an Audio cue or a Playlist group. |
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |
 | `arm` | `target` | Arms the target. |
 | `disarm` | `target` | Disarms the target. |
@@ -280,12 +283,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v2-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v3-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 2,                                   // (1)
+  "format_version": 3,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",

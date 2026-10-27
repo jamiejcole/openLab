@@ -276,16 +276,23 @@ fn a_second_preview_of_a_previewing_cue_is_ignored() {
 
 #[test]
 fn only_playable_audio_cues_are_previewed() {
-    let mut rig = Rig::new(vec![memo(1), sound(2), cue(3, group(vec![]))]);
-    for n in [1, 3] {
-        assert_eq!(
-            rig.preview(0, n),
-            vec![Action::Warning(EngineWarning::PreviewIgnored {
-                cue: id(n),
-                reason: PreviewIgnoredReason::NotAudio
-            })]
-        );
-    }
+    let mut rig = Rig::new(vec![memo(1), sound(2), cue(3, group(vec![memo(4)]))]);
+    assert_eq!(
+        rig.preview(0, 1),
+        vec![Action::Warning(EngineWarning::PreviewIgnored {
+            cue: id(1),
+            reason: PreviewIgnoredReason::NotAudio
+        })]
+    );
+    // A group with no audio cue in it has nothing to play (M2.28, QLab check V1).
+    assert_eq!(
+        rig.preview(0, 3),
+        vec![Action::Warning(EngineWarning::PreviewIgnored {
+            cue: id(3),
+            reason: PreviewIgnoredReason::NothingToPreview
+        })]
+    );
+    assert!(!rig.engine.is_previewing(id(3)));
     assert_eq!(
         rig.preview(0, 99),
         vec![Action::Warning(EngineWarning::UnknownCue { cue: id(99) })]
@@ -307,13 +314,20 @@ fn only_playable_audio_cues_are_previewed() {
     assert!(!rig.engine.is_previewing(id(2)));
 }
 
+/// M2.28, QLab check V2: QLab does not play a preview of a disarmed cue.
 #[test]
-fn a_disarmed_cue_can_be_previewed() {
-    // Arming says whether the show plays the cue; the operator auditioning it is their choice.
+fn a_disarmed_cue_cannot_be_previewed() {
     let mut c = sound(1);
     c.armed = false;
     let mut rig = Rig::new(vec![c]);
-    assert!(preview_start(&rig.preview(0, 1)).is_some());
+    assert_eq!(
+        rig.preview(0, 1),
+        vec![Action::Warning(EngineWarning::PreviewIgnored {
+            cue: id(1),
+            reason: PreviewIgnoredReason::Disarmed
+        })]
+    );
+    assert!(!rig.engine.is_previewing(id(1)));
 }
 
 #[test]
@@ -360,15 +374,11 @@ fn a_stop_is_never_dated_before_the_preview_started() {
 }
 
 #[test]
-fn panic_stops_previews_at_once_but_pause_all_leaves_them() {
+fn a_panic_with_no_panic_time_stops_previews_at_once() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    rig.ws.settings.panic_duration = 0.0;
     rig.preview(0, 1);
     rig.preview(0, 2);
-    let pause = rig.at(100, Input::PauseAll);
-    assert!(pause.is_empty(), "{pause:?}");
-    let resume = rig.at(200, Input::ResumeAll);
-    assert!(resume.is_empty(), "{resume:?}");
-    assert_eq!(rig.engine.previewing().count(), 2);
     let panic = rig.at(300, Input::Panic);
     let s = stops(&panic);
     assert_eq!(s.len(), 2);

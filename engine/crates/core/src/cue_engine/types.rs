@@ -624,6 +624,11 @@ pub enum PreviewIgnoredReason {
     NotAudio,
     /// The cue is being previewed already.
     AlreadyPreviewing,
+    /// The cue is disarmed: a disarmed cue cannot be previewed (QLab check V2, M2.28).
+    Disarmed,
+    /// A group with no audio cue that can be previewed (armed, without problems, not being
+    /// previewed already) inside it.
+    NothingToPreview,
 }
 
 /// Things the operator or the log should hear about. Nothing here stops the show.

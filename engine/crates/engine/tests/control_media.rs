@@ -229,7 +229,7 @@ fn a_preview_of_a_cue_with_a_missing_file_warns_and_plays_nothing() {
 }
 
 #[test]
-fn a_preview_plays_beside_the_same_cue_in_the_show_and_panic_stops_it_at_once() {
+fn a_preview_plays_beside_the_same_cue_in_the_show_and_stopping_one_leaves_the_other() {
     let path = wav(&dc(40_000, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
     go(&mut s);
@@ -242,13 +242,111 @@ fn a_preview_plays_beside_the_same_cue_in_the_show_and_panic_stops_it_at_once() 
     s.run(BLOCK * 12);
     assert_eq!(s.control().live_voices(), 1);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
-    // Panic stops a preview at once (cue-engine.md "Preview"; M2.28 V4/V6 changes this).
+    // And stopping the show's cue leaves a preview playing (feedback is matched on cue and run).
     s.transport(TransportAction::Preview { cue: id(1) });
     s.run(BLOCK * 2);
+    s.transport(TransportAction::HardStop { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert!(s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().live_voices(), 1);
+}
+
+/// A preview alone (long file, workspace panic time 0.1 s = 800 frames at `RATE`), `blocks` of
+/// playing, then a Panic. Returns the show, the Panic's frame and the outbound so far.
+fn previewing_then_panic(blocks: u64) -> (OfflineShow, usize) {
+    let path = wav(&dc(40_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * blocks);
+    assert_eq!(s.control().live_voices(), 1);
     s.take_outbound();
+    let at = s.now() as usize;
     s.transport(TransportAction::Panic);
-    s.run(BLOCK * 2);
+    (s, at)
+}
+
+#[test]
+fn panic_fades_a_playing_preview_over_the_panic_time() {
+    // V4/V6: the preview is over as of the Panic (is_previewing false, `preview: false`), but
+    // its voice keeps fading until the panic's end and is gone after it.
+    let (mut s, at) = previewing_then_panic(4);
+    s.run(BLOCK * 3);
+    // Partway (about 128 of 800 frames): voice still alive and sounding, not cut.
+    assert_eq!(s.control().live_voices(), 1);
+    assert!(!s.control().engine().is_previewing(id(1)));
     assert_eq!(preview_changes(&s.take_outbound(), id(1)), vec![false]);
+    let partway = s.channel(0);
+    assert!(partway[at + 20..at + 120].iter().any(|&v| v > 0.0));
+    assert!(partway[at + 20] > partway[at + 119], "fading down");
+    // After the panic time: silent and the voice record is gone.
+    s.run(1200);
+    let all = s.channel(0);
+    assert!(all[at + 800 + BLOCK as usize..].iter().all(|&v| v == 0.0));
+    assert!(last_nonzero(&all).unwrap() >= at + 600, "not cut early");
+    assert_eq!(s.control().live_voices(), 0);
+    // No second `preview: false` when the faded voice ends.
+    assert!(preview_changes(&s.take_outbound(), id(1)).is_empty());
+}
+
+#[test]
+fn a_second_panic_during_the_fade_stops_the_preview_at_once() {
+    let (mut s, at) = previewing_then_panic(4);
+    s.run(BLOCK * 3);
+    assert_eq!(s.control().live_voices(), 1);
+    s.take_outbound();
+    let second = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    let all = s.channel(0);
+    // Well before the first Panic's end (at + 800), and no further `preview` change.
+    assert!(last_nonzero(&all).unwrap() < second + BLOCK as usize * 2);
+    assert!(second + 400 < at + 800);
+    assert!(preview_changes(&s.take_outbound(), id(1)).is_empty());
+}
+
+#[test]
+fn a_paused_preview_stops_at_once_on_panic() {
+    let path = wav(&dc(40_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::PauseAll);
+    s.run(BLOCK * 4);
+    // Paused, still a preview.
+    assert!(s.control().engine().is_previewing(id(1)));
+    s.take_outbound();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(BLOCK * 3);
+    // Gone at once, not after the 800-frame panic time.
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(preview_changes(&s.take_outbound(), id(1)), vec![false]);
+    assert!(at + 800 > s.now() as usize);
+}
+
+#[test]
+fn panic_fades_the_show_cue_and_its_preview_together() {
+    let path = wav(&dc(40_000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    go(&mut s);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 2);
+    s.take_outbound();
+    let at = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(BLOCK * 3);
+    // Both still fading partway: the show cue is not hard-stopped by the preview's Panic.
+    assert_eq!(s.control().live_voices(), 2);
+    assert_eq!(preview_changes(&s.take_outbound(), id(1)), vec![false]);
+    s.run(1200);
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let all = s.channel(0);
+    assert!(all[at + 800 + BLOCK as usize..].iter().all(|&v| v == 0.0));
 }
 
 /// The probe of a named pipe blocks until a writer opens it: the control loop must keep running

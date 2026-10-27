@@ -264,8 +264,8 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
         },
         8 => CueProperty::Triggers {
             value: Triggers {
-                hotkey: ["a", "f5", "Bad Key", ""]
-                    .get(p.b as usize % 5)
+                hotkey: ["a", "f5", "Bad Key", "", "space"]
+                    .get(p.b as usize % 6)
                     .map(|key| Hotkey {
                         key: (*key).into(),
                         modifiers: Modifiers::default(),
@@ -828,8 +828,8 @@ fn bytes(ws: &Workspace) -> String {
     serde_json::to_string(ws).unwrap()
 }
 
-/// What commands may leave behind: broken references, silent extra outputs and playlist-only
-/// second triggers on other cues, never a value
+/// What commands may leave behind: broken references, silent extra outputs, playlist-only
+/// second triggers on other cues and cue hotkeys the workspace uses, never a value
 /// problem or an error. And the show saves and loads back identical.
 fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
     for issue in validate(ws) {
@@ -843,6 +843,8 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     // Kept and inert, like a wrong-kind target (a group-mode change makes it
                     // apply again).
                     | IssueKind::SecondTriggerNeedsPlaylist
+                    // Kept as QLab keeps it; the workspace's key wins (M2.28, check K1b).
+                    | IssueKind::HotkeyUsedByWorkspace { .. }
                     // A cue may name a patch the workspace lacks (it was removed with
                     // `even_if_used`, or the cue was added after): the broken-cue state.
                     | IssueKind::PatchMissing { .. }

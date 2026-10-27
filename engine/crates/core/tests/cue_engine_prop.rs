@@ -324,6 +324,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                 target,
                 start_next_cue: s.flag,
                 stop_target_when_slice_ends: s.armed,
+                devamp_mode: DevampMode::CurrentSlice,
             },
             11 => CueKind::GoTo {
                 target,
@@ -361,6 +362,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                     target: Some(cue_id(sound)),
                     start_next_cue: s.flag,
                     stop_target_when_slice_ends: s.armed,
+                    devamp_mode: DevampMode::CurrentSlice,
                 },
                 28 => CueKind::Fade {
                     target: Some(cue_id(sound)),
@@ -1179,10 +1181,16 @@ struct Run {
 }
 
 fn preview_action(a: &Action) -> bool {
-    matches!(
-        a,
-        Action::PreviewStart { .. } | Action::PreviewStop { .. } | Action::PreviewChanged { .. }
-    )
+    match a {
+        Action::PreviewStart { .. }
+        | Action::PreviewStop { .. }
+        | Action::PreviewChanged { .. } => true,
+        // Pause All / Resume All pause and resume previews too (M2.28, QLab check V4).
+        Action::PauseVoice { run, .. } | Action::ResumeVoice { run, .. } => {
+            run.0 >= PREVIEW_RUN_BASE
+        }
+        _ => false,
+    }
 }
 
 impl Run {
@@ -1749,6 +1757,15 @@ impl Run {
         }
         // Previews and their voices exist together (Preview).
         for cue in self.engine.previewing() {
+            // A group's preview is its audio cues' (M2.28, QLab check V1).
+            if let Some(Cue {
+                kind: CueKind::Group { .. },
+                ..
+            }) = self.ws.find_cue(cue)
+            {
+                prop_assert!(self.engine.preview_run(cue).is_none());
+                continue;
+            }
             let run = self.engine.preview_run(cue).unwrap();
             prop_assert!(run.0 >= PREVIEW_RUN_BASE);
             let v = self.sim.voices.get(&run);

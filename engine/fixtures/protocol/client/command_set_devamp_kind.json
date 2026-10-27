@@ -1,0 +1,18 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "property": {
+      "type": "kind",
+      "value": {
+        "type": "devamp",
+        "target": "00000000-0000-0000-0000-00000000000a",
+        "start_next_cue": true,
+        "stop_target_when_slice_ends": false,
+        "devamp_mode": "looping_cue"
+      }
+    }
+  }
+}

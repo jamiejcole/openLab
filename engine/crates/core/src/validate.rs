@@ -126,6 +126,14 @@ pub enum IssueKind {
     /// `second_trigger` is `play_next` or `play_previous` on a cue that is not a Playlist group:
     /// kept, but a second trigger does nothing (as `nothing`) until the cue is one.
     SecondTriggerNeedsPlaylist,
+    /// The cue's hotkey is the workspace's key for `action` (a field of `settings.hotkeys`, e.g.
+    /// `go` for Space): kept, but the workspace action wins and the key never starts the cue
+    /// (QLab 5's "Hotkey used by workspace", check K1b).
+    HotkeyUsedByWorkspace { action: &'static str },
+    /// Warning, only when loading a show file older than version 3: this Fade cue targets a
+    /// group, and since version 3 a group Fade moves each child relative to its level (QLab 5,
+    /// check F2) where it used to set it, so the cue may now sound different. Kept as it is.
+    GroupFadeNowRelative,
 }
 
 impl fmt::Display for ValidationIssue {
@@ -199,6 +207,16 @@ impl fmt::Display for ValidationIssue {
                 f,
                 "patch {} must have 1 to {MAX_CHANNELS} outputs; corrected",
                 patch.0
+            ),
+            IssueKind::HotkeyUsedByWorkspace { action } => write!(
+                f,
+                "hotkey is the workspace's {action} key, which wins: it does not start this cue"
+            ),
+            IssueKind::GroupFadeNowRelative => write!(
+                f,
+                "this Fade targets a group: fades aimed at groups now move each child relative \
+                 to its own level, as in QLab 5, instead of setting it; check that it still does \
+                 what the show needs"
             ),
             IssueKind::SecondTriggerNeedsPlaylist => write!(
                 f,
@@ -805,6 +823,11 @@ impl Checker {
                 }
                 if cue.second_trigger.effective(&cue.kind) != cue.second_trigger {
                     self.warn(id, IssueKind::SecondTriggerNeedsPlaylist);
+                }
+                if let Some(action) = (cue.triggers.hotkey.as_ref())
+                    .and_then(|key| workspace.settings.hotkeys.action_of(key))
+                {
+                    self.warn(id, IssueKind::HotkeyUsedByWorkspace { action });
                 }
                 if let Some(target) = starts(&cue.kind)
                     && target != cue.id

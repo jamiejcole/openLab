@@ -56,7 +56,7 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 | `load` | `cue`, `at` (seconds, >= 0) | `Load { time: at }` |
 | `reset` | `cue` | `Reset` |
 | `trigger_released` | `cue` | `TriggerReleased` (second trigger on release) |
-| `preview` | `cue` | `Preview` (M4.13) |
+| `preview` | `cue` | `Preview` (M4.13): an audio cue, or every armed audio cue in a group (M2.28) |
 | `stop_preview` | `cue` (optional; absent or null: every preview) | `StopPreview` |
 
 `stop_all`, `hard_stop_all`, `panic_cue` and `go_from` were added with the OSC API (M4.5b). The Swift `Codable` types do not exist yet: **M5 must implement all four** (fixtures `transport_stop_all.json`, `transport_hard_stop_all.json`, `transport_panic_cue.json`, `transport_go_from.json`).
@@ -142,9 +142,11 @@ A show-log entry (`LogEntry`; in `log_tail` and `log_entry`): `time_ms` (wall cl
 
 These are additions: `PROTOCOL_VERSION` stays 1 (no released client). The Swift client (M5) must decode `status`, `log_entry` and the `log_tail` result (`log_tail.seq` and `status.log_seq` are new in M4.7c; a message without them reads as 0).
 
+M2.28 additions (also optional for the client, `PROTOCOL_VERSION` stays 1): a Devamp cue's kind carries `devamp_mode` (`current_slice` | `looping_cue`, show file version 3; set with the `kind` cue property, fixture `client/command_set_devamp_kind.json`); `preview_ignored` has the reasons `disarmed` and `nothing_to_preview`; `previewing` and `preview` changes name groups too (a group's preview is its audio cues' previews).
+
 ### Snapshot
 
-`revision` (the model revision it is at), `runtime_seq` (the last `runtime` `seq` folded in), `document`, `workspace` (the show-file workspace object, [file-format.md](file-format.md) section 4), `cue_states` (cues not idle: `{cue, state, reason?}`), `problems` (`{cue, problems}` for cues with static problems), `group_warnings` (group ids with a broken descendant; such a group with no run of its own is in `cue_states` as `broken`, with no `reason` and no `problems` entry), `playheads` (`{list, cue}`), `previewing` (cue ids), `warnings`.
+`revision` (the model revision it is at), `runtime_seq` (the last `runtime` `seq` folded in), `document`, `workspace` (the show-file workspace object, [file-format.md](file-format.md) section 4), `cue_states` (cues not idle: `{cue, state, reason?}`), `problems` (`{cue, problems}` for cues with static problems), `group_warnings` (group ids with a broken descendant; such a group with no run of its own is in `cue_states` as `broken`, with no `reason` and no `problems` entry), `playheads` (`{list, cue}`), `previewing` (cue ids; a group being previewed is listed with its audio cues), `warnings`.
 
 ### Model changes
 
@@ -178,7 +180,7 @@ The `model_changed` for revision N is always sent before the `result` that repor
 | `preview` | `cue`, `active` | `PreviewChanged` |
 | `warning` | `warning` | `Warning`, and `GoIgnored` as a `go_ignored` warning |
 
-`RuntimeChange::from_action(action, &engine)` does this mapping (the mixer-side actions map to nothing); it reads the engine after `handle` to fill `reason` for a `broken` state, which is absent for a cue broken only by static problems. Problems: `no_target`, `target_missing {target}`, `target_self`, `target_wrong_kind {target}`, `nothing_to_fade` (M2.26: a Fade that sets no level), `no_media`, `media_missing {media}`, `media_unsupported {media, reason}`, `patch_missing {patch}`, `device_unavailable {patch, resolution}`, `network_patch_missing {patch}`, `network_host_invalid {patch, reason}` (an unusable host or port), `network_host_unresolved {patch, reason}` (a host name that does not resolve), `network_message_invalid {reason}` (a malformed or oversized OSC message; `reason` is English, for the log), `started_broken`; `resolution` is `mapped`, `unmapped`, `device_missing`, `channels_missing`, `output_count_mismatch`. Warnings mirror the engine's (`unknown_list`, `unknown_cue`, `not_in_list`, `number_not_found`, `cue_broken`, `trigger_ignored`, `load_ignored`, `unsupported`, `late_start {late_ms}`, `chain_limit`, `cue_removed`, `no_target`, `target_missing`, `target_wrong_kind`, `target_not_running`, `preview_ignored`, `preview_failed`, `devamp_ignored`) plus `go_ignored {list, reason}` and `notice {code, message, cue?}` for what only the binary knows. The UI localises from the variant or `code`; `message` is English.
+`RuntimeChange::from_action(action, &engine)` does this mapping (the mixer-side actions map to nothing); it reads the engine after `handle` to fill `reason` for a `broken` state, which is absent for a cue broken only by static problems. Problems: `no_target`, `target_missing {target}`, `target_self`, `target_wrong_kind {target}`, `nothing_to_fade` (M2.26: a Fade that sets no level), `no_media`, `media_missing {media}`, `media_unsupported {media, reason}`, `patch_missing {patch}`, `device_unavailable {patch, resolution}`, `network_patch_missing {patch}`, `network_host_invalid {patch, reason}` (an unusable host or port), `network_host_unresolved {patch, reason}` (a host name that does not resolve), `network_message_invalid {reason}` (a malformed or oversized OSC message; `reason` is English, for the log), `started_broken`; `resolution` is `mapped`, `unmapped`, `device_missing`, `channels_missing`, `output_count_mismatch`. Warnings mirror the engine's (`unknown_list`, `unknown_cue`, `not_in_list`, `number_not_found`, `cue_broken`, `trigger_ignored`, `load_ignored`, `unsupported`, `late_start {late_ms}`, `chain_limit`, `cue_removed`, `no_target`, `target_missing`, `target_wrong_kind`, `target_not_running`, `preview_ignored {reason}` (`not_audio`, `already_previewing`, `disarmed`, `nothing_to_preview`), `preview_failed`, `devamp_ignored`) plus `go_ignored {list, reason}` and `notice {code, message, cue?}` for what only the binary knows. The UI localises from the variant or `code`; `message` is English.
 
 ### Error codes
 

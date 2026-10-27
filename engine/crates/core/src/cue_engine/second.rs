@@ -4,17 +4,20 @@
 //! cue's `second_trigger` option, and the "second trigger on release" input. Rules:
 //! `docs/cue-engine.md`, "Second trigger".
 
-use crate::cue::{CueKind, GroupMode, SecondTrigger};
+use crate::cue::{DevampMode, SecondTrigger};
 use crate::model::CueId;
 
-use super::run::{Phase, Slot, Voice};
+use super::control::DevampOrder;
+use super::run::Slot;
 use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
 
 impl CueEngine {
     /// A trigger on `cue` at `at` while it is active (not broken, not fading out in a panic),
-    /// with the cue's effective option. `Nothing` only reaches here for a cue that is not paused.
+    /// with the cue's effective option. A trigger reaches here only for a cue that is not paused
+    /// (a paused one resumes, QLab check S1); a release (`trigger_released`) also for a paused
+    /// one.
     pub(super) fn second_trigger(
         &mut self,
         cue: CueId,
@@ -34,47 +37,16 @@ impl CueEngine {
                 self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
             }
             SecondTrigger::HardStopAndRestart => self.restart(cue, at, cx),
-            SecondTrigger::Devamp => self.devamp(None, cue, false, false, at, cx),
+            SecondTrigger::Devamp => {
+                let order = DevampOrder {
+                    start_next: false,
+                    stop: false,
+                    mode: DevampMode::CurrentSlice,
+                };
+                self.devamp(None, cue, order, at, cx);
+            }
             SecondTrigger::PlayNext => self.playlist_skip(cue, false, at, cx),
             SecondTrigger::PlayPrevious => self.playlist_skip(cue, true, at, cx),
-        }
-    }
-
-    /// Whether `option` has something to act on in the paused `cue` (at `at`). If not, the
-    /// trigger follows the `nothing` rule and resumes it, as it would any paused cue.
-    pub(super) fn acts_on_paused(
-        &self,
-        cue: CueId,
-        option: SecondTrigger,
-        at: SampleTime,
-        cx: &Ctx,
-    ) -> bool {
-        let Some(Slot::Active(run)) = self.slots.get(&cue) else {
-            return false;
-        };
-        let in_action = matches!(run.phase, Phase::Action { .. }) && run.stop_end.is_none();
-        let kind = cx.ws.find_cue(cue).map(|c| &c.kind);
-        let playing_playlist = run.group.as_ref().is_some_and(|g| {
-            !g.stopping && g.devamp.is_none() && g.playlist.is_some() && g.skipped != Some(at)
-        });
-        match option {
-            SecondTrigger::Nothing => false,
-            SecondTrigger::Devamp => {
-                in_action
-                    && match kind {
-                        Some(CueKind::Audio { .. }) => {
-                            matches!(run.voice, Voice::Started { .. }) && run.devamp.is_none()
-                        }
-                        Some(CueKind::Group {
-                            mode: GroupMode::Playlist { loop_: true, .. },
-                            ..
-                        }) => playing_playlist,
-                        _ => false,
-                    }
-            }
-            SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => in_action && playing_playlist,
-            SecondTrigger::HardStopAndRestart => run.started != at,
-            SecondTrigger::Panic | SecondTrigger::Stop | SecondTrigger::HardStop => true,
         }
     }
 
@@ -108,7 +80,9 @@ impl CueEngine {
 
     /// `Input::TriggerReleased`: a second trigger if the cue asks for one on release and is
     /// active; ignored without a warning otherwise (also with the option `nothing`: a release
-    /// never resumes a paused cue, and a cue fading out in a panic is not restarted by it).
+    /// never resumes a paused cue, and a cue fading out in a panic is not restarted by it). On a
+    /// paused cue the option applies (a press resumes it, QLab check S5; the release, with
+    /// `stop`, stops it).
     pub(super) fn trigger_released(&mut self, cue: CueId, cx: &mut Ctx) {
         let Some(model) = cx.ws.find_cue(cue) else {
             return;

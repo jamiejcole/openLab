@@ -43,14 +43,14 @@ impl CueEngine {
     /// or a `panic_duration` of 0, stops everything at once. Children go before their groups
     /// (as in Stop), so a group sees which of its children are still fading out.
     pub(super) fn panic(&mut self, cx: &mut Ctx) {
-        // Previews are the operator's own listening, not the show, but Panic means everything
-        // stops: they go at once.
-        self.stop_previews(None, true, cx);
         let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
         let second = self.panic.is_some_and(|(_, end)| cx.now < end);
         let hard = frames == 0 || second;
         let end = cx.now.saturating_add(frames);
         self.panic = (!hard).then_some((cx.now, end));
+        // Previews are the operator's own listening, not the show, but Panic means everything
+        // stops: they fade out with the show (QLab checks V4, V6).
+        self.panic_previews((!hard).then_some(end), cx);
         for tree in Self::trees(cx) {
             for cue in tree.into_iter().rev() {
                 if !self.slots.contains_key(&cue) {
@@ -68,7 +68,8 @@ impl CueEngine {
     /// Stop All: everything stops at once, children before their groups (as in Stop), and so do
     /// the previews. No fade, no panic window (an earlier panic's is over).
     pub(super) fn stop_all(&mut self, cx: &mut Ctx) {
-        self.stop_previews(None, true, cx);
+        // Also the voices of previews still fading out in a panic.
+        self.panic_previews(None, cx);
         self.panic = None;
         for tree in Self::trees(cx) {
             for cue in tree.into_iter().rev() {
@@ -177,11 +178,13 @@ impl CueEngine {
         self.panic_one(cue, end, cx);
     }
 
-    /// Pause All: pauses every active cue, groups before their children (as Pause does).
+    /// Pause All: pauses every active cue, groups before their children (as Pause does), and
+    /// every preview (QLab check V4).
     pub(super) fn pause_all(&mut self, cx: &mut Ctx) {
         for cue in Self::trees(cx).into_iter().flatten() {
             self.pause_one(cue, cx);
         }
+        self.pause_previews(cx);
     }
 
     /// Resume All: resumes every paused cue, however it was paused (QLab), outermost first so a
@@ -199,6 +202,7 @@ impl CueEngine {
                 self.resume_tree(cue, cx.now, cx);
             }
         }
+        self.resume_previews(cx);
     }
 
     /// The sample the panic fade under way ends on: a Panic before it stops everything at once.
