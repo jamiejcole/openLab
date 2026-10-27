@@ -512,7 +512,7 @@ impl Control {
                     );
                     return Flow::Continue;
                 }
-                if let Some(e) = self.patch_layout_conflict(Some(&command)) {
+                if let Some(e) = self.patch_layout_conflict(Some(&command), false) {
                     reply(to, refused(id, &e));
                     return Flow::Continue;
                 }
@@ -548,7 +548,7 @@ impl Control {
                 } else {
                     self.history.peek_redo()
                 };
-                if let Some(e) = self.patch_layout_conflict(step) {
+                if let Some(e) = self.patch_layout_conflict(step, true) {
                     reply(to, refused(id, &e));
                     return Flow::Continue;
                 }
@@ -626,13 +626,25 @@ impl Control {
     /// and whatever patch that cue's model names now. So any such edit, undo or redo
     /// (`Command::changes_patch_layout`, judged on the final state of a transaction) is refused
     /// while any voice is on the device. Lifted by the stable slot allocator.
-    fn patch_layout_conflict(&self, step: Option<&Command>) -> Option<CommandError> {
+    fn patch_layout_conflict(
+        &self,
+        step: Option<&Command>,
+        restoring: bool,
+    ) -> Option<CommandError> {
         let step = step?;
-        if self.voices.on_device().is_empty() {
+        if self.voices.on_device().is_empty() || !step.changes_patch_layout(&self.ws) {
             return None;
         }
-        step.changes_patch_layout(&self.ws)
-            .then_some(CommandError::PatchPlaying)
+        // A step that would be refused anyway (a patch a cue uses, a bad value) gets that
+        // reason, not this one. The dry run clones the workspace, but only for a patch layout
+        // edit while audio plays.
+        let mut dry = self.ws.clone();
+        let applied = if restoring {
+            dry.apply_restoring(step.clone())
+        } else {
+            dry.apply(step.clone())
+        };
+        applied.is_ok().then_some(CommandError::PatchPlaying)
     }
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made

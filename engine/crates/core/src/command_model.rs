@@ -162,7 +162,11 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
     }
 }
 
-fn set_setting(ws: &mut Workspace, setting: &WorkspaceSetting) -> Result<Inverse, CommandError> {
+fn set_setting(
+    ws: &mut Workspace,
+    setting: &WorkspaceSetting,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
     if let WorkspaceSetting::OscPasscode { value: Some(pass) } = setting {
         if pass.is_empty() {
             return Err(CommandError::InvalidValue(
@@ -177,16 +181,14 @@ fn set_setting(ws: &mut Workspace, setting: &WorkspaceSetting) -> Result<Inverse
     let mut candidate = ws.settings.clone();
     setting.write(&mut candidate);
     // Only what this edit introduces is refused: a warning the show was loaded with (a bad
-    // hotkey name is kept and warned about) must not block every other setting, and an inverse
-    // restoring such a value must never be refused. Hotkey names are not repaired by load, so
-    // they round-trip as they are and are not judged here.
+    // hotkey name is kept and warned about) must not block every other setting. An undo or
+    // redo puts back a state that existed, so it is not judged at all.
     let existing = settings_problems(&ws.settings);
     let issues: Vec<_> = settings_problems(&candidate)
         .into_iter()
-        .filter(|i| !matches!(i.kind, crate::validate::IssueKind::InvalidHotkey { .. }))
         .filter(|i| !existing.contains(i))
         .collect();
-    if !issues.is_empty() {
+    if !restoring && !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
     }
     if old == *setting {
@@ -610,9 +612,10 @@ fn first_cue(ws: &Workspace, uses: impl Fn(&CueKind) -> bool) -> Option<CueId> {
 pub(crate) fn apply_model(
     ws: &mut Workspace,
     command: &Command,
+    restoring: bool,
 ) -> Option<Result<Inverse, CommandError>> {
     Some(match command {
-        Command::SetWorkspaceSetting { setting } => set_setting(ws, setting),
+        Command::SetWorkspaceSetting { setting } => set_setting(ws, setting, restoring),
         Command::AddPatch { index, patch } => add_patch(ws, *index, patch),
         Command::RemovePatch { id, even_if_used } => remove_patch(ws, *id, *even_if_used),
         Command::MovePatch { id, index } => patch_index(ws, *id).and_then(|from| {
