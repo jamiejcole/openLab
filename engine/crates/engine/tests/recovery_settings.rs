@@ -107,6 +107,36 @@ fn older_or_equal_recovery_file_is_moved_aside_never_deleted() {
     }
 }
 
+/// M5: a stale recovery file is never moved over another stale one; with every name taken it
+/// stays where it is, and the others are kept.
+#[test]
+fn a_stale_recovery_file_never_replaces_another() {
+    let env = env();
+    show_with_mtime(&env, SHOW_T);
+    recovery_with_mtime(&env, "Old", 1000);
+    let own = env.dirs.recovery_path(example().id, Some(&env.show_path()));
+    let stem = own.file_stem().unwrap().to_str().unwrap().to_owned();
+    let dir = env.dirs.recovery_dir();
+    let taken = |n: u64| dir.join(format!("{stem}.{:015}.stale.openlab", 1000 + n));
+    for n in 0..100 {
+        fs::write(taken(n), "earlier unsaved work").unwrap();
+    }
+    let RecoveryCheck::Stale { moved_to } =
+        check_recovery(&env.dirs, example().id, &env.show_path()).check
+    else {
+        panic!("expected Stale");
+    };
+    assert_eq!(moved_to, None);
+    for n in 0..100 {
+        assert_eq!(
+            fs::read_to_string(taken(n)).unwrap(),
+            "earlier unsaved work",
+            "stale file {n} was replaced or removed"
+        );
+    }
+    assert_eq!(reload(&own).name, "Old");
+}
+
 #[test]
 fn stale_files_are_bounded_and_removed_by_a_save() {
     let env = env();

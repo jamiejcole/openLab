@@ -260,6 +260,50 @@ fn backing_up_a_fifo_is_an_error_not_a_hang() {
     assert!(err.is_err());
 }
 
+/// M5: a backup never replaces another one, even when every name it may take is in use (the
+/// save goes on and reports the failed backup).
+#[test]
+fn a_backup_never_replaces_another_even_with_every_name_taken() {
+    let env = env();
+    save_workspace(&env.dirs, &env.show_path(), &renamed("a"), 1000, 3).unwrap();
+    let dir = env.dirs.backups_dir(example().id, &env.show_path());
+    fs::create_dir_all(&dir).unwrap();
+    for n in 0..1000 {
+        fs::write(dir.join(backup_file_name(5000 + n)), "older backup").unwrap();
+    }
+    let err = openlab_engine::persist::backup_existing(
+        &env.dirs,
+        example().id,
+        &env.show_path(),
+        5000,
+        3,
+    );
+    assert!(err.is_err(), "{err:?}");
+    for n in 0..1000 {
+        let kept = fs::read_to_string(dir.join(backup_file_name(5000 + n))).unwrap();
+        assert_eq!(kept, "older backup", "backup {n} was replaced");
+    }
+    // Nothing is left behind but the backups that were there (and the first save's own).
+    assert!(
+        names(&dir).iter().all(|n| !n.ends_with(".tmp")),
+        "{:?}",
+        names(&dir)
+    );
+    // With a free name the backup is made.
+    fs::remove_file(dir.join(backup_file_name(5500))).unwrap();
+    let made = openlab_engine::persist::backup_existing(
+        &env.dirs,
+        example().id,
+        &env.show_path(),
+        5000,
+        3,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(made, dir.join(backup_file_name(5500)));
+    assert!(fs::read_to_string(made).unwrap().contains("\"a\""));
+}
+
 #[test]
 fn a_regular_show_file_is_still_backed_up_before_it_is_replaced() {
     let env = env();

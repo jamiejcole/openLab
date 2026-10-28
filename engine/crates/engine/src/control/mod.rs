@@ -1197,6 +1197,21 @@ impl Control {
             };
             self.eng.log(LogLevel::Info, message);
         }
+        match self.eng.pool.take_worker_note() {
+            Some(media::WorkerNote::SpawnFailed(e)) => self.eng.log(
+                LogLevel::Error,
+                format!(
+                    "could not start a media probe worker ({e}); {} of {} running, retrying",
+                    self.eng.pool.workers(),
+                    media::PROBE_WORKERS
+                ),
+            ),
+            Some(media::WorkerNote::Restored) => self.eng.log(
+                LogLevel::Info,
+                "media probe workers running again".to_owned(),
+            ),
+            None => {}
+        }
         if self.eng.pool.take_limit_reached() {
             self.eng.log(
                 LogLevel::Error,

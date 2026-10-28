@@ -499,3 +499,39 @@ fn no_allocation_with_meters_active_on_64_voices() {
     assert_eq!(ctl.faults(), 0);
     assert_eq!(ctl.leaked_starts(), 0);
 }
+
+#[test]
+fn a_fader_drag_of_retargeted_short_ramps_allocates_nothing_and_never_jumps() {
+    // M5.9b: a level edit on a playing cue is a 10 ms ramp from wherever the gain is; a drag
+    // retargets one every few milliseconds, on the master, a cue output and a crosspoint.
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&[1.0; 60_000]), 1);
+    let ramp = |target, gain| CommandKind::Ramp {
+        voice: VoiceId(1),
+        target,
+        gain,
+        fade: Fade::new(480, Curve::Linear),
+    };
+    let xp = GainTarget::Crosspoint {
+        input: 0,
+        output: 0,
+    };
+    let mut out = Vec::new();
+    let mut block = vec![0.0; 300];
+    for k in 0..160u64 {
+        let down = 1.0 - k as f32 / 200.0;
+        let target = [GainTarget::Master, GainTarget::CueOutput(0), xp][(k % 3) as usize];
+        ctl.send(k * 300, ramp(target, down));
+        no_alloc(|| r.render_into(&mut block, &[64, 300]));
+        out.extend_from_slice(&block);
+    }
+    assert!(out.iter().all(|s| s.is_finite()));
+    let jump = out
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(jump < 1e-3, "{jump}");
+    // Every ramp was carried out: the gains got down to where the drag left them.
+    assert!(out[out.len() - 1] < 0.5, "{}", out[out.len() - 1]);
+    assert_eq!(ctl.faults(), 0);
+}

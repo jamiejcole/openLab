@@ -46,6 +46,19 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     func showError(_ message: String) { errors.append(message) }
+
+    /// nil: Cancel.
+    var recoveryChoice: RecoveryChoice?
+    func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
+        log.append("recoveryOffer:\(workspace)")
+        return recoveryChoice
+    }
+
+    var restoreAutosaves = true
+    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool {
+        log.append("autosave:\(name)")
+        return restoreAutosaves
+    }
 }
 
 @MainActor
@@ -61,13 +74,15 @@ final class AppControllerTests: XCTestCase {
     private let sessionScheduler = ManualScheduler()
     private let quitScheduler = ManualScheduler()
 
-    override func setUp() async throws { try await build(.multi) }
+    override func setUp() async throws { try await build() }
 
-    private func build(_ mode: FakeEngine.Mode) async throws {
+    private func build() async throws {
         app?.closeAllWindows()
-        engine = FakeEngine(mode: mode, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
-        let info = engine.info
-        let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
+        engine = FakeEngine(snapshot: try Fixtures.json("server", "welcome")["snapshot"])
+        let engine = engine!
+        // Read afresh each attempt, as engine.json is (a new engine run has a new token).
+        let session = EngineSession(
+            transport: engine, infoProvider: { .success(engine.info) }, scheduler: sessionScheduler)
         app = AppController(
             session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
@@ -123,7 +138,15 @@ final class AppControllerTests: XCTestCase {
 
     private func closeMessages(_ doc: ModelID? = nil) -> [(doc: ModelID?, discard: Bool)] {
         engine.receivedFrom.compactMap {
-            if case .provisional(.close(_, let d, let discard)) = $0.message { return (d, discard) }
+            if case .close(_, let d, let discard) = $0.message { return (d, discard) }
+            return nil
+        }
+    }
+
+    /// The app-scope `panic` messages, by the connection they came on (nil: the app's).
+    private func panics() -> [ModelID?] {
+        engine.receivedFrom.compactMap {
+            if case .panic = $0.message { return $0.doc }
             return nil
         }
     }
@@ -222,9 +245,9 @@ final class AppControllerTests: XCTestCase {
     func testPanicButtonIsAppScope() async throws {
         _ = try await addWorkspace()
         app.windows["1"]?.sidebar.transportButtons[AX.transportPanic]?.performClick(nil)
-        await assertEventually { transports(.panic).count == 1 }
+        await assertEventually { panics().count == 1 }
         // Sent on the unbound app connection, not a workspace's.
-        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+        XCTAssertEqual(panics().map { $0 == nil }, [true])
     }
 
     private func escEvent(flags: NSEvent.ModifierFlags = [], keyCode: UInt16 = 53) throws -> NSEvent {
@@ -238,9 +261,9 @@ final class AppControllerTests: XCTestCase {
         app.showLauncher()
         let event = try escEvent()
         XCTAssertTrue(app.handleKeyDown(event) === event)  // passed on: editors and alerts still see it
-        await assertEventually { transports(.panic).count == 1 }
+        await assertEventually { panics().count == 1 }
         await settle()
-        XCTAssertEqual(transports(.panic).count, 1)
+        XCTAssertEqual(panics().count, 1)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 200, height: 50), styleMask: [.titled], backing: .buffered,
@@ -252,16 +275,17 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(field))
         XCTAssertNotNil(field.currentEditor())
         _ = app.handleKeyDown(try escEvent())
-        await assertEventually { transports(.panic).count == 2 }
+        await assertEventually { panics().count == 2 }
         window.close()
-        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true, true])
+        XCTAssertEqual(panics().map { $0 == nil }, [true, true])
+        XCTAssertTrue(transports(.panic).isEmpty, "the app-scope panic message, not transport: panic")
     }
 
     func testOnlyPlainEscPanics() async throws {
         _ = app.handleKeyDown(try escEvent(flags: .command))
         _ = app.handleKeyDown(try escEvent(keyCode: 0))
         await settle()
-        XCTAssertTrue(transports(.panic).isEmpty)
+        XCTAssertTrue(panics().isEmpty)
     }
 
     // MARK: Transport commands
@@ -295,7 +319,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.canPerform(.panic))
         XCTAssertFalse(app.canPerform(.go))
         await app.perform(.panic)
-        XCTAssertEqual(transports(.panic).map { $0 == nil }, [true])
+        XCTAssertEqual(panics().map { $0 == nil }, [true])
     }
 
     func testStopAllSendsStopAllToTheKeyWindowsWorkspaceOnly() async throws {
@@ -318,7 +342,7 @@ final class AppControllerTests: XCTestCase {
     func testEscStaysPanicNotStopAll() async throws {
         keyDoc = "1"
         _ = app.handleKeyDown(try escEvent())
-        await assertEventually { transports(.panic).count == 1 }
+        await assertEventually { panics().count == 1 }
         XCTAssertTrue(transports(.stopAll).isEmpty)
     }
 
@@ -905,7 +929,7 @@ final class AppControllerTests: XCTestCase {
         let closed = await app.closeWorkspace("1")
         XCTAssertTrue(closed)
         let edit = try XCTUnwrap(index { self.isCommand($0) })
-        let close = try XCTUnwrap(index { if case .provisional(.close) = $0 { return true } else { return false } })
+        let close = try XCTUnwrap(index { if case .close = $0 { return true } else { return false } })
         XCTAssertLessThan(edit, close)
     }
 
@@ -1102,17 +1126,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.windows["1"] === before)
     }
 
-    func testSingleWorkspaceEngineCloseDoesNothing() async throws {
-        try await build(.single)
-        await assertEventually { app.windows.count == 1 }
-        let closed = await app.closeWorkspace(EngineSession.singleDoc)
-        XCTAssertFalse(closed)
-        XCTAssertTrue(alerts.log.isEmpty)
-        XCTAssertEqual(app.windows.first?.value.window?.isVisible, true)
-        XCTAssertFalse(app.launcher.window?.isVisible ?? true)
-        XCTAssertTrue(closeMessages().isEmpty)
-    }
-
     func testAlreadyOpenFromTheLauncherFrontsTheExistingWindowWithoutAnError() async throws {
         let url = URL(fileURLWithPath: "/Shows/A.openlab")
         await app.openWorkspace(url: url)
@@ -1264,5 +1277,39 @@ final class AppControllerTests: XCTestCase {
         app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
         try XCTUnwrap(app.windows[doc]).onRelink?()
         await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
+    }
+
+    // MARK: Window order and engine restarts (M5.19a, M5.2)
+
+    func testWindowsAreInOpenOrderWithTenOrMoreWorkspaces() async throws {
+        for _ in 0..<10 { _ = try await addWorkspace() }
+        XCTAssertEqual(app.allWindows.count, 11)
+        let order = app.allWindows.compactMap { wc in app.session.doc(of: wc.store)?.raw }
+        XCTAssertEqual(order, (1...11).map(String.init), "\"10\" after \"9\", not after \"1\"")
+    }
+
+    func testANewEngineRunKeepsEveryWindowAndRebindsItByReopeningItsFile() async throws {
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/A.openlab"))
+        await assertEventually { app.windows.count == 2 }
+        let before = app.allWindows.map(ObjectIdentifier.init)
+        engine.restart()  // a new engine run is up (its pid alive): doc ids start again
+        var reattached = false
+        let sub = app.session.events.sink { if case .reattached = $0 { reattached = true } }
+        defer { sub.cancel() }
+        for _ in 0..<200 where !reattached {
+            await sessionScheduler.fire()
+            for _ in 0..<20 { await Task.yield() }
+        }
+        XCTAssertTrue(reattached)
+        await assertEventually { app.session.stores.values.allSatisfy { $0.connectionState == .connected } }
+        XCTAssertEqual(app.allWindows.map(ObjectIdentifier.init), before, "the same windows, none made twice")
+        XCTAssertEqual(Set(app.windows.keys), ["1", "2"], "under the new run's doc ids")
+        XCTAssertEqual(app.windows["1"]?.store.model?.name, "Hamlet")
+        XCTAssertEqual(app.windows["2"]?.store.model?.name, "A")
+        let reopened = engine.receivedFrom.compactMap { m -> String? in
+            if case .request(_, .open(let path, _)) = m.message { return path }
+            return nil
+        }
+        XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
     }
 }
