@@ -53,6 +53,14 @@ const UDP_QUEUE: usize = 256;
 /// How long an accepted connection waits for the actor to close an idle one when the table is
 /// full, before it is refused.
 const EVICT_WAIT: Duration = Duration::from_millis(500);
+/// Eviction requests waiting for the actor: one for the table plus a few hosts at their cap.
+/// More are dropped (the connection that asked is refused after `EVICT_WAIT`).
+const EVICT_QUEUE: usize = 8;
+/// TCP keepalive on accepted connections: a peer that vanished without a FIN or RST (a console
+/// whose Wi-Fi dropped) is noticed after this much silence plus the system's probes (about
+/// 10 s apart, 8 to 10 of them), and its connection closed, so it does not hold its slot.
+const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(30);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 /// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt.
 const TAP_QUEUE: usize = 1024;
 /// Messages waiting to be written to one TCP connection.
@@ -84,6 +92,14 @@ pub struct OscConfig {
     /// may ask: with a passcode that needs one that connected. More are closed at accept, with a
     /// (rate-limited) log entry.
     pub max_tcp_connections: usize,
+    /// Open TCP connections from one remote host (IP address). At it, the host's next
+    /// connection asks the actor to close that same host's longest-idle connection (by the
+    /// `tcp_idle_evict` rules: never another host's) and waits `EVICT_WAIT` for its slot; with
+    /// none to close it is refused (logged, counted in `tcp_refused`). So one host, even one
+    /// whose connections keep alive with `/updates` or a message every minute, cannot hold
+    /// every slot and lock out the other consoles, and a console that reconnected many times
+    /// over a flaky network is not locked out by its own dead connections.
+    pub max_tcp_connections_per_host: usize,
     /// Requests to the control loop that have not been answered. Past it new inputs are dropped
     /// and counted: the actor never blocks, so this is what keeps a UDP flood from piling up in
     /// the control inbox. The default is above the 1024 inputs one datagram can make (a wildcard
@@ -120,6 +136,7 @@ impl Default for OscConfig {
             port: OSC_PORT,
             reply_port: OSC_REPLY_PORT,
             max_tcp_connections: 256,
+            max_tcp_connections_per_host: 16,
             max_inflight: 2048,
             write_timeout: Duration::from_secs(10),
             fail_udp_sends: 0,
@@ -235,7 +252,7 @@ pub fn start(
     let shared = Arc::new(Shared::default());
     let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE);
     let (udp_tx, udp_rx) = mpsc::channel(UDP_QUEUE);
-    let (evict_tx, evict_rx) = mpsc::channel(1);
+    let (evict_tx, evict_rx) = mpsc::channel(EVICT_QUEUE);
     let (tap_tx, tap_rx) = mpsc::channel(TAP_QUEUE);
     let lagged = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
@@ -405,7 +422,7 @@ async fn udp_loop(socket: Arc<UdpSocket>, events: mpsc::Sender<Event>, shared: A
 async fn accept_loop(
     listener: TcpListener,
     events: mpsc::Sender<Event>,
-    evict: mpsc::Sender<()>,
+    evict: mpsc::Sender<Option<IpAddr>>,
     config: Arc<OscConfig>,
     inbox: Sender<Inbox>,
     shared: Arc<Shared>,
@@ -414,12 +431,19 @@ async fn accept_loop(
     let slots = Arc::new(Semaphore::new(
         config.max_tcp_connections.min(Semaphore::MAX_PERMITS),
     ));
+    let hosts = Arc::new(HostSlots::default());
     let mut refusals = Refusals::new("OSC server", config.refusal_log_interval);
-    let mut next_conn = 0u64;
+    // Refusals decided in a host's waiting task, logged here with the rest.
+    let (refused_tx, mut refused_rx) = mpsc::unbounded_channel::<String>();
+    let next_conn = Arc::new(AtomicU64::new(0));
     loop {
         let due = refusals.due();
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
+            Some(reason) = refused_rx.recv() => {
+                refusals.refused(&inbox, reason);
+                continue;
+            }
             // The last refusals of a burst are logged even if no connection follows.
             () = sleep_until(due.unwrap_or_else(Instant::now)), if due.is_some() => {
                 refusals.flush(&inbox);
@@ -431,43 +455,224 @@ async fn accept_loop(
             tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         };
-        let slot = match slots.clone().try_acquire_owned() {
-            Ok(slot) => Some(slot),
-            Err(_) => {
-                // Full: the actor may close an idle connection (a vanished peer); wait a
-                // moment for the slot.
-                // Its own signal, not the event queue: that one may be full (a flood) or
-                // unread (a snapshot is out), and this loop must not wait on it. One pending
-                // request is enough.
-                let _ = evict.try_send(());
-                match timeout(EVICT_WAIT, slots.clone().acquire_owned()).await {
-                    Ok(Ok(slot)) => Some(slot),
-                    _ => None,
-                }
-            }
+        keep_alive(&stream);
+        let admit = Admit {
+            events: events.clone(),
+            config: Arc::clone(&config),
+            pending_total: Arc::clone(&pending_total),
+            next_conn: Arc::clone(&next_conn),
         };
-        let Some(slot) = slot else {
+        // The host's own cap first.
+        let ip = from.ip().to_canonical();
+        let max = config.max_tcp_connections_per_host;
+        let Some(host_slot) = hosts.try_take(ip, max) else {
+            // At its cap: the actor may close one of this host's own idle connections (one it
+            // left behind when its network dropped). That wait runs in a task of its own, so
+            // a host that keeps its connections busy cannot slow the accept loop for others,
+            // and one at a time per host.
+            let Some(waiting) = hosts.start_waiting(ip) else {
+                refusals.refused(&inbox, host_refusal(max, ip));
+                shared.tcp_refused.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            let (hosts, slots, evict, refused, shared) = (
+                Arc::clone(&hosts),
+                Arc::clone(&slots),
+                evict.clone(),
+                refused_tx.clone(),
+                Arc::clone(&shared),
+            );
+            // Counted before the stream is closed, so a peer that sees the close sees the count.
+            let refuse = move |reason: String| {
+                shared.tcp_refused.fetch_add(1, Ordering::Relaxed);
+                let _ = refused.send(reason);
+            };
+            tokio::spawn(async move {
+                let _ = evict.try_send(Some(ip));
+                let host_slot = hosts.take_waiting(ip, max, EVICT_WAIT).await;
+                drop(waiting);
+                let Some(host_slot) = host_slot else {
+                    refuse(host_refusal(max, ip));
+                    return;
+                };
+                match table_slot(&slots, &evict).await {
+                    Some(slot) => admit.serve(stream, from.ip(), slot, host_slot).await,
+                    None => refuse("connection limit reached".to_owned()),
+                }
+            });
+            continue;
+        };
+        let Some(slot) = table_slot(&slots, &evict).await else {
             shared.tcp_refused.fetch_add(1, Ordering::Relaxed);
             refusals.refused(&inbox, "connection limit reached");
             continue;
         };
-        let conn = next_conn;
-        next_conn += 1;
-        let events = events.clone();
-        let write_timeout = config.write_timeout;
-        let pending_total = pending_total.clone();
-        tokio::spawn(async move {
-            tcp_connection(
-                stream,
-                from.ip(),
-                conn,
-                events,
-                write_timeout,
-                pending_total,
-            )
-            .await;
-            drop(slot);
-        });
+        tokio::spawn(admit.serve(stream, from.ip(), slot, host_slot));
+    }
+}
+
+fn host_refusal(max: usize, ip: IpAddr) -> String {
+    format!("per-host connection limit ({max}) reached by {ip}")
+}
+
+/// Asks the system to probe a silent peer (`TCP_KEEPALIVE_TIME`): one that vanished is then
+/// closed like one that reset. Best effort: without it such a peer holds its slot until an
+/// eviction closes it.
+fn keep_alive(stream: &TcpStream) {
+    let params = socket2::TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_TIME)
+        .with_interval(TCP_KEEPALIVE_INTERVAL);
+    let _ = socket2::SockRef::from(stream).set_tcp_keepalive(&params);
+}
+
+/// One of the table's `max_tcp_connections`. Full: the actor may close an idle connection (a
+/// vanished peer); waits `EVICT_WAIT` for the slot. The request is its own signal, not the
+/// event queue: that one may be full (a flood) or unread (a snapshot is out), and this must
+/// not wait on it.
+async fn table_slot(
+    slots: &Arc<Semaphore>,
+    evict: &mpsc::Sender<Option<IpAddr>>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if let Ok(slot) = Arc::clone(slots).try_acquire_owned() {
+        return Some(slot);
+    }
+    let _ = evict.try_send(None);
+    match timeout(EVICT_WAIT, Arc::clone(slots).acquire_owned()).await {
+        Ok(Ok(slot)) => Some(slot),
+        _ => None,
+    }
+}
+
+/// What serving an admitted connection needs.
+struct Admit {
+    events: mpsc::Sender<Event>,
+    config: Arc<OscConfig>,
+    pending_total: Arc<AtomicUsize>,
+    next_conn: Arc<AtomicU64>,
+}
+
+impl Admit {
+    async fn serve(
+        self,
+        stream: TcpStream,
+        ip: IpAddr,
+        slot: tokio::sync::OwnedSemaphorePermit,
+        host_slot: HostSlot,
+    ) {
+        let conn = self.next_conn.fetch_add(1, Ordering::Relaxed);
+        tcp_connection(
+            stream,
+            ip,
+            conn,
+            self.events,
+            self.config.write_timeout,
+            self.pending_total,
+        )
+        .await;
+        drop(slot);
+        drop(host_slot);
+    }
+}
+
+/// Open TCP connections per remote host, for `max_tcp_connections_per_host`.
+#[derive(Default)]
+struct HostSlots {
+    open: Mutex<HashMap<IpAddr, usize>>,
+    /// Hosts with a connection waiting for one of their slots (at most one each).
+    waiting: Mutex<HashSet<IpAddr>>,
+    /// Rung when a slot is given back.
+    freed: Notify,
+}
+
+impl HostSlots {
+    /// One of `ip`'s `max` slots, or `None` if it holds them all. The slot is given back when
+    /// the returned guard is dropped.
+    fn try_take(self: &Arc<Self>, ip: IpAddr, max: usize) -> Option<HostSlot> {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = open.entry(ip).or_insert(0);
+        if *n >= max {
+            if *n == 0 {
+                open.remove(&ip);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(HostSlot {
+            hosts: self.clone(),
+            ip,
+        })
+    }
+
+    /// Marks `ip` as having a connection waiting for its slot; `None` if one already is.
+    fn start_waiting(self: &Arc<Self>, ip: IpAddr) -> Option<Waiting> {
+        let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        waiting.insert(ip).then(|| Waiting {
+            hosts: self.clone(),
+            ip,
+        })
+    }
+
+    /// [`try_take`](Self::try_take), waiting up to `wait` for one of `ip`'s slots to be given
+    /// back.
+    async fn take_waiting(
+        self: &Arc<Self>,
+        ip: IpAddr,
+        max: usize,
+        wait: Duration,
+    ) -> Option<HostSlot> {
+        let deadline = Instant::now() + wait;
+        loop {
+            // Registered before the check, so a slot given back in between is not missed.
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            if let Some(slot) = self.try_take(ip, max) {
+                return Some(slot);
+            }
+            if tokio::time::timeout_at(deadline, freed).await.is_err() {
+                return self.try_take(ip, max);
+            }
+        }
+    }
+}
+
+/// A host's waiting connection; dropping it lets the host's next one wait.
+struct Waiting {
+    hosts: Arc<HostSlots>,
+    ip: IpAddr,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut waiting = self
+            .hosts
+            .waiting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        waiting.remove(&self.ip);
+    }
+}
+
+struct HostSlot {
+    hosts: Arc<HostSlots>,
+    ip: IpAddr,
+}
+
+impl Drop for HostSlot {
+    fn drop(&mut self) {
+        let mut open = self
+            .hosts
+            .open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = open.get_mut(&self.ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                open.remove(&self.ip);
+            }
+        }
+        drop(open);
+        self.hosts.freed.notify_waiters();
     }
 }
 
@@ -651,7 +856,9 @@ struct TcpConn {
 struct Queues {
     events: mpsc::Receiver<Event>,
     udp: mpsc::Receiver<Event>,
-    evict: mpsc::Receiver<()>,
+    /// Close an idle connection to make room: of this host (at its cap), or of any (`None`:
+    /// the table is full).
+    evict: mpsc::Receiver<Option<IpAddr>>,
     tap: mpsc::Receiver<Outgoing>,
     replies: ReplyRx,
 }
@@ -748,8 +955,8 @@ impl Actor {
                 // Only wakes the loop; the lag is handled at the top of the next turn.
                 () = wake.notified() => {}
                 // Needs neither the copies nor the event queues.
-                Some(()) = evict.recv() => {
-                    self.evict();
+                Some(host) = evict.recv() => {
+                    self.evict(host);
                     self.publish();
                 }
                 message = tap.recv(), if ready && !waiting => match message {
@@ -1087,8 +1294,9 @@ impl Actor {
     /// connection that completed `/connect` to a doc with a passcode is never closed this way:
     /// it is a console that was let in, and a stranger's connections must not be able to push
     /// it out (the cost: a console that vanished without closing holds its slot until a write
-    /// to it fails).
-    fn evict(&mut self) {
+    /// to it fails, or keepalive notices it). With `host`, only that host's connections are
+    /// candidates (it is at its own cap); the rules are the same.
+    fn evict(&mut self, host: Option<IpAddr>) {
         let idle = self.config.tcp_idle_evict;
         let subscribed: HashSet<u64> = self
             .osc
@@ -1115,7 +1323,10 @@ impl Actor {
                     conn: **conn,
                     ip: c.ip,
                 };
-                !subscribed.contains(conn) && c.last_rx.elapsed() >= idle && !let_in(peer)
+                host.is_none_or(|h| c.ip.to_canonical() == h)
+                    && !subscribed.contains(conn)
+                    && c.last_rx.elapsed() >= idle
+                    && !let_in(peer)
             })
             .min_by_key(|(_, c)| c.last_rx)
             .map(|(conn, _)| *conn);
@@ -1380,4 +1591,40 @@ fn update_message(workspace: &str, update: &Update) -> OscMessage {
 fn access_changed(old: &OscAccess, new: &OscAccess) -> bool {
     old.no_passcode != new.no_passcode
         || old.passcodes.iter().any(|row| !new.passcodes.contains(row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepted_connections_have_keepalive_on() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        assert!(!socket2::SockRef::from(&stream).keepalive().unwrap());
+        keep_alive(&stream);
+        assert!(socket2::SockRef::from(&stream).keepalive().unwrap());
+    }
+
+    #[test]
+    fn a_host_at_its_connection_cap_does_not_take_another_hosts_slot() {
+        let hosts = Arc::new(HostSlots::default());
+        let a: IpAddr = Ipv4Addr::new(10, 0, 0, 1).into();
+        let b: IpAddr = Ipv4Addr::new(10, 0, 0, 2).into();
+        let held: Vec<_> = (0..2).filter_map(|_| hosts.try_take(a, 2)).collect();
+        assert_eq!(held.len(), 2);
+        assert!(
+            hosts.try_take(a, 2).is_none(),
+            "a third connection from one host"
+        );
+        let other = hosts.try_take(b, 2);
+        assert!(other.is_some(), "another host was refused");
+        // A closed connection gives its host's slot back, and an idle host leaves no entry.
+        drop(held);
+        assert!(hosts.try_take(a, 2).is_some());
+        drop(other);
+        assert_eq!(hosts.open.lock().unwrap().len(), 0);
+    }
 }

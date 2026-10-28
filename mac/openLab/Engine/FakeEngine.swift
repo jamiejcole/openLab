@@ -278,18 +278,23 @@ final class FakeEngine: EngineTransport {
         case .transport(let id, let action):
             result(c, id)
             if let doc = c.doc { fakeEffect(of: action, doc: doc) }
-        case .command(let id, let command, _):
+        case .command(let id, let command, let coalesce):
             if refuseCommands { return result(c, id, error: (.commandRefused, "refused by the fake")) }
             if let doc = c.doc {
-                recordingHistory(doc, structural: Self.structural.contains(command.json["type"]?.stringValue ?? "")) {
+                recordingHistory(
+                    doc, structural: Self.structural.contains(command.json["type"]?.stringValue ?? ""),
+                    coalesce: coalesce
+                ) {
                     fakeEdit(doc, command)
                 }
             }
             result(c, id)
         case .undo(let id):
+            if let doc = c.doc { lastCoalesce[doc] = nil }
             if let doc = c.doc { fakeHistory(doc, undo: true) }
             result(c, id)
         case .redo(let id):
+            if let doc = c.doc { lastCoalesce[doc] = nil }
             if let doc = c.doc { fakeHistory(doc, undo: false) }
             result(c, id)
         case .request(let id, let r): handleRequest(id, r, from: c)
@@ -408,14 +413,20 @@ final class FakeEngine: EngineTransport {
     private var undoStacks: [ModelID: [JSONValue]] = [:]
     private var redoStacks: [ModelID: [JSONValue]] = [:]
 
+    /// The coalesce key of the last recorded edit: an edit with the same key joins its undo step
+    /// (docs/commands.md "Coalescing"). Any other edit, undo or redo ends the gesture.
+    private var lastCoalesce: [ModelID: String] = [:]
+
     /// Runs an edit; if it changed the revision, keeps the state before it for undo and, for the
     /// structural ones, sends the new state as a `snapshot`.
-    private func recordingHistory(_ doc: ModelID, structural: Bool, _ edit: () -> Void) {
+    private func recordingHistory(_ doc: ModelID, structural: Bool, coalesce: String?, _ edit: () -> Void) {
         let before = docs[doc]?["workspace"]?["cue_lists"] ?? .null
         let rev = docs[doc]?["revision"]
         edit()
-        guard docs[doc]?["revision"] != rev else { return }
-        undoStacks[doc, default: []].append(before)
+        guard docs[doc]?["revision"] != rev else { return }  // a no-op edit leaves the gesture open
+        let joins = coalesce != nil && lastCoalesce[doc] == coalesce && !(undoStacks[doc] ?? []).isEmpty
+        lastCoalesce[doc] = coalesce
+        if !joins { undoStacks[doc, default: []].append(before) }
         redoStacks[doc] = []
         publishHistory(doc, snapshot: structural)
     }

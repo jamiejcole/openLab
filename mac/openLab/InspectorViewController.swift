@@ -35,6 +35,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let groupShuffleCheck = NSButton(checkboxWithTitle: loc("inspector.groupShuffle"), target: nil, action: nil)
     /// The Mode tab, in the tab view only while a Group cue is selected.
     private var modeItem: NSTabViewItem?
+    /// The Levels tab of an Audio cue (AUD-06, AUD-08) and the Fade tab of a Fade cue (CT-10), each in
+    /// the tab view only while such a cue is selected.
+    let audioLevels = LevelsPanel(isFade: false)
+    let fadeLevels = LevelsPanel(isFade: true)
+    let fadeSettings = FadeSettingsPanel()
+    var levelsItem: NSTabViewItem?
+    var fadeItem: NSTabViewItem?
+    /// `kind` is replaced whole by a levels or fade edit, so an edit made before the engine answered
+    /// the previous one must start from what was sent (as `pendingTriggers`).
+    var pendingKinds: [ModelID: JSONValue] = [:]
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
     ]
@@ -91,9 +101,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var pendingTriggers: [ModelID: JSONValue] = [:]
 
     /// The selected cue as edits should see it: the model's, with unanswered triggers applied.
-    private var cueForEdit: Cue? {
+    var cueForEdit: Cue? {
         guard var c = cue else { return nil }
         if let t = pendingTriggers[c.id] { c.raw.set("triggers", t) }
+        if let k = pendingKinds[c.id] { c.raw.set("kind", k) }
         return c
     }
 
@@ -216,6 +227,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         tabView.addTabViewItem(item)
         tabView.addTabViewItem(triggersTab(row: row, column: column))
         modeItem = modeTab(row: row, column: column)
+        buildLevelsTabs()
         tabView.setAX(AX.inspectorTabs)
 
         for v in [tabView, emptyLabel, messageLabel] {
@@ -451,6 +463,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
         renderMode(cue)
+        renderLevels(cueForEdit ?? cue, model: model)
         updatePreviewButton()
         if isLocked { applyLock() }
     }
@@ -487,6 +500,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
         for c in lockedControls { c.isEnabled = !isLocked }
         notesView.isEditable = !isLocked
+        audioLevels.isLocked = isLocked
+        fadeLevels.isLocked = isLocked
+        fadeSettings.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
@@ -533,7 +549,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         render(force: [f])
     }
 
-    private func send(_ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>) {
+    func send(
+        _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil
+    ) {
         guard !isLocked else { return }
         let seqKey = "\(cue)/\(key)"
         let n = (editSeq[seqKey] ?? 0) + 1
@@ -543,6 +561,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let property = command.json["property"]
         let sentTriggers = property?["type"]?.stringValue == "triggers" ? property?["value"] : nil
         if let sentTriggers { pendingTriggers[cue] = sentTriggers }
+        let sentKind = property?["type"]?.stringValue == "kind" ? property?["value"] : nil
+        if let sentKind { pendingKinds[cue] = sentKind }
         inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
             // Cleared on success and on refusal alike. On success the model already holds the change:
@@ -552,8 +572,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             defer {
                 inFlight[taskID] = nil
                 if let sentTriggers, pendingTriggers[cue] == sentTriggers { pendingTriggers[cue] = nil }
+                if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
             }
-            if case .failure(let error) = await store.send(command: command) {
+            let outcome = await store.send(command: command, coalesce: coalesce)
+            // Answered: the model holds the edit (or refused it), so the unanswered copy must not hide it
+            // from the render below.
+            if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
+            if case .failure(let error) = outcome {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
                     messageLabel.stringValue = String(format: loc("inspector.refused"), message)
