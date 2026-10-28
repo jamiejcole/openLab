@@ -1138,3 +1138,70 @@ fn the_output_override_needs_no_open_doc() {
     assert_eq!(result_error(&replies), None, "{replies:?}");
     assert!(s.control().network_output_disabled());
 }
+
+/// The prime pool is shared by demand (review M-C): an idle second doc opening beside a busy
+/// show takes none of its primes, and nothing re-primes on the open or the close.
+#[test]
+fn an_idle_second_doc_takes_no_primes_from_a_busy_show() {
+    let key = Hotkey {
+        key: "f".into(),
+        modifiers: Modifiers::default(),
+    };
+    let f = wav(&dc(400, 0.25));
+    // 60 hotkey cues: all primed (ARCHITECTURE §3.5), within the 64 of the pool.
+    let cues = (1..=60)
+        .map(|n| {
+            let mut c = audio(n, &f, 0);
+            c.triggers.hotkey = Some(key.clone());
+            c
+        })
+        .collect();
+    let (mut s, ids) = docs_show(workspace(cues), vec![]);
+    s.run(BLOCK * 2);
+    let primed = |s: &OfflineShow| s.control().doc(ids[0]).unwrap().primed().len();
+    assert_eq!(primed(&s), 60);
+    let opened_before = s.control().open_streams();
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(1, vec![]))))
+        .unwrap();
+    s.settle_media();
+    s.run(BLOCK * 8);
+    assert_eq!(primed(&s), 60, "an empty doc halved the show's primes");
+    s.close_doc(b, false).unwrap();
+    s.run(BLOCK * 8);
+    assert_eq!(primed(&s), 60);
+    assert_eq!(s.control().open_streams(), opened_before, "streams churned");
+}
+
+/// Under real contention each doc keeps at least its fair share of the prime pool (half the
+/// stream permits), and a start of a cue nobody primed still finds a permit (review M-C, M3).
+#[test]
+fn contended_primes_are_shared_fairly_and_never_refuse_a_start() {
+    let f = wav(&dc(400, 0.25));
+    let cues = || (1..=8).map(|n| audio(n, &f, 0)).collect::<Vec<_>>();
+    let (mut s, ids) = docs_show_with(workspace(cues()), vec![], |c| {
+        c.streamer.max_streams = 8;
+        c.prime_cues = 8;
+    });
+    s.run(BLOCK * 2);
+    let primed = |s: &OfflineShow, d| s.control().doc(d).unwrap().primed().len();
+    // Alone it has the whole pool: half of 8 permits.
+    assert_eq!(primed(&s, ids[0]), 4);
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(1, cues()))))
+        .unwrap();
+    s.settle_media();
+    // Each fills a few rings per pass; give the shares time to settle.
+    s.run(BLOCK * 16);
+    assert_eq!(primed(&s, ids[0]), 2);
+    assert_eq!(primed(&s, b), 2);
+    // Both docs start a cue nobody primed: each finds a permit.
+    let at = s.now() as usize;
+    start_in(&mut s, ids[0], 8);
+    start_in(&mut s, b, 8);
+    s.run(BLOCK * 4);
+    assert_ne!(state(&s, ids[0], 8), CueState::Broken);
+    assert_ne!(state(&s, b, 8), CueState::Broken);
+    assert_eq!(first_nonzero(&s.channel(0)[at..]), Some(0));
+    assert!(!format!("{:?}", s.take_outbound()).contains("stream_failed"));
+}

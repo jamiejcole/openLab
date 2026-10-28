@@ -818,10 +818,12 @@ impl Voices {
         usable.then_some((prime.prepared, prime.total))
     }
 
-    /// Keeps exactly `wanted` primed (in order, at most `max`): new ones are prepared, ones no
-    /// longer wanted or out of date are released.
-    pub fn prime(&mut self, wanted: &[CueId], max: usize, env: &mut Env<'_>) {
+    /// Keeps exactly `wanted` primed (in order, most urgent first, at most `max`): new ones are
+    /// prepared, at most `burst` of them; ones no longer wanted or out of date are released.
+    /// Returns whether the burst limit left some unmade.
+    pub fn prime(&mut self, wanted: &[CueId], max: usize, burst: usize, env: &mut Env<'_>) -> bool {
         let wanted: Vec<CueId> = wanted.iter().copied().take(max).collect();
+        let mut made = 0;
         self.primes
             .retain(|cue, p| wanted.contains(cue) && sig_of(env, *cue).as_ref() == Some(&p.sig));
         for cue in wanted {
@@ -837,9 +839,13 @@ impl Voices {
             let Some(sig) = sig_of(env, cue) else {
                 continue;
             };
+            if made >= burst {
+                return true;
+            }
             // A prime that cannot be made now (probe pending or failed) is tried again later.
             let mut quiet = Effects::default();
             if let Ok((prepared, total)) = self.prepare(cue, 0, env, &mut quiet) {
+                made += 1;
                 self.primes.insert(
                     cue,
                     Prime {
@@ -850,6 +856,7 @@ impl Voices {
                 );
             }
         }
+        false
     }
 
     /// Checks the streams of live voices for failures: each failed run is reported once.

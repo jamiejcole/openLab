@@ -1863,13 +1863,13 @@ impl Control {
         Ok(())
     }
 
-    /// The number of open docs changed: each doc's share of the primes follows at its next
-    /// priming pass.
+    /// The number of open docs changed.
     fn docs_changed(&mut self) {
         self.eng.open_docs = self.docs.len();
-        for doc in &mut self.docs {
-            doc.primes_dirty = true;
-        }
+        // A closed doc's primes are back in the pool; a new doc asks for its share at its
+        // first priming pass (`balance_primes` makes the others follow, only if they must).
+        let open: Vec<DocId> = self.docs.iter().map(|d| d.id).collect();
+        self.eng.primes.retain(|d, _| open.contains(d));
     }
 
     /// Saves of closed docs that finished: answered (and a failure logged).

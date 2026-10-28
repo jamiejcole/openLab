@@ -218,8 +218,9 @@ impl Gate {
     /// With several docs open the show file's volume is exempt no more (M4.15e review M2): the
     /// workers are shared, and a doc whose show volume hangs would otherwise take every worker,
     /// one 30 s abandonment after another, until no worker is left for the other docs. It is
-    /// then held back like any other volume once two files are stuck on it (one slow file is
-    /// still no verdict), with one trial at a time.
+    /// then held back only once two of its files' probes are stuck past the probe watchdog
+    /// (`stalled`), never on the media watch's word alone (review M-B: one slow stat, a disk
+    /// spinning up, must not slow the show's own probes because another workspace is open).
     fn exempt(&self, bucket: &str) -> bool {
         bucket == SYSTEM_VOLUME
             || self
@@ -235,13 +236,23 @@ impl Gate {
                     .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
     }
 
+    /// An open show file's volume (whether or not it is [`Self::exempt`]).
+    fn show_volume(&self, bucket: &str) -> bool {
+        self.show_dirs
+            .values()
+            .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
+    }
+
     fn stalled(&self, bucket: &str) -> bool {
-        !self.exempt(bucket)
-            && (self.watch_stalled.contains(bucket)
-                || self
-                    .volumes
-                    .get(bucket)
-                    .is_some_and(|v| v.stuck.len() >= CORROBORATION))
+        if self.exempt(bucket) {
+            return false;
+        }
+        let stuck = self
+            .volumes
+            .get(bucket)
+            .is_some_and(|v| v.stuck.len() >= CORROBORATION);
+        // A show's own volume: on its probes' word only (see `exempt`).
+        stuck || (!self.show_volume(bucket) && self.watch_stalled.contains(bucket))
     }
 
     /// May a job start on `bucket` now: it works, or it is stalled and a trial is due.
@@ -390,7 +401,12 @@ impl Gate {
     fn release_due(&mut self, now: Instant) -> Vec<(Job, bool)> {
         let mut tried: HashSet<String> = HashSet::new();
         let mut out = Vec::new();
-        for (job, high) in std::mem::take(&mut self.deferred) {
+        // Urgent jobs (files near a playhead) first, so a volume's one trial is theirs and
+        // they go out ahead of the rest (review M-B); each kind in the order it came.
+        let (high, low): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred)
+            .into_iter()
+            .partition(|(_, h)| *h);
+        for (job, high) in high.into_iter().chain(low) {
             let bucket = self.bucket(job.path());
             let go = if self.stalled(&bucket) {
                 self.may_start(&bucket, now) && tried.insert(bucket)
@@ -2758,6 +2774,74 @@ mod tests {
 
     /// The volumes are the engine's: one doc replacing its workspace forgets only its own
     /// claims and waiting jobs while another doc is open; alone, it forgets everything.
+    /// With two docs open, a show's own volume is never held back on the media watch's word:
+    /// its probes (the playhead's first) run at once; only two of its probes stuck past the
+    /// watchdog hold it back (review M-B, M2).
+    #[test]
+    fn a_show_volume_is_held_back_on_stuck_probes_only_while_several_docs_are_open() {
+        let t0 = Instant::now();
+        let mut gate = Gate {
+            members: BTreeSet::from([DocId(0), DocId(1)]),
+            show_dirs: BTreeMap::from([(DocId(0), PathBuf::from("/Volumes/Shows/Hamlet"))]),
+            ..Gate::default()
+        };
+        // The watch saw one slow stat there (a disk spinning up).
+        gate.watch_stalled.insert("/Volumes/Shows".to_owned());
+        assert!(!gate.exempt("/Volumes/Shows"), "several docs: not exempt");
+        assert!(!gate.stalled("/Volumes/Shows"));
+        for n in 1..=5 {
+            let taken = gate.admit(job(&format!("/Volumes/Shows/Hamlet/{n}.wav"), n), true, t0);
+            assert!(
+                taken.is_some_and(|t| t.trial.is_none()),
+                "file {n} held back"
+            );
+        }
+        // Another volume the watch reports is held back as before.
+        gate.watch_stalled.insert("/Volumes/Other".to_owned());
+        assert!(gate.stalled("/Volumes/Other"));
+        // Two of the show's probes stuck past the watchdog: now it is held back.
+        stuck(&mut gate, "/Volumes/Shows/Hamlet/a.wav", 10, t0);
+        stuck(&mut gate, "/Volumes/Shows/Hamlet/b.wav", 11, t0);
+        assert!(gate.stalled("/Volumes/Shows"));
+    }
+
+    /// Jobs held back go out urgent ones first: the trial of a stalled volume is the file at
+    /// the playhead, not the next of hundreds that came before it (review M-B).
+    #[test]
+    fn held_back_jobs_are_released_urgent_first() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        stuck(&mut gate, "/mnt/dead/a.wav", 1, t0);
+        stuck(&mut gate, "/mnt/dead/b.wav", 2, t0);
+        assert!(gate.stalled(DEAD));
+        // The one trial goes now; everything after it waits, the urgent one last to arrive.
+        assert!(gate.admit(job("/mnt/dead/c.wav", 3), false, t0).is_some());
+        for n in 4..20 {
+            assert!(
+                gate.admit(job(&format!("/mnt/dead/{n}.wav"), n), false, t0)
+                    .is_none()
+            );
+        }
+        assert!(
+            gate.admit(job("/mnt/dead/playhead.wav", 30), true, t0)
+                .is_none()
+        );
+        // The trial fails; after its wait the next one is due: it is the urgent job.
+        gate.finished(
+            gate.epoch,
+            DEAD,
+            "/mnt/dead/c.wav",
+            true,
+            Some(1),
+            false,
+            t0,
+        );
+        let due = gate.release_due(t0 + Duration::from_secs(600));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0.key().0, "/mnt/dead/playhead.wav");
+        assert!(due[0].1);
+    }
+
     #[test]
     fn one_docs_reset_keeps_what_the_others_know_about_the_volumes() {
         let t0 = Instant::now();
