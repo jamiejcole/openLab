@@ -379,7 +379,7 @@ final class AppController {
         guard let folder = pickFolderURL() else { return }
         switch await store.relink(folder: folder.path) {
         case .success(let ok):
-            guard case .relink(let relinked, let ambiguous, let unmatched)? = ok.data else {
+            guard case .relink(let relinked, let ambiguous, let unmatched, _, _)? = ok.data else {
                 report(.encoding("relink result has no relink data"), on: store)
                 return
             }

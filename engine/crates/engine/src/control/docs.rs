@@ -38,6 +38,7 @@ use openlab_core::{
     MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
     is_absolute, load_show, portable_ref, relink_command,
 };
+use openlab_core::{CueId, RelinkPlan};
 
 use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
@@ -48,7 +49,8 @@ use super::{
 };
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
-    check_recovery, file_key, lexical_key, media_path, read_text, scan_recovery,
+    ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path, read_text,
+    scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -231,11 +233,28 @@ pub enum DocAnswer {
         ticket: u64,
         entries: Vec<RecoveryEntryInfo>,
     },
+    /// The folder walk of a `relink`: proposals only, applied on the control thread.
+    Relinked {
+        ticket: u64,
+        found: Box<RelinkFound>,
+    },
     Failed {
         ticket: u64,
         code: ErrorCode,
         message: String,
     },
+}
+
+/// What the document worker found for a `relink`.
+#[derive(Debug)]
+pub struct RelinkFound {
+    plan: RelinkPlan,
+    /// The audio cues' media as the worker's copy of the workspace had them: a proposal is
+    /// applied only to a cue that still has that reference (the workspace may have been edited
+    /// while the folder was walked).
+    before: Vec<(CueId, MediaRef)>,
+    truncated: bool,
+    skipped: usize,
 }
 
 impl DocAnswer {
@@ -245,6 +264,7 @@ impl DocAnswer {
             | Self::Built { ticket, .. }
             | Self::Offer { ticket, .. }
             | Self::Entries { ticket, .. }
+            | Self::Relinked { ticket, .. }
             | Self::Failed { ticket, .. } => *ticket,
         }
     }
@@ -279,6 +299,14 @@ enum DocJob {
     Scan {
         ticket: u64,
     },
+    /// The folder walk of a `relink`, on a copy of the workspace.
+    Relink {
+        ticket: u64,
+        workspace: Box<Workspace>,
+        show_dir: Option<PathBuf>,
+        folder: PathBuf,
+        limits: ScanLimits,
+    },
 }
 
 /// What a document request is for.
@@ -288,6 +316,8 @@ enum Target {
     Engine,
     /// A doc to add ([`Control::open_doc`]).
     New,
+    /// The `relink` of a doc: applied to it when the walk is done, if it is still open.
+    Relink(DocId),
 }
 
 /// What the request being worked on by the document worker is.
@@ -300,6 +330,9 @@ struct PendingDoc {
     path: Option<PathBuf>,
     /// When the request was handed to the worker ([`ControlConfig::clock`], milliseconds).
     started_ms: i64,
+    /// Time allowed on top of the engine's read timeout: a folder walk has its own time limit,
+    /// which the stall check must outwait.
+    extra_ms: i64,
 }
 
 struct PendingSave {
@@ -531,6 +564,13 @@ fn work(
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
+            DocJob::Relink {
+                ticket,
+                workspace,
+                show_dir,
+                folder,
+                limits,
+            } => relink_scan(ticket, &workspace, show_dir.as_deref(), &folder, limits),
         };
         // The control loop gave up on the request while this was reading: its answer is stale
         // (it has another ticket), and this thread leaves the work to the replacement.
@@ -699,6 +739,46 @@ fn open_recovery(
     }
 }
 
+/// Walks `folder` for the files `workspace` lacks (on the document worker: it can take as long as
+/// `limits` allow, and a volume that stops answering is the stall check's business). A folder
+/// that is not a folder is `not_found`.
+fn relink_scan(
+    ticket: u64,
+    workspace: &Workspace,
+    show_dir: Option<&Path>,
+    folder: &Path,
+    limits: ScanLimits,
+) -> DocAnswer {
+    match std::fs::metadata(folder) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => {
+            return failed(
+                ticket,
+                ErrorCode::BadRequest,
+                format!("{} is not a folder", folder.display()),
+            );
+        }
+        Err(e) => {
+            let code = if e.kind() == std::io::ErrorKind::NotFound {
+                ErrorCode::NotFound
+            } else {
+                ErrorCode::Io
+            };
+            return failed(ticket, code, format!("{}: {e}", folder.display()));
+        }
+    }
+    let found = find_in_folder(workspace, show_dir, folder, limits);
+    DocAnswer::Relinked {
+        ticket,
+        found: Box::new(RelinkFound {
+            plan: found.plan,
+            before: audio_media(workspace),
+            truncated: found.truncated,
+            skipped: found.skipped,
+        }),
+    }
+}
+
 fn scan(ticket: u64, dirs: Option<&AppDirs>) -> DocAnswer {
     let entries = dirs
         .map(|dirs| scan_recovery(dirs, MAX_RECOVERY_ENTRIES).entries)
@@ -838,6 +918,80 @@ impl DocCx<'_> {
                 ),
             ),
         }
+    }
+
+    /// Applies a folder walk's matches as one undo step, to the cues that still have the
+    /// reference the walk started from, and answers with the counts and whether a limit ended
+    /// the walk early.
+    fn apply_relink(&mut self, found: RelinkFound, id: RequestId, to: &ReplyTx) {
+        let RelinkFound {
+            plan,
+            before,
+            truncated,
+            skipped,
+        } = found;
+        let current = audio_media(&self.doc.ws);
+        let relinks: Vec<Relink> = plan
+            .matches
+            .into_iter()
+            .filter(|m| {
+                fn media_of(list: &[(CueId, MediaRef)], cue: CueId) -> Option<&MediaRef> {
+                    list.iter().find(|(c, _)| *c == cue).map(|(_, r)| r)
+                }
+                media_of(&before, m.cue).is_some()
+                    && media_of(&before, m.cue) == media_of(&current, m.cue)
+            })
+            .collect();
+        let relinked = relinks.len() as u64;
+        let now = self.now();
+        let command = relink_command(&self.doc.ws, &relinks);
+        let footprint = command.footprint();
+        let revision = match self.doc.history.execute(&mut self.doc.ws, command) {
+            Ok(true) => {
+                self.edited(now, &footprint);
+                self.log(
+                    LogLevel::Info,
+                    format!(
+                        "relinked {relinked} cue(s){}",
+                        if truncated { " (search cut short)" } else { "" }
+                    ),
+                );
+                Some(self.doc.revision)
+            }
+            Ok(false) => Some(self.doc.revision),
+            Err(e) => {
+                self.partly_changed(now, &e);
+                fail(to, id, ErrorCode::CommandRefused, e.to_string());
+                return;
+            }
+        };
+        reply(
+            to,
+            ServerMessage::Result {
+                id,
+                outcome: Outcome::Ok(OkBody {
+                    revision,
+                    data: Some(ResultData::Relink {
+                        relinked,
+                        ambiguous: plan
+                            .ambiguous
+                            .into_iter()
+                            .map(|a| openlab_core::protocol::AmbiguousMatch {
+                                cue: a.cue,
+                                candidates: a
+                                    .candidates
+                                    .iter()
+                                    .map(|c| c.as_str().to_owned())
+                                    .collect(),
+                            })
+                            .collect(),
+                        unmatched: plan.unmatched,
+                        truncated,
+                        skipped: skipped as u64,
+                    }),
+                }),
+            },
+        );
     }
 
     /// Stops everything that is running, as Panic pressed twice does, and lets go of every
@@ -1185,15 +1339,14 @@ impl Engine {
             .clock
             .now_ms()
             .saturating_sub(pending.started_ms);
-        if elapsed < self.docs.timeout_ms {
+        let timeout_ms = self.docs.timeout_ms.saturating_add(pending.extra_ms);
+        if elapsed < timeout_ms {
             return;
         }
         // The worker has answered and the answer is in the inbox, not yet applied: it is not
         // stuck. Leave the request to that answer.
         // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
-        if !self.docs.worker.busy.load(Ordering::SeqCst)
-            && elapsed < self.docs.timeout_ms.saturating_mul(2)
-        {
+        if !self.docs.worker.busy.load(Ordering::SeqCst) && elapsed < timeout_ms.saturating_mul(2) {
             return;
         }
         let Some(pending) = self.docs.pending.take() else {
@@ -1271,6 +1424,7 @@ impl Engine {
             reply: to.clone(),
             path: None,
             started_ms: self.config.clock.now_ms(),
+            extra_ms: 0,
         });
         self.docs.ticket
     }
@@ -1479,6 +1633,50 @@ impl Control {
         super::Flow::Continue
     }
 
+    /// `relink` of doc `doc` (WS-03, NFR-04): the folder is walked on the document worker, on a
+    /// copy of the workspace, so the control thread does no disk I/O and a slow volume holds up
+    /// nothing but this answer. The matches are applied as one undoable edit when the walk is
+    /// done ([`Self::relinked`]). Refused (`command_refused`) while another document request is
+    /// being handled.
+    pub(super) fn relink(&mut self, doc: DocId, id: RequestId, folder: String, to: &ReplyTx) {
+        if !self.eng.read_gate(id, to, true) {
+            return;
+        }
+        let Some(d) = self.docs.iter().find(|d| d.id == doc) else {
+            fail(to, id, ErrorCode::NoWorkspace, "no workspace is open");
+            return;
+        };
+        let (workspace, show_dir) = (
+            Box::new(d.ws.clone()),
+            d.show_path.as_deref().and_then(folder_of),
+        );
+        let limits = self.eng.config.relink_limits;
+        let ticket = self.eng.next_ticket(Target::Relink(doc), id, to);
+        let wait_ms = i64::try_from(limits.max_duration.as_millis()).unwrap_or(i64::MAX);
+        if let Some(pending) = &mut self.eng.docs.pending {
+            pending.extra_ms = wait_ms;
+        }
+        self.eng.send_job(
+            DocJob::Relink {
+                ticket,
+                workspace,
+                show_dir,
+                folder: PathBuf::from(folder),
+                limits,
+            },
+            id,
+            to,
+        );
+    }
+
+    /// The walk is done: apply what it found to the doc, if it is still open.
+    fn relinked(&mut self, doc: DocId, found: RelinkFound, id: RequestId, to: &ReplyTx) {
+        match self.cx_of(doc) {
+            Some(mut cx) => cx.apply_relink(found, id, to),
+            None => fail(to, id, ErrorCode::NoWorkspace, "the workspace was closed"),
+        }
+    }
+
     /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
     pub(super) fn scan_recovery(&mut self, id: RequestId, to: &ReplyTx) {
         if !self.eng.read_gate(id, to, true) {
@@ -1510,6 +1708,9 @@ impl Control {
                 reply_data(to, id, ResultData::RecoveryEntries { entries });
             }
             (Target::New, DocAnswer::Built { parts, .. }) => self.install_new(*parts, id, to),
+            (Target::Relink(doc), DocAnswer::Relinked { found, .. }) => {
+                self.relinked(doc, *found, id, to);
+            }
             (
                 Target::New,
                 DocAnswer::Offer {
