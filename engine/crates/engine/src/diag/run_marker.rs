@@ -167,6 +167,26 @@ pub fn begin(
     (marker, previous)
 }
 
+/// Whether the engine with process id `pid` is running: its marker in `dir` is held by a live
+/// process (M4.9, `engine.json`'s single-instance check). `false` for this process's own pid (a
+/// file left by an earlier run whose pid this one reuses), for no marker, and where locks are
+/// unsupported (as for leftovers: such a run cannot be told from a live one, and a start must
+/// not be refused for ever).
+pub fn is_live(dir: &Path, pid: u32) -> bool {
+    if pid == std::process::id() {
+        return false;
+    }
+    let path = dir.join(marker_name(pid));
+    // A FIFO named like a marker must not hang the start (as in `take_one`).
+    if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+}
+
 fn marker_name(pid: u32) -> String {
     format!("{PREFIX}{pid}{SUFFIX}")
 }
@@ -396,6 +416,23 @@ pub(crate) mod tests {
         assert_eq!(markers(&dir), ["running-1.json", "running-2.json"]);
         other.unwrap().finish().unwrap();
         live.finish().unwrap();
+    }
+
+    #[test]
+    fn a_run_is_live_while_its_marker_is_held_and_not_after() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
+        assert!(!is_live(&dir, 1), "no marker");
+        let (live, _) = RunMarker::start(&dir, &crashes, &info(1, T0));
+        let live = live.unwrap();
+        assert!(is_live(&dir, 1));
+        assert!(
+            !is_live(&dir, std::process::id()),
+            "this process is never another engine"
+        );
+        // Ended without a clean shutdown: the file stays, unlocked.
+        drop(live);
+        assert!(!is_live(&dir, 1));
     }
 
     #[test]
