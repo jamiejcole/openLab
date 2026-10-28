@@ -5,8 +5,8 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-LOG="$(mktemp "${TMPDIR:-/tmp}/openlab-prepush.XXXXXX")"
-LOG="${LOG}.log"
+LOG="${TMPDIR:-/tmp}/openlab-prepush-$(date +%Y%m%d-%H%M%S)-$$.log"
+: >"$LOG"
 
 changed="$( { git diff --name-only origin/main...HEAD; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u)"
 
