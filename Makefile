@@ -5,7 +5,7 @@ SPDX := SPDX-License-Identifier: GPL-3.0-or-later
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
 
-.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz
+.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz prepush
 
 lint:
 	@missing=$$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' Makefile | xargs grep -L "$(SPDX)"); \
@@ -17,6 +17,10 @@ lint:
 	swift format lint --strict -r mac/
 
 test: test-rust test-mac
+
+# Pre-push gate; picks checks from the diff against origin/main (see scripts/prepush.sh).
+prepush:
+	scripts/prepush.sh
 
 test-rust:
 	cd engine && cargo test --workspace
