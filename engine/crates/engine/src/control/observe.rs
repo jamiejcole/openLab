@@ -371,11 +371,27 @@ impl DocCx<'_> {
         cue: Option<CueId>,
         source: Option<String>,
     ) {
+        let message = self.tagged(message);
         self.eng.record(kind, level, message, cue, source);
     }
 
     pub(super) fn log_kind(&mut self, kind: LogKind, level: LogLevel, message: String) {
+        let message = self.tagged(message);
         self.eng.log_kind(kind, level, message);
+    }
+
+    /// A doc's log line names its workspace while more than one is open (the show log and the
+    /// crash report mix every doc's lines); with one doc open it is as before.
+    pub(super) fn tagged(&self, message: String) -> String {
+        if self.eng.open_docs <= 1 {
+            return message;
+        }
+        let name = if self.doc.ws.name.is_empty() {
+            format!("workspace {}", self.doc.id)
+        } else {
+            self.doc.ws.name.clone()
+        };
+        format!("[{name}] {message}")
     }
 
     /// `cue 5 "Storm"`, for log lines.

@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -198,6 +198,9 @@ struct Gate {
     show_dirs: BTreeMap<DocId, PathBuf>,
     /// The docs whose catalogs send jobs.
     members: BTreeSet<DocId>,
+    /// Docs closed: their jobs still in the queues are dropped when a worker takes them
+    /// (`DocId`s are never reused, so this only grows by one per close).
+    left: BTreeSet<DocId>,
     epoch: u64,
     next_trial: u64,
 }
@@ -208,21 +211,28 @@ impl Gate {
     }
 
     /// Volumes never held back: the system volume (`/`, or the system drive) mixes the local
-    /// disk with automounts and cloud folders, and the volume holding an open show file is
-    /// one an operator cannot do without. Only other volumes (removable drives, network
+    /// disk with automounts and cloud folders, and the volume holding the open show file is
+    /// the one an operator cannot do without. Only other volumes (removable drives, network
     /// shares, other mounts) can be stalled for probe scheduling.
+    ///
+    /// With several docs open the show file's volume is exempt no more (M4.15e review M2): the
+    /// workers are shared, and a doc whose show volume hangs would otherwise take every worker,
+    /// one 30 s abandonment after another, until no worker is left for the other docs. It is
+    /// then held back like any other volume once two files are stuck on it (one slow file is
+    /// still no verdict), with one trial at a time.
     fn exempt(&self, bucket: &str) -> bool {
         bucket == SYSTEM_VOLUME
             || self
                 .system_drive
                 .as_ref()
                 .is_some_and(|d| d.eq_ignore_ascii_case(bucket))
-            || self
-                .show_dirs
-                .values()
-                // A file in the folder: `bucket_of` calls a path directly inside a mount
-                // folder (a show at the root of a volume) part of `/`.
-                .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
+            || self.members.len() <= 1
+                && self
+                    .show_dirs
+                    .values()
+                    // A file in the folder: `bucket_of` calls a path directly inside a mount
+                    // folder (a show at the root of a volume) part of `/`.
+                    .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
     }
 
     fn stalled(&self, bucket: &str) -> bool {
@@ -243,6 +253,10 @@ impl Gate {
     /// deferred (its volume is stalled and no trial is due).
     fn admit(&mut self, job: Job, high: bool, now: Instant) -> Option<Taken> {
         let (key, ticket) = job.key();
+        // A closed doc's job, still in a queue: nobody wants its answer.
+        if self.left.contains(&job.doc()) {
+            return None;
+        }
         let claim = (job.doc(), job.is_probe(), key.to_owned());
         if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
             return None;
@@ -432,6 +446,7 @@ impl Gate {
     /// A doc closed: it sends no more jobs, and its show folder is no longer exempt.
     fn leave(&mut self, doc: DocId) {
         self.forget(doc);
+        self.left.insert(doc);
         self.members.remove(&doc);
         self.show_dirs.remove(&doc);
     }
@@ -529,12 +544,16 @@ pub struct ProbePool {
     limit_unread: bool,
     timeout: Duration,
     clock: ProbeClock,
+    /// Bytes every doc's preloads hold together (AUD-05: one budget for the engine).
+    preloads: Arc<AtomicU64>,
 }
 
 /// How one doc's catalog reaches the pool: its jobs carry the doc.
 #[derive(Clone)]
 pub struct PoolHandle {
     doc: DocId,
+    /// Bytes every doc's preloads hold together, against the one preload budget.
+    preloads: Arc<AtomicU64>,
     high: Sender<Job>,
     low: Sender<Job>,
     gate: Arc<Mutex<Gate>>,
@@ -611,6 +630,7 @@ impl ProbePool {
             limit_unread: false,
             timeout,
             clock,
+            preloads: Arc::default(),
         };
         #[cfg(windows)]
         {
@@ -626,6 +646,7 @@ impl ProbePool {
     pub fn handle(&self, doc: DocId) -> PoolHandle {
         PoolHandle {
             doc,
+            preloads: Arc::clone(&self.preloads),
             high: self.high.clone(),
             low: self.low.clone(),
             gate: Arc::clone(&self.gate),
@@ -923,7 +944,8 @@ impl MediaCatalog {
         lock(&self.pool.gate).reset_doc(self.pool.doc, show_dir.clone());
         self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
-        self.reserved = 0;
+        let all = self.reserved;
+        give_back(&mut self.reserved, &self.pool.preloads, all);
         self.show_dir = show_dir;
         self.sync(ws);
     }
@@ -971,7 +993,7 @@ impl MediaCatalog {
                 false
             }
         });
-        self.reserved = self.reserved.saturating_sub(freed);
+        give_back(&mut self.reserved, &self.pool.preloads, freed);
         let mut asked = Vec::new();
         for key in &order {
             if !self.entries.contains_key(key.as_str()) {
@@ -1069,7 +1091,7 @@ impl MediaCatalog {
             if self.entries.get(key.as_str()).is_some_and(|e| e.users == 0)
                 && let Some(e) = self.entries.remove(key.as_str())
             {
-                self.reserved = self.reserved.saturating_sub(e.reserved);
+                give_back(&mut self.reserved, &self.pool.preloads, e.reserved);
                 self.key_changes
                     .push(KeyChange::Unwatch { key: key.clone() });
                 self.plan_changes.keys.insert(key.clone());
@@ -1138,19 +1160,26 @@ impl MediaCatalog {
             return;
         };
         let (path, bytes) = (ready.path.clone(), preload_bytes(&ready.probed));
-        self.reserved = self.reserved.saturating_sub(e.reserved);
+        give_back(&mut self.reserved, &self.pool.preloads, e.reserved);
         e.reserved = 0;
         e.preloaded = None;
         e.preload_failed = false;
         e.over_budget = false;
-        if self.reserved.saturating_add(bytes) > self.budget {
+        // The budget is the engine's: every doc's preloads together (AUD-05, M4.15e1).
+        if self
+            .pool
+            .preloads
+            .load(Ordering::SeqCst)
+            .saturating_add(bytes)
+            > self.budget
+        {
             e.over_budget = true;
             e.preload_ticket = 0;
             return;
         }
         self.next_ticket += 1;
         e.preload_ticket = self.next_ticket;
-        self.reserved += bytes;
+        take_budget(&mut self.reserved, &self.pool.preloads, bytes);
         e.reserved = bytes;
         let job = Job::Preload {
             doc: self.pool.doc,
@@ -1160,7 +1189,7 @@ impl MediaCatalog {
             max_bytes: bytes,
         };
         if self.pool.low.send(job).is_err() {
-            self.reserved = self.reserved.saturating_sub(bytes);
+            give_back(&mut self.reserved, &self.pool.preloads, bytes);
             e.reserved = 0;
             e.preload_ticket = 0;
         } else {
@@ -1177,7 +1206,7 @@ impl MediaCatalog {
         let Some(e) = self.entries.get_mut(key) else {
             return;
         };
-        self.reserved = self.reserved.saturating_sub(e.reserved);
+        give_back(&mut self.reserved, &self.pool.preloads, e.reserved);
         e.reserved = 0;
         e.preloaded = None;
         e.over_budget = false;
@@ -1351,7 +1380,7 @@ impl MediaCatalog {
                 entry.probe = probe;
                 self.plan_changes.keys.insert(key.clone());
                 entry.preloaded = None;
-                self.reserved = self.reserved.saturating_sub(entry.reserved);
+                give_back(&mut self.reserved, &self.pool.preloads, entry.reserved);
                 entry.reserved = 0;
                 entry.over_budget = false;
                 entry.preload_failed = false;
@@ -1377,7 +1406,7 @@ impl MediaCatalog {
                     Ok(p) => entry.preloaded = Some(p),
                     Err(_) => {
                         // It streams instead; the budget it held goes back.
-                        self.reserved = self.reserved.saturating_sub(entry.reserved);
+                        give_back(&mut self.reserved, &self.pool.preloads, entry.reserved);
                         entry.reserved = 0;
                         entry.preload_failed = true;
                     }
@@ -1399,7 +1428,7 @@ impl MediaCatalog {
         entry.urgent = false;
         entry.timed_out = false;
         entry.probe = Probe::Failed;
-        self.reserved = self.reserved.saturating_sub(entry.reserved);
+        give_back(&mut self.reserved, &self.pool.preloads, entry.reserved);
         entry.reserved = 0;
         entry.preloaded = None;
         entry.over_budget = false;
@@ -1518,6 +1547,29 @@ impl MediaCatalog {
             _ => None,
         })
     }
+}
+
+impl Drop for MediaCatalog {
+    /// A closed doc's preloads give their part of the engine's budget back (the catalog is
+    /// dropped off the control thread; the count is atomic).
+    fn drop(&mut self) {
+        let all = self.reserved;
+        give_back(&mut self.reserved, &self.pool.preloads, all);
+    }
+}
+
+/// Takes `bytes` of the engine's preload budget for one doc.
+fn take_budget(reserved: &mut u64, used: &AtomicU64, bytes: u64) {
+    *reserved = reserved.saturating_add(bytes);
+    used.fetch_add(bytes, Ordering::SeqCst);
+}
+
+/// Gives back up to `bytes` of what one doc took.
+fn give_back(reserved: &mut u64, used: &AtomicU64, bytes: u64) {
+    let bytes = bytes.min(*reserved);
+    *reserved -= bytes;
+    // `used` is the sum of every doc's `reserved`, so it holds at least `bytes`.
+    used.fetch_sub(bytes, Ordering::SeqCst);
 }
 
 /// The file an audio cue plays and whether it asks for it to be preloaded.

@@ -276,8 +276,9 @@ fn states_all(msgs: &[ServerMessage]) -> Vec<&'static str> {
         .collect()
 }
 
-/// A doc closed while the mixer still holds events of its voices (the control loop was late):
-/// the events find no owner and are dropped; the other doc is untouched.
+/// Mixer events go to the doc that owns the voice and to no other; a doc closed while the
+/// mixer still holds events of its voices (the control loop was late) has them dropped, and
+/// the other doc is untouched.
 #[test]
 fn a_late_event_of_a_closed_doc_is_ignored() {
     let short = wav(&dc(300, 0.25));
@@ -290,10 +291,19 @@ fn a_late_event_of_a_closed_doc_is_ignored() {
     let at = s.now() as usize;
     start_in(&mut s, da, 1);
     start_in(&mut s, db, 1);
-    // A's voice ends in the mixer; its event waits, unread.
+    s.run(BLOCK * 8);
+    // A's voice ended: its event went to A alone (B's long voice has had none).
+    assert_eq!(state(&s, da, 1), CueState::Idle);
+    assert!(s.control().doc(da).unwrap().events_routed() >= 1);
+    assert_eq!(s.control().doc(db).unwrap().events_routed(), 0);
+    // Again, and this time A's voice ends in the mixer while its event waits, unread.
+    start_in(&mut s, da, 1);
     s.render_only(BLOCK * 8);
     s.close_doc(da, false).unwrap();
     assert!(s.control().doc(da).is_none());
+    // A's waiting events are drained now: none of them reaches B.
+    s.run(BLOCK);
+    assert_eq!(s.control().doc(db).unwrap().events_routed(), 0);
     s.run(7000);
     assert_eq!(state(&s, db, 1), CueState::Idle);
     assert_eq!(&s.channel(1)[at..at + 6000], ramp(6000).as_slice());
@@ -863,4 +873,268 @@ fn a_closed_docs_late_probe_answers_are_dropped() {
     start_in(&mut s, c, 1);
     s.run(BLOCK * 4);
     assert_eq!(first_nonzero(&s.channel(1)[at..]), Some(0));
+}
+
+/// A file named with `marker`, holding `frames` frames of `value` (gated probes pick files out
+/// by name).
+fn marked_wav(marker: &str, frames: usize, value: f32) -> std::path::PathBuf {
+    let p = wav(&dc(frames, value));
+    let q = p.with_file_name(format!(
+        "{marker}-{}",
+        p.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::rename(&p, &q).unwrap();
+    q
+}
+
+/// A closed doc's jobs still waiting in the shared probe queues are dropped, never run: closing
+/// a big show opened by mistake does not keep both workers busy on its files (review M1).
+#[test]
+fn a_closed_docs_queued_probes_are_never_run() {
+    let files: Vec<_> = (0..20).map(|_| marked_wav("m1gate", 100, 0.5)).collect();
+    gate(&files[0]);
+    gate(&files[1]);
+    let (mut s, _) = docs_show_with(workspace(vec![]), vec![], |c| {
+        c.probe = gated_probe;
+        c.probe_clock = ProbeTime::new().clock();
+    });
+    let cues = files
+        .iter()
+        .enumerate()
+        .map(|(n, f)| audio(n as u128 + 1, f, 0))
+        .collect();
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(1, cues))))
+        .unwrap();
+    // Both workers hold one of B's files; the other 18 wait in the queues.
+    wait_probed(&files, 2);
+    s.close_doc(b, false).unwrap();
+    release(&files[0]);
+    release(&files[1]);
+    // A doc opened after them is probed once the queues ahead of it have been taken.
+    let late = wav(&dc(100, 0.5));
+    let c = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(
+            2,
+            vec![audio(1, &late, 1)],
+        ))))
+        .unwrap();
+    s.settle_media();
+    assert_eq!(s.control().doc(c).unwrap().probes_pending(), 0);
+    assert_eq!(
+        probe_order(&files).len(),
+        2,
+        "a closed doc's queued probes ran"
+    );
+}
+
+/// Which volume a path is on, for the two-doc stall test: files named `m2dead` are on a share.
+fn m2_volume(path: &std::path::Path) -> String {
+    if path.to_string_lossy().contains("m2dead") {
+        "/Volumes/M2Dead".to_owned()
+    } else {
+        "/".to_owned()
+    }
+}
+
+/// One doc's show volume hanging cannot take the shared workers from another doc (review M2):
+/// with several docs open the show's own volume is held back like any other once two of its
+/// files are stuck, so the other doc's probes still run.
+#[test]
+fn a_hung_show_volume_of_one_doc_leaves_workers_for_the_others() {
+    // The share is a folder of its own, the show file in it too.
+    let share = fresh_path("m2dead");
+    std::fs::create_dir_all(&share).unwrap();
+    let dead: Vec<_> = (0..6)
+        .map(|n| {
+            let to = share.join(format!("{n}.wav"));
+            std::fs::rename(wav(&dc(100, 0.5)), &to).unwrap();
+            to
+        })
+        .collect();
+    for f in &dead {
+        gate(f);
+    }
+    let time = ProbeTime::new();
+    let cues = dead
+        .iter()
+        .enumerate()
+        .map(|(n, f)| audio(n as u128 + 1, f, 0))
+        .collect();
+    let a = workspace(cues);
+    let mut c = config(&a);
+    c.probe = gated_probe;
+    c.probe_clock = time.clock();
+    c.probe_volume = Some(m2_volume);
+    // Doc A's show file is on the hung share too.
+    c.show_path = Some(share.join("show.openlab"));
+    let mut s = OfflineShow::new(a, mixer_config(), c).unwrap();
+    wait_probed(&dead, 2);
+    // Doc B: one local file, far from its playhead (no urgent copy of its probe).
+    let local = wav(&dc(100, 0.5));
+    let mut cues: Vec<_> = (1..=19)
+        .map(|n| cue(n, openlab_core::CueKind::Memo))
+        .collect();
+    cues.push(audio(20, &local, 1));
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(1, cues))))
+        .unwrap();
+    // A's two stuck probes are given up on: two files stuck on one volume hold it back, so the
+    // fresh workers try one of A's files and leave a worker for B.
+    time.advance(Duration::from_secs(31));
+    s.tick();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while s.control().doc(b).unwrap().probes_pending() > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "doc B's probe never ran: A's hung show volume took every worker"
+        );
+        s.tick();
+        std::thread::yield_now();
+    }
+    assert_ne!(state(&s, b, 20), CueState::Broken);
+    for f in &dead {
+        release(f);
+    }
+}
+
+/// Primes are a head start only: the docs' primes together never take the stream permits a
+/// start needs (review M3). With 4 permits, two docs prime one cue each and a start of a cue
+/// nobody primed still plays.
+#[test]
+fn other_docs_primes_never_refuse_a_start() {
+    let f = wav(&dc(400, 0.25));
+    let cues = || vec![audio(1, &f, 0), audio(2, &f, 0), audio(3, &f, 0)];
+    let (mut s, ids) = docs_show_with(workspace(cues()), vec![ws_n(1, cues())], |c| {
+        c.streamer.max_streams = 4;
+        c.prime_cues = 3;
+    });
+    s.run(BLOCK * 2);
+    for doc in &ids {
+        assert!(s.control().doc(*doc).unwrap().primed().len() <= 1);
+    }
+    let at = s.now() as usize;
+    start_in(&mut s, ids[0], 3);
+    s.run(BLOCK * 4);
+    assert_ne!(state(&s, ids[0], 3), CueState::Broken);
+    assert_eq!(first_nonzero(&s.channel(0)[at..]), Some(0));
+    let msgs = s.take_outbound();
+    assert!(!format!("{msgs:?}").contains("stream_failed"));
+}
+
+/// The preload budget (AUD-05) is the engine's, not each doc's (M4.15e1): a second doc's
+/// preload that does not fit what the first holds streams, and a closed doc gives its share
+/// back.
+#[test]
+fn the_preload_budget_is_shared_by_every_doc() {
+    let preloaded = |n: u128, path: &std::path::Path| {
+        let mut c = audio(n, path, 0);
+        if let openlab_core::CueKind::Audio { preload, .. } = &mut c.kind {
+            *preload = true;
+        }
+        c
+    };
+    // 1,000 mono frames are 4,000 bytes preloaded: the budget holds one such file.
+    let fa = wav(&dc(1000, 0.25));
+    let fb = wav(&dc(1000, 0.25));
+    let fc = wav(&dc(1000, 0.25));
+    let (mut s, ids) = docs_show_with(
+        workspace(vec![preloaded(1, &fa)]),
+        vec![ws_n(1, vec![preloaded(1, &fb)])],
+        |c| c.preload_budget = 4000,
+    );
+    s.run(BLOCK);
+    let over = |s: &OfflineShow, doc| {
+        notice_codes(s.control().doc(doc).unwrap().warnings())
+            .contains(&"preload_over_budget".to_owned())
+    };
+    assert!(!over(&s, ids[0]));
+    assert!(
+        over(&s, ids[1]),
+        "the second doc's preload fitted a budget already taken"
+    );
+    s.close_doc(ids[0], false).unwrap();
+    let c = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(
+            2,
+            vec![preloaded(1, &fc)],
+        ))))
+        .unwrap();
+    s.settle_media();
+    s.run(BLOCK);
+    assert!(!over(&s, c), "the closed doc's share did not come back");
+}
+
+/// A doc's mixer slot takes its gains at once when the doc opens: a GO on the sample it is
+/// installed is heard at its level, not faded in over the de-zipper (review L1).
+#[test]
+fn a_cue_started_as_its_doc_opens_is_not_faded_in() {
+    let f = wav(&dc(800, 0.25));
+    let (mut s, _) = docs_show(workspace(vec![]), vec![]);
+    s.run(BLOCK * 4);
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(
+            1,
+            vec![audio(1, &f, 1)],
+        ))))
+        .unwrap();
+    s.settle_media();
+    let at = s.now() as usize;
+    start_in(&mut s, b, 1);
+    s.run(900);
+    let ch1 = s.channel(1);
+    assert_eq!(first_nonzero(&ch1), Some(at));
+    assert!(
+        ch1[at..at + 400].iter().all(|&v| v == 0.25),
+        "{:?}",
+        &ch1[at..at + 8]
+    );
+}
+
+/// With several docs open, a doc's show-log lines name its workspace; alone, they read as
+/// before (review L4).
+#[test]
+fn log_lines_name_their_doc_while_several_are_open() {
+    let f = wav(&dc(200, 0.25));
+    let (mut s, ids) = docs_show(workspace(vec![audio(1, &f, 0)]), vec![]);
+    start_in(&mut s, ids[0], 1);
+    let lines = |s: &OfflineShow| -> Vec<String> {
+        s.control()
+            .show_log()
+            .tail_seq(500)
+            .0
+            .into_iter()
+            .map(|e| e.message)
+            .filter(|m| m.contains("cue 1 \"cue 1\" started"))
+            .collect()
+    };
+    assert_eq!(lines(&s), vec!["cue 1 \"cue 1\" started".to_owned()]);
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(
+            1,
+            vec![audio(1, &f, 1)],
+        ))))
+        .unwrap();
+    s.settle_media();
+    start_in(&mut s, b, 1);
+    assert_eq!(
+        lines(&s).last().map(String::as_str),
+        Some("[doc 1] cue 1 \"cue 1\" started")
+    );
+}
+
+/// The PB-10 override is app-scope: it is set even with no doc open (review L6).
+#[test]
+fn the_output_override_needs_no_open_doc() {
+    let (mut s, ids) = docs_show(workspace(vec![]), vec![]);
+    s.close_doc(ids[0], false).unwrap();
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetOutputOverrides {
+            network_disabled: true,
+        },
+    });
+    assert_eq!(result_error(&replies), None, "{replies:?}");
+    assert!(s.control().network_output_disabled());
 }
