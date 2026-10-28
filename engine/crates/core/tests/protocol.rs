@@ -217,6 +217,16 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         ("preshow_check", Request::PreshowCheck),
         ("set_show_mode", Request::SetShowMode { on: true }),
+        (
+            "set_patch_mapping",
+            Request::SetPatchMapping {
+                patch: PatchId(uuid::Uuid::from_u128(0x70)),
+                mapping: Some(PatchMapping {
+                    device: "Scarlett 18i20".into(),
+                    channels: vec![2, 3],
+                }),
+            },
+        ),
     ]
 }
 
@@ -246,6 +256,13 @@ fn request_variants() -> Vec<(&'static str, Request)> {
             },
         ),
         ("log_tail_max", Request::LogTail { max: Some(50) }),
+        (
+            "clear_patch_mapping",
+            Request::SetPatchMapping {
+                patch: PatchId(uuid::Uuid::from_u128(0x70)),
+                mapping: None,
+            },
+        ),
     ]
 }
 
@@ -1174,7 +1191,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 13);
+    assert_eq!(all_requests().len(), 14);
 }
 
 #[test]
@@ -3119,6 +3136,14 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
         any::<bool>().prop_map(|on| Request::SetShowMode { on }),
+        (
+            any::<u128>(),
+            proptest::option::of(("[ -~]{1,20}", proptest::collection::vec(0u32..64, 0..8))),
+        )
+            .prop_map(|(patch, mapping)| Request::SetPatchMapping {
+                patch: PatchId(uuid::Uuid::from_u128(patch)),
+                mapping: mapping.map(|(device, channels)| PatchMapping { device, channels }),
+            }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
     ]

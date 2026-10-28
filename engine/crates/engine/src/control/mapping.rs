@@ -5,10 +5,149 @@
 //! on the device the mixer uses, each patch on the device's first outputs, as QLab does. An
 //! operator's mapping is never touched.
 
-use openlab_core::PatchMapping;
-use openlab_core::protocol::LogLevel;
+use openlab_core::protocol::{
+    DeviceEntry, ErrorBody, ErrorCode, LogLevel, Outcome, RequestId, ServerMessage,
+};
+use openlab_core::{PatchId, PatchMapping};
 
-use super::{DocCx, Engine};
+use super::inbox::reply;
+use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, ok};
+
+impl Control {
+    /// `set_patch_mapping` (M4.4g, WS-07): sets or clears where doc `doc`'s `patch` plays on
+    /// this machine. The machine settings are engine-wide, so the entry is keyed by the doc's
+    /// workspace id and the patch id, as the default mapping keys it (a second open doc of the
+    /// same workspace id shares it). Validated first, nothing changes on a refusal; then stored
+    /// (written like the default mapping) and every doc's patches resolve again, which reaches
+    /// running cues as a device change does: the mixer slot follows in place and the cue
+    /// engine gets the new availability.
+    pub(super) fn set_patch_mapping(
+        &mut self,
+        doc: DocId,
+        id: RequestId,
+        patch: PatchId,
+        mapping: Option<PatchMapping>,
+        to: &ReplyTx,
+    ) -> Flow {
+        let devices = self.eng.device_list();
+        let outcome = match self.cx_of(doc) {
+            Some(mut cx) => cx.apply_patch_mapping(patch, mapping, &devices),
+            None => Err(ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace")),
+        };
+        match outcome {
+            Err(error) => reply(
+                to,
+                ServerMessage::Result {
+                    id,
+                    outcome: Outcome::Error(error),
+                },
+            ),
+            Ok(()) => {
+                self.each_doc(|cx| {
+                    let now = cx.now();
+                    for input in cx.sync_patches(false) {
+                        cx.feed(input, now);
+                    }
+                });
+                reply(to, ok(id, None));
+            }
+        }
+        Flow::Continue
+    }
+}
+
+/// Why `mapping` cannot be used for a patch with `outputs` outputs on the listed `devices`.
+fn mapping_refusal(
+    mapping: &PatchMapping,
+    outputs: usize,
+    devices: &[DeviceEntry],
+) -> Option<ErrorBody> {
+    let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
+        return Some(ErrorBody::new(
+            ErrorCode::NotFound,
+            format!("no output device named \"{}\"", mapping.device),
+        ));
+    };
+    if mapping.channels.len() != outputs {
+        return Some(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!(
+                "the patch has {outputs} outputs; the mapping lists {} channels",
+                mapping.channels.len()
+            ),
+        ));
+    }
+    if let Some(bad) = mapping
+        .channels
+        .iter()
+        .find(|&&c| c >= device.output_channels)
+    {
+        return Some(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!(
+                "channel {bad} is out of range: \"{}\" has {} outputs",
+                device.name, device.output_channels
+            ),
+        ));
+    }
+    None
+}
+
+impl DocCx<'_> {
+    /// Validates and stores the request's mapping (`None` clears it: an explicit "unmapped"
+    /// entry, so the default mapping leaves the patch alone) and saves the machine settings.
+    fn apply_patch_mapping(
+        &mut self,
+        patch: PatchId,
+        mapping: Option<PatchMapping>,
+        devices: &[DeviceEntry],
+    ) -> Result<(), ErrorBody> {
+        let Some((name, outputs)) = self
+            .doc
+            .ws
+            .patches
+            .iter()
+            .find(|p| p.id == patch)
+            .map(|p| (p.name.clone(), p.outputs.len()))
+        else {
+            return Err(ErrorBody::new(ErrorCode::NotFound, "no such patch"));
+        };
+        let workspace = self.doc.ws.id;
+        let message = match mapping {
+            Some(mapping) => {
+                if let Some(refusal) = mapping_refusal(&mapping, outputs, devices) {
+                    return Err(refusal);
+                }
+                let text = format!(
+                    "patch '{name}' mapped to {} {}",
+                    mapping.device,
+                    channels_text(&mapping.channels)
+                );
+                self.eng
+                    .config
+                    .machine
+                    .set_patch_mapping(workspace, patch, mapping)
+                    .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+                text
+            }
+            None => {
+                self.eng
+                    .config
+                    .machine
+                    .clear_patch_mapping(workspace, patch);
+                format!("patch '{name}' left unmapped on this machine")
+            }
+        };
+        // Whatever the default mapping warned about this patch is settled by the operator now.
+        let doc = self.doc.id;
+        self.eng
+            .mapping_warned
+            .retain(|(d, _, p, _)| *d != doc || *p != patch);
+        self.eng.save_machine();
+        self.log(LogLevel::Info, message);
+        Ok(())
+    }
+}
 
 impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
@@ -34,7 +173,7 @@ impl DocCx<'_> {
                 .eng
                 .config
                 .machine
-                .patch_mapping(self.doc.ws.id, patch.id)
+                .patch_entry(self.doc.ws.id, patch.id)
                 .is_some()
             {
                 continue;
@@ -150,5 +289,18 @@ fn outputs_text(count: usize) -> String {
         "output 1".to_owned()
     } else {
         format!("outputs 1\u{2013}{count}")
+    }
+}
+
+/// "channels 1, 2" (device channels are 0-based on the wire, 1-based for people).
+fn channels_text(channels: &[u32]) -> String {
+    let list: Vec<String> = channels
+        .iter()
+        .map(|c| c.saturating_add(1).to_string())
+        .collect();
+    if list.len() == 1 {
+        format!("channel {}", list.join(""))
+    } else {
+        format!("channels {}", list.join(", "))
     }
 }

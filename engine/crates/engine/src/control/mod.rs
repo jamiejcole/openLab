@@ -804,6 +804,13 @@ impl Control {
                     self.relink(doc, id, folder, to);
                     Flow::Continue
                 }
+                // The mapping is the machine's: every doc resolves its patches again.
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetPatchMapping { patch, mapping },
+                } if self.cx_of(doc).is_some() => {
+                    self.set_patch_mapping(doc, id, patch, mapping, to)
+                }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),
                     None => no_doc(message, to),
@@ -3489,6 +3496,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::ListDevices => "list_devices",
         Request::PreshowCheck => "preshow_check",
         Request::SetShowMode { .. } => "set_show_mode",
+        Request::SetPatchMapping { .. } => "set_patch_mapping",
         Request::LogTail { .. } => "log_tail",
         Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
