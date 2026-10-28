@@ -59,6 +59,14 @@ final class EditCommandTests: XCTestCase {
             (.setProperty(id, .continueMode("auto_follow")), #"{"type":"continue_mode","value":"auto_follow"}"#),
             (.setProperty(id, .target("t")), #"{"type":"target","value":"t"}"#),
             (.setProperty(id, .target(nil)), #"{"type":"target","value":null}"#),
+            (
+                .setProperty(id, .groupMode(type: "playlist", loop: true, shuffle: false)),
+                #"{"type":"group_mode","value":{"type":"playlist","loop":true,"shuffle":false}}"#
+            ),
+            (
+                .setProperty(id, .groupMode(type: "start_random", loop: true, shuffle: true)),
+                #"{"type":"group_mode","value":{"type":"start_random"}}"#
+            ),
         ]
         for (command, property) in cases {
             let expected = JSONValue.parse(
@@ -203,6 +211,98 @@ final class InspectorTests: XCTestCase {
         _ = vc.armedCheck.target?.perform(vc.armedCheck.action, with: vc.armedCheck)
         await assertEventually { self.commands.count == 4 }
         XCTAssertEqual(commands.last, property("armed", "false"))
+    }
+
+    private func choose(_ popup: NSPopUpButton, _ i: Int) {
+        popup.selectItem(at: i)
+        _ = popup.target?.perform(popup.action, with: popup)
+    }
+
+    private func toggle(_ check: NSButton, _ on: Bool) {
+        check.state = on ? .on : .off
+        _ = check.target?.perform(check.action, with: check)
+    }
+
+    private func groupMode(_ json: String) -> JSONValue? {
+        property("group_mode", json, id: CueListHarness.group)
+    }
+
+    func testModeTabIsForGroupsOnly() {
+        let hasMode = { self.vc.tabView.tabViewItems.contains { $0.identifier as? String == "mode" } }
+        vc.setSelection([Self.intro])
+        XCTAssertFalse(hasMode())
+        vc.setSelection([CueListHarness.group])
+        XCTAssertTrue(hasMode())
+        XCTAssertEqual(vc.groupModePopup.indexOfSelectedItem, 0, "the demo group is a timeline")
+        vc.setSelection([Self.fade])
+        XCTAssertFalse(hasMode())
+    }
+
+    func testEachGroupModeSendsItsCommand() async {
+        vc.setSelection([CueListHarness.group])
+        let expected = [
+            (1, #"{"type":"playlist","loop":false,"shuffle":false}"#),
+            (2, #"{"type":"start_first_and_enter"}"#),
+            (3, #"{"type":"start_first_and_go_to_next"}"#),
+            (4, #"{"type":"start_random"}"#),
+            (0, #"{"type":"timeline"}"#),
+        ]
+        for (n, (index, mode)) in expected.enumerated() {
+            choose(vc.groupModePopup, index)
+            await assertEventually { self.commands.count == n + 1 }
+            XCTAssertEqual(commands.last, groupMode(mode), mode)
+            await assertEventually("the model answers") { self.vc.groupModePopup.indexOfSelectedItem == index }
+        }
+    }
+
+    func testLoopAndShuffleOnlyForPlaylistAndSendWholeMode() async {
+        vc.setSelection([CueListHarness.group])
+        XCTAssertFalse(vc.groupLoopCheck.isEnabled)
+        XCTAssertFalse(vc.groupShuffleCheck.isEnabled)
+        choose(vc.groupModePopup, 1)
+        await assertEventually { self.vc.groupLoopCheck.isEnabled && self.vc.groupShuffleCheck.isEnabled }
+        toggle(vc.groupLoopCheck, true)
+        await assertEventually { self.commands.count == 2 }
+        XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":false}"#))
+        toggle(vc.groupShuffleCheck, true)
+        await assertEventually { self.commands.count == 3 }
+        XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":true}"#))
+        choose(vc.groupModePopup, 0)
+        await assertEventually { !self.vc.groupLoopCheck.isEnabled }
+        XCTAssertEqual(vc.groupLoopCheck.state, .off)
+    }
+
+    func testGroupControlsFollowAModelChangeFromElsewhere() throws {
+        vc.setSelection([CueListHarness.group])
+        var cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.group)).raw
+        cue["kind"]?.set("mode", .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
+        let upsert =
+            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":2,"cue":\#(try cue.text())}"#
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
+                )), .applied)
+        XCTAssertEqual(vc.groupModePopup.indexOfSelectedItem, 1)
+        XCTAssertEqual(vc.groupLoopCheck.state, .on)
+        XCTAssertEqual(vc.groupShuffleCheck.state, .on)
+        XCTAssertTrue(vc.groupLoopCheck.isEnabled)
+    }
+
+    func testGroupControlsAreLockedInShowMode() async {
+        vc.setSelection([CueListHarness.group])
+        choose(vc.groupModePopup, 1)
+        await assertEventually { self.vc.groupLoopCheck.isEnabled }
+        vc.isLocked = true
+        for c in [vc.groupModePopup as NSControl, vc.groupLoopCheck, vc.groupShuffleCheck] {
+            XCTAssertFalse(c.isEnabled)
+        }
+        choose(vc.groupModePopup, 2)
+        await settle()
+        XCTAssertEqual(commands.count, 1, "nothing is sent in Show Mode")
+        vc.isLocked = false
+        XCTAssertTrue(vc.groupModePopup.isEnabled)
+        XCTAssertTrue(vc.groupLoopCheck.isEnabled)
     }
 
     func testTargetByNumber() async {

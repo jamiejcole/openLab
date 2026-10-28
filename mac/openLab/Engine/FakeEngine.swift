@@ -318,7 +318,11 @@ final class FakeEngine: EngineTransport {
                 (
                     id,
                     { cue in
-                        if type == "target" { cue["kind"]?.set("target", value) } else { cue.set(type, value) }
+                        switch type {
+                        case "target": cue["kind"]?.set("target", value)
+                        case "group_mode": cue["kind"]?.set("mode", value)
+                        default: cue.set(type, value)
+                        }
                     }
                 ))
         case "set_cue_numbers":

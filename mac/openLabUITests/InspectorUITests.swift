@@ -32,6 +32,40 @@ final class InspectorUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Intro"].exists)
     }
 
+    func testGroupSetToPlaylistAndLoop() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-OpenLabEngine", "fake"]
+        app.launch()
+        let windows = app.windows.matching(identifier: "main-window")
+        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
+        app.typeKey("w", modifierFlags: .command)
+        let one = NSPredicate(format: "count == 1")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
+            .completed)
+
+        XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
+        app.staticTexts["Act One"].click()
+        let tab = app.tabs["Mode"].exists ? app.tabs["Mode"] : app.radioButtons["Mode"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+        tab.click()
+        let mode = app.popUpButtons["inspector-group-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        let loop = app.checkBoxes["inspector-group-loop"]
+        XCTAssertFalse(loop.isEnabled, "loop is for playlists")
+        mode.click()
+        app.menuItems["Playlist - one child at a time"].click()
+        let enabled = NSPredicate(format: "isEnabled == true")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: enabled, object: loop)], timeout: 10),
+            .completed)
+        loop.click()
+        let on = NSPredicate(format: "value == 1")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: on, object: loop)], timeout: 10),
+            .completed)
+    }
+
     func testPreviewButtonMarksTheRowAndClears() {
         let app = XCUIApplication()
         app.launchArguments += ["-OpenLabEngine", "fake"]
