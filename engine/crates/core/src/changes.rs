@@ -124,6 +124,7 @@ impl Command {
                 }
             }
             Self::SetWorkspaceSetting { .. }
+            | Self::RenameWorkspace { .. }
             | Self::AddOscPasscode { .. }
             | Self::RemoveOscPasscode { .. }
             | Self::SetOscRights { .. } => fp.settings = true,
