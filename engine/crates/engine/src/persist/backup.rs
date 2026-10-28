@@ -10,9 +10,9 @@ use openlab_core::{
     MAX_SHOW_FILE_BYTES, WorkspaceId, backup_file_name, parse_backup_name, select_backups_to_delete,
 };
 
-use super::atomic::split_tmp_name;
+use super::atomic::{split_tmp_name, write_new};
 use super::files::{read_bytes, regular_file_or_absent};
-use super::{AppDirs, PersistError, write_atomic};
+use super::{AppDirs, PersistError};
 
 #[derive(Debug, Default)]
 pub(crate) struct Rotation {
@@ -49,18 +49,11 @@ pub fn backup_existing(
     };
     let dir = dirs.backups_dir(workspace, show_path);
     fs::create_dir_all(&dir).map_err(PersistError::io("create", &dir))?;
-    // Two saves in the same millisecond must not overwrite each other's backup.
-    let mut ms = now_ms;
-    let mut path = dir.join(backup_file_name(ms));
-    for _ in 0..1000 {
-        if !path.exists() {
-            break;
-        }
-        ms = ms.saturating_add(1);
-        path = dir.join(backup_file_name(ms));
-    }
-    write_atomic(&path, &bytes)?;
-    Ok(Some(path))
+    // Two saves in the same millisecond must not overwrite each other's backup, and no backup
+    // ever replaces another: the next free millisecond's name is taken (all of them taken is
+    // a failed backup, which the save reports and goes on without).
+    let names = (0..1000).map(|n| dir.join(backup_file_name(now_ms.saturating_add(n))));
+    write_new(names, &bytes).map(Some)
 }
 
 /// Deletes all but the `keep` newest backups of `workspace`, and the temp files a crash left

@@ -16,6 +16,7 @@
 //! controller and decides when (docs/control.md "Devices").
 
 pub mod engine_file;
+mod instance_lock;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -65,9 +66,10 @@ pub enum HostError {
     Net(#[from] NetError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
-    /// One engine per user (M4.9): the app attaches to the one running.
-    #[error("another openLab engine is running (pid {pid}, port {port})")]
-    AlreadyRunning { pid: u32, port: u16 },
+    /// One engine per user (M4.9): the app attaches to the one running. Its pid and port when
+    /// known (one still starting has not written `engine.json` yet).
+    #[error("another openLab engine is running ({})", other_engine(*.pid, *.port))]
+    AlreadyRunning { pid: Option<u32>, port: Option<u16> },
     /// Without it no client can find the engine.
     #[error("could not write {path}: {error}")]
     EngineFile { path: String, error: std::io::Error },
@@ -108,6 +110,11 @@ pub fn run(options: Options) -> Result<(), HostError> {
     let dirs = match &options.app_support {
         Some(dir) => Some(AppDirs::new(dir)),
         None => AppDirs::system(),
+    };
+    // Held until the process ends (a second engine is refused before it touches anything).
+    let _instance = match &dirs {
+        Some(dirs) => lock_instance(dirs)?,
+        None => None,
     };
     supervise(dirs.clone(), CrashHook::Install, |show_log| {
         run_with(&options, dirs.as_ref(), signals, show_log)
@@ -191,12 +198,45 @@ fn join_control(worker: thread::JoinHandle<()>) -> Result<(), HostError> {
     worker.join().map_err(|_| HostError::ControlPanicked)
 }
 
+/// The single-instance lock (`instance_lock`). Refused while another engine holds it, naming
+/// that engine from `engine.json` when the file is its (or the lock file names no pid). A
+/// folder or filesystem where the lock cannot be taken does not stop the start: the
+/// `engine.json` check ([`check_single_instance`]) still runs, and a stderr line says so.
+fn lock_instance(dirs: &AppDirs) -> Result<Option<instance_lock::InstanceLock>, HostError> {
+    match instance_lock::acquire(&dirs.engine_lock_path()) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(instance_lock::Refused::Held { pid }) => {
+            let file = engine_file::read(&dirs.engine_file_path())
+                .filter(|info| pid.is_none_or(|pid| pid == info.pid));
+            Err(HostError::AlreadyRunning {
+                pid: file.as_ref().map(|info| info.pid).or(pid),
+                port: file.map(|info| info.port),
+            })
+        }
+        Err(instance_lock::Refused::Unavailable(e)) => {
+            say(&format!(
+                "could not take the single-instance lock ({e}); relying on engine.json"
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// What [`HostError::AlreadyRunning`] says of the other engine.
+fn other_engine(pid: Option<u32>, port: Option<u16>) -> String {
+    match (pid, port) {
+        (Some(pid), Some(port)) => format!("pid {pid}, port {port}"),
+        (Some(pid), None) => format!("pid {pid}, still starting"),
+        (None, _) => "still starting".to_owned(),
+    }
+}
+
 /// Refuses to start while `engine.json` names a live engine (module docs).
 fn check_single_instance(dirs: &AppDirs) -> Result<(), HostError> {
     match engine_file::live_engine(&dirs.engine_file_path(), &dirs.run_markers_dir()) {
         Some(other) => Err(HostError::AlreadyRunning {
-            pid: other.pid,
-            port: other.port,
+            pid: Some(other.pid),
+            port: Some(other.port),
         }),
         None => Ok(()),
     }
@@ -502,8 +542,8 @@ mod tests {
             matches!(
                 result,
                 Err(HostError::AlreadyRunning {
-                    pid: 4_000_000,
-                    port: 50_000
+                    pid: Some(4_000_000),
+                    port: Some(50_000)
                 })
             ),
             "{result:?}"
@@ -511,6 +551,48 @@ mod tests {
         assert_eq!(markers(&dirs), vec!["running-4000000.json".to_owned()]);
         assert_eq!(engine_file::read(&dirs.engine_file_path()), Some(info));
         held.unwrap().finish().unwrap();
+    }
+
+    /// M8: the lock is taken before anything else, so a second start is refused even while
+    /// the first is still starting (no `engine.json` yet), and named once the file is there.
+    #[test]
+    fn a_second_start_is_refused_by_the_instance_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let first = lock_instance(&dirs).unwrap();
+        assert!(first.is_some());
+        let refused = lock_instance(&dirs).unwrap_err();
+        let me = std::process::id();
+        if cfg!(unix) {
+            assert!(
+                matches!(refused, HostError::AlreadyRunning { pid: Some(p), port: None } if p == me),
+                "{refused:?}"
+            );
+        }
+        assert!(
+            refused
+                .to_string()
+                .starts_with("another openLab engine is running ("),
+            "{refused}"
+        );
+        let info = EngineInfo {
+            pid: me,
+            port: 50_001,
+            token: "t".into(),
+            version: "0.0.1".into(),
+            protocol_version: PROTOCOL_VERSION,
+            started_ms: 0,
+        };
+        let _file = EngineFile::write(&dirs.engine_file_path(), info).unwrap();
+        let refused = lock_instance(&dirs).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            format!("another openLab engine is running (pid {me}, port 50001)")
+        );
+        // Nothing of the running engine's was touched.
+        assert!(markers(&dirs).is_empty());
+        drop(first);
+        assert!(lock_instance(&dirs).unwrap().is_some());
     }
 
     #[test]
