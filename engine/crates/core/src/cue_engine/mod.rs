@@ -1259,6 +1259,11 @@ impl CueEngine {
             return;
         }
         let before = self.state(cue);
+        // Whether the end of a paused run would start a sibling or a runless playlist's next
+        // child (looked up before the run is borrowed).
+        let paused = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.paused_at.is_some());
+        let chains = paused && group::chains_siblings(cx.ws, cue);
+        let runless = paused && in_runless_playlist(self, cue, cx.ws);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
@@ -1280,6 +1285,39 @@ impl CueEngine {
             return;
         };
         let at = at.max(start);
+        // Dated before the pause, arriving after it (M2.33): a paused show starts nothing, so
+        // when this end would start a cue (its auto-follow, its Devamp cue's next cue, or the
+        // next child of a playlist it was started in on its own), the end is held as a deadline
+        // on the pause sample, which the resume moves to the resume sample, as for a failure
+        // while paused. The voice is gone, so the resume sends nothing for it. A stop, reset or
+        // panic cancels it.
+        if let Some(paused) = run.paused_at {
+            let start_next = matches!(
+                run.devamp,
+                Some(DevampWait {
+                    start_next: true,
+                    at: Some(_),
+                    ..
+                })
+            );
+            if (run.follow && chains) || start_next || runless {
+                run.voice = Voice::None;
+                run.length = None;
+                run.phase = Phase::Action {
+                    start,
+                    end: Some(paused.max(start)),
+                };
+                // Its next cue starts there too (`step` carries out the devamp first).
+                run.devamp = run
+                    .devamp
+                    .filter(|d| d.start_next && d.at.is_some())
+                    .map(|d| DevampWait {
+                        at: Some(paused),
+                        ..d
+                    });
+                return self.report(cue, before, cx.now, cx);
+            }
+        }
         run.phase = Phase::Done;
         run.voice = Voice::None;
         let follow = run.follow;
@@ -1347,8 +1385,16 @@ impl CueEngine {
             .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
         let current = match self.slots.get(&cue) {
             // Nor a running fade (it owns no voice either).
+            // Nor a run whose voice already ended while it is paused, its end held for the
+            // resume (`action_ended`): the voice is gone, so a failure report cannot concern it.
             Some(Slot::Active(run)) => {
-                run.run == run_id && !run.is_broken() && run.group.is_none() && run.fade.is_none()
+                run.run == run_id
+                    && !run.is_broken()
+                    && run.group.is_none()
+                    && run.fade.is_none()
+                    && !(run.paused_at.is_some()
+                        && run.voice == Voice::None
+                        && matches!(run.phase, Phase::Action { .. }))
             }
             Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
             Some(Slot::Broken(_)) | None => false,
