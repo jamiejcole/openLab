@@ -64,6 +64,9 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - Work only on the `PROGRESS.md` task(s) you were assigned.
 - When a task is complete **and tested**, tick it in `PROGRESS.md`. Tick a requirement in `REQUIREMENTS.md` only when every part of it within the current release scope (§21) is implemented and tested.
 - If you discover missing work, add an unticked task under the right milestone with a note — don't silently expand scope.
+- Review findings rated Low or low-Medium are not fixed in the batch: file each as a GitHub issue labelled `low` (title, file:line, scenario) and move on. Only Highs and show-safety Mediums get a fix round. One regression test per bug, not a matrix of variants.
+- Do not fix states that only a property generator, fuzzer or contrived input can reach (e.g. invalid workspaces load refuses): fix the test oracle or file an issue.
+- Niche QLab-parity features not needed for v0.0.1 go to the "Deferred to v0.0.2" section of `PROGRESS.md`, not into the current batch.
 - Keep `PROGRESS.md` lines short: tick boxes and add new one-line tasks only. Never append notes to an existing line (every open PR edits this file; long lines cause merge conflicts) — notes go in the PR, the docs, or `docs/handoff/`.
 
 ## Git
