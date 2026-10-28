@@ -330,6 +330,9 @@ final class EngineClientTests: XCTestCase {
             EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake", "-OpenLabFakeCrashAfter", "2"]),
             .fake(crashAfter: 2))
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake-single"]), .real)
+        XCTAssertEqual(
+            EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake", "-OpenLabFakeEmpty"]),
+            .fake(crashAfter: nil, empty: true))
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"]), .real)
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"]), .real)
     }

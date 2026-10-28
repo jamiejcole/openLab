@@ -664,6 +664,12 @@ final class FakeEngine: EngineTransport {
     }
 
     /// Marks a document dirty or renames it, as an edit would, and tells the app connections.
+    /// Before any connection: no workspace open (an engine just started).
+    func closeAll() {
+        docs = [:]
+        docOrder = []
+    }
+
     func setDocument(_ doc: ModelID, dirty: Bool) {
         docs[doc]?["document"]?.set("dirty", .bool(dirty))
         broadcastWorkspaces()

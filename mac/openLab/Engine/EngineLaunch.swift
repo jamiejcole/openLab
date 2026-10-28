@@ -3,11 +3,12 @@
 import Foundation
 
 /// Which engine the app talks to. `-OpenLabEngine fake` runs the in-process fake so UI tests need
-/// no engine; the default is the real one. With the fake, `-OpenLabFakeCrashAfter SECONDS` makes
-/// it crash that long after launch (the crash-alarm UI test).
+/// no engine (and never start a real one); the default is the real one. With the fake,
+/// `-OpenLabFakeEmpty` opens no workspace and `-OpenLabFakeCrashAfter SECONDS` makes it crash that
+/// long after launch (the crash-alarm UI test).
 enum EngineMode: Equatable {
     case real
-    case fake(crashAfter: Double?)
+    case fake(crashAfter: Double?, empty: Bool = false)
 
     /// Only the process arguments are read (never a persisted default), and only in Debug builds:
     /// a shipping app cannot be switched to the fake engine. (The fake and its welcome.json stay
@@ -21,7 +22,7 @@ enum EngineMode: Equatable {
             if let c = arguments.firstIndex(of: "-OpenLabFakeCrashAfter"), c + 1 < arguments.count {
                 crashAfter = Double(arguments[c + 1])
             }
-            return .fake(crashAfter: crashAfter)
+            return .fake(crashAfter: crashAfter, empty: arguments.contains("-OpenLabFakeEmpty"))
         #else
             return .real
         #endif
@@ -34,11 +35,12 @@ enum EngineMode: Equatable {
             let processes = SystemEngineProcesses()
             let session = EngineSession(transport: WebSocketTransport(), infoProvider: { processes.readInfo() })
             return (session, EngineSupervisor(processes: processes, session: session))
-        case .fake(let crashAfter):
+        case .fake(let crashAfter, let empty):
             let engine = FakeEngine(snapshot: FakeEngine.demoSnapshot())
             // Two clean workspaces so UI tests start with several windows and no save prompts.
             for doc in engine.openDocs { engine.setDocument(doc, dirty: false) }
             _ = engine.addDoc(FakeEngine.emptySnapshot(name: "Second"), path: nil)
+            if empty { engine.closeAll() }
             let processes = FakeEngineProcesses(engine: engine)
             let session = EngineSession(transport: engine, infoProvider: { processes.readInfo() })
             if let crashAfter {
