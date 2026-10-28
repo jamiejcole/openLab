@@ -627,6 +627,7 @@ final class AppController {
         switch e {
         case .notConnected, .disconnected: return loc("error.detail.notConnected")
         case .engine(_, let message) where !message.isEmpty: return message
+        case .timeout: return loc("error.detail.timeout")
         default:
             engineLog.error("engine call failed: \(String(describing: e), privacy: .public)")
             return loc("error.detail.generic")

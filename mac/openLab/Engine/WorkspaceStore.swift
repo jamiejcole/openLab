@@ -176,17 +176,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         switch result {
         case .success: showModeUnsent = false
         case .failure(let e):
-            _ = receive(.log(.warn, String(format: loc("showMode.error.engine"), Self.describe(e))))
+            _ = receive(.log(.warn, String(format: loc("showMode.error.engine"), EngineSession.describe(e))))
         }
         return result
-    }
-
-    private static func describe(_ e: EngineError) -> String {
-        switch e {
-        case .engine(_, let message) where !message.isEmpty: return message
-        case .notConnected, .disconnected: return loc("error.detail.notConnected")
-        default: return loc("error.detail.generic")
-        }
     }
 
     /// After a snapshot (connect, reconnect, reattach): a mode the engine has not got (it restarted,

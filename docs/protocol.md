@@ -29,6 +29,8 @@ The engine holds up to 8 open workspaces ("docs", ARCHITECTURE section 6). A doc
 
 A client that sees a gap in `revision` or in `seq` (section 4) sends `request: snapshot` and replaces its state.
 
+The macOS client (`EngineClient`) gives each live message (`transport`, `command`, `undo`, `redo`, `panic`, `hotkey`, and the requests the control thread answers at once) 10 s for its `result`; past that the call fails with a timeout (beep and show-log line), and two timeouts in a row with no `result` between close the connection, which then reconnects. Document requests (`new`, `open`, `open_recovery`, `scan_recovery`, `save`, `save_as`, `relink`, `close`) have no client deadline: the engine bounds its reads, and the app bounds saves and closes in its own flows.
+
 `PROTOCOL_VERSION` is **2** since M4.15f: `welcome` has two shapes, `new`/`open`/`open_recovery` open another doc instead of replacing the one open and lose `discard_changes`, and `revert` is gone (QLab 5 has none). An engine refuses a client of protocol 1 at `hello`.
 
 ## 3. Client -> engine

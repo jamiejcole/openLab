@@ -12,6 +12,8 @@ enum EngineError: Error, Equatable, Sendable {
     case encoding(String)
     /// A `snapshot` is already out; never pipelined (docs/network.md).
     case snapshotAlreadyPending
+    /// No `result` within `ReconnectPolicy.requestTimeout` (the engine may still carry it out).
+    case timeout
     /// `open` found an autosave newer than the show file and opened nothing (`recovery_offer`):
     /// ask, then repeat the `open` with a choice.
     case recoveryOffered(path: String, workspaceName: String, modifiedMs: Int64)
@@ -49,6 +51,14 @@ struct ReconnectPolicy: Equatable, Sendable {
     var cap = 5.0
     /// How long a connection may take to deliver its `welcome` before the attempt is abandoned.
     var handshakeTimeout = 10.0
+    /// How long a live request (transport, edit, hotkey, panic, a request the control thread
+    /// answers at once) may wait for its `result`. Above the engine's 5 s hold of a GO on a file
+    /// still being probed. Document requests (new, open, save, close, relink, recovery) have no
+    /// deadline here: the engine bounds its reads, and the app bounds saves and closes itself.
+    var requestTimeout = 10.0
+    /// Live requests timed out in a row, with no `result` between them, that mark the connection
+    /// dead (an engine whose socket is open but that no longer answers): it is closed and retried.
+    var deadAfterTimeouts = 2
     func delay(attempt: Int) -> Double { min(cap, initial * pow(2, Double(min(attempt, 30)))) }
 }
 
@@ -80,6 +90,10 @@ final class EngineClient: ObservableObject {
     private let infoProvider: @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>
     private let scheduler: Scheduler
     private let handshakeScheduler: Scheduler
+    private let requestScheduler: Scheduler
+    /// Deadline timers of the live requests in flight.
+    private var deadlines: [UInt64: Task<Void, Never>] = [:]
+    private var timeoutsInARow = 0
     private var handshakeTimedOut = false
     private let policy: ReconnectPolicy
     private let clientName: String
@@ -105,11 +119,12 @@ final class EngineClient: ObservableObject {
         transport: EngineTransport,
         infoProvider: @escaping @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>,
         scheduler: Scheduler = SystemScheduler(), handshakeScheduler: Scheduler = SystemScheduler(),
-        policy: ReconnectPolicy = ReconnectPolicy(),
+        requestScheduler: Scheduler = SystemScheduler(), policy: ReconnectPolicy = ReconnectPolicy(),
         clientName: String = "openLab for macOS", workspace: ModelID? = nil, runToken: String? = nil
     ) {
         self.runToken = runToken
         self.handshakeScheduler = handshakeScheduler
+        self.requestScheduler = requestScheduler
         self.transport = transport
         self.infoProvider = infoProvider
         self.scheduler = scheduler
@@ -211,13 +226,38 @@ final class EngineClient: ObservableObject {
         do { text = try message.text() } catch { return completion(.failure(.encoding("\(error)"))) }
         pending[id] = completion
         if answersWithSnapshot { snapshotRequest = id }
+        if message.hasDeadline {
+            deadlines[id] = Task { [weak self, requestScheduler, timeout = policy.requestTimeout] in
+                do { try await requestScheduler.sleep(seconds: timeout) } catch { return }
+                if !Task.isCancelled { self?.timedOut(id, on: connection) }
+            }
+        }
         connection.send(text)
+    }
+
+    /// A live request got no answer in time: it fails (the caller beeps and logs, as for a lost
+    /// connection). Several in a row with no result between mean the engine stopped answering on
+    /// an open socket: the connection is closed, which fails the rest and reconnects.
+    private func timedOut(_ id: UInt64, on conn: any EngineConnection) {
+        deadlines[id] = nil
+        guard connection === conn, let completion = pending.removeValue(forKey: id) else { return }
+        if snapshotRequest == id { snapshotRequest = nil }
+        timeoutsInARow += 1
+        engineLog.error("request \(id) got no result in \(self.policy.requestTimeout) s")
+        completion(.failure(.timeout))
+        if timeoutsInARow >= policy.deadAfterTimeouts {
+            engineLog.error("engine stopped answering on an open connection: reconnecting")
+            timeoutsInARow = 0
+            conn.close()
+        }
     }
 
     private func failPending(_ error: EngineError) {
         let all = pending
         pending = [:]
         snapshotRequest = nil
+        for (_, timer) in deadlines { timer.cancel() }
+        deadlines = [:]
         for (_, completion) in all { completion(.failure(error)) }
     }
 
@@ -262,6 +302,7 @@ final class EngineClient: ObservableObject {
         }
         connection = conn
         nextRequestID = 1
+        timeoutsInARow = 0
         handshakeTimedOut = false
         workspaceClosed = false
         let timer = Task { [handshakeScheduler, timeout = policy.handshakeTimeout] in
@@ -337,6 +378,7 @@ final class EngineClient: ObservableObject {
         guard let stub = try? JSONDecoder().decode(ResultStub.self, from: Data(text.utf8)), stub.type == "result"
         else { return }
         if snapshotRequest == stub.id { snapshotRequest = nil }
+        deadlines.removeValue(forKey: stub.id)?.cancel()
         pending.removeValue(forKey: stub.id)?(.failure(.encoding("undecodable result")))
     }
 
@@ -346,6 +388,8 @@ final class EngineClient: ObservableObject {
         switch message {
         case .result(let id, let outcome):
             if snapshotRequest == id { snapshotRequest = nil }
+            timeoutsInARow = 0
+            deadlines.removeValue(forKey: id)?.cancel()
             guard let completion = pending.removeValue(forKey: id) else { return }
             switch outcome {
             case .ok(let body):
@@ -372,6 +416,24 @@ final class EngineClient: ObservableObject {
             _ = delegate?.engineClient(self, didReceive: message)
         default:
             if delegate?.engineClient(self, didReceive: message) == .gap { requestSnapshot() }
+        }
+    }
+}
+
+extension ClientMessage {
+    /// Whether `EngineClient` gives up on its `result` after `ReconnectPolicy.requestTimeout`.
+    /// Document requests can rightly take long (a slow disk, a big show): they have none.
+    var hasDeadline: Bool {
+        switch self {
+        case .transport, .command, .undo, .redo, .panic, .hotkey: return true
+        case .hello, .goodbye, .close: return false
+        case .request(_, let r):
+            switch r {
+            case .new, .open, .openRecovery, .scanRecovery, .save, .saveAs, .relink: return false
+            case .listDevices, .preshowCheck, .logTail, .setOutputOverrides, .setShowMode, .setPatchMapping,
+                .snapshot:
+                return true
+            }
         }
     }
 }
