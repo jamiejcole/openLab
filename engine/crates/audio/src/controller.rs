@@ -237,6 +237,13 @@ impl MixerController {
         self.shared.faults.load(Ordering::Relaxed)
     }
 
+    /// Voices dropped because their render faulted [`VOICE_FAULT_LIMIT`] blocks in a row.
+    ///
+    /// [`VOICE_FAULT_LIMIT`]: crate::VOICE_FAULT_LIMIT
+    pub fn faulted_voices(&self) -> u64 {
+        self.shared.faulted_voices.load(Ordering::Relaxed)
+    }
+
     /// Frames of silence output because a source ring was empty.
     pub fn underrun_frames(&self) -> u64 {
         self.shared.underrun_frames.load(Ordering::Relaxed)

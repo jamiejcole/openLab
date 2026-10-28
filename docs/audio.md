@@ -9,7 +9,7 @@ Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1
 `Mixer::new(config)` returns a pair:
 
 - **`MixerController`** (control thread) schedules time-stamped `Command`s, polls `Event`s, frees returned voice starts, and reads the clock (`samples_rendered`), counters (faults, underrun frames, dropped events, leaked starts, pending-full blocks, xruns) and meters (see Meters and xruns).
-- **`Mixer`** (audio thread) renders with `process(out, frames)` into an interleaved `f32` buffer. The device callback and the offline renderer call `process_guarded`, which wraps `process` in `catch_unwind`: on a panic the block is silent, the fault counter goes up, and the clock still advances (ARCHITECTURE §3.4).
+- **`Mixer`** (audio thread) renders with `process(out, frames)` into an interleaved `f32` buffer. The device callback and the offline renderer call `process_guarded`, which wraps `process` in `catch_unwind`: on a panic the block is silent, the fault counter goes up, and the clock still advances (ARCHITECTURE §3.4). The mixer notes which voice it is rendering (a pool index, no allocation); a panic during that voice's render is blamed on it, and a voice blamed for `VOICE_FAULT_LIMIT` (3) faulted blocks in a row is finished with `FinishReason::Faulted` (its start goes back, its meters flush, `faulted_voices` counts it), so the other voices play again from the next block. A block that renders without a fault, or a fault outside any voice's render (commands, buses, outputs), ends the streak; the latter drops nothing.
 
 They share only preallocated `rtrb` SPSC queues and atomics:
 

@@ -512,6 +512,7 @@ struct Doc {
 struct Seen {
     dropped_events: u64,
     faults: u64,
+    faulted_voices: u64,
     alloc_violations: u64,
     outbound_dropped: u64,
     feedback_overflow: u64,
@@ -3034,6 +3035,14 @@ impl Control {
             eng.log(
                 LogLevel::Error,
                 format!("audio engine fault: {faults} block(s) replaced with silence"),
+            );
+        }
+        let faulted = eng.mixer.faulted_voices();
+        if faulted > eng.seen.faulted_voices {
+            eng.seen.faulted_voices = faulted;
+            eng.log(
+                LogLevel::Error,
+                format!("audio engine fault: {faulted} voice(s) dropped after repeated faults"),
             );
         }
         let allocs = eng.backend.alloc_violations();
