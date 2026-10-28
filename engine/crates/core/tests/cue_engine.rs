@@ -1971,14 +1971,27 @@ fn end_report_dated_during_a_pause_is_ignored() {
     assert_eq!(resume_ids(&resume)[0].1, run);
 }
 
+/// An end dated before the pause, arriving after it, completes the action but its auto-follow
+/// waits for the resume: a paused cue starts nothing (M2.33). Without an auto-follow it completes
+/// on its own sample.
 #[test]
-fn end_before_the_pause_still_completes_and_follows() {
+fn end_before_the_pause_completes_and_follows_on_the_resume() {
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
     rig.start(0, 1);
     rig.at(500, Input::Pause { cue: id(1) });
     let ended = rig.ended(520, 1, 480);
+    assert!(changes(&ended, 1).is_empty(), "{ended:?}");
+    assert_eq!(running_at(&ended, 2), None);
+    let resume = rig.at(1000, Input::Resume { cue: id(1) });
+    assert_eq!(changes(&resume, 1).last(), Some(&(CueState::Idle, 1000)));
+    assert_eq!(running_at(&resume, 2), Some(1000));
+
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, DNC), memo(2)]);
+    rig.start(0, 1);
+    rig.at(500, Input::Pause { cue: id(1) });
+    let ended = rig.ended(520, 1, 480);
     assert_eq!(changes(&ended, 1), vec![(CueState::Idle, 480)]);
-    assert_eq!(running_at(&ended, 2), Some(480));
+    assert_eq!(running_at(&ended, 2), None);
 }
 
 fn pause_offset(actions: &[Action]) -> Option<SampleTime> {
