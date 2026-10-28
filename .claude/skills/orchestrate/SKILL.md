@@ -95,4 +95,4 @@ Review traffic stays local (report files + `SendMessage`); GitHub is only the me
 - v0.0.1 = audio-only rehearsal on macOS; video is v0.0.2; lighting deferred; Windows UI tech decided later (engine CI on Windows from day one).
 - macOS 12 minimum, 2014 Mac mini is the performance target; CI perf budgets stand in until the M6 hardware check.
 - Everything reaches `main` through a PR merged by the orchestrator after green CI; never push directly to `main`. No self-hosted CI runner (user decision 2026-10-28).
-- QLab behaviour questions follow CLAUDE.md "Behaviour decisions" and never wait for the user; the user answers `docs/todo/open-qlab-questions.md` in batches, then update the row and the code if the answer differs. Still escalate architecture/scope/dependency questions, and behaviour that conflicts with ARCHITECTURE.md or show safety.
+- QLab behaviour questions: CLAUDE.md "Behaviour decisions"; when the user answers a row, update it and the code if the answer differs. Still escalate architecture/scope/dependency questions, and behaviour that conflicts with ARCHITECTURE.md or show safety.

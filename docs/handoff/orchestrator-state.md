@@ -20,12 +20,13 @@ Now: push once, merge `main` into a PR only on a conflict, only `main` saves cac
 macOS app job only when the app can be affected (see the `changes` job). Intel still runs on every merge
 to `main` (QA-07).
 
+## Policy health (updated at each milestone end; SKILL.md "Milestone end")
+- 2026-10-28 baseline: `low` issues 94 open / 6 closed; Mediums fixed in the last 5 reviews: 0; claims the repo did not back: 5.
+
 ## Rules learned the hard way
-- At most 3 agents at once, at most 2 on Opus (orchestrate skill).
 - Pushing a branch whose workflow file is old runs that old workflow (old branches ran CI on every
   push). Delete stale branches rather than pushing them.
-- One build per worktree; never share
-  a `CARGO_TARGET_DIR` between two source trees. Delete a worktree's `engine/target` when its agent finishes.
+- Delete a worktree (and its `engine/target`) once its branch is pushed: agent worktrees filled the disk on 2026-10-28.
 - `PROGRESS.md`: tick boxes and add one-line tasks only.
 - Every brief includes the adversarial checklist in `.claude/agents/implementer.md`.
 - Two green PRs can still break `main` together; `main`'s run after each merge catches it, and a red

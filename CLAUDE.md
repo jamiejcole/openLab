@@ -41,7 +41,7 @@ make prepush     # pre-push gate: lint, Windows clippy, Rust tests, app build, a
 - No real-time sleeps or wall-clock dependence in tests — use the virtual clock / offline render driver.
 - Add tests to the existing file for that behaviour and reuse `tests/common`; no new harness types. No milestone or task IDs in code, comments or test names (requirement IDs are fine).
 - Integration-test support modules (`tests/common/mod.rs`) start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`: clippy's in-test allowances only cover `#[test]` fns and `#[cfg(test)]` items.
-- A test that cannot run here fails when CI marks it required; it never passes by returning early.
+- A test that cannot run here says so as a skip or a failure (e.g. `soak_rt` fails instead of skipping with `OPENLAB_SOAK_RT_REQUIRE=1`); a required test never reports a pass by returning early.
 - Test-only code (fakes, fault switches, fixtures) never compiles into a Release product.
 - Before reporting done: `make prepush` (it runs Windows clippy). Path tests: expect `\` on Windows or use `to_portable`; APFS refuses non-UTF-8 names.
 
@@ -74,11 +74,11 @@ make prepush     # pre-push gate: lint, Windows clippy, Rust tests, app build, a
 
 ## Findings policy (the only copy: agents and the orchestrate skill link here)
 - **High**: a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input, however found (fuzzers and property tests included). Any input from outside the process is reachable.
-- **Medium**: wrong behaviour; a false or stale claim in a contract doc, ARCHITECTURE.md or this file; a missing test on a changed path; behaviour that differs between debug and release; duplication, dead code or a parallel test harness that the change adds or that sits in a file it touches.
+- **Medium**: wrong behaviour; a false or stale claim in a contract doc, ARCHITECTURE.md or this file; a missing test on a changed path; behaviour that differs between debug and release; duplication, dead code or a parallel test harness that the change adds.
 - **Low**: everything else.
 - High and Medium block merge. Only the user downgrades a Medium; quote it in the PR.
 - Lows: fix in the same round when the fix is small and in a file the PR touches; otherwise a `low` issue in the current milestone. A milestone closes only when its `low` issues are fixed or re-milestoned with a reason.
-- Pre-existing High/Medium found in a touched file: a `severity:high` / `severity:medium` issue in the current milestone. It blocks the milestone, not this PR, unless the PR makes it worse.
+- Pre-existing findings in a touched file: a High (crash, panic, hang included) is fixed in this PR or the PR waits for its fix. A pre-existing Medium becomes a `severity:medium` issue in the current milestone; it blocks the milestone, not this PR, unless the PR makes it worse.
 - A generator, fuzzer or oracle finding that is not a crash, panic or hang and needs input the loader already rejects: fix the generator or oracle, not the product.
 - One regression test per bug, no variant matrices.
 
