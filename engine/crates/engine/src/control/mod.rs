@@ -1508,6 +1508,7 @@ impl Doc {
                 .collect(),
             previewing: self.engine.previewing().collect(),
             warnings: self.warnings.clone(),
+            media_durations: self.checks.media_durations(),
         }
     }
 }
@@ -2662,11 +2663,26 @@ impl DocCx<'_> {
             );
         }
         // The plans just checked also give the cues' nominal lengths, which a playlist halted by
-        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist").
-        let lengths = self.doc.checks.length_changes();
-        if !lengths.is_empty() {
+        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist"), and the
+        // media lengths clients show (M5.4d): only the cues whose plan changed.
+        let changes = self.doc.checks.take_changes();
+        if !changes.media.is_empty() {
+            self.runtime(
+                changes
+                    .media
+                    .into_iter()
+                    .map(RuntimeChange::MediaDuration)
+                    .collect(),
+            );
+        }
+        if !changes.lengths.is_empty() {
             let now = self.now();
-            self.feed(Input::CueLengths { lengths }, now);
+            self.feed(
+                Input::CueLengths {
+                    lengths: changes.lengths,
+                },
+                now,
+            );
         }
     }
 
@@ -3171,6 +3187,7 @@ impl Control {
                 playheads: Vec::new(),
                 previewing: Vec::new(),
                 warnings: Vec::new(),
+                media_durations: Vec::new(),
             },
         }
     }
