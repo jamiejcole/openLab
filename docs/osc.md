@@ -1,6 +1,6 @@
 # OSC API (NET-01, NET-02, NET-05, TRG-03, DOC-02)
 
-Status: implemented, matched to what QLab 5.5.3 was measured to do (M4.5b; the captures are `docs/handoff/qlab-osc-findings.md` on the `qlab-osc-findings` branch). The socket-free layer is `engine/crates/engine/src/osc/` (decoding, address dispatch, patterns, passcode and updates state, replies); the UDP and TCP listeners and the update messages are `engine/crates/engine/src/net/osc.rs` and `osc_mirror.rs` (see "Listeners" below and [network.md](network.md)). `host::run` starts them; if port 53000 is taken the engine logs a warning and runs without OSC. This file lists exactly what is done; anything not listed is not implemented.
+Status: implemented, matched to what QLab 5.5.3 was measured to do (M4.5b). The socket-free layer is `engine/crates/engine/src/osc/` (decoding, address dispatch, patterns, passcode and updates state, replies); the UDP and TCP listeners and the update messages are `engine/crates/engine/src/net/osc.rs` and `osc_mirror.rs` (see "Listeners" below and [network.md](network.md)). `host::run` starts them; if port 53000 is taken the engine logs a warning and runs without OSC. This file lists exactly what is done; anything not listed is not implemented.
 
 The address space follows QLab 5's OSC dictionary, so existing remotes keep working where openLab has the feature. Where openLab does something else on purpose, it is listed under "Differences from QLab".
 

@@ -2,16 +2,20 @@
 Closes #
 
 ## Tasks
-- M?.?: one line each
+- one line each
 
 ## Requirements
 IDs (e.g. AUD-07, NFR-02):
 
 ## Tests
-`PREPUSH PASS` line or test summary lines:
+`PREPUSH PASS` line (and the head sha it ran on):
 
-## Review digest
-R1: 0 High / 0 Medium fixed. Lows filed as: #
+## Review
+R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows filed #…
+Pre-existing findings filed: #… (or none)
+
+## Docs claims
+Claims about CI/lints/tests/versions changed: none / <files>, checked against <ci.yml/Cargo.toml/code>
 
 ## QLab questions added
 Rows added to `docs/todo/open-qlab-questions.md` (or none):
