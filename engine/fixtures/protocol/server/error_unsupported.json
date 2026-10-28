@@ -2,5 +2,5 @@
   "type": "error",
   "code": "unsupported",
   "message": "message",
-  "protocol_version": 1
+  "protocol_version": 2
 }

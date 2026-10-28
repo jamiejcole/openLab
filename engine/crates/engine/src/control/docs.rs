@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Documents (M4.4, docs/control.md "Documents"): new, open, open-recovery, save, save-as,
-//! revert and autosave.
+//! Documents (M4.4, M4.15; docs/control.md "Documents"): new, open, open-recovery, close, save,
+//! save-as and autosave.
 //!
 //! Nothing here touches the disk on the control thread. Saves and autosaves go to the
 //! [`SaveWriter`] thread (the control thread clones the workspace and polls for the answer each
 //! tick); reading a show, the recovery check and the recovery scan run on one document worker
 //! thread, whose answer comes back through the inbox ([`DocAnswer`]) and is applied here.
-//! Replacing the workspace (new, open, revert) stops every running cue first and keeps
-//! `revision` and `runtime_seq` rising, then sends the new `snapshot` to the requester and,
-//! through the outbound channel, to every other client.
 //!
-//! Several docs (M4.15e; ARCHITECTURE §3.1): [`Control::open_doc`] adds a doc. The document
+//! Several docs (M4.15e, M4.15f; ARCHITECTURE §3.1, §6): `new`, `open` and `open_recovery` add a
+//! doc ([`Control::open_doc`]) beside the ones open, which keep playing. The document
 //! worker reads the file (or takes the workspace given) and builds everything the doc needs off
 //! the control thread ([`DocParts`]: the workspace, its cue engine with its static problems
 //! worked out, the media catalog's cue index), so installing it on the control thread is an
@@ -148,8 +146,6 @@ pub struct Loaded {
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
     notices: Vec<WireWarning>,
-    /// A revert: the autosave of the edits just dropped goes (after any write of it in flight).
-    clear_autosave: bool,
 }
 
 /// Everything a doc being opened needs, built on the document worker (ARCHITECTURE §3.1).
@@ -203,6 +199,12 @@ pub enum DocSource {
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
     },
+    /// An autosave listed by `scan_recovery`, opened untitled and dirty (as `open_recovery`).
+    Recovery {
+        workspace_id: WorkspaceId,
+        path_hash: Option<String>,
+        modified_ms: Option<i64>,
+    },
     /// A workspace in memory, never saved (tests; a template later).
     Workspace(Box<Workspace>),
 }
@@ -249,12 +251,12 @@ impl DocAnswer {
 }
 
 enum DocJob {
+    /// A doc to add: its parts are built from what is read, with this cue engine config.
     Open {
         ticket: u64,
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
-        /// A doc to add: its parts are built from what is read, with this cue engine config.
-        build: Option<EngineConfig>,
+        config: EngineConfig,
     },
     /// A doc to add from a workspace already in hand.
     Build {
@@ -264,26 +266,23 @@ enum DocJob {
     },
     /// A closed doc, dropped here rather than on the control thread.
     Discard(Box<dyn Send>),
-    Revert {
-        ticket: u64,
-        path: PathBuf,
-    },
     OpenRecovery {
         ticket: u64,
         workspace: WorkspaceId,
         path_hash: Option<String>,
         modified_ms: Option<i64>,
+        config: EngineConfig,
     },
     Scan {
         ticket: u64,
     },
 }
 
-/// Which doc a document request is for.
+/// What a document request is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
-    /// An open doc (its workspace replaced, or a scan it asked for).
-    Doc(DocId),
+    /// The engine's own: a recovery scan.
+    Engine,
     /// A doc to add ([`Control::open_doc`]).
     New,
 }
@@ -294,7 +293,6 @@ struct PendingDoc {
     ticket: u64,
     id: RequestId,
     reply: ReplyTx,
-    discard: bool,
     /// When the request was handed to the worker ([`ControlConfig::clock`], milliseconds).
     started_ms: i64,
 }
@@ -303,9 +301,6 @@ struct PendingSave {
     rx: Receiver<Result<SaveReport, PersistError>>,
     revision: u64,
     path: PathBuf,
-    /// The document generation it was started in; a save finishing after another workspace was
-    /// installed says nothing about the new one.
-    epoch: u64,
     /// A save-as to another folder: relative media references were rebased in the copy saved.
     rebase: bool,
     waiters: Vec<(RequestId, ReplyTx)>,
@@ -359,9 +354,8 @@ pub(super) struct DocFile {
     autosaved_revision: Option<u64>,
     dirty_since: Option<i64>,
     last_autosave: Option<i64>,
-    epoch: u64,
-    /// Notices about how the open workspace was loaded (repairs, recovery), shown with the
-    /// workspace-level warnings until another workspace replaces it.
+    /// Notices about how the workspace was loaded (repairs, recovery), shown with the
+    /// workspace-level warnings while it is open.
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
@@ -376,7 +370,6 @@ impl DocFile {
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
-            epoch: 0,
             notices: Vec::new(),
             resend_snapshot: false,
         }
@@ -487,19 +480,20 @@ fn work(
         if let Some(hook) = hook {
             (hook.0)();
         }
+        let built = |answer: DocAnswer, config: EngineConfig| match answer {
+            DocAnswer::Loaded { ticket, loaded } => DocAnswer::Built {
+                ticket,
+                parts: Box::new(build_parts(*loaded, config)),
+            },
+            answer => answer,
+        };
         let answer = match job {
             DocJob::Open {
                 ticket,
                 path,
                 recovery,
-                build,
-            } => match (open(ticket, &path, recovery, dirs), build) {
-                (DocAnswer::Loaded { ticket, loaded }, Some(config)) => DocAnswer::Built {
-                    ticket,
-                    parts: Box::new(build_parts(*loaded, config)),
-                },
-                (answer, _) => answer,
-            },
+                config,
+            } => built(open(ticket, &path, recovery, dirs), config),
             DocJob::Build {
                 ticket,
                 loaded,
@@ -509,13 +503,16 @@ fn work(
                 parts: Box::new(build_parts(*loaded, config)),
             },
             DocJob::Discard(_) => continue,
-            DocJob::Revert { ticket, path } => revert(ticket, &path),
             DocJob::OpenRecovery {
                 ticket,
                 workspace,
                 path_hash,
                 modified_ms,
-            } => open_recovery(ticket, workspace, path_hash.as_deref(), modified_ms, dirs),
+                config,
+            } => built(
+                open_recovery(ticket, workspace, path_hash.as_deref(), modified_ms, dirs),
+                config,
+            ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
         };
         // The control loop gave up on the request while this was reading: its answer is stale
@@ -632,26 +629,6 @@ fn open(
             path: Some(path.to_path_buf()),
             dirty,
             notices,
-            clear_autosave: false,
-        }),
-    }
-}
-
-fn revert(ticket: u64, path: &Path) -> DocAnswer {
-    let shown = match read_show(path) {
-        Ok(shown) => shown,
-        Err((code, message)) => return failed(ticket, code, message),
-    };
-    DocAnswer::Loaded {
-        ticket,
-        loaded: Box::new(Loaded {
-            notices: load_notices(&shown),
-            workspace: shown.workspace,
-            path: Some(path.to_path_buf()),
-            dirty: false,
-            // The operator dropped the edits on purpose: their autosave must not come back
-            // (the control loop queues the removal behind any write of it).
-            clear_autosave: true,
         }),
     }
 }
@@ -701,7 +678,6 @@ fn open_recovery(
             workspace: shown.workspace,
             path: None,
             dirty: true,
-            clear_autosave: false,
         }),
     }
 }
@@ -813,7 +789,8 @@ fn folder_of(path: &Path) -> Option<PathBuf> {
 }
 
 impl DocCx<'_> {
-    /// A document request (everything in `Request` but `snapshot`, `list_devices`, `relink`).
+    /// A save of this doc (`save`, `save_as`); the other document requests are app-scope
+    /// ([`Control::app_scope`]).
     pub(super) fn doc_request(&mut self, id: RequestId, request: Request, to: &ReplyTx) {
         match request {
             Request::Save => match self.doc.show_path.clone() {
@@ -826,165 +803,21 @@ impl DocCx<'_> {
                 ),
             },
             Request::SaveAs { path } => self.start_save(id, to, PathBuf::from(path)),
-            Request::ScanRecovery => {
-                if !self.doc_gate(id, to, true, true) {
-                    return;
-                }
-                let ticket = self.next_ticket(id, to, false);
-                self.send_job(DocJob::Scan { ticket }, id, to);
-            }
-            Request::New { discard_changes } => {
-                if !self.doc_gate(id, to, discard_changes, false) {
-                    return;
-                }
-                let workspace = self.eng.fresh_workspace();
-                let loaded = Loaded {
-                    workspace,
-                    path: None,
-                    dirty: false,
-                    notices: Vec::new(),
-                    clear_autosave: false,
-                };
-                self.install(loaded, discard_changes);
-                self.finish_install(id, to);
-            }
-            Request::Open {
-                path,
-                discard_changes,
-                recovery,
-            } => {
-                if !self.doc_gate(id, to, discard_changes, true) {
-                    return;
-                }
-                let ticket = self.next_ticket(id, to, discard_changes);
-                let job = DocJob::Open {
-                    ticket,
-                    path: PathBuf::from(path),
-                    recovery,
-                    build: None,
-                };
-                self.send_job(job, id, to);
-            }
-            Request::OpenRecovery {
-                workspace_id,
-                path_hash,
-                modified_ms,
-                discard_changes,
-            } => {
-                if !self.doc_gate(id, to, discard_changes, true) {
-                    return;
-                }
-                let ticket = self.next_ticket(id, to, discard_changes);
-                let job = DocJob::OpenRecovery {
-                    ticket,
-                    workspace: workspace_id,
-                    path_hash,
-                    modified_ms,
-                };
-                self.send_job(job, id, to);
-            }
-            Request::Revert { discard_changes } => {
-                let Some(path) = self.doc.show_path.clone() else {
-                    fail(
-                        to,
-                        id,
-                        ErrorCode::NoWorkspace,
-                        "the workspace has never been saved; there is nothing to revert to",
-                    );
-                    return;
-                };
-                if !self.doc_gate(id, to, discard_changes, true) {
-                    return;
-                }
-                let ticket = self.next_ticket(id, to, discard_changes);
-                self.send_job(DocJob::Revert { ticket, path }, id, to);
-            }
-            Request::Snapshot
-            | Request::ListDevices
-            | Request::SetOutputOverrides { .. }
-            | Request::PreshowCheck
-            | Request::LogTail { .. }
-            | Request::Relink { .. } => {}
-        }
-    }
-
-    /// Whether a request that replaces the workspace (or reads files) may start: only one at a
-    /// time, and not over unsaved edits unless the request discards them. `reads`: the request
-    /// needs the document worker.
-    fn doc_gate(&self, id: RequestId, to: &ReplyTx, discard: bool, reads: bool) -> bool {
-        if !self.eng.read_gate(id, to, reads) {
-            return false;
-        }
-        if self.doc.is_dirty() && !discard {
-            fail(
-                to,
-                id,
-                ErrorCode::UnsavedChanges,
-                "the workspace has unsaved changes; save them or discard them",
-            );
-            return false;
-        }
-        true
-    }
-
-    fn next_ticket(&mut self, id: RequestId, to: &ReplyTx, discard: bool) -> u64 {
-        let target = Target::Doc(self.doc.id);
-        self.eng.next_ticket(target, id, to, discard)
-    }
-
-    fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
-        self.eng.send_job(job, id, to);
-    }
-
-    /// The document worker's answer to a request of this doc.
-    fn doc_answer(&mut self, pending: PendingDoc, answer: DocAnswer) {
-        let (id, to) = (pending.id, &pending.reply);
-        match answer {
-            DocAnswer::Failed { code, message, .. } => fail(to, id, code, message),
-            DocAnswer::Offer {
-                path,
-                workspace_name,
-                modified_ms,
-                ..
-            } => reply_data(
-                to,
-                id,
-                ResultData::RecoveryOffer {
-                    path,
-                    workspace_name,
-                    modified_ms,
-                },
-            ),
-            DocAnswer::Entries { entries, .. } => {
-                reply_data(to, id, ResultData::RecoveryEntries { entries });
-            }
-            // Cannot happen: only an added doc's request builds parts.
-            DocAnswer::Built { .. } => fail(
+            other => fail(
                 to,
                 id,
                 ErrorCode::Internal,
-                "the document worker answered another request",
+                format!(
+                    "{} is not a request of one workspace",
+                    super::request_name(&other)
+                ),
             ),
-            DocAnswer::Loaded { loaded, .. } => {
-                // The operator may have edited while the file was being read.
-                if self.doc.is_dirty() && !pending.discard {
-                    fail(
-                        to,
-                        id,
-                        ErrorCode::UnsavedChanges,
-                        "the workspace changed while the file was being read; nothing was opened",
-                    );
-                    return;
-                }
-                self.install(*loaded, pending.discard);
-                self.finish_install(id, to);
-            }
         }
     }
 
     /// Stops everything that is running, as Panic pressed twice does, and lets go of every
-    /// voice, prime and queued feedback: they belong to the workspace about to be replaced.
-    fn stop_everything(&mut self) {
+    /// voice, prime and queued feedback: the doc is closing.
+    pub(super) fn stop_everything(&mut self) {
         let now = self.now();
         // A second Panic within the first's fade is a hard stop (docs/cue-engine.md, Panic).
         self.feed(Input::Panic, now);
@@ -1016,84 +849,6 @@ impl DocCx<'_> {
         self.eng.mixer.pump();
     }
 
-    /// Replaces the workspace: stops the show, rebuilds the cue engine, history, media catalog
-    /// and patches around the new one, and keeps `revision` and `runtime_seq` rising.
-    /// `discard`: the operator agreed to drop unsaved edits.
-    fn install(&mut self, loaded: Loaded, discard: bool) {
-        let Loaded {
-            workspace,
-            path,
-            dirty,
-            notices,
-            clear_autosave,
-        } = loaded;
-        let same_file = self.doc.ws.id == workspace.id
-            && match (&self.doc.show_path, &path) {
-                (Some(a), Some(b)) => same_path(a, b),
-                (None, None) => true,
-                _ => false,
-            };
-        // The autosave of dropped edits goes, after any write of it still in flight (the writer
-        // runs the removal after its current job). Not when the same file is reopened: its
-        // autosave may be the one just restored.
-        if (discard && self.doc.is_dirty() && !same_file) || clear_autosave {
-            let (id, from) = if clear_autosave {
-                (workspace.id, path.clone())
-            } else {
-                (self.doc.ws.id, self.doc.show_path.clone())
-            };
-            self.clear_autosave_of(id, from);
-        }
-        self.stop_everything();
-        self.doc.file.epoch += 1;
-        // A new engine: its run ids restart, which cannot meet the old ones (the voices are
-        // forgotten and mixer voice ids are never reused).
-        match self.eng.engine_config(self.doc.id) {
-            Ok(config) => {
-                self.doc.engine = openlab_core::CueEngine::new(config);
-                // The new engine counts unsignalled changes from zero.
-                self.doc.seen_unsignalled = 0;
-            }
-            // Cannot happen (the same values built the first engine); the old engine, with
-            // everything stopped, is the safe thing to keep.
-            Err(e) => self.log(LogLevel::Error, format!("cue engine not rebuilt: {e}")),
-        }
-        self.doc.ws = workspace;
-        self.doc.history = History::new();
-        self.doc.checks = super::checks::PlanChecks::default();
-        self.doc.show_path = path;
-        self.eng.observe.reset(self.doc.id);
-        self.log_kind(
-            LogKind::Document,
-            LogLevel::Info,
-            match &self.doc.show_path {
-                Some(p) => format!("workspace opened: {}", p.display()),
-                None => "workspace opened: untitled".to_owned(),
-            },
-        );
-        self.doc.media.reset(self.show_dir(), &self.doc.ws);
-        self.doc.file.notices = notices;
-        self.doc.revision += 1;
-        self.doc.saved_revision = if dirty {
-            self.doc.revision.saturating_sub(1)
-        } else {
-            self.doc.revision
-        };
-        self.doc.file.dirty_since = None;
-        self.doc.file.last_autosave = None;
-        self.doc.file.autosaved_revision = None;
-        let now = self.now();
-        self.doc.engine.model_changed();
-        let mut inputs = vec![Input::Tick];
-        inputs.extend(self.sync_workspace(true));
-        for input in inputs {
-            self.feed(input, now);
-        }
-        self.doc.warnings_dirty = false;
-        self.refresh_warnings();
-        self.eng.mixer.pump();
-    }
-
     /// Queues the removal of a workspace's recovery file behind the writer's current job.
     fn clear_autosave_of(&mut self, workspace: WorkspaceId, show_path: Option<PathBuf>) {
         if let Some(writer) = &self.eng.docs.writer {
@@ -1104,35 +859,14 @@ impl DocCx<'_> {
         }
     }
 
-    /// Replies to the requester after [`Self::install`]: the snapshot (also broadcast to every
-    /// other client), the workspace warnings, then the result.
-    fn finish_install(&mut self, id: RequestId, to: &ReplyTx) {
-        let snapshot = self.doc.snapshot();
-        reply(
-            to,
-            ServerMessage::Snapshot {
-                snapshot: Box::new(snapshot.clone()),
-            },
-        );
-        self.doc.file.resend_snapshot = !self.eng.out.send_state(ServerMessage::Snapshot {
-            snapshot: Box::new(snapshot),
-        });
-        reply(
-            to,
-            ServerMessage::Warnings {
-                warnings: self.doc.warnings.clone(),
-            },
-        );
-        reply(to, ok(id, Some(self.doc.revision)));
-    }
-
-    /// Sends the snapshot to every client again (the first broadcast did not fit).
+    /// Sends this doc's snapshot to its clients again (its model changed in a way no
+    /// `model_changed` describes, or the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
         let snapshot = Box::new(self.doc.snapshot());
         self.doc.file.resend_snapshot = !self
             .eng
             .out
-            .send_state(ServerMessage::Snapshot { snapshot });
+            .send_state(Some(self.doc.id), ServerMessage::Snapshot { snapshot });
     }
 
     pub(super) fn show_dir(&self) -> Option<PathBuf> {
@@ -1189,7 +923,6 @@ impl DocCx<'_> {
             rx,
             revision: self.doc.revision,
             path,
-            epoch: self.doc.file.epoch,
             rebase: rebased,
             waiters: vec![(id, to.clone())],
         });
@@ -1264,9 +997,7 @@ impl DocCx<'_> {
                 for warning in report.warnings {
                     self.log(LogLevel::Warn, warning);
                 }
-                if save.epoch == self.doc.file.epoch {
-                    self.saved(&save);
-                }
+                self.saved(&save);
                 for (id, to) in &save.waiters {
                     reply(to, ok(*id, None));
                 }
@@ -1505,14 +1236,13 @@ impl Engine {
         true
     }
 
-    fn next_ticket(&mut self, target: Target, id: RequestId, to: &ReplyTx, discard: bool) -> u64 {
+    fn next_ticket(&mut self, target: Target, id: RequestId, to: &ReplyTx) -> u64 {
         self.docs.ticket += 1;
         self.docs.pending = Some(PendingDoc {
             target,
             ticket: self.docs.ticket,
             id,
             reply: to.clone(),
-            discard,
             started_ms: self.config.clock.now_ms(),
         });
         self.docs.ticket
@@ -1576,12 +1306,13 @@ fn reply_data(to: &ReplyTx, id: RequestId, data: ResultData) {
 
 impl Control {
     /// Opens another doc (WS-02; QLab 5 opens a workspace beside the ones open, which keep
-    /// playing). The file is read and the doc built on the document worker; the doc is
-    /// installed when the answer comes (`snapshot`, `warnings` and the result go to `to`;
-    /// [`Self::take_opened`] tells its [`DocId`]). Refused (`command_refused`) while another
-    /// document request is being handled, or when [`MAX_DOCS`] docs are open.
+    /// playing): `new`, `open` and `open_recovery` on any connection. The file is read and the
+    /// doc built on the document worker; the doc is installed when the answer comes, and the
+    /// result (`opened { doc }`) goes to `to` ([`Self::take_opened`] tells its [`DocId`] too).
+    /// Refused (`command_refused`) while another document request is being handled, or when
+    /// [`MAX_DOCS`] docs are open; a show file that is open already answers `already_open`.
     pub fn open_doc(&mut self, source: DocSource, id: RequestId, to: &ReplyTx) {
-        let reads = matches!(source, DocSource::Open { .. });
+        let reads = matches!(source, DocSource::Open { .. } | DocSource::Recovery { .. });
         if !self.eng.read_gate(id, to, reads) {
             return;
         }
@@ -1594,6 +1325,17 @@ impl Control {
             );
             return;
         }
+        if let DocSource::Open { path, .. } = &source
+            && let Some(open) = self.doc_at(path)
+        {
+            fail(
+                to,
+                id,
+                ErrorCode::AlreadyOpen,
+                format!("{} is open already (workspace {open})", path.display()),
+            );
+            return;
+        }
         let config = match self.eng.engine_config(DocId(self.eng.next_doc)) {
             Ok(config) => config,
             Err(e) => {
@@ -1603,12 +1345,26 @@ impl Control {
         };
         let job = match source {
             DocSource::Open { path, recovery } => {
-                let ticket = self.eng.next_ticket(Target::New, id, to, false);
+                let ticket = self.eng.next_ticket(Target::New, id, to);
                 DocJob::Open {
                     ticket,
                     path,
                     recovery,
-                    build: Some(config),
+                    config,
+                }
+            }
+            DocSource::Recovery {
+                workspace_id,
+                path_hash,
+                modified_ms,
+            } => {
+                let ticket = self.eng.next_ticket(Target::New, id, to);
+                DocJob::OpenRecovery {
+                    ticket,
+                    workspace: workspace_id,
+                    path_hash,
+                    modified_ms,
+                    config,
                 }
             }
             DocSource::New | DocSource::Workspace(_) => {
@@ -1616,7 +1372,7 @@ impl Control {
                     DocSource::Workspace(ws) => *ws,
                     _ => self.eng.fresh_workspace(),
                 };
-                let ticket = self.eng.next_ticket(Target::New, id, to, false);
+                let ticket = self.eng.next_ticket(Target::New, id, to);
                 DocJob::Build {
                     ticket,
                     loaded: Box::new(Loaded {
@@ -1624,7 +1380,6 @@ impl Control {
                         path: None,
                         dirty: false,
                         notices: Vec::new(),
-                        clear_autosave: false,
                     }),
                     config,
                 }
@@ -1633,8 +1388,24 @@ impl Control {
         self.eng.send_job(job, id, to);
     }
 
-    /// The document worker's answer, for the doc whose request it is (an open doc, or one being
-    /// added). A doc closed since its request answers `no_workspace`.
+    /// The open doc whose show file is `path` (spelled as media paths are compared).
+    fn doc_at(&self, path: &Path) -> Option<DocId> {
+        self.docs
+            .iter()
+            .find(|d| d.show_path.as_deref().is_some_and(|p| same_path(p, path)))
+            .map(|d| d.id)
+    }
+
+    /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
+    pub(super) fn scan_recovery(&mut self, id: RequestId, to: &ReplyTx) {
+        if !self.eng.read_gate(id, to, true) {
+            return;
+        }
+        let ticket = self.eng.next_ticket(Target::Engine, id, to);
+        self.eng.send_job(DocJob::Scan { ticket }, id, to);
+    }
+
+    /// The document worker's answer, for the request it is for (a doc being added, or a scan).
     pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
         let Some(pending) = self
             .eng
@@ -1649,48 +1420,48 @@ impl Control {
             }
             return;
         };
-        match pending.target {
-            Target::Doc(doc) => match self.cx_of(doc) {
-                Some(mut cx) => cx.doc_answer(pending, answer),
-                None => fail(
-                    &pending.reply,
-                    pending.id,
-                    ErrorCode::NoWorkspace,
-                    "the workspace was closed",
-                ),
-            },
-            Target::New => {
-                let (id, to) = (pending.id, &pending.reply);
-                match answer {
-                    DocAnswer::Built { parts, .. } => self.install_new(*parts, id, to),
-                    DocAnswer::Failed { code, message, .. } => fail(to, id, code, message),
-                    DocAnswer::Offer {
-                        path,
-                        workspace_name,
-                        modified_ms,
-                        ..
-                    } => reply_data(
-                        to,
-                        id,
-                        ResultData::RecoveryOffer {
-                            path,
-                            workspace_name,
-                            modified_ms,
-                        },
-                    ),
-                    DocAnswer::Loaded { .. } | DocAnswer::Entries { .. } => fail(
-                        to,
-                        id,
-                        ErrorCode::Internal,
-                        "the document worker answered another request",
-                    ),
+        let (id, to) = (pending.id, &pending.reply);
+        match (pending.target, answer) {
+            (_, DocAnswer::Failed { code, message, .. }) => fail(to, id, code, message),
+            (Target::Engine, DocAnswer::Entries { entries, .. }) => {
+                reply_data(to, id, ResultData::RecoveryEntries { entries });
+            }
+            (Target::New, DocAnswer::Built { parts, .. }) => self.install_new(*parts, id, to),
+            (
+                Target::New,
+                DocAnswer::Offer {
+                    path,
+                    workspace_name,
+                    modified_ms,
+                    ..
+                },
+            ) => reply_data(
+                to,
+                id,
+                ResultData::RecoveryOffer {
+                    path,
+                    workspace_name,
+                    modified_ms,
+                },
+            ),
+            (_, answer) => {
+                // Cannot happen: each job has its own kind of answer.
+                if let DocAnswer::Built { parts, .. } = answer {
+                    self.eng.docs.discard(parts);
                 }
+                fail(
+                    to,
+                    id,
+                    ErrorCode::Internal,
+                    "the document worker answered another request",
+                );
             }
         }
     }
 
     /// Installs a doc built off the control thread: an insert, its probe jobs, its slot
-    /// commands and its first reports, so it costs no audio block (ARCHITECTURE §3.1).
+    /// commands and its first reports, so it costs no audio block (ARCHITECTURE §3.1). The
+    /// requester gets `opened { doc }`; a connection bound to the doc gets its snapshot.
     fn install_new(&mut self, parts: DocParts, id: RequestId, to: &ReplyTx) {
         if self.docs.len() >= MAX_DOCS {
             fail(
@@ -1698,6 +1469,19 @@ impl Control {
                 id,
                 ErrorCode::CommandRefused,
                 format!("at most {MAX_DOCS} workspaces can be open at once"),
+            );
+            self.eng.docs.discard(Box::new(parts));
+            return;
+        }
+        // Another doc may have been saved to this path while it was read.
+        if let Some(path) = &parts.loaded.path
+            && let Some(open) = self.doc_at(path)
+        {
+            fail(
+                to,
+                id,
+                ErrorCode::AlreadyOpen,
+                format!("{} is open already (workspace {open})", path.display()),
             );
             self.eng.docs.discard(Box::new(parts));
             return;
@@ -1720,12 +1504,19 @@ impl Control {
             checks,
         } = parts;
         let Loaded {
-            workspace,
+            mut workspace,
             path,
-            dirty,
+            mut dirty,
             notices,
-            ..
         } = loaded;
+        // A copy of an open show (a Finder duplicate) has its workspace id: QLab 5 gives the
+        // copy a fresh one and marks it unsaved. Ids must be unique: autosaves, OSC
+        // `/workspace/{id}` and the app's windows go by them.
+        let duplicate = self.docs.iter().any(|d| d.ws.id == workspace.id);
+        if duplicate {
+            workspace.id = WorkspaceId(random_id());
+            dirty = true;
+        }
         // The device may have come back with another block size while the doc was built.
         if engine.config().lookahead() != self.eng.block
             && let Err(e) = engine.set_lookahead(self.eng.block)
@@ -1763,6 +1554,14 @@ impl Control {
                 None => "workspace opened: untitled".to_owned(),
             },
         );
+        if duplicate {
+            cx.log(
+                LogLevel::Info,
+                "a workspace with the same id is open already (a copy of a show?): this one \
+                 gets a new id and is unsaved"
+                    .to_owned(),
+            );
+        }
         let now = cx.now();
         for input in cx.execute(&actions, now) {
             cx.feed(input, now);
@@ -1774,22 +1573,9 @@ impl Control {
         }
         cx.doc.warnings_dirty = false;
         cx.refresh_warnings();
-        // To the requester only: the other clients show another workspace (connections bound
-        // to docs, and broadcasts tagged with theirs, are M4.15f).
-        reply(
-            to,
-            ServerMessage::Snapshot {
-                snapshot: Box::new(cx.doc.snapshot()),
-            },
-        );
-        reply(
-            to,
-            ServerMessage::Warnings {
-                warnings: cx.doc.warnings.clone(),
-            },
-        );
-        reply(to, ok(id, Some(cx.doc.revision)));
+        reply_data(to, id, ResultData::Opened { doc: doc_id });
         self.eng.opened.push((id, doc_id));
+        self.publish_workspaces();
         self.eng.mixer.pump();
     }
 
@@ -1797,8 +1583,27 @@ impl Control {
     /// unless `discard_changes` (then its autosave is removed, after any write of it still in
     /// flight). Its cues stop at once (Panic twice: a hard stop), its voices' late events are
     /// ignored from now on, its mixer slots are zeroed and freed, and it is dropped off the
-    /// control thread. The other docs play on untouched.
+    /// control thread. The other docs play on untouched. Its clients get `closed { doc }`.
     pub fn close_doc(&mut self, doc: DocId, discard_changes: bool) -> Result<(), ErrorBody> {
+        self.remove_doc(doc, discard_changes)?;
+        self.closed(doc);
+        Ok(())
+    }
+
+    /// Tells everyone doc `doc` is gone: its connections get `closed` (the network layer then
+    /// closes them), the app connections the list without it. After the reply to a `close`, so
+    /// the requester has its result before its connection ends.
+    pub(super) fn closed(&mut self, doc: DocId) {
+        self.eng.announce_closed(doc);
+        self.publish_workspaces();
+    }
+
+    /// [`Self::close_doc`] without telling anyone.
+    pub(super) fn remove_doc(
+        &mut self,
+        doc: DocId,
+        discard_changes: bool,
+    ) -> Result<(), ErrorBody> {
         let Some(index) = self.docs.iter().position(|d| d.id == doc) else {
             return Err(ErrorBody::new(
                 ErrorCode::NoWorkspace,
@@ -1929,7 +1734,7 @@ impl Control {
 }
 
 impl Doc {
-    fn is_dirty(&self) -> bool {
+    pub(super) fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
 }

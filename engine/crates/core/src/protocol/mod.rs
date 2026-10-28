@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 
 /// Version a peer sends in `hello` and the engine answers in `welcome`. The engine accepts a
 /// client only on an equal version.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 2: connections bind to one of several open workspaces (M4.15f).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Longest frame the engine reads from a client. Commands and requests are small; a big paste is
 /// well under this. Decoding buffers a frame several times over, so the limit bounds the memory
@@ -40,6 +41,19 @@ pub const MAX_SERVER_FRAME_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RequestId(pub u64);
+
+/// An open workspace of the engine (a "doc"). Handed out in open order from 0 and never reused in
+/// one engine run, so a late message about a closed doc can never be taken for another's. A
+/// connection binds to one with `hello { workspace }`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DocId(pub u64);
+
+impl std::fmt::Display for DocId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {

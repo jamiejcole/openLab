@@ -1457,19 +1457,22 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
     let mut s = device_show(workspace(vec![]));
     lose(&mut s);
     let id = s.request_id();
-    let replies = s.send(ClientMessage::Request {
+    s.send(ClientMessage::Request {
         id,
-        request: Request::New {
-            discard_changes: false,
-        },
+        request: Request::New {},
     });
-    let new_ws = replies
-        .iter()
-        .find_map(|m| match m {
-            ServerMessage::Snapshot { snapshot } => Some(snapshot.workspace.clone()),
-            _ => None,
-        })
-        .expect("no snapshot");
+    // Another doc opens beside the first (M4.15f), built on the document worker.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while s.control().doc_ids().len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the new doc was not installed"
+        );
+        s.tick();
+        std::thread::yield_now();
+    }
+    let docs = s.control().doc_ids();
+    let new_ws = s.control().doc(docs[1]).unwrap().workspace().clone();
     let patch = new_ws.patches[0].id;
     // No device to map to: the patch stays unmapped, nothing is guessed.
     assert_eq!(s.control().machine().patch_mapping(new_ws.id, patch), None);

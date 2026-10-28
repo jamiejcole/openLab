@@ -291,7 +291,7 @@ fn the_runner_answers_and_shuts_down() {
     // The playhead report of the GO went out.
     assert!(
         std::iter::from_fn(|| out.try_recv().ok())
-            .any(|m| matches!(m, ServerMessage::Runtime { .. }))
+            .any(|m| matches!(m.message, ServerMessage::Runtime { .. }))
     );
 }
 

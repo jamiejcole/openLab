@@ -2,5 +2,5 @@
   "type": "error",
   "code": "bad_show_file",
   "message": "message",
-  "protocol_version": 1
+  "protocol_version": 2
 }

@@ -260,19 +260,27 @@ fn saving_and_opening_are_logged_as_document_events() {
     let (mut c, _) = timed(&ws);
     c.app_dirs = Some(e.dirs.clone());
     let mut s = show_with(ws, c);
-    for request in [
-        Request::SaveAs {
-            path: path.to_string_lossy().into_owned(),
-        },
-        Request::Open {
-            path: path.to_string_lossy().into_owned(),
-            discard_changes: false,
-            recovery: None,
-        },
-    ] {
-        let id = s.request_id();
-        s.send(ClientMessage::Request { id, request });
-    }
+    // Saved, closed (an open show is `already_open`), opened again.
+    let save_as = Request::SaveAs {
+        path: path.to_string_lossy().into_owned(),
+    };
+    let id = s.request_id();
+    s.send(ClientMessage::Request {
+        id,
+        request: save_as,
+    });
+    let id = s.request_id();
+    s.send(ClientMessage::Close {
+        id,
+        doc: None,
+        discard_changes: false,
+    });
+    let open = Request::Open {
+        path: path.to_string_lossy().into_owned(),
+        recovery: None,
+    };
+    let id = s.request_id();
+    s.send(ClientMessage::Request { id, request: open });
     let log = events(&mut s);
     let docs: Vec<&str> = log
         .iter()
@@ -283,6 +291,7 @@ fn saving_and_opening_are_logged_as_document_events() {
         docs,
         [
             format!("saved {}", path.display()),
+            format!("workspace closed: {}", path.display()),
             format!("workspace opened: {}", path.display())
         ]
     );

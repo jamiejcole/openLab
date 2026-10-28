@@ -1,0 +1,12 @@
+{
+  "type": "hotkey",
+  "id": 74,
+  "key": "f5",
+  "modifiers": {
+    "shift": true,
+    "control": false,
+    "alt": false,
+    "command": true
+  },
+  "phase": "up"
+}

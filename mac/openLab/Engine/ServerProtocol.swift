@@ -8,7 +8,8 @@ import Foundation
 
 /// `MAX_SERVER_FRAME_BYTES`: the largest frame the engine sends (a whole snapshot).
 let maxServerFrameBytes = 32 * 1024 * 1024
-let protocolVersion: UInt32 = 1
+/// 2: connections bind to one of several open workspaces (M4.15f).
+let protocolVersion: UInt32 = 2
 
 /// A tagged object the UI shows but does not branch on yet (warnings, problems, resolutions).
 /// Kept as data so a new variant is displayed, not fatal.

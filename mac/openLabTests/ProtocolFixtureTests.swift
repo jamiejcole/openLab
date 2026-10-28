@@ -22,7 +22,10 @@ final class ProtocolFixtureTests: XCTestCase {
         case .warnings: return "warnings"
         case .result: return "result"
         case .error: return "error"
-        case .provisional, .unknown(_): return "?"
+        case .provisional(.appWelcome): return "welcome"
+        case .provisional(.workspaces): return "workspaces"
+        case .provisional(.closed): return "closed"
+        case .unknown(_): return "?"
         }
     }
 
@@ -58,7 +61,7 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .welcome(let v, let snap) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")
         }
-        XCTAssertEqual(v, 1)
+        XCTAssertEqual(v, 2)
         XCTAssertEqual(snap.revision, 7)
         XCTAssertEqual(snap.runtimeSeq, 42)
         XCTAssertEqual(snap.workspace.name, "Test")
@@ -118,21 +121,30 @@ final class ProtocolFixtureTests: XCTestCase {
     func testHelloOmitsWorkspaceWhenNilAndSendsItWhenBound() throws {
         let plain = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c")).text()
         XCTAssertFalse(plain.contains("workspace"))
-        let bound = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", workspace: "doc-1"))
+        let bound = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", workspace: "1"))
             .text()
-        XCTAssertEqual(JSONValue.parse(bound)?["workspace"]?.stringValue, "doc-1")
+        XCTAssertEqual(JSONValue.parse(bound)?["workspace"], .int(1), "a doc id is a number on the wire")
+        // A store key that is not a doc id is never sent as one.
+        XCTAssertThrowsError(
+            try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", workspace: "default")).text()
+        )
     }
 
     func testProvisionalMessagesDecode() throws {
         let app = try ServerMessage.decode(
-            #"{"type":"welcome","protocol_version":1,"workspaces":[{"doc":"d1","workspace_id":"w","name":"A","path":null,"dirty":false}]}"#
+            #"{"type":"welcome","protocol_version":2,"workspaces":[{"doc":4,"workspace_id":"w","name":"A","path":null,"dirty":false}]}"#
         )
         guard case .provisional(.appWelcome(_, let list)) = app else { return XCTFail() }
-        XCTAssertEqual(list.first?.doc, "d1")
-        let closed = try ServerMessage.decode(#"{"type":"closed","doc":"d1"}"#)
+        XCTAssertEqual(list.first?.doc, "4")
+        let closed = try ServerMessage.decode(#"{"type":"closed","doc":4}"#)
         guard case .provisional(.closed(let d)) = closed else { return XCTFail() }
-        XCTAssertEqual(d, "d1")
-        let close = ClientMessage.provisional(.close(id: 5, doc: "d1", discardChanges: true))
+        XCTAssertEqual(d, "4")
+        // A doc id is a number: a string one is not a protocol 2 message.
+        XCTAssertThrowsError(try ServerMessage.decode(#"{"type":"closed","doc":"4"}"#))
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_ok_opened"))
+        else { return XCTFail("opened") }
+        XCTAssertEqual(ok.data?.openedDoc, "4")
+        let close = ClientMessage.provisional(.close(id: 5, doc: "4", discardChanges: true))
         let again = try JSONDecoder().decode(ClientMessage.self, from: Data(try close.text().utf8))
         XCTAssertEqual(again, close)
     }

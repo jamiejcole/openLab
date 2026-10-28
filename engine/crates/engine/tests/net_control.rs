@@ -59,6 +59,7 @@ async fn commands_and_transport_over_the_wire() {
             protocol_version: PROTOCOL_VERSION,
             token: server.token().to_owned(),
             client_name: "test".into(),
+            workspace: Some(openlab_core::protocol::DocId(0)),
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await
@@ -71,7 +72,10 @@ async fn commands_and_transport_over_the_wire() {
             }
         };
         let revision = match next(&mut c).await {
-            Some(ServerMessage::Welcome { snapshot, .. }) => {
+            Some(ServerMessage::Welcome {
+                snapshot: Some(snapshot),
+                ..
+            }) => {
                 assert_eq!(snapshot.workspace, ws);
                 snapshot.revision
             }
