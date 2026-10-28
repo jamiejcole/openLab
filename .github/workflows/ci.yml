@@ -27,6 +27,7 @@ jobs:
     outputs:
       engine: ${{ steps.diff.outputs.engine }}
       mac: ${{ steps.diff.outputs.mac }}
+      bundle: ${{ steps.diff.outputs.bundle }}
       intel: ${{ steps.diff.outputs.intel }}
     steps:
       - uses: actions/checkout@v7
@@ -46,6 +47,7 @@ jobs:
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "engine=true" >> "$GITHUB_OUTPUT"
             echo "mac=true" >> "$GITHUB_OUTPUT"
+            echo "bundle=true" >> "$GITHUB_OUTPUT"
             echo "intel=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -54,7 +56,14 @@ jobs:
           # A CI or Makefile change re-runs everything.
           if printf '%s\n' "$files" | grep -qE '^(\.github/|Makefile$)'; then all=true; else all=false; fi
           if [ "$all" = true ] || printf '%s\n' "$files" | grep -q '^engine/'; then echo "engine=true"; else echo "engine=false"; fi >> "$GITHUB_OUTPUT"
-          if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^(mac|engine)/'; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+          # On main every engine change rebuilds the app. On a PR the app job runs only for what the app
+          # reads from the engine: the protocol and show file (Swift Codable types, fixtures), the engine's
+          # command line and engine.json (host/), and the bundled build. The app's tests use FakeEngine; once
+          # XCUITests drive a real engine (M5.16), widen this to every engine change.
+          if [ "$EVENT" = pull_request ]; then mac_re='^(mac/|engine/fixtures/protocol/|engine/crates/core/src/(protocol|show_file)|engine/crates/engine/src/(main\.rs|host/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$|docs/(protocol|file-format)\.md$)'; else mac_re='^(mac|engine)/'; fi
+          if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE "$mac_re"; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+          # The Release universal build and bundle check: on main always, on a PR only when the build changes.
+          if [ "$EVENT" != pull_request ] || [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^(mac/(project\.yml|scripts/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'; then echo "bundle=true"; else echo "bundle=false"; fi >> "$GITHUB_OUTPUT"
           # Perf-sensitive code also runs on the Intel runner (closest to the 2014 Mac mini target).
           if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/src/control/(watch|watch_share|media|voices)\.rs$)'; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
 
@@ -82,6 +91,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine
+          # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
@@ -147,6 +158,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine/fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-fuzz --locked
       - run: make fuzz FUZZ_TIME=60 FUZZ_TOOLCHAIN="$FUZZ_TOOLCHAIN"
       - uses: actions/upload-artifact@v4
@@ -181,10 +193,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine
+          # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
       - run: make test-mac
       - run: make mac
+        if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle
+        if: needs.changes.outputs.bundle == 'true'
 
   # The one check branch protection requires: green when every job that ran passed.
   result:

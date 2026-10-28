@@ -11,7 +11,7 @@ use openlab_core::protocol::{
     DeviceState, DeviceStatus, LogEntry, LogKind, LogLevel, RuntimeChange, ServerMessage,
     TransportAction, WireCueState,
 };
-use openlab_core::{CueId, CueListId};
+use openlab_core::{CueId, CueListId, CueState};
 
 use super::{Control, ControlConfig, DocCx, DocId, Engine};
 use crate::diag::{Counters, Peek, StatusReporter};
@@ -403,6 +403,24 @@ impl DocCx<'_> {
             },
             None => format!("cue {id}"),
         }
+    }
+
+    /// What a client is told when an undo or redo is refused because it would stop `cue`
+    /// (M5.10d). Read before anything changed, so the cue is still there to name.
+    pub(super) fn active_cue_refusal(&self, cue: CueId, undo: bool) -> String {
+        let step = if undo { "undo" } else { "redo" };
+        let doing = match self.doc.engine.state(cue) {
+            CueState::PreWaiting => "pre-waiting",
+            CueState::Running => "running",
+            CueState::Paused => "paused",
+            CueState::PostWaiting => "post-waiting",
+            CueState::Fading => "fading",
+            CueState::Stopping => "stopping",
+            // Only a preview keeps a cue in any other state from being changed this way.
+            CueState::Idle | CueState::Loaded | CueState::Broken => "being previewed",
+        };
+        let label = self.cue_label(cue);
+        format!("Can't {step}: {label} is {doing}. Stop it, then {step} again.")
     }
 
     /// A transport action is about to be carried out: GO with the cue it starts, anything else
