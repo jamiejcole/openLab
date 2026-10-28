@@ -149,6 +149,28 @@ final class FakeEngine: EngineTransport {
         held = []
     }
 
+    /// Sends a `media_duration` runtime change for `cue` (M5.4d; all nil: not known now) and keeps
+    /// it in the doc's snapshot, as the engine does when a probe answers or a file goes missing.
+    func pushMediaDuration(
+        _ cue: ModelID, file: Double?, trimmed: Double?, duration: Double?, doc: ModelID = ModelID(doc: 1)
+    ) {
+        guard var s = docs[doc], case .int(let q)? = s["runtime_seq"] else { return }
+        var fields: [String: JSONValue] = ["cue": .string(cue.raw)]
+        if let file { fields["file"] = .double(file) }
+        if let trimmed { fields["trimmed"] = .double(trimmed) }
+        if let duration { fields["duration"] = .double(duration) }
+        var list = (s["media_durations"]?.arrayValue ?? []).filter { $0["cue"]?.stringValue != cue.raw }
+        if fields.count > 1 { list.append(.object(fields)) }
+        s.set("media_durations", .array(list))
+        s.set("runtime_seq", .int(q + 1))
+        docs[doc] = s
+        fields["type"] = .string("media_duration")
+        let message = JSONValue.object([
+            "type": .string("runtime"), "seq": .int(q + 1), "changes": .array([.object(fields)]),
+        ])
+        push(text(message), doc: doc)
+    }
+
     func releaseResults(reversed: Bool = false) {
         let all = reversed ? held.reversed() : held
         held = []

@@ -71,6 +71,50 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
     }
 
+    /// M5.4d: the snapshot's `media_durations` and the `media_duration` runtime change.
+    func testMediaDurationsDecode() throws {
+        guard case .snapshot(let snap) = try ServerMessage.decode(try Fixtures.text("server", "snapshot")) else {
+            return XCTFail("snapshot")
+        }
+        XCTAssertEqual(
+            snap.mediaDurations,
+            [CueMediaDuration(cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60, duration: 120)])
+        guard
+            case .runtime(let seq, let changes) = try ServerMessage.decode(
+                try Fixtures.text("server", "runtime_media_duration"))
+        else { return XCTFail("runtime") }
+        XCTAssertEqual(seq, 44)
+        let decoded: [CueMediaDuration] = changes.compactMap {
+            if case .mediaDuration(let d) = $0 { return d }
+            return nil
+        }
+        XCTAssertEqual(
+            decoded,
+            [
+                CueMediaDuration(
+                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60.25, duration: nil),
+                CueMediaDuration(cue: "00000000-0000-0000-0000-00000000000b", file: nil, trimmed: nil, duration: nil),
+            ])
+        // A snapshot without the field (none known) still decodes.
+        var bare = try Fixtures.json("server", "snapshot")
+        bare["snapshot"]?["media_durations"] = nil
+        guard case .snapshot(let old) = try ServerMessage.decode(try bare.text()) else { return XCTFail("bare") }
+        XCTAssertNil(old.mediaDurations)
+    }
+
+    /// The fake engine sends a `media_duration` change in sequence, which the store applies.
+    @MainActor
+    func testFakeEnginePushesMediaDurationsInSequence() async throws {
+        let rig = try Rig()
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let seq = rig.store.runtimeSeq
+        let cue: ModelID = "00000000-0000-0000-0000-00000000000a"
+        rig.engine.pushMediaDuration(cue, file: nil, trimmed: nil, duration: nil, doc: rig.engine.docs.keys.first!)
+        await assertEventually { rig.store.runtimeSeq == seq + 1 }
+        XCTAssertEqual(rig.engine.docs.values.first?["media_durations"]?.arrayValue?.count, 0)
+    }
+
     func testDecodedValuesAreRight() throws {
         guard case .welcome(let v, let snap) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")

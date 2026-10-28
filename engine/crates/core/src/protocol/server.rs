@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::wire::{
-    RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireResolution, WireWarning,
+    CueMediaDuration, RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireResolution,
+    WireWarning,
 };
 use super::{
     DocId, MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode,
@@ -612,6 +613,10 @@ pub struct Snapshot {
     pub previewing: Vec<CueId>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
+    /// The media lengths of the audio cues whose file is probed and playable, by cue id
+    /// (M5.4d); later changes come as `media_duration` runtime changes. Absent: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_durations: Vec<CueMediaDuration>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

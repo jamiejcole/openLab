@@ -46,6 +46,8 @@ enum RuntimeChange: Sendable, Decodable {
     case playhead(list: ModelID, cue: ModelID?)
     case preview(cue: ModelID, active: Bool)
     case warning(WireWarning)
+    /// Every field nil: the cue's lengths are not known now (drop what is held).
+    case mediaDuration(CueMediaDuration)
     case unknown(String)
 
     init(from decoder: Decoder) throws {
@@ -71,6 +73,8 @@ enum RuntimeChange: Sendable, Decodable {
                 cue: try c.decode(ModelID.self, forKey: "cue"), active: try c.decode(Bool.self, forKey: "active"))
         case "warning":
             self = .warning(try c.decode(WireWarning.self, forKey: "warning"))
+        case "media_duration":
+            self = .mediaDuration(try CueMediaDuration(from: decoder))
         case let other:
             self = .unknown(other)
         }
@@ -104,11 +108,14 @@ struct Snapshot: Sendable, Decodable {
     var playheads: [PlayheadEntry]
     var previewing: [ModelID]
     var warnings: [WireWarning]
+    /// Absent (none known): nil.
+    var mediaDurations: [CueMediaDuration]?
     enum CodingKeys: String, CodingKey {
         case revision, document, workspace, problems, playheads, previewing, warnings
         case runtimeSeq = "runtime_seq"
         case cueStates = "cue_states"
         case groupWarnings = "group_warnings"
+        case mediaDurations = "media_durations"
     }
 }
 
