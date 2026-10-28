@@ -77,11 +77,16 @@ final class EngineSessionTests: XCTestCase {
     }
 
     func testStoresAreInOpenOrderNotDocIdStringOrder() async throws {
-        let (s, _) = try await started()
+        let (s, engine) = try await started()
         for _ in 0..<10 { _ = await s.newWorkspace() }
         await assertEventually { s.stores.count == 11 }
         XCTAssertEqual(s.order.map(\.raw), (1...11).map(String.init), "\"10\" comes after \"9\"")
         XCTAssertEqual(s.orderedStores.map(\.doc), s.order)
+        // A list naming a doc twice (a broken peer) still gives one store and one place.
+        let one = #"{"doc":3,"workspace_id":"w","name":"x","path":null,"dirty":false}"#
+        engine.push(#"{"type":"workspaces","workspaces":[\#(one),\#(one)]}"#, doc: nil)
+        await assertEventually { s.order == ["3"] }
+        XCTAssertEqual(s.stores.count, 1)
     }
 
     func testOpeningAnOpenPathIsAlreadyOpen() async throws {

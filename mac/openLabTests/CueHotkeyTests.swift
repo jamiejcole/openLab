@@ -404,9 +404,11 @@ final class CueHotkeyFiringTests: XCTestCase {
     func testHeldKeyFiresOnce() async throws {
         XCTAssertNil(app.handleKeyDown(try event("x")))
         XCTAssertNil(app.handleKeyDown(try event("x", repeats: true)), "still ours, nothing sent")
-        XCTAssertNil(app.handleKeyDown(try event("x")), "a second down before the up: still held")
         await settle()
         XCTAssertEqual(downs, 1)
+        // A fresh press with no key-up seen (lost while a modal ran) still fires.
+        XCTAssertNil(app.handleKeyDown(try event("x")))
+        await assertEventually { self.downs == 2 }
     }
 
     func testKeyUpSendsTheUpOnce() async throws {

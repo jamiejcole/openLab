@@ -169,6 +169,19 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(processes.spawns, 1)
     }
 
+    func testAnEngineThatAnswersWithAnErrorAtLaunchIsNotEnded() async throws {
+        processes.info = .success(engine.info)
+        processes.alive = [engine.pid]
+        engine.refuseAuth = .internal  // it answers, with a refusal
+        supervisor.start()
+        for _ in 0..<10 {
+            await scheduler.fire()
+            for _ in 0..<20 { await Task.yield() }
+        }
+        XCTAssertTrue(processes.signals.isEmpty, "only silence ends an engine")
+        XCTAssertEqual(processes.spawns, 0)
+    }
+
     func testAnEngineThisRunTalkedToIsNeverSignalled() async throws {
         processes.info = .success(engine.info)
         processes.alive = [engine.pid]

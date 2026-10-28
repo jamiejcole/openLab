@@ -202,7 +202,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             for info in list where stores[info.doc] == nil { makeStore(info.doc) }
         }
         for doc in stores.keys where !list.contains(where: { $0.doc == doc }) { dropStore(doc) }
-        let listed = list.map(\.doc).filter { stores[$0] != nil }
+        var seen = Set<ModelID>()
+        let listed = list.map(\.doc).filter { stores[$0] != nil && seen.insert($0).inserted }
         order = listed + order.filter { !listed.contains($0) && stores[$0] != nil }
         storesChanged.send()
     }

@@ -229,7 +229,8 @@ final class AppController {
             cueHotkeys(for: entry.store).contains { $0.chord == chord }
         }
         guard matched, let hotkey = chord.hotkeyJSON, let key = hotkey["key"]?.stringValue else { return false }
-        if event.isARepeat || heldHotkeys[event.keyCode] != nil { return true }
+        // A repeat is the held key; a fresh press always fires (a lost key-up must not mute the key).
+        if event.isARepeat { return true }
         heldHotkeys[event.keyCode] = hotkey
         Task { await sendHotkey(key: key, modifiers: Self.modifiers(of: hotkey), up: false) }
         return true

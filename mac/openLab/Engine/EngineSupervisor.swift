@@ -123,7 +123,13 @@ final class EngineSupervisor {
         guard everConnected, let run = lastRun else {
             // Launch: nothing is bound yet.
             if let live = filed {
-                if live.pid == spawned || failure == .engineNotAvailable { return }  // still starting
+                if live.pid == spawned { return }  // still starting
+                // Only silence counts (refused, dropped, no welcome): an engine that answers with
+                // an error is talking, and is never ended for it.
+                switch failure {
+                case .transport, .lost: break
+                default: return
+                }
                 silentAttempts += 1
                 if silentAttempts >= probeAttempts, !handled.contains(live.pid) {
                     Task { await terminateThenSpawn(live.pid) }

@@ -41,8 +41,8 @@ QLab 5's Basics tab has controls the model has no field for; the inspector omits
 Done on the engine side (M4.15f): the app-scope `hotkey { id, key, modifiers, phase: "down" | "up" }`
 (docs/protocol.md section 3), sendable on any connection, matches every doc's cue hotkeys (a doc whose
 transport keys use the key starts nothing) and sends the release to the same cues. The Swift codec has it
-(`ProvisionalClientMessage.hotkey`), but the app still does the fan-out itself (per-workspace
-`transport: start` / `trigger_released`): M5 should switch to the message, so the engine owns the matching.
+(`ClientMessage.hotkey`). **Done in the app (M5.19a)**: a key that is a cue hotkey of any open workspace
+goes out as one `hotkey` on the app connection (its `up` on key release); the engine does the matching.
 
 Also: the app refuses (at record time) a cue hotkey that equals a transport key, a menu key or another
 cue's hotkey; the engine's `SetCueProperty::Triggers` accepts any of them, so a second client can still
@@ -82,7 +82,10 @@ binds a connection to a doc, the app connection gets `welcome { workspaces }` an
 connections, `already_open`, the app-scope `panic` and `hotkey`, `set_output_overrides` on any connection.
 The app's minimal changes (M4.15f) make it work against this engine: protocol version 2, doc ids are JSON
 numbers (kept as a `ModelID` of their digits: `ModelID(doc:)`, `docNumber`), no `discard_changes` on
-new/open and no `revert`. What the app (M5) must still do:
+new/open and no `revert`. **Items 1 to 8 are done in the app (M5.19a, M5.2)**: the messages live in
+`ClientProtocol.swift` / `ServerProtocol.swift`, windows follow the `workspaces` order, Esc sends `panic`,
+a store's own `closed` drops its window and stops its client, and a new engine run (another token in
+`engine.json`) rebinds every window by reopening its show (`EngineSession`, "reattach"). What was asked:
 
 1. **Rename the provisional layer**: `ProvisionalProtocol.swift` and the `.provisional` cases are the real
    messages now; fold them into `ClientProtocol.swift` / `ServerProtocol.swift`.
@@ -106,7 +109,8 @@ new/open and no `revert`. What the app (M5) must still do:
 
 ## Engine lifecycle (M4.9 engine side landed; M5.2)
 
-docs/control.md "Process lifecycle" has the whole contract. What the app must do:
+docs/control.md "Process lifecycle" has the whole contract, and its "The app (M5.2)" bullet says what
+the app does (done: `EngineSupervisor`, `EngineProcesses`, `EngineAlarmController`). What was asked:
 
 1. **Find or start the engine**: read `<app-support>/openLab/engine.json` (`{pid, port, token, version,
    protocol_version, started_ms}`, mode 0600; `EngineConnectionInfo` reads `port`, `token`, `pid`). Connect;
