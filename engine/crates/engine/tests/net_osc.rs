@@ -2527,3 +2527,42 @@ async fn opening_another_workspace_forgets_the_known_addresses() {
     f.udp_send(&msg("/connect", vec![text("4444")])).await;
     assert_eq!(status(&f.udp_recv().await), "denied");
 }
+
+/// M4.15h, issue #152: a doc's `closed` drops its copy at once, so reads are not answered from a
+/// show that is no longer open; a list from the tap that leaves a doc out (it may be older than
+/// what the actor knows) does not drop it.
+#[tokio::test]
+async fn a_closed_doc_is_not_answered_from_and_a_list_never_drops_a_doc() {
+    let f = fixture(test_workspace()).await;
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    // An empty list on the tap: the doc stays.
+    f.out
+        .0
+        .send(Outgoing::all(ServerMessage::Workspaces {
+            workspaces: vec![],
+        }))
+        .await
+        .unwrap();
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Opening");
+    // Its `closed`: gone, and with no doc open the read is an error naming no workspace.
+    f.out
+        .send(ServerMessage::Closed { doc: DOC })
+        .await
+        .unwrap();
+    guard("the copy to go", async {
+        loop {
+            f.udp_send(&msg("/cue/1/name", vec![])).await;
+            let reply = body(&f.udp_recv().await);
+            if reply["status"] == "error" {
+                assert_eq!(
+                    reply,
+                    serde_json::json!({"status": "error", "address": "/cue/1/name"})
+                );
+                return;
+            }
+        }
+    })
+    .await;
+}
