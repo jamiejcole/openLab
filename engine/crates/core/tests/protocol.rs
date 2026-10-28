@@ -103,6 +103,12 @@ fn snapshot() -> Snapshot {
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
         }],
+        media_durations: vec![CueMediaDuration {
+            cue: cue_id(10),
+            file: Some(62.5),
+            trimmed: Some(60.0),
+            duration: Some(120.0),
+        }],
     }
 }
 
@@ -623,6 +629,28 @@ fn fixtures() -> Vec<(String, Sample)> {
                         state: WireCueState::Running,
                     },
                 },
+            ],
+        }),
+    );
+    // M5.4d: a probed cue whose last slice loops for ever (no `duration`), and a cue whose file
+    // went missing (every field absent: not known).
+    add(
+        "runtime_media_duration",
+        server(ServerMessage::Runtime {
+            seq: 44,
+            changes: vec![
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(10),
+                    file: Some(62.5),
+                    trimmed: Some(60.25),
+                    duration: None,
+                }),
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(11),
+                    file: None,
+                    trimmed: None,
+                    duration: None,
+                }),
             ],
         }),
     );
@@ -3357,4 +3385,20 @@ proptest! {
         }
         let _ = decode_client(&wire[..end]);
     }
+}
+
+#[test]
+fn a_snapshot_without_media_durations_reads_as_none_known() {
+    // M5.4d: the field is optional, so a snapshot with none known leaves it out and decodes.
+    let mut snap = snapshot();
+    snap.media_durations.clear();
+    let text = encode_server(&ServerMessage::Snapshot {
+        snapshot: Box::new(snap),
+    })
+    .unwrap();
+    assert!(!text.contains("media_durations"));
+    let ServerMessage::Snapshot { snapshot } = decode_server(&text).unwrap() else {
+        panic!("not a snapshot");
+    };
+    assert!(snapshot.media_durations.is_empty());
 }

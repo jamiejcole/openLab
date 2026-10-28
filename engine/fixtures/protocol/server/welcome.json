@@ -255,6 +255,14 @@
         "message": "intro.wav has a damaged tail",
         "cue": "00000000-0000-0000-0000-00000000000a"
       }
+    ],
+    "media_durations": [
+      {
+        "cue": "00000000-0000-0000-0000-00000000000a",
+        "file": 62.5,
+        "trimmed": 60.0,
+        "duration": 120.0
+      }
     ]
   }
 }

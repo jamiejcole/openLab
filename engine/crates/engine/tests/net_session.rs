@@ -522,8 +522,14 @@ fn session_workspace() -> Workspace {
     ])
 }
 
-/// What a client folded must be what the engine says.
-fn assert_consistent(ws: &Ws, engine: &Snapshot) {
+/// What a client folded must be what the engine says, once the client has read up to the
+/// snapshot: runtime changes a control-loop tick makes (`media_duration`, M5.4d) are not held
+/// behind a command's result, so the snapshot can be ahead of what the client has read.
+async fn assert_consistent(ws: &mut Ws, engine: &Snapshot) {
+    ws.wait("the engine's revision and runtime seq", |c| {
+        c.revision >= engine.revision && c.seq >= engine.runtime_seq
+    })
+    .await;
     let engine_states: HashMap<CueId, WireCueState> =
         engine.cue_states.iter().map(|e| (e.cue, e.state)).collect();
     assert_eq!(ws.states, engine_states);
@@ -636,7 +642,7 @@ async fn a_full_show_session_over_the_websocket() {
 
     // What the client folded is what the engine holds, and what a snapshot request returns.
     let engine = show.engine_snapshot().await;
-    assert_consistent(&c, &engine);
+    assert_consistent(&mut c, &engine).await;
     assert_eq!(engine.workspace.cue_lists[0].cues.len(), 4);
     assert_eq!(engine.workspace.cue_lists[0].cues[2].name, "Interval");
     let before = (c.states.clone(), c.playhead, c.revision, c.seq);
@@ -721,9 +727,7 @@ async fn a_full_show_session_over_the_websocket() {
     };
     assert!(matches!(app.call(3, close).await, Outcome::Ok(_)));
     let engine = show.engine_snapshot().await;
-    c.wait("the engine's state", |c| c.revision == engine.revision)
-        .await;
-    assert_consistent(&c, &engine);
+    assert_consistent(&mut c, &engine).await;
 
     // goodbye { shutdown } ends the control loop.
     c.c.send(Message::text(
@@ -984,7 +988,7 @@ async fn an_undo_that_would_stop_a_playing_cue_is_refused_over_the_websocket() {
     assert_eq!(c.revision, revision + 1);
     let engine = show.engine_snapshot().await;
     assert!(engine.workspace.find_cue(id(4)).is_none());
-    assert_consistent(&c, &engine);
+    assert_consistent(&mut c, &engine).await;
     show.finish();
 }
 
@@ -1123,8 +1127,8 @@ async fn websocket_and_osc_clients_see_one_consistent_show() {
 
     // Final state: equal everywhere.
     let engine = show.engine_snapshot().await;
-    assert_consistent(&a, &engine);
-    assert_consistent(&b, &engine);
+    assert_consistent(&mut a, &engine).await;
+    assert_consistent(&mut b, &engine).await;
     for osc in [&mut udp, &mut tcp] {
         for (n, cue) in engine.workspace.cue_lists[0].cues.iter().enumerate() {
             assert_eq!(osc.name_of(n as u128 + 1).await, cue.name);
