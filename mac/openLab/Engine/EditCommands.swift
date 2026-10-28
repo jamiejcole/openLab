@@ -25,6 +25,9 @@ enum CueProperty: Hashable, Sendable {
     case destination(ModelID)
     case address(String)
     case args([JSONValue])
+    /// Group cues only: core's `GroupMode` (`type`: timeline, start_first_and_enter,
+    /// start_first_and_go_to_next, playlist, start_random; `loop`/`shuffle` for a playlist only).
+    case groupMode(type: String, loop: Bool, shuffle: Bool)
 
     var json: JSONValue {
         func p(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
@@ -46,6 +49,13 @@ enum CueProperty: Hashable, Sendable {
         case .destination(let v): return p("destination", .string(v.raw))
         case .address(let v): return p("address", .string(v))
         case .args(let v): return p("args", .array(v))
+        case .groupMode(let type, let loop, let shuffle):
+            var mode: [String: JSONValue] = ["type": .string(type)]
+            if type == "playlist" {
+                mode["loop"] = .bool(loop)
+                mode["shuffle"] = .bool(shuffle)
+            }
+            return p("group_mode", .object(mode))
         }
     }
 }
