@@ -94,7 +94,11 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
 Named `YYYYMMDD-HHMMSS-mmm.openlab` in UTC, so names sort in time order
 (`backup_file_name`/`parse_backup_name`). `select_backups_to_delete(names, keep)` keeps the `keep`
 newest. Files whose names are not in that form are never deleted. Two saves in the same millisecond get
-consecutive names. Order is always the time in the file name, never the file's modification time, so a
+consecutive names. **A backup never replaces a file**: it is written and synced under a temp name, then
+put in place with `rename_no_replace` (a hard link, which fails on an existing name, then the temp name
+removed; on a file system without hard links, a check then a rename), trying the next millisecond's name
+when one is taken, up to 1000; every name taken is a failed backup (the save warns and goes on). Stale
+recovery files are moved aside the same way (up to 100 names; all taken leaves the file in place). Order is always the time in the file name, never the file's modification time, so a
 clock stepped backwards cannot make the newest backup rotate out first. Rotation also removes backup temp
 files (`<backup name>.<pid>-<n>.tmp`) left by a crash, provided the backup name is not newer than the
 newest finished backup (a newer one may be an instance still writing). `keep` is `MachineSettings::backup_keep` (default 20, at most 1000); 0 turns backups
