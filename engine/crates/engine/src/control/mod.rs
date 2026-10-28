@@ -1001,6 +1001,7 @@ impl Control {
         self.probe_watchdog();
         self.hand_out_freed_slots();
         self.eng.check_stalled_read();
+        self.eng.check_stalled_save();
         self.eng.poll_clears();
         self.poll_orphan_saves();
         self.eng.resend_closed();

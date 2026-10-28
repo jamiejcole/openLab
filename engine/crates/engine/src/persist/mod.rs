@@ -15,6 +15,7 @@ mod recovery_scan;
 mod relink;
 mod save;
 mod settings;
+mod threads;
 mod writer;
 
 use std::io;
@@ -39,7 +40,7 @@ pub use save::{SaveReport, save_workspace, save_workspace_with};
 pub use settings::{
     SettingsWriter, load_machine_settings, load_machine_settings_checked, save_machine_settings,
 };
-pub use writer::{JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, SaveWriter};
+pub use writer::{JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS, SaveWriter};
 
 /// `<app-support>/openLab`, and where the logs and crash reports go.
 #[derive(Clone, Debug)]
@@ -163,6 +164,12 @@ pub enum PersistError {
     },
     #[error("the save thread has stopped")]
     WriterGone,
+    /// A write did not finish within the stall timeout (`SaveWriter::check_stalled`), or one
+    /// of the same show still has not: its volume may have stopped answering.
+    #[error(
+        "a write of this show did not finish within {secs} s; its volume may have stopped answering"
+    )]
+    Stalled { secs: u64 },
     /// A save would write a show file another open workspace has (M4.15f): refused, nothing
     /// written.
     #[error("{} is open in another workspace", .0.display())]

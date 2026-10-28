@@ -1761,3 +1761,52 @@ fn opening_a_show_a_save_as_is_writing_is_already_open() {
     ));
     assert_eq!(r.s.control().doc_ids().len(), 1);
 }
+
+/// A save stuck on a volume that stopped answering is answered `io` after the document
+/// timeout, on the engine's clock, instead of leaving the operator (and every later save)
+/// waiting.
+#[test]
+fn a_stalled_save_is_answered_io_after_the_document_timeout() {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release = Mutex::new(release);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let mut r = rig_tweak(memo_ws("one", &[1]), |c| {
+        c.save_hook = Some(hook);
+        c.doc_timeout = std::time::Duration::from_secs(20);
+    });
+    let _unblock = Unblock(release_tx);
+    let (tx, mut rx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(1),
+            request: Request::SaveAs {
+                path: r.env.show_path().to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    entered.recv().unwrap();
+    r.s.tick();
+    r.clock.advance(19_999);
+    r.s.tick();
+    r.s.tick();
+    assert!(rx.try_recv().is_err(), "still waiting short of the timeout");
+    r.clock.advance(1);
+    r.s.tick();
+    r.s.tick();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Error(ref e),
+            ..
+        } if e.code == ErrorCode::Io && e.message.contains("did not finish within 20 s")
+    ));
+}

@@ -372,3 +372,56 @@ fn unsaved_changes_with_nowhere_to_write_are_logged_at_shutdown() {
         "{errors:?}"
     );
 }
+
+/// One show's save stuck on a slow volume at shutdown does not hold up the other show's final
+/// recovery write: it runs beside it, on a spare writer thread. (The hook lets the stuck save
+/// go only once the other show's write has started, so without the spare both would miss the
+/// shutdown wait.)
+#[test]
+fn a_slow_save_of_one_show_does_not_hold_up_another_shows_final_write() {
+    let env = env();
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release, gate) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release = Mutex::new(release);
+    let gate = Mutex::new(gate);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| match kind {
+        JobKind::Save => {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(60));
+        }
+        JobKind::Autosave => {
+            let _ = release.lock().unwrap().send(());
+        }
+    }));
+    let (mut s, _clock) = launch(&env, |c| {
+        c.save_hook = Some(hook);
+        c.shutdown_wait = Duration::from_secs(25);
+    });
+    let slow = opened(&app_request(&mut s, Request::New {}));
+    let other = opened(&app_request(&mut s, Request::New {}));
+    for (doc, name) in [(slow, "Slow"), (other, "Other")] {
+        edit(&mut s, doc, Command::RenameWorkspace { name: name.into() });
+    }
+    // Not `send_doc`: it would wait for the save.
+    let (tx, _rx) = openlab_engine::control::reply_channel();
+    let id = s.request_id();
+    s.deliver(openlab_engine::control::Inbox::Conn {
+        doc: Some(slow),
+        message: ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: env.show_path().to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    entered.recv().unwrap();
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            written: 2,
+            ..FinalWrites::default()
+        }
+    );
+}

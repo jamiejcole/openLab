@@ -810,7 +810,9 @@ fn fail(to: &ReplyTx, id: RequestId, code: ErrorCode, message: impl Into<String>
 
 fn persist_code(e: &PersistError) -> ErrorCode {
     match e {
-        PersistError::Io { .. } | PersistError::WriterGone => ErrorCode::Io,
+        PersistError::Io { .. } | PersistError::WriterGone | PersistError::Stalled { .. } => {
+            ErrorCode::Io
+        }
         PersistError::OpenElsewhere(_) => ErrorCode::AlreadyOpen,
         _ => ErrorCode::Internal,
     }
@@ -1386,6 +1388,20 @@ impl Engine {
             LogLevel::Error,
             "a document read stalled; its worker was abandoned".to_owned(),
         );
+    }
+
+    /// A save or autosave that has not finished within the document timeout (a volume that
+    /// stopped answering) is answered `io` and its writer thread abandoned, so the other
+    /// shows go on saving (`SaveWriter::check_stalled`).
+    pub(super) fn check_stalled_save(&mut self) {
+        let now_ms = self.config.clock.now_ms();
+        let timeout = self.config.doc_timeout;
+        let Some(writer) = &mut self.docs.writer else {
+            return;
+        };
+        for message in writer.check_stalled(now_ms, timeout) {
+            self.log(LogLevel::Error, message);
+        }
     }
 
     pub(super) fn poll_clears(&mut self) {
@@ -2082,6 +2098,10 @@ impl Control {
                     }
                 },
             }
+        }
+        // One show's write stuck on a slow volume must not hold up the others'.
+        if let Some(writer) = &mut self.eng.docs.writer {
+            writer.add_spare();
         }
         let deadline = Instant::now() + wait;
         let mut logs: Vec<(LogLevel, String)> = logs_early

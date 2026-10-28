@@ -454,3 +454,80 @@ fn saved_revisions_are_remembered_for_the_most_recent_workspaces_only() {
     let (w, p) = target(&env, 1);
     assert!(writer.autosave(w, p, 5).recv().unwrap().unwrap().is_some());
 }
+
+/// A writer whose first job blocks in the hook until released (a write stuck on a volume that
+/// stopped answering); later jobs go through.
+fn stall_first(env: &Env) -> (SaveWriter, Receiver<JobKind>, Sender<()>) {
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let writer = SaveWriter::spawn_with_hook(env.dirs.clone(), move |kind| {
+        if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.send(kind);
+            let _ = release_rx.lock().unwrap().recv();
+        }
+    })
+    .unwrap();
+    (writer, entered, release)
+}
+
+/// A save stuck on a hung volume is answered `Stalled` after the timeout and other shows go on
+/// autosaving; the stuck show is refused at once while its write is out, and once that write
+/// returns, a later save of it is written (after the stale one, never under it).
+#[test]
+fn a_stalled_save_does_not_stop_other_shows_and_its_show_saves_again_after() {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    let hang_guard = std::time::Duration::from_secs(20);
+    let env = env();
+    let (mut writer, entered, release) = stall_first(&env);
+    let (a, pa) = target(&env, 1);
+    let (b, pb) = target(&env, 2);
+    let pa = pa.unwrap();
+    let stuck = writer.save(a.clone(), pa.clone(), 1, 20, 1);
+    assert_eq!(entered.recv().unwrap(), JobKind::Save);
+    let other = writer.autosave(b, pb, 2);
+    assert!(writer.check_stalled(0, TIMEOUT).is_empty());
+    assert!(writer.check_stalled(19_999, TIMEOUT).is_empty());
+    assert!(other.try_recv().is_err(), "queued behind the stuck save");
+    let logs = writer.check_stalled(20_000, TIMEOUT);
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert!(matches!(
+        stuck.try_recv().unwrap(),
+        Err(PersistError::Stalled { secs: 20 })
+    ));
+    assert_eq!(writer.stalled_threads(), 1);
+    // The replacement thread writes the other show.
+    assert!(
+        other
+            .recv_timeout(hang_guard)
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .exists()
+    );
+    // The stuck show is refused at once, not queued behind the write that may never return.
+    let mut newer = a.clone();
+    newer.name = "newer".into();
+    assert!(matches!(
+        writer
+            .save(newer.clone(), pa.clone(), 2, 20, 2)
+            .try_recv()
+            .unwrap(),
+        Err(PersistError::Stalled { .. })
+    ));
+    // The volume answers again: the stale write lands, then a new save goes over it.
+    release.send(()).unwrap();
+    stuck.recv_timeout(hang_guard).unwrap().unwrap();
+    let deadline = std::time::Instant::now() + hang_guard;
+    while writer.stalled_threads() > 0 && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(writer.stalled_threads(), 0);
+    writer
+        .save(newer, pa.clone(), 3, 20, 3)
+        .recv_timeout(hang_guard)
+        .unwrap()
+        .unwrap();
+    assert!(std::fs::read_to_string(&pa).unwrap().contains("\"newer\""));
+}
