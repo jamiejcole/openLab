@@ -7,28 +7,32 @@
 //! table, the reply byte budget. Shared by the `osc_session` fuzz target and the engine's
 //! `fuzz_osc_session` test; public APIs only, no `unwrap`, `expect`, `panic!` or indexing.
 //!
-//! Input: byte 0 picks whether the workspace has the passcode `1234`. The rest is records
-//! separated by 0x1e; a record is `[op][peer][delay][payload...]`:
+//! Two docs are open (M4.15h: an un-prefixed message goes to each). Input: byte 0 picks whether
+//! the first has the passcode `1234` (bit 0) and whether the second has it too (bit 1; else it is
+//! open). The rest is records separated by 0x1e; a record is `[op][peer][delay][payload...]`:
 //!
 //! - op 0, 1: the payload as a UDP datagram, or as a chunk of the peer's TCP stream
 //! - op 2: the peer's TCP connection closes
 //! - op 3: every session is reset (a passcode change)
-//! - op 4: an update message is prepared for every subscriber
+//! - op 4: an update message is prepared for every subscriber of each doc
+//! - op 5: the second doc closes, or (when closed) opens again as a new doc
 //!
 //! `delay` moves the clock on by `delay` x 250 ms (255: eleven minutes, past the UDP idle time).
 //!
 //! Invariants: every reply and update encodes, and survives decode; the tables stay within their
-//! bounds; a closed or reset peer is not connected; and with a passcode set, input that never
-//! contains the passcode's bytes gets nothing through: no engine input, no connected peer, no
-//! subscriber.
+//! bounds; a closed or reset peer is not connected; a closed doc has no session; every input is
+//! for a doc that is open; and input that never contains the passcode's bytes gets nothing
+//! through to a doc with a passcode: no engine input, no connected peer, no subscriber that may
+//! view.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
+use openlab_core::protocol::DocId;
 use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
-    CueField, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SINGLE_DOC, SlipDecoder,
+    CueField, DocShow, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder,
     decode_packet, encode_message,
 };
 use rosc::OscMessage;
@@ -41,12 +45,13 @@ const MAX_RECORDS: usize = 256;
 const PEERS: u8 = 6;
 
 struct Show {
+    id: u128,
     access: OscAccess,
 }
 
 impl OscShow for Show {
     fn workspace_id(&self) -> WorkspaceId {
-        WorkspaceId(Uuid::from_u128(1))
+        WorkspaceId(Uuid::from_u128(self.id))
     }
     fn access(&self) -> &OscAccess {
         &self.access
@@ -95,31 +100,41 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+fn access(locked: bool) -> OscAccess {
+    if locked {
+        OscAccess {
+            no_passcode: OscRights::NONE,
+            passcodes: vec![OscPasscode {
+                passcode: PASSCODE.to_owned(),
+                rights: OscRights::ALL,
+            }],
+        }
+    } else {
+        OscAccess::default()
+    }
+}
+
 /// Runs one input. `Err` is a broken invariant.
 pub fn run(data: &[u8]) -> Result<(), String> {
     let Some((&config, rest)) = data.split_first() else {
         return Ok(());
     };
-    // With the bit set, peers without a passcode have no rights and one passcode has all.
-    let show = Show {
-        access: if config & 1 != 0 {
-            OscAccess {
-                no_passcode: OscRights::NONE,
-                passcodes: vec![OscPasscode {
-                    passcode: PASSCODE.to_owned(),
-                    rights: OscRights::ALL,
-                }],
-            }
-        } else {
-            OscAccess::default()
-        },
+    let first = Show {
+        id: 1,
+        access: access(config & 1 != 0),
+    };
+    let second = Show {
+        id: 2,
+        access: access(config & 2 != 0),
     };
     // Without the passcode's bytes anywhere in the input, nobody can have connected.
-    let locked_out_for_good =
-        show.access.requires_passcode() && !contains(rest, PASSCODE.as_bytes());
+    let never_sent = !contains(rest, PASSCODE.as_bytes());
     let mut osc = Osc::new();
     let mut decoders: HashMap<u8, SlipDecoder> = HashMap::new();
     let mut now = Duration::ZERO;
+    // The second doc's id while it is open; it opens again under a new one.
+    let mut second_doc: Option<DocId> = Some(DocId(1));
+    let mut next_doc = 2u64;
     for record in rest.split(|&b| b == SEPARATOR).take(MAX_RECORDS) {
         let (&op, tail) = match record.split_first() {
             Some(x) => x,
@@ -138,23 +153,43 @@ pub fn run(data: &[u8]) -> Result<(), String> {
         } else {
             Duration::from_millis(u64::from(delay) * 250)
         };
-        match op % 5 {
+        let mut docs = vec![DocShow {
+            doc: DocId(0),
+            show: &first,
+        }];
+        if let Some(doc) = second_doc {
+            docs.push(DocShow { doc, show: &second });
+        }
+        let open = |doc: DocId| docs.iter().any(|d| d.doc == doc);
+        let locked = |doc: DocId| {
+            docs.iter()
+                .any(|d| d.doc == doc && d.show.access().requires_passcode())
+        };
+        let check_inputs = |outcome: &Outcome| -> Result<(), String> {
+            if outcome.input_docs.len() != outcome.inputs.len() {
+                return Err("an input without its doc".into());
+            }
+            if outcome.input_docs.iter().any(|d| !open(*d)) {
+                return Err("an input for a doc that is not open".into());
+            }
+            if never_sent && outcome.input_docs.iter().any(|d| locked(*d)) {
+                return Err("input got through without the passcode".into());
+            }
+            Ok(())
+        };
+        match op % 6 {
             0 => {
-                let outcome = osc.handle_datagram(udp(peer), now, payload, &show);
+                let outcome = osc.handle_datagram_docs(udp(peer), now, now, payload, &docs);
                 check_replies(&outcome)?;
-                if locked_out_for_good && !outcome.inputs.is_empty() {
-                    return Err("input got through without the passcode".into());
-                }
+                check_inputs(&outcome)?;
             }
             1 => {
                 let decoder = decoders
                     .entry(peer % PEERS)
                     .or_insert_with(|| SlipDecoder::new(4096));
-                let outcome = osc.handle_stream(tcp(peer), now, decoder, payload, &show);
+                let outcome = osc.handle_stream_docs(tcp(peer), now, now, decoder, payload, &docs);
                 check_replies(&outcome)?;
-                if locked_out_for_good && !outcome.inputs.is_empty() {
-                    return Err("input got through without the passcode".into());
-                }
+                check_inputs(&outcome)?;
             }
             2 => {
                 osc.disconnect(tcp(peer));
@@ -165,46 +200,75 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             }
             3 => {
                 osc.reset_sessions();
-                if !osc.update_subscribers(now).is_empty() || osc.known_ips() != 0 {
+                if !osc.update_subscribers(now).is_empty()
+                    || docs.iter().any(|d| osc.known_ips_in(d.doc) != 0)
+                {
                     return Err("a reset left sessions behind".into());
                 }
                 if (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))) {
                     return Err("a reset left a peer connected".into());
                 }
             }
-            _ => {
+            4 => {
                 let update = OscMessage {
                     addr: "/update/workspace/x".into(),
                     args: vec![],
                 };
-                for subscriber in osc.update_subscribers(now) {
-                    if let Some(bytes) = osc.encode_update(&update)
-                        && osc.update_allowed(
-                            SINGLE_DOC,
-                            subscriber,
-                            now,
-                            bytes.len(),
-                            show.access.requires_passcode(),
-                        )
-                        && decode_packet(&bytes).is_err()
-                    {
-                        return Err("an update did not decode".into());
+                for d in &docs {
+                    for subscriber in osc.update_subscribers_in(d.doc, now) {
+                        if let Some(bytes) = osc.encode_update(&update)
+                            && osc.update_allowed(
+                                d.doc,
+                                subscriber,
+                                now,
+                                bytes.len(),
+                                d.show.access().requires_passcode(),
+                            )
+                            && decode_packet(&bytes).is_err()
+                        {
+                            return Err("an update did not decode".into());
+                        }
                     }
                 }
             }
+            _ => match second_doc.take() {
+                Some(doc) => {
+                    osc.close_doc(doc);
+                    if !osc.update_subscribers_in(doc, now).is_empty()
+                        || osc.known_ips_in(doc) != 0
+                        || (0..PEERS).any(|n| {
+                            osc.is_connected_in(doc, udp(n)) || osc.is_connected_in(doc, tcp(n))
+                        })
+                    {
+                        return Err("a closed doc kept a session".into());
+                    }
+                }
+                None => {
+                    second_doc = Some(DocId(next_doc));
+                    next_doc += 1;
+                }
+            },
         }
-        if osc.known_ips() > MAX_KNOWN_IPS || osc.update_subscribers(now).len() > MAX_PEERS {
-            return Err("a table grew past its bound".into());
-        }
-        // `/updates` works at any access level, but a subscriber that may not view is sent nothing.
-        if locked_out_for_good
-            && (osc
-                .update_subscribers(now)
-                .into_iter()
-                .any(|p| osc.may_receive_updates(SINGLE_DOC, p, &show.access))
-                || (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))))
-        {
-            return Err("a peer got a session without the passcode".into());
+        for d in &docs {
+            if osc.known_ips_in(d.doc) > MAX_KNOWN_IPS
+                || osc.update_subscribers_in(d.doc, now).len() > MAX_PEERS
+            {
+                return Err("a table grew past its bound".into());
+            }
+            // `/updates` works at any access level, but a subscriber that may not view is sent
+            // nothing.
+            if never_sent
+                && d.show.access().requires_passcode()
+                && (osc
+                    .update_subscribers_in(d.doc, now)
+                    .into_iter()
+                    .any(|p| osc.may_receive_updates(d.doc, p, d.show.access()))
+                    || (0..PEERS).any(|n| {
+                        osc.is_connected_in(d.doc, udp(n)) || osc.is_connected_in(d.doc, tcp(n))
+                    }))
+            {
+                return Err("a peer got a session without the passcode".into());
+            }
         }
     }
     Ok(())
