@@ -163,18 +163,25 @@ struct LevelSet: Equatable {
 
     /// Sets a level. A cue output in a gang moves its whole gang by the same amount, each member
     /// held to the limits on its own (QLab, manual p. 181).
-    mutating func set(_ slot: Slot, db: Double) {
+    mutating func set(_ slot: Slot, db: Double, drag: Bool = false) {
         let db = LevelText.clamp(db)
         switch slot {
         case .master: master = db
         case .output(let o):
             guard o >= 0, o < Self.maxChannels else { return }
-            let old = self.db(slot) ?? db
+            // Levels move on the fader's travel, where -inf is the bottom (-60 dB): a member at -inf
+            // is at the floor, not 60 dB below it, so the delta is what the control moved.
+            func travel(_ x: Double) -> Double { max(x, LevelText.floorDb) }
+            let old = travel(self.db(slot) ?? db)
             padOutputs(to: o + 1)
             if !isFade, let g = gang(of: o), gangs[g].count > 1 {
-                let delta = db - old
+                let delta = travel(db) - old
                 for m in gangs[g] where m != o && outputs.indices.contains(m) {
-                    outputs[m].db = LevelText.clamp((outputs[m].db ?? LevelText.silence) + delta)
+                    let was = outputs[m].db ?? LevelText.silence
+                    var moved = travel(was) + delta
+                    // A drag never takes a member past 0 dB (a member already above stays where it is).
+                    if drag { moved = min(moved, max(0, was)) }
+                    outputs[m].db = LevelText.clamp(moved)
                 }
             }
             outputs[o].db = db

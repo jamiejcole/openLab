@@ -138,6 +138,31 @@ final class LevelSetTests: XCTestCase {
         XCTAssertTrue(s.gangs.isEmpty)
     }
 
+    /// Regression: a ganged member at -inf is at the fader's floor (-60), not 120 dB under it.
+    func testGangDragFromSilenceMovesPartnersByWhatTheControlMoved() {
+        var s = audio()
+        s.set(.output(0), db: -10)
+        s.set(.output(1), db: LevelText.silence)
+        s.setGang(of: 0, letter: "A")
+        s.setGang(of: 1, letter: "A")
+        s.set(.output(1), db: -50, drag: true)  // up 10 from the floor
+        XCTAssertEqual(s.db(.output(0)), 0, "the partner moves by 10, not to +12")
+        s.set(.output(1), db: LevelText.silence, drag: true)  // back to the floor: down 10
+        XCTAssertEqual(s.db(.output(0)), -10, "not to silence")
+        s.set(.output(0), db: -20, drag: true)  // down 10: the other is at the floor already
+        XCTAssertEqual(s.db(.output(1)), LevelText.silence)
+        s.set(.output(0), db: -10, drag: true)
+        XCTAssertEqual(s.db(.output(1)), -50, "and comes back up with it")
+
+        var t = audio()
+        t.set(.output(0), db: -6)
+        t.set(.output(1), db: -2)
+        t.setGang(of: 0, letter: "A")
+        t.setGang(of: 1, letter: "A")
+        t.set(.output(0), db: 0, drag: true)
+        XCTAssertEqual(t.db(.output(1)), 0, "a drag holds partners at the 0 dB ceiling")
+    }
+
     func testSilenceAll() {
         var s = audio()
         s.set(.master, db: -3)

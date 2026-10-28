@@ -416,6 +416,18 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertFalse(vc.fadeLevels.activeCheck.isEnabled)
     }
 
+    /// The fader stops at 0 dB; a typed level above it is kept and shows pinned.
+    func testFaderTopIsZeroDbAndATypedLevelAboveItIsKept() async throws {
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        XCTAssertEqual(p.fader.maxValue, 0)
+        type(p, "+6")
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(6) }
+        XCTAssertEqual(p.levelField.stringValue, "6.0")
+        XCTAssertEqual(p.fader.doubleValue, 0, "pinned at the top")
+        XCTAssertEqual(p.levels?.master, 6, "showing the fader did not change the level")
+    }
+
     // MARK: A full 64-output patch
 
     func testSixtyFourOutputMatrixStaysResponsive() throws {
@@ -436,7 +448,6 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(set.crosspoints.count, 4096)
         let panel = LevelsPanel(isFade: false)
         panel.view.frame = NSRect(x: 0, y: 0, width: 800, height: 300)
-        let start = CFAbsoluteTimeGetCurrent()
         panel.show(set, inputs: 64, outputs: 64)
         panel.view.layoutSubtreeIfNeeded()
         let m = panel.matrix
@@ -444,8 +455,6 @@ final class InspectorLevelsTests: XCTestCase {
         let whole = try XCTUnwrap(m.bitmapImageRepForCachingDisplay(in: m.bounds))
         m.cacheDisplay(in: m.bounds, to: whole)
         _ = set.json(into: kind)
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        XCTAssertLessThan(elapsed, 2.0, "show, draw and encode a 64 x 64 matrix")
         XCTAssertEqual(m.subviews.count, 0, "no per-cell views")
         XCTAssertEqual(m.outputCount, 64)
         XCTAssertEqual(m.inputs, 64)

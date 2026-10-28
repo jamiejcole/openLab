@@ -27,7 +27,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let cellLabel = NSTextField(labelWithString: "")
     let levelField = NSTextField()
     let fader = LevelFader(
-        value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: LevelText.maxDb, target: nil, action: nil)
+        value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
     let muteCheck = NSButton(checkboxWithTitle: loc("levels.mute"), target: nil, action: nil)
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
     let gangField = NSTextField()
@@ -85,7 +85,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.onDrag = { [weak self] slot, db, first in
             guard let self else { return }
             if first { self.beginGesture() }
-            self.edit(gesture: self.gesture) { $0.set(slot, db: db) }
+            self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
 
@@ -162,7 +162,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let active = levels.isActive(slot)
         let db = levels.db(slot)
         if levelField.currentEditor() == nil { levelField.stringValue = db.map(LevelText.format) ?? "" }
-        fader.doubleValue = max(db ?? LevelText.floorDb, LevelText.floorDb)
+        // The fader stops at 0 dB (QLab manual p. 181); a level above it shows pinned there.
+        fader.doubleValue = min(max(db ?? LevelText.floorDb, LevelText.floorDb), 0)
         activeCheck.state = active ? .on : .off
         muteCheck.state = levels.isMuted(slot) ? .on : .off
         var isOutput = false
@@ -223,7 +224,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let v = fader.doubleValue
         let db = v <= LevelText.floorDb ? LevelText.silence : (v * 10).rounded() / 10
         let slot = selection
-        edit(gesture: gesture) { $0.set(slot, db: db) }
+        edit(gesture: gesture) { $0.set(slot, db: db, drag: true) }
     }
 
     @objc private func muteToggled() {
