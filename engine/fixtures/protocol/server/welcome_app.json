@@ -1,0 +1,20 @@
+{
+  "type": "welcome",
+  "protocol_version": 2,
+  "workspaces": [
+    {
+      "doc": 0,
+      "workspace_id": "00000000-0000-0000-0000-000000000007",
+      "name": "Hamlet",
+      "path": "/Users/sam/Shows/Hamlet.openlab",
+      "dirty": true
+    },
+    {
+      "doc": 3,
+      "workspace_id": "00000000-0000-0000-0000-000000000008",
+      "name": "Untitled",
+      "path": null,
+      "dirty": false
+    }
+  ]
+}

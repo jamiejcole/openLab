@@ -175,17 +175,11 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
 
 fn all_requests() -> Vec<(&'static str, Request)> {
     vec![
-        (
-            "new",
-            Request::New {
-                discard_changes: false,
-            },
-        ),
+        ("new", Request::New {}),
         (
             "open",
             Request::Open {
                 path: "/Users/sam/Shows/Hamlet.openlab".into(),
-                discard_changes: false,
                 recovery: None,
             },
         ),
@@ -194,12 +188,6 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             "save_as",
             Request::SaveAs {
                 path: "/Users/sam/Shows/Hamlet 2.openlab".into(),
-            },
-        ),
-        (
-            "revert",
-            Request::Revert {
-                discard_changes: false,
             },
         ),
         (
@@ -216,7 +204,6 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 workspace_id: workspace_id(7),
                 path_hash: Some("0123456789abcdef".into()),
                 modified_ms: Some(1_700_000_000_000),
-                discard_changes: true,
             },
         ),
         ("scan_recovery", Request::ScanRecovery),
@@ -235,16 +222,9 @@ fn all_requests() -> Vec<(&'static str, Request)> {
 fn request_variants() -> Vec<(&'static str, Request)> {
     vec![
         (
-            "new_discard",
-            Request::New {
-                discard_changes: true,
-            },
-        ),
-        (
             "open_restore",
             Request::Open {
                 path: "/Users/sam/Shows/Hamlet.openlab".into(),
-                discard_changes: true,
                 recovery: Some(RecoveryChoice::Restore),
             },
         ),
@@ -252,7 +232,6 @@ fn request_variants() -> Vec<(&'static str, Request)> {
             "open_ignore_recovery",
             Request::Open {
                 path: "/Users/sam/Shows/Hamlet.openlab".into(),
-                discard_changes: false,
                 recovery: Some(RecoveryChoice::Ignore),
             },
         ),
@@ -262,13 +241,6 @@ fn request_variants() -> Vec<(&'static str, Request)> {
                 workspace_id: workspace_id(7),
                 path_hash: None,
                 modified_ms: None,
-                discard_changes: false,
-            },
-        ),
-        (
-            "revert_discard",
-            Request::Revert {
-                discard_changes: true,
             },
         ),
         ("log_tail_max", Request::LogTail { max: Some(50) }),
@@ -293,6 +265,16 @@ fn fixtures() -> Vec<(String, Sample)> {
             protocol_version: PROTOCOL_VERSION,
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS 0.0.1".into(),
+            workspace: Some(DocId(3)),
+        }),
+    );
+    add(
+        "hello_app",
+        client(ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            token: "3f9a1c0e5b7d42a8".into(),
+            client_name: "openLab for macOS 0.0.1".into(),
+            workspace: None,
         }),
     );
     add(
@@ -301,6 +283,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             protocol_version: PROTOCOL_VERSION + 1,
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS from the future".into(),
+            workspace: None,
         }),
     );
     add(
@@ -427,13 +410,81 @@ fn fixtures() -> Vec<(String, Sample)> {
             client(request(60 + i as u64, req)),
         );
     }
+    add(
+        "close",
+        client(ClientMessage::Close {
+            id: rid(70),
+            doc: None,
+            discard_changes: false,
+        }),
+    );
+    add(
+        "close_doc",
+        client(ClientMessage::Close {
+            id: rid(71),
+            doc: Some(DocId(3)),
+            discard_changes: true,
+        }),
+    );
+    add("panic", client(ClientMessage::Panic { id: rid(72) }));
+    add(
+        "hotkey",
+        client(ClientMessage::Hotkey {
+            id: rid(73),
+            key: "space".into(),
+            modifiers: Modifiers::default(),
+            phase: HotkeyPhase::Down,
+        }),
+    );
+    add(
+        "hotkey_up",
+        client(ClientMessage::Hotkey {
+            id: rid(74),
+            key: "f5".into(),
+            modifiers: Modifiers {
+                shift: true,
+                control: false,
+                alt: false,
+                command: true,
+            },
+            phase: HotkeyPhase::Up,
+        }),
+    );
     add("goodbye", client(ClientMessage::Goodbye { shutdown: true }));
 
     add(
         "welcome",
         server(ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
-            snapshot: Box::new(snapshot()),
+            doc: Some(DocId(3)),
+            snapshot: Some(Box::new(snapshot())),
+            workspaces: None,
+        }),
+    );
+    add(
+        "welcome_app",
+        server(ServerMessage::Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            doc: None,
+            snapshot: None,
+            workspaces: Some(workspace_list()),
+        }),
+    );
+    add(
+        "workspaces",
+        server(ServerMessage::Workspaces {
+            workspaces: workspace_list(),
+        }),
+    );
+    add("closed", server(ServerMessage::Closed { doc: DocId(3) }));
+    add(
+        "result_ok_opened",
+        server(ServerMessage::Result {
+            id: rid(41),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Opened { doc: DocId(4) }),
+            }),
         }),
     );
     add(
@@ -801,6 +852,26 @@ fn fixtures() -> Vec<(String, Sample)> {
     out
 }
 
+/// Two open workspaces, a saved one with unsaved edits and an untitled one.
+fn workspace_list() -> Vec<WorkspaceInfo> {
+    vec![
+        WorkspaceInfo {
+            doc: DocId(0),
+            workspace_id: workspace_id(7),
+            name: "Hamlet".into(),
+            path: Some("/Users/sam/Shows/Hamlet.openlab".into()),
+            dirty: true,
+        },
+        WorkspaceInfo {
+            doc: DocId(3),
+            workspace_id: workspace_id(8),
+            name: "Untitled".into(),
+            path: None,
+            dirty: false,
+        },
+    ]
+}
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/protocol")
 }
@@ -892,54 +963,78 @@ fn drift_is_detected_by_comparison() {
     assert!(check_fixture("x", Some("{}"), "{}\n").is_err());
 }
 
-/// The M4.4 additions are wire-compatible (PROTOCOL_VERSION stays 1): the unit forms `new` and
-/// `revert` and an `open` without the new fields still decode, with the old meaning.
+/// M4.15f: `revert` is gone; `new` is a bare object, and a `discard_changes` an older client
+/// still sends is an unknown field, ignored.
 #[test]
-fn requests_from_before_the_workspace_flags_still_decode() {
+fn revert_is_gone_and_new_is_bare() {
     let frame = |request: &str| {
         decode_client(&format!(
             r#"{{"type":"request","id":1,"request":{request}}}"#
         ))
-        .unwrap()
     };
+    assert_eq!(frame(r#"{"type":"new"}"#), Ok(request(1, Request::New {})));
     assert_eq!(
-        frame(r#"{"type":"new"}"#),
-        request(
-            1,
-            Request::New {
-                discard_changes: false
-            }
-        )
+        frame(r#"{"type":"new","discard_changes":true}"#),
+        Ok(request(1, Request::New {}))
     );
-    assert_eq!(
+    assert!(matches!(
         frame(r#"{"type":"revert"}"#),
-        request(
-            1,
-            Request::Revert {
-                discard_changes: false
-            }
-        )
-    );
-    assert_eq!(
-        frame(r#"{"type":"open","path":"/a.openlab"}"#),
-        request(
-            1,
-            Request::Open {
-                path: "/a.openlab".into(),
-                discard_changes: false,
-                recovery: None
-            }
-        )
-    );
-    // The defaults are not written, so an old engine's reader sees what it always saw.
-    let new = encode_client(&request(
-        1,
-        Request::New {
-            discard_changes: false,
-        },
-    ))
-    .unwrap();
+        Err(ProtocolError::Malformed(_))
+    ));
+    let new = encode_client(&request(1, Request::New {})).unwrap();
     assert!(new.contains(r#""request":{"type":"new"}"#), "{new}");
+}
+
+#[test]
+fn a_hello_without_a_workspace_is_the_app_connection() {
+    let text = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c"}}"#
+    );
+    assert!(matches!(
+        decode_hello(&text),
+        Ok(ClientMessage::Hello {
+            workspace: None,
+            ..
+        })
+    ));
+    let bound = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","workspace":5}}"#
+    );
+    assert!(matches!(
+        decode_hello(&bound),
+        Ok(ClientMessage::Hello {
+            workspace: Some(DocId(5)),
+            ..
+        })
+    ));
+    // A doc is a number, never a string or negative.
+    for bad in [r#""5""#, "-1", "1.5"] {
+        let text = format!(
+            r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","workspace":{bad}}}"#
+        );
+        assert!(decode_hello(&text).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_hotkey_key_is_bounded() {
+    let frame = |key: &str| decode_client(&format!(r#"{{"type":"hotkey","id":1,"key":"{key}"}}"#));
+    assert_eq!(
+        frame("a"),
+        Ok(ClientMessage::Hotkey {
+            id: RequestId(1),
+            key: "a".into(),
+            modifiers: Modifiers::default(),
+            phase: HotkeyPhase::Down,
+        })
+    );
+    for key in [String::new(), "k".repeat(MAX_HOTKEY_KEY + 1)] {
+        assert!(
+            matches!(frame(&key), Err(ProtocolError::OutOfRange { .. })),
+            "{key:?}"
+        );
+    }
+    assert!(frame(&"k".repeat(MAX_HOTKEY_KEY)).is_ok());
 }
 
 #[test]
@@ -965,10 +1060,12 @@ fn relative_paths_are_refused_for_open_and_save_as() {
 fn bad_workspace_requests_are_errors_not_panics() {
     for text in [
         r#"{"type":"request","id":1,"request":{"type":"open","path":"/a","recovery":"maybe"}}"#,
-        r#"{"type":"request","id":1,"request":{"type":"open","path":"/a","discard_changes":"yes"}}"#,
+        r#"{"type":"close","id":1,"doc":"one"}"#,
+        r#"{"type":"close","id":1,"discard_changes":"yes"}"#,
+        r#"{"type":"hotkey","id":1,"key":"a","phase":"sideways"}"#,
+        r#"{"type":"panic"}"#,
         r#"{"type":"request","id":1,"request":{"type":"open_recovery"}}"#,
         r#"{"type":"request","id":1,"request":{"type":"open_recovery","workspace_id":"nope"}}"#,
-        r#"{"type":"request","id":1,"request":{"type":"new","discard_changes":1}}"#,
     ] {
         assert!(decode_client(text).is_err(), "{text}");
     }
@@ -1060,7 +1157,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 13);
+    assert_eq!(all_requests().len(), 12);
 }
 
 #[test]
@@ -1269,6 +1366,7 @@ fn oversized_frames_are_refused_before_parsing() {
         protocol_version: 1,
         token: "t".into(),
         client_name: "n".repeat(MAX_CLIENT_FRAME_BYTES),
+        workspace: None,
     };
     assert!(matches!(
         encode_client(&big),
@@ -1743,7 +1841,7 @@ fn engine_preview_idx(r: PreviewIgnoredReason) -> usize {
     }
 }
 
-const ERROR_CODE_COUNT: usize = 12;
+const ERROR_CODE_COUNT: usize = 13;
 fn error_code_idx(c: ErrorCode) -> usize {
     match c {
         ErrorCode::ProtocolVersionMismatch => 0,
@@ -1758,6 +1856,7 @@ fn error_code_idx(c: ErrorCode) -> usize {
         ErrorCode::BadShowFile => 9,
         ErrorCode::Unsupported => 10,
         ErrorCode::Internal => 11,
+        ErrorCode::AlreadyOpen => 12,
     }
 }
 
@@ -2089,6 +2188,7 @@ fn all_error_codes() -> Vec<ErrorCode> {
         ErrorCode::BadShowFile,
         ErrorCode::Unsupported,
         ErrorCode::Internal,
+        ErrorCode::AlreadyOpen,
     ]
 }
 
@@ -2972,38 +3072,30 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
 
 fn arb_request() -> impl Strategy<Value = Request> {
     prop_oneof![
-        any::<bool>().prop_map(|discard_changes| Request::New { discard_changes }),
+        Just(Request::New {}),
         (
             arb_abs_path(),
-            any::<bool>(),
             proptest::option::of(prop_oneof![
                 Just(RecoveryChoice::Restore),
                 Just(RecoveryChoice::Ignore)
             ])
         )
-            .prop_map(|(path, discard_changes, recovery)| Request::Open {
-                path,
-                discard_changes,
-                recovery
-            }),
+            .prop_map(|(path, recovery)| Request::Open { path, recovery }),
         (
             any::<u128>(),
             proptest::option::of("[0-9a-f]{16}"),
             proptest::option::of(any::<i64>()),
-            any::<bool>()
         )
-            .prop_map(|(id, path_hash, modified_ms, discard_changes)| {
+            .prop_map(|(id, path_hash, modified_ms)| {
                 Request::OpenRecovery {
                     workspace_id: workspace_id(id),
                     path_hash,
                     modified_ms,
-                    discard_changes,
                 }
             }),
         Just(Request::ScanRecovery),
         Just(Request::Save),
         arb_abs_path().prop_map(|path| Request::SaveAs { path }),
-        any::<bool>().prop_map(|discard_changes| Request::Revert { discard_changes }),
         arb_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
@@ -3065,15 +3157,20 @@ fn arb_command() -> impl Strategy<Value = Command> {
 
 fn arb_client() -> impl Strategy<Value = ClientMessage> {
     prop_oneof![
-        (any::<u32>(), arb_text(), arb_text()).prop_map(
-            |(protocol_version, token, client_name)| {
+        (
+            any::<u32>(),
+            arb_text(),
+            arb_text(),
+            proptest::option::of(any::<u64>())
+        )
+            .prop_map(|(protocol_version, token, client_name, workspace)| {
                 ClientMessage::Hello {
                     protocol_version,
                     token,
                     client_name,
+                    workspace: workspace.map(DocId),
                 }
-            }
-        ),
+            }),
         (
             any::<u64>(),
             arb_command(),
@@ -3088,6 +3185,32 @@ fn arb_client() -> impl Strategy<Value = ClientMessage> {
         any::<u64>().prop_map(|id| ClientMessage::Undo { id: rid(id) }),
         any::<u64>().prop_map(|id| ClientMessage::Redo { id: rid(id) }),
         (any::<u64>(), arb_request()).prop_map(|(id, r)| request(id, r)),
+        (
+            any::<u64>(),
+            proptest::option::of(any::<u64>()),
+            any::<bool>()
+        )
+            .prop_map(|(id, doc, discard_changes)| ClientMessage::Close {
+                id: rid(id),
+                doc: doc.map(DocId),
+                discard_changes
+            }),
+        any::<u64>().prop_map(|id| ClientMessage::Panic { id: rid(id) }),
+        (any::<u64>(), "[a-z0-9]{1,8}", any::<bool>(), any::<bool>()).prop_map(
+            |(id, key, shift, up)| ClientMessage::Hotkey {
+                id: rid(id),
+                key,
+                modifiers: Modifiers {
+                    shift,
+                    ..Modifiers::default()
+                },
+                phase: if up {
+                    HotkeyPhase::Up
+                } else {
+                    HotkeyPhase::Down
+                },
+            }
+        ),
         any::<bool>().prop_map(|shutdown| ClientMessage::Goodbye { shutdown }),
     ]
 }

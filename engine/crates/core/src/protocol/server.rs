@@ -8,7 +8,7 @@ use super::wire::{
     RuntimeChange, WireBrokenReason, WireCueState, WireProblem, WireResolution, WireWarning,
 };
 use super::{
-    MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode,
+    DocId, MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION, ProtocolError, RequestId, decode, encode,
     encode_pretty,
 };
 use crate::command::CommandError;
@@ -31,6 +31,8 @@ pub const SERVER_TYPES: &[&str] = &[
     "log_entry",
     "status",
     "warnings",
+    "workspaces",
+    "closed",
     "result",
     "error",
 ];
@@ -38,13 +40,20 @@ pub const SERVER_TYPES: &[&str] = &[
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    /// Answer to an accepted `hello`: everything the client needs to draw the show.
+    /// Answer to an accepted `hello`. On a connection bound to a workspace: `doc` and its
+    /// `snapshot`, everything the client needs to draw the show. On the app connection:
+    /// `workspaces`, the open workspaces.
     Welcome {
         protocol_version: u32,
-        snapshot: Box<Snapshot>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<DocId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<Snapshot>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspaces: Option<Vec<WorkspaceInfo>>,
     },
-    /// The whole state again: after `new`, `open`, `revert` and the `snapshot` request. A client
-    /// replaces everything it holds.
+    /// The whole state again, after the `snapshot` request (or a resync). A client replaces
+    /// everything it holds.
     Snapshot {
         snapshot: Box<Snapshot>,
     },
@@ -93,7 +102,18 @@ pub enum ServerMessage {
     Warnings {
         warnings: Vec<WireWarning>,
     },
-    /// Answer to a `command`, `transport`, `undo`, `redo` or `request`.
+    /// To app connections: the open workspaces, in open order, whenever one opens or closes or
+    /// one's name, path or unsaved state changes. Replaces the previous list.
+    Workspaces {
+        workspaces: Vec<WorkspaceInfo>,
+    },
+    /// To the connections bound to `doc`: the workspace was closed. The engine closes the
+    /// connection next; a client must not reconnect to it.
+    Closed {
+        doc: DocId,
+    },
+    /// Answer to a `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` or
+    /// `hotkey`.
     Result {
         id: RequestId,
         #[serde(flatten)]
@@ -127,9 +147,26 @@ pub struct OkBody {
     pub data: Option<ResultData>,
 }
 
+/// One open workspace, as the app connection lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    /// What `hello { workspace }` and `close { doc }` name.
+    pub doc: DocId,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    /// Where it is saved; `null` = never saved.
+    pub path: Option<String>,
+    /// Edits since the last save.
+    pub dirty: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResultData {
+    /// `new`, `open` or `open_recovery` opened this workspace; bind a connection to it.
+    Opened {
+        doc: DocId,
+    },
     Devices {
         devices: Vec<DeviceEntry>,
     },
@@ -325,7 +362,7 @@ pub enum LogKind {
     CueFail,
     /// Audio device events.
     Device,
-    /// New, open, save, revert.
+    /// Open, save, close.
     Document,
     /// Everything else the engine reports (warnings, errors, health).
     Engine,
@@ -463,11 +500,14 @@ pub enum ErrorCode {
     CommandRefused,
     /// A transport or request named a cue, list or file that does not exist.
     NotFound,
-    /// A request needs a workspace and none is open, or a save has no path yet.
+    /// A request needs a workspace and none is open (an app connection, a closed doc), or a
+    /// save has no path yet.
     NoWorkspace,
-    /// `new`, `open`, `open_recovery` or `revert` would drop unsaved edits and the request did
-    /// not say `discard_changes`.
+    /// `close` would drop unsaved edits and did not say `discard_changes`.
     UnsavedChanges,
+    /// `open` of a show file that is open already (the result names no doc: the app finds it
+    /// by path in its `workspaces` list).
+    AlreadyOpen,
     /// A file could not be read or written.
     Io,
     /// A show file the engine could not load (damaged, newer format, ...).
@@ -661,6 +701,8 @@ impl ServerMessage {
             Self::LogEntry { .. } => "log_entry",
             Self::Status { .. } => "status",
             Self::Warnings { .. } => "warnings",
+            Self::Workspaces { .. } => "workspaces",
+            Self::Closed { .. } => "closed",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
         }

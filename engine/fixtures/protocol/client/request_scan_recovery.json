@@ -1,6 +1,6 @@
 {
   "type": "request",
-  "id": 49,
+  "id": 48,
   "request": {
     "type": "scan_recovery"
   }

@@ -5,16 +5,19 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    MAX_CLIENT_FRAME_BYTES, MAX_HELLO_FRAME_BYTES, ProtocolError, RequestId, decode, encode,
+    DocId, MAX_CLIENT_FRAME_BYTES, MAX_HELLO_FRAME_BYTES, ProtocolError, RequestId, decode, encode,
     encode_pretty, non_negative,
 };
 use crate::command::Command;
-use crate::cue::FadeSpec;
+use crate::cue::{FadeSpec, Modifiers};
 use crate::media_path::{PathStyle, is_absolute, to_portable};
 use crate::model::{CueId, CueListId, WorkspaceId};
 
 /// Longest `coalesce` key of a `command`, bytes.
 pub const MAX_COALESCE_KEY: usize = 128;
+
+/// Longest key name of a `hotkey` message, bytes (key names are short: `"a"`, `"f5"`, `"space"`).
+pub const MAX_HOTKEY_KEY: usize = 64;
 
 /// Every `type` a client may send.
 pub const CLIENT_TYPES: &[&str] = &[
@@ -24,6 +27,9 @@ pub const CLIENT_TYPES: &[&str] = &[
     "undo",
     "redo",
     "request",
+    "close",
+    "panic",
+    "hotkey",
     "goodbye",
 ];
 
@@ -39,6 +45,12 @@ pub enum ClientMessage {
         token: String,
         /// Shown in logs, e.g. "openLab for macOS 0.0.1".
         client_name: String,
+        /// The open workspace this connection is bound to (`opened.doc`, or a `doc` of the
+        /// `workspaces` list): its snapshot comes in `welcome` and everything sent acts on it.
+        /// Absent: the app connection, which sees the list of open workspaces and may send only
+        /// the app-scope messages (docs/protocol.md section 2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<DocId>,
     },
     /// A model edit. `command` is core's [`Command`], with its own wire format.
     ///
@@ -64,6 +76,32 @@ pub enum ClientMessage {
     Request {
         id: RequestId,
         request: Request,
+    },
+    /// Close a workspace: `doc`, or the one this connection is bound to when absent. Refused
+    /// with `unsaved_changes` while it has unsaved edits unless `discard_changes`. Its cues
+    /// stop at once; its connections get `closed` and are closed.
+    Close {
+        id: RequestId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        doc: Option<DocId>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        discard_changes: bool,
+    },
+    /// The app-scope Panic (Esc): every open workspace panics, as a `panic` transport in each
+    /// would (twice within the fade: a hard stop). On any connection.
+    Panic {
+        id: RequestId,
+    },
+    /// A hotkey went down or up (app-scope, on any connection): it triggers the cues with this
+    /// hotkey in every open workspace, in front or not. `down` starts them (a second trigger on
+    /// an active one), `up` is the release (`trigger_released`) for each.
+    Hotkey {
+        id: RequestId,
+        key: String,
+        #[serde(default)]
+        modifiers: Modifiers,
+        #[serde(default)]
+        phase: HotkeyPhase,
     },
     /// Closing politely. `shutdown` also asks the engine to quit (the app is closing); without it
     /// the engine keeps running for a reconnect.
@@ -159,25 +197,18 @@ pub enum TransportAction {
     },
 }
 
-/// Document and device requests. The reply is a `result` with the same id; `new`, `open`,
-/// `open_recovery`, `revert` and `snapshot` also send a fresh `snapshot` message first when they
-/// succeed.
+/// Document and device requests. The reply is a `result` with the same id; `snapshot` also
+/// sends a fresh `snapshot` message first (a `workspaces` message on the app connection).
 ///
-/// `new`, `open`, `open_recovery` and `revert` replace the open workspace: they stop every
-/// running cue first, and are refused with `unsaved_changes` while the workspace has unsaved
-/// edits unless `discard_changes` is true (the engine never prompts; the UI asks the operator).
-/// A bare `{"type": "new"}` is still accepted: every added field has a default.
+/// `new`, `open` and `open_recovery` open another workspace beside the ones open, which keep
+/// playing; the `result` carries `opened { doc }`, and a connection bound to that doc gets its
+/// snapshot. They are app-scope: any connection may send them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    New {
-        #[serde(default, skip_serializing_if = "is_false")]
-        discard_changes: bool,
-    },
+    New {},
     Open {
         path: String,
-        #[serde(default, skip_serializing_if = "is_false")]
-        discard_changes: bool,
         /// What to do about an autosave newer than the show file. Absent: nothing is opened and
         /// the `result` carries a `recovery_offer`; send the request again with a choice.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,19 +226,12 @@ pub enum Request {
         /// Absent: the newest.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modified_ms: Option<i64>,
-        #[serde(default, skip_serializing_if = "is_false")]
-        discard_changes: bool,
     },
     /// List the autosave files, for a show that cannot be opened.
     ScanRecovery,
     Save,
     SaveAs {
         path: String,
-    },
-    /// Reload the saved file, dropping unsaved edits.
-    Revert {
-        #[serde(default, skip_serializing_if = "is_false")]
-        discard_changes: bool,
     },
     /// Relink missing media with files found in `folder` (WS-03).
     Relink {
@@ -236,6 +260,15 @@ pub enum Request {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Whether a `hotkey` message is the key going down or coming up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyPhase {
+    #[default]
+    Down,
+    Up,
 }
 
 /// The operator's answer to a recovery offer.
@@ -278,6 +311,11 @@ impl ClientMessage {
                     field: "request.path",
                 })
             }
+            Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
+                Err(ProtocolError::OutOfRange {
+                    field: "hotkey.key",
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -291,6 +329,9 @@ impl ClientMessage {
             Self::Undo { .. } => "undo",
             Self::Redo { .. } => "redo",
             Self::Request { .. } => "request",
+            Self::Close { .. } => "close",
+            Self::Panic { .. } => "panic",
+            Self::Hotkey { .. } => "hotkey",
             Self::Goodbye { .. } => "goodbye",
         }
     }

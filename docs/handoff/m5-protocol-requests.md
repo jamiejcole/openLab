@@ -38,14 +38,11 @@ QLab 5's Basics tab has controls the model has no field for; the inspector omits
 
 ## Cue hotkeys (M5.7)
 
-ARCHITECTURE section 6 says a hotkey trigger is app-scope (fires in every open workspace), but the wire has
-no such message. Until it exists the app does the fan-out itself: on a matching key-down it sends
-`transport: start { cue }` to each open workspace's connection for every cue whose `triggers.hotkey`
-matches, and on key-up `transport: trigger_released { cue }` for the cues with `second_trigger_on_release`.
-Wanted: an app-scope message (proposed name `hotkey { key, modifiers, phase: "down" | "up" }`, sendable on
-any connection) that the engine matches against every doc's cue hotkeys, so the engine, not the app, owns
-the matching (the engine also runs OSC triggers) and a held key's release reaches the same cues. The
-Swift name goes in `ProvisionalProtocol.swift` when it is agreed.
+Done on the engine side (M4.15f): the app-scope `hotkey { id, key, modifiers, phase: "down" | "up" }`
+(docs/protocol.md section 3), sendable on any connection, matches every doc's cue hotkeys (a doc whose
+transport keys use the key starts nothing) and sends the release to the same cues. The Swift codec has it
+(`ProvisionalClientMessage.hotkey`), but the app still does the fan-out itself (per-workspace
+`transport: start` / `trigger_released`): M5 should switch to the message, so the engine owns the matching.
 
 Also: the app refuses (at record time) a cue hotkey that equals a transport key, a menu key or another
 cue's hotkey; the engine's `SetCueProperty::Triggers` accepts any of them, so a second client can still
@@ -74,3 +71,33 @@ function). The app re-implements `prepare_paste` in `CueEditor.preparePaste` (fr
 used numbers cleared, missing patch / network destination becomes the first) from the model it holds, so it can
 drift from core. Wanted: a `paste` form that takes the raw clipboard and runs `prepare_paste` in the engine
 (fresh ids made by the engine), then delete the Swift copy.
+
+## Several workspaces (M4.15f landed; M5.2, M5.19)
+
+The engine side of ARCHITECTURE section 6 is in (protocol 2; docs/protocol.md section 2): `hello { workspace }`
+binds a connection to a doc, the app connection gets `welcome { workspaces }` and `workspaces` updates,
+`new`/`open`/`open_recovery` answer `opened { doc }`, `close` / `close { doc }` with `closed` to the doc's
+connections, `already_open`, the app-scope `panic` and `hotkey`, `set_output_overrides` on any connection.
+The app's minimal changes (M4.15f) make it work against this engine: protocol version 2, doc ids are JSON
+numbers (kept as a `ModelID` of their digits: `ModelID(doc:)`, `docNumber`), no `discard_changes` on
+new/open and no `revert`. What the app (M5) must still do:
+
+1. **Rename the provisional layer**: `ProvisionalProtocol.swift` and the `.provisional` cases are the real
+   messages now; fold them into `ClientProtocol.swift` / `ServerProtocol.swift`.
+2. **Drop the one-workspace fallback** (`EngineSession.Mode.single`, `singleDoc`, `FakeEngine` single mode):
+   a protocol 1 engine is refused at `hello`, so single mode is never reached against a real engine.
+3. **Order windows and stores by open order, not by the doc id's string** (`AppController` sorts
+   `stores.keys` by `raw`: "10" sorts before "9"); the `workspaces` list is in open order.
+4. **Esc**: the app sends `transport: panic` on the app connection, which the engine takes as the
+   app-scope panic; send `panic { id }` instead (it also works on a bound connection).
+5. **Hotkeys**: send `hotkey` (above) instead of fanning out `start` / `trigger_released`.
+6. **`closed`**: a bound connection gets `closed { doc }` and the engine closes it; the app reacts to the
+   `workspaces` list today (and a reconnect is refused `no_workspace`, which stops the client). Handle
+   `closed` on the store's connection too, so a window closed from elsewhere (another client, OSC later)
+   goes at once and the client does not try to reconnect.
+7. **Reattach after an engine restart (M5.2)**: doc ids restart from 0 in a new engine run (with a new
+   token), so a window must rebind by reopening its file (`open`), never by its old doc id.
+8. **The engine still starts with one untitled doc** (doc 0) until M4.15g; the app then decides what to
+   open (recovery, last workspaces) and closes that untitled doc if it does not want it.
+9. **Copies of an open show** open with a fresh workspace id and unsaved (`dirty`); the app's save prompt
+   on close covers it.
