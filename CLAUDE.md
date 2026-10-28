@@ -85,6 +85,7 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - XCUITest needs macOS Automation Mode; on a dev machine the first run may prompt the user for authorisation.
 - The engine build phase (`mac/scripts/build-engine.sh`) ad-hoc signs the engine; Xcode doesn't sign nested binaries in `Contents/MacOS`.
 - CI's mac job runs on the `xcode-27` runner image (preview) with Xcode 27.1 pinned; fallback is `macos-26` + Xcode 26.x.
+- Agents act on GitHub as `openlab-dev`, never the owner's account: commits use `openlab-dev <349245076+openlab-dev@users.noreply.github.com>` (repo-local git config; set it in any fresh clone), and `gh` must be logged in as `openlab-dev` before pushing, opening PRs/issues or merging.
 
 - Agents share this machine and sccache (`~/.cargo/config.toml` wraps rustc; incremental compilation is off). Never wait on machine-wide process checks (`pgrep cargo`, "is anything building?"): wait on your own command only.
 - `make prepush` is the pre-push gate: it picks the checks the diff needs and prints `PREPUSH PASS` or `PREPUSH FAIL: <step>`.

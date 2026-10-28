@@ -38,7 +38,7 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [x] M1.14 Per-machine settings: where UI-owned parts (window layout, recent files) live [WS-06]
 - [x] M1.15 Windows `write_atomic` bounded retry on transient rename failure [NFR-04, NFR-31]
 - [x] M1.16 M1-C review Lows: preserve metadata/symlinks on atomic replace, etc.
-- [ ] M1.17 #98 Relink find-in-folder on the document worker
+- [x] M1.17 #98 Relink find-in-folder on the document worker
 - [x] M1.19 `Workspace::apply` Transaction rollback snapshot without cloning the workspace
 - [x] M1.20 Rename the workspace (`SetWorkspaceName`) and name length/character rules
 - [x] M1.21 Engine: on `RollbackFailed` log, mark dirty and resend the whole model
@@ -120,16 +120,16 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
   - [x] M4.2j Control loop must not spin while the sample clock stands still
   - [x] M4.2c Auto-follow after an audio cue was up to two blocks late
   - [x] M4.2f Patch add/remove/reorder must keep mixer matrix slots stable
-  - [ ] M4.2e #99 Progress for cues without a voice
+  - [x] M4.2e #99 Progress for cues without a voice
 - [x] M4.3 WebSocket server [NFR-01]
 - [x] M4.4 Workspace requests [WS-02, WS-08, NFR-05]
   - [x] M4.4a open/new/revert that resets revision must resync every client
   - [x] M4.4c Map a new workspace default patch to the device first two outputs [WS-07]
-  - [ ] M4.4g #100 Request to set/clear a patch mapping on this machine
+  - [x] M4.4g #100 Request to set/clear a patch mapping on this machine
   - [x] M4.4h Flake shared with M4.7d (fixed by M2.28)
   - [x] M4.4i Flaky `control_the_control_loop_never_waits_for_the_disk` (BrokenPipe on FIFO)
-  - [ ] M4.4d #101 Final recovery write on shutdown with unsaved changes
-  - [ ] M4.4e #102 host::run_show skips the recovery check
+  - [x] M4.4d #101 Final recovery write on shutdown with unsaved changes
+  - [x] M4.4e #102 host::run_show skips the recovery check
 - [x] M4.4f Close + no-workspace state (superseded by M4.15f/g)
 - [x] M4.4i Flaky `control_media` FIFO test
   - [x] M4.4j Flaky stalled-tail hard stop / reset tests under load
@@ -150,9 +150,9 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
   - [x] M4.7d Flaky `save_robust` test (fixed by M2.28 `create_tmp`)
   - [x] M4.7e Run-marker crash-report test no longer flakes on a held lock
 - [x] M4.8 Pre-show check + warnings feed [SM-06, DX-01, NFR-07]
-- [ ] M4.9 #103 Lifecycle: engine.json, relaunch on crash, graceful shutdown, sleep prevention
+- [x] M4.9 #103 Lifecycle: engine.json, relaunch on crash, graceful shutdown, sleep prevention
 - [x] M4.10 Integration tests over real sockets; fuzz targets for OSC + protocol [QA-04]
-  - [ ] M4.10a #104 Document requests in socket session tests and protocol fuzz body
+  - [x] M4.10a #104 Document requests in socket session tests and protocol fuzz body
 - [x] M4.11 Accelerated 24 h soak test [NFR-09, QA-05]
   - [x] M4.11a Shorter real-time soak, `#[ignore]`, nightly
   - [x] M4.11b Decide `Load` with `at` past the cue length
@@ -168,7 +168,7 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [x] M4.2k Device tests check `device_down()` every idle tick (race)
 - [x] M4.14 Send `Input::StartFailed` instead of `ActionFailed` before any audio
 - [x] M4.16 `voices.rs` `finished`: an end on the pause sample is an end
-- [ ] M4.15 #105 Several workspaces open at once, one engine process
+- [x] M4.15 #105 Several workspaces open at once, one engine process
   - [x] M4.15a Docs for multi-workspace
   - [x] M4.15b (M) Mixer sharing prep, still one workspace
   - [x] M4.15c (S) `SaveWriter`: one pending autosave per recovery target
@@ -176,10 +176,10 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
   - [x] M4.15d1 (S-M; with M4.15e) Per-doc probe pool, `MediaWatch`, `NetOut`, `Observe` states
   - [x] M4.15e (L; in review) N docs through a test API: DocId, routing, close, cap of 8
   - [x] M4.15e1 Engine-wide preload budget across docs [AUD-05]
-  - [ ] M4.15f #106 Protocol and hub for several docs
-  - [ ] M4.15g #107 Engine starts with no docs, final recovery write per dirty doc
-  - [ ] M4.15h #108 OSC over several docs
-  - [ ] M4.15i #109 Perf gate: two 2,000-cue docs
+  - [x] M4.15f #106 Protocol and hub for several docs
+  - [x] M4.15g #107 Engine starts with no docs, final recovery write per dirty doc
+  - [x] M4.15h #108 OSC over several docs
+  - [x] M4.15i #109 Perf gate: two 2,000-cue docs
 
 ## M5 — macOS app (Swift + AppKit)
 - [x] M5.1 `EngineClient` (connect, reconnect, codec) + `WorkspaceStore`; fixture contract tests [NFR-01]
