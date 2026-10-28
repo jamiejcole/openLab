@@ -204,8 +204,8 @@ impl CueEngine {
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
     /// M4.2 contract. Release builds skip those whole-workspace passes on every other call
     /// unless the workspace's outline changed (`shape.rs`: then the miss is counted and the
-    /// passes run), so a missed signal inside a cue or group leaves them out of date; what could then refuse or drop a cue is guarded
-    /// where it happens (a cue about to be refused for its problems is rechecked, a spent chain
+    /// passes run), so a missed signal inside a cue or group leaves them out of date; what
+    /// could then refuse or drop a cue is guarded where it happens (a cue about to be refused for its problems is rechecked, a spent chain
     /// budget is recounted, a GO whose playhead cue is gone resyncs that list) and counted in
     /// [`Self::unsignalled_model_changes`]. Debug builds run the passes on every call and count.
     pub fn model_changed(&mut self) {
