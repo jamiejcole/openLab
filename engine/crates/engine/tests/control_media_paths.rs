@@ -174,7 +174,10 @@ fn media_property_replaces_only_the_file_and_is_undoable() {
     let after = find(&s.control().workspace().cue_lists[0].cues, id(1))
         .unwrap()
         .clone();
-    assert_eq!(media_of(s.control().workspace(), 1).as_deref(), Some("sfx/door.wav"));
+    assert_eq!(
+        media_of(s.control().workspace(), 1).as_deref(),
+        Some("sfx/door.wav")
+    );
     // Everything but the file is as it was.
     let (CueKind::Audio { media: m0, .. }, CueKind::Audio { media: m1, .. }) =
         (&before.kind, &after.kind)

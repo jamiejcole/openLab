@@ -30,10 +30,10 @@ mod validate;
 pub use backup::*;
 pub use changes::*;
 pub use command::*;
-pub use command_prepare::MediaPaths;
 pub use command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, TransportKey, WorkspaceSetting,
 };
+pub use command_prepare::MediaPaths;
 pub use cue::*;
 pub use cue_engine::*;
 pub use cue_index::*;

@@ -30,9 +30,7 @@ fn audio_at(n: u128, media: &str) -> Cue {
 
 fn media(c: &Cue) -> &str {
     match &c.kind {
-        CueKind::Audio {
-            media: Some(m), ..
-        } => m.as_str(),
+        CueKind::Audio { media: Some(m), .. } => m.as_str(),
         other => panic!("not an audio cue with a file: {other:?}"),
     }
 }
@@ -117,10 +115,7 @@ fn windows_paths_are_converted_and_made_relative() {
 #[test]
 fn a_decomposed_name_is_stored_composed() {
     let nfd = "/Show/cafe\u{301}.wav";
-    assert_eq!(
-        added_media(add(nfd), Some("/Show"), POSIX),
-        "caf\u{e9}.wav"
-    );
+    assert_eq!(added_media(add(nfd), Some("/Show"), POSIX), "caf\u{e9}.wav");
 }
 
 #[test]
@@ -301,7 +296,11 @@ fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
         [1002, 1003, 1004, 1005, 1006].map(cue_id)
     );
     assert_eq!(kids[1].kind.target(), Some(cue_id(1002)), "inside: follows");
-    assert_eq!(cues[1].kind.target(), Some(cue_id(1001)), "between top-level cues");
+    assert_eq!(
+        cues[1].kind.target(),
+        Some(cue_id(1001)),
+        "between top-level cues"
+    );
     assert_eq!(kids[2].kind.target(), None, "missing: cleared");
     assert_eq!(kids[3].kind.target(), Some(cue_id(51)), "existing: kept");
     assert!(matches!(&kids[0].kind, CueKind::Audio { patch, .. } if *patch == patch_id(1)));
