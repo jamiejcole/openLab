@@ -8,8 +8,8 @@ Status: mixer, fades, routing, per-voice patches and offline render driver (M3.1
 
 `Mixer::new(config)` returns a pair:
 
-- **`MixerController`** (control thread) schedules time-stamped `Command`s, polls `Event`s, frees returned voice starts, and reads the clock (`samples_rendered`), counters (faults, underrun frames, dropped events, leaked starts, pending-full blocks, xruns) and meters (see Meters and xruns).
-- **`Mixer`** (audio thread) renders with `process(out, frames)` into an interleaved `f32` buffer. The device callback and the offline renderer call `process_guarded`, which wraps `process` in `catch_unwind`: on a panic the block is silent, the fault counter goes up, and the clock still advances (ARCHITECTURE §3.4). The mixer notes which voice it is rendering (a pool index, no allocation); a panic during that voice's render is blamed on it, and a voice blamed for `VOICE_FAULT_LIMIT` (3) faulted blocks within `VOICE_FAULT_WINDOW` (16) blocks (`process_guarded` calls; ~170 ms at 512 frames, 48 kHz) is finished with `FinishReason::Faulted` (its start goes back, its meters flush, `faulted_voices` counts it), so the other voices play again from the next block. Each voice keeps the blocks of its last 3 faults in a fixed array (reset when the slot plays another voice), so a voice that faults every block or every other one is dropped while a one-off fault, or faults further apart than the window, cost only their blocks. A fault outside any voice's render (commands, buses, outputs) silences its block and drops nothing.
+- **`MixerController`** (control thread) schedules time-stamped `Command`s, polls `Event`s, frees returned voice starts, and reads the clock (`samples_rendered`), counters (faults, faulted voices and stages, underrun frames, dropped events, leaked starts, pending-full blocks, xruns) and meters (see Meters and xruns).
+- **`Mixer`** (audio thread) renders with `process(out, frames)` into an interleaved `f32` buffer. The device callback and the offline renderer call `process_guarded`, which wraps `process` in `catch_unwind`: on a panic the block is silent, the fault counter goes up, and the clock still advances (ARCHITECTURE §3.4). The faulted block's unit is isolated (see Faults below).
 
 They share only preallocated `rtrb` SPSC queues and atomics:
 
@@ -20,6 +20,22 @@ They share only preallocated `rtrb` SPSC queues and atomics:
 | returns | audio → control | 1024 + 4096 + voices + 1 | `Box<VoiceStart>` (source and routing) the mixer is finished with |
 
 The openlab-audio crate does not depend on `openlab-core`; the engine translates core actions into mixer commands.
+
+### Faults
+
+The mixer notes the stage it is in (`Stage`: a plain field write, no allocation) and `process_guarded` blames a panic on it. Each unit keeps the blocks of its last `FAULT_LIMIT` (3) faults in a fixed array; that many within `FAULT_WINDOW` (16) blocks (`process_guarded` calls; ~170 ms at 512 frames, 48 kHz) is the limit, so a unit that faults every block or every other one is dealt with while a one-off fault, or faults further apart than the window, cost only their blocks.
+
+| Stage | On a fault | At the limit |
+|---|---|---|
+| a voice's render (pool index) | nothing more (the window resets when the slot plays another voice) | finished with `FinishReason::Faulted` (its start goes back, its meters flush, `faulted_voices` counts it) |
+| applying a command to a voice | the command is gone (it left the pending set before it was applied); the voice, in whatever state it was left, is finished with `Faulted` at once; a start that never reached the pool is reported as `VoiceFinished { Faulted }` all the same | — |
+| a patch matrix (mixing its bus, or `SetPatchRouting` / `SnapPatch` for it) | every gain set to 0, bus cleared; `StageFaulted { Patch(k) }` | disabled: not mixed (its voices play on unheard), routing commands ignored |
+| a device output (delay line and gain, or `SetOutput` for it) | gain 0, the delay line cleared (no delay); `StageFaulted { Output(o) }` | disabled: silent, `SetOutput` ignored |
+| the master (or `SetMaster`) | gain 0; `StageFaulted { Master }` | disabled: bypassed at unity, `SetMaster` ignored |
+| the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
+| none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch, output and the master reset to silence and enabled again, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands are kept |
+
+`StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued. The control thread answers it from its own copy (docs/control.md "Mixer faults"). Clearing a delay line costs at most 1 s of samples, on a fault only. Every reset reuses the mixer's buffers; the panic itself (its payload, the hook) allocates, as before. Test hooks (`#[cfg(test)]`): `panic_next` (unblamed), `panic_voice`, `panic_apply` (a command matching a predicate), `stage.panic_at` (entering a patch, output, master or meter stage).
 
 ### Scheduling horizon
 
