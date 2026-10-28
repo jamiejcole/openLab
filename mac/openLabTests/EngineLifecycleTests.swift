@@ -376,6 +376,24 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(engine.docs[doc]?["document"]?["show_mode"], .bool(true))
     }
 
+    /// The crashed run's cues stopped with it: a window waiting to be reopened shows none playing.
+    func testAWindowWaitingForItsShowShowsNoCuePlaying() async throws {
+        let store = try XCTUnwrap(app.session.orderedStores.first?.store)
+        XCTAssertTrue(store.cueStates.values.contains { $0.state.isActive }, "the fixture has live cues")
+        engine.holdResults = true  // the new engine does not answer the reopen yet
+        processes.crash()
+        let alarmed = await pump { !self.presenter.shown.isEmpty }
+        XCTAssertTrue(alarmed)
+        XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive })
+        XCTAssertTrue(store.progress.isEmpty)
+        let waiting = await pump { self.app.session.detached.count == 2 }
+        XCTAssertTrue(waiting)
+        XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive })
+        engine.holdResults = false
+        engine.releaseResults()
+        await assertEventually { !self.app.session.isReattaching }
+    }
+
     func testTransportStillWorksWhileTheAlarmIsUp() async throws {
         processes.crash()
         let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }

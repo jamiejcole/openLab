@@ -147,6 +147,7 @@ final class EngineSupervisor {
             handled.insert(run.pid)
             let crashed = info?.pid == run.pid
             recoveryPending = true
+            session.engineRunEnded()
             engineLog.error(
                 "engine pid \(run.pid, privacy: .public) is gone (\(crashed ? "crashed" : "exited", privacy: .public)): starting a new one"
             )

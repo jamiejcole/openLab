@@ -247,12 +247,18 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     // MARK: Reattach after an engine restart
 
+    /// The engine the stores were bound in is gone (its pid ended): every cue it played stopped.
+    func engineRunEnded() {
+        for s in stores.values { s.clearRuntime() }
+    }
+
     /// Every store leaves its doc id (it means nothing in the new run) and waits to be rebound.
     private func detachAll() {
         reattachTask?.cancel()
         reattachTask = nil
         for (doc, store) in orderedStores {
             store.client.stop()
+            store.clearRuntime()
             detached.append((info(of: store, doc: doc), store))
         }
         stores = [:]
