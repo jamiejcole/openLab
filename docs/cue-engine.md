@@ -415,14 +415,13 @@ The passes compare the workspace with what the engine knows:
 
 ## Warnings
 
-`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken` (a start or load of a broken cue), `TriggerIgnored`, `LoadIgnored`, `Unsupported`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`, `PreviewIgnored`, `PreviewFailed`. They are structured so the UI can localise them.
+`Action::Warning(EngineWarning)` never stops anything: `UnknownList`, `UnknownCue`, `NotInList`, `NumberNotFound`, `CueBroken` (a start or load of a broken cue), `TriggerIgnored`, `LoadIgnored`, `LateStart`, `ChainLimit`, `CueRemoved`, `NoTarget`, `TargetMissing`, `TargetWrongKind`, `TargetNotRunning`, `DevampIgnored`, `PreviewIgnored`, `PreviewFailed`. They are structured so the UI can localise them.
 
 ## Not yet
 
 - **Groups**: playlist crossfades and per-group options beyond loop/shuffle.
 - **Open QLab questions on halted playlists** (M2.27, from QLab check Q2; decided here as the most defensible reading, not measured): a remaining child whose length is not known or endless (a looping or unprobed audio cue, a nested looping playlist, a nested random or "start first" group) cancels the group's auto-follow, as the group could never say when it would have ended; a looping playlist that halts never follows; the group shows `post-waiting` while its follow is pending (QLab shows it finished); a nested group that ends with a child broken at run time still counts as a broken child of the playlist around it (that playlist moves on and does not follow), it does not halt it; a broken child that was paused on its own when it failed has its nominal end counted from its frozen deadline. QLab showed the measured case only (a plain list of 10 s audio cues).
 - **Fade with nothing to fade** (M2.26, QLab check F4): a Fade that sets no level has the static problem `nothing_to_fade` (QLab: "No parameters set to fade"), so it is broken like any cue with problems: GO and Start skip it (`CueBroken`) and its "stop target when done" does not stop the target; its timing and continue run as for any broken cue. The target need not be playing or even set for the problem to show (a Fade with no target has `no_target` as well, listed first). Setting any one level (master, one output, one crosspoint) fixes it, incrementally like other model problems.
-- **Network** cues (M4.6): their action completes at once with an `Unsupported` warning and does nothing; pre-wait, post-wait and continue mode apply.
 - **Target** cues (CT-18) are not in v0.0.1; video fades (CT-10 video part) are v0.0.2.
 - **Network cues** send OSC only. Raw UDP/TCP string messages and OSC parameter fades are later (REQUIREMENTS §21).
 - **Priming**: `Loaded` means "loaded by an operation"; keeping cues near the playhead primed (ARCHITECTURE §3.5) is the binary's job (M4.2).

@@ -107,6 +107,16 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(ProblemText.problem(target, label: { _ in "2.1  Door slam" }).contains("2.1  Door slam"))
     }
 
+    /// An older engine may still send the removed `unsupported` warning (M4.6c): the message
+    /// decodes and the row reads as an unrecognised warning.
+    func testLegacyUnsupportedWarningDecodesAsUnknown() throws {
+        let m = try ServerMessage.decode(
+            #"{"type":"warnings","warnings":[{"type":"unsupported","cue":"\#(rain)"}]}"#)
+        guard case .warnings(let ws) = m, let w = ws.first else { return XCTFail("\(m)") }
+        XCTAssertEqual(w.type, "unsupported")
+        XCTAssertTrue(ProblemText.warning(w, label: { $0.raw }).contains("unsupported"))
+    }
+
     func testUnknownVariantsShowTheirRawType() throws {
         let w = try JSONDecoder().decode(WireVariant.self, from: Data(#"{"type":"flux_capacitor","x":1}"#.utf8))
         XCTAssertTrue(ProblemText.warning(w, label: { $0.raw }).contains("flux_capacitor"))
@@ -183,7 +193,7 @@ final class WarningsTests: XCTestCase {
         try receive(#"{"type":"warnings","warnings":[]}"#)
         let base = side.warningRows.count
         try receive(
-            #"{"type":"warnings","warnings":[{"type":"unsupported","cue":"\#(rain)"},{"type":"cue_broken","cue":"\#(radio)"}]}"#
+            #"{"type":"warnings","warnings":[{"type":"load_ignored","cue":"\#(rain)"},{"type":"cue_broken","cue":"\#(radio)"}]}"#
         )
         XCTAssertEqual(side.warningRows.count, base + 2)
         try receive(#"{"type":"warnings","warnings":[{"type":"cue_broken","cue":"\#(radio)"}]}"#)
