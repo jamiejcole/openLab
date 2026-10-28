@@ -668,10 +668,6 @@ pub enum EngineWarning {
     LoadIgnored {
         cue: CueId,
     },
-    /// This cue kind's action is not implemented yet; it completed at once and did nothing.
-    Unsupported {
-        cue: CueId,
-    },
     /// The voice started `late_by` samples after its deadline (a late tick). Later cues keep
     /// their timing.
     LateStart {

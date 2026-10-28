@@ -142,7 +142,7 @@ Notes and decisions go in the PR, the task's docs or `docs/handoff/`.
 - [x] M4.6 Network (OSC send) cue + OSC output override [CT-30, PB-10]
   - [x] M4.6a Edit a Network cue [CT-30, ED-07]
   - [x] M4.6b QLab check: TCP framing for Network cue sends (SLIP vs length-prefixed) [CT-30]
-  - [ ] M4.6c Remove `EngineWarning::Unsupported` / `WireWarning::Unsupported` (protocol cleanup)
+  - [x] M4.6c Remove `EngineWarning::Unsupported` / `WireWarning::Unsupported` (protocol cleanup)
 - [x] M4.7 Show log to disk, status (CPU, engine load, disk, xruns, devices), local crash capture [DX-02, DX-03, DX-04]
   - [x] M4.7a `engine_load` in `status` (DX-03)
   - [x] M4.7b Crash capture beyond panics (DX-04)

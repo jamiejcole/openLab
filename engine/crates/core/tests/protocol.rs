@@ -1687,7 +1687,7 @@ fn assert_covered(what: &str, seen: impl Iterator<Item = usize>, count: usize) {
 // Each `*_idx` is an exhaustive match: a new variant stops compiling here until it is given
 // the next index and bumped in its `*_COUNT`, and the coverage tests then want a sample for it.
 
-const ENGINE_WARNING_COUNT: usize = 18;
+const ENGINE_WARNING_COUNT: usize = 17;
 fn engine_warning_idx(w: &EngineWarning) -> usize {
     match w {
         EngineWarning::UnknownList { .. } => 0,
@@ -1697,21 +1697,20 @@ fn engine_warning_idx(w: &EngineWarning) -> usize {
         EngineWarning::CueBroken { .. } => 4,
         EngineWarning::TriggerIgnored { .. } => 5,
         EngineWarning::LoadIgnored { .. } => 6,
-        EngineWarning::Unsupported { .. } => 7,
-        EngineWarning::LateStart { .. } => 8,
-        EngineWarning::ChainLimit { .. } => 9,
-        EngineWarning::CueRemoved { .. } => 10,
-        EngineWarning::NoTarget { .. } => 11,
-        EngineWarning::TargetMissing { .. } => 12,
-        EngineWarning::TargetWrongKind { .. } => 13,
-        EngineWarning::TargetNotRunning { .. } => 14,
-        EngineWarning::PreviewIgnored { .. } => 15,
-        EngineWarning::PreviewFailed { .. } => 16,
-        EngineWarning::DevampIgnored { .. } => 17,
+        EngineWarning::LateStart { .. } => 7,
+        EngineWarning::ChainLimit { .. } => 8,
+        EngineWarning::CueRemoved { .. } => 9,
+        EngineWarning::NoTarget { .. } => 10,
+        EngineWarning::TargetMissing { .. } => 11,
+        EngineWarning::TargetWrongKind { .. } => 12,
+        EngineWarning::TargetNotRunning { .. } => 13,
+        EngineWarning::PreviewIgnored { .. } => 14,
+        EngineWarning::PreviewFailed { .. } => 15,
+        EngineWarning::DevampIgnored { .. } => 16,
     }
 }
 
-const WIRE_WARNING_COUNT: usize = 20;
+const WIRE_WARNING_COUNT: usize = 19;
 fn wire_warning_idx(w: &WireWarning) -> usize {
     match w {
         WireWarning::UnknownList { .. } => 0,
@@ -1721,19 +1720,18 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
         WireWarning::CueBroken { .. } => 4,
         WireWarning::TriggerIgnored { .. } => 5,
         WireWarning::LoadIgnored { .. } => 6,
-        WireWarning::Unsupported { .. } => 7,
-        WireWarning::LateStart { .. } => 8,
-        WireWarning::ChainLimit { .. } => 9,
-        WireWarning::CueRemoved { .. } => 10,
-        WireWarning::NoTarget { .. } => 11,
-        WireWarning::TargetMissing { .. } => 12,
-        WireWarning::TargetWrongKind { .. } => 13,
-        WireWarning::TargetNotRunning { .. } => 14,
-        WireWarning::PreviewIgnored { .. } => 15,
-        WireWarning::PreviewFailed { .. } => 16,
-        WireWarning::DevampIgnored { .. } => 17,
-        WireWarning::GoIgnored { .. } => 18,
-        WireWarning::Notice { .. } => 19,
+        WireWarning::LateStart { .. } => 7,
+        WireWarning::ChainLimit { .. } => 8,
+        WireWarning::CueRemoved { .. } => 9,
+        WireWarning::NoTarget { .. } => 10,
+        WireWarning::TargetMissing { .. } => 11,
+        WireWarning::TargetWrongKind { .. } => 12,
+        WireWarning::TargetNotRunning { .. } => 13,
+        WireWarning::PreviewIgnored { .. } => 14,
+        WireWarning::PreviewFailed { .. } => 15,
+        WireWarning::DevampIgnored { .. } => 16,
+        WireWarning::GoIgnored { .. } => 17,
+        WireWarning::Notice { .. } => 18,
     }
 }
 
@@ -1918,10 +1916,6 @@ fn warning_table() -> Vec<(EngineWarning, WireWarning)> {
         (
             EngineWarning::LoadIgnored { cue: c },
             WireWarning::LoadIgnored { cue: c },
-        ),
-        (
-            EngineWarning::Unsupported { cue: c },
-            WireWarning::Unsupported { cue: c },
         ),
         // 4800 samples at 48 kHz.
         (
