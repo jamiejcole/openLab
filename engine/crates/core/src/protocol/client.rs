@@ -11,7 +11,8 @@ use super::{
 use crate::command::Command;
 use crate::cue::{FadeSpec, Modifiers};
 use crate::media_path::{PathStyle, is_absolute, to_portable};
-use crate::model::{CueId, CueListId, WorkspaceId};
+use crate::model::{CueId, CueListId, PatchId, WorkspaceId};
+use crate::settings::PatchMapping;
 
 /// Longest `coalesce` key of a `command`, bytes.
 pub const MAX_COALESCE_KEY: usize = 128;
@@ -251,6 +252,19 @@ pub enum Request {
     /// Answers `ok` with no data. Workspace-bound.
     SetShowMode {
         on: bool,
+    },
+    /// Sets (`mapping`) or clears (`mapping` null or absent) where the connection's workspace's
+    /// `patch` plays on this machine (WS-07, M4.4g). Stored in the machine settings under this
+    /// workspace's id, not in the show file. The device must be one `list_devices` names, there
+    /// must be one channel per output of the patch, each below the device's channel count.
+    /// Answers `ok` with no data, or `not_found` (patch or device unknown) / `bad_request`
+    /// (wrong channel count, channel out of range); nothing changes on a refusal. A clear is
+    /// stored as an explicit "unmapped" so the default mapping does not map the patch again.
+    /// Workspace-bound.
+    SetPatchMapping {
+        patch: PatchId,
+        #[serde(default)]
+        mapping: Option<PatchMapping>,
     },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
