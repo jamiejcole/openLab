@@ -19,8 +19,9 @@ use openlab_engine::osc::{
     MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES, MAX_KNOWN_IPS,
     MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
     MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES,
-    Osc, OscInput, OscShow, Outcome, Peer, Reply, Sessions, SlipDecoder, SlipEvent, Target,
-    UDP_IDLE, decode_packet, encode_message, parse_address, reply_message, slip_encode, upper,
+    Osc, OscInput, OscShow, Outcome, Peer, Reply, SINGLE_DOC, Sessions, SlipDecoder, SlipEvent,
+    Target, UDP_IDLE, decode_packet, encode_message, parse_address, reply_message, slip_encode,
+    upper,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -1542,7 +1543,7 @@ fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_t
     );
     let mut allowed = 0;
     for _ in 0..2000 {
-        if osc.update_allowed(victim, later, 120, false) {
+        if osc.update_allowed(SINGLE_DOC, victim, later, 120, false) {
             allowed += 1;
         }
     }
@@ -1554,7 +1555,7 @@ fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_t
             .len(),
         1
     );
-    assert!(osc.update_allowed(tcp_peer(9), T0, 100_000, false));
+    assert!(osc.update_allowed(SINGLE_DOC, tcp_peer(9), T0, 100_000, false));
     // With no passcode a `/connect` proves nothing about a datagram's source address: a forged
     // `/connect` followed by reads (in one bundle, or one datagram after another) leaves the
     // victim's budget in place, and so do its updates.
@@ -1578,7 +1579,7 @@ fn with_no_passcode_a_source_that_has_not_connected_has_a_large_budget_and_one_t
     assert_eq!(replies, 4, "256 KiB of 60 KB replies and no more");
     let mut allowed = 0;
     for _ in 0..2000 {
-        allowed += usize::from(osc.update_allowed(forged, T0, 120, false));
+        allowed += usize::from(osc.update_allowed(SINGLE_DOC, forged, T0, 120, false));
     }
     assert!(allowed < 2000);
 }
@@ -1594,9 +1595,9 @@ fn with_a_passcode_a_peer_that_connected_is_not_held_to_a_budget() {
         let out = send(&mut osc, &show, console, T0, &msg("/cue/1/notes", vec![]));
         assert_eq!(reply_json(&out.replies[0])["status"], "ok");
     }
-    assert!(osc.update_allowed(console, T0, 100_000, true));
+    assert!(osc.update_allowed(SINGLE_DOC, console, T0, 100_000, true));
     // The passcode, not the session, is what proves the address: with none set it does not.
-    assert!(!osc.update_allowed(console, T0, 10_000_000, false));
+    assert!(!osc.update_allowed(SINGLE_DOC, console, T0, 10_000_000, false));
 }
 
 #[test]
@@ -2705,7 +2706,7 @@ fn cycling_many_forged_subscribers_does_not_reset_their_update_budgets() {
     for _round in 0..2000 {
         for (i, count) in allowed.iter_mut().enumerate() {
             clock += Duration::from_nanos(1);
-            if osc.update_allowed(Peer::Udp(ip_n(i)), clock, 120, false) {
+            if osc.update_allowed(SINGLE_DOC, Peer::Udp(ip_n(i)), clock, 120, false) {
                 *count += 1;
             }
         }
@@ -2722,7 +2723,7 @@ fn cycling_many_forged_subscribers_does_not_reset_their_update_budgets() {
     assert!(osc.stats().updates_dropped > 0);
     // A bucket that has refilled makes room: a second later the new address is served.
     let later = clock + Duration::from_secs(10);
-    assert!(osc.update_allowed(Peer::Udp(ip_n(1024)), later, 120, false));
+    assert!(osc.update_allowed(SINGLE_DOC, Peer::Udp(ip_n(1024)), later, 120, false));
     // And the same with a passcode (the strict budget).
     let mut osc = quiet_osc();
     let show = Show::with_passcode("s3cret");
@@ -3520,16 +3521,17 @@ fn a_reply_port_needs_the_passcode_like_updates() {
 #[test]
 fn changing_the_reply_port_does_not_reset_the_reply_budget() {
     let mut sessions = Sessions::default();
+    let mut budgets = openlab_engine::osc::Budgets::default();
     let ip = udp().ip();
     let kind = openlab_engine::osc::Budget::Strict;
     let mut spent = 0;
-    while sessions.spend_reply_bytes(ip, kind, T0, 1000) {
+    while budgets.spend_reply_bytes(ip, kind, T0, 1000) {
         spent += 1;
         assert!(spent < 1000);
     }
     assert!(sessions.set_reply_port(udp(), T0, 54329));
     assert!(sessions.set_reply_port(udp(), T0, 54330));
-    assert!(!sessions.spend_reply_bytes(ip, kind, T0, 1000));
+    assert!(!budgets.spend_reply_bytes(ip, kind, T0, 1000));
 }
 
 // ---- passcode rights (M4.5c)
@@ -3925,7 +3927,7 @@ fn a_peer_connected_with_a_no_rights_row_can_do_nothing() {
             peer,
             &msg("/cue/zz*/name", vec![])
         ));
-        assert!(!osc.may_receive_updates(peer, show.access()));
+        assert!(!osc.may_receive_updates(SINGLE_DOC, peer, show.access()));
     }
 }
 
@@ -4262,15 +4264,15 @@ fn updates_work_at_any_access_level_but_only_viewers_may_receive_them() {
     assert!(out.replies.is_empty());
     assert_eq!(osc.update_subscribers(T0), vec![udp()]);
     // ... but what an update carries is cue data: no View, no updates.
-    assert!(!osc.may_receive_updates(udp(), show.access()));
+    assert!(!osc.may_receive_updates(SINGLE_DOC, udp(), show.access()));
     connect_status(&mut osc, &show, udp(), T0, VIEW_ONLY);
-    assert!(osc.may_receive_updates(udp(), show.access()));
+    assert!(osc.may_receive_updates(SINGLE_DOC, udp(), show.access()));
     // A No Passcode peer with View needs no connect.
     let open = Show::with_access(table(rights(true, false, false)));
     let osc = quiet_osc();
-    assert!(osc.may_receive_updates(tcp_peer(5), open.access()));
+    assert!(osc.may_receive_updates(SINGLE_DOC, tcp_peer(5), open.access()));
     // The right is judged against the table as it is now.
-    assert!(!osc.may_receive_updates(tcp_peer(5), show.access()));
+    assert!(!osc.may_receive_updates(SINGLE_DOC, tcp_peer(5), show.access()));
 }
 
 #[test]
