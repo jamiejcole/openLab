@@ -5,8 +5,8 @@
 //! 8 kHz in 64-frame blocks (sample counts stay small and exact).
 
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{OnceLock, PoisonError};
 
 use openlab_audio::MixerConfig;
 use openlab_core::protocol::{
@@ -247,20 +247,55 @@ pub fn wav(samples: &[f32]) -> PathBuf {
     file("wav", &v)
 }
 
-/// Writes `bytes` to a fresh file (tests run in parallel and must never share one).
+/// Writes `bytes` to a fresh file (tests run in parallel and must never share one). The file
+/// is created, never opened: whatever is in the way (a pipe nobody reads would block the write
+/// for ever) fails the test at once instead.
 pub fn file(ext: &str, bytes: &[u8]) -> PathBuf {
     let p = fresh_path(ext);
-    std::fs::write(&p, bytes).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&p)
+        .unwrap();
+    std::io::Write::write_all(&mut f, bytes).unwrap();
     p
 }
 
+/// A path nothing exists at, in a folder of this process's own.
 pub fn fresh_path(ext: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("control-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(format!("{n}.{ext}"))
+    process_dir().join(format!("{n}.{ext}"))
+}
+
+/// Created new for this process. A folder named after the pid alone outlives the run (the target
+/// dir is never cleaned), and pids are reused: a later process with the same pid found the old
+/// run's files at its "fresh" paths, a named pipe among them, and blocked for ever writing one.
+fn process_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix(&format!("control-{}-", std::process::id()))
+            .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+            .unwrap()
+            .keep()
+    })
+}
+
+/// Opens the named pipe `path` for writing, which returns once a reader has it open; fails the
+/// test, rather than hang it, if no reader comes within 30 s. The waiting thread is left behind
+/// then (it ends with the process).
+#[cfg(unix)]
+pub fn open_pipe_writer(path: &Path) -> std::fs::File {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::OpenOptions::new().write(true).open(&path));
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(f) => f.unwrap(),
+        Err(_) => panic!("no reader opened the pipe"),
+    }
 }
 
 /// `frames` samples of `value`.
@@ -413,6 +448,22 @@ pub fn probe_order(paths: &[PathBuf]) -> Vec<PathBuf> {
         .filter(|p| paths.contains(p))
         .cloned()
         .collect()
+}
+
+/// Ticks until at most `n` probes are pending (their answers applied); fails the test after 30 s.
+pub fn settle_probes_to(s: &mut OfflineShow, n: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        s.tick();
+        if s.control().probes_pending() <= n {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "probes never answered"
+        );
+        std::thread::yield_now();
+    }
 }
 
 /// Waits (event-driven, bounded) until `gated_probe` has been asked for `n` of these files.

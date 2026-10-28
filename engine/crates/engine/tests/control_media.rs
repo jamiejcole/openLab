@@ -349,6 +349,43 @@ fn panic_fades_the_show_cue_and_its_preview_together() {
     assert!(all[at + 800 + BLOCK as usize..].iter().all(|&v| v == 0.0));
 }
 
+/// Pids are reused and the target dir is never cleaned, so files an earlier run left under its
+/// pid-named folder must never be handed out as fresh: one was a named pipe, and writing a
+/// "fresh" WAV to it blocked the test for ever (M4.4j).
+#[test]
+fn fresh_paths_never_land_on_an_earlier_runs_files() {
+    let first = fresh_path("wav");
+    let n: u64 = first
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let old = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("control-{}", std::process::id()));
+    std::fs::create_dir_all(&old).unwrap();
+    // Other tests take paths meanwhile: cover the next couple of hundred. Created, never
+    // opened: something already there may be a pipe a real earlier run left.
+    let left: Vec<_> = (n + 1..n + 200)
+        .map(|k| old.join(format!("{k}.wav")))
+        .filter(|p| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(p)
+                .is_ok()
+        })
+        .collect();
+    let p = fresh_path("wav");
+    assert!(std::fs::symlink_metadata(&p).is_err(), "{p:?}");
+    let w = wav(&dc(10, 0.5));
+    assert_eq!(std::fs::read(&w).unwrap().len(), 44 + 10 * 4);
+    for p in &left {
+        std::fs::remove_file(p).unwrap();
+    }
+}
+
 /// The probe of a named pipe blocks until a writer opens it: the control loop must keep running
 /// (the probe is on a worker) and a GO in the meantime must not block either.
 #[cfg(unix)]
@@ -377,7 +414,7 @@ fn the_control_loop_never_waits_for_the_disk() {
     // refuses a pipe at its first seek and closes it without reading, so the bytes below race
     // with that close and may hit EPIPE: they are only there to be unplayable if read, and the
     // outcome does not depend on them, so a broken pipe is fine.
-    let mut writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    let mut writer = open_pipe_writer(&fifo);
     match std::io::Write::write_all(&mut writer, b"not audio") {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
@@ -448,14 +485,17 @@ fn files_near_the_playhead_are_probed_first() {
         cue: Some(id(6)),
     });
     s.tick();
+    // One worker freed: it takes the next job, which must be the file at the playhead (workspace
+    // order would probe it last). Freeing both would race them: the one that took the urgent
+    // job can be descheduled before it starts it while the other runs through the rest.
+    release(&paths[0]);
+    wait_probed(&paths, 3);
+    let order = probe_order(&paths);
+    assert_eq!(order.get(2), Some(&paths[5]), "{order:?}");
     for p in &paths {
         release(p);
     }
     s.settle_media();
-    let order = probe_order(&paths);
-    let pos = order.iter().position(|p| *p == paths[5]).unwrap();
-    // Workspace order would have probed it last (index 5).
-    assert!(pos <= 3, "{order:?}");
     assert_eq!(s.control().probes_pending(), 0);
 }
 
@@ -473,6 +513,9 @@ fn a_start_held_by_its_probe_fails_after_five_seconds() {
     // The hold limit is sample time; the watchdog's clock stands still, so only the limit fails it.
     c.probe_clock = ProbeTime::new().clock();
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    // The follow's own file is probed first, or its start would wait for that probe too (and
+    // play late) whenever the other worker runs behind the render.
+    settle_probes_to(&mut s, 1);
     let at = go(&mut s);
     // Told at once that it waits.
     assert!(warnings(&s.take_outbound()).iter().any(|w| matches!(
@@ -759,7 +802,17 @@ fn slow_probes_and_a_short_file(
         .zip(1u128..)
         .map(|(p, n)| audio(n, p, 0))
         .collect();
-    cues.push(audio(4, &short, 0));
+    let mut short_cue = audio(4, &short, 0);
+    let short_kind = short_cue.kind.clone();
+    if delayed {
+        // The short file comes once the trial has started. Asked for with the slow ones, its
+        // probe races the third slow file's for the two fresh workers, and whichever is taken
+        // first is the trial: the short file would answer it and end the stall.
+        if let CueKind::Audio { media, .. } = &mut short_cue.kind {
+            *media = None;
+        }
+    }
+    cues.push(short_cue);
     let ws = workspace(cues);
     let time = ProbeTime::new();
     let mut c = config(&ws);
@@ -780,6 +833,7 @@ fn slow_probes_and_a_short_file(
         }
         // The volume is stalled: one trial (the third slow file) hangs, the short file waits.
         wait_probed(&slow, 3);
+        set_kind(&mut s, 4, short_kind);
         for _ in 0..50 {
             s.step();
         }
@@ -857,9 +911,7 @@ fn stalled_tail() -> openlab_engine::control::offline::OfflineShow {
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
     // A writer opens the pipe and closes it: the worker goes on, and cue 1's audio comes.
-    std::thread::spawn(move || drop(std::fs::OpenOptions::new().write(true).open(&pipe)))
-        .join()
-        .unwrap();
+    drop(open_pipe_writer(&pipe));
     s.run(BLOCK * 4);
     let from = s.channel(0).len() - BLOCK as usize;
     assert!(s.channel(0)[from..].iter().all(|&v| v == 0.5));
@@ -917,6 +969,10 @@ fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
     if let CueKind::Audio { preload, .. } = &mut kind {
         *preload = on;
     }
+    set_kind(s, cue, kind);
+}
+
+fn set_kind(s: &mut OfflineShow, cue: u128, kind: CueKind) {
     let request = s.request_id();
     let replies = s.send(ClientMessage::Command {
         id: request,
