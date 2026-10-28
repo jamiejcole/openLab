@@ -703,11 +703,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if let style = CueKindStyle.kinds[kind] {
                 cell.setImage(0, symbol: style.symbol, label: loc(style.labelKey))
             }
-            if cue.name.isEmpty {
+            if cue.displayName.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
                 cell.label.textColor = .secondaryLabelColor
             } else {
-                text(cue.name)
+                text(cue.displayName)
             }
             if let colour = cue.raw["color"]?.stringValue.flatMap({ CueKindStyle.colours[$0] }) {
                 cell.setImage(1, symbol: colour.symbol, label: loc(colour.labelKey), tint: colour.tint)
@@ -737,7 +737,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if cue.kindType == "network" { return cue.raw["kind"]?["address"]?.stringValue ?? "" }
         guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
         guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
-        let label = [t.number, t.name.isEmpty ? CueKindStyle.kindLabel(t.kindType) : t.name]
+        let label = [t.number, t.listName]
         return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
