@@ -32,7 +32,7 @@ use openlab_core::{
 };
 
 use super::inbox::reply;
-use super::{Control, ControlConfig, ControlError, Inbox, ReplyTx, Scope, notice, ok};
+use super::{Control, ControlConfig, ControlError, Doc, DocCx, Inbox, ReplyTx, Scope, notice, ok};
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
     check_recovery, media_path, read_text, scan_recovery,
@@ -683,11 +683,7 @@ fn folder_of(path: &Path) -> Option<PathBuf> {
     path.parent().map(Path::to_path_buf)
 }
 
-impl Control {
-    fn is_dirty(&self) -> bool {
-        self.doc.revision != self.doc.saved_revision
-    }
-
+impl DocCx<'_> {
     /// A document request (everything in `Request` but `snapshot`, `list_devices`, `relink`).
     pub(super) fn doc_request(&mut self, id: RequestId, request: Request, to: &ReplyTx) {
         match request {
@@ -818,7 +814,7 @@ impl Control {
             );
             return false;
         }
-        if self.is_dirty() && !discard {
+        if self.doc.is_dirty() && !discard {
             fail(
                 to,
                 id,
@@ -886,7 +882,7 @@ impl Control {
             }
             DocAnswer::Loaded { loaded, .. } => {
                 // The operator may have edited while the file was being read.
-                if self.is_dirty() && !pending.discard {
+                if self.doc.is_dirty() && !pending.discard {
                     fail(
                         to,
                         id,
@@ -967,7 +963,7 @@ impl Control {
         // The autosave of dropped edits goes, after any write of it still in flight (the writer
         // runs the removal after its current job). Not when the same file is reopened: its
         // autosave may be the one just restored.
-        if (discard && self.is_dirty() && !same_file) || clear_autosave {
+        if (discard && self.doc.is_dirty() && !same_file) || clear_autosave {
             let (id, from) = if clear_autosave {
                 (workspace.id, path.clone())
             } else {
@@ -1038,7 +1034,7 @@ impl Control {
     /// Replies to the requester after [`Self::install`]: the snapshot (also broadcast to every
     /// other client), the workspace warnings, then the result.
     fn finish_install(&mut self, id: RequestId, to: &ReplyTx) {
-        let snapshot = self.snapshot();
+        let snapshot = self.doc.snapshot();
         reply(
             to,
             ServerMessage::Snapshot {
@@ -1059,7 +1055,7 @@ impl Control {
 
     /// Sends the snapshot to every client again (the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
-        let snapshot = Box::new(self.snapshot());
+        let snapshot = Box::new(self.doc.snapshot());
         self.doc.file.resend_snapshot = !self
             .eng
             .out
@@ -1221,7 +1217,7 @@ impl Control {
                 self.moved_folder(old_dir.as_deref(), save.rebase, clean_before);
             }
         }
-        if !self.is_dirty() {
+        if !self.doc.is_dirty() {
             self.doc.file.dirty_since = None;
         }
         self.document();
@@ -1352,7 +1348,7 @@ impl Control {
     }
 
     fn autosave_if_due(&mut self) {
-        if !self.is_dirty() {
+        if !self.doc.is_dirty() {
             self.doc.file.dirty_since = None;
             return;
         }
@@ -1390,7 +1386,15 @@ impl Control {
         self.doc.file.autosaved_revision = Some(self.doc.revision);
         self.doc.file.last_autosave = Some(now_ms);
     }
+}
 
+impl Doc {
+    fn is_dirty(&self) -> bool {
+        self.revision != self.saved_revision
+    }
+}
+
+impl Control {
     /// Answers the document workers have posted so far (tests wait for one to be in the inbox).
     pub fn doc_answers_posted(&self) -> u64 {
         self.eng.docs.answered.load(Ordering::SeqCst)
@@ -1412,7 +1416,7 @@ impl Control {
     }
 
     pub fn is_unsaved(&self) -> bool {
-        self.is_dirty()
+        self.doc.is_dirty()
     }
 
     pub fn runtime_seq(&self) -> u64 {

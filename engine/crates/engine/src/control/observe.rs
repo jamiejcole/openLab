@@ -13,7 +13,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{CueId, CueListId};
 
-use super::{Control, ControlConfig};
+use super::{Control, ControlConfig, DocCx};
 use crate::diag::{Counters, Peek, StatusReporter};
 
 /// Entries `log_tail` returns when the request names no limit: the whole ring.
@@ -89,7 +89,7 @@ fn elapsed(now: i64, then: i64, gap: i64) -> bool {
     d < 0 || d >= gap
 }
 
-impl Control {
+impl DocCx<'_> {
     /// Seconds of audio rendered: the show's own time.
     fn show_time(&self) -> f64 {
         self.eng.mixer.samples_rendered() as f64 / f64::from(self.eng.rate.get())
@@ -458,7 +458,9 @@ impl Control {
                 .filter(|l| l.is_finite()),
         }
     }
+}
 
+impl Control {
     /// The show log, for tests and the host.
     pub fn show_log(&self) -> &crate::diag::ShowLog {
         &self.eng.config.show_log

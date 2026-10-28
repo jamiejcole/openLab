@@ -3,6 +3,12 @@
 //! The control thread (ARCHITECTURE §3.1, §3.2; docs/control.md): owns the workspace, its undo
 //! history, the cue engine and the mixer controller, and wires them to the disk streams.
 //!
+//! The state is split as ARCHITECTURE §3.1 assigns it: an `Engine` every workspace shares (mixer,
+//! device, disk streamer, voice-id and patch-slot allocators, machine settings, document worker,
+//! outbound channel, show log) and a `Doc` per open workspace (model, history, cue engine,
+//! voices, media catalog, file state). Per-doc work runs on a `DocCx` (one doc and the engine).
+//! One doc is open for now (M4.15d); several arrive with M4.15e.
+//!
 //! [`Control`] is the loop's state and logic, with no thread or clock of its own: time is the
 //! mixer's sample counter (`samples_rendered`), whether a device callback ([`runner::run`]) or
 //! the offline render driver ([`offline::OfflineShow`], tests) advances it. Both call the same
@@ -460,8 +466,9 @@ impl Control {
             observe,
         };
         let mut control = Self { eng, doc };
+        let mut cx = control.cx();
         if let Some(e) = writer_error {
-            control.record(
+            cx.record(
                 LogKind::Engine,
                 LogLevel::Warn,
                 format!(
@@ -471,7 +478,7 @@ impl Control {
                 None,
             );
         }
-        control.record(
+        cx.record(
             LogKind::Engine,
             LogLevel::Info,
             format!(
@@ -483,61 +490,216 @@ impl Control {
             None,
             None,
         );
-        let cap = control.eng.mixer.voice_meter_capacity();
-        control.eng.meter_ids = vec![VoiceId(0); cap];
-        control.eng.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
-        let now = control.now();
+        let cap = cx.eng.mixer.voice_meter_capacity();
+        cx.eng.meter_ids = vec![VoiceId(0); cap];
+        cx.eng.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
+        let now = cx.now();
         // A newly opened workspace: tell the engine, report the playheads (docs/cue-engine.md).
-        control.doc.engine.model_changed();
-        control.doc.media.sync(&control.doc.ws);
+        cx.doc.engine.model_changed();
+        cx.doc.media.sync(&cx.doc.ws);
         let mut inputs = vec![Input::Tick];
-        inputs.extend(control.sync_workspace(true));
+        inputs.extend(cx.sync_workspace(true));
         for input in inputs {
-            control.feed(input, now);
+            cx.feed(input, now);
         }
         control.eng.mixer.pump();
         Ok(control)
     }
 
-    /// The scheduling time: the earliest sample a command can still hit.
-    fn now(&self) -> SampleTime {
-        self.eng
-            .mixer
-            .samples_rendered()
-            .saturating_add(self.eng.block)
-            .max(self.eng.now_floor)
+    /// The one open doc with the engine it plays on. Engine-wide work that acts on the docs
+    /// (device loss and return, health, status, shutdown) runs through it too until there are
+    /// several docs (M4.15e).
+    fn cx(&mut self) -> DocCx<'_> {
+        DocCx {
+            eng: &mut self.eng,
+            doc: &mut self.doc,
+        }
+    }
+
+    /// The open docs, in open order.
+    fn docs(&self) -> impl Iterator<Item = &Doc> {
+        std::iter::once(&self.doc)
     }
 
     /// Handles one inbox message.
     pub fn handle(&mut self, msg: Inbox) -> Flow {
+        let mut cx = self.cx();
         match msg {
-            Inbox::Client { message, reply } => return self.client(message, &reply),
-            Inbox::Probe(answer) => self.probe_answer(answer),
-            Inbox::Device(answer) => self.device_answer(answer),
-            Inbox::Net(answer) => self.net_answer(answer),
-            Inbox::Doc(answer) => self.doc_answer(answer),
-            Inbox::Watch(WatchAnswer::Batch(batch)) => self.doc.watch_batches.push(batch),
+            Inbox::Client { message, reply } => return cx.client(message, &reply),
+            Inbox::Probe(answer) => cx.probe_answer(answer),
+            Inbox::Device(answer) => cx.device_answer(answer),
+            Inbox::Net(answer) => cx.net_answer(answer),
+            Inbox::Doc(answer) => cx.doc_answer(answer),
+            Inbox::Watch(WatchAnswer::Batch(batch)) => cx.doc.watch_batches.push(batch),
             Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
-                self.doc.watch.answered(&bucket, healthy);
+                cx.doc.watch.answered(&bucket, healthy);
             }
-            Inbox::Log { level, message } => self.log(level, message),
-            Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
+            Inbox::Log { level, message } => cx.log(level, message),
+            Inbox::Trigger { source, detail } => cx.observe_trigger(source, detail),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
     }
 
-    /// One wake of the loop: feedback from the mixer, the streams and the probes, due
-    /// deadlines, priming, reports, then `pump` (ARCHITECTURE §3.2; docs/audio.md: every tick).
+    /// One wake of the loop: the device, then each doc ([`DocCx::tick`]: feedback from the
+    /// mixer, the streams and the probes, due deadlines, priming, reports, saves), then the
+    /// engine's own reports and `pump` (ARCHITECTURE §3.1, §3.2; docs/audio.md: every tick).
     pub fn tick(&mut self) {
         let rendered = self.eng.mixer.samples_rendered();
         self.eng.last_tick_stalled = rendered == self.eng.last_tick_rendered;
         self.eng.last_tick_rendered = rendered;
-        self.poll_device();
+        self.cx().poll_device();
+        let eng = &mut self.eng;
+        for doc in std::iter::once(&mut self.doc) {
+            DocCx {
+                eng: &mut *eng,
+                doc,
+            }
+            .tick();
+        }
+        let mut cx = self.cx();
+        cx.settings_tick();
+        cx.health();
+        cx.observe_tick();
+        self.eng.mixer.pump();
+    }
+
+    /// How long the loop may wait for the inbox before it must tick again: the shortest wait
+    /// any doc asks for ([`Doc::wait`]), at most [`MAX_WAIT`].
+    pub fn wait_hint(&self) -> Duration {
+        // Nothing becomes due by waiting while sample time stands still.
+        if self.eng.backend.is_down() {
+            return MAX_WAIT;
+        }
+        let wait = self
+            .docs()
+            .map(|doc| doc.wait(&self.eng))
+            .min()
+            .unwrap_or(MAX_WAIT);
+        // A deadline enters the window only when sample time moves, and it moves in whole
+        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
+        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
+        // would spin. The floor is a quarter block at most, so a small device block cannot
+        // slip past the window. The first wake after a tick that saw progress is not floored,
+        // and a message ends any wait at once.
+        if self.eng.last_tick_stalled {
+            wait.max(stall_floor(self.eng.block, self.eng.rate.get()))
+        } else {
+            wait
+        }
+    }
+}
+
+impl Engine {
+    /// The scheduling time: the earliest sample a command can still hit.
+    fn now(&self) -> SampleTime {
+        self.mixer
+            .samples_rendered()
+            .saturating_add(self.block)
+            .max(self.now_floor)
+    }
+}
+
+impl Doc {
+    /// How long this doc lets the loop wait: until its next deadline enters the lookahead
+    /// window or a deferred report of it becomes due, at most [`MAX_WAIT`].
+    fn wait(&self, eng: &Engine) -> Duration {
+        let frames = wake_frames(
+            self.engine.next_deadline(),
+            self.deferred.iter().map(|(at, _)| *at),
+            eng.mixer.samples_rendered(),
+            eng.block,
+        );
+        let secs = frames as f64 / f64::from(eng.rate.get());
+        Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
+    }
+
+    fn document_state(&self) -> DocumentState {
+        DocumentState {
+            path: self
+                .show_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            dirty: self.revision != self.saved_revision,
+            can_undo: self.history.can_undo(),
+            can_redo: self.history.can_redo(),
+        }
+    }
+
+    /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
+    fn snapshot(&self) -> Snapshot {
+        let cue_states = self
+            .engine
+            .cue_states()
+            .map(|(cue, state)| CueStateEntry {
+                cue,
+                state: state.into(),
+                reason: match state {
+                    CueState::Broken => self.engine.broken_reason(cue).map(Into::into),
+                    _ => None,
+                },
+            })
+            .collect();
+        let problems = self
+            .engine
+            .broken_cues()
+            .into_iter()
+            .map(|(cue, problems)| CueProblems {
+                cue,
+                problems: problems.iter().map(WireProblem::from).collect(),
+            })
+            .collect();
+        let mut group_warnings = Vec::new();
+        for list in &self.ws.cue_lists {
+            groups(&list.cues, &mut |c| {
+                if self.engine.has_broken_descendant(c) {
+                    group_warnings.push(c);
+                }
+            });
+        }
+        Snapshot {
+            revision: self.revision,
+            runtime_seq: self.runtime_seq,
+            document: self.document_state(),
+            workspace: self.ws.clone(),
+            cue_states,
+            problems,
+            group_warnings,
+            playheads: self
+                .ws
+                .cue_lists
+                .iter()
+                .map(|l| PlayheadEntry {
+                    list: l.id,
+                    cue: self.engine.playhead(l.id),
+                })
+                .collect(),
+            previewing: self.engine.previewing().collect(),
+            warnings: self.warnings.clone(),
+        }
+    }
+}
+
+/// One doc and the engine it plays on: the control loop's work for one workspace.
+struct DocCx<'a> {
+    eng: &'a mut Engine,
+    doc: &'a mut Doc,
+}
+
+impl DocCx<'_> {
+    /// The scheduling time ([`Engine::now`]).
+    fn now(&self) -> SampleTime {
+        self.eng.now()
+    }
+
+    /// This doc's part of a wake ([`Control::tick`]).
+    fn tick(&mut self) {
         let now = self.now();
         self.watch_events();
         self.flush_media(now);
         let mut fx = Effects::default();
+        // The mixer's events are the engine's: with several docs they are routed by voice
+        // owner (M4.15e). With one, every event is this doc's.
         while let Some(e) = self.eng.mixer.poll_event() {
             self.doc.voices.event(e, &mut fx);
         }
@@ -598,10 +760,6 @@ impl Control {
             self.refresh_warnings();
         }
         self.docs_tick();
-        self.settings_tick();
-        self.health();
-        self.observe_tick();
-        self.eng.mixer.pump();
     }
 
     /// A retired patch slot whose last voice has left is freed (zeroed), and a patch waiting
@@ -617,34 +775,6 @@ impl Control {
         }
         for input in self.sync_patches(false) {
             self.feed(input, now);
-        }
-    }
-
-    /// How long the loop may wait for the inbox before it must tick again: until the next
-    /// deadline enters the lookahead window, a deferred report becomes due, or [`MAX_WAIT`].
-    pub fn wait_hint(&self) -> Duration {
-        // Nothing becomes due by waiting while sample time stands still.
-        if self.eng.backend.is_down() {
-            return MAX_WAIT;
-        }
-        let frames = wake_frames(
-            self.doc.engine.next_deadline(),
-            self.doc.deferred.iter().map(|(at, _)| *at),
-            self.eng.mixer.samples_rendered(),
-            self.eng.block,
-        );
-        let secs = frames as f64 / f64::from(self.eng.rate.get());
-        let wait = Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()));
-        // A deadline enters the window only when sample time moves, and it moves in whole
-        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
-        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
-        // would spin. The floor is a quarter block at most, so a small device block cannot
-        // slip past the window. The first wake after a tick that saw progress is not floored,
-        // and a message ends any wait at once.
-        if self.eng.last_tick_stalled {
-            wait.max(stall_floor(self.eng.block, self.eng.rate.get()))
-        } else {
-            wait
         }
     }
 
@@ -735,7 +865,7 @@ impl Control {
                     reply(
                         to,
                         ServerMessage::Snapshot {
-                            snapshot: Box::new(self.snapshot()),
+                            snapshot: Box::new(self.doc.snapshot()),
                         },
                     );
                     reply(to, ok(id, None));
@@ -1280,24 +1410,6 @@ impl Control {
         }
     }
 
-    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
-    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
-    /// found nothing.
-    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
-        self.doc.watch.apply(self.doc.media.take_key_changes());
-        self.doc.watch.manual_pass()
-    }
-
-    /// Watch batches of the current generation taken so far (a cost measure).
-    pub fn watch_batches(&self) -> u64 {
-        self.doc.watch.batches()
-    }
-
-    /// Media watchers abandoned in a stalled stat.
-    pub fn abandoned_watchers(&self) -> usize {
-        self.doc.watch.abandoned()
-    }
-
     /// Hands the probe answers gathered since the last tick to the engine in one
     /// `Availability`, then starts the voices that waited for them.
     fn flush_media(&mut self, now: SampleTime) {
@@ -1588,24 +1700,11 @@ impl Control {
     }
 
     fn document(&mut self) {
-        let document = self.document_state();
+        let document = self.doc.document_state();
         self.doc.resend_document = !self
             .eng
             .out
             .send_state(ServerMessage::Document { document });
-    }
-
-    fn document_state(&self) -> DocumentState {
-        DocumentState {
-            path: self
-                .doc
-                .show_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned()),
-            dirty: self.doc.revision != self.doc.saved_revision,
-            can_undo: self.doc.history.can_undo(),
-            can_redo: self.doc.history.can_redo(),
-        }
     }
 
     fn log_device(&mut self, level: LogLevel, message: String) {
@@ -1998,70 +2097,40 @@ impl Control {
             ));
         }
     }
+}
 
+impl Control {
     /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
     pub fn snapshot(&self) -> Snapshot {
-        let cue_states = self
-            .doc
-            .engine
-            .cue_states()
-            .map(|(cue, state)| CueStateEntry {
-                cue,
-                state: state.into(),
-                reason: match state {
-                    CueState::Broken => self.doc.engine.broken_reason(cue).map(Into::into),
-                    _ => None,
-                },
-            })
-            .collect();
-        let problems = self
-            .doc
-            .engine
-            .broken_cues()
-            .into_iter()
-            .map(|(cue, problems)| CueProblems {
-                cue,
-                problems: problems.iter().map(WireProblem::from).collect(),
-            })
-            .collect();
-        let mut group_warnings = Vec::new();
-        for list in &self.doc.ws.cue_lists {
-            groups(&list.cues, &mut |c| {
-                if self.doc.engine.has_broken_descendant(c) {
-                    group_warnings.push(c);
-                }
-            });
-        }
-        Snapshot {
-            revision: self.doc.revision,
-            runtime_seq: self.doc.runtime_seq,
-            document: self.document_state(),
-            workspace: self.doc.ws.clone(),
-            cue_states,
-            problems,
-            group_warnings,
-            playheads: self
-                .doc
-                .ws
-                .cue_lists
-                .iter()
-                .map(|l| PlayheadEntry {
-                    list: l.id,
-                    cue: self.doc.engine.playhead(l.id),
-                })
-                .collect(),
-            previewing: self.doc.engine.previewing().collect(),
-            warnings: self.doc.warnings.clone(),
-        }
+        self.doc.snapshot()
+    }
+
+    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
+    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
+    /// found nothing.
+    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
+        self.doc.watch.apply(self.doc.media.take_key_changes());
+        self.doc.watch.manual_pass()
+    }
+
+    /// Watch batches of the current generation taken so far (a cost measure).
+    pub fn watch_batches(&self) -> u64 {
+        self.doc.watch.batches()
+    }
+
+    /// Media watchers abandoned in a stalled stat.
+    pub fn abandoned_watchers(&self) -> usize {
+        self.doc.watch.abandoned()
     }
 
     /// Stops the show for shutdown: a hard stop of everything, carried out by the mixer.
     pub fn shutdown(&mut self) {
-        let now = self.now();
+        let mut cx = self.cx();
+        let now = cx.now();
         // A second panic within the fade is a hard stop (docs/cue-engine.md, Panic).
-        self.feed(Input::Panic, now);
-        self.feed(Input::Panic, now);
-        self.doc.voices.clear_primes();
+        cx.feed(Input::Panic, now);
+        cx.feed(Input::Panic, now);
+        cx.doc.voices.clear_primes();
         self.eng.mixer.pump();
     }
 
