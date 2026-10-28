@@ -32,7 +32,10 @@
 //! Look-up threads are bounded: at most [`MAX_LOOKUPS`] are alive at once, counting those that
 //! timed out or whose name was forgotten until they answer, and at most one per (host, port).
 //! If hung look-ups fill every slot, the names waiting for one are reported `Unknown` (their
-//! cues are not broken on a guess) and [`NetOut::take_limit_note`] says so once.
+//! cues are not broken on a guess) and [`NetOut::take_limit_note`] says so once. The bound is
+//! the engine's: each doc has its own `NetOut` (and send threads), but they count their live
+//! look-up threads together ([`LookupThreads`]), and the PB-10 override is one flag for every
+//! doc.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -50,7 +53,7 @@ use openlab_core::{
 };
 use rosc::{OscMessage, OscType};
 
-use super::Inbox;
+use super::{DocId, Inbox};
 use crate::osc::{encode_message, slip_encode};
 
 /// Messages queued for one destination before more are refused.
@@ -323,8 +326,29 @@ struct Lookup {
     failing: bool,
 }
 
-/// The control thread's side of network output.
+/// Look-up threads alive in the whole engine, every doc's (at most [`MAX_LOOKUPS`]). A thread
+/// counts itself off when it ends, whether or not its doc is still open.
+#[derive(Clone, Default)]
+pub struct LookupThreads(Arc<AtomicUsize>);
+
+impl LookupThreads {
+    pub fn alive(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Counts a look-up thread off when it ends (a panic in the resolver included).
+struct Alive(Arc<AtomicUsize>);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The control thread's side of one doc's network output.
 pub struct NetOut {
+    doc: DocId,
     transport: Arc<dyn Transport>,
     inbox: Sender<Inbox>,
     rate: u64,
@@ -332,8 +356,10 @@ pub struct NetOut {
     disabled: Arc<AtomicBool>,
     links: HashMap<NetworkPatchId, Link>,
     lookups: HashMap<NetworkPatchId, Lookup>,
-    /// Look-up threads that have not answered yet, by ticket: the bound on threads.
+    /// This doc's look-up threads that have not answered yet, by ticket.
     running: HashMap<u64, (String, u16)>,
+    /// Every doc's live look-up threads: the bound on threads.
+    alive: LookupThreads,
     limit_hit: bool,
     limit_note: bool,
     /// Log lines for the caller ([`NetOut::take_notes`]).
@@ -349,15 +375,39 @@ pub struct NetOut {
 pub type Reports = Vec<(NetworkPatchId, NetworkReachability)>;
 
 impl NetOut {
+    /// Network output with an override and a look-up bound of its own (unit tests of one).
+    #[cfg(test)]
     pub fn new(transport: NetTransport, inbox: Sender<Inbox>, sample_rate: u32) -> Self {
+        Self::shared(
+            transport,
+            inbox,
+            sample_rate,
+            DocId(0),
+            Arc::new(AtomicBool::new(false)),
+            LookupThreads::default(),
+        )
+    }
+
+    /// Doc `doc`'s network output, under the engine's PB-10 override `disabled` and look-up
+    /// bound `alive`.
+    pub fn shared(
+        transport: NetTransport,
+        inbox: Sender<Inbox>,
+        sample_rate: u32,
+        doc: DocId,
+        disabled: Arc<AtomicBool>,
+        alive: LookupThreads,
+    ) -> Self {
         Self {
+            doc,
             transport: transport.0,
             inbox,
             rate: u64::from(sample_rate.max(1)),
-            disabled: Arc::new(AtomicBool::new(false)),
+            disabled,
             links: HashMap::new(),
             lookups: HashMap::new(),
             running: HashMap::new(),
+            alive,
             limit_hit: false,
             limit_note: false,
             notes: Vec::new(),
@@ -377,7 +427,8 @@ impl NetOut {
     }
 
     /// Turning it on also stops messages already queued: their workers check it before they
-    /// send.
+    /// send. (The engine sets its shared flag; this is for unit tests of one.)
+    #[cfg(test)]
     pub fn set_disabled(&mut self, disabled: bool) {
         self.disabled.store(disabled, Ordering::SeqCst);
     }
@@ -603,8 +654,13 @@ impl NetOut {
 
     /// With every slot taken by look-ups that never answered, the names that wait for a slot
     /// are not known to be bad: report them `Unknown` instead of leaving them broken.
+    /// Every look-up slot is taken: this doc's, or the engine's together.
+    fn slots_full(&self) -> bool {
+        self.running.len() >= MAX_LOOKUPS || self.alive.alive() >= MAX_LOOKUPS
+    }
+
     fn relieve(&mut self) -> Reports {
-        if self.running.len() < MAX_LOOKUPS {
+        if !self.slots_full() {
             self.limit_hit = false;
             return Vec::new();
         }
@@ -634,7 +690,7 @@ impl NetOut {
         wanted.sort();
         let retry_at = now.saturating_add(self.samples(RETRY_AFTER));
         for (_, id) in wanted {
-            if self.running.len() >= MAX_LOOKUPS {
+            if self.slots_full() {
                 break;
             }
             let Some(l) = self.lookups.get_mut(&id) else {
@@ -650,16 +706,24 @@ impl NetOut {
             let transport = Arc::clone(&self.transport);
             let inbox = self.inbox.clone();
             let name = host.clone();
+            let doc = self.doc;
+            self.alive.0.fetch_add(1, Ordering::SeqCst);
+            let alive = Alive(Arc::clone(&self.alive.0));
             let spawned = thread::Builder::new()
                 .name("openlab-net-lookup".into())
                 .spawn(move || {
+                    let _alive = alive;
                     let result = transport.resolve(&name, port);
-                    let _ = inbox.send(Inbox::Net(NetAnswer::Lookup {
-                        patch: id,
-                        ticket,
-                        result,
-                    }));
+                    let _ = inbox.send(Inbox::Net(
+                        doc,
+                        NetAnswer::Lookup {
+                            patch: id,
+                            ticket,
+                            result,
+                        },
+                    ));
                 });
+            // A thread that did not start counted itself off as the closure was dropped.
             match spawned {
                 Ok(_) => {
                     l.phase = Phase::InFlight { ticket, since: now };
@@ -746,6 +810,7 @@ impl NetOut {
         let outstanding = Arc::clone(&self.outstanding);
         let disabled = Arc::clone(&self.disabled);
         let resolved = Arc::clone(&cache);
+        let doc = self.doc;
         thread::Builder::new()
             .name("openlab-net-send".into())
             .spawn(move || {
@@ -767,13 +832,16 @@ impl NetOut {
                             .map_err(|e| (e, true))
                     };
                     if let Err((reason, from_transport)) = outcome {
-                        let _ = inbox.send(Inbox::Net(NetAnswer::SendFailed {
-                            cue: job.cue,
-                            patch,
-                            destination: dest.clone(),
-                            reason,
-                            from_transport,
-                        }));
+                        let _ = inbox.send(Inbox::Net(
+                            doc,
+                            NetAnswer::SendFailed {
+                                cue: job.cue,
+                                patch,
+                                destination: dest.clone(),
+                                reason,
+                                from_transport,
+                            },
+                        ));
                     }
                     outstanding.fetch_sub(1, Ordering::SeqCst);
                 }
@@ -1271,7 +1339,7 @@ mod tests {
             send_one(&mut net, &p);
             let failed = loop {
                 match rx.recv() {
-                    Ok(Inbox::Net(f @ NetAnswer::SendFailed { .. })) => break f,
+                    Ok(Inbox::Net(_, f @ NetAnswer::SendFailed { .. })) => break f,
                     Ok(_) => {}
                     Err(e) => panic!("{e}"),
                 }
@@ -1375,6 +1443,91 @@ mod tests {
         net.sync(&patches, false, 0);
         assert_eq!(net.lookups.len(), MAX_TRACKED);
         assert!(net.running.len() <= MAX_LOOKUPS);
+    }
+
+    /// Look-ups that wait until released.
+    #[derive(Default)]
+    struct Hang {
+        open: Mutex<bool>,
+        cv: std::sync::Condvar,
+    }
+
+    impl Hang {
+        fn release(&self) {
+            *self.open.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+
+    impl Transport for Hang {
+        fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.cv.wait(open).unwrap();
+            }
+            Ok(vec![])
+        }
+    }
+
+    /// The bound on look-up threads is the engine's: two docs' network outputs share it, and a
+    /// thread counts itself off when it ends, whichever doc it was for.
+    #[test]
+    fn two_docs_share_the_look_up_bound() {
+        let hang = Arc::new(Hang::default());
+        let alive = LookupThreads::default();
+        let disabled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let make = |doc| {
+            NetOut::shared(
+                NetTransport(Arc::clone(&hang) as Arc<dyn Transport>),
+                tx.clone(),
+                1000,
+                DocId(doc),
+                Arc::clone(&disabled),
+                alive.clone(),
+            )
+        };
+        let (mut a, mut b) = (make(0), make(1));
+        let names = |base: u128| -> Vec<NetworkPatch> {
+            (0..6)
+                .map(|n| patch(base + n, &format!("d{base}-{n}.local")))
+                .collect()
+        };
+        a.sync(&names(10), false, 0);
+        b.sync(&names(20), false, 0);
+        assert_eq!(a.running.len(), 6);
+        assert_eq!(
+            b.running.len(),
+            MAX_LOOKUPS - 6,
+            "only the engine's slots left"
+        );
+        assert_eq!(alive.alive(), MAX_LOOKUPS);
+        // The override is one flag: turned on through one doc, the other sends nothing.
+        a.disabled.store(true, Ordering::SeqCst);
+        assert!(b.disabled());
+        hang.release();
+        // Each answer is tagged with the doc that asked.
+        let mut tagged = Vec::new();
+        for _ in 0..MAX_LOOKUPS {
+            match rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap() {
+                Inbox::Net(doc, NetAnswer::Lookup { patch, .. }) => tagged.push((doc, patch)),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(tagged.iter().filter(|(d, _)| *d == DocId(0)).count(), 6);
+        assert!(
+            tagged
+                .iter()
+                .all(|(d, p)| (*d == DocId(0)) == (p.0.as_u128() < 20))
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while alive.alive() > 0 {
+            assert!(std::time::Instant::now() < deadline, "threads never ended");
+            std::thread::yield_now();
+        }
     }
 
     #[test]

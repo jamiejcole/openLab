@@ -48,6 +48,8 @@ pub struct Effects {
 
 /// The environment voice actions are carried out in.
 pub struct Env<'a> {
+    /// The doc the voices belong to: new ids are recorded as its, and patch slots are its.
+    pub doc: super::DocId,
     pub ws: &'a Workspace,
     pub media: &'a MediaCatalog,
     pub streamer: &'a mut DiskStreamer,
@@ -300,7 +302,7 @@ impl Voices {
 
     fn load(&mut self, cue: CueId, run: RunId, offset: u64, env: &mut Env<'_>, fx: &mut Effects) {
         self.release(run);
-        let id = env.ids.next();
+        let id = env.ids.next(env.doc);
         let prepared = match self.prepare(cue, offset, env, fx) {
             Ok(p) => Some(p),
             Err(PrepError::Pending) => None,
@@ -353,7 +355,7 @@ impl Voices {
             }
             _ => {
                 self.release(run);
-                let id = env.ids.next();
+                let id = env.ids.next(env.doc);
                 let prepared = if preview {
                     None
                 } else {
@@ -591,7 +593,7 @@ impl Voices {
         let Some(old) = self.by_run.get(&paused).copied() else {
             return;
         };
-        let new = env.ids.next();
+        let new = env.ids.next(env.doc);
         let Some(mut r) = self.recs.remove(&old) else {
             return;
         };
@@ -1011,6 +1013,12 @@ impl Voices {
         std::mem::take(&mut self.gone)
     }
 
+    /// Whether a mixer event of `voice` could still mean anything here (a live record or an
+    /// alias of one): an id this returns false for is never looked up again.
+    pub fn knows(&self, voice: VoiceId) -> bool {
+        self.resolve(voice).is_some()
+    }
+
     /// The cue a mixer voice id belongs to (current or alias).
     pub fn cue_of(&self, voice: VoiceId) -> Option<CueId> {
         self.resolve(voice)
@@ -1426,8 +1434,8 @@ fn voice_start(
     else {
         return None;
     };
-    let mixer_patch = env.patches.mixer_patch(*patch)?;
-    let patch_outputs = env.patches.outputs(*patch);
+    let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
+    let patch_outputs = env.patches.outputs(env.doc, *patch);
     let (mut vs, handle) = prepared.into_voice(id, env.cue_outputs);
     vs.patch = mixer_patch;
     vs.gain = db_to_gain(levels.master_db);

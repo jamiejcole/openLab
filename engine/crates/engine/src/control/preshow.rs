@@ -87,7 +87,7 @@ impl DocCx<'_> {
         let mut patches = Vec::new();
         let mut used_patches = 0u64;
         for patch in &ws.patches {
-            let resolution = self.eng.patches.resolution(patch.id);
+            let resolution = self.eng.patches.resolution(self.doc.id, patch.id);
             if matches!(resolution, Some(PatchResolution::Mapped { .. })) {
                 continue;
             }
