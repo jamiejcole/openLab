@@ -8,30 +8,34 @@
 use openlab_core::PatchMapping;
 use openlab_core::protocol::LogLevel;
 
-use super::Control;
+use super::DocCx;
 
-impl Control {
+impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
     /// first outputs of the playable device. Nothing happens while no device is playable (an
     /// outage, or none): the patch stays unmapped and the next sync with a device maps it. A
     /// device with fewer outputs than the patch needs leaves it unmapped (one warning per
     /// patch and device); a different device is tried again.
     pub(super) fn map_unmapped_patches(&mut self) {
-        let Some(device) = self.playable.first().cloned() else {
+        let Some(device) = self.eng.playable.first().cloned() else {
             return;
         };
         // Warnings for patches that are gone (or in another workspace) are forgotten.
-        let (ws_id, patches) = (self.ws.id, &self.ws.patches);
-        self.mapping_warned
+        // M4.15e: this retain also drops every other open doc's entries; keep only this doc's
+        // stale ones (seams note (a)).
+        let (ws_id, patches) = (self.doc.ws.id, &self.doc.ws.patches);
+        self.eng
+            .mapping_warned
             .retain(|(w, p, _)| *w == ws_id && patches.iter().any(|x| x.id == *p));
         let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
         let mut notes = Vec::new();
         let mut changed = false;
-        for patch in &self.ws.patches {
+        for patch in &self.doc.ws.patches {
             if self
+                .eng
                 .config
                 .machine
-                .patch_mapping(self.ws.id, patch.id)
+                .patch_mapping(self.doc.ws.id, patch.id)
                 .is_some()
             {
                 continue;
@@ -39,6 +43,7 @@ impl Control {
             let wanted = patch.outputs.len();
             if wanted > have {
                 if self
+                    .eng
                     .mapping_warned
                     .insert((ws_id, patch.id, device.name.clone()))
                 {
@@ -60,9 +65,10 @@ impl Control {
                 channels,
             };
             match self
+                .eng
                 .config
                 .machine
-                .set_patch_mapping(self.ws.id, patch.id, mapping)
+                .set_patch_mapping(self.doc.ws.id, patch.id, mapping)
             {
                 Ok(()) => {
                     changed = true;
@@ -78,6 +84,7 @@ impl Control {
                 }
                 Err(why) => {
                     if self
+                        .eng
                         .mapping_warned
                         .insert((ws_id, patch.id, device.name.clone()))
                     {
@@ -100,8 +107,8 @@ impl Control {
     /// Hands the machine settings to the writer, unless they are defaults standing in for a file
     /// that could not be read (the operator's mappings would be lost) or there is no writer.
     fn save_machine(&mut self) {
-        if !self.config.machine_writable {
-            if !std::mem::replace(&mut self.unwritable_warned, true) {
+        if !self.eng.config.machine_writable {
+            if !std::mem::replace(&mut self.eng.unwritable_warned, true) {
                 self.log(
                     LogLevel::Warn,
                     "settings.json could not be read at start: default mappings are kept in \
@@ -111,11 +118,11 @@ impl Control {
             }
             return;
         }
-        let Some(writer) = &self.settings_writer else {
+        let Some(writer) = &self.eng.settings_writer else {
             return;
         };
-        if !writer.save(self.config.machine.clone()) {
-            self.settings_writer = None;
+        if !writer.save(self.eng.config.machine.clone()) {
+            self.eng.settings_writer = None;
             self.log(
                 LogLevel::Warn,
                 "the settings writer stopped: this machine's settings are no longer saved"
@@ -126,7 +133,12 @@ impl Control {
 
     /// Reports a failed settings write (once per failure) in the show log.
     pub(super) fn settings_tick(&mut self) {
-        let Some(error) = self.settings_writer.as_ref().and_then(|w| w.take_error()) else {
+        let Some(error) = self
+            .eng
+            .settings_writer
+            .as_ref()
+            .and_then(|w| w.take_error())
+        else {
             return;
         };
         self.log(
