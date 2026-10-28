@@ -86,6 +86,11 @@ impl AppDirs {
         self.root.join("engine.json")
     }
 
+    /// The single-instance lock a running engine holds (M4.9, `host::instance_lock`).
+    pub fn engine_lock_path(&self) -> PathBuf {
+        self.root.join("engine.lock")
+    }
+
     pub fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
     }

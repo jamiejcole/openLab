@@ -125,3 +125,38 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
         .unwrap_or_default();
     assert!(running.is_empty(), "run marker removed: {running:?}");
 }
+
+/// M8: one engine per user. While another process holds `engine.lock` (here the test itself,
+/// standing for an engine still starting), a start is refused at once, with exit 1 and the
+/// message, before it opens a log, a run marker, the audio device or `engine.json`. Needs no
+/// audio device: the lock is the first thing a start takes.
+#[test]
+fn a_second_engine_is_refused_while_another_holds_the_instance_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("openLab");
+    std::fs::create_dir_all(&dir).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("engine.lock"))
+        .unwrap();
+    held.try_lock().unwrap();
+    // `--watch-stdin` with no stdin: an engine that wrongly started ends at once, not never.
+    let out = Command::new(ENGINE)
+        .args(["--app-support".as_ref(), root.path().as_os_str()])
+        .arg("--watch-stdin")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("openlab-engine: another openLab engine is running ("),
+        "{stderr}"
+    );
+    for left_alone in ["Running", "Logs", "engine.json"] {
+        assert!(!dir.join(left_alone).exists(), "{left_alone} was created");
+    }
+    drop(held);
+}
