@@ -363,6 +363,34 @@ final class EngineCrashFlowTests: XCTestCase {
             }, 1)
     }
 
+    /// An autosave the operator dismissed with the alarm (an untitled workspace's: no file to
+    /// reopen it from) is still offered from File > Recover Autosaves… later.
+    func testADismissedAutosaveCanStillBeRecoveredFromTheMenu() async throws {
+        engine.recoveryEntries = [
+            .object([
+                "workspace_id": .string("00000000-0000-0000-0000-0000000000ee"), "stale": .bool(false),
+            ])
+        ]
+        processes.crash()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["autosave:" + loc("engine.alarm.untitled")])
+        await assertEventually { self.app.allWindows.count == 3 }
+        // Now a window holds it: nothing more to recover.
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
+    }
+
+    func testRecoverAutosavesIsInTheFileMenuAndWaitsForTheEngine() throws {
+        let file = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }
+        let item = try XCTUnwrap(file?.items.first { $0.action == #selector(AppDelegate.recoverAutosaves(_:)) })
+        let delegate = AppDelegate()  // its engine is never started here
+        XCTAssertFalse(delegate.validateMenuItem(item), "nothing to ask while no engine is connected")
+    }
+
     /// SM-07 after a crash: the new engine run opened the show afresh (not in Show Mode); the
     /// window still is, so the engine is told again and keeps the Mac awake.
     func testShowModeIsRestoredAfterTheEngineRestarts() async throws {

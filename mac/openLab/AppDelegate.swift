@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
+    @MainActor @objc func recoverAutosaves(_ sender: Any?) { Task { await alarmController.recoverAutosaves() } }
 
     @MainActor @objc func enterShowMode(_ sender: Any?) {
         Task { await appController.frontController?.requestShowMode(true) }
@@ -164,6 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         if item.action == #selector(relinkMedia(_:)) {
             return appController.frontController.map { !$0.isShowMode } ?? false
+        }
+        if item.action == #selector(recoverAutosaves(_:)) {
+            return engineSession.connectionState == .connected
         }
         if item.action == #selector(showLog(_:)) {
             return appController.frontController != nil

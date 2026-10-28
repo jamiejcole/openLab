@@ -190,8 +190,7 @@ final class EngineAlarmController {
                 engineLog.error("recovery scan failed: \(String(describing: e), privacy: .public)")
                 return
             }
-            let open = Set(self.session.stores.values.compactMap { $0.model?.id })
-            let offer = entries.filter { !open.contains($0.workspaceId) }
+            let offer = self.unheld(entries)
             guard !offer.isEmpty else { return }
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
@@ -200,6 +199,28 @@ final class EngineAlarmController {
             self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
             self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }
         }
+    }
+
+    /// File > Recover Autosaves…: the autosaves no window holds, whenever the operator asks, so
+    /// one dismissed with the alarm (or never offered: a quit during a reattach) stays reachable,
+    /// an untitled workspace's included.
+    func recoverAutosaves() async {
+        switch await session.scanRecovery() {
+        case .success(let entries):
+            let offer = unheld(entries)
+            if offer.isEmpty { return alerts().showInfo(loc("recover.none")) }
+            await restore(offer)
+        case .failure(let e):
+            alerts().showError(String(format: loc("error.recoverFailed"), EngineSession.describe(e)))
+        }
+    }
+
+    /// The entries of workspaces no window shows or is waiting to reopen.
+    private func unheld(_ entries: [RecoveryEntryInfo]) -> [RecoveryEntryInfo] {
+        let held = Set(
+            session.stores.values.compactMap { $0.model?.id } + session.workspaces.map(\.workspaceId)
+                + session.detached.map(\.info.workspaceId))
+        return entries.filter { !held.contains($0.workspaceId) }
     }
 
     /// One prompt per autosave, newest first, while there is room (at most 8 workspaces, §21).

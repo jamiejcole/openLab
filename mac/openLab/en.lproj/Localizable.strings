@@ -360,6 +360,9 @@
 "log.dropped" = "%d records were dropped by the engine.";
 
 /* Relink missing media (WS-03) */
+"menu.file.recover" = "Recover Autosaves…";
+"recover.none" = "There are no autosaves to recover.";
+"error.recoverFailed" = "The autosaves could not be listed: %@";
 "menu.file.relink" = "Relink Missing Media…";
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
 "relink.panel.prompt" = "Relink";

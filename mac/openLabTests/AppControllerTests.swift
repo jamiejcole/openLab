@@ -46,6 +46,7 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     func showError(_ message: String) { errors.append(message) }
+    func showInfo(_ message: String) { log.append("info:\(message)") }
 
     /// nil: Cancel.
     var recoveryChoice: RecoveryChoice?
