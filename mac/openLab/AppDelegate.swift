@@ -19,7 +19,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         app.run()
     }
 
+    /// Another copy of the app (same bundle id) was already running: this one hands over and exits.
+    @MainActor private var isSecondInstance = false
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // A second copy (another download, `open -n`) would attach to the same engine and its
+        // Quit would shut down every show the first one runs: it fronts the first and exits. The
+        // fake engine (UI tests) and the unit-test host share no engine with anyone.
+        if EngineMode.fromLaunchArguments() == .real, !EngineMode.isUnitTestHost(),
+            let first = SingleInstance.runningFirst()
+        {
+            isSecondInstance = true
+            engineLog.notice("openLab is already running (pid \(first.processIdentifier, privacy: .public)): exiting")
+            first.activate(options: [.activateIgnoringOtherApps])
+            return
+        }
         NSApp.appearance = NSAppearance(named: .darkAqua)
         let menu = MainMenu.make()
         menu.transport.delegate = self
@@ -30,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if isSecondInstance { return NSApp.terminate(nil) }
         // The launcher shows until the engine reports a workspace (fake engine: at once).
         appController.showLauncher()
         appController.installKeyMonitor()
@@ -49,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// One save prompt per dirty workspace, then `goodbye { shutdown }`; Cancel aborts the quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isSecondInstance { return .terminateNow }  // it never started or reached an engine
         if appController.quitting { return .terminateCancel }
         Task { @MainActor in
             let ok = await appController.prepareToQuit()
@@ -186,5 +202,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return
         }
         MainMenu.applyKeys(to: menu, appController.frontKeys)
+    }
+}
+
+/// Which copy of the app runs: the one launched first. Every copy decides alike, so two
+/// launched at once never both stay (or both exit).
+enum SingleInstance {
+    struct Instance: Equatable {
+        var pid: pid_t
+        var launched: Date?
+    }
+
+    /// The instance among `others` this one (`me`) must hand over to, if any: the earliest
+    /// launched, a lower pid breaking a tie (or standing in for an unknown launch date).
+    static func handOver(me: Instance, others: [Instance]) -> Instance? {
+        func first(_ a: Instance, _ b: Instance) -> Bool {
+            if let x = a.launched, let y = b.launched, x != y { return x < y }
+            return a.pid < b.pid
+        }
+        return others.filter { $0.pid != me.pid && first($0, me) }.min(by: first)
+    }
+
+    /// The running copy of this app that was there first, or nil when this one is it.
+    @MainActor
+    static func runningFirst() -> NSRunningApplication? {
+        let current = NSRunningApplication.current
+        guard let id = Bundle.main.bundleIdentifier else { return nil }
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: id).filter { !$0.isTerminated }
+        let me = Instance(pid: current.processIdentifier, launched: current.launchDate)
+        let others = apps.map { Instance(pid: $0.processIdentifier, launched: $0.launchDate) }
+        guard let pick = handOver(me: me, others: others) else { return nil }
+        return apps.first { $0.processIdentifier == pick.pid }
     }
 }

@@ -533,3 +533,19 @@ final class SystemEngineProcessesTests: XCTestCase {
         guard case .failure(.missing) = p.readInfo() else { return XCTFail() }
     }
 }
+
+final class SingleInstanceTests: XCTestCase {
+    /// A second copy hands over to the one already running; two started at once agree on one.
+    func testOnlyTheFirstLaunchedCopyStays() {
+        let early = SingleInstance.Instance(pid: 900, launched: Date(timeIntervalSince1970: 100))
+        let late = SingleInstance.Instance(pid: 300, launched: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(SingleInstance.handOver(me: late, others: [early, late]), early)
+        XCTAssertNil(SingleInstance.handOver(me: early, others: [early, late]))
+        XCTAssertNil(SingleInstance.handOver(me: early, others: [early]), "alone: it runs")
+        // Same or unknown launch date: the lower pid stays, as both copies see it.
+        let a = SingleInstance.Instance(pid: 10, launched: nil)
+        let b = SingleInstance.Instance(pid: 20, launched: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(SingleInstance.handOver(me: b, others: [a, b]), a)
+        XCTAssertNil(SingleInstance.handOver(me: a, others: [a, b]))
+    }
+}
