@@ -1,0 +1,24 @@
+{
+  "type": "progress",
+  "items": [
+    {
+      "cue": "00000000-0000-0000-0000-00000000000c",
+      "elapsed": 1.0,
+      "remaining": 4.0
+    }
+  ],
+  "waits": [
+    {
+      "cue": "00000000-0000-0000-0000-00000000000c",
+      "wait": "post_wait",
+      "elapsed": 1.0,
+      "remaining": 2.0
+    },
+    {
+      "cue": "00000000-0000-0000-0000-00000000000d",
+      "wait": "pre_wait",
+      "elapsed": 0.5,
+      "remaining": 1.5
+    }
+  ]
+}

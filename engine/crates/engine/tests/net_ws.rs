@@ -783,7 +783,10 @@ async fn meters_and_progress_are_relayed() {
         })
         .unwrap();
     f.out
-        .try_send(ServerMessage::Progress { items: vec![] })
+        .try_send(ServerMessage::Progress {
+            items: vec![],
+            waits: vec![],
+        })
         .unwrap();
     assert!(matches!(
         next(&mut c).await,
