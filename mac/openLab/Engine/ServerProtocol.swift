@@ -400,7 +400,9 @@ enum ResultData: Sendable, Equatable, Decodable {
     case recoveryEntries([RecoveryEntryInfo])
     case logTail(entries: [ShowLogEntry], dropped: UInt64)
     case preshowCheck(PreshowReport)
-    /// A data type this client does not know; the raw object is kept (see ProvisionalProtocol).
+    /// The doc a `new` / `open` / `open_recovery` opened.
+    case opened(doc: ModelID)
+    /// A data type this client does not know; the raw object is kept.
     case other(type: String, json: JSONValue)
 
     init(from decoder: Decoder) throws {
@@ -426,9 +428,53 @@ enum ResultData: Sendable, Equatable, Decodable {
                 entries: try c.decode([ShowLogEntry].self, forKey: "entries"),
                 dropped: try c.decode(UInt64.self, forKey: "dropped"))
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
+        case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }
+}
+
+/// One open workspace as the app connection lists it.
+struct WorkspaceInfo: Hashable, Sendable, Decodable {
+    let doc: ModelID
+    let workspaceId: ModelID
+    let name: String
+    let path: String?
+    let dirty: Bool
+    enum CodingKeys: String, CodingKey {
+        case doc, name, path, dirty
+        case workspaceId = "workspace_id"
+    }
+
+    init(doc: ModelID, workspaceId: ModelID, name: String, path: String?, dirty: Bool) {
+        self.doc = doc
+        self.workspaceId = workspaceId
+        self.name = name
+        self.path = path
+        self.dirty = dirty
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        doc = ModelID(doc: try c.decode(UInt64.self, forKey: .doc))
+        workspaceId = try c.decode(ModelID.self, forKey: .workspaceId)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+        dirty = try c.decode(Bool.self, forKey: .dirty)
+    }
+}
+
+extension ResultData {
+    /// The doc a `new` / `open` / `open_recovery` opened; nil for any other result.
+    var openedDoc: ModelID? {
+        if case .opened(let doc) = self { return doc }
+        return nil
+    }
+}
+
+extension ErrorCode {
+    /// `open` of a path that is already open.
+    static let alreadyOpen: ErrorCode = "already_open"
 }
 
 struct OkBody: Sendable, Equatable, Decodable {
@@ -458,8 +504,12 @@ enum ServerMessage: Sendable, Decodable {
     case warnings([WireWarning])
     case result(id: UInt64, Outcome)
     case error(code: ErrorCode, message: String, protocolVersion: UInt32)
-    /// Multi-workspace messages (ProvisionalProtocol.swift).
-    case provisional(ProvisionalServerMessage)
+    /// `welcome` on the app (unbound) connection: the open workspaces, in open order.
+    case appWelcome(protocolVersion: UInt32, workspaces: [WorkspaceInfo])
+    /// The list changed (a workspace opened, closed, renamed, saved or became dirty).
+    case workspaces([WorkspaceInfo])
+    /// The engine closed this connection's workspace; it closes the connection next.
+    case closed(doc: ModelID)
     /// A `type` this client does not know: logged and dropped by the client.
     case unknown(type: String)
 
@@ -471,10 +521,8 @@ enum ServerMessage: Sendable, Decodable {
         case "welcome":
             if c.contains("snapshot") {
                 self = .welcome(protocolVersion: try d("protocol_version"), snapshot: try d("snapshot"))
-            } else if let p = try ProvisionalServerMessage(type: type, from: decoder) {
-                self = .provisional(p)
             } else {
-                self = .unknown(type: type)
+                self = .appWelcome(protocolVersion: try d("protocol_version"), workspaces: try d("workspaces"))
             }
         case "snapshot": self = .snapshot(try d("snapshot"))
         case "model_changed":
@@ -497,12 +545,9 @@ enum ServerMessage: Sendable, Decodable {
             }
         case "error":
             self = .error(code: try d("code"), message: try d("message"), protocolVersion: try d("protocol_version"))
-        default:
-            if let p = try ProvisionalServerMessage(type: type, from: decoder) {
-                self = .provisional(p)
-            } else {
-                self = .unknown(type: type)
-            }
+        case "workspaces": self = .workspaces(try d("workspaces"))
+        case "closed": self = .closed(doc: ModelID(doc: try d("doc")))
+        default: self = .unknown(type: type)
         }
     }
 

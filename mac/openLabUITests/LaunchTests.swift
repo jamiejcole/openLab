@@ -4,9 +4,11 @@ import XCTest
 
 @MainActor
 final class LaunchTests: XCTestCase {
-    /// With the real engine and no workspace open the launcher is what the operator sees.
+    /// With an engine that has no workspace open the launcher is what the operator sees. (The
+    /// fake: a UI test must not start a real engine, which outlives the app and relaunches it.)
     func testLaunchWithNoWorkspaceShowsLauncher() {
         let app = XCUIApplication()
+        app.launchArguments += ["-OpenLabEngine", "fake", "-OpenLabFakeEmpty"]
         app.launch()
         XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["launcher-new"].exists)

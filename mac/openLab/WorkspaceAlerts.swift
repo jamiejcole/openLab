@@ -19,6 +19,10 @@ protocol WorkspaceAlerts {
     func confirmQuitDisconnected() -> Bool
     func unsavedChanges(workspace: String) -> SaveChoice
     func showError(_ message: String)
+    /// `open` found an autosave newer than the show file (NFR-05). nil: Cancel, nothing opens.
+    func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice?
+    /// After an unclean engine exit: open this autosave as an untitled workspace? True: open it.
+    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool
 }
 
 /// The real thing. Cancel is the default (Return) button on the destructive prompts: a stray
@@ -63,6 +67,33 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.messageText = message
         alert.addButton(withTitle: loc("alert.ok"))
         alert.runModal()
+    }
+
+    func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
+        let alert = NSAlert()
+        alert.messageText = String(format: loc("alert.recoveryOffer.title"), workspace)
+        alert.informativeText = String(format: loc("alert.recoveryOffer.message"), Self.date(modifiedMs))
+        for key in ["alert.recoveryOffer.restore", "alert.cancel", "alert.recoveryOffer.ignore"] {
+            alert.addButton(withTitle: loc(key))
+        }
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .restore
+        case .alertThirdButtonReturn: return .ignore
+        default: return nil
+        }
+    }
+
+    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(format: loc("alert.autosave.title"), name)
+        alert.informativeText = String(format: loc("alert.autosave.message"), modifiedMs.map(Self.date) ?? "?")
+        for key in ["alert.autosave.open", "alert.autosave.skip"] { alert.addButton(withTitle: loc(key)) }
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private static func date(_ ms: Int64) -> String {
+        DateFormatter.localizedString(
+            from: Date(timeIntervalSince1970: Double(ms) / 1000), dateStyle: .medium, timeStyle: .medium)
     }
 
     /// Index of the clicked button.
