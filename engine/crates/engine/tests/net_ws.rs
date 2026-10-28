@@ -849,9 +849,23 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
     // The live client still gets replies.
     send(&mut live, &go(1)).await;
     wait_result(&mut live, 1).await;
-    // The stalled one is closed by the write timeout; reading it now drains what was buffered
-    // and must reach the end of the connection.
-    expect_closed(&mut stalled).await;
+    // The stalled one was not served the whole stream: either its socket filled first and the
+    // write timeout closed it, or its queue overflowed first (a fast producer: release builds)
+    // and the server threw the queue away and sent a fresh snapshot instead of holding it.
+    // Reading it now drains what was buffered and must reach one of the two.
+    guard("the stalled client to be closed or resynced", async {
+        let mut logs = 0usize;
+        loop {
+            match next(&mut stalled).await {
+                None => break,
+                Some(ServerMessage::Snapshot { .. }) => break,
+                Some(ServerMessage::Log { .. }) => logs += 1,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(logs < total, "the stalled client was served everything");
+    })
+    .await;
 }
 
 #[tokio::test]
