@@ -60,8 +60,9 @@ fn serve(wants: &Receiver<bool>, inbox: &Sender<Inbox>) {
                 }
                 Err(_) => {}
             }
-        } else if !want && let Some(a) = held.take() {
-            drop(a);
+        } else if !want && held.is_some() {
+            // Dropping it releases the assertion.
+            held = None;
             log(
                 LogLevel::Debug,
                 "the computer and display may sleep again".into(),
