@@ -47,7 +47,7 @@ Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-ba
 
 ## 4. Adversarial review
 - Spawn `subagent_type: "pr-reviewer"` with: task IDs, base and branch/commit range, and any area you're suspicious of.
-- **High** → must fix. **Medium** → fix or accept a concrete justification. **Low** → implementer's discretion; batch leftovers into a cleanup task if they pile up.
+- **High** → must fix. **Medium** that affects show safety → fix. Other Mediums (low-medium) and all **Lows** → a GitHub issue labelled `low` each (user decision 2026-10-28), not a fix round. Don't fix states only a generator/fuzzer/contrived input can reach. Niche QLab-parity features → PROGRESS "Deferred to v0.0.2". Prioritise work that blocks M5.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context). After fixes, re-run the reviewer if there were any Highs. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
 ## 5. Land it (PR into `main`)
