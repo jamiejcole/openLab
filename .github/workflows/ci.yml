@@ -27,6 +27,7 @@ jobs:
     outputs:
       engine: ${{ steps.diff.outputs.engine }}
       mac: ${{ steps.diff.outputs.mac }}
+      intel: ${{ steps.diff.outputs.intel }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,6 +46,7 @@ jobs:
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "engine=true" >> "$GITHUB_OUTPUT"
             echo "mac=true" >> "$GITHUB_OUTPUT"
+            echo "intel=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "$base" HEAD)
@@ -53,6 +55,8 @@ jobs:
           if printf '%s\n' "$files" | grep -qE '^(\.github/|Makefile$)'; then all=true; else all=false; fi
           if [ "$all" = true ] || printf '%s\n' "$files" | grep -q '^engine/'; then echo "engine=true"; else echo "engine=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^(mac|engine)/'; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+          # Perf-sensitive code also runs on the Intel runner (closest to the 2014 Mac mini target).
+          if [ "$all" = true ] || printf '%s\n' "$files" | grep -qE '^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/src/control/(watch|watch_share|media|voices)\.rs$)'; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
 
   rust:
     name: Rust (${{ matrix.name }})
@@ -60,10 +64,11 @@ jobs:
     if: needs.changes.outputs.engine == 'true'
     strategy:
       fail-fast: false
-      # macOS Intel runs on main, nightly and on demand only: Windows covers x86-64 code on PRs, the
-      # app job builds and checks the universal bundle, and the Intel queue was the longest wait.
+      # macOS Intel runs on main, nightly, on demand, and on PRs that touch perf-sensitive code
+      # (`changes.intel`): Windows covers other x86-64 code on PRs, the app job builds and checks the
+      # universal bundle, and the Intel queue was the longest wait.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.intel != 'true' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours.
     timeout-minutes: 30
@@ -191,3 +196,26 @@ jobs:
           for r in $RESULTS; do
             case "$r" in success|skipped) ;; *) exit 1 ;; esac
           done
+
+  # A failed run on main opens (or comments on) one `ci-red` issue, so a red main is never silent:
+  # some jobs (macOS Intel) run only on main.
+  alert:
+    name: Alert on red main
+    needs: [result]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          open=$(gh issue list --label ci-red --state open --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Still red at $SHA: $RUN"
+          else
+            gh issue create --label ci-red --title "main CI is red" --body "CI failed on main at $SHA: $RUN"
+          fi
