@@ -114,5 +114,5 @@ if [ "$start_clean" = 1 ] && [ "$(git rev-parse HEAD)" = "$start_head" ] && tree
   echo "PREPUSH PASS $start_head" | tee "$STAMP"
   echo "(log: $LOG)"
 else
-  echo "PREPUSH PASS (not stamped: the tree was not clean or HEAD moved; commit and run again) (log: $LOG)"
+  echo "PREPUSH CHECKS PASSED, NOT STAMPED: the tree was not clean or HEAD moved; commit and run again (log: $LOG)"
 fi
