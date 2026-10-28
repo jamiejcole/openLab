@@ -174,6 +174,11 @@ pub enum ResultData {
         relinked: u64,
         ambiguous: Vec<AmbiguousMatch>,
         unmatched: Vec<CueId>,
+        /// A scan limit (depth, folders, files or time) ended the search early, so files beyond
+        /// it were not considered: `unmatched` may name cues whose file is in the folder.
+        truncated: bool,
+        /// Folders or entries the scan could not read, plus names that are not UTF-8.
+        skipped: u64,
     },
     /// `open` found an autosave newer than the show file and nothing was opened. Send `open`
     /// again with a `recovery` choice.

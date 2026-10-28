@@ -32,7 +32,7 @@ The engine's control thread (ARCHITECTURE §3.1, §3.2): it owns the workspace, 
 
 - **Transport** → the cue-engine input of docs/protocol.md's table (`hard_stop` = `Stop { fade_out: None }`; `stop_all` and `hard_stop_all` = `StopAll`, `panic_cue` = `PanicCue`), handled at once; `result` ok means "handed to the cue engine".
 - **Command / undo / redo** → `History` on the workspace, then `engine.model_changed_cues(footprint)` (`engine.model_changed()` when the edit also touched settings, patches or cue lists: `Footprint::is_model_wide`) and `MediaCatalog::sync_cues(footprint)` before the engine's next call (M4.2 contract; M4.12a), one `model_changed { revision, upserts, deletes }` broadcast (below), a `document` broadcast, then the `result` with that revision, then one `Tick` so the edit takes effect now (a deleted running cue stops on the next block). A refused command changes nothing: `command_refused`. `unsignalled_model_changes()` is checked after every engine call; a rise is logged as an error. A `RollbackFailed` refusal (a wrong inverse left the workspace partly changed; core cleared history) is treated as an edit nobody can undo: error log record, `revision += 1`, `engine.model_changed()`, `MediaCatalog::sync` (probe results kept), `sync_workspace`, `document` and a whole `snapshot` to every client, then the `command_refused` reply (`DocCx::partly_changed`).
-- **Requests**: `snapshot` answers `snapshot` then `result`; `list_devices` answers at once from the last device list read (no device call on the control thread; offline: `ControlConfig::devices`); `relink` is `unsupported` until it is wired; the document requests are [Documents](#documents-m44).
+- **Requests**: `snapshot` answers `snapshot` then `result`; `list_devices` answers at once from the last device list read (no device call on the control thread; offline: `ControlConfig::devices`); `relink` walks the folder on the document worker ([Relink](#relink-m117)); the document requests are [Documents](#documents-m44).
 - **Ordering across channels**: a command's `model_changed` goes to the outbound channel before its `result` goes to `reply`. The network layer keeps that order per connection (docs/network.md: a `result` with `ok.revision = N` waits for the `model_changed` for N).
 
 ### Model changes (M4.1a)
@@ -270,6 +270,10 @@ Tests: `tests/cli.rs` (the binary: `engine.json` written private with this pid, 
 ## Deferred
 
 - Choosing the device and its rate/buffer from the machine settings (M5.13; today the default device at start).
-- `relink` request (PROGRESS); M4.5 OSC; M4.7 xruns/underruns in status.
+- M4.5 OSC; M4.7 xruns/underruns in status.
 - File-system watching (a file that disappears is found when its stream fails).
 - Progress for cues without a voice (pre-waits, Wait cues, post-waits) needs a cue-engine query.
+
+## Relink (M1.17)
+
+`relink { folder }` (bound connection, its doc; WS-03, NFR-04): `Control::relink` clones the workspace and hands the document worker a `DocJob::Relink`; the worker checks the folder (`not_found`, `bad_request` if it is a file), runs `find_in_folder` within `ControlConfig::relink_limits` (core's defaults: 16 levels, 50 000 folders, 200 000 files, 20 s) and posts `DocAnswer::Relinked`. The control thread never touches the folder. It then drops matches whose cue no longer has the reference the walk started from (an edit made meanwhile wins), applies the rest with `relink_command` through `History` (one undo step, `model_changed`, dirty) and answers with the counts and `truncated`. The request holds the single pending document-request slot, so `open` and `scan_recovery` are `command_refused` meanwhile; the stall check allows the walk's own time budget on top of `doc_timeout`, and a walk stuck in a hung volume fails with `io` and its worker is replaced as for a stuck read. If the doc closes during the walk the answer is `no_workspace`.

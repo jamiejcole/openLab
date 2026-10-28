@@ -33,6 +33,7 @@ final class FakeEngine: EngineTransport {
     var logTailEntries: [JSONValue] = []
     var relinkData: JSONValue = .object([
         "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+        "truncated": .bool(false), "skipped": .int(0),
     ])
 
     private static let allClearReport: JSONValue = .object([

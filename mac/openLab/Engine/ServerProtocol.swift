@@ -375,7 +375,8 @@ struct PreshowReport: Hashable, Sendable, Decodable {
 
 enum ResultData: Sendable, Equatable, Decodable {
     case devices([DeviceEntry])
-    case relink(relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID])
+    case relink(
+        relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
     case logTail(entries: [ShowLogEntry], dropped: UInt64)
@@ -392,7 +393,9 @@ enum ResultData: Sendable, Equatable, Decodable {
             self = .relink(
                 relinked: try c.decode(Int.self, forKey: "relinked"),
                 ambiguous: try c.decode([AmbiguousMatch].self, forKey: "ambiguous"),
-                unmatched: try c.decode([ModelID].self, forKey: "unmatched"))
+                unmatched: try c.decode([ModelID].self, forKey: "unmatched"),
+                truncated: try c.decode(Bool.self, forKey: "truncated"),
+                skipped: try c.decode(Int.self, forKey: "skipped"))
         case "recovery_offer":
             self = .recoveryOffer(
                 path: try c.decode(String.self, forKey: "path"),

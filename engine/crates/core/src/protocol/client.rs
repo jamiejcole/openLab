@@ -234,7 +234,8 @@ pub enum Request {
     SaveAs {
         path: String,
     },
-    /// Relink missing media with files found in `folder` (WS-03).
+    /// Relink missing media with files found in `folder` (WS-03; an absolute path, searched on
+    /// the document worker within core's scan limits).
     Relink {
         folder: String,
     },
@@ -303,6 +304,10 @@ pub enum RecoveryChoice {
     Ignore,
 }
 
+/// Longest `relink` folder path accepted, in bytes (the longest real path on any platform
+/// openLab runs on is far shorter).
+pub const MAX_FOLDER_BYTES: usize = 4096;
+
 impl ClientMessage {
     /// Checks what serde cannot: numbers that must be finite and in range, paths not empty.
     pub fn validate(&self) -> Result<(), ProtocolError> {
@@ -325,7 +330,16 @@ impl ClientMessage {
                 field: "request.path",
             }),
             Self::Request {
-                request: Request::Open { path, .. } | Request::SaveAs { path },
+                request: Request::Relink { folder },
+                ..
+            } if folder.len() > MAX_FOLDER_BYTES => Err(ProtocolError::OutOfRange {
+                field: "request.folder",
+            }),
+            Self::Request {
+                request:
+                    Request::Open { path, .. }
+                    | Request::SaveAs { path }
+                    | Request::Relink { folder: path },
                 ..
             } if !is_absolute(&to_portable(path, PathStyle::host())) => {
                 Err(ProtocolError::NotAbsolute {

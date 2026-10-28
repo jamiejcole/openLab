@@ -808,6 +808,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                         candidates: vec!["a/storm.wav".into(), "b/storm.wav".into()],
                     }],
                     unmatched: vec![cue_id(11)],
+                    truncated: true,
+                    skipped: 2,
                 }),
             }),
         }),
@@ -1322,6 +1324,11 @@ fn malformed_input_is_an_error_never_a_panic() {
         r#"{"type":"request","id":1,"request":{"type":"open","path":""}}"#.into(),
         r#"{"type":"request","id":1,"request":{"type":"save_as","path":""}}"#.into(),
         r#"{"type":"request","id":1,"request":{"type":"relink","folder":""}}"#.into(),
+        r#"{"type":"request","id":1,"request":{"type":"relink","folder":"media/relative"}}"#.into(),
+        format!(
+            r#"{{"type":"request","id":1,"request":{{"type":"relink","folder":"/{}"}}}}"#,
+            "a".repeat(5000)
+        ),
         r#"{"type":"request","id":1,"request":{"type":"open","path":5}}"#.into(),
         r#"{"type":"goodbye","shutdown":"yes"}"#.into(),
         "\u{0}\u{1}\u{2}".into(),
@@ -3058,11 +3065,7 @@ fn arb_text() -> impl Strategy<Value = String> {
     prop_oneof!["[a-z0-9 ]{0,12}", "\\PC{0,12}"]
 }
 
-fn arb_path() -> impl Strategy<Value = String> {
-    "\\PC{1,40}"
-}
-
-/// A path `open` and `save_as` accept.
+/// A path `open`, `save_as` and `relink` accept.
 fn arb_abs_path() -> impl Strategy<Value = String> {
     "/\\PC{0,40}"
 }
@@ -3128,7 +3131,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ScanRecovery),
         Just(Request::Save),
         arb_abs_path().prop_map(|path| Request::SaveAs { path }),
-        arb_path().prop_map(|folder| Request::Relink { folder }),
+        arb_abs_path().prop_map(|folder| Request::Relink { folder }),
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),

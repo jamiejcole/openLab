@@ -747,6 +747,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.sidebar.relinkLocked)
         engine.relinkData = .object([
             "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
+            "truncated": .bool(false), "skipped": .int(0),
         ])
         await app.relinkMedia(on: store)
         XCTAssertTrue(asked, "Edit Mode relinks as before")
@@ -1192,6 +1193,7 @@ final class AppControllerTests: XCTestCase {
         let store = try XCTUnwrap(app.session.stores[doc])
         engine.relinkData = .object([
             "type": .string("relink"), "relinked": .int(3), "ambiguous": .array([]), "unmatched": .array([]),
+            "truncated": .bool(false), "skipped": .int(0),
         ])
         app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
         await app.relinkMedia(on: store)
@@ -1224,6 +1226,7 @@ final class AppControllerTests: XCTestCase {
                 ])
             ]),
             "unmatched": .array([.string("00000000-0000-0000-0000-00000000000b")]),
+            "truncated": .bool(false), "skipped": .int(0),
         ])
         app.pickFolderURL = { URL(fileURLWithPath: "/m") }
         await app.relinkMedia(on: store)

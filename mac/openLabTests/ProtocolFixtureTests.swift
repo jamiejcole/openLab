@@ -91,12 +91,14 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(e.code, .commandRefused)
 
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_relink")),
-            case .relink(let n, let amb, let un)? = ok.data
+            case .relink(let n, let amb, let un, let truncated, let skipped)? = ok.data
         else { return XCTFail("relink") }
         XCTAssertEqual(ok.revision, 9)
         XCTAssertEqual(n, 3)
         XCTAssertEqual(amb.count, 1)
         XCTAssertEqual(un.count, 1)
+        XCTAssertTrue(truncated)
+        XCTAssertEqual(skipped, 2)
     }
 
     func testUnknownFieldsAreIgnored() throws {
