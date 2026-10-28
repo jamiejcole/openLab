@@ -2756,6 +2756,15 @@ fn property_commands() -> Vec<(String, Command)> {
                 modifiers: Modifiers::default(),
             }),
         },
+        WorkspaceSetting::Hotkeys {
+            value: Box::new(TransportHotkeys {
+                load_selected: Some(Hotkey {
+                    key: "f2".into(),
+                    modifiers: Modifiers::default(),
+                }),
+                ..TransportHotkeys::default()
+            }),
+        },
         WorkspaceSetting::AutoNumberStart { value: 10.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
     ];

@@ -17,13 +17,15 @@
 //! - A change that equals the current value is not an edit: the inverse is an empty
 //!   [`Command::Transaction`], which [`History`](crate::History) does not record.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::command::{Command, CommandError, Inverse};
 use crate::cue::{CueKind, Hotkey, MAX_CHANNELS};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
-    PatchOutput, Workspace, WorkspaceSettings,
+    PatchOutput, TransportHotkeys, Workspace, WorkspaceSettings, hotkey_field, is_reserved_key,
 };
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
 use crate::validate::{host_problem, name_problem, patch_problems, settings_problems, visit};
@@ -38,7 +40,7 @@ pub(crate) fn no_change() -> Inverse {
 // ---------------------------------------------------------------------------------------------
 // Settings
 
-/// A transport key of [`TransportHotkeys`](crate::TransportHotkeys).
+/// A key of [`TransportHotkeys`]: a transport key or a selected-cue key (TRG-01).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportKey {
@@ -48,6 +50,11 @@ pub enum TransportKey {
     ResumeAll,
     PlayheadNext,
     PlayheadPrevious,
+    LoadSelected,
+    PauseResumeSelected,
+    StartSelected,
+    StopSelected,
+    ResetSelected,
 }
 
 /// One workspace setting. Each variant is the whole new value.
@@ -70,9 +77,15 @@ pub enum WorkspaceSetting {
     MasterDb {
         value: f64,
     },
+    /// One workspace key (TRG-01).
     Hotkey {
         key: TransportKey,
         value: Option<Hotkey>,
+    },
+    /// The whole key map at once (TRG-01): a swap of two keys, or a reset to the defaults, which
+    /// one key at a time would refuse halfway as a duplicate.
+    Hotkeys {
+        value: Box<TransportHotkeys>,
     },
     AutoNumberStart {
         value: f64,
@@ -100,6 +113,9 @@ impl WorkspaceSetting {
                 key: *key,
                 value: hotkey_slot(s, *key).clone(),
             },
+            Self::Hotkeys { .. } => Self::Hotkeys {
+                value: Box::new(s.hotkeys.clone()),
+            },
             Self::AutoNumberStart { .. } => Self::AutoNumberStart {
                 value: s.auto_number_start,
             },
@@ -116,6 +132,7 @@ impl WorkspaceSetting {
             Self::AutosaveInterval { value } => s.autosave_interval = *value,
             Self::MasterDb { value } => s.master_db = *value,
             Self::Hotkey { key, value } => hotkey_slot_mut(s, *key).clone_from(value),
+            Self::Hotkeys { value } => s.hotkeys.clone_from(&**value),
             Self::AutoNumberStart { value } => s.auto_number_start = *value,
             Self::AutoNumberIncrement { value } => s.auto_number_increment = *value,
         }
@@ -130,14 +147,20 @@ impl WorkspaceSetting {
     }
 }
 
-fn hotkey_field(key: TransportKey) -> &'static str {
+/// The [`TransportHotkeys::slots`] name of `key`.
+fn key_name(key: TransportKey) -> &'static str {
     match key {
-        TransportKey::Go => "settings.hotkeys.go",
-        TransportKey::StopAll => "settings.hotkeys.stop_all",
-        TransportKey::PauseAll => "settings.hotkeys.pause_all",
-        TransportKey::ResumeAll => "settings.hotkeys.resume_all",
-        TransportKey::PlayheadNext => "settings.hotkeys.playhead_next",
-        TransportKey::PlayheadPrevious => "settings.hotkeys.playhead_previous",
+        TransportKey::Go => "go",
+        TransportKey::StopAll => "stop_all",
+        TransportKey::PauseAll => "pause_all",
+        TransportKey::ResumeAll => "resume_all",
+        TransportKey::PlayheadNext => "playhead_next",
+        TransportKey::PlayheadPrevious => "playhead_previous",
+        TransportKey::LoadSelected => "load_selected",
+        TransportKey::PauseResumeSelected => "pause_resume_selected",
+        TransportKey::StartSelected => "start_selected",
+        TransportKey::StopSelected => "stop_selected",
+        TransportKey::ResetSelected => "reset_selected",
     }
 }
 
@@ -150,6 +173,11 @@ fn hotkey_slot(s: &WorkspaceSettings, key: TransportKey) -> &Option<Hotkey> {
         TransportKey::ResumeAll => &keys.resume_all,
         TransportKey::PlayheadNext => &keys.playhead_next,
         TransportKey::PlayheadPrevious => &keys.playhead_previous,
+        TransportKey::LoadSelected => &keys.load_selected,
+        TransportKey::PauseResumeSelected => &keys.pause_resume_selected,
+        TransportKey::StartSelected => &keys.start_selected,
+        TransportKey::StopSelected => &keys.stop_selected,
+        TransportKey::ResetSelected => &keys.reset_selected,
     }
 }
 
@@ -162,7 +190,88 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
         TransportKey::ResumeAll => &mut keys.resume_all,
         TransportKey::PlayheadNext => &mut keys.playhead_next,
         TransportKey::PlayheadPrevious => &mut keys.playhead_previous,
+        TransportKey::LoadSelected => &mut keys.load_selected,
+        TransportKey::PauseResumeSelected => &mut keys.pause_resume_selected,
+        TransportKey::StartSelected => &mut keys.start_selected,
+        TransportKey::StopSelected => &mut keys.stop_selected,
+        TransportKey::ResetSelected => &mut keys.reset_selected,
     }
+}
+
+/// Why a workspace key was refused ([`CommandError::HotkeyRefused`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HotkeyClash {
+    /// Esc, or a bare Up / Down arrow ([`is_reserved_key`]).
+    Reserved,
+    /// Another key of the new map is the same; its show-file path.
+    Workspace { other: &'static str },
+    /// A cue of the workspace has this hotkey (the first in workspace order).
+    Cue { cue: CueId, number: Option<String> },
+}
+
+impl fmt::Display for HotkeyClash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reserved => f.write_str(
+                "the key is reserved: Esc is panic and the bare Up and Down arrows move the selection",
+            ),
+            Self::Workspace { other } => write!(f, "the same key is already {other}"),
+            Self::Cue {
+                number: Some(number),
+                ..
+            } => write!(f, "the same key is the hotkey of cue {number}"),
+            Self::Cue { cue, number: None } => {
+                write!(f, "the same key is the hotkey of cue {cue}")
+            }
+        }
+    }
+}
+
+/// The edit rules of the key map (TRG-01; the app's key recorder has the same): a key the edit
+/// changes must not be reserved, the same as another key of the new map, or a cue's hotkey.
+/// Keys the edit leaves as they are are not judged, so a clash a show was loaded with does not
+/// block other edits. A cue hotkey may still be edited to a workspace key (QLab check K1b: the
+/// workspace key wins and the cue warns), but the key map never takes a key from a cue.
+fn check_key_map(
+    ws: &Workspace,
+    old: &TransportHotkeys,
+    new: &TransportHotkeys,
+) -> Result<(), CommandError> {
+    let new_slots = new.slots();
+    for ((name, key), (_, before)) in new_slots.iter().zip(old.slots()) {
+        let Some(key) = key else { continue };
+        if Some(key) == before.as_ref() {
+            continue;
+        }
+        let field = hotkey_field(name);
+        let refuse = |reason| Err(CommandError::HotkeyRefused { field, reason });
+        if is_reserved_key(key) {
+            return refuse(HotkeyClash::Reserved);
+        }
+        if let Some((other, _)) = new_slots
+            .iter()
+            .find(|(other, k)| other != name && k.as_ref() == Some(key))
+        {
+            return refuse(HotkeyClash::Workspace {
+                other: hotkey_field(other),
+            });
+        }
+        let mut found = None;
+        for list in &ws.cue_lists {
+            visit(&list.cues, &mut |cue| {
+                if found.is_none() && cue.triggers.hotkey.as_ref() == Some(key) {
+                    found = Some(HotkeyClash::Cue {
+                        cue: cue.id,
+                        number: cue.number.clone(),
+                    });
+                }
+            });
+        }
+        if let Some(clash) = found {
+            return refuse(clash);
+        }
+    }
+    Ok(())
 }
 
 fn set_setting(
@@ -178,19 +287,27 @@ fn set_setting(
     // redo puts back a state that existed, so it is not judged at all.
     let existing = settings_problems(&ws.settings);
     // A hotkey being set is judged on its own: any invalid new name is refused.
-    let own = match setting {
-        WorkspaceSetting::Hotkey { key, .. } => Some(hotkey_field(*key)),
-        _ => None,
+    let own: Vec<&'static str> = match setting {
+        WorkspaceSetting::Hotkey { key, .. } => vec![hotkey_field(key_name(*key))],
+        WorkspaceSetting::Hotkeys { value } => (value.slots().into_iter())
+            .zip(ws.settings.hotkeys.slots())
+            .filter(|((_, new), (_, old))| new != old)
+            .map(|((name, _), _)| hotkey_field(name))
+            .collect(),
+        _ => Vec::new(),
     };
     let issues: Vec<_> = settings_problems(&candidate)
         .into_iter()
         .filter(|i| {
-            matches!(i.kind, crate::validate::IssueKind::InvalidHotkey { field } if Some(field) == own)
+            matches!(i.kind, crate::validate::IssueKind::InvalidHotkey { field } if own.contains(&field))
                 || !existing.contains(i)
         })
         .collect();
     if !restoring && !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
+    }
+    if !restoring {
+        check_key_map(ws, &ws.settings.hotkeys, &candidate.hotkeys)?;
     }
     if old == *setting {
         return Ok(no_change());

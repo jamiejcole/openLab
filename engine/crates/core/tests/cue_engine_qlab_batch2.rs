@@ -858,13 +858,12 @@ fn k1b_a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
     rig.ws.settings.hotkeys.go = Some(hotkey("enter"));
     assert!(validate(&rig.ws).is_empty());
     assert_eq!(rig.ws.cues_with_hotkey(&hotkey("space")), vec![id(1)]);
-    // Every transport key counts.
+    // Every workspace key counts, the selected-cue keys included (M5.11c).
     for (key, action) in [
-        ("escape", "stop_all"),
         ("[", "pause_all"),
         ("]", "resume_all"),
-        ("down", "playhead_next"),
-        ("up", "playhead_previous"),
+        ("l", "load_selected"),
+        ("p", "pause_resume_selected"),
         ("enter", "go"),
     ] {
         assert_eq!(
@@ -872,6 +871,16 @@ fn k1b_a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
             Some(action)
         );
     }
+    let next = rig.ws.settings.hotkeys.playhead_next.clone().unwrap();
+    assert_eq!(
+        rig.ws.settings.hotkeys.action_of(&next),
+        Some("playhead_next")
+    );
+    rig.ws.settings.hotkeys.stop_selected = Some(hotkey("f2"));
+    assert_eq!(
+        rig.ws.settings.hotkeys.action_of(&hotkey("f2")),
+        Some("stop_selected")
+    );
 }
 
 /// Editing a cue's hotkey to a workspace key is allowed (QLab keeps it, with the warning).

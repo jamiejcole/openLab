@@ -60,7 +60,39 @@ enum CueProperty: Hashable, Sendable {
     }
 }
 
+/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey` (docs/commands.md).
+enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
+    case go
+    case stopAll = "stop_all"
+    case pauseAll = "pause_all"
+    case resumeAll = "resume_all"
+    case playheadNext = "playhead_next"
+    case playheadPrevious = "playhead_previous"
+    case loadSelected = "load_selected"
+    case pauseResumeSelected = "pause_resume_selected"
+    case startSelected = "start_selected"
+    case stopSelected = "stop_selected"
+    case resetSelected = "reset_selected"
+}
+
 extension Command {
+    /// `SetWorkspaceSetting { hotkey { key, value } }`: one key of the map; nil clears it. The
+    /// engine refuses Esc, bare Up/Down, a key already in the map and a cue's hotkey
+    /// (`command_refused`, the message names the clash).
+    static func setWorkspaceKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) -> Command {
+        let setting = JSONValue.object([
+            "type": .string("hotkey"), "key": .string(key.rawValue), "value": hotkey ?? .null,
+        ])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
+    /// `SetWorkspaceSetting { hotkeys { value } }`: the whole key map in one undo step (a swap,
+    /// or Reset). `hotkeys` is the `settings.hotkeys` object with every key, null for none.
+    static func setKeyMap(_ hotkeys: JSONValue) -> Command {
+        let setting = JSONValue.object(["type": .string("hotkeys"), "value": hotkeys])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
     /// `RenameWorkspace { name }`: the show title, undoable. At most 256 characters, no control
     /// characters (docs/commands.md); the engine refuses anything else.
     static func renameWorkspace(_ name: String) -> Command {

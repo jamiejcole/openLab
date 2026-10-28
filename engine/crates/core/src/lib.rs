@@ -30,7 +30,8 @@ pub use backup::*;
 pub use changes::*;
 pub use command::*;
 pub use command_model::{
-    NetworkPatchProperty, OscRightsTarget, PatchProperty, TransportKey, WorkspaceSetting,
+    HotkeyClash, NetworkPatchProperty, OscRightsTarget, PatchProperty, TransportKey,
+    WorkspaceSetting,
 };
 pub use cue::*;
 pub use cue_engine::*;

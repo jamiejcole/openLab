@@ -19,7 +19,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Command, ContinueMode, CueProperty, CueState, Hotkey, MachineSettings, Modifiers, NetworkPatch,
-    NetworkPatchId, NetworkProtocol, PatchMapping, Workspace, WorkspaceId,
+    NetworkPatchId, NetworkProtocol, PatchMapping, TransportKey, Workspace, WorkspaceId,
+    WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::control::{
@@ -228,6 +229,92 @@ fn a_hotkey_fires_in_every_doc() {
     let later = s.now() as usize;
     s.run(1000);
     assert!(s.channel(0)[later..].iter().all(|&v| v == 0.0));
+}
+
+/// M5.11c (TRG-01): the app-scope hotkey follows each doc's edited key map. A key edit that
+/// takes a cue's hotkey is refused over the protocol, naming the cue; the key GO moves to starts
+/// no cue, the key it left starts the cue that has it, and undo gives it back to GO. An edit in
+/// one doc does not change what a key does in another.
+#[test]
+fn a_hotkey_follows_the_edited_key_map_of_each_doc() {
+    let plain = |k: &str| Hotkey {
+        key: k.into(),
+        modifiers: Modifiers::default(),
+    };
+    let f = wav(&dc(20_000, 0.25));
+    let keyed = |n, key: &str, patch| {
+        let mut c = audio(n, &f, patch);
+        c.triggers.hotkey = Some(plain(key));
+        c
+    };
+    // Doc A: cue 1 on F2, cue 2 on Space (GO's key: it never fires, K1b). Doc B: cue 1 on F2.
+    let (mut s, ids) = docs_show(
+        workspace(vec![keyed(1, "f2", 0), keyed(2, "space", 0)]),
+        vec![ws_n(1, vec![keyed(1, "f2", 1)])],
+    );
+    s.settle_media();
+    let (a, b) = (ids[0], ids[1]);
+    let set = |s: &mut OfflineShow, doc, key, value| {
+        let rid = s.request_id();
+        s.send_doc(
+            doc,
+            ClientMessage::Command {
+                id: rid,
+                command: Box::new(Command::SetWorkspaceSetting {
+                    setting: WorkspaceSetting::Hotkey { key, value },
+                }),
+                coalesce: None,
+            },
+        )
+    };
+    // F2 is cue 1's in doc A: the key map refuses it, naming the cue.
+    let replies = set(&mut s, a, TransportKey::Go, Some(plain("f2")));
+    let refusal = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome: Outcome::Error(e),
+                ..
+            } => Some(e.clone()),
+            _ => None,
+        })
+        .expect("refused");
+    assert_eq!(refusal.code, ErrorCode::CommandRefused);
+    assert!(
+        refusal.message.contains("settings.hotkeys.go"),
+        "{}",
+        refusal.message
+    );
+    assert!(
+        refusal.message.contains("hotkey of cue"),
+        "{}",
+        refusal.message
+    );
+    // GO moves to F9 in doc A: Space is now cue 2's, and F9 starts nothing.
+    set(&mut s, a, TransportKey::Go, Some(plain("f9")));
+    s.run(BLOCK);
+    s.hotkey(&plain("f9"));
+    s.run(BLOCK * 4);
+    assert_eq!(state(&s, a, 1), CueState::Idle);
+    assert_eq!(state(&s, a, 2), CueState::Idle);
+    s.hotkey(&plain("space"));
+    s.run(BLOCK * 4);
+    assert_eq!(state(&s, a, 2), CueState::Running);
+    // Stop Selected takes F3 in doc B; F2 still fires in both docs.
+    set(&mut s, b, TransportKey::StopSelected, Some(plain("f3")));
+    s.hotkey(&plain("f2"));
+    s.run(BLOCK * 4);
+    assert_eq!(state(&s, a, 1), CueState::Running);
+    assert_eq!(state(&s, b, 1), CueState::Running);
+    // Undo in doc A gives Space back to GO: it no longer starts cue 2 (already running, so it
+    // is checked on a fresh press after a stop).
+    s.transport_doc(a, TransportAction::StopAll);
+    s.run(BLOCK * 8);
+    let rid = s.request_id();
+    s.send_doc(a, ClientMessage::Undo { id: rid });
+    s.hotkey(&plain("space"));
+    s.run(BLOCK * 4);
+    assert_eq!(state(&s, a, 2), CueState::Idle);
 }
 
 /// The hotkey's release (the `hotkey` message with `phase: up`) reaches every doc too: a cue

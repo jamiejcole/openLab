@@ -6,12 +6,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cue::{Cue, CueKind};
-use crate::model::Workspace;
+use crate::cue::{Cue, CueKind, Hotkey, Modifiers};
+use crate::model::{Workspace, is_reserved_key};
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -180,6 +180,7 @@ pub fn migrate(mut document: Value, from: u32) -> Result<Value, LoadError> {
             1 => v1_to_v2(document),
             2 => v2_to_v3(document),
             3 => v3_to_v4(document),
+            4 => v4_to_v5(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -271,6 +272,97 @@ fn v3_to_v4(mut document: Value) -> Result<Value, String> {
     }
     root.insert("format_version".into(), 4.into());
     Ok(document)
+}
+
+/// v5 added the selected-cue keys to `settings.hotkeys` (M5.11c) and made Esc and the bare Up /
+/// Down arrows reserved (`is_reserved_key`). The result keeps what the app bound before:
+/// - A transport key that is reserved becomes null. The app never bound one (Esc is its fixed
+///   panic; bare Up / Down move the selection), and the v4 defaults were Esc for Stop All and
+///   Down / Up for the playhead.
+/// - Load Selected `L` and Pause/Resume Selected `P` were fixed app keys that yielded to a cue
+///   hotkey or a transport key on the same chord: each becomes that key, or null where the app
+///   gave it up, so no cue loses its hotkey to the new workspace key. Start, Stop and Reset
+///   Selected had no key.
+///
+/// A v4 reader ignored unknown keys, so hand-added selected-cue keys are replaced. A document
+/// that is not shaped like this is left for the model parse to refuse.
+fn v4_to_v5(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    root.insert("format_version".into(), 5.into());
+    let mut taken = root.get("workspace").map(cue_hotkeys).unwrap_or_default();
+    let Some(keys) = root
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("settings"))
+        .and_then(|s| s.get_mut("hotkeys"))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(document);
+    };
+    let v4_fields = [
+        "go",
+        "stop_all",
+        "pause_all",
+        "resume_all",
+        "playhead_next",
+        "playhead_previous",
+    ];
+    for (_, value) in keys
+        .iter_mut()
+        .filter(|(k, _)| v4_fields.contains(&k.as_str()))
+    {
+        if let Ok(hotkey) = Hotkey::deserialize(&*value) {
+            if is_reserved_key(&hotkey) {
+                *value = Value::Null;
+            } else {
+                taken.push(hotkey);
+            }
+        }
+    }
+    for (field, key) in [("load_selected", "l"), ("pause_resume_selected", "p")] {
+        let hotkey = Hotkey {
+            key: key.into(),
+            modifiers: Modifiers::default(),
+        };
+        let value = if taken.contains(&hotkey) {
+            Value::Null
+        } else {
+            serde_json::to_value(&hotkey).map_err(|e| e.to_string())?
+        };
+        keys.insert(field.into(), value);
+    }
+    for field in ["start_selected", "stop_selected", "reset_selected"] {
+        keys.insert(field.into(), Value::Null);
+    }
+    Ok(document)
+}
+
+/// The hotkeys of every cue of a workspace document that has a readable one, any depth.
+/// Iterative, so deep nesting cannot overflow the stack.
+fn cue_hotkeys(workspace: &Value) -> Vec<Hotkey> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&Value> = Vec::new();
+    if let Some(Value::Array(lists)) = workspace.get("cue_lists") {
+        for list in lists {
+            if let Some(Value::Array(cues)) = list.get("cues") {
+                stack.extend(cues);
+            }
+        }
+    }
+    while let Some(cue) = stack.pop() {
+        if let Some(hotkey) = cue
+            .get("triggers")
+            .and_then(|t| t.get("hotkey"))
+            .and_then(|h| Hotkey::deserialize(h).ok())
+        {
+            out.push(hotkey);
+        }
+        if let Some(Value::Array(children)) = cue.get("kind").and_then(|k| k.get("children")) {
+            stack.extend(children);
+        }
+    }
+    out
 }
 
 /// Applies `upgrade` to every cue object of the document (any depth) and sets its

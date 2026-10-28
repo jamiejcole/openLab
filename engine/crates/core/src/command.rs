@@ -22,7 +22,8 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::command_model::{
-    NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
+    HotkeyClash, NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting,
+    apply_model, no_change,
 };
 use crate::cue::{
     ContinueMode, Cue, CueColor, CueKind, GroupMode, OscArg, SecondTrigger, Triggers,
@@ -327,6 +328,12 @@ pub enum CommandError {
     PatchOutputOutOfRange { patch: PatchId, output: usize },
     #[error("{0}")]
     InvalidValue(&'static str),
+    /// A workspace key edit broke a key-map rule (TRG-01); `field` is the key's show-file path.
+    #[error("{field}: {reason}")]
+    HotkeyRefused {
+        field: &'static str,
+        reason: HotkeyClash,
+    },
     #[error("the Network cue's message is invalid: {0}")]
     InvalidMessage(MessageIssue),
     #[error("values are invalid: {}", join(.0))]
