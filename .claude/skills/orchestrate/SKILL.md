@@ -15,11 +15,11 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - Orchestrator: read report files with `head`/`grep`, not in full; don't re-run checks the agent already proved unless merging.
 
 ## 0. Re-orient (every session start or after a reset)
-- Read `PROGRESS.md` (what's done/next), skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, run `git log --oneline -15` and `git status`.
+- Read `PROGRESS.md` (history) and `gh issue list --label task` (what's next), skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, run `git log --oneline -15` and `git status`.
 - Check open PRs and the last CI on `main` with the GitHub MCP tools (`list_pull_requests`, `actions_list`); `gh` may not exist in cloud sessions.
 
 ## 1. Pick work
-- Follow the dependency order at the top of `PROGRESS.md`. Prefer finishing a milestone over starting several.
+- Pick from `gh issue list --milestone "<current milestone>" --label task --state open`, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`); follow the dependency order at the top of `PROGRESS.md`. Prefer finishing a milestone over starting several. Choose the model from the issue's `model:*` label and size from `size:*`. Briefs name issue numbers.
 - Batch 1–4 closely related tasks per implementer (same files, same concepts). Split unrelated areas into separate implementers.
 - Parallel implementers only when they touch disjoint files (e.g. `crates/core` vs `crates/audio` vs `mac/`). Run each parallel implementer with `isolation: "worktree"`; a single implementer can work on `main` directly.
 
@@ -42,27 +42,27 @@ Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-ba
 
 ## 3. Verify the report (don't trust it)
 - Check the commits exist and `git diff --stat` matches the claim.
-- Run `make lint` and `make test-rust` (or `make test`) yourself on the branch.
+- Check the report's `PREPUSH PASS` line; run `make prepush` yourself on the branch before opening the PR.
 - Spot-check that the tests cited actually test the behaviour (open one or two).
 
 ## 4. Adversarial review
 - Spawn `subagent_type: "pr-reviewer"` with: task IDs, base and branch/commit range, and any area you're suspicious of.
-- **High** → must fix. **Medium** that affects show safety → fix. Other Mediums (low-medium) and all **Lows** → a GitHub issue labelled `low` each (user decision 2026-10-28), not a fix round. Don't fix states only a generator/fuzzer/contrived input can reach. Niche QLab-parity features → PROGRESS "Deferred to v0.0.2". Prioritise work that blocks M5.
+- **High** → must fix. **Medium** that affects show safety → fix. Other Mediums (low-medium) and all **Lows** → a GitHub issue labelled `low` each (user decision 2026-10-28), not a fix round. Don't fix states only a generator/fuzzer/contrived input can reach. Niche QLab-parity features → an issue in the `v0.0.2` milestone. Prioritise work that blocks M5.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context). After fixes, re-run the reviewer if there were any Highs. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
 ## 5. Land it (PR into `main`)
 Review traffic stays local (report files + `SendMessage`); GitHub is only the merge gate. Keep it to a few calls per batch.
-- Each batch has its own branch named after the tasks (e.g. `m4-5-osc`). Merge current `main` into it first (merge commit, never rebase a pushed branch), run `make lint` + `make test-rust`, then `git push origin <worktree-branch>:<task-branch>`.
-- Open one PR into `main` (`create_pull_request`). Body: task IDs + one line each, requirement IDs, test summary line, and a review digest (e.g. "R1: 0H/3M fixed; R2: 1M fixed; Lows → M4.1c"). No full review text.
+- Each batch has its own branch named after the tasks (e.g. `m4-5-osc`). Merge current `main` into it first (merge commit, never rebase a pushed branch), run `make prepush`, then `git push origin <worktree-branch>:<task-branch>`.
+- Open one PR into `main` (`create_pull_request`). Body: `Closes #N` for each issue (see `.github/pull_request_template.md`), task IDs + one line each, requirement IDs, test summary line, and a review digest (e.g. "R1: 0H/3M fixed; R2: 1M fixed; Lows → #101, #102"). No full review text.
 - Check CI on the PR head **once** when you would otherwise merge (`pull_request_read` status / `actions_list`); fetch job logs only if red. Don't subscribe to PR events for routine batches.
-- Merge only when: CI green on the head, no open High/Medium, Lows fixed or filed in PROGRESS. Merge with `merge_pull_request` using merge method `merge` and title `Merge <task IDs>: <summary>`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
+- Merge only when: CI green on the head, no open High/Medium, Lows filed as `low` issues. Merge with `merge_pull_request` using merge method `merge` and title `Merge <task IDs>: <summary>`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
 - Delete the task branch after merge; `git fetch origin main` and fast-forward the local `main`.
-- Small orchestrator-only commits (handoff notes, PROGRESS edits) ride along in the next batch's PR rather than getting their own.
+- Small orchestrator-only commits (handoff notes, PROGRESS ticks) ride along in the next batch's PR rather than getting their own.
 - A red CI on `main` is the top priority: fix it (via a PR) before new work.
 - Commits are plain terminal `git` commands. **Never add Co-authored-by or AI-attribution trailers.**
 
 ## 6. Track
-- Confirm `PROGRESS.md` ticks are accurate (implemented **and** tested). Tick requirements in `REQUIREMENTS.md` only when fully satisfied within the release scope.
+- After merge the PR's `Closes #N` closes the issues. Tick the matching `PROGRESS.md` lines in batches (the only place `PROGRESS.md` is edited; PRs never touch it), implemented **and** tested. Tick requirements in `REQUIREMENTS.md` only when fully satisfied within the release scope.
 - Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. Lessons that every agent needs go into `CLAUDE.md`.
 
 ## 7. Talk to the user
