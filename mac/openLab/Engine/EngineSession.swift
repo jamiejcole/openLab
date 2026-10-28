@@ -389,6 +389,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         switch e {
         case .engine(_, let message) where !message.isEmpty: return message
         case .notConnected, .disconnected: return loc("error.detail.notConnected")
+        case .timeout: return loc("error.detail.timeout")
         default: return loc("error.detail.generic")
         }
     }

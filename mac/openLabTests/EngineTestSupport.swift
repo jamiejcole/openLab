@@ -82,6 +82,8 @@ final class Rig {
     let engine: FakeEngine
     let scheduler = ManualScheduler()
     let handshakeScheduler = ManualScheduler()
+    /// Request deadlines (M15): fire it to time out what is in flight.
+    let requestScheduler = ManualScheduler()
     let box = InfoBox()
     let client: EngineClient
     let store: WorkspaceStore
@@ -98,7 +100,8 @@ final class Rig {
                 box.reads += 1
                 return .success(EngineConnectionInfo(port: box.port, token: box.token, pid: 1))
             },
-            scheduler: scheduler, handshakeScheduler: handshakeScheduler, workspace: workspace)
+            scheduler: scheduler, handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler,
+            workspace: workspace)
         store = WorkspaceStore(client: client)
     }
 

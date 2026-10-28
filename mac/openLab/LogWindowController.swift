@@ -51,6 +51,10 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private var tailFailed = false
     private var tailMark = 0
     private var sub: AnyCancellable?
+    private var gapSub: AnyCancellable?
+    /// A gap re-read is out; `gapAgain`: another gap came meanwhile (one more re-read follows).
+    private var gapRefreshing = false
+    private var gapAgain = false
     private var storeEntries: [LogEntry]
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -82,12 +86,36 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
                 self?.rebuild()
             }
         }
+        // Records the engine made but did not push: an open window reads the tail again.
+        gapSub = store.logGaps.sink { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.window?.isVisible == true else { return }
+                self.refreshAfterGap()
+            }
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     // MARK: Data
+
+    /// A burst of gaps (a slow client under a log burst) must not start a re-read each: one is in
+    /// flight at a time and the gaps meanwhile fold into a single one after it.
+    private func refreshAfterGap() {
+        guard !gapRefreshing else {
+            gapAgain = true
+            return
+        }
+        gapRefreshing = true
+        Task {
+            repeat {
+                gapAgain = false
+                await refresh()
+            } while gapAgain
+            gapRefreshing = false
+        }
+    }
 
     /// Fetches the engine's records again. A failure leaves the store's own entries on screen
     /// with a note: a log window that goes blank is no use in a fault.

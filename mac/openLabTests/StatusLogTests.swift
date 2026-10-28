@@ -153,7 +153,7 @@ final class StatusLogTests: XCTestCase {
 
     private func tail() throws -> [ShowLogEntry] {
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_log_tail")),
-            case .logTail(let entries, _)? = ok.data
+            case .logTail(let entries, _, _)? = ok.data
         else { throw XCTSkip("fixture is not a log_tail result") }
         return entries
     }
@@ -264,6 +264,64 @@ final class StatusLogTests: XCTestCase {
         await log.refresh()
         XCTAssertEqual(log.rows.map(\.message), ["kept"])
         XCTAssertEqual(log.note.stringValue, loc("log.tailFailed"))
+    }
+
+    /// M18: `log_entry` numbers every record; a jump means some were not pushed, so an open log
+    /// window reads `log_tail` again. Consecutive numbers (and a closed window) read nothing.
+    func testALogEntryGapRereadsTheTailInAnOpenWindow() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
+        func entry(_ seq: Int) -> String {
+            #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"info","kind":"go","message":"m"}}"#
+        }
+        rig.engine.push(entry(1))
+        rig.engine.push(entry(5))  // window closed: nothing read
+        await settle()
+        XCTAssertEqual(tails(), 0)
+        XCTAssertEqual(rig.store.logSeq, 5)
+        log.showWindow(nil)
+        defer { log.close() }
+        rig.engine.push(entry(6))
+        await settle()
+        XCTAssertEqual(tails(), 0, "no gap")
+        rig.engine.push(entry(9))
+        await assertEventually { tails() == 1 }
+        // A broken or hostile engine's largest number must not overflow the gap check.
+        let max = entry(9).replacingOccurrences(of: #""seq":9"#, with: #""seq":18446744073709551615"#)
+        rig.engine.push(max)
+        rig.engine.push(max)
+        await assertEventually { rig.store.logSeq == UInt64.max }
+    }
+
+    /// A burst of gaps is one re-read in flight and at most one after it, never one per gap.
+    func testABurstOfLogGapsIsAtMostTwoTailReads() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        log.showWindow(nil)
+        defer { log.close() }
+        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
+        func push(_ seq: Int) {
+            rig.engine.push(
+                #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"info","kind":"go","message":"m"}}"#)
+        }
+        rig.engine.holdResults = true
+        push(1)
+        push(5)
+        await assertEventually { tails() == 1 }
+        // Ten more gaps while that read is out: one more read after it, not ten.
+        for seq in stride(from: 9, through: 45, by: 4) { push(seq) }
+        await settle()
+        XCTAssertEqual(tails(), 1)
+        rig.engine.holdResults = false
+        rig.engine.releaseResults()
+        await assertEventually { tails() == 2 }
+        await settle()
+        XCTAssertEqual(tails(), 2)
     }
 
     func testDroppedRecordsAreMentioned() async throws {

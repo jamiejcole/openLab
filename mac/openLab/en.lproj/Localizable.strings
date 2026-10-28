@@ -142,22 +142,6 @@
 "cue.broken.deviceLost" = "The audio device was lost";
 "cue.broken.group" = "A cue inside this group is broken";
 
-"problem.no_target" = "No target";
-"problem.target_missing" = "The target cue is missing";
-"problem.target_self" = "The cue targets itself";
-"problem.target_wrong_kind" = "The target is the wrong kind of cue";
-"problem.nothing_to_fade" = "No parameters set to fade";
-"problem.no_media" = "No media file";
-"problem.media_missing" = "The media file is missing";
-"problem.media_unsupported" = "The media file is not supported";
-"problem.patch_missing" = "The output patch is missing";
-"problem.device_unavailable" = "The output device is unavailable";
-"problem.network_patch_missing" = "The network patch is missing";
-"problem.network_host_invalid" = "The network destination cannot be used";
-"problem.network_host_unresolved" = "The network host cannot be found";
-"problem.network_message_invalid" = "The OSC message cannot be sent";
-"problem.started_broken" = "The cue started while broken";
-
 "cue.colour.none" = "None";
 "cue.colour.red" = "Red";
 "cue.colour.orange" = "Orange";
@@ -191,6 +175,14 @@
 "inspector.hotkey.otherCue" = "Another cue already has that hotkey.";
 "inspector.hotkey.menu" = "That key belongs to a menu command.";
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
+"hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
+"hotkeys.warn.yields" = "%1$@ key: %2$@ is a cue hotkey in this show, so the cue keeps it and no key is bound.";
+"hotkeys.warn.shadowed" = "Cue hotkey %@ is a transport key in this workspace, so the cue does not fire from it.";
+"hotkeys.reason.reserved" = "the key is reserved";
+"hotkeys.reason.duplicate" = "it is the same key as %@";
+"hotkeys.reason.cueHotkey" = "it is the same key as a cue hotkey";
+"hotkeys.reason.menuKey" = "it is the same key as a menu command";
+"hotkeys.reason.unsupported" = "the key is not supported";
 "inspector.osc" = "OSC address";
 "inspector.osc.placeholder" = "/my/trigger";
 "inspector.invalid.osc" = "Enter an OSC address starting with /, with no spaces or wildcards.";
@@ -384,6 +376,7 @@
 
 "window.main.title.showMode" = "%@ (Show Mode)";
 "footer.showMode.indicator" = "SHOW MODE";
+"showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";
 "alert.closeShowMode.message" = "The workspace is in Show Mode.";
 "alert.quitShowMode.title" = "Quit openLab?";

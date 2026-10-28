@@ -36,6 +36,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let sidebar: SidebarViewController
     private var sub: AnyCancellable?
     private var statusSub: AnyCancellable?
+    private var showModeSub: AnyCancellable?
     private(set) lazy var logWindow = LogWindowController(store: store)
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
@@ -92,6 +93,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
+        // The store's mode moves on the operator's choice and on the engine's word (a reconnect,
+        // another client): the window follows either. Published before it changes: use the value.
+        showModeSub = store.$showMode.sink { [weak self] on in
+            MainActor.assumeIsolated { self?.applyShowMode(on) }
+        }
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         setVisible(.sidebar, false)
@@ -120,9 +126,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         Task { await logWindow.refresh() }
     }
 
-    /// Show Mode (SM-01) belongs to this window only and is not saved; the app does not send the
-    /// engine's `set_show_mode` yet (#124). Locks the inspector and cue-type row; transport,
-    /// hotkeys, the sidebar and the layout toggles keep working, as in QLab.
+    /// Show Mode (SM-01) belongs to this window only and is not saved; the store tells the engine
+    /// (`set_show_mode`, so it holds off sleep, SM-07) and restores it after a reconnect. Locks the
+    /// inspector and cue-type row; transport, hotkeys, the sidebar and the layout toggles keep
+    /// working, as in QLab.
     private(set) var isShowMode = false
 
     /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
@@ -137,7 +144,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         setShowMode(on)
     }
 
+    /// Enters or leaves Show Mode now, without committing typed edits (callers do that first).
     func setShowMode(_ on: Bool) {
+        guard on != store.showMode else { return }
+        store.setShowMode(on)
+    }
+
+    private func applyShowMode(_ on: Bool) {
         guard on != isShowMode else { return }
         isShowMode = on
         inspector.isLocked = on

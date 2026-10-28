@@ -57,6 +57,13 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertNil(keys.chord(for: .pauseResumeSelected), "the fixed P key yields to the show's key")
         XCTAssertEqual(keys.chord(for: .resumeAll), KeyChord("]"), "cue hotkeys do not take transport keys")
         XCTAssertEqual(keys.warnings.count, 2, "\(keys.warnings)")
+        // The show log reads them: localised words and menu titles, never field names (L26).
+        XCTAssertEqual(
+            keys.warnings.first,
+            String(
+                format: loc("hotkeys.warn.unusable"), loc("menu.transport.stopAll"),
+                String(format: loc("hotkeys.reason.duplicate"), loc("menu.transport.go"))))
+        XCTAssertFalse(keys.warnings.contains { $0.contains("hotkeys.") || $0.contains("_") }, "\(keys.warnings)")
     }
 
     func testUnsupportedAndMalformedHotkeysWarnNotCrash() throws {
