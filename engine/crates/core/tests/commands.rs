@@ -1358,36 +1358,29 @@ fn paste_without_fresh_ids_is_refused() {
     ));
 }
 
-/// Undo and redo (`apply_restoring`) skip value checks a loaded show may already fail, never the
-/// id check: no command path can give a workspace duplicate cue ids, which the cue engine relies
-/// on (M2.32).
+/// Undo and redo skip value checks a loaded show may already fail, never the id check: no
+/// command path can give a workspace duplicate cue ids, which the cue engine relies on (M2.32).
 #[test]
-fn restoring_still_refuses_duplicate_ids() {
+fn undo_still_refuses_a_duplicate_id() {
     let mut ws = sample();
+    let removed = ws.cue_lists[0].cues[1].clone();
+    let mut history = History::new();
+    history
+        .execute(&mut ws, Command::RemoveCue { id: removed.id })
+        .unwrap();
+    // A cue with the removed id arrives behind the history's back: undo must not add a second.
+    ws.apply(add(pos(None, 0), removed)).unwrap();
     let before = format!("{ws:?}");
-    let stale = ws.cue_lists[0].cues[1].clone();
-    let commands = [
-        add(pos(None, 0), memo(5)),
-        Command::Paste {
-            at: pos(None, 0),
-            cues: vec![stale],
-        },
-        Command::Transaction {
-            commands: vec![add(pos(None, 0), memo(40)), add(pos(None, 0), memo(40))],
-        },
-    ];
-    for command in commands {
-        let error = ws.apply_restoring(command).unwrap_err();
-        let duplicate = match &error {
-            CommandError::InTransaction { source, .. } => source.as_ref(),
-            other => other,
-        };
-        assert!(
-            matches!(duplicate, CommandError::DuplicateCueId(_)),
-            "{error:?}"
-        );
-        assert_eq!(format!("{ws:?}"), before);
-    }
+    let error = history.undo(&mut ws).unwrap_err();
+    let duplicate = match &error {
+        CommandError::InTransaction { source, .. } => source.as_ref(),
+        other => other,
+    };
+    assert!(
+        matches!(duplicate, CommandError::DuplicateCueId(_)),
+        "{error:?}"
+    );
+    assert_eq!(format!("{ws:?}"), before);
 }
 
 #[test]
