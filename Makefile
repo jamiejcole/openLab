@@ -50,7 +50,8 @@ fuzz:
 # --lib --tests skips doctests (rustdoc does not support -Zsanitizer reliably). Ignored tests (real-time, perf,
 # soak, CPU budget) stay ignored: their bounds are wall-clock and mean nothing under a 2-10x slowdown.
 # Skipped by name, each because a sanitizer cannot give a meaningful answer:
-#   (none yet; add `--skip name` here with the reason)
+#   ThreadSanitizer: long_start_chains_validate_in_linear_time asserts a wall-clock bound (a ~5-15x TSan slowdown
+#   breaks it; the algorithm is not at issue). It passes under ASan, so only the thread leg skips it.
 SAN_TEST := cargo +$(SAN_TOOLCHAIN) test -Zbuild-std --target $(SAN_TARGET) --workspace --locked --lib --tests --no-fail-fast
 sanitize: sanitize-address sanitize-thread miri
 
@@ -59,7 +60,7 @@ sanitize-address:
 
 # TSan needs every crate instrumented, hence -Zbuild-std; on macOS it is not supported for all targets.
 sanitize-thread:
-	cd engine && RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST)
+	cd engine && RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST) -- --skip long_start_chains_validate_in_linear_time
 
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
