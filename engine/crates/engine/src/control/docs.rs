@@ -1289,7 +1289,10 @@ impl Engine {
 
     /// The cue engine settings for doc `doc`: the loop's rate and block, and a seed of its own
     /// (the first doc's is the configured seed, so a one-doc run is as before).
-    pub(super) fn engine_config(&self, doc: DocId) -> Result<EngineConfig, openlab_core::EngineConfigError> {
+    pub(super) fn engine_config(
+        &self,
+        doc: DocId,
+    ) -> Result<EngineConfig, openlab_core::EngineConfigError> {
         EngineConfig::new(
             self.rate.get(),
             self.block,
@@ -1853,11 +1856,8 @@ impl Control {
                 (None, true) => counts.written += 1,
                 (_, false) => match &self.eng.docs.writer {
                     Some(writer) => {
-                        let rx = writer.autosave(
-                            doc.ws.clone(),
-                            doc.show_path.clone(),
-                            doc.revision,
-                        );
+                        let rx =
+                            writer.autosave(doc.ws.clone(), doc.show_path.clone(), doc.revision);
                         file.autosaved_revision = Some(doc.revision);
                         waiting.push((name, rx));
                     }
