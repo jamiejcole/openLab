@@ -161,6 +161,30 @@ fn ok(id: RequestId) -> ServerMessage {
 fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
     while let Ok(msg) = rx.recv() {
         match msg {
+            // The OSC side asks which docs are open as an app connection does (M4.15h): one,
+            // [`DOC`]. Not recorded: `snapshot_requests` counts the doc's.
+            Inbox::Conn {
+                doc: None,
+                message:
+                    ClientMessage::Request {
+                        id,
+                        request: Request::Snapshot,
+                    },
+                reply,
+            } => {
+                let ws = c.workspace.lock().unwrap().clone().unwrap();
+                let _ = reply.send(ServerMessage::Workspaces {
+                    workspaces: vec![openlab_core::protocol::WorkspaceInfo {
+                        doc: DOC,
+                        workspace_id: ws.id,
+                        name: ws.name.clone(),
+                        path: None,
+                        dirty: false,
+                    }],
+                });
+                let _ = reply.send(ok(id));
+                c.changed.notify_one();
+            }
             Inbox::Client { message, reply } | Inbox::Conn { message, reply, .. } => {
                 c.seen.lock().unwrap().push(message.clone());
                 match message {
@@ -205,7 +229,7 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
     }
 }
 
-/// The doc the stand-in plays: the OSC side follows the first open doc (until M4.15h).
+/// The one doc the stand-in plays.
 const DOC: openlab_core::protocol::DocId = openlab_core::protocol::DocId(0);
 
 /// The control loop's outbound channel as the stand-in uses it: every message is about [`DOC`].

@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
-    CueField, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder, decode_packet,
-    encode_message,
+    CueField, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SINGLE_DOC, SlipDecoder,
+    decode_packet, encode_message,
 };
 use rosc::OscMessage;
 use serde_json::{Value, json};
@@ -180,6 +180,7 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                 for subscriber in osc.update_subscribers(now) {
                     if let Some(bytes) = osc.encode_update(&update)
                         && osc.update_allowed(
+                            SINGLE_DOC,
                             subscriber,
                             now,
                             bytes.len(),
@@ -200,7 +201,7 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             && (osc
                 .update_subscribers(now)
                 .into_iter()
-                .any(|p| osc.may_receive_updates(p, &show.access))
+                .any(|p| osc.may_receive_updates(SINGLE_DOC, p, &show.access))
                 || (0..PEERS).any(|n| osc.is_connected(udp(n)) || osc.is_connected(tcp(n))))
         {
             return Err("a peer got a session without the passcode".into());
