@@ -301,10 +301,7 @@ mod tests {
         assert_eq!(r("../Audio/b.wav", Some("/Show"), P), "../Audio/b.wav");
         assert_eq!(r("../Audio/b.wav", None, P), "../Audio/b.wav");
         assert_eq!(r("a/./b.wav", Some("/Show"), P), "a/./b.wav");
-        assert_eq!(
-            r(r"..\Audio\b.wav", Some(r"C:\Show"), W),
-            "../Audio/b.wav"
-        );
+        assert_eq!(r(r"..\Audio\b.wav", Some(r"C:\Show"), W), "../Audio/b.wav");
     }
 
     #[test]

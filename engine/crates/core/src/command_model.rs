@@ -133,20 +133,22 @@ fn required<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D:
     Option::<Hotkey>::deserialize(d)
 }
 
-fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Box<TransportHotkeys>, D::Error> {
+fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Box<TransportHotkeys>, D::Error> {
     let w = StrictHotkeys::deserialize(d)?;
     Ok(Box::new(TransportHotkeys {
-            go: w.go,
-            stop_all: w.stop_all,
-            pause_all: w.pause_all,
-            resume_all: w.resume_all,
-            playhead_next: w.playhead_next,
-            playhead_previous: w.playhead_previous,
-            load_selected: w.load_selected,
-            pause_resume_selected: w.pause_resume_selected,
-            start_selected: w.start_selected,
-            stop_selected: w.stop_selected,
-            reset_selected: w.reset_selected,
+        go: w.go,
+        stop_all: w.stop_all,
+        pause_all: w.pause_all,
+        resume_all: w.resume_all,
+        playhead_next: w.playhead_next,
+        playhead_previous: w.playhead_previous,
+        load_selected: w.load_selected,
+        pause_resume_selected: w.pause_resume_selected,
+        start_selected: w.start_selected,
+        stop_selected: w.stop_selected,
+        reset_selected: w.reset_selected,
     }))
 }
 

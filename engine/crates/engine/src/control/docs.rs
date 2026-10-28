@@ -2254,7 +2254,10 @@ mod tests {
         let p = |rel: &str| root.join(rel).to_string_lossy().into_owned();
         assert!(same_file(&p("show/media/x.wav"), &p("show/media/./x.wav")));
         // Neither exists yet: the same names are the same file.
-        assert!(same_file(&p("show/media/new.wav"), &p("show/media/new.wav")));
+        assert!(same_file(
+            &p("show/media/new.wav"),
+            &p("show/media/new.wav")
+        ));
         assert!(!same_file(&p("show/media/a.wav"), &p("show/media/b.wav")));
         #[cfg(unix)]
         {
