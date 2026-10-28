@@ -297,8 +297,20 @@ fn crash_reports_of(crash_dir: &Path, info: &RunInfo) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Tests that drop a marker and then expect its lock to be free, and the test that spawns a
+    /// child process, hold this. A child created by `fork`/`posix_spawn` shares every open file
+    /// description of the process until its `exec` closes the close-on-exec ones, so a spawn
+    /// that overlaps a dropped marker keeps the `flock` held for a moment and the next start sees
+    /// `WouldBlock` (seen on CI macOS arm64; ~1% of overlaps when reproduced). The engine itself
+    /// spawns no children, so this is only a test-process hazard.
+    pub(crate) fn serialize_spawn_and_lock_release() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     const T0: i64 = 1_700_000_000_000;
 
@@ -339,6 +351,7 @@ mod tests {
 
     #[test]
     fn a_run_that_ended_without_finishing_is_reported_once_with_its_pid_and_start() {
+        let _serial = serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         let (marker, _) = RunMarker::start(&dir, &crashes, &info(4242, T0));
@@ -404,6 +417,7 @@ mod tests {
 
     #[test]
     fn crash_reports_of_that_run_are_named() {
+        let _serial = serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         fs::create_dir_all(&crashes).unwrap();
@@ -438,6 +452,7 @@ mod tests {
 
     #[test]
     fn begin_records_each_unclean_exit_in_the_show_log() {
+        let _serial = serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         let log = ShowLog::new(None);
@@ -483,6 +498,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_named_like_a_marker_does_not_hang_the_start() {
+        let _serial = serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         fs::create_dir_all(&dir).unwrap();
