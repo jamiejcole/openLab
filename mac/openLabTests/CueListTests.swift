@@ -479,34 +479,12 @@ final class CueListTests: XCTestCase {
             XCTAssertNotEqual(loc(key), key, "\(reason)")
         }
         XCTAssertEqual(
-            CueStateStyle.brokenDetail(reason: .deviceLost, problems: [], groupWarning: true),
+            CueStateStyle.brokenDetail(reason: .deviceLost, problems: [], groupWarning: true, label: \.raw),
             loc("cue.broken.deviceLost"))
         XCTAssertEqual(
-            CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: true), loc("cue.broken.group"))
-        XCTAssertNil(CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: false))
-    }
-
-    func testProblemTextIsLocalisedOrShownRaw() {
-        for t in [
-            "no_target",
-            "target_missing",
-            "target_self",
-            "target_wrong_kind",
-            "nothing_to_fade",
-            "no_media",
-            "media_missing",
-            "media_unsupported",
-            "patch_missing",
-            "device_unavailable",
-            "network_patch_missing",
-            "network_host_invalid",
-            "network_host_unresolved",
-            "network_message_invalid",
-            "started_broken",
-        ] {
-            XCTAssertNotEqual(CueStateStyle.problemText(t), t, t)
-        }
-        XCTAssertEqual(CueStateStyle.problemText("brand_new_problem"), "brand_new_problem")
+            CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: true, label: \.raw),
+            loc("cue.broken.group"))
+        XCTAssertNil(CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: false, label: \.raw))
     }
 
     func testStateCellsCarryIconLabelAndBrokenTooltip() async throws {
@@ -521,7 +499,20 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("cue.broken.deviceLost"))")
         // Static problems break a cue even without a state entry (the fixture's fade cue).
         XCTAssertEqual(try icon(H.fade).accessibilityLabel(), loc("cue.state.broken"))
-        XCTAssertTrue(try XCTUnwrap(try icon(H.fade).toolTip).contains(loc("problem.target_missing")))
+        // The tooltip reads as the Warnings tab does: fields filled in, never a raw `{target}`.
+        let tip = try XCTUnwrap(try icon(H.fade).toolTip)
+        XCTAssertFalse(tip.contains("{"), tip)
+        XCTAssertTrue(tip.contains("00000000-0000-0000-0000-000000000063"), tip)
+        // A problem type this build has no words for still shows its type, not nothing.
+        let unknown = try ServerMessage.decode(
+            #"{"type":"runtime","seq":1,"changes":[{"type":"problems","cue":"\#(H.fade)","problems":[{"type":"brand_new"}]}]}"#
+        )
+        guard case .runtime(_, let changes) = unknown, case .problems(_, let list) = changes.first else {
+            return XCTFail("\(unknown)")
+        }
+        let raw = try XCTUnwrap(
+            CueStateStyle.brokenDetail(reason: nil, problems: list, groupWarning: false, label: \.raw))
+        XCTAssertTrue(raw.contains("brand_new") && !raw.contains("{"), raw)
         XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[1].isHidden, "idle shows no icon")
     }
 

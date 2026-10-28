@@ -41,17 +41,15 @@ struct CueStateStyle: Equatable {
 
     /// Why a cue is broken, for the tooltip: a run-time reason, else its static problems, else a
     /// group's warning about a descendant.
-    static func brokenDetail(reason: WireBrokenReason?, problems: [WireProblem], groupWarning: Bool) -> String? {
+    /// Problems read as the Warnings tab words them, fields filled in (`label` names ids).
+    static func brokenDetail(
+        reason: WireBrokenReason?, problems: [WireProblem], groupWarning: Bool, label: ProblemText.Label
+    ) -> String? {
         if let reason { return loc(brokenReasonKey(reason)) }
-        if !problems.isEmpty { return problems.map { problemText($0.type) }.joined(separator: "\n") }
+        if !problems.isEmpty {
+            return problems.map { ProblemText.problem($0, label: label) }.joined(separator: "\n")
+        }
         return groupWarning ? loc("cue.broken.group") : nil
-    }
-
-    /// `problem.<type>` if localised, else the type itself (a newer engine's problem is shown, not hidden).
-    static func problemText(_ type: String) -> String {
-        let key = "problem.\(type)"
-        let text = loc(key)
-        return text == key ? type : text
     }
 }
 

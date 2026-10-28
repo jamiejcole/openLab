@@ -142,22 +142,6 @@
 "cue.broken.deviceLost" = "The audio device was lost";
 "cue.broken.group" = "A cue inside this group is broken";
 
-"problem.no_target" = "No target";
-"problem.target_missing" = "The target cue is missing";
-"problem.target_self" = "The cue targets itself";
-"problem.target_wrong_kind" = "The target is the wrong kind of cue";
-"problem.nothing_to_fade" = "No parameters set to fade";
-"problem.no_media" = "No media file";
-"problem.media_missing" = "The media file is missing";
-"problem.media_unsupported" = "The media file is not supported";
-"problem.patch_missing" = "The output patch is missing";
-"problem.device_unavailable" = "The output device is unavailable";
-"problem.network_patch_missing" = "The network patch is missing";
-"problem.network_host_invalid" = "The network destination cannot be used";
-"problem.network_host_unresolved" = "The network host cannot be found";
-"problem.network_message_invalid" = "The OSC message cannot be sent";
-"problem.started_broken" = "The cue started while broken";
-
 "cue.colour.none" = "None";
 "cue.colour.red" = "Red";
 "cue.colour.orange" = "Orange";

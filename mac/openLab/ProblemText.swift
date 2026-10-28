@@ -89,13 +89,7 @@ enum WarningRows {
     @MainActor
     static func make(store: WorkspaceStore) -> [WarningRow] {
         let model = store.model
-        func label(_ id: ModelID) -> String {
-            if let cue = model?.cue(id) { return cueTitle(cue) }
-            let patches = (model?.patches ?? []) + (model?.networkPatches ?? [])
-            if let name = patches.first(where: { $0.id == id })?.raw["name"]?.stringValue { return name }
-            if let list = model?.cueLists.first(where: { $0.id == id }) { return list.name }
-            return id.raw
-        }
+        let label = labeler(model)
         var rows: [WarningRow] = []
         func walk(_ cues: [Cue]) {
             for cue in cues {
@@ -126,6 +120,17 @@ enum WarningRows {
             }
         }
         return rows
+    }
+
+    /// Names an id in problem and warning text: a cue's number and name, a patch or list name.
+    static func labeler(_ model: WorkspaceModel?) -> ProblemText.Label {
+        { id in
+            if let cue = model?.cue(id) { return cueTitle(cue) }
+            let patches = (model?.patches ?? []) + (model?.networkPatches ?? [])
+            if let name = patches.first(where: { $0.id == id })?.raw["name"]?.stringValue { return name }
+            if let list = model?.cueLists.first(where: { $0.id == id }) { return list.name }
+            return id.raw
+        }
     }
 
     static func cueTitle(_ cue: Cue) -> String {

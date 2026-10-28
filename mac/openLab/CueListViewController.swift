@@ -664,7 +664,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let state = run?.state ?? (problems.isEmpty ? .idle : .broken)
         guard state == .broken else { return (state, nil) }
         let detail = CueStateStyle.brokenDetail(
-            reason: run?.reason, problems: problems, groupWarning: store.groupWarnings.contains(id))
+            reason: run?.reason, problems: problems, groupWarning: store.groupWarnings.contains(id),
+            label: WarningRows.labeler(store.model))
         return (state, detail)
     }
 
