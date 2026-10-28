@@ -41,6 +41,7 @@ uuid = { version = "1.29.0", default-features = false }
 [dev-dependencies]
 # The crate itself with its test doubles, for the integration tests.
 openlab-engine = { path = ".", features = ["test-support"] }
+openlab-core = { path = "../core", features = ["fault-injection"] }
 proptest = "1.12.0"
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"

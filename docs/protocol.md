@@ -28,7 +28,7 @@ A client that sees a gap in `revision` or in `seq` (section 4) sends `request: s
 | `type` | Fields | Notes |
 |---|---|---|
 | `hello` | `protocol_version: u32`, `token`, `client_name` | first frame |
-| `command` | `id`, `command`, `coalesce?` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused`. A command that changes nothing (a value set to what it already is) replies `ok` with the current revision, sends no `model_changed` and is no undo step. `coalesce`: a string of at most 128 bytes (longer: `bad_request`, nothing applied); consecutive commands with the same key are one undo step, each still sent as its own `model_changed` ([commands.md](commands.md) "Coalescing"). Absent = no coalescing |
+| `command` | `id`, `command`, `coalesce?` | `command` is core's `Command` ([commands.md](commands.md)): one undo step. The engine replies `model_changed`, then `result { ok: { revision } }`; a refused command changes nothing and replies `error.code = command_refused`, with one exception: if a transaction's rollback itself failed (core's `RollbackFailed`, only a wrong inverse can cause it) the workspace is partly changed, so the engine logs an error (`engine`), bumps the revision (the document is dirty), clears undo and redo, sends `document` and a whole `snapshot` instead of a `model_changed`, and then replies `command_refused` with a message saying the workspace is partly changed (undo and redo likewise). A command that changes nothing (a value set to what it already is) replies `ok` with the current revision, sends no `model_changed` and is no undo step. `coalesce`: a string of at most 128 bytes (longer: `bad_request`, nothing applied); consecutive commands with the same key are one undo step, each still sent as its own `model_changed` ([commands.md](commands.md) "Coalescing"). Absent = no coalescing |
 | `transport` | `id`, `action` | see below |
 | `undo`, `redo` | `id` | like a command; `ok.revision` after, `ok` without a revision if there was nothing to undo or redo |
 | `request` | `id`, `request` | see below |
@@ -185,3 +185,5 @@ The `model_changed` for revision N is always sent before the `result` that repor
 ### Error codes
 
 `protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.
+
+M4.6a additions (`PROTOCOL_VERSION` stays 1): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).

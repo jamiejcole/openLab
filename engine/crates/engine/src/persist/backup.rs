@@ -6,9 +6,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use openlab_core::{WorkspaceId, backup_file_name, parse_backup_name, select_backups_to_delete};
+use openlab_core::{
+    MAX_SHOW_FILE_BYTES, WorkspaceId, backup_file_name, parse_backup_name, select_backups_to_delete,
+};
 
 use super::atomic::split_tmp_name;
+use super::files::{read_bytes, regular_file_or_absent};
 use super::{AppDirs, PersistError, write_atomic};
 
 #[derive(Debug, Default)]
@@ -32,10 +35,17 @@ pub fn backup_existing(
     if keep == 0 {
         return Ok(None);
     }
-    let bytes = match fs::read(show_path) {
+    // Checked before opening: opening a FIFO for reading blocks for ever, and the document
+    // worker would stop saving for the rest of the show.
+    if !regular_file_or_absent(show_path)? {
+        return Ok(None);
+    }
+    let bytes = match read_bytes(show_path, MAX_SHOW_FILE_BYTES) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(PersistError::io("read", show_path)(e)),
+        Err(PersistError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
     };
     let dir = dirs.backups_dir(workspace, show_path);
     fs::create_dir_all(&dir).map_err(PersistError::io("create", &dir))?;

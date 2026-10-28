@@ -45,7 +45,9 @@ pub fn load_machine_settings_checked(dirs: &AppDirs) -> (LoadedSettings, bool) {
     };
     let mut writable = read_ok;
     if !loaded.warnings.is_empty() {
-        let copied = fs::copy(&path, super::unique_sibling(&path, "corrupt")).is_ok();
+        // Copying a FIFO would block; only a regular file has anything to keep.
+        let copied = super::files::regular_file_or_absent(&path).unwrap_or(false)
+            && fs::copy(&path, super::unique_sibling(&path, "corrupt")).is_ok();
         writable = writable && copied;
     }
     (loaded, writable)

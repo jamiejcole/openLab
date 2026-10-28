@@ -24,10 +24,13 @@ use serde::{Deserialize, Serialize};
 use crate::command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
 };
-use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
+use crate::cue::{
+    ContinueMode, Cue, CueColor, CueKind, GroupMode, OscArg, SecondTrigger, Triggers,
+};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
 };
+use crate::network::{MessageIssue, check_message};
 use crate::osc_access::OscRights;
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
@@ -104,6 +107,18 @@ pub enum CueProperty {
     /// Neither the old nor the new kind may be a Group: add and remove cues for that.
     Kind {
         value: CueKind,
+    },
+    /// Only for Network cues. A new value must name an existing network patch.
+    Destination {
+        value: NetworkPatchId,
+    },
+    /// Only for Network cues. An OSC address pattern (`network::check_message`).
+    Address {
+        value: String,
+    },
+    /// Only for Network cues. At most `MAX_OSC_ARGS` arguments within the message size limits.
+    Args {
+        value: Vec<OscArg>,
     },
 }
 
@@ -308,6 +323,8 @@ pub enum CommandError {
     PatchOutputOutOfRange { patch: PatchId, output: usize },
     #[error("{0}")]
     InvalidValue(&'static str),
+    #[error("the Network cue's message is invalid: {0}")]
+    InvalidMessage(MessageIssue),
     #[error("values are invalid: {}", join(.0))]
     InvalidModel(Vec<ValidationIssue>),
     #[error("transactions cannot be nested")]
@@ -378,7 +395,49 @@ fn transaction(
     commands: Vec<Command>,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    transaction_with(ws, commands, restoring, |ws, step| single(ws, step, true))
+    #[cfg(feature = "fault-injection")]
+    let (commands, rollback_fails) = fault::apply(commands);
+    transaction_with(ws, commands, restoring, |ws, step| {
+        #[cfg(feature = "fault-injection")]
+        if rollback_fails {
+            return Err(CommandError::Internal);
+        }
+        single(ws, step, true)
+    })
+}
+
+/// Test seam (feature `fault-injection`, per thread): the next transaction after `skip` others
+/// has command `at` replaced by one that is refused and, if `rollback_fails`, every rollback
+/// step refused too, which is what a wrong inverse does. One shot.
+#[cfg(feature = "fault-injection")]
+pub mod fault {
+    use std::cell::Cell;
+
+    use super::{Command, CueId};
+
+    thread_local! {
+        static NEXT: Cell<Option<(usize, usize, bool)>> = const { Cell::new(None) };
+    }
+
+    pub fn inject(skip: usize, at: usize, rollback_fails: bool) {
+        NEXT.with(|n| n.set(Some((skip, at, rollback_fails))));
+    }
+
+    pub(super) fn apply(mut commands: Vec<Command>) -> (Vec<Command>, bool) {
+        let Some((skip, at, rollback_fails)) = NEXT.with(Cell::take) else {
+            return (commands, false);
+        };
+        if skip > 0 {
+            NEXT.with(|n| n.set(Some((skip - 1, at, rollback_fails))));
+            return (commands, false);
+        }
+        if let Some(command) = commands.get_mut(at) {
+            *command = Command::RemoveCue {
+                id: CueId(uuid::Uuid::from_u128(u128::MAX)),
+            };
+        }
+        (commands, rollback_fails)
+    }
 }
 
 /// [`transaction`] with the rollback's `apply` as a parameter, so a test can make it fail.
@@ -760,6 +819,24 @@ impl CueProperty {
             Self::Kind { .. } => Self::Kind {
                 value: cue.kind.clone(),
             },
+            Self::Destination { .. } => match &cue.kind {
+                CueKind::Network { destination, .. } => Self::Destination {
+                    value: *destination,
+                },
+                _ => return None,
+            },
+            Self::Address { .. } => match &cue.kind {
+                CueKind::Network { address, .. } => Self::Address {
+                    value: address.clone(),
+                },
+                _ => return None,
+            },
+            Self::Args { .. } => match &cue.kind {
+                CueKind::Network { args, .. } => Self::Args {
+                    value: args.clone(),
+                },
+                _ => return None,
+            },
         })
     }
 
@@ -788,6 +865,18 @@ impl CueProperty {
                 _ => return false,
             },
             Self::Kind { value } => cue.kind = value.clone(),
+            Self::Destination { value } => match &mut cue.kind {
+                CueKind::Network { destination, .. } => *destination = *value,
+                _ => return false,
+            },
+            Self::Address { value } => match &mut cue.kind {
+                CueKind::Network { address, .. } => address.clone_from(value),
+                _ => return false,
+            },
+            Self::Args { value } => match &mut cue.kind {
+                CueKind::Network { args, .. } => args.clone_from(value),
+                _ => return false,
+            },
         }
         true
     }
@@ -860,11 +949,47 @@ fn set_property(
     if old == property {
         return Ok(no_change());
     }
+    if !restoring {
+        check_network_value(ws, cue, &property)?;
+    }
     let cue = cue_at_mut(ws, &path).ok_or(CommandError::Internal)?;
     if !property.write(cue) {
         return Err(CommandError::Internal);
     }
     Ok(Command::SetCueProperty { id, property: old })
+}
+
+/// What a new Network destination, address or argument list has to satisfy. The new value is
+/// judged on its own, so a cue loaded with a bad address or argument list can be mended one half
+/// at a time; the pair is only refused for a size the new value introduces (the same rule as
+/// `Kind` and `Triggers`: the edit answers for what it adds, not for what the cue already had).
+fn check_network_value(
+    ws: &Workspace,
+    cue: &Cue,
+    property: &CueProperty,
+) -> Result<(), CommandError> {
+    let CueKind::Network { address, args, .. } = &cue.kind else {
+        return Ok(());
+    };
+    let (alone, pair) = match property {
+        CueProperty::Destination { value } => {
+            return if ws.network_patches.iter().any(|p| p.id == *value) {
+                Ok(())
+            } else {
+                Err(CommandError::NetworkPatchNotFound(*value))
+            };
+        }
+        CueProperty::Address { value } => (check_message(value, &[]), check_message(value, args)),
+        CueProperty::Args { value } => (check_message("/", value), check_message(address, value)),
+        _ => return Ok(()),
+    };
+    alone.map_err(CommandError::InvalidMessage)?;
+    if pair == Err(MessageIssue::TooLarge)
+        && check_message(address, args) != Err(MessageIssue::TooLarge)
+    {
+        return Err(CommandError::InvalidMessage(MessageIssue::TooLarge));
+    }
+    Ok(())
 }
 
 /// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.
