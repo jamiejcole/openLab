@@ -368,6 +368,8 @@ struct Engine {
     inbox: Sender<Inbox>,
     /// The next doc's id; never reused.
     next_doc: u64,
+    /// Docs open (the primes' share of the stream permits is split between them).
+    open_docs: usize,
     /// Docs installed by [`Control::open_doc`] and the request each answered (until taken).
     opened: Vec<(openlab_core::protocol::RequestId, DocId)>,
 }
@@ -385,6 +387,8 @@ struct Doc {
     net: NetOut,
     /// Mixer events of this doc's voices, routed here by the engine this wake.
     events: Vec<Event>,
+    /// Mixer events routed to this doc, ever (tests: an event reaches its owner only).
+    events_routed: u64,
     /// Model changes nobody signalled, already reported (seams note (c)).
     seen_unsignalled: u64,
     voices: Voices,
@@ -513,6 +517,7 @@ impl Control {
             lookups: LookupThreads::default(),
             inbox,
             next_doc: 0,
+            open_docs: 1,
             opened: Vec::new(),
         };
         if let Some(e) = writer_error {
@@ -613,6 +618,9 @@ impl Control {
     pub fn handle(&mut self, msg: Inbox) -> Flow {
         match msg {
             Inbox::Client { message, reply: to } => {
+                if self.app_scope(&message, &to) {
+                    return Flow::Continue;
+                }
                 return match self.docs.first().map(|d| d.id) {
                     Some(id) => self.handle_doc(id, message, &to),
                     None => no_doc(message, &to),
@@ -644,20 +652,28 @@ impl Control {
     /// A client message for doc `doc` (what a connection bound to it sends, M4.15f). An unknown
     /// or closed doc answers `no_workspace`.
     pub fn handle_doc(&mut self, doc: DocId, message: ClientMessage, to: &ReplyTx) -> Flow {
-        if let ClientMessage::Request {
-            id,
-            request: Request::SetOutputOverrides { network_disabled },
-        } = &message
-        {
-            // App-scope (PB-10): one flag for every doc.
-            self.set_network_disabled(*network_disabled);
-            reply(to, ok(*id, None));
+        if self.app_scope(&message, to) {
             return Flow::Continue;
         }
         match self.cx_of(doc) {
             Some(mut cx) => cx.client(message, to),
             None => no_doc(message, to),
         }
+    }
+
+    /// Carries out an app-scope request (PB-10: one flag for every doc, whether or not a doc
+    /// is open); `false` if `message` is not one.
+    fn app_scope(&mut self, message: &ClientMessage, to: &ReplyTx) -> bool {
+        let ClientMessage::Request {
+            id,
+            request: Request::SetOutputOverrides { network_disabled },
+        } = message
+        else {
+            return false;
+        };
+        self.set_network_disabled(*network_disabled);
+        reply(to, ok(*id, None));
+        true
     }
 
     /// PB-10: Network cues of every open doc send nothing (or again).
@@ -706,6 +722,7 @@ impl Control {
             };
             if let Some(doc) = self.docs.iter_mut().find(|d| d.id == owner) {
                 doc.events.push(e);
+                doc.events_routed += 1;
             }
         }
     }
@@ -947,6 +964,19 @@ impl Engine {
         Some(DocId(id))
     }
 
+    /// Streams one doc may keep primed (ARCHITECTURE §3.5). The disk streamer's open-stream
+    /// limit is the engine's, and a start that finds no permit fails (`stream_failed`), so
+    /// primes, which are only a head start, never hold more than half the permits, split
+    /// evenly between the open docs (M4.15e review M3): another doc's idle primes can never
+    /// refuse a start. One doc with the defaults keeps its 64.
+    fn prime_cap(&self) -> usize {
+        let engine = self
+            .config
+            .max_primes
+            .min(self.config.streamer.max_streams / 2);
+        engine / self.open_docs.max(1)
+    }
+
     /// PB-10: whether the network output override is on.
     fn network_disabled(&self) -> bool {
         self.net_disabled.load(Ordering::SeqCst)
@@ -1009,6 +1039,7 @@ impl Doc {
             media,
             net,
             events: Vec::new(),
+            events_routed: 0,
             seen_unsignalled: 0,
             voices: Voices::new(),
             checks: PlanChecks::default(),
@@ -1969,6 +2000,7 @@ impl DocCx<'_> {
 
     /// A message for the show log and every client's `log`.
     fn log(&mut self, level: LogLevel, message: String) {
+        let message = self.tagged(message);
         self.eng.log(level, message);
     }
 
@@ -1986,6 +2018,7 @@ impl DocCx<'_> {
             .collect();
         self.doc.media.prioritize(keys.iter().map(String::as_str));
         let floor = self.stop_floor();
+        let cap = self.eng.prime_cap();
         let mut env = Env {
             doc: self.doc.id,
             ws: &self.doc.ws,
@@ -1998,9 +2031,7 @@ impl DocCx<'_> {
             now,
             floor,
         };
-        self.doc
-            .voices
-            .prime(&wanted, self.eng.config.max_primes, &mut env);
+        self.doc.voices.prime(&wanted, cap, &mut env);
     }
 
     /// Progress and meters, each at most [`REPORT_HZ`] in sample time; reconciliation of lost
@@ -2897,6 +2928,11 @@ impl<'a> DocView<'a> {
     /// Voice records alive.
     pub fn live_voices(&self) -> usize {
         self.doc.voices.live()
+    }
+
+    /// Mixer events routed to this doc so far.
+    pub fn events_routed(&self) -> u64 {
+        self.doc.events_routed
     }
 
     /// No voice, alias or deferred report is left.

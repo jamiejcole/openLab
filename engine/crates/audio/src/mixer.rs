@@ -214,6 +214,12 @@ pub enum CommandKind {
         device_output: u16,
         gain: f32,
     },
+    /// The patch matrix takes the gains its routing ramps towards at once: for a matrix just
+    /// given to a doc, which nothing plays through yet, so a cue started on the same sample is
+    /// heard at its level rather than faded in over the de-zipper.
+    SnapPatch {
+        patch: u16,
+    },
     SetOutput {
         output: u16,
         settings: OutputSettings,
@@ -1788,6 +1794,14 @@ impl Mixer {
                     && let Some(g) = p.gains.get_mut(o * outs + d)
                 {
                     g.ramp_to(sanitize_gain(gain), dezip, Curve::Linear);
+                    p.dirty = true;
+                }
+            }
+            CommandKind::SnapPatch { patch } => {
+                if let Some(p) = self.patches.get_mut(usize::from(patch)) {
+                    for g in &mut p.gains {
+                        g.finish();
+                    }
                     p.dirty = true;
                 }
             }

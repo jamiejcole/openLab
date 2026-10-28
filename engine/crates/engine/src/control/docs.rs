@@ -1049,7 +1049,11 @@ impl DocCx<'_> {
         // A new engine: its run ids restart, which cannot meet the old ones (the voices are
         // forgotten and mixer voice ids are never reused).
         match self.eng.engine_config(self.doc.id) {
-            Ok(config) => self.doc.engine = openlab_core::CueEngine::new(config),
+            Ok(config) => {
+                self.doc.engine = openlab_core::CueEngine::new(config);
+                // The new engine counts unsignalled changes from zero.
+                self.doc.seen_unsignalled = 0;
+            }
             // Cannot happen (the same values built the first engine); the old engine, with
             // everything stopped, is the safe thing to keep.
             Err(e) => self.log(LogLevel::Error, format!("cue engine not rebuilt: {e}")),
@@ -1747,6 +1751,7 @@ impl Control {
         doc.revision = 1;
         doc.saved_revision = if dirty { 0 } else { 1 };
         self.docs.push(doc);
+        self.docs_changed();
         let Some(mut cx) = self.cx_of(doc_id) else {
             return;
         };
@@ -1828,6 +1833,7 @@ impl Control {
             );
         }
         let mut closed = self.docs.remove(index);
+        self.docs_changed();
         // Dated after the stops the panic sent (at `now` too): the slots go silent as the
         // voices on them end.
         let now = self.eng.now();
@@ -1855,6 +1861,15 @@ impl Control {
         self.eng.docs.discard(Box::new(closed));
         self.eng.mixer.pump();
         Ok(())
+    }
+
+    /// The number of open docs changed: each doc's share of the primes follows at its next
+    /// priming pass.
+    fn docs_changed(&mut self) {
+        self.eng.open_docs = self.docs.len();
+        for doc in &mut self.docs {
+            doc.primes_dirty = true;
+        }
     }
 
     /// Saves of closed docs that finished: answered (and a failure logged).

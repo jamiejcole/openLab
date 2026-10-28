@@ -127,6 +127,9 @@ impl Patches {
         devices: &[DeviceInfo],
         busy: &BTreeSet<u16>,
     ) -> (Vec<CommandKind>, Vec<(PatchId, PatchResolution)>) {
+        // A doc's first sync (it was just opened): its slots, which nothing plays through, take
+        // their gains at once instead of ramping in (M4.15e review L1).
+        let first = !self.docs.contains_key(&doc);
         let mut d = self.docs.remove(&doc).unwrap_or_default();
         let mut commands = Vec::new();
         let mut changed = Vec::new();
@@ -161,6 +164,15 @@ impl Patches {
             if let Some(base) = base {
                 self.apply(slot, base, ws_master, &mut commands);
             }
+        }
+        if first {
+            let mut slots: Vec<u16> = d.slots.values().map(|&(slot, _)| slot).collect();
+            slots.sort_unstable();
+            commands.extend(
+                slots
+                    .into_iter()
+                    .map(|patch| CommandKind::SnapPatch { patch }),
+            );
         }
         self.doc_delays(&mut d, ws);
         self.docs.insert(doc, d);
