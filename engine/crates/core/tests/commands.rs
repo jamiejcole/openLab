@@ -1358,6 +1358,38 @@ fn paste_without_fresh_ids_is_refused() {
     ));
 }
 
+/// Undo and redo (`apply_restoring`) skip value checks a loaded show may already fail, never the
+/// id check: no command path can give a workspace duplicate cue ids, which the cue engine relies
+/// on (M2.32).
+#[test]
+fn restoring_still_refuses_duplicate_ids() {
+    let mut ws = sample();
+    let before = format!("{ws:?}");
+    let stale = ws.cue_lists[0].cues[1].clone();
+    let commands = [
+        add(pos(None, 0), memo(5)),
+        Command::Paste {
+            at: pos(None, 0),
+            cues: vec![stale],
+        },
+        Command::Transaction {
+            commands: vec![add(pos(None, 0), memo(40)), add(pos(None, 0), memo(40))],
+        },
+    ];
+    for command in commands {
+        let error = ws.apply_restoring(command).unwrap_err();
+        let duplicate = match &error {
+            CommandError::InTransaction { source, .. } => source.as_ref(),
+            other => other,
+        };
+        assert!(
+            matches!(duplicate, CommandError::DuplicateCueId(_)),
+            "{error:?}"
+        );
+        assert_eq!(format!("{ws:?}"), before);
+    }
+}
+
 #[test]
 fn paste_points_copied_targets_at_the_copies_and_clears_numbers_in_use() {
     let mut ws = workspace(vec![
