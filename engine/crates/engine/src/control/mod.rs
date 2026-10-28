@@ -573,6 +573,15 @@ impl Control {
         Ok(control)
     }
 
+    /// The first doc with the engine (unit tests).
+    #[cfg(test)]
+    fn first_cx(&mut self) -> DocCx<'_> {
+        DocCx {
+            eng: &mut self.eng,
+            doc: &mut self.docs[0],
+        }
+    }
+
     /// Doc `id` with the engine.
     fn cx_of(&mut self, id: DocId) -> Option<DocCx<'_>> {
         let doc = self.docs.iter_mut().find(|d| d.id == id)?;
@@ -3268,18 +3277,20 @@ mod tests {
         s.take_outbound();
         // What the failed transaction did before it stopped, with history cleared as core does.
         let c = s.control_mut();
-        c.doc.ws.apply(Command::RemoveCue { id: cue }).unwrap();
-        c.doc.history.clear();
+        c.docs[0].ws.apply(Command::RemoveCue { id: cue }).unwrap();
+        c.docs[0].history.clear();
         let now = s.now();
-        s.control_mut().cx().partly_changed(now, &rollback_failed());
+        s.control_mut()
+            .first_cx()
+            .partly_changed(now, &rollback_failed());
 
         let c = s.control_mut();
         assert_eq!(c.revision(), revision + 1);
-        assert!(c.doc.revision != c.doc.saved_revision);
-        assert!(!c.doc.history.can_undo() && !c.doc.history.can_redo());
+        assert!(c.docs[0].revision != c.docs[0].saved_revision);
+        assert!(!c.docs[0].history.can_undo() && !c.docs[0].history.can_redo());
         assert_eq!(c.engine().unsignalled_model_changes(), 0);
         assert_ne!(c.engine().state(cue), CueState::PreWaiting);
-        let (entries, ..) = c.cx().log_tail(None);
+        let (entries, ..) = c.eng.log_tail(None);
         assert!(entries.iter().any(|e| e.level == LogLevel::Error
             && e.kind == LogKind::Engine
             && e.message.contains("command 2")
@@ -3307,10 +3318,13 @@ mod tests {
         s.take_outbound();
         let now = s.now();
         s.control_mut()
-            .cx()
+            .first_cx()
             .partly_changed(now, &CommandError::Internal);
         assert_eq!(s.control().revision(), revision);
-        assert_eq!(s.control().doc.revision, s.control().doc.saved_revision);
+        assert_eq!(
+            s.control().docs[0].revision,
+            s.control().docs[0].saved_revision
+        );
         assert!(s.take_outbound().is_empty());
     }
 
@@ -3373,10 +3387,10 @@ mod tests {
         assert!(error.message.contains("partly changed"));
         let c = s.control_mut();
         assert_eq!(c.revision(), before + 1);
-        assert!(c.doc.revision != c.doc.saved_revision);
-        assert!(!c.doc.history.can_undo() && !c.doc.history.can_redo());
+        assert!(c.docs[0].revision != c.docs[0].saved_revision);
+        assert!(!c.docs[0].history.can_undo() && !c.docs[0].history.can_redo());
         assert_eq!(c.engine().unsignalled_model_changes(), 0);
-        let (entries, ..) = c.cx().log_tail(None);
+        let (entries, ..) = c.eng.log_tail(None);
         assert!(
             entries
                 .iter()
@@ -3429,7 +3443,7 @@ mod tests {
         // Behind the history's back: the undo step now refuses at its second command, and its
         // rollback is wrong.
         let c = s.control_mut();
-        c.doc
+        c.docs[0]
             .ws
             .apply(Command::RemoveCue {
                 id: CueId(uuid_zero()),
@@ -3458,7 +3472,7 @@ mod tests {
         let id = s.request_id();
         send_ok(&mut s, ClientMessage::Undo { id });
         let c = s.control_mut();
-        c.doc
+        c.docs[0]
             .ws
             .apply(Command::RemoveCue {
                 id: CueId(uuid::Uuid::from_u128(1)),
