@@ -84,14 +84,31 @@ pub struct DocShow<'a> {
     pub show: &'a dyn OscShow,
 }
 
+/// What `/workspace/{id}` names.
+#[derive(Clone, Copy)]
+pub enum Named<'a> {
+    Doc(DocShow<'a>),
+    /// No open doc has that id or name.
+    None,
+    /// No doc has that id, and several have that name. Nothing is guessed: a copy of a show
+    /// (a Finder duplicate) keeps its name, and a GO must not fire the backup instead of the
+    /// running show.
+    Ambiguous,
+}
+
 /// The doc `/workspace/{id}` names: the one with that id, as replies write it (upper case), else
-/// the first, in open order, whose name is exactly that (QLab 5: "{id} may be either the display
-/// name of the workspace ... or the unique ID").
-pub fn find_doc<'a>(docs: &[DocShow<'a>], id: &str) -> Option<DocShow<'a>> {
-    docs.iter()
-        .find(|d| upper(d.show.workspace_id()) == id)
-        .or_else(|| docs.iter().find(|d| d.show.workspace_name() == id))
-        .copied()
+/// the only one whose name is exactly that (QLab 5: "{id} may be either the display name of the
+/// workspace ... or the unique ID").
+pub fn find_doc<'a>(docs: &[DocShow<'a>], id: &str) -> Named<'a> {
+    if let Some(doc) = docs.iter().find(|d| upper(d.show.workspace_id()) == id) {
+        return Named::Doc(*doc);
+    }
+    let mut named = docs.iter().filter(|d| d.show.workspace_name() == id);
+    match (named.next(), named.next()) {
+        (Some(doc), None) => Named::Doc(*doc),
+        (Some(_), Some(_)) => Named::Ambiguous,
+        _ => Named::None,
+    }
 }
 
 /// What a pattern can match: a cue list (its number is empty) or a cue.

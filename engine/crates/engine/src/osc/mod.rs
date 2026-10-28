@@ -29,9 +29,9 @@ pub use codec::{
 pub use dedupe::{DUPLICATE_WINDOW, Dedupe, MAX_PEERS as MAX_DEDUPE_PEERS};
 pub use dispatch::{
     Address, CueField, CueRef, DocShow, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, MAX_MATCHES,
-    MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, OscInput, OscShow, Parsed, PlayheadTarget, Query,
-    Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target, Verb,
-    find_doc, parse_address, reply_message, required_right, resolve, upper,
+    MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, Named, OscInput, OscShow, Parsed, PlayheadTarget,
+    Query, Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target,
+    Verb, find_doc, parse_address, reply_message, required_right, resolve, upper,
 };
 pub use pattern::{
     BudgetSpent, CuePattern, MATCH_BUDGET, MAX_ALTERNATIVES, MAX_MATCH_CHARS, PatternError,
@@ -114,6 +114,8 @@ pub struct Outcome {
     /// The doc each of `inputs` is for (the same length): an un-prefixed `/go` is one input per
     /// open doc.
     pub input_docs: Vec<DocId>,
+    /// Warnings for the show log (a workspace name that several docs share).
+    pub warnings: Vec<String>,
     /// To send back to the peer that sent the bytes: UDP to its address on [`OSC_REPLY_PORT`]
     /// (or the port it set with `/udpReplyPort`, see [`Osc::reply_port`]),
     /// TCP SLIP-framed on the same connection.
@@ -127,6 +129,9 @@ impl Outcome {
     }
 }
 
+/// Most (peer, name) pairs remembered as warned about an ambiguous name.
+const MAX_AMBIGUOUS_WARNED: usize = 64;
+
 /// The doc the single-show calls ([`Osc::handle_datagram`] and friends) stand for.
 pub const SINGLE_DOC: DocId = DocId(0);
 
@@ -138,6 +143,8 @@ pub struct Osc {
     docs: BTreeMap<DocId, Sessions>,
     /// Per source IP, whatever doc a reply is about.
     budgets: Budgets,
+    /// (peer, name) pairs already warned about an ambiguous workspace name.
+    ambiguous_warned: Vec<(Peer, String)>,
     dedupe: Dedupe,
     stats: OscStats,
     last_expire: Duration,
@@ -184,6 +191,7 @@ impl Osc {
         Self {
             docs: BTreeMap::new(),
             budgets: Budgets::default(),
+            ambiguous_warned: Vec::new(),
             dedupe: Dedupe::default(),
             stats: OscStats::default(),
             last_expire: Duration::ZERO,
@@ -539,8 +547,13 @@ impl Osc {
         // is an error that says nothing else.
         let target = match &parsed.workspace {
             Some(id) => match dispatch::find_doc(docs, id) {
-                Some(doc) => Some(doc),
-                None => {
+                Named::Doc(doc) => Some(doc),
+                Named::None => {
+                    self.wrong_workspace(peer, now, &message.addr, &parsed.path, docs, out);
+                    return;
+                }
+                Named::Ambiguous => {
+                    self.warn_ambiguous(peer, id, out);
                     self.wrong_workspace(peer, now, &message.addr, &parsed.path, docs, out);
                     return;
                 }
@@ -561,15 +574,45 @@ impl Osc {
             }
         }
         match target {
-            Some(doc) => self.doc_message(peer, now, message, &parsed, doc, out),
+            Some(doc) => self.doc_message(peer, now, (message, &parsed), doc, false, out),
             // QLab 5: a message without the prefix goes to every open workspace on the port,
             // and each answers for itself.
             None => {
+                // A passcode that some doc's table accepts is a console connecting to that doc,
+                // not a guess at the others: it must not lock itself out of them (two docs with
+                // two passcodes, each sent un-prefixed).
+                let accepted_somewhere = parsed.address == Address::Connect
+                    && dispatch::passcode_arg(&message.args).is_some_and(|given| {
+                        docs.iter()
+                            .any(|d| session::passcode_matches(d.show.access(), &given))
+                    });
                 for doc in docs {
-                    self.doc_message(peer, now, message, &parsed, *doc, out);
+                    self.doc_message(peer, now, (message, &parsed), *doc, accepted_somewhere, out);
                 }
             }
         }
+    }
+
+    /// Says once per peer and name that a name matched several docs (the operator must rename
+    /// one or address it by id). Remembers at most [`MAX_AMBIGUOUS_WARNED`] pairs; past that it
+    /// starts afresh, so a flood of names costs a bounded table and an occasional repeat.
+    fn warn_ambiguous(&mut self, peer: Peer, name: &str, out: &mut Outcome) {
+        if self
+            .ambiguous_warned
+            .iter()
+            .any(|(p, n)| *p == peer && n == name)
+        {
+            return;
+        }
+        if self.ambiguous_warned.len() >= MAX_AMBIGUOUS_WARNED {
+            self.ambiguous_warned.clear();
+        }
+        self.ambiguous_warned.push((peer, name.to_owned()));
+        out.warnings.push(format!(
+            "OSC from {} named workspace \"{name}\", which several open workspaces are called: \
+             refused; rename one or address it by its id",
+            peer.ip()
+        ));
     }
 
     fn wrong_workspace(
@@ -592,9 +635,9 @@ impl Osc {
         &mut self,
         peer: Peer,
         now: Duration,
-        message: &OscMessage,
-        parsed: &Parsed,
+        (message, parsed): (&OscMessage, &Parsed),
         target: DocShow<'_>,
+        accepted_elsewhere: bool,
         out: &mut Outcome,
     ) {
         let DocShow { doc, show } = target;
@@ -618,9 +661,13 @@ impl Osc {
         };
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
-            let result = self
-                .sessions(doc)
-                .connect(peer, now, access, given.as_deref());
+            let result = self.sessions(doc).connect_counting(
+                peer,
+                now,
+                access,
+                given.as_deref(),
+                !accepted_elsewhere,
+            );
             let reply = reply_for_connect(result);
             self.push_reply(&ask, &reply, out);
             return;

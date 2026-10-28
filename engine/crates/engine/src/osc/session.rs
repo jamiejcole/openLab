@@ -209,6 +209,21 @@ impl Sessions {
         access: &OscAccess,
         given: Option<&str>,
     ) -> ConnectResult {
+        self.connect_counting(peer, now, access, given, true)
+    }
+
+    /// As [`Sessions::connect`]; with `count_failure` false a passcode not in this table is
+    /// answered `BadPasscode` without counting towards the lockouts. For an un-prefixed
+    /// `/connect` that another open doc's table accepted: a console connecting to two docs with
+    /// their two passcodes is not guessing, and must not lock itself out of either.
+    pub fn connect_counting(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        access: &OscAccess,
+        given: Option<&str>,
+        count_failure: bool,
+    ) -> ConnectResult {
         let current = self.rights(peer);
         let guess = given.filter(|_| !access.passcodes.is_empty());
         let Some(guess) = guess else {
@@ -233,7 +248,9 @@ impl Sessions {
         let Some(rights) = matched else {
             // A wrong guess counts even during a lockout, and a connected peer's counts too (it
             // stays connected): otherwise it could search the table for more rights for free.
-            self.record_failure(peer.ip(), now);
+            if count_failure {
+                self.record_failure(peer.ip(), now);
+            }
             if current.is_some() {
                 self.touch(peer, now);
             }
@@ -499,6 +516,15 @@ impl Budgets {
             false
         }
     }
+}
+
+/// Whether `given` is a passcode of `access`'s table (every row compared, as in `connect`).
+pub fn passcode_matches(access: &OscAccess, given: &str) -> bool {
+    let mut matched = false;
+    for row in &access.passcodes {
+        matched |= constant_time_eq(&row.passcode, given);
+    }
+    matched
 }
 
 /// Tokens after refilling for the time since `updated`, capped at the burst size.
