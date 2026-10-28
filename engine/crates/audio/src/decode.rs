@@ -29,6 +29,7 @@ use symphonia::core::units::{TimeBase, Timestamp};
 use crate::mixer::{MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS};
 use crate::mp4_priming::Priming;
 use crate::pcm::PcmSource;
+use crate::riff_check::check_container;
 
 /// Frames decoded and thrown away before a seek target, so decoders with inter-frame state (MP3
 /// bit reservoir, MDCT overlap) are warm when the wanted frame comes out. Covers the packet a
@@ -670,15 +671,25 @@ pub(crate) const HEADER_CHUNKS: usize = 64;
 /// (`ProbeOptions::max_probe_depth`, 1 MiB by default).
 const PROBE_SCAN: u64 = 1 << 20;
 
-/// Most `RIFF....WAVE` markers [`check_pcm_header`] examines in the scanned bytes; more is junk.
-const MAX_WAVE_MARKERS: usize = 64;
+/// Most `RIFF....WAVE` / `FORM....AIFF` markers [`check_pcm_header`] examines in the scanned
+/// bytes; more is junk.
+const MAX_CONTAINER_MARKERS: usize = 64;
+
+/// Does this 12-byte window start a container symphonia's WAV or AIFF reader takes? The probe
+/// scores a `RIFF`/`FORM` marker on its form type alone.
+fn is_container_marker(w: &[u8]) -> bool {
+    matches!(
+        (w.get(..4), w.get(8..12)),
+        (Some(b"RIFF"), Some(b"WAVE")) | (Some(b"FORM"), Some(b"AIFF" | b"AIFC"))
+    )
+}
 
 /// Rejects WAV and AIFF headers symphonia 0.6.1 would overflow on, before it sees them (a panic
 /// with overflow checks on, as in cargo-fuzz): a channel count outside what openLab plays or a
 /// sample size above 64 bits (`(bits / 8) * channels` is computed in `u16`), and a
 /// WAVE_FORMAT_EXTENSIBLE channel mask that `fix_wave_channel_mask` shifts out of range. The
-/// probe skips leading junk such as an ID3 tag by scanning for a marker, so a RIFF/WAVE header
-/// anywhere in the scanned bytes is checked. Other data is left to symphonia. Leaves `r` at the
+/// probe skips leading junk such as an ID3 tag by scanning for a marker, so a RIFF/WAVE or
+/// FORM/AIFF/AIFC header anywhere in the scanned bytes is checked. Other data is left to symphonia. Leaves `r` at the
 /// start.
 fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
     let result = check_pcm_header_at(r);
@@ -690,9 +701,8 @@ fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError
 fn check_pcm_header_at<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
     let io = |e: io::Error| MediaError::Io(e.to_string());
     // A container that starts at byte 0 is what symphonia's probe finds first: check it as-is.
-    let first = find_chunk_body(r, 0);
-    let found_first = first.is_some();
-    reject_bad_header(first)?;
+    let found_first = find_chunk_body(r, 0).is_some();
+    check_container(r, 0)?;
     r.seek(SeekFrom::Start(0)).map_err(io)?;
     let mut start = [0u8; 12];
     if r.read_exact(&mut start).is_err() {
@@ -719,21 +729,23 @@ fn check_pcm_header_at<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaEr
     let markers: Vec<usize> = head
         .windows(12)
         .enumerate()
-        .filter(|(_, w)| w.get(..4) == Some(b"RIFF") && w.get(8..) == Some(b"WAVE"))
+        .filter(|(_, w)| is_container_marker(w))
         .map(|(i, _)| i)
-        .take(MAX_WAVE_MARKERS + 1)
+        .take(MAX_CONTAINER_MARKERS + 1)
         .collect();
-    if markers.len() > MAX_WAVE_MARKERS {
-        return Err(MediaError::Corrupt("header: too many RIFF markers".into()));
+    if markers.len() > MAX_CONTAINER_MARKERS {
+        return Err(MediaError::Corrupt(
+            "header: too many RIFF/FORM markers".into(),
+        ));
     }
     for at in markers {
-        reject_bad_header(find_chunk_body(r, at as u64))?;
+        check_container(r, at as u64)?;
     }
     Ok(())
 }
 
-fn reject_bad_header(found: Option<ChunkBody>) -> Result<(), MediaError> {
-    let Some(c) = found else { return Ok(()) };
+/// Rejects one `fmt ` / `COMM` chunk symphonia would overflow on (see [`check_pcm_header`]).
+pub(crate) fn reject_bad_header(c: &ChunkBody) -> Result<(), MediaError> {
     let (channels, bits, _) = c.format();
     if !(1..=MAX_VOICE_CHANNELS).contains(&usize::from(channels)) || bits > 64 {
         return Err(MediaError::Corrupt(format!(
@@ -750,14 +762,23 @@ fn reject_bad_header(found: Option<ChunkBody>) -> Result<(), MediaError> {
 }
 
 /// The start of a WAV `fmt ` or AIFF `COMM` chunk (zero-padded where the chunk is shorter).
-struct ChunkBody {
+pub(crate) struct ChunkBody {
     big_endian: bool,
     body: [u8; 40],
     len: usize,
 }
 
 impl ChunkBody {
-    fn u16_at(&self, i: usize) -> u16 {
+    /// `len` is how many bytes of `body` the chunk filled.
+    pub(crate) fn new(big_endian: bool, body: [u8; 40], len: usize) -> Self {
+        ChunkBody {
+            big_endian,
+            body,
+            len,
+        }
+    }
+
+    pub(crate) fn u16_at(&self, i: usize) -> u16 {
         let b = [
             self.body.get(i).copied().unwrap_or(0),
             self.body.get(i + 1).copied().unwrap_or(0),
@@ -1863,8 +1884,8 @@ impl FrameSource for Decoder {
 mod tests {
     use super::*;
 
-    /// A valid WAV/AIFF/FLAC start is taken by the probe: the pre-check reads only its header,
-    /// not the scan window.
+    /// A valid WAV/AIFF/FLAC start is taken by the probe: the pre-check walks only its chunks
+    /// (here 4 KiB of them, plus one buffer), not the scan window.
     #[test]
     fn valid_container_starts_are_checked_without_the_embedded_header_scan() {
         struct Counting(io::Cursor<Vec<u8>>, u64);
@@ -1891,7 +1912,7 @@ mod tests {
             bytes.resize(PROBE_SCAN as usize * 2, 0);
             let mut c = Counting(io::Cursor::new(bytes), 0);
             check_pcm_header(&mut c).unwrap();
-            assert!(c.1 < 1024, "read up to byte {}", c.1);
+            assert!(c.1 < 16 << 10, "read up to byte {}", c.1);
         }
     }
 

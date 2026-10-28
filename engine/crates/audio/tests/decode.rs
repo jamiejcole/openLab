@@ -448,6 +448,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `non-wave-riff-start-wav-mask-shift.wav`: a RIFF whose form type is not `WAVE` came first, so
 /// the scan for embedded headers was skipped, yet the probe went on to the 64-channel extensible
 /// WAV behind it.
+/// `junk-then-aiff-channel-overflow.aiff`: two junk bytes, then an AIFF with 32769 channels of 24
+/// bits; the scan for embedded headers looked only for WAV markers, and symphonia 0.6.1's AIFF
+/// reader overflowed `u16` computing the frame size.
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -727,4 +730,249 @@ fn a_non_wave_container_start_does_not_hide_an_overflowing_wav_header() {
     no_fmt.extend_from_slice(&bad_start_then_wav(b"RIFF\0\0\0\0WAV\t"));
     let r = probe_media(reader(no_fmt));
     assert!(matches!(r, Err(MediaError::Corrupt(_))), "{r:?}");
+}
+
+fn header_rejected<T: std::fmt::Debug>(r: &Result<T, MediaError>) -> bool {
+    matches!(r, Err(MediaError::Corrupt(m)) if m.starts_with("header:"))
+}
+
+/// `fuzz-findings/junk-then-aiff-channel-overflow.aiff`: the embedded-header scan finds AIFF and
+/// AIFC containers behind leading junk, not only WAV, and rejects a channel count symphonia's
+/// AIFF reader would overflow on (probe, preload and the fuzz pipeline all fail typed).
+#[test]
+fn an_aiff_behind_leading_junk_is_header_checked() {
+    let finding = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fuzz-findings/junk-then-aiff-channel-overflow.aiff");
+    let r = probe(&finding);
+    assert!(header_rejected(&r), "{r:?}");
+    assert!(header_rejected(&preload(Media::Path(finding.clone()))));
+    assert!(openlab_audio::fuzz_decode(&std::fs::read(&finding).unwrap()).is_ok());
+    for form in [b"AIFF", b"AIFC"] {
+        let mut a = aiff(&tone(10, RATE), 2, RATE, Pcm::I24);
+        a[8..12].copy_from_slice(form);
+        a[20..22].copy_from_slice(&0x8001u16.to_be_bytes());
+        for junk in [&[0xFF, 0xF9][..], &id3_tag(40)[..], &[0u8; 1001][..]] {
+            let r = probe_media(reader([junk, &a[..]].concat()));
+            assert!(
+                header_rejected(&r),
+                "{form:?} after {} bytes: {r:?}",
+                junk.len()
+            );
+        }
+    }
+    // A good AIFF behind junk is not refused by the check.
+    let good = [&[0xFF, 0xF9][..], &aiff(&tone(10, RATE), 2, RATE, Pcm::I24)].concat();
+    let r = probe_media(reader(good));
+    assert!(!header_rejected(&r), "{r:?}");
+}
+
+/// A RIFF chunk: tag, little-endian size, body, padding to even length.
+fn le_chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut v = tag.to_vec();
+    v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    v.extend_from_slice(body);
+    if body.len() % 2 == 1 {
+        v.push(0);
+    }
+    v
+}
+
+/// An AIFF chunk: tag, big-endian size, body, padding to even length.
+fn be_chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut v = tag.to_vec();
+    v.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    v.extend_from_slice(body);
+    if body.len() % 2 == 1 {
+        v.push(0);
+    }
+    v
+}
+
+/// A RIFF/WAVE (or FORM/AIFF when `big`) container around `chunks`, its length covering them.
+fn container(big: bool, form: &[u8; 4], chunks: &[u8]) -> Vec<u8> {
+    let len = (4 + chunks.len()) as u32;
+    let mut v = if big {
+        b"FORM".to_vec()
+    } else {
+        b"RIFF".to_vec()
+    };
+    v.extend_from_slice(&if big {
+        len.to_be_bytes()
+    } else {
+        len.to_le_bytes()
+    });
+    v.extend_from_slice(form);
+    v.extend_from_slice(chunks);
+    v
+}
+
+/// A 16-byte WAV `fmt ` body.
+fn fmt_body(tag: u16, channels: u16, bits: u16) -> Vec<u8> {
+    let mut v = tag.to_le_bytes().to_vec();
+    v.extend_from_slice(&channels.to_le_bytes());
+    v.extend_from_slice(&48_000u32.to_le_bytes());
+    let align = u32::from(channels) * u32::from(bits / 8);
+    v.extend_from_slice(&48_000u32.wrapping_mul(align).to_le_bytes());
+    v.extend_from_slice(&(align as u16).to_le_bytes());
+    v.extend_from_slice(&bits.to_le_bytes());
+    v
+}
+
+/// The `fmt ` chunk symphonia 0.6.1 overflows on: 65535 channels of 16-bit PCM.
+fn bad_fmt() -> Vec<u8> {
+    le_chunk(b"fmt ", &fmt_body(1, u16::MAX, 16))
+}
+
+/// An 18-byte AIFF `COMM` body at 48 kHz.
+fn comm_body(channels: u16, bits: u16) -> Vec<u8> {
+    let mut v = channels.to_be_bytes().to_vec();
+    v.extend_from_slice(&0u32.to_be_bytes());
+    v.extend_from_slice(&bits.to_be_bytes());
+    v.extend_from_slice(&[0x40, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0]);
+    v
+}
+
+fn data(n: usize) -> Vec<u8> {
+    le_chunk(b"data", &vec![0; n])
+}
+
+/// symphonia's WAV reader parses every `fmt ` chunk before `data`, not only the first, and
+/// walks any number of chunks: a bad format behind a good one, or behind more chunks than the
+/// old check looked at, is rejected. Past [`MAX_WALK_CHUNKS`] chunks the file is refused.
+#[test]
+fn every_wav_fmt_chunk_symphonia_parses_is_header_checked() {
+    let good = le_chunk(b"fmt ", &fmt_body(1, 2, 16));
+    let second = container(false, b"WAVE", &[good, bad_fmt(), data(8)].concat());
+    let r = probe_media(reader(second));
+    assert!(header_rejected(&r), "{r:?}");
+    let junk = le_chunk(b"junk", &[]).repeat(100);
+    let deep = container(false, b"WAVE", &[junk, bad_fmt(), data(8)].concat());
+    let r = probe_media(reader(deep));
+    assert!(
+        matches!(&r, Err(MediaError::Corrupt(m)) if m.contains("65535 channels")),
+        "{r:?}"
+    );
+    let junk = le_chunk(b"junk", &[]).repeat(1100);
+    let many = container(false, b"WAVE", &[junk, bad_fmt(), data(8)].concat());
+    let r = probe_media(reader(many));
+    assert!(
+        matches!(&r, Err(MediaError::Corrupt(m)) if m.contains("more than 1024 chunks")),
+        "{r:?}"
+    );
+    // A good format after a few chunks still plays.
+    let fine = [
+        le_chunk(b"junk", &[1, 2, 3]),
+        le_chunk(b"fmt ", &fmt_body(1, 2, 16)),
+        data(64),
+    ]
+    .concat();
+    let r = probe_media(reader(container(false, b"WAVE", &fine)));
+    assert_eq!(r.map(|p| p.info.frames), Ok(16));
+}
+
+/// symphonia's WAV reader does not always land where the chunk sizes say: an odd-sized `LIST`
+/// moves two padding bytes, an extensible `fmt ` longer than 40 bytes is read only to 40, and an
+/// A-law `fmt ` reads as many extra bytes as its extension size says. A bad format at the
+/// position symphonia reaches (not the one the sizes give) is rejected.
+#[test]
+fn wav_fmt_chunks_reached_off_the_chunk_sizes_are_header_checked() {
+    // Odd LIST: symphonia's next header is one byte later than the sizes say. At the sizes'
+    // position the bytes read as a chunk too large for the file.
+    let mut odd_list = le_chunk(b"LIST", b"abcdX");
+    odd_list.push(b'A');
+    let w = container(false, b"WAVE", &[odd_list, bad_fmt(), data(8)].concat());
+    let r = probe_media(reader(w));
+    assert!(header_rejected(&r), "odd LIST: {r:?}");
+    // Extensible fmt of 48 bytes: the next header is read 8 bytes into it.
+    let mut ext = fmt_body(0xFFFE, 2, 16);
+    ext.extend_from_slice(&22u16.to_le_bytes());
+    ext.extend_from_slice(&16u16.to_le_bytes());
+    ext.extend_from_slice(&3u32.to_le_bytes());
+    ext.extend_from_slice(&[
+        0x01, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71,
+    ]);
+    let bad = bad_fmt();
+    let (bad_head, bad_body) = bad.split_at(8);
+    ext.extend_from_slice(bad_head);
+    let mut chunks = le_chunk(b"fmt ", &ext);
+    chunks.extend_from_slice(bad_body);
+    chunks.extend_from_slice(&data(8));
+    let r = probe_media(reader(container(false, b"WAVE", &chunks)));
+    assert!(header_rejected(&r), "long extensible: {r:?}");
+    // A-law fmt with 8 extension bytes: the next header is read 8 bytes after the chunk, where
+    // the sizes see a chunk too large for the file.
+    let mut alaw = fmt_body(6, 2, 8);
+    alaw.extend_from_slice(&8u16.to_le_bytes());
+    let mut chunks = le_chunk(b"fmt ", &alaw);
+    chunks.extend_from_slice(b"junk\xff\xff\xff\x7f");
+    chunks.extend_from_slice(&bad_fmt());
+    chunks.extend_from_slice(&data(8));
+    let r = probe_media(reader(container(false, b"WAVE", &chunks)));
+    assert!(header_rejected(&r), "A-law extension: {r:?}");
+}
+
+/// symphonia's AIFF reader parses `MARK` and `COMT` entries past the chunk's declared size, so
+/// its next chunk can be one the sizes never reach: a bad `COMM` there is rejected.
+#[test]
+fn aiff_comm_chunks_reached_off_the_chunk_sizes_are_header_checked() {
+    let bad_comm = be_chunk(b"COMM", &comm_body(0x8001, 24));
+    // MARK declares only its count; the marker (id, position, name) runs on. The sizes read the
+    // marker as a chunk of 256 bytes, past the end of the file.
+    let mut mark = b"MARK\0\0\0\x02\0\x01".to_vec();
+    mark.extend_from_slice(b"JUNK\0\0\x01\0");
+    let mut a = container(true, b"AIFF", &[mark, bad_comm.clone()].concat());
+    // The form ends where symphonia's count of declared sizes does.
+    a[4..8].copy_from_slice(&(4 + 10 + 26u32).to_be_bytes());
+    let r = probe_media(reader(a));
+    assert!(header_rejected(&r), "MARK: {r:?}");
+    // COMT declares only its count; the comment (time, marker, text) runs on.
+    let mut comt = b"COMT\0\0\0\x02\0\x01".to_vec();
+    comt.extend_from_slice(b"TIME\x7f\xff\0\x01x");
+    let mut a = container(true, b"AIFF", &[comt, bad_comm].concat());
+    a[4..8].copy_from_slice(&(4 + 10 + 26u32).to_be_bytes());
+    let r = probe_media(reader(a));
+    assert!(header_rejected(&r), "COMT: {r:?}");
+    // Good MARK and COMT chunks before a good COMM change nothing.
+    let mut mark = b"MARK\0\0\0\x0a\0\x01\0\x01\0\0\0\0\x01m".to_vec();
+    mark.extend_from_slice(&be_chunk(b"COMM", &comm_body(2, 16)));
+    mark.extend_from_slice(&be_chunk(b"SSND", &[0; 8 + 64]));
+    let r = probe_media(reader(container(true, b"AIFF", &mark)));
+    assert_eq!(r.map(|p| p.info.frames), Ok(16));
+}
+
+/// The fields symphonia's AIFF reader turns into numbers without the header check (rate, frame
+/// count, sound data size and offset) are checked or saturate in symphonia itself: extreme
+/// values are typed errors or play, never a panic.
+#[test]
+fn extreme_aiff_rates_and_sizes_are_typed_errors() {
+    let rates: [[u8; 10]; 6] = [
+        [0; 10],
+        [0x7F, 0xFF, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        [0x7F, 0xFF, 0xC0, 0, 0, 0, 0, 0, 0, 1],
+        [0x7F, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+        [0x00, 0x01, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        [0xC0, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0],
+    ];
+    for rate in rates {
+        let mut comm = comm_body(2, 16);
+        comm[8..].copy_from_slice(&rate);
+        let chunks = [be_chunk(b"COMM", &comm), be_chunk(b"SSND", &[0; 72])].concat();
+        let r = probe_media(reader(container(true, b"AIFF", &chunks)));
+        assert!(r.is_err(), "{rate:?}: {r:?}");
+    }
+    let mut comm = comm_body(2, 16);
+    comm[2..6].copy_from_slice(&u32::MAX.to_be_bytes());
+    for ssnd in [
+        b"SSND\xff\xff\xff\xff\0\0\0\0\0\0\0\0".to_vec(),
+        b"SSND\0\0\0\x10\xff\xff\xff\xff\0\0\0\0".to_vec(),
+        b"SSND\0\0\0\x07\0\0\0\0\0\0\0\0".to_vec(),
+    ] {
+        let mut chunks = be_chunk(b"COMM", &comm);
+        chunks.extend_from_slice(&ssnd);
+        let bytes = container(true, b"AIFF", &chunks);
+        assert_eq!(openlab_audio::fuzz_decode(&bytes), Ok(()));
+        let mut big = bytes.clone();
+        big[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(openlab_audio::fuzz_decode(&big), Ok(()));
+    }
 }
