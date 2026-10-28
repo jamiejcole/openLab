@@ -289,6 +289,11 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(tails(), 0, "no gap")
         rig.engine.push(entry(9))
         await assertEventually { tails() == 1 }
+        // A broken or hostile engine's largest number must not overflow the gap check.
+        let max = entry(9).replacingOccurrences(of: #""seq":9"#, with: #""seq":18446744073709551615"#)
+        rig.engine.push(max)
+        rig.engine.push(max)
+        await assertEventually { rig.store.logSeq == UInt64.max }
     }
 
     func testDroppedRecordsAreMentioned() async throws {

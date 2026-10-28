@@ -254,7 +254,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if doc == client.workspace { onClosed?() }
         case .logEntry(let seq, _):
             // The record itself is shown from `log_tail`; its number tells whether any were lost.
-            if logSeq > 0, seq > logSeq + 1 { logGaps.send() }
+            if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send() }  // no `+ 1`: a hostile u64::MAX
             logSeq = Swift.max(logSeq, seq)
         case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
             // Meters have no consumer yet; the rest belong to the client or session.
