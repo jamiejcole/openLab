@@ -2464,16 +2464,7 @@ mod tests {
 
     #[test]
     fn a_voice_that_faults_every_block_is_dropped_and_the_others_play_on() {
-        let (mut ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
-        for (id, out) in [(1, 0), (2, 1)] {
-            let (mut tx, rx) = RingBuffer::new(8192);
-            tx.push_entire_slice(&[0.5; 8192]).unwrap();
-            let mut v = VoiceStart::new(VoiceId(id), rx, 1, 2);
-            v.set_crosspoint(0, out, 1.0);
-            ctl.send(0, CommandKind::StartVoice(Box::new(v)));
-        }
-        let mut r = OfflineRenderer::new(mixer);
-        r.render(64, &[]);
+        let (mut ctl, mut r) = two_voices();
         r.mixer_mut().panic_voice = Some(VoiceId(1));
         let mut buf = vec![1.0; 128];
         for _ in 0..VOICE_FAULT_LIMIT {
