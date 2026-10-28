@@ -285,7 +285,6 @@
 "warning.cue_broken" = "{cue} is broken and was not started.";
 "warning.trigger_ignored" = "{cue} ignored a trigger because it is {state}.";
 "warning.load_ignored" = "{cue} could not be loaded.";
-"warning.unsupported" = "{cue} is a kind of cue this version cannot run.";
 "warning.late_start" = "{cue} started {late_ms} ms late.";
 "warning.chain_limit" = "{cue} stopped a chain of cues after {limit} steps.";
 "warning.cue_removed" = "{cue} was removed while a trigger for it was pending.";
