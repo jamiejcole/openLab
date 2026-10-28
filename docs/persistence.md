@@ -84,13 +84,14 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
   needs a final autosave (M4.15g) must wait on its reply;
 - manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
   durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
-- `clear_recovery(workspace, show_path)` runs after the job in flight of its target (no two writer threads
-  ever write the same workspace's or show file's files at once), removes that target's file, and cancels
+- `clear_recovery(workspace, show_path)` runs after any job in flight that writes that recovery file (no two writer
+  threads ever write the same show file or recovery file at once), removes that target's file, and cancels
   only that target's pending autosave;
 - a job stuck on a hung volume for the document timeout is answered `Stalled` and its thread abandoned; a
-  fresh thread serves the queue (at most `MAX_WRITERS`, 5, threads in all), so other shows go on saving,
-  and the stuck show's saves and autosaves are refused at once until its write returns
-  (`SaveWriter::check_stalled`; docs/control.md "A save that stalls");
+  fresh thread serves the queue (at most `MAX_WRITERS`, 5, threads in all). Threads never write the same
+  show file or recovery file at once; the files a stalled write holds are refused at once until it returns,
+  and a stalled save holds only its show file (it skips its recovery-file removal), so the workspace can
+  still be saved elsewhere and autosaved (`SaveWriter::check_stalled`; docs/control.md "A save that stalls");
 - dropping the writer finishes the running jobs and pending manual saves, and discards pending
   autosaves.
 

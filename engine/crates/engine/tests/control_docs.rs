@@ -1778,9 +1778,11 @@ fn a_stalled_save_is_answered_io_after_the_document_timeout() {
             let _ = release.lock().unwrap().recv();
         }
     }));
+    let time = ProbeTime::new();
     let mut r = rig_tweak(memo_ws("one", &[1]), |c| {
         c.save_hook = Some(hook);
         c.doc_timeout = std::time::Duration::from_secs(20);
+        c.stall_clock = time.clock();
     });
     let _unblock = Unblock(release_tx);
     let (tx, mut rx) = reply_channel();
@@ -1795,11 +1797,13 @@ fn a_stalled_save_is_answered_io_after_the_document_timeout() {
     });
     entered.recv().unwrap();
     r.s.tick();
-    r.clock.advance(19_999);
+    // A wall-clock step does not count: only the monotonic stall clock does.
+    r.clock.advance(3_600_000);
+    time.advance(std::time::Duration::from_millis(19_999));
     r.s.tick();
     r.s.tick();
     assert!(rx.try_recv().is_err(), "still waiting short of the timeout");
-    r.clock.advance(1);
+    time.advance(std::time::Duration::from_millis(1));
     r.s.tick();
     r.s.tick();
     assert!(matches!(

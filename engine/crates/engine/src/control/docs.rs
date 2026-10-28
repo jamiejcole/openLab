@@ -1394,12 +1394,12 @@ impl Engine {
     /// stopped answering) is answered `io` and its writer thread abandoned, so the other
     /// shows go on saving (`SaveWriter::check_stalled`).
     pub(super) fn check_stalled_save(&mut self) {
-        let now_ms = self.config.clock.now_ms();
+        let now = self.config.stall_clock.now();
         let timeout = self.config.doc_timeout;
         let Some(writer) = &mut self.docs.writer else {
             return;
         };
-        for message in writer.check_stalled(now_ms, timeout) {
+        for message in writer.check_stalled(now, timeout) {
             self.log(LogLevel::Error, message);
         }
     }

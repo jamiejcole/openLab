@@ -40,7 +40,9 @@ pub use save::{SaveReport, save_workspace, save_workspace_with};
 pub use settings::{
     SettingsWriter, load_machine_settings, load_machine_settings_checked, save_machine_settings,
 };
-pub use writer::{JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS, SaveWriter};
+pub use writer::{
+    DROP_WAIT, JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS, SaveWriter,
+};
 
 /// `<app-support>/openLab`, and where the logs and crash reports go.
 #[derive(Clone, Debug)]

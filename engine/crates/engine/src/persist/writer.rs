@@ -26,12 +26,15 @@
 //! timeout is answered [`PersistError::Stalled`] and its thread abandoned (it carries on and
 //! leaves once the write returns, if ever), and a fresh thread takes over the queue, at most
 //! [`MAX_WRITERS`] threads in all. Two threads never write the same files at once: a job
-//! waits while another thread runs one for the same workspace or show file ([`Target`]), so a
-//! stalled write that finishes late can never land over a newer one. While a stalled write of
-//! a target is still out, saves and autosaves of that target are refused at once with
-//! `Stalled` (a recovery-file removal waits for it); every other target is written as usual.
-//! Once the stalled write returns, its target saves again. A late answer of an abandoned job
-//! is not reported (the request was already answered).
+//! waits while another thread runs one that writes the same show file or recovery file
+//! ([`Target`]), so a stalled write that finishes late can never land over a newer one. While
+//! a stalled write is still out, saves and autosaves of the files it holds are refused at once
+//! with `Stalled` (a recovery-file removal waits for it); every other file is written as usual.
+//! A stalled save holds only its show file: it no longer removes the recovery files when it
+//! finishes (an autosave since then holds newer edits), so the same workspace can still be
+//! saved elsewhere and autosaved, at shutdown too. Once the stalled write returns, its file
+//! saves again. A late answer of an abandoned job is not reported (the request was already
+//! answered).
 //!
 //! Dropping the writer finishes the running jobs and any pending manual saves and discards
 //! pending autosaves, so shutdown never waits behind a backlog. It waits for that at most
@@ -45,12 +48,13 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openlab_core::{Workspace, WorkspaceId};
 
+use super::save::save_workspace_inner;
 use super::threads::BoundedThreads;
-use super::{AppDirs, PersistError, SaveReport, clear_recovery, save_workspace, write_recovery};
+use super::{AppDirs, PersistError, SaveReport, clear_recovery, recovery_stem, write_recovery};
 
 /// What a writer job does; passed to the test hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,21 +91,32 @@ pub const DROP_WAIT: Duration = Duration::from_secs(5);
 /// [`PersistError::Stalled`] until one returns.
 pub const MAX_WRITERS: usize = 5;
 
-/// The files a job writes, as far as keeping two threads apart goes: the workspace's (its
-/// backups and recovery files) and the show file. Two jobs overlap when either is the same.
+/// The files a job writes, as far as keeping two threads apart goes: the show file (and its
+/// backups, which are kept per workspace and show file) and recovery files, by their names'
+/// stems ([`recovery_stem`]). Two jobs overlap when they share either.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
     workspace: WorkspaceId,
-    path: Option<PathBuf>,
+    show: Option<PathBuf>,
+    recovery: Vec<String>,
 }
 
 impl Target {
     fn overlaps(&self, other: &Self) -> bool {
-        self.workspace == other.workspace || (self.path.is_some() && self.path == other.path)
+        (self.show.is_some() && self.show == other.show)
+            || self.recovery.iter().any(|r| other.recovery.contains(r))
+    }
+
+    /// Only the show file: a stalled save that will not touch the recovery files.
+    fn show_only(&self) -> Self {
+        Self {
+            recovery: Vec::new(),
+            ..self.clone()
+        }
     }
 
     fn describe(&self) -> String {
-        match &self.path {
+        match &self.show {
             Some(path) => path.display().to_string(),
             None => format!("the recovery file of workspace {}", self.workspace),
         }
@@ -136,10 +151,25 @@ struct Running {
     id: u64,
     target: Target,
     answer: Answer,
-    /// When [`SaveWriter::check_stalled`] first saw it (its clock, milliseconds).
-    seen_ms: Option<i64>,
+    /// When [`SaveWriter::check_stalled`] first saw it (a monotonic clock).
+    seen: Option<Instant>,
     /// Answered `Stalled`; its thread is abandoned.
     stalled: bool,
+    /// A save that has begun removing the recovery files (it holds them until it ends, even
+    /// if it stalls there); before that, a stalled save skips the removal.
+    clearing: bool,
+}
+
+impl Running {
+    /// The files it still holds: a stalled save that has not begun removing the recovery
+    /// files never will, so it holds only its show file.
+    fn holds(&self) -> Target {
+        if self.stalled && !self.clearing && matches!(self.answer, Answer::Save(_)) {
+            self.target.show_only()
+        } else {
+            self.target.clone()
+        }
+    }
 }
 
 struct AutosaveJob {
@@ -165,16 +195,20 @@ impl AutosaveJob {
     fn target(&self) -> Target {
         Target {
             workspace: self.workspace.id,
-            path: self.show_path.clone(),
+            show: None,
+            recovery: vec![recovery_stem(self.workspace.id, self.show_path.as_deref())],
         }
     }
 }
 
 impl SaveJob {
+    /// The show file, and the two recovery files a save removes once it is in place.
     fn target(&self) -> Target {
+        let id = self.workspace.id;
         Target {
-            workspace: self.workspace.id,
-            path: Some(self.path.clone()),
+            workspace: id,
+            show: Some(self.path.clone()),
+            recovery: vec![recovery_stem(id, Some(&self.path)), recovery_stem(id, None)],
         }
     }
 }
@@ -183,7 +217,8 @@ impl ClearJob {
     fn target(&self) -> Target {
         Target {
             workspace: self.workspace,
-            path: self.show_path.clone(),
+            show: None,
+            recovery: vec![recovery_stem(self.workspace, self.show_path.as_deref())],
         }
     }
 }
@@ -223,7 +258,7 @@ impl State {
 
     /// Another thread is writing files this job writes: it waits.
     fn blocked(&self, target: &Target) -> bool {
-        self.running.iter().any(|r| r.target.overlaps(target))
+        self.running.iter().any(|r| r.holds().overlaps(target))
     }
 
     /// Why a new save or autosave of `target` is answered at once instead of queued.
@@ -231,7 +266,7 @@ impl State {
         let stuck = self
             .running
             .iter()
-            .any(|r| r.stalled && r.target.overlaps(target));
+            .any(|r| r.stalled && r.holds().overlaps(target));
         (stuck || self.live() == 0).then_some(PersistError::Stalled {
             secs: self.stall_secs,
         })
@@ -244,8 +279,9 @@ impl State {
             id,
             target,
             answer,
-            seen_ms: None,
+            seen: None,
             stalled: false,
+            clearing: false,
         });
         id
     }
@@ -360,18 +396,17 @@ impl SaveWriter {
     /// seen running `timeout` ago or more is answered [`PersistError::Stalled`], queued saves
     /// and autosaves of its target too, and a fresh thread takes over the queue (module docs).
     /// Returns what to log.
-    pub fn check_stalled(&mut self, now_ms: i64, timeout: Duration) -> Vec<String> {
-        let timeout_ms = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
+    pub fn check_stalled(&mut self, now: Instant, timeout: Duration) -> Vec<String> {
         let secs = timeout.as_secs();
         let mut state = self.shared.lock();
         state.stall_secs = secs;
         let mut stalled = Vec::new();
         for job in state.running.iter_mut().filter(|r| !r.stalled) {
-            let seen = *job.seen_ms.get_or_insert(now_ms);
-            if now_ms.saturating_sub(seen) >= timeout_ms {
+            let seen = *job.seen.get_or_insert(now);
+            if now.saturating_duration_since(seen) >= timeout {
                 job.stalled = true;
                 job.answer.fail(PersistError::Stalled { secs });
-                stalled.push(job.target.clone());
+                stalled.push(job.holds());
             }
         }
         if stalled.is_empty() {
@@ -651,6 +686,19 @@ fn next_job(shared: &Shared) -> Option<(u64, Next)> {
     }
 }
 
+/// A save is about to remove the recovery files: false if it was given up on (it then
+/// leaves them: an autosave since may hold newer edits); otherwise it holds them from now on.
+fn begin_clearing(shared: &Shared, id: u64) -> bool {
+    let mut state = shared.lock();
+    match state.running.iter_mut().find(|r| r.id == id) {
+        Some(job) if !job.stalled => {
+            job.clearing = true;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The job `id` is done. True when this thread should end: another thread that is not stuck
 /// serves the queue (a replacement took over while this one was stalled, or a spare).
 fn finish(shared: &Shared, id: u64) -> bool {
@@ -678,7 +726,16 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
                 let result = if job.others.iter().any(|o| super::file_key(o) == target) {
                     Err(PersistError::OpenElsewhere(job.path.clone()))
                 } else {
-                    save_workspace(dirs, &job.path, &job.workspace, job.now_ms, job.keep)
+                    let may_clear = || begin_clearing(shared, id);
+                    save_workspace_inner(
+                        dirs,
+                        &job.path,
+                        &job.workspace,
+                        job.now_ms,
+                        job.keep,
+                        |_| Ok(()),
+                        &may_clear,
+                    )
                 };
                 if result.is_ok() {
                     let mut state = shared.lock();

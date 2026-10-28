@@ -487,10 +487,12 @@ fn a_stalled_save_does_not_stop_other_shows_and_its_show_saves_again_after() {
     let stuck = writer.save(a.clone(), pa.clone(), 1, 20, 1);
     assert_eq!(entered.recv().unwrap(), JobKind::Save);
     let other = writer.autosave(b, pb, 2);
-    assert!(writer.check_stalled(0, TIMEOUT).is_empty());
-    assert!(writer.check_stalled(19_999, TIMEOUT).is_empty());
+    let t0 = std::time::Instant::now();
+    let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+    assert!(writer.check_stalled(at(0), TIMEOUT).is_empty());
+    assert!(writer.check_stalled(at(19_999), TIMEOUT).is_empty());
     assert!(other.try_recv().is_err(), "queued behind the stuck save");
-    let logs = writer.check_stalled(20_000, TIMEOUT);
+    let logs = writer.check_stalled(at(20_000), TIMEOUT);
     assert_eq!(logs.len(), 1, "{logs:?}");
     assert!(matches!(
         stuck.try_recv().unwrap(),
@@ -530,4 +532,67 @@ fn a_stalled_save_does_not_stop_other_shows_and_its_show_saves_again_after() {
         .unwrap()
         .unwrap();
     assert!(std::fs::read_to_string(&pa).unwrap().contains("\"newer\""));
+}
+
+/// While a save of a show is stuck on its hung volume, the same workspace's edits can still be
+/// kept: Save As to another file and its recovery autosave both go through. When the stale
+/// save returns at last it leaves the recovery file alone (it holds newer edits than it does).
+#[test]
+fn a_stalled_save_still_lets_its_workspace_be_saved_elsewhere_and_autosaved() {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    let hang_guard = std::time::Duration::from_secs(20);
+    let env = env();
+    let (mut writer, entered, release) = stall_first(&env);
+    let (w, stuck_path) = target(&env, 1);
+    let stuck_path = stuck_path.unwrap();
+    let stuck = writer.save(w.clone(), stuck_path.clone(), 1, 20, 1);
+    assert_eq!(entered.recv().unwrap(), JobKind::Save);
+    let t0 = std::time::Instant::now();
+    assert!(writer.check_stalled(t0, TIMEOUT).is_empty());
+    assert_eq!(writer.check_stalled(t0 + TIMEOUT, TIMEOUT).len(), 1);
+    assert!(matches!(
+        stuck.try_recv().unwrap(),
+        Err(PersistError::Stalled { .. })
+    ));
+    let mut newer = w.clone();
+    newer.name = "newer".into();
+    let recovery = writer
+        .autosave(newer.clone(), Some(stuck_path.clone()), 2)
+        .recv_timeout(hang_guard)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let elsewhere = env.show_dir().join("Elsewhere.openlab");
+    writer
+        .save(newer, elsewhere.clone(), 2, 20, 3)
+        .recv_timeout(hang_guard)
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&elsewhere)
+            .unwrap()
+            .contains("\"newer\"")
+    );
+    // A second autosave of the stuck show's recovery file after the Save As (rev 4 > 3).
+    let mut newest = w.clone();
+    newest.name = "newest".into();
+    writer
+        .autosave(newest, Some(stuck_path.clone()), 4)
+        .recv_timeout(hang_guard)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    release.send(()).unwrap();
+    stuck.recv_timeout(hang_guard).unwrap().unwrap();
+    let deadline = std::time::Instant::now() + hang_guard;
+    while writer.stalled_threads() > 0 && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(writer.stalled_threads(), 0);
+    assert!(
+        std::fs::read_to_string(&recovery)
+            .unwrap()
+            .contains("\"newest\""),
+        "the late stale save removed a newer recovery file"
+    );
 }

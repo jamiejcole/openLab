@@ -425,3 +425,68 @@ fn a_slow_save_of_one_show_does_not_hold_up_another_shows_final_write() {
         }
     );
 }
+
+/// A show whose save is stuck on its hung volume (answered `io` after the document timeout)
+/// still gets its final recovery write at quit: its edits are kept in app support.
+#[test]
+fn a_show_whose_save_is_stuck_still_gets_its_final_recovery_write() {
+    let env = env();
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release, gate) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let gate = Mutex::new(gate);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(60));
+        }
+    }));
+    let time = ProbeTime::new();
+    let (mut s, _clock) = launch(&env, |c| {
+        c.save_hook = Some(hook);
+        c.stall_clock = time.clock();
+        c.doc_timeout = Duration::from_secs(20);
+        c.shutdown_wait = Duration::from_secs(20);
+    });
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    edit(
+        &mut s,
+        doc,
+        Command::RenameWorkspace {
+            name: "Stuck".into(),
+        },
+    );
+    let (tx, mut rx) = openlab_engine::control::reply_channel();
+    let id = s.request_id();
+    s.deliver(openlab_engine::control::Inbox::Conn {
+        doc: Some(doc),
+        message: ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: env.show_path().to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    entered.recv().unwrap();
+    s.tick();
+    time.advance(Duration::from_secs(20));
+    s.tick();
+    s.tick();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Error(ref e),
+            ..
+        } if e.code == ErrorCode::Io
+    ));
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            written: 1,
+            ..FinalWrites::default()
+        }
+    );
+    assert_eq!(names(&env.dirs.recovery_dir()).len(), 1);
+    drop(release);
+}
