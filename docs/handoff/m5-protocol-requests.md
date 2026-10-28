@@ -50,10 +50,12 @@ create the duplicates. Core could warn in `validate`.
 
 ## Show Mode (M5.12)
 
-Show Mode (SM-01) is UI-only state, kept per window in memory and lost on relaunch; the engine does not know it.
-SM-07 (no system sleep while a workspace is open in Show Mode, engine M4.9) needs it: wanted is a per-doc
-`set_show_mode { on }` command (or a flag on `document`) so the engine can hold the sleep assertion and a
-second client can show the same mode. Until then the app does not tell the engine.
+Done on the engine side (M4.9): `request: set_show_mode { on }` on a workspace's connection; the engine
+keeps it per doc in memory, reports it as `document.show_mode` (absent = false; in the snapshot too) and
+holds the sleep assertion (SM-07) while any doc is in Show Mode or any cue runs. The Swift codec has
+`Request.setShowMode(on:)` and the fake engine answers it; M5 must still send it when a window enters or
+leaves Show Mode, read `show_mode` back from `document` / the snapshot (`DocumentState` ignores the key
+today), and take it as the window's mode after a reconnect. The engine does not lock edits in Show Mode.
 
 ## Undo and redo of an active cue (M5.10a)
 

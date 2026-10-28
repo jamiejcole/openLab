@@ -41,7 +41,7 @@ use crate::diag::run_marker::{self, RunInfo};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
 use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
 use crate::persist::{AppDirs, load_machine_settings_checked};
-use crate::platform::signals;
+use crate::platform::{power, signals};
 use engine_file::{EngineFile, EngineInfo};
 
 /// Frames per device callback asked for: about 5 ms at 48 kHz.
@@ -255,6 +255,18 @@ fn run_with(
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;
+    // Not essential: without it the computer may sleep, which the log says.
+    match power::spawn(inbox_tx.clone()) {
+        Ok(awake) => config.awake = Some(awake),
+        Err(e) => {
+            let _ = inbox_tx.send(Inbox::Log {
+                level: LogLevel::Warn,
+                message: format!(
+                    "could not start sleep prevention ({e}); the computer may sleep during the show"
+                ),
+            });
+        }
+    }
     if let Some(dirs) = dirs {
         let (loaded, writable) = load_machine_settings_checked(dirs);
         config.machine = loaded.settings;

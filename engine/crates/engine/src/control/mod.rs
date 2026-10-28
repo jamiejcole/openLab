@@ -216,6 +216,9 @@ pub struct ControlConfig {
     pub net: NetTransport,
     /// The media watch (M2.25): how files are statted, how often, and on which thread.
     pub watch: watch::WatchConfig,
+    /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
+    /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
+    pub awake: Option<Sender<bool>>,
 }
 
 impl ControlConfig {
@@ -249,6 +252,7 @@ impl ControlConfig {
             cpu_probe: crate::diag::cpu::process_cpu_seconds,
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
+            awake: None,
         }
     }
 }
@@ -418,6 +422,8 @@ struct Engine {
     list_unsent: bool,
     /// Closed docs whose `closed` message did not fit the outbound channel yet.
     closed_unsent: Vec<DocId>,
+    /// What was last said on `config.awake` (SM-07).
+    awake: bool,
 }
 
 /// One doc as the `workspaces` list showed it, to tell when the list changes without
@@ -494,6 +500,8 @@ struct Doc {
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
     meters_live: bool,
+    /// Show Mode (SM-01, `set_show_mode`): in memory only; holds off sleep (SM-07).
+    show_mode: bool,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -651,6 +659,7 @@ impl Control {
             listed: Vec::new(),
             list_unsent: false,
             closed_unsent: Vec::new(),
+            awake: false,
         };
         if let Some(e) = writer_error {
             eng.record(
@@ -977,6 +986,11 @@ impl Control {
         self.poll_orphan_saves();
         self.eng.resend_closed();
         self.publish_workspaces();
+        let awake = self
+            .docs
+            .iter()
+            .any(|d| d.show_mode || d.engine.has_active_cues());
+        self.eng.keep_awake(awake);
         self.eng.settings_tick();
         self.health();
         let paths = self.docs.iter().map(|d| d.show_path.as_deref());
@@ -1266,6 +1280,17 @@ impl Engine {
             .max(self.now_floor)
     }
 
+    /// Says on `config.awake` whether the computer must stay awake, when that changes. Never
+    /// blocks (unbounded channel; a power thread that is gone is ignored).
+    fn keep_awake(&mut self, awake: bool) {
+        if awake != self.awake {
+            self.awake = awake;
+            if let Some(tx) = &self.config.awake {
+                let _ = tx.send(awake);
+            }
+        }
+    }
+
     /// A fresh doc id (never reused); `None` once the counter is spent (2^64 opens).
     fn take_doc_id(&mut self) -> Option<DocId> {
         let id = self.next_doc;
@@ -1385,6 +1410,7 @@ impl Doc {
             resend_warnings: false,
             last_progress: None,
             meters_live: false,
+            show_mode: false,
         }
     }
 
@@ -1410,6 +1436,7 @@ impl Doc {
             dirty: self.revision != self.saved_revision,
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
+            show_mode: self.show_mode,
         }
     }
 
@@ -1615,6 +1642,13 @@ impl DocCx<'_> {
                             snapshot: Box::new(self.doc.snapshot()),
                         },
                     );
+                    reply(to, ok(id, None));
+                }
+                Request::SetShowMode { on } => {
+                    if self.doc.show_mode != on {
+                        self.doc.show_mode = on;
+                        self.document();
+                    }
                     reply(to, ok(id, None));
                 }
                 Request::PreshowCheck => {
@@ -2951,8 +2985,14 @@ impl Control {
             cx.doc.voices.clear_primes();
         });
         self.eng.mixer.pump();
+        self.eng.keep_awake(false);
         let wait = self.eng.config.shutdown_wait;
         self.final_recovery_writes(wait)
+    }
+
+    /// Whether the loop last asked to keep the computer awake (SM-07; tests).
+    pub fn keeps_awake(&self) -> bool {
+        self.eng.awake
     }
 
     /// App-scope Panic (Esc; ARCHITECTURE §6): every open doc panics, as a `panic` transport in
@@ -3086,6 +3126,7 @@ impl Control {
                     dirty: false,
                     can_undo: false,
                     can_redo: false,
+                    show_mode: false,
                 },
                 workspace: self.none.ws.clone(),
                 cue_states: Vec::new(),
@@ -3446,6 +3487,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::PreshowCheck => "preshow_check",
+        Request::SetShowMode { .. } => "set_show_mode",
         Request::LogTail { .. } => "log_tail",
         Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",

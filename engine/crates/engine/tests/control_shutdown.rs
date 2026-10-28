@@ -270,3 +270,78 @@ fn a_doc_whose_last_edit_is_autosaved_is_not_written_again() {
     );
     assert_eq!(*writes.lock().unwrap(), 1);
 }
+
+/// SM-07, SM-01: Show Mode is the engine's (per doc, in memory, in `document` and the
+/// snapshot), and the loop asks to keep the computer awake while a doc is in it or a cue runs.
+#[test]
+fn show_mode_and_running_cues_keep_the_computer_awake() {
+    let env = env();
+    let (awake_tx, awake) = crossbeam_channel::unbounded();
+    let ws = workspace(vec![cue(1, CueKind::Wait { duration: 1.0 })]);
+    let mut c = config(&ws);
+    c.app_dirs = Some(env.dirs.clone());
+    c.awake = Some(awake_tx);
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    let doc = s.control().doc_ids()[0];
+    let said = |rx: &crossbeam_channel::Receiver<bool>| rx.try_iter().collect::<Vec<_>>();
+
+    let id = s.request_id();
+    let replies = s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SetShowMode { on: true },
+        },
+    );
+    assert!(matches!(result(&replies), Outcome::Ok(_)), "{replies:?}");
+    let documents: Vec<bool> = s
+        .take_outbound()
+        .into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Document { document } => Some(document.show_mode),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(documents, [true]);
+    assert!(s.control().doc(doc).unwrap().snapshot().document.show_mode);
+    s.tick();
+    assert!(s.control().keeps_awake());
+    assert_eq!(said(&awake), [true]);
+    let id = s.request_id();
+    s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SetShowMode { on: false },
+        },
+    );
+    s.tick();
+    assert_eq!(said(&awake), [false]);
+
+    // A running cue keeps it awake too, until it ends.
+    start(&mut s, 1);
+    s.tick();
+    assert_eq!(said(&awake), [true]);
+    s.run(u64::from(RATE) * 2);
+    assert_eq!(said(&awake), [false]);
+
+    // Workspace-bound: an app connection has none.
+    let replies = app_request(&mut s, Request::SetShowMode { on: true });
+    match result(&replies) {
+        Outcome::Error(e) => assert_eq!(e.code, ErrorCode::NoWorkspace),
+        other => panic!("{other:?}"),
+    }
+    // Shutdown lets go.
+    let id = s.request_id();
+    s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SetShowMode { on: true },
+        },
+    );
+    s.tick();
+    assert_eq!(said(&awake), [true]);
+    s.shutdown();
+    assert_eq!(said(&awake), [false]);
+}
