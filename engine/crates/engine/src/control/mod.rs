@@ -21,6 +21,7 @@
 mod checks;
 pub mod devices;
 mod docs;
+mod faults;
 mod inbox;
 mod mapping;
 mod media;
@@ -387,6 +388,10 @@ struct Engine {
     last_tick_stalled: bool,
     cue_outputs: usize,
     seen: Seen,
+    /// Mixer stage fault reports handled ([`Control::stage_faulted`]).
+    stage_reports: u64,
+    /// Mixer units disabled after repeated faults.
+    disabled: faults::Disabled,
     last_meters: Option<SampleTime>,
     /// Rendered sample of the previous voice-meter read (reconciliation).
     last_meter_read: Option<SampleTime>,
@@ -513,6 +518,7 @@ struct Seen {
     dropped_events: u64,
     faults: u64,
     faulted_voices: u64,
+    faulted_stages: u64,
     alloc_violations: u64,
     outbound_dropped: u64,
     feedback_overflow: u64,
@@ -642,6 +648,8 @@ impl Control {
             last_tick_stalled: false,
             cue_outputs,
             seen: Seen::default(),
+            stage_reports: 0,
+            disabled: faults::Disabled::default(),
             last_meters: None,
             last_meter_read: None,
             meter_round: None,
@@ -1018,10 +1026,17 @@ impl Control {
     }
 
     /// The mixer's events, drained once and handed to the doc that owns each voice. An event of
-    /// a voice no open doc owns (a closed doc's) is dropped; one with no voice
-    /// (`PendingFull`) meant nothing to any doc before either.
+    /// a voice no open doc owns (a closed doc's) is dropped; `PendingFull` means nothing to any
+    /// doc; a stage fault is the engine's ([`Self::stage_faulted`]).
     fn route_mixer_events(&mut self) {
         while let Some(e) = self.eng.mixer.poll_event() {
+            if let Event::StageFaulted {
+                stage, disabled, ..
+            } = e
+            {
+                self.stage_faulted(stage, disabled);
+                continue;
+            }
             let Some(voice) = event_voice(&e) else {
                 continue;
             };
@@ -2728,6 +2743,7 @@ impl DocCx<'_> {
     /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
     /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
     fn device_warnings(&self, list: &mut Vec<WireWarning>) {
+        self.eng.disabled.warnings(list);
         if let Some(d) = self.eng.backend.device() {
             let name = &d.info().name;
             if let Some(why) = d.unrecoverable() {
@@ -3045,6 +3061,19 @@ impl Control {
                 format!("audio engine fault: {faulted} voice(s) dropped after repeated faults"),
             );
         }
+        // Reports counted at the previous check have been drained by now (the mixer counts a
+        // fault just before it queues the report).
+        let counted_before = eng.seen.faulted_stages;
+        let stages = eng.mixer.faulted_stages();
+        if stages > eng.seen.faulted_stages {
+            eng.seen.faulted_stages = stages;
+            eng.log(
+                LogLevel::Error,
+                format!("audio engine fault: {stages} mixer stage fault(s) so far"),
+            );
+        }
+        self.lost_stage_reports(counted_before);
+        let eng = &mut self.eng;
         let allocs = eng.backend.alloc_violations();
         if allocs > eng.seen.alloc_violations {
             eng.seen.alloc_violations = allocs;
@@ -4116,5 +4145,118 @@ mod tests {
 
     fn uuid_zero() -> uuid::Uuid {
         uuid::Uuid::from_u128(0)
+    }
+
+    /// `audio_fault` notices sent as runtime changes, and the last warnings list's.
+    fn fault_notices(msgs: &[ServerMessage]) -> (Vec<String>, Option<Vec<String>>) {
+        let mut runtime = Vec::new();
+        let mut list = None;
+        let fault = |w: &WireWarning| match w {
+            WireWarning::Notice { code, message, .. } if code == "audio_fault" => {
+                Some(message.clone())
+            }
+            _ => None,
+        };
+        for m in msgs {
+            match m {
+                ServerMessage::Runtime { changes, .. } => {
+                    runtime.extend(changes.iter().filter_map(|c| match c {
+                        RuntimeChange::Warning { warning } => fault(warning),
+                        _ => None,
+                    }));
+                }
+                ServerMessage::Warnings { warnings } => {
+                    list = Some(warnings.iter().filter_map(fault).collect());
+                }
+                _ => {}
+            }
+        }
+        (runtime, list)
+    }
+
+    /// NFR-01: a mixer fault outside any voice reaches the workspace, and the unit it hit gets
+    /// its settings again; a disabled patch moves to another slot, a disabled output is a
+    /// warning until a rebuild, which frees the quarantined slot again.
+    #[test]
+    fn a_mixer_stage_fault_reaches_the_workspace_and_its_unit_is_set_again() {
+        use openlab_audio::FaultStage;
+        let mut ws = memo_workspace(10.0);
+        let patch = openlab_core::PatchId(uuid::Uuid::from_u128(5));
+        let output = openlab_core::PatchOutput {
+            level_db: 0.0,
+            mute: false,
+            delay_ms: 0.0,
+            polarity_inverted: false,
+        };
+        ws.patches.push(openlab_core::OutputPatch {
+            id: patch,
+            name: "Main".into(),
+            master_db: 0.0,
+            outputs: vec![output; 2],
+        });
+        let mixer = openlab_audio::MixerConfig {
+            sample_rate: 8000,
+            output_channels: 2,
+            max_block_frames: 64,
+            max_voices: 8,
+            max_voice_channels: 2,
+            patches: 2,
+            lookahead_ms: 500,
+        };
+        let mut config = ControlConfig::new(8000, 64);
+        config.mixer_patches = 2;
+        let mut s = crate::control::offline::OfflineShow::new(ws, mixer, config).unwrap();
+        s.run(64);
+        s.take_outbound();
+        let slot = |s: &crate::control::offline::OfflineShow| {
+            s.control().eng.patches.mixer_patch(DocId(0), patch)
+        };
+        let first = slot(&s).unwrap();
+
+        s.control_mut()
+            .stage_faulted(FaultStage::Patch(first), false);
+        let (told, _) = fault_notices(&s.take_outbound());
+        assert!(told.iter().any(|m| m.contains("\"Main\"")), "{told:?}");
+        assert_eq!(slot(&s), Some(first));
+
+        s.control_mut()
+            .stage_faulted(FaultStage::Patch(first), true);
+        let moved = slot(&s).unwrap();
+        assert_ne!(moved, first);
+        assert_eq!(s.control().eng.patches.free_slots(), 0);
+
+        s.control_mut().stage_faulted(FaultStage::Output(1), true);
+        s.run(64);
+        let (_, list) = fault_notices(&s.take_outbound());
+        assert!(
+            list.unwrap().iter().any(|m| m.contains("device output 2")),
+            "a disabled output is a warning in force"
+        );
+
+        s.control_mut().stage_faulted(FaultStage::Mixer, false);
+        s.run(64);
+        let (told, list) = fault_notices(&s.take_outbound());
+        assert!(told.iter().any(|m| m.contains("rebuilt")), "{told:?}");
+        assert_eq!(list, Some(Vec::new()));
+        assert_eq!(slot(&s), Some(moved));
+        assert_eq!(s.control().eng.patches.free_slots(), 1);
+    }
+
+    /// A fault report the mixer counted but the control thread never got (a full event queue)
+    /// would leave its unit silent: everything is sent again, and it is logged.
+    #[test]
+    fn a_lost_mixer_fault_report_sends_the_routing_again() {
+        let mut s = memo_show();
+        s.run(64);
+        s.take_outbound();
+        s.control_mut().lost_stage_reports(2);
+        assert_eq!(s.control().eng.stage_reports, 2);
+        let logged = s.take_outbound().iter().any(
+            |m| matches!(m, ServerMessage::Log { message, .. } if message.contains("were lost")),
+        );
+        assert!(logged);
+        // Counted again at the next check: nothing more is lost.
+        s.control_mut().lost_stage_reports(2);
+        assert!(s.take_outbound().is_empty());
     }
 }

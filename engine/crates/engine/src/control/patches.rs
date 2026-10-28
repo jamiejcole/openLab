@@ -85,6 +85,8 @@ pub struct Patches {
     /// The conflicts changed since [`Self::take_conflicts_changed`]: every doc's notices
     /// should be looked at again (another doc's change can make or end one).
     conflicts_changed: bool,
+    /// Slots the mixer disabled after repeated faults ([`Self::quarantine`]).
+    quarantined: BTreeSet<u16>,
 }
 
 impl Patches {
@@ -111,6 +113,7 @@ impl Patches {
             delays: vec![0; device_outputs],
             conflicts: BTreeSet::new(),
             conflicts_changed: false,
+            quarantined: BTreeSet::new(),
         }
     }
 
@@ -563,6 +566,108 @@ impl Patches {
             _ => None,
         }
     }
+
+    /// The doc and patch slot `slot` is given to, in use or retired (`None`: it is free).
+    pub fn owner(&self, slot: u16) -> Option<(DocId, PatchId)> {
+        self.docs.iter().find_map(|(&doc, d)| {
+            d.slots
+                .iter()
+                .find(|(_, (s, _))| *s == slot)
+                .map(|(&patch, _)| patch)
+                .or_else(|| d.retired.get(&slot).map(|h| h.patch))
+                .map(|patch| (doc, patch))
+        })
+    }
+
+    /// The mixer reset slot `slot` to silence after a fault: what brings it back to the gains
+    /// last sent (`docs/control.md` "Mixer faults").
+    pub fn resend(&self, slot: u16) -> Vec<CommandKind> {
+        let mut commands = Vec::new();
+        self.resend_into(slot, &mut commands);
+        commands
+    }
+
+    fn resend_into(&self, slot: u16, commands: &mut Vec<CommandKind>) {
+        let n = self.device_outputs;
+        let Some(sent) = self.sent.get(usize::from(slot)) else {
+            return;
+        };
+        for (i, &gain) in sent.iter().enumerate() {
+            if gain == 0.0 {
+                continue;
+            }
+            let (Ok(cue_output), Ok(device_output)) = (u16::try_from(i / n), u16::try_from(i % n))
+            else {
+                continue;
+            };
+            commands.push(CommandKind::SetPatchRouting {
+                patch: slot,
+                cue_output,
+                device_output,
+                gain,
+            });
+        }
+    }
+
+    /// The mixer disabled slot `slot` after repeated faults (it is silent and ignores routing):
+    /// it is never handed out again until the mixer is rebuilt. The patch that had it gets
+    /// another at the doc's next sync (or none is free: it cannot play, as when the slots run
+    /// out).
+    pub fn quarantine(&mut self, slot: u16) {
+        for d in self.docs.values_mut() {
+            d.slots.retain(|_, &mut (s, _)| s != slot);
+            d.retired.remove(&slot);
+        }
+        self.free.retain(|&s| s != slot);
+        let i = usize::from(slot);
+        if let (Some(sent), Some(base)) = (self.sent.get_mut(i), self.bases.get_mut(i)) {
+            sent.fill(0.0);
+            base.fill(0.0);
+            self.quarantined.insert(slot);
+        }
+    }
+
+    /// The mixer rebuilt its non-voice state after repeated faults (every slot silent and
+    /// enabled, every device output silent with no delay, the master silent): the commands
+    /// that bring all of it back to what was last sent. Quarantined slots are free again.
+    pub fn rebuilt(&mut self) -> Vec<CommandKind> {
+        let back = std::mem::take(&mut self.quarantined);
+        if !back.is_empty() {
+            self.free.extend(back);
+            self.freed = true;
+        }
+        self.resend_all()
+    }
+
+    /// Every slot's gains, every device output's settings and the master, as last sent. Sent
+    /// again to a mixer that did not reset them changes nothing.
+    pub fn resend_all(&self) -> Vec<CommandKind> {
+        let mut commands = Vec::new();
+        for slot in (0..self.sent.len()).filter_map(|s| u16::try_from(s).ok()) {
+            self.resend_into(slot, &mut commands);
+        }
+        commands.extend(
+            (0..self.delays.len())
+                .filter_map(|o| u16::try_from(o).ok())
+                .filter_map(|o| self.resend_output(o)),
+        );
+        // The mixer's master stays at unity (the workspace master is in the matrices).
+        commands.push(CommandKind::SetMaster { gain: 1.0 });
+        commands
+    }
+
+    /// The mixer reset device output `output` (silent, no delay) after a fault: its settings
+    /// as last sent.
+    pub fn resend_output(&self, output: u16) -> Option<CommandKind> {
+        let &delay_frames = self.delays.get(usize::from(output))?;
+        Some(CommandKind::SetOutput {
+            output,
+            settings: OutputSettings {
+                delay_frames,
+                ..OutputSettings::default()
+            },
+        })
+    }
 }
 
 /// One patch output's gain: patch master × level (muted: 0; polarity: negative).
@@ -822,6 +927,55 @@ mod tests {
         assert!(delays(&again).is_empty());
         let (gone, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &[], &idle());
         assert_eq!(delays(&gone), vec![(1, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_a_rebuild() {
+        let mut ws = ws_with(vec![out(0.0, false, false); 2]);
+        ws.patches[0].outputs[0].delay_ms = 2.5;
+        let mut p = Patches::new(2, 4, rate());
+        let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
+        assert_eq!(p.owner(0), Some((D0, pid())));
+        assert_eq!(p.owner(1), None);
+        // Reset to silence: the mapped gains, nothing else.
+        let g = db_to_gain(-6.0);
+        let sent: Vec<_> = routes(&cmds)
+            .into_iter()
+            .filter(|r| r.0 == 0 && r.3 != 0.0)
+            .collect();
+        assert_eq!(sent, vec![(0, 0, 3, g), (0, 1, 1, g)]);
+        let mut gains = routes(&p.resend(0));
+        gains.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(gains, sent);
+        assert_eq!(
+            p.resend_output(3).map(|c| delays(&[c])),
+            Some(vec![(3, 20)])
+        );
+
+        // Disabled: the patch moves to slot 1 at the next sync; slot 0 never comes back, even
+        // when the doc closes.
+        p.quarantine(0);
+        assert_eq!(p.owner(0), None);
+        let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
+        assert_eq!(p.mixer_patch(D0, pid()), Some(1));
+        assert!(touched(&cmds).contains(&1));
+        assert!(!touched(&cmds).contains(&0));
+        p.release_doc(D0);
+        assert_eq!(p.free_slots(), 1);
+
+        // A rebuild frees it and sends every slot, output and the master again.
+        let all = p.rebuilt();
+        assert_eq!(p.free_slots(), 2);
+        assert!(p.take_freed());
+        assert!(
+            all.iter()
+                .any(|c| matches!(c, CommandKind::SetMaster { gain } if *gain == 1.0))
+        );
+        assert_eq!(
+            delays(&all),
+            vec![(0, 0), (1, 0), (2, 0), (3, 0)],
+            "every device output is sent, at the delay it has now"
+        );
     }
 
     #[test]

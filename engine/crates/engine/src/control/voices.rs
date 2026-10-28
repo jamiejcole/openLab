@@ -1108,6 +1108,30 @@ impl Voices {
         at.min(earliest)
     }
 
+    /// The mixer disabled patch slot `slot` after repeated faults: every voice playing through
+    /// it is stopped (no fade; dated no earlier than its own start or resume, so it cannot start
+    /// after the stop) and its cue breaks as a faulted voice does ([`Self::finished`]).
+    pub fn fail_slot(&mut self, slot: u16, now: SampleTime, fx: &mut Effects) {
+        let on: Vec<(VoiceId, Option<VoiceId>, SampleTime)> = self
+            .recs
+            .iter()
+            .filter(|(_, r)| matches!(r.phase, Phase::Playing) && r.slot == Some(slot))
+            .map(|(&id, r)| {
+                let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
+                (id, r.prev_id, at)
+            })
+            .collect();
+        for (id, prev, at) in on {
+            // A resume still on its way: the mixer may know the voice by its old id.
+            for voice in std::iter::once(id).chain(prev) {
+                let fade = Fade::NONE;
+                fx.commands
+                    .push((at, CommandKind::StopVoice { voice, fade }));
+            }
+            self.finished(id, at, FinishReason::Faulted, fx);
+        }
+    }
+
     /// Runs whose voice is on the device: started in the mixer, or started and waiting for
     /// their file's probe. Loaded runs are not (a load only prepares a stream).
     pub fn on_device(&self) -> Vec<(CueId, RunId)> {
@@ -1592,6 +1616,43 @@ mod tests {
             assert_eq!(fx.notices[0].2, Some(cue));
             assert!(v.is_idle());
         }
+    }
+
+    /// The mixer disabled a patch slot: the voices on it (and only those) stop and break their
+    /// cues; a stop is never dated before the voice's own start.
+    #[test]
+    fn the_voices_on_a_disabled_slot_stop_and_break_their_cues() {
+        let cue = |n| CueId(uuid::Uuid::from_u128(n));
+        let mut v = Voices::new();
+        let mut on = rec(cue(1), RunId(1), false);
+        on.slot = Some(3);
+        on.start_at = 500;
+        v.insert(VoiceId(1), on);
+        let mut other = rec(cue(2), RunId(2), false);
+        other.slot = Some(4);
+        v.insert(VoiceId(2), other);
+        let mut fx = Effects::default();
+        v.fail_slot(3, 200, &mut fx);
+        assert!(
+            matches!(
+                fx.commands.as_slice(),
+                [(
+                    500,
+                    CommandKind::StopVoice {
+                        voice: VoiceId(1),
+                        ..
+                    }
+                )]
+            ),
+            "{:?}",
+            fx.commands
+        );
+        assert!(matches!(
+            fx.feedback.as_slice(),
+            [Input::ActionFailed { cue: c, .. } | Input::StartFailed { cue: c, .. }] if *c == cue(1)
+        ));
+        assert_eq!(fx.notices[0].0, "audio_fault");
+        assert_eq!(v.slots_in_use(), BTreeSet::from([4]));
     }
 
     /// Regression (#302): a voice dropped under its old id while the resume that re-keyed it
