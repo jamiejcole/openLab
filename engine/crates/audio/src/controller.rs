@@ -253,6 +253,12 @@ impl MixerController {
         self.shared.faulted_stages.load(Ordering::Relaxed)
     }
 
+    /// The units the mixer has disabled after repeated faults, until a rebuild: also when the
+    /// [`Event::StageFaulted`] that reported one was lost to a full event queue.
+    pub fn disabled_units(&self) -> crate::DisabledUnits {
+        self.shared.disabled.read()
+    }
+
     /// Frames of silence output because a source ring was empty.
     pub fn underrun_frames(&self) -> u64 {
         self.shared.underrun_frames.load(Ordering::Relaxed)

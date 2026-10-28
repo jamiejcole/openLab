@@ -28,14 +28,14 @@ The mixer notes the stage it is in (`Stage`: a plain field write, no allocation)
 | Stage | On a fault | At the limit |
 |---|---|---|
 | a voice's render (pool index) | nothing more (the window resets when the slot plays another voice) | finished with `FinishReason::Faulted` (its start goes back, its meters flush, `faulted_voices` counts it) |
-| applying a command to a voice | the command is gone (it left the pending set before it was applied); the voice, in whatever state it was left, is finished with `Faulted` at once; a start that never reached the pool is reported as `VoiceFinished { Faulted }` all the same | — |
+| applying a command to a voice | the command is gone (it left the pending set before it was applied); the voice, in whatever state it was left, is finished with `Faulted` at once; a start that never reached the pool, or a voice that left the pool inside `finish` before it was reported (a slot keeps its last id), is reported as `VoiceFinished { Faulted }` all the same | — |
 | a patch matrix (mixing its bus, or `SetPatchRouting` / `SnapPatch` for it) | every gain set to 0, bus cleared; `StageFaulted { Patch(k) }` | disabled: not mixed (its voices play on unheard), routing commands ignored |
-| a device output (delay line and gain, or `SetOutput` for it) | gain 0, the delay line cleared (no delay); `StageFaulted { Output(o) }` | disabled: silent, `SetOutput` ignored |
-| the master (or `SetMaster`) | gain 0; `StageFaulted { Master }` | disabled: bypassed at unity, `SetMaster` ignored |
+| a device output (delay line and gain, or `SetOutput` for it) | gain to unity (the only level the engine sends), the delay line cleared (no delay); `StageFaulted { Output(o) }` | disabled: silent, `SetOutput` ignored |
+| the master (or `SetMaster`) | gain to unity (the engine keeps it there), so one fault costs one block; `StageFaulted { Master }` | disabled: bypassed at unity, `SetMaster` ignored |
 | the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
-| none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch, output and the master reset to silence and enabled again, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands are kept |
+| none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch reset to silence, every output and the master to unity with no delay, all enabled again, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands are kept |
 
-`StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued. The control thread answers it from its own copy (docs/control.md "Mixer faults"). Clearing a delay line costs at most 1 s of samples, on a fault only. Every reset reuses the mixer's buffers; the panic itself (its payload, the hook) allocates, as before. Test hooks (`#[cfg(test)]`): `panic_next` (unblamed), `panic_voice`, `panic_apply` (a command matching a predicate), `stage.panic_at` (entering a patch, output, master or meter stage).
+`StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued. A disabled unit is also published before its report, as bits in preallocated atomics (`MixerController::disabled_units`: a `u64` mask of patches, one of outputs, master, meters; cleared by a rebuild), so a report lost to a full event queue is still found. The control thread answers it from its own copy (docs/control.md "Mixer faults"). Clearing a delay line costs at most 1 s of samples, on a fault only. Every reset reuses the mixer's buffers; the panic itself (its payload, the hook) allocates, as before. Test hooks (`#[cfg(test)]`): `panic_next` (unblamed), `panic_voice`, `panic_apply` (a command matching a predicate), `stage.panic_at` (entering a patch, output, master or meter stage).
 
 ### Scheduling horizon
 

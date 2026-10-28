@@ -9,7 +9,7 @@ use std::collections::BinaryHeap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
@@ -412,15 +412,15 @@ pub enum FaultStage {
     /// A patch matrix (mixing its bus, or a routing command for it). Its gains were reset to
     /// silence; the control thread re-sends its routing.
     Patch(u16),
-    /// A device output's delay line or gain (or a `SetOutput` for it). Reset to silence with no
+    /// A device output's delay line or gain (or a `SetOutput` for it). Reset to unity with no
     /// delay; the control thread re-sends its settings.
     Output(u16),
-    /// The master gain (or a `SetMaster`). Reset to silence; the control thread re-sends it.
+    /// The master gain (or a `SetMaster`). Reset to unity; the control thread re-sends it.
     Master,
     /// Publishing the meters.
     Meters,
-    /// Faults with no unit to blame reached [`FAULT_LIMIT`]: every patch, output and the master
-    /// were reset to silence and re-enabled; the control thread re-sends all of them.
+    /// Faults with no unit to blame reached [`FAULT_LIMIT`]: every patch was reset to silence,
+    /// every output and the master to unity, all re-enabled; the control thread re-sends them.
     Mixer,
 }
 
@@ -483,8 +483,8 @@ pub enum Event {
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
     /// A block panicked in `stage` (or, for [`FaultStage::Mixer`], faults no unit could be
-    /// blamed for kept repeating). The stage was reset to silence; the control thread re-sends
-    /// its settings. `disabled`: it faulted [`FAULT_LIMIT`] times within [`FAULT_WINDOW`] and
+    /// blamed for kept repeating). The stage was reset (a patch to silence, an output or the
+    /// master to unity); the control thread re-sends its settings. `disabled`: it faulted [`FAULT_LIMIT`] times within [`FAULT_WINDOW`] and
     /// stays off until a [`FaultStage::Mixer`] rebuild (a patch or device output is silent and
     /// ignores its commands, the master is bypassed at unity, the meters stop).
     StageFaulted {
@@ -500,12 +500,77 @@ pub(crate) struct Shared {
     pub(crate) faults: AtomicU64,
     pub(crate) faulted_voices: AtomicU64,
     pub(crate) faulted_stages: AtomicU64,
+    pub(crate) disabled: DisabledFlags,
     pub(crate) underrun_frames: AtomicU64,
     pub(crate) dropped_events: AtomicU64,
     pub(crate) leaked_starts: AtomicU64,
     pub(crate) pending_full_blocks: AtomicU64,
     pub(crate) xruns: AtomicU64,
     pub(crate) meters: Meters,
+}
+
+/// The units the mixer disabled, as atomics: what a lost [`Event::StageFaulted`] report would
+/// otherwise hide. Bit `k` of `patches` / `outputs` is patch `k` / device output `k`
+/// ([`MAX_PATCHES`] and [`MAX_OUTPUT_CHANNELS`] are 64).
+#[derive(Debug, Default)]
+pub(crate) struct DisabledFlags {
+    patches: AtomicU64,
+    outputs: AtomicU64,
+    master: AtomicBool,
+    meters: AtomicBool,
+}
+
+impl DisabledFlags {
+    fn note(&self, stage: FaultStage) {
+        let bit = |k: u16| 1u64.checked_shl(u32::from(k)).unwrap_or(0);
+        match stage {
+            FaultStage::Patch(k) => self.patches.fetch_or(bit(k), Ordering::Release),
+            FaultStage::Output(o) => self.outputs.fetch_or(bit(o), Ordering::Release),
+            FaultStage::Master => u64::from(self.master.swap(true, Ordering::Release)),
+            FaultStage::Meters => u64::from(self.meters.swap(true, Ordering::Release)),
+            FaultStage::Mixer => 0,
+        };
+    }
+
+    fn clear(&self) {
+        self.patches.store(0, Ordering::Release);
+        self.outputs.store(0, Ordering::Release);
+        self.master.store(false, Ordering::Release);
+        self.meters.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn read(&self) -> DisabledUnits {
+        DisabledUnits {
+            patches: self.patches.load(Ordering::Acquire),
+            outputs: self.outputs.load(Ordering::Acquire),
+            master: self.master.load(Ordering::Acquire),
+            meters: self.meters.load(Ordering::Acquire),
+        }
+    }
+}
+
+/// The units the mixer has disabled after repeated faults, until a rebuild
+/// ([`MixerController::disabled_units`](crate::MixerController::disabled_units)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DisabledUnits {
+    /// Bit `k`: patch `k`.
+    pub patches: u64,
+    /// Bit `o`: device output `o`.
+    pub outputs: u64,
+    pub master: bool,
+    pub meters: bool,
+}
+
+impl DisabledUnits {
+    /// Every unit disabled, as the stage its report names.
+    pub fn stages(self) -> impl Iterator<Item = FaultStage> {
+        let bits = |mask: u64| (0..64u16).filter(move |&k| mask >> k & 1 == 1);
+        bits(self.patches)
+            .map(FaultStage::Patch)
+            .chain(bits(self.outputs).map(FaultStage::Output))
+            .chain(self.master.then_some(FaultStage::Master))
+            .chain(self.meters.then_some(FaultStage::Meters))
+    }
 }
 
 /// Audio-thread side of the queues back to the controller.
@@ -1925,9 +1990,10 @@ impl Mixer {
     /// - a command to a voice: the command is gone (taken off the pending set before it was
     ///   applied) and the voice, in whatever state the command left it, is dropped at once; a
     ///   start that never reached the pool is reported finished the same way;
-    /// - a patch, device output or the master: reset to silence and reported
-    ///   ([`Event::StageFaulted`]) for the control thread to re-send its settings; disabled at the
-    ///   limit;
+    /// - a patch: reset to silence; a device output or the master: reset to unity (the only
+    ///   value the control thread gives them) with no delay. Reported ([`Event::StageFaulted`])
+    ///   for the control thread to re-send its settings; disabled at the limit (also published
+    ///   in [`DisabledUnits`], so a lost report is found);
     /// - the meters: reported; disabled at the limit;
     /// - none of these: at the limit, every patch, output and the master are rebuilt
     ///   ([`FaultStage::Mixer`]).
@@ -1947,14 +2013,15 @@ impl Mixer {
             }
             Stage::VoiceCommand { voice, alt, start } => {
                 let Mixer { voices, outbox, .. } = self;
-                match voices
-                    .iter_mut()
-                    .find(|v| v.is_active() && (v.id == voice || v.id == alt))
-                {
+                let ours = |v: &Voice| v.id == voice || v.id == alt;
+                let known = voices.iter().any(ours);
+                match voices.iter_mut().find(|v| v.is_active() && ours(v)) {
                     Some(v) => v.finish(at, FinishReason::Faulted, outbox),
-                    // The start's box was dropped by the unwind: the cue must still learn it
-                    // never played.
-                    None if start => outbox.emit(Event::VoiceFinished {
+                    // The start's box was dropped by the unwind, or the panic hit inside
+                    // `finish` after the voice left the pool and before it was reported: the
+                    // cue must still learn the voice is gone. (A slot keeps its last id until
+                    // another voice starts in it; ids are never reused.)
+                    None if start || known => outbox.emit(Event::VoiceFinished {
                         voice,
                         at,
                         reason: FinishReason::Faulted,
@@ -1980,13 +2047,13 @@ impl Mixer {
                 ) else {
                     return;
                 };
-                g.set(0.0);
+                g.set(1.0);
                 d.reset();
                 let stage = FaultStage::Output(u16::try_from(o).unwrap_or(u16::MAX));
                 (stage, h.fault(block))
             }
             Stage::Master => {
-                self.master.set(0.0);
+                self.master.set(1.0);
                 (FaultStage::Master, self.master_health.fault(block))
             }
             Stage::Meters => (FaultStage::Meters, self.meter_health.fault(block)),
@@ -1998,10 +2065,11 @@ impl Mixer {
                 (FaultStage::Mixer, false)
             }
         };
-        self.outbox
-            .shared
-            .faulted_stages
-            .fetch_add(1, Ordering::Relaxed);
+        let shared = &self.outbox.shared;
+        if disabled {
+            shared.disabled.note(stage);
+        }
+        shared.faulted_stages.fetch_add(1, Ordering::Relaxed);
         self.outbox.emit(Event::StageFaulted {
             stage,
             at,
@@ -2016,18 +2084,20 @@ impl Mixer {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The last resort for faults no unit can be blamed for: every patch, device output and the
-    /// master back to silence and enabled, to be set again from the control thread's copy.
-    /// Voices and pending commands are kept (they are the show; a fault in one is blamed on it).
+    /// The last resort for faults no unit can be blamed for: every patch back to silence, every
+    /// device output and the master to unity with no delay, all enabled, to be set again from
+    /// the control thread's copy. Voices and pending commands are kept (they are the show; a
+    /// fault in one is blamed on it).
     fn rebuild(&mut self) {
+        self.outbox.shared.disabled.clear();
         for p in &mut self.patches {
             p.reset();
             p.health = Health::OK;
         }
-        self.out_gain.iter_mut().for_each(|g| g.set(0.0));
+        self.out_gain.iter_mut().for_each(|g| g.set(1.0));
         self.delays.iter_mut().for_each(DelayLine::reset);
         self.out_health.fill(Health::OK);
-        self.master.set(0.0);
+        self.master.set(1.0);
         self.master_health = Health::OK;
         self.meter_health = Health::OK;
         self.dev.fill(0.0);
@@ -2920,9 +2990,9 @@ mod tests {
         );
         fault(&mut r);
         assert_eq!(stage_events(&mut ctl), [(FaultStage::Master, false)]);
-        // The master was reset to silence until the control thread sends it again.
-        assert_eq!(play(&mut r, 1), [0.0, 0.0]);
-        ctl.send(ctl.samples_rendered(), CommandKind::SetMaster { gain: 1.0 });
+        // Regression (#315): the master is reset to unity, its only legitimate value, so the
+        // show plays from the next block without waiting for the control thread.
+        assert_eq!(play(&mut r, 1), [0.5, 0.5]);
         assert_eq!(play(&mut r, 8), [0.5, 0.5]);
         assert_eq!(ctl.faults(), 1);
         assert_eq!(ctl.faulted_stages(), 1);
@@ -2960,6 +3030,31 @@ mod tests {
         assert_eq!(ctl.faulted_stages(), 0);
     }
 
+    /// Regression (#319): a panic inside `finish`, after the voice left the pool and before it
+    /// was reported, still reports it, so its cue does not run for ever.
+    #[test]
+    fn a_voice_command_that_panics_after_the_voice_left_the_pool_still_reports_it() {
+        let (mut ctl, mut r) = two_voices();
+        let m = r.mixer_mut();
+        let start = m.voices[0].start.take().unwrap();
+        m.outbox.give_back(start);
+        m.stage.now = Stage::VoiceCommand {
+            voice: VoiceId(1),
+            alt: VoiceId(1),
+            start: false,
+        };
+        m.isolate(64, 1);
+        assert_eq!(faulted_events(&mut ctl), [VoiceId(1)]);
+        // A command for a voice the pool never had reports nothing.
+        m.stage.now = Stage::VoiceCommand {
+            voice: VoiceId(7),
+            alt: VoiceId(7),
+            start: false,
+        };
+        m.isolate(64, 2);
+        assert_eq!(faulted_events(&mut ctl), []);
+    }
+
     #[test]
     fn a_patch_fault_silences_that_patch_until_its_routing_is_sent_again() {
         let (mut ctl, mut r) = two_voices_on([0, 1]);
@@ -2985,6 +3080,11 @@ mod tests {
         assert_eq!(
             stage_events(&mut ctl),
             [(p0, false), (p0, false), (p0, true)]
+        );
+        // Also published, for a report lost to a full event queue (#316).
+        assert_eq!(
+            ctl.disabled_units().stages().collect::<Vec<_>>(),
+            [FaultStage::Patch(0)]
         );
         // Disabled: no longer mixed (so no longer faulting), its routing ignored.
         route(&mut ctl, 0, 0, 1.0);
@@ -3048,6 +3148,7 @@ mod tests {
             let rebuilt = (k == FAULT_LIMIT).then_some((FaultStage::Mixer, false));
             assert_eq!(stage_events(&mut ctl), rebuilt.as_slice());
         }
+        assert_eq!(ctl.disabled_units(), DisabledUnits::default());
         // Silent until the control thread sends its copy again; the voices play on meanwhile.
         assert_eq!(play(&mut r, 1), [0.0, 0.0]);
         for patch in 0..2 {

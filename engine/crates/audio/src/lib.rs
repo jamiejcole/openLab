@@ -42,10 +42,10 @@ pub use gain::{
 };
 pub use meter::XrunNotifier;
 pub use mixer::{
-    COMMAND_CAPACITY, CommandKind, ConfigError, Event, FAULT_LIMIT, FAULT_WINDOW, FaultStage,
-    FinishReason, GainTarget, MAX_BLOCK_FRAMES, MAX_OUTPUT_CHANNELS, MAX_PATCHES, MAX_SAMPLE_RATE,
-    MAX_VOICE_CHANNELS, Mixer, MixerConfig, OutputSettings, PENDING_CAPACITY, RejectReason,
-    SampleTime, VoiceId, VoiceStart,
+    COMMAND_CAPACITY, CommandKind, ConfigError, DisabledUnits, Event, FAULT_LIMIT, FAULT_WINDOW,
+    FaultStage, FinishReason, GainTarget, MAX_BLOCK_FRAMES, MAX_OUTPUT_CHANNELS, MAX_PATCHES,
+    MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer, MixerConfig, OutputSettings, PENDING_CAPACITY,
+    RejectReason, SampleTime, VoiceId, VoiceStart,
 };
 pub use negotiate::{
     BufferChoice, BufferRange, ConfigRange, Latency, NegotiateError, Negotiated, Request,
