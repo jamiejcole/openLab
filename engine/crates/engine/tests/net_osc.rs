@@ -20,7 +20,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::{CueKind, GroupMode, OscAccess, OscPasscode, OscRights, Workspace};
 use openlab_engine::control::{
-    Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, ReplyTx, outbound_channel, runner,
+    Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, Outgoing, ReplyTx, outbound_channel,
+    runner,
 };
 use openlab_engine::net::{OscConfig, OscListenerStats, ServerConfig, WsServer};
 use openlab_engine::osc::{SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode};
@@ -159,7 +160,7 @@ fn ok(id: RequestId) -> ServerMessage {
 fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
     while let Ok(msg) = rx.recv() {
         match msg {
-            Inbox::Client { message, reply } => {
+            Inbox::Client { message, reply } | Inbox::Conn { message, reply, .. } => {
                 c.seen.lock().unwrap().push(message.clone());
                 match message {
                     ClientMessage::Request {
@@ -203,9 +204,39 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
     }
 }
 
+/// The doc the stand-in plays: the OSC side follows the first open doc (until M4.15h).
+const DOC: openlab_core::protocol::DocId = openlab_core::protocol::DocId(0);
+
+/// The control loop's outbound channel as the stand-in uses it: every message is about [`DOC`].
+struct Out(OutboundTx);
+
+impl Out {
+    /// Opens the channel as the engine does: the list of open docs comes first.
+    fn new(tx: OutboundTx, ws: &Workspace) -> Self {
+        let list = ServerMessage::Workspaces {
+            workspaces: vec![openlab_core::protocol::WorkspaceInfo {
+                doc: DOC,
+                workspace_id: ws.id,
+                name: ws.name.clone(),
+                path: None,
+                dirty: false,
+            }],
+        };
+        tx.try_send(Outgoing::all(list)).unwrap();
+        Self(tx)
+    }
+
+    async fn send(
+        &self,
+        m: ServerMessage,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<Outgoing>> {
+        self.0.send(Outgoing::doc(DOC, m)).await
+    }
+}
+
 struct Fix {
     server: WsServer,
-    out: OutboundTx,
+    out: Out,
     inbox: Sender<Inbox>,
     control: Arc<Stand>,
     thread: Option<thread::JoinHandle<()>>,
@@ -298,6 +329,7 @@ async fn fixture_held(ws: Workspace, hold: bool, tune: impl FnOnce(&mut OscConfi
     tune(&mut osc);
     let (inbox, rx) = crossbeam_channel::unbounded();
     let (out, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+    let out = Out::new(out, &ws);
     let control = Arc::new(Stand::default());
     *control.workspace.lock().unwrap() = Some(ws);
     control
@@ -1452,7 +1484,7 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
         }
         // The fan-out task has taken every message (and, as it takes the next only after
         // offering the one before, offered all but possibly the last).
-        while f.out.capacity() < f.out.max_capacity() {
+        while f.out.0.capacity() < f.out.0.max_capacity() {
             tokio::task::yield_now().await;
         }
     };

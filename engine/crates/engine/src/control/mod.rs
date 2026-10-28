@@ -51,9 +51,9 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
-    ErrorCode, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter, PlayheadEntry,
-    ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction,
-    WireProblem, WireWarning,
+    ErrorCode, HotkeyPhase, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter,
+    PlayheadEntry, ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot,
+    TransportAction, WireProblem, WireWarning, WorkspaceInfo,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
@@ -64,7 +64,7 @@ use openlab_core::{
 
 pub use docs::{DocAnswer, DocHook, DocSource, EpochClock, Loaded, ManualClock, SaveHook};
 pub use inbox::{
-    Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, ProbeAnswer, ReplyRx, ReplyTx,
+    Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, Outgoing, ProbeAnswer, ReplyRx, ReplyTx,
     outbound_channel, reply_channel,
 };
 pub use media::{PROBE_WORKERS, ProbeClock};
@@ -112,16 +112,8 @@ const FEEDBACK_LIMIT: usize = 4096;
 /// Workspaces open at once (REQUIREMENTS §21); one more is `command_refused`.
 pub const MAX_DOCS: usize = 8;
 
-/// An open doc (workspace) in this engine run. Ids are handed out in open order from 0 and never
-/// reused, so a late answer or event of a closed doc can never be taken for another's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DocId(pub u64);
-
-impl std::fmt::Display for DocId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+/// An open doc (workspace) in this engine run: the protocol's (ids never reused).
+pub use openlab_core::protocol::DocId;
 
 /// How the control loop reaches the audio side, besides the mixer controller. The clock is the
 /// mixer's either way; this carries what only a device has.
@@ -411,6 +403,43 @@ struct Engine {
     primes_changed: bool,
     /// Docs installed by [`Control::open_doc`] and the request each answered (until taken).
     opened: Vec<(openlab_core::protocol::RequestId, DocId)>,
+    /// The open docs as the last `workspaces` message listed them.
+    listed: Vec<Listed>,
+    /// That message did not fit the outbound channel: send the list again.
+    list_unsent: bool,
+    /// Closed docs whose `closed` message did not fit the outbound channel yet.
+    closed_unsent: Vec<DocId>,
+}
+
+/// One doc as the `workspaces` list showed it, to tell when the list changes without
+/// building it (checked every tick).
+#[derive(PartialEq)]
+struct Listed {
+    doc: DocId,
+    workspace_id: openlab_core::WorkspaceId,
+    name: String,
+    path: Option<PathBuf>,
+    dirty: bool,
+}
+
+impl Listed {
+    fn of(d: &Doc) -> Self {
+        Self {
+            doc: d.id,
+            workspace_id: d.ws.id,
+            name: d.ws.name.clone(),
+            path: d.show_path.clone(),
+            dirty: d.is_dirty(),
+        }
+    }
+
+    fn lists(&self, d: &Doc) -> bool {
+        self.doc == d.id
+            && self.workspace_id == d.ws.id
+            && self.name == d.ws.name
+            && self.path == d.show_path
+            && self.dirty == d.is_dirty()
+    }
 }
 
 /// One open workspace (ARCHITECTURE §3.1): its model, undo history, cue engine, voices, media
@@ -560,6 +589,9 @@ impl Control {
             primes: std::collections::BTreeMap::new(),
             primes_changed: false,
             opened: Vec::new(),
+            listed: Vec::new(),
+            list_unsent: false,
+            closed_unsent: Vec::new(),
         };
         if let Some(e) = writer_error {
             eng.record(
@@ -599,6 +631,9 @@ impl Control {
             docs: vec![doc],
             none,
         };
+        // Before the doc's first reports: the app connections (and the OSC side, which follows
+        // the first doc) learn of the doc before anything about it.
+        control.publish_workspaces();
         if let Some(doc) = control.docs.first_mut() {
             let mut cx = DocCx {
                 eng: &mut control.eng,
@@ -653,20 +688,26 @@ impl Control {
         self.docs.iter()
     }
 
-    /// Handles one inbox message. A client message goes to the first open doc (the protocol
-    /// addresses one workspace until M4.15f); a worker's answer goes to the doc it was for,
-    /// and one for a doc closed since is dropped.
+    /// Handles one inbox message. A connection's message goes to the doc it is bound to, or is
+    /// one of the app-scope messages ([`Self::app_scope`]); `Inbox::Client` (OSC until M4.15h)
+    /// addresses the first open doc. A worker's answer goes to the doc it was for, and one for
+    /// a doc closed since is dropped.
     pub fn handle(&mut self, msg: Inbox) -> Flow {
         match msg {
             Inbox::Client { message, reply: to } => {
-                if self.app_scope(&message, &to) {
-                    return Flow::Continue;
-                }
-                return match self.docs.first().map(|d| d.id) {
-                    Some(id) => self.handle_doc(id, message, &to),
-                    None => no_doc(message, &to),
-                };
+                let first = self.docs.first().map(|d| d.id);
+                return self.client(Addr::Doc(first), message, &to);
             }
+            Inbox::Conn {
+                doc: Some(doc),
+                message,
+                reply: to,
+            } => return self.client(Addr::Doc(Some(doc)), message, &to),
+            Inbox::Conn {
+                doc: None,
+                message,
+                reply: to,
+            } => return self.client(Addr::App, message, &to),
             Inbox::Probe(doc, answer) => {
                 if let Some(mut cx) = self.cx_of(doc) {
                     cx.probe_answer(answer);
@@ -693,28 +734,178 @@ impl Control {
     /// A client message for doc `doc` (what a connection bound to it sends, M4.15f). An unknown
     /// or closed doc answers `no_workspace`.
     pub fn handle_doc(&mut self, doc: DocId, message: ClientMessage, to: &ReplyTx) -> Flow {
-        if self.app_scope(&message, to) {
-            return Flow::Continue;
-        }
-        match self.cx_of(doc) {
-            Some(mut cx) => cx.client(message, to),
-            None => no_doc(message, to),
+        self.client(Addr::Doc(Some(doc)), message, to)
+    }
+
+    /// A client message: app-scope ones first, whoever sends them; the rest act on the doc the
+    /// sender is bound to.
+    fn client(&mut self, from: Addr, message: ClientMessage, to: &ReplyTx) -> Flow {
+        let message = match self.app_scope(from, message, to) {
+            Ok(flow) => return flow,
+            Err(message) => message,
+        };
+        match from {
+            Addr::Doc(Some(doc)) => match self.cx_of(doc) {
+                Some(mut cx) => cx.client(message, to),
+                None => no_doc(message, to),
+            },
+            Addr::Doc(None) => no_doc(message, to),
+            Addr::App => match message {
+                // The one transport an app connection may send: Esc, which is app-scope.
+                ClientMessage::Transport {
+                    id,
+                    action: TransportAction::Panic,
+                } => {
+                    self.panic_all();
+                    reply(to, ok(id, None));
+                    Flow::Continue
+                }
+                // The app connection's "snapshot" is the workspace list.
+                ClientMessage::Request {
+                    id,
+                    request: Request::Snapshot,
+                } => {
+                    reply(
+                        to,
+                        ServerMessage::Workspaces {
+                            workspaces: self.workspace_list(),
+                        },
+                    );
+                    reply(to, ok(id, None));
+                    Flow::Continue
+                }
+                message => no_doc(message, to),
+            },
         }
     }
 
-    /// Carries out an app-scope request (PB-10: one flag for every doc, whether or not a doc
-    /// is open); `false` if `message` is not one.
-    fn app_scope(&mut self, message: &ClientMessage, to: &ReplyTx) -> bool {
-        let ClientMessage::Request {
-            id,
-            request: Request::SetOutputOverrides { network_disabled },
-        } = message
-        else {
-            return false;
-        };
-        self.set_network_disabled(*network_disabled);
-        reply(to, ok(*id, None));
-        true
+    /// Carries out an app-scope message (ARCHITECTURE §6: on any connection, whether or not a
+    /// doc is open): opening a workspace, the recovery scan, closing one by id, the Esc panic
+    /// and hotkeys of every doc, the PB-10 override, the device list and the show log. Any
+    /// other message is handed back.
+    fn app_scope(
+        &mut self,
+        from: Addr,
+        message: ClientMessage,
+        to: &ReplyTx,
+    ) -> Result<Flow, ClientMessage> {
+        match message {
+            ClientMessage::Request { id, request } => match request {
+                Request::SetOutputOverrides { network_disabled } => {
+                    self.set_network_disabled(network_disabled);
+                    reply(to, ok(id, None));
+                }
+                Request::New {} => self.open_doc(DocSource::New, id, to),
+                Request::Open { path, recovery } => self.open_doc(
+                    DocSource::Open {
+                        path: PathBuf::from(path),
+                        recovery,
+                    },
+                    id,
+                    to,
+                ),
+                Request::OpenRecovery {
+                    workspace_id,
+                    path_hash,
+                    modified_ms,
+                } => self.open_doc(
+                    DocSource::Recovery {
+                        workspace_id,
+                        path_hash,
+                        modified_ms,
+                    },
+                    id,
+                    to,
+                ),
+                Request::ScanRecovery => self.scan_recovery(id, to),
+                Request::ListDevices => reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Ok(OkBody {
+                            revision: None,
+                            data: Some(ResultData::Devices {
+                                devices: self.eng.device_list(),
+                            }),
+                        }),
+                    },
+                ),
+                Request::LogTail { max } => {
+                    let (entries, dropped, seq) = self.eng.log_tail(max);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::LogTail {
+                                    entries,
+                                    dropped,
+                                    seq,
+                                }),
+                            }),
+                        },
+                    );
+                }
+                request => return Err(ClientMessage::Request { id, request }),
+            },
+            ClientMessage::Close {
+                id,
+                doc,
+                discard_changes,
+            } => {
+                let own = match from {
+                    Addr::Doc(doc) => doc,
+                    Addr::App => None,
+                };
+                let Some(doc) = doc.or(own) else {
+                    let e = ErrorBody::new(
+                        ErrorCode::NoWorkspace,
+                        "close names no workspace and this connection is bound to none",
+                    );
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(e),
+                        },
+                    );
+                    return Ok(Flow::Continue);
+                };
+                match self.remove_doc(doc, discard_changes) {
+                    Ok(()) => {
+                        reply(to, ok(id, None));
+                        self.closed(doc);
+                    }
+                    Err(e) => reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(e),
+                        },
+                    ),
+                }
+            }
+            ClientMessage::Panic { id } => {
+                self.panic_all();
+                reply(to, ok(id, None));
+            }
+            ClientMessage::Hotkey {
+                id,
+                key,
+                modifiers,
+                phase,
+            } => {
+                let hotkey = openlab_core::Hotkey { key, modifiers };
+                match phase {
+                    HotkeyPhase::Down => self.hotkey(&hotkey),
+                    HotkeyPhase::Up => self.hotkey_released(&hotkey),
+                }
+                reply(to, ok(id, None));
+            }
+            message => return Err(message),
+        }
+        Ok(Flow::Continue)
     }
 
     /// PB-10: Network cues of every open doc send nothing (or again).
@@ -744,6 +935,8 @@ impl Control {
         self.eng.check_stalled_read();
         self.eng.poll_clears();
         self.poll_orphan_saves();
+        self.eng.resend_closed();
+        self.publish_workspaces();
         self.eng.settings_tick();
         self.health();
         let paths = self.docs.iter().map(|d| d.show_path.as_deref());
@@ -988,8 +1181,16 @@ fn event_voice(e: &Event) -> Option<VoiceId> {
     }
 }
 
-/// The answer to a client message when no doc is open (or the one it names is closed): every
-/// workspace message fails with `no_workspace`; a shutdown still shuts down.
+/// Who a client message comes from: a sender bound to a doc (`None`: it is closed, or none is
+/// open for `Inbox::Client`), or an app connection.
+#[derive(Clone, Copy, Debug)]
+enum Addr {
+    Doc(Option<DocId>),
+    App,
+}
+
+/// The answer to a workspace message with no doc to act on (none open, the one it names is
+/// closed, or an app connection sent it): `no_workspace`; a shutdown still shuts down.
 fn no_doc(message: ClientMessage, to: &ReplyTx) -> Flow {
     let id = match message {
         ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
@@ -998,7 +1199,10 @@ fn no_doc(message: ClientMessage, to: &ReplyTx) -> Flow {
         | ClientMessage::Command { id, .. }
         | ClientMessage::Undo { id }
         | ClientMessage::Redo { id }
-        | ClientMessage::Request { id, .. } => id,
+        | ClientMessage::Request { id, .. }
+        | ClientMessage::Close { id, .. }
+        | ClientMessage::Panic { id }
+        | ClientMessage::Hotkey { id, .. } => id,
     };
     reply(
         to,
@@ -1373,18 +1577,6 @@ impl DocCx<'_> {
                     );
                     reply(to, ok(id, None));
                 }
-                Request::ListDevices => reply(
-                    to,
-                    ServerMessage::Result {
-                        id,
-                        outcome: Outcome::Ok(OkBody {
-                            revision: None,
-                            data: Some(ResultData::Devices {
-                                devices: self.device_list(),
-                            }),
-                        }),
-                    },
-                ),
                 Request::PreshowCheck => {
                     let report = self.preshow_report();
                     reply(
@@ -1397,28 +1589,6 @@ impl DocCx<'_> {
                             }),
                         },
                     );
-                }
-                Request::LogTail { max } => {
-                    let (entries, dropped, seq) = self.eng.log_tail(max);
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Ok(OkBody {
-                                revision: None,
-                                data: Some(ResultData::LogTail {
-                                    entries,
-                                    dropped,
-                                    seq,
-                                }),
-                            }),
-                        },
-                    );
-                }
-                Request::SetOutputOverrides { network_disabled } => {
-                    // App-scope: [`Control::handle_doc`] takes it before any doc does.
-                    self.eng.set_network_disabled(network_disabled);
-                    reply(to, ok(id, None));
                 }
                 Request::Relink { .. } => reply(
                     to,
@@ -1435,6 +1605,19 @@ impl DocCx<'_> {
             ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
             // The network layer handles the handshake and closing (M4.3).
             ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
+            // App-scope: [`Control::app_scope`] takes them before any doc does.
+            ClientMessage::Close { id, .. }
+            | ClientMessage::Panic { id }
+            | ClientMessage::Hotkey { id, .. } => reply(
+                to,
+                ServerMessage::Result {
+                    id,
+                    outcome: Outcome::Error(ErrorBody::new(
+                        ErrorCode::Internal,
+                        "an app-scope message reached a workspace",
+                    )),
+                },
+            ),
         }
         Flow::Continue
     }
@@ -1569,11 +1752,14 @@ impl DocCx<'_> {
                     model_changes(&self.doc.ws, footprint)
                 },
             );
-        self.eng.out.send(ServerMessage::ModelChanged {
-            revision: self.doc.revision,
-            upserts,
-            deletes,
-        });
+        self.eng.out.send(
+            Some(self.doc.id),
+            ServerMessage::ModelChanged {
+                revision: self.doc.revision,
+                upserts,
+                deletes,
+            },
+        );
         self.sync_workspace(false)
     }
 
@@ -1699,11 +1885,6 @@ impl DocCx<'_> {
         failed
     }
 
-    /// The output devices for a `list_devices` request.
-    fn device_list(&self) -> Vec<DeviceEntry> {
-        self.eng.device_list()
-    }
-
     /// One event of the shared media watch about a file of this doc ([`Control::watch_tick`]):
     /// a file gone is `Missing` in this tick's `Availability` (its cues are broken within the
     /// tick); a file back, changed or unreadable is probed again.
@@ -1724,6 +1905,29 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// Tells doc `doc`'s connections it closed (again on a later tick if that does not fit).
+    fn announce_closed(&mut self, doc: DocId) {
+        if !self
+            .out
+            .send_state(Some(doc), ServerMessage::Closed { doc })
+        {
+            self.closed_unsent.push(doc);
+        }
+    }
+
+    /// The `closed` messages that did not fit, once there is room.
+    fn resend_closed(&mut self) {
+        while let Some(&doc) = self.closed_unsent.first() {
+            if !self
+                .out
+                .send_state(Some(doc), ServerMessage::Closed { doc })
+            {
+                return;
+            }
+            self.closed_unsent.remove(0);
+        }
+    }
+
     /// The output devices for a `list_devices` request.
     fn device_list(&self) -> Vec<DeviceEntry> {
         match self.backend.device() {
@@ -2066,10 +2270,13 @@ impl DocCx<'_> {
 
     fn runtime(&mut self, changes: Vec<RuntimeChange>) {
         self.doc.runtime_seq += 1;
-        self.eng.out.send(ServerMessage::Runtime {
-            seq: self.doc.runtime_seq,
-            changes,
-        });
+        self.eng.out.send(
+            Some(self.doc.id),
+            ServerMessage::Runtime {
+                seq: self.doc.runtime_seq,
+                changes,
+            },
+        );
     }
 
     fn document(&mut self) {
@@ -2077,7 +2284,7 @@ impl DocCx<'_> {
         self.doc.resend_document = !self
             .eng
             .out
-            .send_state(ServerMessage::Document { document });
+            .send_state(Some(self.doc.id), ServerMessage::Document { document });
     }
 
     /// A message for the show log and every client's `log`.
@@ -2160,7 +2367,7 @@ impl DocCx<'_> {
                 self.doc.last_progress = Some(rendered);
                 let mut m = ServerMessage::Progress { items };
                 m.sanitise();
-                self.eng.out.send_lossy(m);
+                self.eng.out.send_lossy(Some(self.doc.id), m);
             }
         }
         // The engine read the meters once this wake ([`Control::begin_meter_round`]): this
@@ -2239,7 +2446,7 @@ impl DocCx<'_> {
             self.doc.meters_live = live;
             let mut m = ServerMessage::Meters { outputs, cues };
             m.sanitise();
-            self.eng.out.send_lossy(m);
+            self.eng.out.send_lossy(Some(self.doc.id), m);
         }
     }
 
@@ -2273,9 +2480,12 @@ impl DocCx<'_> {
             self.document();
         }
         if self.doc.resend_warnings && self.eng.out.has_room() {
-            self.doc.resend_warnings = !self.eng.out.send_state(ServerMessage::Warnings {
-                warnings: self.doc.warnings.clone(),
-            });
+            self.doc.resend_warnings = !self.eng.out.send_state(
+                Some(self.doc.id),
+                ServerMessage::Warnings {
+                    warnings: self.doc.warnings.clone(),
+                },
+            );
         }
     }
 
@@ -2335,10 +2545,10 @@ impl DocCx<'_> {
         }
         if list != self.doc.warnings {
             self.doc.warnings = list.clone();
-            self.doc.resend_warnings = !self
-                .eng
-                .out
-                .send_state(ServerMessage::Warnings { warnings: list });
+            self.doc.resend_warnings = !self.eng.out.send_state(
+                Some(self.doc.id),
+                ServerMessage::Warnings { warnings: list },
+            );
         }
         // The plans just checked also give the cues' nominal lengths, which a playlist halted by
         // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist").
@@ -2722,6 +2932,56 @@ impl Control {
             }
         });
         self.eng.mixer.pump();
+    }
+
+    /// App-scope hotkey release: the release (`trigger_released`) of every cue of every doc
+    /// with this hotkey (a cue whose second trigger is not on release ignores it).
+    pub fn hotkey_released(&mut self, hotkey: &openlab_core::Hotkey) {
+        self.each_doc(|cx| {
+            let now = cx.now();
+            for cue in cx.doc.ws.cues_with_hotkey(hotkey) {
+                cx.transport(TransportAction::TriggerReleased { cue }, now);
+            }
+        });
+        self.eng.mixer.pump();
+    }
+
+    /// The open docs as the app connections list them, in open order.
+    pub fn workspace_list(&self) -> Vec<WorkspaceInfo> {
+        self.docs
+            .iter()
+            .map(|d| WorkspaceInfo {
+                doc: d.id,
+                workspace_id: d.ws.id,
+                name: d.ws.name.clone(),
+                path: d
+                    .show_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                dirty: d.is_dirty(),
+            })
+            .collect()
+    }
+
+    /// Sends the `workspaces` list to the app connections when a doc opened or closed, or one's
+    /// name, path or unsaved state changed since it was last sent (or that send did not fit).
+    fn publish_workspaces(&mut self) {
+        let same = self.eng.listed.len() == self.docs.len()
+            && self
+                .eng
+                .listed
+                .iter()
+                .zip(&self.docs)
+                .all(|(l, d)| l.lists(d));
+        if same && !self.eng.list_unsent {
+            return;
+        }
+        self.eng.listed = self.docs.iter().map(Listed::of).collect();
+        let workspaces = self.workspace_list();
+        self.eng.list_unsent = !self
+            .eng
+            .out
+            .send_state(None, ServerMessage::Workspaces { workspaces });
     }
 
     /// The ids of the open docs, in open order.
@@ -3138,7 +3398,6 @@ fn request_name(r: &Request) -> &'static str {
         Request::ScanRecovery => "scan_recovery",
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",
-        Request::Revert { .. } => "revert",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::PreshowCheck => "preshow_check",

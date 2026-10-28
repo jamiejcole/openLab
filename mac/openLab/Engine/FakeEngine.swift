@@ -159,7 +159,7 @@ final class FakeEngine: EngineTransport {
     // MARK: Server side
 
     func addDoc(_ snapshot: JSONValue, path: String?) -> ModelID {
-        let doc = ModelID("doc-\(nextDoc)")
+        let doc = ModelID(doc: UInt64(nextDoc))
         nextDoc += 1
         var s = snapshot
         if let path {
@@ -172,12 +172,15 @@ final class FakeEngine: EngineTransport {
 
     private func text(_ v: JSONValue) -> String { (try? v.text()) ?? "{}" }
 
+    /// A doc id as the engine writes it: a number.
+    private static func docJSON(_ doc: ModelID) -> JSONValue { doc.docNumber.map { .uint($0) } ?? .null }
+
     private func workspacesList() -> JSONValue {
         .array(
             docOrder.map { doc in
                 let s = docs[doc] ?? .null
                 return .object([
-                    "doc": .string(doc.raw), "workspace_id": s["workspace"]?["id"] ?? .null,
+                    "doc": Self.docJSON(doc), "workspace_id": s["workspace"]?["id"] ?? .null,
                     "name": s["workspace"]?["name"] ?? .null, "path": s["document"]?["path"] ?? .null,
                     "dirty": s["document"]?["dirty"] ?? .bool(false),
                 ])
@@ -250,6 +253,7 @@ final class FakeEngine: EngineTransport {
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
         case .provisional(.close(let id, let doc, let discard)): handleClose(id, doc: doc, discard: discard, from: c)
+        case .provisional(.panic(let id)), .provisional(.hotkey(let id, _, _, _)): result(c, id)
         }
     }
 
@@ -549,31 +553,28 @@ final class FakeEngine: EngineTransport {
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             c.deliver(snapshotMessage(doc))
             result(c, id)
-        case .new(let discard):
+        case .new:
             open(
                 id, snapshot: Self.emptySnapshot(name: "Untitled \(nextDoc)", workspaceID: workspaceID(nextDoc)),
-                path: nil, discard: discard, from: c)
-        case .open(let path, let discard, _):
+                path: nil, from: c)
+        case .open(let path, _):
             if mode == .multi,
                 let existing = docOrder.first(where: { docs[$0]?["document"]?["path"]?.stringValue == path })
             {
                 return result(c, id, error: (.alreadyOpen, "already open as \(existing)"))
             }
             let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            open(
-                id, snapshot: Self.emptySnapshot(name: name, workspaceID: workspaceID(nextDoc)), path: path,
-                discard: discard, from: c)
-        case .openRecovery(_, _, _, let discard):
+            open(id, snapshot: Self.emptySnapshot(name: name, workspaceID: workspaceID(nextDoc)), path: path, from: c)
+        case .openRecovery:
             open(
                 id, snapshot: Self.emptySnapshot(name: "Recovered", workspaceID: workspaceID(nextDoc)), path: nil,
-                discard: discard, from: c)
+                from: c)
         case .save, .saveAs:
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             if case .saveAs(let path) = r { docs[doc]?["document"]?.set("path", .string(path)) }
             docs[doc]?["document"]?.set("dirty", .bool(false))
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
-        case .revert: result(c, id)
         case .setOutputOverrides: result(c, id)
         case .scanRecovery:
             result(c, id, ok: .object(["data": .object(["type": .string("recovery_entries"), "entries": .array([])])]))
@@ -599,18 +600,16 @@ final class FakeEngine: EngineTransport {
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }
 
-    /// `new` / `open` / `open_recovery`: a new document (multi) or an in-place replacement (single).
-    private func open(_ id: UInt64, snapshot: JSONValue, path: String?, discard: Bool, from c: FakeConnection) {
+    /// `new` / `open` / `open_recovery`: a new document (multi) or an in-place replacement (single,
+    /// the one-workspace engine before protocol 2).
+    private func open(_ id: UInt64, snapshot: JSONValue, path: String?, from c: FakeConnection) {
         if mode == .multi {
             let doc = addDoc(snapshot, path: path)
             broadcastWorkspaces()
-            result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": .string(doc.raw)])]))
+            result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": Self.docJSON(doc)])]))
             return
         }
         guard let doc = docOrder.first else { return result(c, id, error: (.internal, "no document")) }
-        if docs[doc]?["document"]?["dirty"] == .bool(true) && !discard {
-            return result(c, id, error: (.unsavedChanges, "unsaved changes"))
-        }
         // Numbering never restarts: the replacement is a later revision.
         var s = snapshot
         if case .int(let r)? = docs[doc]?["revision"] { s.set("revision", .int(r + 1)) }
@@ -633,7 +632,7 @@ final class FakeEngine: EngineTransport {
         result(c, id)
         docs[target] = nil
         docOrder.removeAll { $0 == target }
-        let closed = text(.object(["type": .string("closed"), "doc": .string(target.raw)]))
+        let closed = text(.object(["type": .string("closed"), "doc": Self.docJSON(target)]))
         for conn in connections(of: target) {
             conn.deliver(closed)
             conn.close()

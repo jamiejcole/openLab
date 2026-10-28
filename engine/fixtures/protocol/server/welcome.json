@@ -1,6 +1,7 @@
 {
   "type": "welcome",
-  "protocol_version": 1,
+  "protocol_version": 2,
+  "doc": 3,
   "snapshot": {
     "revision": 7,
     "runtime_seq": 42,

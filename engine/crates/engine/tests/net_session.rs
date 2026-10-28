@@ -13,7 +13,8 @@
 //! Coverage, against the other net tests: `net_ws` and `net_osc` use a stand-in control thread
 //! (framing, limits, resync, refusals); `net_control` and `net_osc::go_over_the_wire...` run the
 //! real loop but without time passing. Here: a full session per protocol (edits, undo/redo, GO,
-//! runtime and progress, pause, resume, panic, shutdown), and both protocols and several clients
+//! runtime and progress, pause, resume, panic, save as, save and an app connection opening and
+//! closing another doc, shutdown), and both protocols and several clients
 //! at once seeing the same show.
 
 mod show;
@@ -27,7 +28,7 @@ use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use openlab_audio::{Mixer, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, Delete, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
+    ClientMessage, Delete, DocId, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
     ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server, encode_client,
 };
 use openlab_core::{Command, CueId, CueKind, CueProperty, Position, Workspace};
@@ -95,6 +96,9 @@ fn control_loop(
                 }
                 Err(_) => break,
             },
+            // A save is answered when a tick finds it written: tick while idle too. Ticks do not
+            // move sample time (the offline backend renders only in `advance`).
+            default(Duration::from_millis(5)) => control.tick(),
         }
     }
     control.shutdown();
@@ -158,6 +162,8 @@ struct Show {
     adv: Sender<Advance>,
     worker: Option<JoinHandle<()>>,
     server: WsServer,
+    /// The application folder (autosaves) and a place for show files.
+    dir: tempfile::TempDir,
 }
 
 impl Show {
@@ -166,11 +172,16 @@ impl Show {
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
         let (adv, adv_rx) = crossbeam_channel::unbounded();
         let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = config(ws);
+        c.app_dirs = Some(openlab_engine::persist::AppDirs::new(
+            dir.path().join("support"),
+        ));
         let control = Control::new(
             ws.clone(),
             ctl,
             Backend::Offline,
-            config(ws),
+            c,
             inbox_tx.clone(),
             out_tx,
         )
@@ -198,6 +209,7 @@ impl Show {
             adv,
             worker: Some(worker),
             server,
+            dir,
         }
     }
 
@@ -266,6 +278,7 @@ impl Ws {
             protocol_version: PROTOCOL_VERSION,
             token: show.server.token().to_owned(),
             client_name: "session test".into(),
+            workspace: Some(DocId(0)),
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await
@@ -286,8 +299,12 @@ impl Ws {
             progress: Vec::new(),
             changed: Vec::new(),
         };
-        let ServerMessage::Welcome { snapshot, .. } = me.raw().await else {
-            panic!("the first message was not a welcome")
+        let ServerMessage::Welcome {
+            snapshot: Some(snapshot),
+            ..
+        } = me.raw().await
+        else {
+            panic!("the first message was not a welcome with a snapshot")
         };
         me.adopt(&snapshot);
         (me, *snapshot)
@@ -420,6 +437,64 @@ impl Ws {
 
     fn state(&self, n: u128) -> Option<WireCueState> {
         self.states.get(&id(n)).copied()
+    }
+}
+
+/// An app connection (`hello` without a workspace).
+struct App {
+    c: WebSocketStream<MaybeTlsStream<TcpStream>>,
+}
+
+impl App {
+    async fn connect(show: &Show) -> Self {
+        let (mut c, _) = connect_async(format!("ws://127.0.0.1:{}", show.server.port()))
+            .await
+            .unwrap();
+        let hello = ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            token: show.server.token().to_owned(),
+            client_name: "app".into(),
+            workspace: None,
+        };
+        c.send(Message::text(encode_client(&hello).unwrap()))
+            .await
+            .unwrap();
+        let mut me = Self { c };
+        match me.next().await {
+            ServerMessage::Welcome {
+                workspaces: Some(list),
+                ..
+            } => assert_eq!(list.len(), 1),
+            other => panic!("{other:?}"),
+        }
+        me
+    }
+
+    async fn next(&mut self) -> ServerMessage {
+        guard("an app connection message", async {
+            loop {
+                match self.c.next().await {
+                    Some(Ok(Message::Text(t))) => return decode_server(t.as_str()).unwrap(),
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                    other => panic!("the connection ended: {other:?}"),
+                }
+            }
+        })
+        .await
+    }
+
+    async fn call(&mut self, id: u64, message: ClientMessage) -> Outcome {
+        self.c
+            .send(Message::text(encode_client(&message).unwrap()))
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::Result { id: rid, outcome } = self.next().await
+                && rid == RequestId(id)
+            {
+                return outcome;
+            }
+        }
     }
 }
 
@@ -571,6 +646,82 @@ async fn a_full_show_session_over_the_websocket() {
         .await;
     assert!(matches!(o, Outcome::Ok(_)));
     assert_eq!((c.states.clone(), c.playhead, c.revision, c.seq), before);
+
+    // Documents (M4.10a, M4.15f): save as, an edit, save; the bound client follows the file
+    // state. An app connection then finds the show open already, opens another doc beside it
+    // and closes that one; the session's doc is not touched.
+    let path = show.dir.path().join("Session.openlab");
+    let o = c
+        .call(|id| ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: path.to_string_lossy().into_owned(),
+            },
+        })
+        .await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    let saved = path.to_string_lossy().into_owned();
+    c.wait("saved", |c| {
+        c.document.path.as_deref() == Some(saved.as_str()) && !c.document.dirty
+    })
+    .await;
+    assert!(matches!(
+        c.command(rename(3, "Saved")).await,
+        Outcome::Ok(_)
+    ));
+    c.wait("dirty", |c| c.document.dirty).await;
+    let o = c
+        .call(|id| ClientMessage::Request {
+            id,
+            request: Request::Save,
+        })
+        .await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    c.wait("clean", |c| !c.document.dirty).await;
+    let on_disk = openlab_core::load_show(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(on_disk.workspace.cue_lists[0].cues[2].name, "Saved");
+
+    let mut app = App::connect(&show).await;
+    let open = Request::Open {
+        path: saved.clone(),
+        recovery: None,
+    };
+    match app
+        .call(
+            1,
+            ClientMessage::Request {
+                id: RequestId(1),
+                request: open,
+            },
+        )
+        .await
+    {
+        Outcome::Error(e) => {
+            assert_eq!(e.code, openlab_core::protocol::ErrorCode::AlreadyOpen)
+        }
+        other => panic!("{other:?}"),
+    }
+    let new = ClientMessage::Request {
+        id: RequestId(2),
+        request: Request::New {},
+    };
+    let doc = match app.call(2, new).await {
+        Outcome::Ok(openlab_core::protocol::OkBody {
+            data: Some(openlab_core::protocol::ResultData::Opened { doc }),
+            ..
+        }) => doc,
+        other => panic!("{other:?}"),
+    };
+    let close = ClientMessage::Close {
+        id: RequestId(3),
+        doc: Some(doc),
+        discard_changes: false,
+    };
+    assert!(matches!(app.call(3, close).await, Outcome::Ok(_)));
+    let engine = show.engine_snapshot().await;
+    c.wait("the engine's state", |c| c.revision == engine.revision)
+        .await;
+    assert_consistent(&c, &engine);
 
     // goodbye { shutdown } ends the control loop.
     c.c.send(Message::text(

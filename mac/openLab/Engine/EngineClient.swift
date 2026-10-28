@@ -10,7 +10,7 @@ enum EngineError: Error, Equatable, Sendable {
     case disconnected
     case engine(code: ErrorCode, message: String)
     case encoding(String)
-    /// A `snapshot` (or `new` / `open` / `revert`) is already out; never pipelined (docs/network.md).
+    /// A `snapshot` is already out; never pipelined (docs/network.md).
     case snapshotAlreadyPending
     /// The engine in use does not have this feature (the multi-workspace calls on a one-workspace engine).
     case unsupported

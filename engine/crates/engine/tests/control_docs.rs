@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Documents through the control loop on the offline driver (M4.4; NFR-04, NFR-05, NFR-06,
-//! WS-02, WS-03, WS-06, WS-07, WS-08): new, open, open-recovery, save, save-as, revert, autosave
+//! Documents through the control loop on the offline driver (M4.4, M4.15f; NFR-04, NFR-05, NFR-06,
+//! WS-02, WS-03, WS-06, WS-07, WS-08): new, open, open-recovery, close, save, save-as, autosave
 //! and recovery, with a virtual wall clock and the persistence layer on a temp folder.
+//!
+//! Most tests follow one workspace through its life: `request` closes the docs open before one
+//! that `new`, `open` or `open_recovery` opened, so the accessors of `control()` (the first
+//! doc's) show it, and hands its snapshot back in front of its result as a connection bound to
+//! it would get it.
 
 mod common;
 mod show;
@@ -16,7 +21,7 @@ use std::thread;
 
 use common::{Env, env, names, set_mtime};
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, Outcome, RecoveryChoice, Request, RequestId, ResultData,
+    ClientMessage, ErrorCode, OkBody, Outcome, RecoveryChoice, Request, RequestId, ResultData,
     ServerMessage, Snapshot, WireCueState, WireProblem,
 };
 use openlab_core::{Command, CueKind, CueProperty, MediaRef, Workspace, load_show, save_show};
@@ -88,8 +93,28 @@ fn saved_rig(ws: Workspace) -> Rig {
 
 fn request(s: &mut OfflineShow, request: Request) -> Vec<ServerMessage> {
     let id = s.request_id();
-    let replies = s.send(ClientMessage::Request { id, request });
+    let mut replies = s.send(ClientMessage::Request { id, request });
     assert_eq!(s.stalls(), 0, "a worker did not answer in time");
+    let opened = replies.iter().find_map(|m| match m {
+        ServerMessage::Result {
+            outcome:
+                Outcome::Ok(OkBody {
+                    data: Some(ResultData::Opened { doc }),
+                    ..
+                }),
+            ..
+        } => Some(*doc),
+        _ => None,
+    });
+    if let Some(doc) = opened {
+        for other in s.control().doc_ids() {
+            if other != doc {
+                s.close_doc(other, true).unwrap();
+            }
+        }
+        let snapshot = Box::new(s.control().doc(doc).unwrap().snapshot());
+        replies.insert(0, ServerMessage::Snapshot { snapshot });
+    }
     replies
 }
 
@@ -149,9 +174,15 @@ fn write_show(path: &Path, ws: &Workspace) {
     fs::write(path, save_show(ws).unwrap()).unwrap();
 }
 
+/// A workspace of memos, with an id of its name's: shows of other names can be open together
+/// (one with the id of an open one opens as a copy, with a fresh id).
 fn memo_ws(name: &str, cues: &[u128]) -> Workspace {
     let mut ws = workspace(cues.iter().map(|&n| cue(n, CueKind::Memo)).collect());
     ws.name = name.into();
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u128, |h, b| {
+        (h ^ u128::from(b)).wrapping_mul(0x1b3)
+    });
+    ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(hash));
     ws
 }
 
@@ -167,13 +198,12 @@ fn cue_name(s: &OfflineShow, n: u128) -> String {
 fn open(path: &Path) -> Request {
     Request::Open {
         path: path.to_string_lossy().into_owned(),
-        discard_changes: false,
         recovery: None,
     }
 }
 
 #[test]
-fn new_save_as_open_and_revert_round_trip_through_the_protocol() {
+fn new_save_as_and_open_round_trip_through_the_protocol() {
     let mut r = rig(memo_ws("one", &[1, 2]));
     let a = r.env.show_dir().join("a.openlab");
     let b = r.env.show_dir().join("b.openlab");
@@ -216,31 +246,8 @@ fn new_save_as_open_and_revert_round_trip_through_the_protocol() {
         .workspace;
     assert_eq!(saved.find_cue(id(1)).unwrap().name, "edited");
 
-    // Revert drops the next edit, clears undo, and replies snapshot, warnings, result.
-    rename(&mut r.s, 2, "dropped");
-    let replies = request(
-        &mut r.s,
-        Request::Revert {
-            discard_changes: true,
-        },
-    );
-    assert!(matches!(replies[0], ServerMessage::Snapshot { .. }));
-    assert!(matches!(replies[1], ServerMessage::Warnings { .. }));
-    assert!(matches!(replies[2], ServerMessage::Result { .. }));
-    assert_eq!(cue_name(&r.s, 2), "cue 2");
-    assert_eq!(cue_name(&r.s, 1), "edited");
-    assert!(!r.s.control().is_unsaved());
-    let snap = snapshot(&replies);
-    assert!(!snap.document.can_undo, "revert clears undo");
-    assert_eq!(snap.workspace.find_cue(id(1)).unwrap().name, "edited");
-
     // New: an empty untitled workspace, never saved (Save has no path).
-    let replies = request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    );
+    let replies = request(&mut r.s, Request::New {});
     ok_result(&replies);
     let snap = snapshot(&replies);
     assert_eq!(snap.document.path, None);
@@ -263,15 +270,6 @@ fn new_save_as_open_and_revert_round_trip_through_the_protocol() {
     );
     assert_eq!(
         error_code(&request(&mut r.s, Request::Save)),
-        ErrorCode::NoWorkspace
-    );
-    assert_eq!(
-        error_code(&request(
-            &mut r.s,
-            Request::Revert {
-                discard_changes: false
-            }
-        )),
         ErrorCode::NoWorkspace
     );
 
@@ -316,64 +314,6 @@ fn open_errors_are_clear_and_change_nothing() {
 }
 
 #[test]
-fn unsaved_changes_refuse_new_open_and_revert_unless_discarded() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    let other = r.env.show_dir().join("other.openlab");
-    write_show(&other, &memo_ws("other", &[7]));
-    rename(&mut r.s, 1, "edited");
-    let revision = r.s.control().revision();
-    for refused in [
-        Request::New {
-            discard_changes: false,
-        },
-        open(&other),
-        Request::Revert {
-            discard_changes: false,
-        },
-        Request::OpenRecovery {
-            workspace_id: r.s.control().workspace().id,
-            path_hash: None,
-            modified_ms: None,
-            discard_changes: false,
-        },
-    ] {
-        let replies = request(&mut r.s, refused);
-        assert_eq!(error_code(&replies), ErrorCode::UnsavedChanges);
-        assert!(
-            !replies
-                .iter()
-                .any(|m| matches!(m, ServerMessage::Snapshot { .. }))
-        );
-    }
-    assert_eq!(r.s.control().revision(), revision);
-    assert_eq!(cue_name(&r.s, 1), "edited");
-
-    // With the flag, it goes ahead.
-    let replies = request(
-        &mut r.s,
-        Request::Open {
-            path: other.to_string_lossy().into_owned(),
-            discard_changes: true,
-            recovery: None,
-        },
-    );
-    ok_result(&replies);
-    assert_eq!(snapshot(&replies).workspace.name, "other");
-}
-
-#[test]
-fn a_clean_workspace_is_replaced_without_the_flag() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    ok_result(&request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    ));
-    assert!(!r.s.control().is_unsaved());
-}
-
-#[test]
 fn discarding_edits_removes_their_autosave_so_it_is_not_offered_later() {
     let mut r = saved_rig(memo_ws("one", &[1]));
     let path = r.env.show_path();
@@ -383,12 +323,19 @@ fn discarding_edits_removes_their_autosave_so_it_is_not_offered_later() {
     r.s.settle_docs();
     let recovery = r.env.dirs.recovery_dir();
     assert_eq!(names(&recovery).len(), 1, "autosaved");
-    ok_result(&request(
-        &mut r.s,
-        Request::New {
-            discard_changes: true,
-        },
-    ));
+    // Closing it refuses while it has unsaved edits, then discards them on request.
+    let close = |r: &mut Rig, discard_changes| {
+        let id = r.s.request_id();
+        r.s.send(ClientMessage::Close {
+            id,
+            doc: None,
+            discard_changes,
+        })
+    };
+    assert_eq!(error_code(&close(&mut r, false)), ErrorCode::UnsavedChanges);
+    assert_eq!(names(&recovery).len(), 1, "kept while refused");
+    ok_result(&close(&mut r, true));
+    assert!(r.s.control().doc_ids().is_empty());
     r.s.settle_docs();
     // The worker removes it asynchronously: wait for it through the inbox-free path.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -399,195 +346,6 @@ fn discarding_edits_removes_their_autosave_so_it_is_not_offered_later() {
     // Opening the show now offers nothing.
     let replies = request(&mut r.s, open(&path));
     ok_result(&replies);
-}
-
-#[test]
-fn reverting_removes_the_autosave_of_the_dropped_edits() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    rename(&mut r.s, 1, "edited");
-    r.s.tick();
-    r.clock.advance(31_000);
-    r.s.settle_docs();
-    assert_eq!(names(&r.env.dirs.recovery_dir()).len(), 1);
-    ok_result(&request(
-        &mut r.s,
-        Request::Revert {
-            discard_changes: true,
-        },
-    ));
-    assert!(names(&r.env.dirs.recovery_dir()).is_empty());
-}
-
-#[test]
-fn running_cues_stop_on_new_open_and_revert() {
-    let path = wav(&dc(8000, 0.5));
-    for which in 0..3 {
-        let mut r = saved_rig(workspace(vec![audio(1, &path, 0), cue(2, CueKind::Memo)]));
-        let other = r.env.show_dir().join("other.openlab");
-        write_show(&other, &memo_ws("other", &[9]));
-        start(&mut r.s, 1);
-        r.s.run(BLOCK * 8);
-        assert!(r.s.control().live_voices() > 0);
-        r.s.take_outbound();
-        let replies = match which {
-            0 => request(
-                &mut r.s,
-                Request::New {
-                    discard_changes: false,
-                },
-            ),
-            1 => request(&mut r.s, open(&other)),
-            _ => request(
-                &mut r.s,
-                Request::Revert {
-                    discard_changes: false,
-                },
-            ),
-        };
-        ok_result(&replies);
-        assert_eq!(r.s.control().live_voices(), 0, "case {which}");
-        let out = r.s.take_outbound();
-        assert!(
-            states(&out, id(1))
-                .iter()
-                .any(|(s, _)| *s == WireCueState::Idle),
-            "case {which}: the clients are told the cue stopped: {:?}",
-            states(&out, id(1))
-        );
-        // Silence from the block after the request, though the old voice's end is reported
-        // late and the revert reuses the cue's id: it is never mistaken for the new cue.
-        let from = r.s.audio().len() + usize::try_from(BLOCK).unwrap() * 2 * 2;
-        r.s.run(BLOCK * 40);
-        assert!(
-            r.s.audio()[from..].iter().all(|x| *x == 0.0),
-            "case {which}: audio after the stop"
-        );
-        assert_eq!(
-            r.s.control().engine().state(id(1)),
-            openlab_core::CueState::Idle,
-            "case {which}"
-        );
-        let later = r.s.take_outbound();
-        assert!(
-            states(&later, id(1)).is_empty(),
-            "case {which}: {:?}",
-            states(&later, id(1))
-        );
-    }
-}
-
-#[test]
-fn revision_and_runtime_seq_keep_rising_across_replacements() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    let a = r.env.show_path();
-    let other = r.env.show_dir().join("other.openlab");
-    write_show(&other, &memo_ws("other", &[7]));
-    let mut last = (r.s.control().revision(), r.s.control().runtime_seq());
-    for request_ in [
-        Request::New {
-            discard_changes: false,
-        },
-        open(&other),
-        open(&a),
-        Request::Revert {
-            discard_changes: false,
-        },
-        Request::New {
-            discard_changes: false,
-        },
-    ] {
-        let replies = request(&mut r.s, request_);
-        ok_result(&replies);
-        let snap = snapshot(&replies);
-        assert!(snap.revision > last.0, "{} > {}", snap.revision, last.0);
-        assert!(snap.runtime_seq >= last.1);
-        assert_eq!(
-            ok_result(&replies),
-            Some(snap.revision),
-            "the result reports the snapshot's revision"
-        );
-        last = (snap.revision, snap.runtime_seq);
-        // And an edit afterwards is exactly one step on.
-        let cues: Vec<_> = snap.workspace.cue_lists[0]
-            .cues
-            .iter()
-            .map(|c| c.id)
-            .collect();
-        if let Some(first) = cues.first() {
-            let id = r.s.request_id();
-            let replies = r.s.send(ClientMessage::Command {
-                id,
-                command: Box::new(Command::SetCueProperty {
-                    id: *first,
-                    property: CueProperty::Name { value: "x".into() },
-                }),
-                coalesce: None,
-            });
-            assert_eq!(ok_result(&replies), Some(last.0 + 1));
-            last.0 += 1;
-            // Leave a clean workspace for the next replacement.
-            if r.s.control().show_path().is_some() {
-                ok_result(&request(
-                    &mut r.s,
-                    Request::Revert {
-                        discard_changes: true,
-                    },
-                ));
-                last.0 = r.s.control().revision();
-            } else {
-                ok_result(&request(
-                    &mut r.s,
-                    Request::New {
-                        discard_changes: true,
-                    },
-                ));
-                last.0 = r.s.control().revision();
-            }
-        }
-    }
-}
-
-#[test]
-fn every_replacement_is_broadcast_as_a_snapshot_to_all_clients() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    r.s.take_outbound();
-    let replies = request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    );
-    let own = snapshot(&replies).clone();
-    let broadcast: Vec<_> =
-        r.s.take_outbound()
-            .into_iter()
-            .filter_map(|m| match m {
-                ServerMessage::Snapshot { snapshot } => Some(snapshot),
-                _ => None,
-            })
-            .collect();
-    assert_eq!(broadcast.len(), 1);
-    assert_eq!(*broadcast[0], own);
-}
-
-#[test]
-fn the_snapshot_reaches_the_requester_before_its_result() {
-    let mut r = saved_rig(memo_ws("one", &[1]));
-    let replies = request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    );
-    let snapshot_at = replies
-        .iter()
-        .position(|m| matches!(m, ServerMessage::Snapshot { .. }))
-        .unwrap();
-    let result_at = replies
-        .iter()
-        .position(|m| matches!(m, ServerMessage::Result { .. }))
-        .unwrap();
-    assert!(snapshot_at < result_at);
 }
 
 #[test]
@@ -815,6 +573,9 @@ fn workspace_settings_travel_with_the_file_and_machine_settings_do_not() {
         !text.contains("Offline"),
         "device names stay on the machine"
     );
+    // Closed first: an open show cannot be opened again.
+    let first = r.s.control().doc_ids()[0];
+    r.s.close_doc(first, false).unwrap();
     let replies = request(&mut r.s, open(&path));
     ok_result(&replies);
     assert_eq!(snapshot(&replies).workspace.settings, ws.settings);
@@ -968,7 +729,6 @@ fn recovery_is_offered_on_open_after_an_unclean_exit_and_nothing_changes_until_a
         &mut r.s,
         Request::Open {
             path: path.to_string_lossy().into_owned(),
-            discard_changes: false,
             recovery: Some(RecoveryChoice::Restore),
         },
     );
@@ -995,7 +755,6 @@ fn ignoring_the_recovery_opens_the_saved_file_and_keeps_the_autosave() {
         &mut r.s,
         Request::Open {
             path: path.to_string_lossy().into_owned(),
-            discard_changes: false,
             recovery: Some(RecoveryChoice::Ignore),
         },
     );
@@ -1016,10 +775,10 @@ fn a_stale_autosave_is_not_offered() {
     let mut r = restart(env, memo_ws("blank", &[5]));
     let replies = request(&mut r.s, open(&path));
     ok_result(&replies);
-    assert!(matches!(
-        outcome(&replies),
-        Outcome::Ok(ok) if ok.data.is_none()
-    ));
+    assert!(
+        matches!(data(&replies), ResultData::Opened { .. }),
+        "opened, no offer"
+    );
     assert!(!snapshot(&replies).document.dirty);
     // Moved aside, not deleted.
     assert!(
@@ -1077,7 +836,6 @@ fn a_corrupt_show_offers_the_recovery_scan_and_open_recovery_restores_untitled()
             workspace_id: entry.workspace_id,
             path_hash: entry.path_hash.clone(),
             modified_ms: entry.modified_ms,
-            discard_changes: false,
         },
     );
     ok_result(&replies);
@@ -1119,7 +877,6 @@ fn open_recovery_errors() {
             workspace_id: unknown,
             path_hash: None,
             modified_ms: None,
-            discard_changes: false,
         },
     );
     assert_eq!(error_code(&replies), ErrorCode::NotFound);
@@ -1155,14 +912,27 @@ fn only_one_document_request_at_a_time() {
             ..
         } if e.code == ErrorCode::CommandRefused
     ));
-    // The first completed normally.
+    // The first completed normally: another doc is open beside the first.
     let kinds: Vec<_> = std::iter::from_fn(|| rx1.try_recv().ok()).collect();
-    assert!(matches!(kinds[0], ServerMessage::Snapshot { .. }));
-    assert_eq!(r.s.control().workspace().name, "other");
+    assert!(matches!(
+        kinds[..],
+        [ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }]
+    ));
+    let docs = r.s.control().doc_ids();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(
+        r.s.control().doc(docs[1]).unwrap().workspace().name,
+        "other"
+    );
 }
 
+/// The doc open keeps playing and editing while another is read (M4.15f: the file opens beside
+/// it; the edit is not thrown away, and the open is not refused for it).
 #[test]
-fn an_edit_made_while_the_file_is_read_is_not_thrown_away() {
+fn an_edit_made_while_a_file_is_read_stays_in_its_doc() {
     let mut r = rig(memo_ws("one", &[1]));
     let other = r.env.show_dir().join("other.openlab");
     write_show(&other, &memo_ws("other", &[7]));
@@ -1194,12 +964,14 @@ fn an_edit_made_while_the_file_is_read_is_not_thrown_away() {
     assert!(matches!(
         rx.try_recv().unwrap(),
         ServerMessage::Result {
-            outcome: Outcome::Error(ref e),
+            outcome: Outcome::Ok(_),
             ..
-        } if e.code == ErrorCode::UnsavedChanges
+        }
     ));
     assert_eq!(r.s.control().workspace().name, "one");
     assert_eq!(cue_name(&r.s, 1), "edited");
+    assert!(r.s.control().is_unsaved());
+    assert_eq!(r.s.control().doc_ids().len(), 2);
 }
 
 #[test]
@@ -1420,12 +1192,7 @@ fn opening_a_fifo_is_an_io_error_not_a_hang() {
     // Answered at once (`request` fails the test if the worker does not answer in time), and
     // the next request is not refused.
     assert_eq!(error_code(&request(&mut r.s, open(&fifo))), ErrorCode::Io);
-    ok_result(&request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    ));
+    ok_result(&request(&mut r.s, Request::New {}));
 }
 
 /// A document hook that blocks its first call until released (a read stuck on a stalled
@@ -1495,12 +1262,7 @@ fn a_stalled_read_times_out_with_io_and_the_next_request_works() {
     ));
     assert_eq!(r.s.control().stuck_doc_workers(), 1);
     // A fresh worker serves what comes next (the shared queue), over the stuck one.
-    ok_result(&request(
-        &mut r.s,
-        Request::New {
-            discard_changes: false,
-        },
-    ));
+    ok_result(&request(&mut r.s, Request::New {}));
     let replies = request(&mut r.s, open(&other));
     ok_result(&replies);
     assert_eq!(snapshot(&replies).workspace.name, "other");
@@ -1602,112 +1364,6 @@ fn a_superseded_save_is_answered_with_the_save_that_replaced_it_even_when_the_fi
     }
 }
 
-#[test]
-fn an_autosave_in_flight_cannot_bring_back_edits_the_operator_discarded() {
-    for revert in [true, false] {
-        let (entered_tx, entered) = mpsc::channel::<()>();
-        let (release_tx, release) = mpsc::channel::<()>();
-        let release = Arc::new(Mutex::new(release));
-        let entered_tx = Mutex::new(entered_tx);
-        let hook = SaveHook(Arc::new(move |kind: JobKind| {
-            if kind == JobKind::Autosave {
-                let _ = entered_tx.lock().unwrap().send(());
-                let _ = release.lock().unwrap().recv();
-            }
-        }));
-        let mut r = rig_with(memo_ws("one", &[1]), None, Some(hook));
-        let path = r.env.show_path();
-        ok_result(&request(
-            &mut r.s,
-            Request::SaveAs {
-                path: path.to_string_lossy().into_owned(),
-            },
-        ));
-        rename(&mut r.s, 1, "edited");
-        r.s.tick();
-        r.clock.advance(31_000);
-        r.s.tick();
-        entered.recv().unwrap(); // the autosave of the edit is mid-write
-        let (tx, mut rx) = reply_channel();
-        let id = r.s.request_id();
-        let what = if revert {
-            Request::Revert {
-                discard_changes: true,
-            }
-        } else {
-            Request::New {
-                discard_changes: true,
-            }
-        };
-        r.s.deliver(Inbox::Client {
-            message: ClientMessage::Request { id, request: what },
-            reply: tx,
-        });
-        // The read is answered by the worker; apply it (the writer is still blocked).
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let mut replies = Vec::new();
-        while !replies
-            .iter()
-            .any(|m| matches!(m, ServerMessage::Result { .. }))
-        {
-            r.s.tick();
-            replies.extend(std::iter::from_fn(|| rx.try_recv().ok()));
-            assert!(std::time::Instant::now() < deadline, "no answer");
-            thread::yield_now();
-        }
-        release_tx.send(()).unwrap();
-        r.s.settle_docs();
-        // The autosave landed, and the removal ran after it: nothing is left to offer.
-        assert!(
-            names(&r.env.dirs.recovery_dir()).is_empty(),
-            "revert {revert}: {:?}",
-            names(&r.env.dirs.recovery_dir())
-        );
-        if revert {
-            let replies = request(&mut r.s, open(&path));
-            assert!(matches!(outcome(&replies), Outcome::Ok(ok) if ok.data.is_none()));
-        }
-    }
-}
-
-#[test]
-fn reopening_the_same_show_spelled_differently_keeps_the_autosave_just_restored() {
-    let (env, path, id) = crash_with_autosave(saved_rig(memo_ws("one", &[1])));
-    let mut r = restart(env, memo_ws("blank", &[5]));
-    // Restore it, edit on top, then reopen with discard under another spelling of the path.
-    let spelled = format!("{}/./My Show.openlab", r.env.show_dir().display());
-    assert_ne!(spelled, path.to_string_lossy());
-    ok_result(&request(
-        &mut r.s,
-        Request::Open {
-            path: path.to_string_lossy().into_owned(),
-            discard_changes: false,
-            recovery: Some(RecoveryChoice::Restore),
-        },
-    ));
-    let replies = request(
-        &mut r.s,
-        Request::Open {
-            path: spelled,
-            discard_changes: true,
-            recovery: Some(RecoveryChoice::Restore),
-        },
-    );
-    ok_result(&replies);
-    assert_eq!(
-        snapshot(&replies)
-            .workspace
-            .find_cue(id_of(1))
-            .unwrap()
-            .name,
-        "unsaved work"
-    );
-    assert!(
-        r.env.dirs.recovery_path(id, Some(&path)).exists(),
-        "the autosave restored from is not deleted by the discard"
-    );
-}
-
 /// A show with a missing file on cue 1 and a present one on cue 2.
 fn media_ws() -> Workspace {
     let present = wav(&dc(2000, 0.5));
@@ -1752,26 +1408,6 @@ fn media_is_probed_again_after_open() {
 }
 
 #[test]
-fn media_is_probed_again_after_revert() {
-    let mut r = rig(media_ws());
-    let path = r.env.show_path();
-    ok_result(&request(
-        &mut r.s,
-        Request::SaveAs {
-            path: path.to_string_lossy().into_owned(),
-        },
-    ));
-    rename(&mut r.s, 2, "edited");
-    ok_result(&request(
-        &mut r.s,
-        Request::Revert {
-            discard_changes: true,
-        },
-    ));
-    assert_media_is_live(&mut r.s, "revert");
-}
-
-#[test]
 fn media_is_probed_again_after_open_recovery() {
     let mut r = rig(media_ws());
     let path = r.env.show_path();
@@ -1791,28 +1427,9 @@ fn media_is_probed_again_after_open_recovery() {
             workspace_id: id,
             path_hash: None,
             modified_ms: None,
-            discard_changes: false,
         },
     ));
     assert_media_is_live(&mut r.s, "open_recovery");
-}
-
-#[test]
-fn media_is_probed_again_after_new() {
-    // New has no media; what matters is that the old show's files are forgotten and a later
-    // open starts from a clean catalog.
-    let mut r = rig(media_ws());
-    ok_result(&request(
-        &mut r.s,
-        Request::New {
-            discard_changes: true,
-        },
-    ));
-    assert!(r.s.control().snapshot().problems.is_empty());
-    let path = r.env.show_dir().join("media.openlab");
-    write_show(&path, &media_ws());
-    ok_result(&request(&mut r.s, open(&path)));
-    assert_media_is_live(&mut r.s, "new then open");
 }
 
 #[test]
@@ -1844,7 +1461,162 @@ fn an_answer_already_in_the_inbox_when_the_timeout_fires_is_not_reported_as_io()
     r.s.tick();
     assert!(matches!(
         rx.try_recv().unwrap(),
-        ServerMessage::Snapshot { .. }
+        ServerMessage::Result {
+            outcome: Outcome::Ok(OkBody {
+                data: Some(ResultData::Opened { .. }),
+                ..
+            }),
+            ..
+        }
     ));
-    assert_eq!(r.s.control().workspace().name, "other");
+    let docs = r.s.control().doc_ids();
+    assert_eq!(
+        r.s.control().doc(docs[1]).unwrap().workspace().name,
+        "other"
+    );
+}
+
+/// M4.15f: `new` and `open` open another doc beside the one open, which keeps playing; the
+/// requester gets `opened { doc }` and no snapshot (a connection bound to the doc gets that),
+/// nothing is broadcast as a snapshot (M4.4a's replacement broadcast is gone), and the app
+/// connections get the list with both. Closing the first then stops its cue.
+#[test]
+fn another_doc_opens_beside_a_playing_one_and_closing_it_stops_its_cues() {
+    let path = wav(&dc(16_000, 0.5));
+    let mut r = saved_rig(workspace(vec![audio(1, &path, 0), cue(2, CueKind::Memo)]));
+    let other = r.env.show_dir().join("other.openlab");
+    write_show(&other, &memo_ws("other", &[9]));
+    start(&mut r.s, 1);
+    r.s.run(BLOCK * 8);
+    let first = r.s.control().doc_ids()[0];
+    for (n, opened) in [Request::New {}, open(&other)].into_iter().enumerate() {
+        r.s.take_outbound();
+        let rid = r.s.request_id();
+        let replies = r.s.send(ClientMessage::Request {
+            id: rid,
+            request: opened,
+        });
+        assert!(
+            matches!(
+                &replies[..],
+                [ServerMessage::Result {
+                    outcome: Outcome::Ok(OkBody {
+                        data: Some(ResultData::Opened { .. }),
+                        ..
+                    }),
+                    ..
+                }]
+            ),
+            "{replies:?}"
+        );
+        r.s.run(BLOCK * 4);
+        let out = r.s.take_outbound();
+        assert!(
+            !out.iter()
+                .any(|m| matches!(m, ServerMessage::Snapshot { .. })),
+            "no snapshot broadcast"
+        );
+        assert!(out.iter().any(|m| matches!(
+            m,
+            ServerMessage::Workspaces { workspaces } if workspaces.len() == n + 2
+        )));
+        assert_eq!(
+            r.s.control().engine().state(id(1)),
+            openlab_core::CueState::Running,
+            "the first doc plays on"
+        );
+    }
+    r.s.close_doc(first, false).unwrap();
+    let out = r.s.take_outbound();
+    assert!(
+        states(&out, id(1))
+            .iter()
+            .any(|(s, _)| *s == WireCueState::Idle),
+        "its clients are told the cue stopped"
+    );
+    assert!(
+        out.iter()
+            .any(|m| matches!(m, ServerMessage::Closed { doc } if *doc == first))
+    );
+    let from = r.s.audio().len() + usize::try_from(BLOCK).unwrap() * 2 * 2;
+    r.s.run(BLOCK * 40);
+    assert!(r.s.audio()[from..].iter().all(|x| *x == 0.0));
+}
+
+/// A show that is open answers `already_open`, also under another spelling of its path.
+#[test]
+fn opening_an_open_show_again_is_already_open() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    let path = r.env.show_path();
+    let spelled = format!("{}/./My Show.openlab", r.env.show_dir().display());
+    assert_ne!(spelled, path.to_string_lossy());
+    for again in [path.to_string_lossy().into_owned(), spelled] {
+        let replies = request(
+            &mut r.s,
+            Request::Open {
+                path: again,
+                recovery: None,
+            },
+        );
+        assert_eq!(error_code(&replies), ErrorCode::AlreadyOpen);
+    }
+    assert_eq!(r.s.control().doc_ids().len(), 1);
+}
+
+/// Closing a doc over its unsaved edits removes their autosave even while that autosave is
+/// being written: the removal runs after the write, so nothing is left to offer.
+#[test]
+fn an_autosave_in_flight_cannot_bring_back_edits_the_operator_discarded() {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release));
+    let entered_tx = Mutex::new(entered_tx);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Autosave {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let mut r = rig_with(memo_ws("one", &[1]), None, Some(hook));
+    let path = r.env.show_path();
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: path.to_string_lossy().into_owned(),
+        },
+    ));
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.tick();
+    entered.recv().unwrap(); // the autosave of the edit is mid-write
+    let (tx, mut rx) = reply_channel();
+    let id = r.s.request_id();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Close {
+            id,
+            doc: None,
+            discard_changes: true,
+        },
+        reply: tx,
+    });
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    ));
+    release_tx.send(()).unwrap();
+    r.s.settle_docs();
+    assert!(
+        names(&r.env.dirs.recovery_dir()).is_empty(),
+        "{:?}",
+        names(&r.env.dirs.recovery_dir())
+    );
+    let replies = request(&mut r.s, open(&path));
+    assert!(
+        matches!(data(&replies), ResultData::Opened { .. }),
+        "no offer"
+    );
 }
