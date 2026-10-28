@@ -37,7 +37,7 @@ enum InspectorEdit {
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
             guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
-            return target.number ?? target.name
+            return target.number ?? target.displayName
         }
     }
 

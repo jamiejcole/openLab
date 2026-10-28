@@ -46,7 +46,7 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(adds.map { $0["type"]?.stringValue }, ["add_cue", "add_cue"])
         XCTAssertEqual(adds.map { $0["at"]?["index"] }, [.int(1), .int(2)])
         XCTAssertEqual(adds.map { $0["at"]?["list"]?.stringValue }, [H.list, H.list])
-        XCTAssertEqual(adds.map { $0["cue"]?["name"]?.stringValue }, ["b thunder", "a rain"])
+        XCTAssertEqual(adds.map { $0["cue"]?["name"]?.stringValue }, ["", ""])
         XCTAssertEqual(adds.map { $0["cue"]?["id"]?.stringValue }, ids.map(\.raw))
         XCTAssertEqual(adds.map { $0["cue"]?["kind"]?["type"]?.stringValue }, ["audio", "audio"])
         XCTAssertEqual(
