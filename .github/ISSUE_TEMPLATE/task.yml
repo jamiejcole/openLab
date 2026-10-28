@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Task
+description: A unit of planned work (replaces a PROGRESS.md line)
+labels: [task]
+body:
+  - type: input
+    id: task_id
+    attributes:
+      label: Task ID
+      description: Milestone-numbered ID, e.g. M4.15g. Put it first in the title too.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What done looks like, in behaviour terms, with the tests that must prove it.
+    validations:
+      required: true
+  - type: input
+    id: requirements
+    attributes:
+      label: Requirements
+      description: IDs from REQUIREMENTS.md
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      description: Issue numbers (also set Blocked by in the sidebar)
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options: ["S", "M", "L"]
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: ["core", "audio", "engine", "mac", "docs"]
+    validations:
+      required: true
