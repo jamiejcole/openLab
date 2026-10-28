@@ -1030,7 +1030,9 @@ impl DocCx<'_> {
         );
         self.doc.engine.model_changed();
         self.doc.revision += 1;
-        self.doc.media.reset(self.show_dir(), &self.doc.ws);
+        // Not `reset`: the files are the same, so their probe results stay (a cue started
+        // meanwhile must not find them pending).
+        self.doc.media.sync(&self.doc.ws);
         let inputs = self.sync_workspace(false);
         self.document();
         for input in inputs {
@@ -2742,6 +2744,164 @@ mod tests {
         assert_eq!(s.control().revision(), revision);
         assert_eq!(s.control().doc.revision, s.control().doc.saved_revision);
         assert!(s.take_outbound().is_empty());
+    }
+
+    fn two_cue_show() -> crate::control::offline::OfflineShow {
+        let mut ws = memo_workspace(10.0);
+        let mut second = ws.cue_lists[0].cues[0].clone();
+        second.id = CueId(uuid::Uuid::from_u128(1));
+        ws.cue_lists[0].cues.push(second);
+        let mixer = openlab_audio::MixerConfig {
+            sample_rate: 8000,
+            output_channels: 2,
+            max_block_frames: 64,
+            max_voices: 8,
+            max_voice_channels: 2,
+            patches: 1,
+            lookahead_ms: 500,
+        };
+        crate::control::offline::OfflineShow::new(ws, mixer, ControlConfig::new(8000, 64)).unwrap()
+    }
+
+    fn rename_both(a: &str, b: &str) -> Command {
+        let rename = |n: u128, value: &str| Command::SetCueProperty {
+            id: CueId(uuid::Uuid::from_u128(n)),
+            property: openlab_core::CueProperty::Name {
+                value: value.into(),
+            },
+        };
+        Command::Transaction {
+            commands: vec![rename(0, a), rename(1, b)],
+        }
+    }
+
+    fn send_ok(s: &mut crate::control::offline::OfflineShow, message: ClientMessage) {
+        let replies = s.send(message);
+        assert!(replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )));
+    }
+
+    /// The reply and the broadcasts of a request whose rollback failed: `command_refused` that
+    /// says so, after the whole model.
+    fn assert_partly_changed(
+        s: &mut crate::control::offline::OfflineShow,
+        replies: &[ServerMessage],
+        before: u64,
+    ) {
+        let error = replies.iter().find_map(|m| match m {
+            ServerMessage::Result {
+                outcome: Outcome::Error(e),
+                ..
+            } => Some(e),
+            _ => None,
+        });
+        let error = error.unwrap_or_else(|| panic!("a refusal: {replies:?}"));
+        assert_eq!(error.code, ErrorCode::CommandRefused);
+        assert!(error.message.contains("partly changed"));
+        let c = s.control_mut();
+        assert_eq!(c.revision(), before + 1);
+        assert!(c.doc.revision != c.doc.saved_revision);
+        assert!(!c.doc.history.can_undo() && !c.doc.history.can_redo());
+        assert_eq!(c.engine().unsignalled_model_changes(), 0);
+        let (entries, ..) = c.cx().log_tail(None);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.level == LogLevel::Error && e.message.contains("partly changed"))
+        );
+        let out = s.take_outbound();
+        let snapshot = out.iter().find_map(|m| match m {
+            ServerMessage::Snapshot { snapshot } => Some(snapshot),
+            _ => None,
+        });
+        let snapshot = snapshot.expect("clients get the whole model");
+        assert_eq!(&snapshot.workspace, s.control().workspace());
+        assert!(!snapshot.document.can_undo);
+    }
+
+    #[test]
+    fn a_command_whose_rollback_fails_is_an_unundoable_edit() {
+        let mut s = two_cue_show();
+        let before = s.control().revision();
+        s.take_outbound();
+        openlab_core::fault::inject(0, 1, true);
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Command {
+            id,
+            command: Box::new(rename_both("a", "b")),
+            coalesce: None,
+        });
+        assert_partly_changed(&mut s, &replies, before);
+        // The first rename stayed; the second never ran.
+        let names: Vec<_> = s.control().workspace().cue_lists[0]
+            .cues
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, ["a", ""]);
+    }
+
+    #[test]
+    fn an_undo_whose_rollback_fails_is_an_unundoable_edit() {
+        let mut s = two_cue_show();
+        let id = s.request_id();
+        send_ok(
+            &mut s,
+            ClientMessage::Command {
+                id,
+                command: Box::new(rename_both("a", "b")),
+                coalesce: None,
+            },
+        );
+        // Behind the history's back: the undo step now refuses at its second command, and its
+        // rollback is wrong.
+        let c = s.control_mut();
+        c.doc
+            .ws
+            .apply(Command::RemoveCue {
+                id: CueId(uuid_zero()),
+            })
+            .unwrap();
+        let before = c.revision();
+        s.take_outbound();
+        openlab_core::fault::inject(0, usize::MAX, true);
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Undo { id });
+        assert_partly_changed(&mut s, &replies, before);
+    }
+
+    #[test]
+    fn a_redo_whose_rollback_fails_is_an_unundoable_edit() {
+        let mut s = two_cue_show();
+        let id = s.request_id();
+        send_ok(
+            &mut s,
+            ClientMessage::Command {
+                id,
+                command: Box::new(rename_both("a", "b")),
+                coalesce: None,
+            },
+        );
+        let id = s.request_id();
+        send_ok(&mut s, ClientMessage::Undo { id });
+        let c = s.control_mut();
+        c.doc
+            .ws
+            .apply(Command::RemoveCue {
+                id: CueId(uuid::Uuid::from_u128(1)),
+            })
+            .unwrap();
+        let before = c.revision();
+        s.take_outbound();
+        openlab_core::fault::inject(0, usize::MAX, true);
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Redo { id });
+        assert_partly_changed(&mut s, &replies, before);
     }
 
     fn memo_workspace(pre_wait: f64) -> Workspace {

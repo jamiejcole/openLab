@@ -378,7 +378,49 @@ fn transaction(
     commands: Vec<Command>,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    transaction_with(ws, commands, restoring, |ws, step| single(ws, step, true))
+    #[cfg(feature = "fault-injection")]
+    let (commands, rollback_fails) = fault::apply(commands);
+    transaction_with(ws, commands, restoring, |ws, step| {
+        #[cfg(feature = "fault-injection")]
+        if rollback_fails {
+            return Err(CommandError::Internal);
+        }
+        single(ws, step, true)
+    })
+}
+
+/// Test seam (feature `fault-injection`, per thread): the next transaction after `skip` others
+/// has command `at` replaced by one that is refused and, if `rollback_fails`, every rollback
+/// step refused too, which is what a wrong inverse does. One shot.
+#[cfg(feature = "fault-injection")]
+pub mod fault {
+    use std::cell::Cell;
+
+    use super::{Command, CueId};
+
+    thread_local! {
+        static NEXT: Cell<Option<(usize, usize, bool)>> = const { Cell::new(None) };
+    }
+
+    pub fn inject(skip: usize, at: usize, rollback_fails: bool) {
+        NEXT.with(|n| n.set(Some((skip, at, rollback_fails))));
+    }
+
+    pub(super) fn apply(mut commands: Vec<Command>) -> (Vec<Command>, bool) {
+        let Some((skip, at, rollback_fails)) = NEXT.with(Cell::take) else {
+            return (commands, false);
+        };
+        if skip > 0 {
+            NEXT.with(|n| n.set(Some((skip - 1, at, rollback_fails))));
+            return (commands, false);
+        }
+        if let Some(command) = commands.get_mut(at) {
+            *command = Command::RemoveCue {
+                id: CueId(uuid::Uuid::from_u128(u128::MAX)),
+            };
+        }
+        (commands, rollback_fails)
+    }
 }
 
 /// [`transaction`] with the rollback's `apply` as a parameter, so a test can make it fail.
