@@ -1251,6 +1251,51 @@ async fn one_host_past_its_connection_cap_is_refused_while_the_table_has_room() 
     drop(b);
 }
 
+/// A console on flaky Wi-Fi leaves dead connections behind each time it reconnects. At its
+/// cap its next connection closes its own longest-idle one instead of being refused; with all
+/// of them subscribed it is refused.
+#[tokio::test]
+async fn a_host_at_its_cap_with_idle_connections_still_gets_a_new_one_served() {
+    let f = fixture_with(test_workspace(), |c| {
+        c.max_tcp_connections = 8;
+        c.max_tcp_connections_per_host = 2;
+        c.tcp_idle_evict = Duration::ZERO;
+    })
+    .await;
+    let mut a = f.tcp().await;
+    a.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
+    let mut b = f.tcp().await;
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    let mut c = f.tcp().await;
+    c.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&c.recv().await.unwrap())["status"], "ok");
+    assert!(
+        a.recv().await.is_none(),
+        "the host's oldest idle connection stayed"
+    );
+    assert_eq!(f.stats().tcp_refused, 0);
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    // All of the host's connections subscribed: none may be closed, the next is refused.
+    b.subscribe().await;
+    c.subscribe().await;
+    let mut d = f.tcp().await;
+    assert!(
+        d.recv().await.is_none(),
+        "a connection past the cap was served"
+    );
+    assert_eq!(f.stats().tcp_refused, 1);
+    f.control
+        .wait_for("the refusal log", |s| {
+            s.logs.lock().unwrap().iter().any(|l| {
+                l == "OSC server refused 1 connection(s): per-host connection limit (2) reached by 127.0.0.1"
+            })
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
     let ws = test_workspace();
