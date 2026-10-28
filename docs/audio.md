@@ -230,6 +230,7 @@ out_gain[d]  = (mute ? 0 : level) · (invert ? −1 : 1)
 |---|---|
 | `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames` |
 | `SetPatchRouting { patch, cue_output, device_output, gain }` | one patch's cue output → device output gain (default: identity in every patch) (AUD-07) |
+| `SnapPatch { patch }` | the patch matrix takes the gains its routing is ramping to at once (a matrix just given to a newly opened workspace, which nothing plays through: a cue started on that sample is heard at its level) |
 | `SetOutput { output, settings }` | per device output: level, mute, polarity, delay (AUD-07, PB-11) |
 | `SetMaster { gain }` | global master (PB-11). The control loop does not send it: each workspace's master is folded into its patch matrices (docs/control.md, Patches), so the mixer master stays at unity |
 

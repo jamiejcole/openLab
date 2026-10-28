@@ -30,6 +30,8 @@ When `ControlConfig::push_log` is set (the host sets it; offline tests leave it 
 
 ### In memory
 
+While more than one workspace is open (M4.15e), a record a workspace caused (a cue started, stopped or failed, a GO, a transport action, a document event, a warning) begins with its workspace's name in brackets, `[Hamlet] cue 5 "Storm" started` (`[workspace <doc>]` when it has no name); engine records (the device, health, triggers) and every record while one workspace is open read as before. The crash report's workspace line lists every open show file, `; `-separated.
+
 A ring of the newest 1000 records (`RING_CAPACITY`). It feeds `log_tail` and the crash report. Messages are cut at 2 KiB.
 
 ### On disk
