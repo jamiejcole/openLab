@@ -30,6 +30,7 @@ use super::NetError;
 use super::hub::{self, Broadcast, Hub, Kind};
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
+use super::relaunch::{Budget, Relaunch};
 use super::token::{constant_time_eq, generate_token};
 use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
 
@@ -73,6 +74,9 @@ pub struct ServerConfig {
     pub refusal_log_interval: Duration,
     /// The OSC listeners (docs/osc.md), on this server's runtime. `None`: no OSC.
     pub osc: Option<OscConfig>,
+    /// What to do when an app connection ends without `goodbye` (the UI crashed; M4.9).
+    /// `None`: only log it.
+    pub relaunch: Option<Relaunch>,
 }
 
 impl Default for ServerConfig {
@@ -90,6 +94,7 @@ impl Default for ServerConfig {
             max_handshaking: 8,
             refusal_log_interval: Duration::from_secs(10),
             osc: None,
+            relaunch: None,
         }
     }
 }
@@ -102,6 +107,7 @@ struct Shared {
     handshaking: Arc<Semaphore>,
     connections: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
+    relaunches: Mutex<Budget>,
 }
 
 /// The running server. Dropping it (or [`WsServer::stop`]) closes every connection.
@@ -179,6 +185,7 @@ impl WsServer {
             connections: Arc::new(Semaphore::new(config.max_connections)),
             config,
             shutdown: shutdown_rx,
+            relaunches: Mutex::new(Budget::default()),
         });
         runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap));
         let accept_shared = shared.clone();
@@ -436,6 +443,8 @@ struct Conn {
     held: VecDeque<Held>,
     bad_frames: u32,
     last_heard: Instant,
+    /// The client said `goodbye`: its end is no crash.
+    said_goodbye: bool,
 }
 
 async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
@@ -457,11 +466,70 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
         held: VecDeque::new(),
         bad_frames: 0,
         last_heard: Instant::now(),
+        said_goodbye: false,
         shared,
     };
     let _ = conn.session().await;
     conn.shared.hub.unregister(conn.hub_id);
+    if conn.doc.is_none() && !conn.said_goodbye && !*conn.shared.shutdown.borrow() {
+        app_lost(&conn.shared);
+    }
     let _ = timeout(conn.shared.config.write_timeout, conn.ws.close(None)).await;
+}
+
+/// An app connection ended without `goodbye` (relaunch.rs): log it, and relaunch the app after
+/// the delay unless one is back by then.
+fn app_lost(shared: &Arc<Shared>) {
+    let log = |shared: &Shared, level, message: &str| {
+        let _ = shared.inbox.send(Inbox::Log {
+            level,
+            message: message.to_owned(),
+        });
+    };
+    log(
+        shared,
+        LogLevel::Warn,
+        "the app's connection closed without goodbye (did it crash?); playback goes on",
+    );
+    let Some(relaunch) = shared.config.relaunch.clone() else {
+        return;
+    };
+    if !lock(&shared.relaunches).begin() {
+        return;
+    }
+    let shared = Arc::clone(shared);
+    tokio::spawn(async move {
+        tokio::time::sleep(relaunch.delay).await;
+        let back = shared.hub.app_connections() > 0 || *shared.shutdown.borrow();
+        let allowed = !back && lock(&shared.relaunches).take(Instant::now());
+        lock(&shared.relaunches).end();
+        if back {
+            return;
+        }
+        if !allowed {
+            log(
+                &shared,
+                LogLevel::Error,
+                "the app is not relaunched: it was relaunched 3 times in the last minute",
+            );
+            return;
+        }
+        log(&shared, LogLevel::Warn, "relaunching the app");
+        let action = relaunch.action;
+        match tokio::task::spawn_blocking(move || action()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log(
+                &shared,
+                LogLevel::Error,
+                &format!("could not relaunch the app: {e}"),
+            ),
+            Err(_) => log(&shared, LogLevel::Error, "could not relaunch the app"),
+        }
+    });
+}
+
+fn lock(budget: &Mutex<Budget>) -> std::sync::MutexGuard<'_, Budget> {
+    budget.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn request_id(message: &ClientMessage) -> Option<RequestId> {
@@ -842,6 +910,7 @@ impl Conn {
                     .await
             }
             ClientMessage::Goodbye { shutdown } => {
+                self.said_goodbye = true;
                 if shutdown {
                     // The control loop stops the show and ends (docs/network.md); the process
                     // exit is the host's.

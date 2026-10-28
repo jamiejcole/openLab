@@ -5,4 +5,5 @@
 //! nothing (and says so) elsewhere, so the engine builds and runs on every platform.
 
 pub mod power;
+pub mod relaunch;
 pub mod signals;

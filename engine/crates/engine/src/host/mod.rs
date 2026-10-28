@@ -39,9 +39,9 @@ use crate::control::{
 use crate::diag::crash::{self, CrashConfig};
 use crate::diag::run_marker::{self, RunInfo};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
-use crate::net::{NetError, OscConfig, ServerConfig, WsServer};
+use crate::net::{NetError, OscConfig, Relaunch, RelaunchFn, ServerConfig, WsServer};
 use crate::persist::{AppDirs, load_machine_settings_checked};
-use crate::platform::{power, signals};
+use crate::platform::{power, relaunch, signals};
 use engine_file::{EngineFile, EngineInfo};
 
 /// Frames per device callback asked for: about 5 ms at 48 kHz.
@@ -85,6 +85,9 @@ pub struct Options {
     pub app_support: Option<PathBuf>,
     /// Shut down when stdin closes (a parent that ends takes the engine with it: tests).
     pub watch_stdin: bool,
+    /// The app to relaunch (its bundle identifier) when its connection ends without `goodbye`
+    /// (M4.9; the app passes its own). `None`: only log it (dev and tests).
+    pub relaunch_app: Option<String>,
 }
 
 /// How long shutdown waits for the log writer to write what is queued.
@@ -275,8 +278,13 @@ fn run_with(
     }
     let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
     // OSC (UDP and TCP 53000) shares the runtime; if its port is taken it logs and stays off.
+    let relaunch = options.relaunch_app.clone().map(|id| {
+        let action: RelaunchFn = std::sync::Arc::new(move || relaunch::launch(&id));
+        Relaunch::new(action)
+    });
     let net_config = ServerConfig {
         osc: Some(OscConfig::default()),
+        relaunch,
         ..ServerConfig::default()
     };
     let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
