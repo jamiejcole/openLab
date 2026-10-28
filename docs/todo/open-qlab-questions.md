@@ -21,6 +21,7 @@ confirmed or corrected; the change, if any, is linked).
 | 9 | A child started on its own while its playlist post-waits: does it carry the playlist on if it ends **after** the post-wait? | Yes (it does not if it ends during the post-wait, which QLab confirmed) | M2.27 (review L1) | fundamentals/group-cues: children auto-continue, post-wait = duration; nothing on this | assumed |
 | 10 | Opening a workspace whose id duplicates an open one: the engine gives it a fresh id and marks it dirty. Does QLab persist the new id on save? | Yes, saved with the new id | M4.15f | fundamentals/managing-workspaces, workspace-settings, osc-dictionary-v5: uniqueID exists, nothing on duplicates | assumed |
 | 11 | Selecting several cues by hand: which one does the playhead move to? | The topmost selected cue | M5.11 | general/keyboard-shortcuts (Load Last Selected: the most recently selected); osc-dictionary-v5 `/playhead/selected`: the first selected. Conflicting signals | assumed |
+| 12 | Does QLab 5 refuse a malformed OSC address or argument list typed into a Network cue, or accept it and fail at send? | Refuse at the edit (a new value must be valid by itself; a cue loaded invalid can still be repaired step by step); destination must be an existing network patch | M4.6a, `CueProperty::{Destination, Address, Args}` | networking/network-cues (message format only; nothing on invalid input) | assumed |
 
 ## Settled by the documentation
 
