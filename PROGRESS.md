@@ -152,7 +152,7 @@ Notes and decisions go in the PR, the task's docs or `docs/handoff/`.
 - [x] M4.8 Pre-show check + warnings feed [SM-06, DX-01, NFR-07]
 - [ ] M4.9 Lifecycle: `engine.json`, UI relaunch on crash, graceful shutdown, sleep prevention (with M4.15g) [NFR-01, SM-07]
 - [x] M4.10 Integration tests over real sockets; fuzz targets for OSC + protocol [QA-04]
-  - [x] M4.10a Document requests in socket session tests and the `protocol` fuzz body
+  - [ ] M4.10a Document requests in socket session tests and the `protocol` fuzz body
 - [x] M4.11 Accelerated 24 h soak test [NFR-09, QA-05]
   - [x] M4.11a Shorter real-time soak, `#[ignore]`, nightly
   - [x] M4.11b Decide `Load` with `at` past the cue length
@@ -176,7 +176,7 @@ Notes and decisions go in the PR, the task's docs or `docs/handoff/`.
   - [x] M4.15d1 (S-M; with M4.15e) Per-doc probe pool, `MediaWatch`, `NetOut`, `Observe` states
   - [x] M4.15e (L; in review) N docs through a test API: DocId, routing, close, cap of 8
   - [x] M4.15e1 Engine-wide preload budget across docs [AUD-05]
-  - [x] M4.15f (L; after M4.15e) Protocol and hub: bound connections, `workspaces`, `opened`/`closed`, `close`
+  - [ ] M4.15f (L; after M4.15e) Protocol and hub: bound connections, `workspaces`, `opened`/`closed`, `close`
   - [ ] M4.15g (M; after M4.15f) Engine starts with no docs, final recovery write for every dirty doc
   - [ ] M4.15h (M-L; after M4.5b, M4.5c) OSC over several docs: one listener, mirror per doc, routing
   - [ ] M4.15i (S; after M4.15h) Perf gate: two 2,000-cue docs
