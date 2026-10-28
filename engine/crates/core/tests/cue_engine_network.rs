@@ -417,3 +417,50 @@ fn an_incremental_edit_notices_a_changed_network_patch() {
         [CueProblem::NetworkHostInvalid { .. }]
     ));
 }
+
+/// M4.6a: the commands that edit a Network cue reach the engine; GO sends the edited message.
+#[test]
+fn an_edited_network_cue_sends_the_edited_message() {
+    let mut rig = Rig::new(vec![network(1), memo(2)]);
+    rig.ws.network_patches.push(NetworkPatch {
+        id: net_id(2),
+        name: "Second".into(),
+        host: "10.0.0.2".into(),
+        port: 9000,
+        protocol: NetworkProtocol::Udp,
+    });
+    for property in [
+        CueProperty::Destination { value: net_id(2) },
+        CueProperty::Address {
+            value: "/lx/[1-2]/go".into(),
+        },
+        CueProperty::Args {
+            value: vec![
+                OscArg::String { value: "q".into() },
+                OscArg::Float { value: 0.5 },
+            ],
+        },
+    ] {
+        rig.ws
+            .apply(Command::SetCueProperty {
+                id: id(1),
+                property,
+            })
+            .unwrap();
+        rig.at(1, Input::Tick);
+    }
+    assert!(rig.problems(1).is_empty());
+    assert_eq!(
+        sends(&rig.go(5)),
+        vec![&Action::SendOsc {
+            cue: id(1),
+            at: 5,
+            destination: net_id(2),
+            address: "/lx/[1-2]/go".into(),
+            args: vec![
+                OscArg::String { value: "q".into() },
+                OscArg::Float { value: 0.5 }
+            ],
+        }]
+    );
+}
