@@ -25,7 +25,7 @@ use crate::command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
 };
 use crate::cue::{
-    ContinueMode, Cue, CueColor, CueKind, GroupMode, OscArg, SecondTrigger, Triggers,
+    ContinueMode, Cue, CueColor, CueKind, GroupMode, MediaRef, OscArg, SecondTrigger, Triggers,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
@@ -108,6 +108,12 @@ pub enum CueProperty {
     Kind {
         value: CueKind,
     },
+    /// Only for Audio cues: the file alone, so a replaced file leaves levels, routing, fades and
+    /// slices as they are. `None` clears it. The engine stores a path inside the show folder
+    /// relative to it ([`Command::prepare`]).
+    Media {
+        value: Option<MediaRef>,
+    },
     /// Only for Network cues. A new value must name an existing network patch.
     Destination {
         value: NetworkPatchId,
@@ -142,6 +148,13 @@ pub enum Command {
     },
     /// Adds several cues, in order, as one step. Ids must be fresh: see [`prepare_paste`].
     Paste {
+        at: Position,
+        cues: Vec<Cue>,
+    },
+    /// Adds the cues of a clipboard copied anywhere, in order, as one step (ED-05). The engine
+    /// turns it into a [`Command::Paste`] with [`prepare_paste`] and fresh ids before applying
+    /// it ([`Command::prepare`]); core's `apply` refuses it with [`CommandError::NotPrepared`].
+    PasteClipboard {
         at: Position,
         cues: Vec<Cue>,
     },
@@ -358,6 +371,9 @@ pub enum CommandError {
     /// sees with the cue's number and name.
     #[error("cue {0} is playing; stop it, then try again")]
     CueIsActive(CueId),
+    /// A `PasteClipboard` reached `apply` without [`Command::prepare`]: a bug in the caller.
+    #[error("the pasted cues were not prepared")]
+    NotPrepared,
     /// The cue tree was not as expected. Nothing was changed.
     #[error("internal inconsistency in the cue tree; command refused")]
     Internal,
@@ -543,6 +559,7 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
                     .collect(),
             })
         }
+        Command::PasteClipboard { .. } => Err(CommandError::NotPrepared),
         Command::RemoveCue { id } => remove(ws, id),
         Command::MoveCue { id, index } => {
             let path = find_path(ws, id).ok_or(CommandError::CueNotFound(id))?;
@@ -828,6 +845,12 @@ impl CueProperty {
             Self::Kind { .. } => Self::Kind {
                 value: cue.kind.clone(),
             },
+            Self::Media { .. } => match &cue.kind {
+                CueKind::Audio { media, .. } => Self::Media {
+                    value: media.clone(),
+                },
+                _ => return None,
+            },
             Self::Destination { .. } => match &cue.kind {
                 CueKind::Network { destination, .. } => Self::Destination {
                     value: *destination,
@@ -874,6 +897,10 @@ impl CueProperty {
                 _ => return false,
             },
             Self::Kind { value } => cue.kind = value.clone(),
+            Self::Media { value } => match &mut cue.kind {
+                CueKind::Audio { media, .. } => media.clone_from(value),
+                _ => return false,
+            },
             Self::Destination { value } => match &mut cue.kind {
                 CueKind::Network { destination, .. } => *destination = *value,
                 _ => return false,

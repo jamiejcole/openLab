@@ -38,7 +38,7 @@ use openlab_core::{
     MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
     is_absolute, load_show, portable_ref, relink_command,
 };
-use openlab_core::{CueId, RelinkPlan};
+use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
 
 use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
@@ -817,7 +817,7 @@ fn persist_code(e: &PersistError) -> ErrorCode {
 }
 
 /// Ids for a new workspace, from the OS (core draws no randomness).
-fn random_id() -> uuid::Uuid {
+pub(super) fn random_id() -> uuid::Uuid {
     let mut bytes = [0u8; 16];
     if getrandom::fill(&mut bytes).is_err() {
         // The OS refused: the time and a counter-free fallback are still unique enough for a
@@ -1051,6 +1051,18 @@ impl DocCx<'_> {
 
     pub(super) fn show_dir(&self) -> Option<PathBuf> {
         self.doc.show_path.as_deref().and_then(folder_of)
+    }
+
+    /// What a client sent, made ready to apply (WS-03, ED-05): media paths stored relative to
+    /// the show folder when inside it, a raw clipboard turned into cues with fresh ids.
+    pub(super) fn prepare_command(&self, command: Command) -> Result<Command, CommandError> {
+        let dir = self.show_dir();
+        let paths = MediaPaths {
+            // A folder that is not UTF-8 cannot be compared with media paths: they stay as given.
+            show_dir: dir.as_deref().and_then(Path::to_str),
+            style: PathStyle::host(),
+        };
+        command.prepare(&self.doc.ws, &paths, &mut || CueId(random_id()))
     }
 
     // ---- Saving -----------------------------------------------------------------------------

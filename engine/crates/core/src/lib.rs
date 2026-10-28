@@ -10,6 +10,7 @@ mod backup;
 mod changes;
 mod command;
 mod command_model;
+mod command_prepare;
 mod cue;
 mod cue_engine;
 mod cue_index;
@@ -29,6 +30,7 @@ mod validate;
 pub use backup::*;
 pub use changes::*;
 pub use command::*;
+pub use command_prepare::MediaPaths;
 pub use command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, TransportKey, WorkspaceSetting,
 };

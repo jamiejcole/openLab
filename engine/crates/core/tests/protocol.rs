@@ -368,6 +368,35 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // An Audio cue's file alone, and a raw clipboard to paste (M5.10e).
+    add(
+        "command_set_cue_media",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(12),
+                property: CueProperty::Media {
+                    value: Some(MediaRef::new("/Volumes/Show/thunder.wav")),
+                },
+            }),
+            coalesce: None,
+        }),
+    );
+    add(
+        "command_paste_clipboard",
+        client(ClientMessage::Command {
+            id: rid(5),
+            command: Box::new(Command::PasteClipboard {
+                at: Position {
+                    list: list(),
+                    parent: Some(cue_id(10)),
+                    index: 2,
+                },
+                cues: vec![sample_cue()],
+            }),
+            coalesce: None,
+        }),
+    );
     // A Network cue's destination, address and arguments (M4.6a).
     for property in [
         CueProperty::Destination { value: net_id(4) },
@@ -2804,6 +2833,7 @@ fn model_command_idx(c: &Command) -> Option<usize> {
     Some(match c {
         Command::AddCue { .. }
         | Command::Paste { .. }
+        | Command::PasteClipboard { .. }
         | Command::RemoveCue { .. }
         | Command::MoveCue { .. }
         | Command::ReparentCue { .. }
