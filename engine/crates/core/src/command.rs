@@ -247,6 +247,10 @@ pub enum Command {
         id: CueListId,
         name: String,
     },
+    /// Renames the workspace: the show title (`name` of the settings upsert), not the file.
+    RenameWorkspace {
+        name: String,
+    },
     /// Adds a row to the OSC passcode table at `index` (0 to the current count; NET-02). The
     /// passcode is 1 to 32 digits, not already in the table; Edit and Control need View; the
     /// table holds at most 16.

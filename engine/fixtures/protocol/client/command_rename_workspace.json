@@ -1,0 +1,8 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "rename_workspace",
+    "name": "Hamlet"
+  }
+}
