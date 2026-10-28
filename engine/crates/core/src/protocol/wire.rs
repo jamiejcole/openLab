@@ -384,7 +384,7 @@ fn millis(samples: SampleTime, rate: NonZeroU32) -> u64 {
 
 /// One change to what the operator sees of the running show, event-driven. Carried by
 /// `runtime { seq, changes }`; applied in order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeChange {
     /// `reason` is set when `state` is `broken` because of a run-time failure (not for static
@@ -419,6 +419,31 @@ pub enum RuntimeChange {
     Warning {
         warning: WireWarning,
     },
+    /// An audio cue's media lengths changed (a probe answered, the file went missing or was
+    /// relinked, its trims or slices were edited, the cue went away): all fields absent = not
+    /// known now (M5.4d).
+    MediaDuration(CueMediaDuration),
+}
+
+/// What an audio cue's file gives it to play, in seconds rounded down to the millisecond
+/// (M5.4d; the cue list's Duration column, CL-02). Derived from the media probe and the cue's
+/// trims, never saved. Each field is absent when it is not known: the file is not probed yet,
+/// is missing or cannot be played (then all three), or its trims and slices cannot be played
+/// (`trimmed` and `duration`). QLab 5 counts a cue's duration as the time its action takes
+/// (manual pp. 94-95, 124), so `duration` counts every slice's plays and is absent when a slice
+/// loops until devamped; `trimmed` is one pass from the in to the out point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CueMediaDuration {
+    pub cue: CueId,
+    /// The whole file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<f64>,
+    /// From the start trim to the end trim, each slice once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trimmed: Option<f64>,
+    /// The cue's action: `trimmed` with every slice's play count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
 }
 
 impl RuntimeChange {

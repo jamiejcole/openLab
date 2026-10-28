@@ -400,3 +400,46 @@ fn a_doc_closed_during_the_walk_answers_no_workspace() {
     }
     assert_eq!(error_code(&[got.unwrap()]), ErrorCode::NoWorkspace);
 }
+
+/// Half a second at [`RATE`] for any file that is there.
+fn present_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+    if !path.exists() {
+        return Err(openlab_audio::MediaError::NotFound(path.to_path_buf()));
+    }
+    Ok(openlab_audio::Probed {
+        info: openlab_audio::MediaInfo {
+            channels: 1,
+            sample_rate: RATE,
+            frames: u64::from(RATE) / 2,
+            duration: std::time::Duration::from_millis(500),
+        },
+        warnings: vec![],
+        seeking: openlab_audio::Seeking::Direct,
+    })
+}
+
+#[test]
+fn a_relinked_cue_gets_its_new_files_lengths() {
+    // M5.4d: a missing file has no lengths; once relinked and probed, the cue has the new file's.
+    let mut r = rig_with(&["a.wav"], |c| c.probe = present_probe);
+    assert!(r.s.control().snapshot().media_durations.is_empty());
+    touch(&r.lib.join("a.wav"));
+    r.s.take_outbound();
+    relink(&mut r);
+    r.s.settle_media();
+    let told: Vec<_> = changes(&r.s.take_outbound())
+        .into_iter()
+        .filter_map(|c| match c {
+            openlab_core::protocol::RuntimeChange::MediaDuration(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    let expected = openlab_core::protocol::CueMediaDuration {
+        cue: id(1),
+        file: Some(0.5),
+        trimmed: Some(0.5),
+        duration: Some(0.5),
+    };
+    assert_eq!(told, vec![expected.clone()]);
+    assert_eq!(r.s.control().snapshot().media_durations, vec![expected]);
+}

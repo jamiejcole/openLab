@@ -345,6 +345,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {
                     runtimeWarnings.removeFirst(runtimeWarnings.count - Self.maxRuntimeWarnings)
                 }
+            case .mediaDuration:
+                // Decoded for the Duration column (#112), which keeps them; nothing shows them yet.
+                break
             case .unknown(let type):
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
