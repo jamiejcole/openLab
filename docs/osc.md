@@ -218,7 +218,7 @@ A cue object has QLab's fields: `number`, `uniqueID`, `cues` (the children of a 
 1. Whether `/playhead/{number}` and `/select/{number}` answer `error` for a cue that does not exist (we do) and for one inside a group (we do: a playhead cannot rest there).
 2. `/go ""`: QLab's behaviour was not checked (we answer `error` and start nothing).
 3. How long QLab's failure counter persists, and whether its UDP back-off is per IP (we have our own guard).
-4. Answered by the QLab 5 OSC dictionary and the M4.15 checks: an un-prefixed message goes to every open workspace, each answering (M4.15h). Duplicate names, no workspace open and un-prefixed `/updates` with several open are `docs/todo/open-qlab-questions.md` rows 14 to 16.
+4. Answered by the QLab 5 OSC dictionary and the M4.15 checks: an un-prefixed message goes to every open workspace, each answering (M4.15h). Duplicate names, no workspace open and un-prefixed `/updates` with several open are `docs/todo/open-qlab-questions.md` rows 15 to 17.
 5. Which properties besides name, notes and pre-wait QLab lets a view-only or edit-only peer write. We allow `notes` with View and every other property write with Edit (`docs/handoff/decisions/m4-5c.md`).
 6. Answered, no longer open: `/cue/{n}/stop` stops at once and ignores the cue's own fade-out (`isRunning` is false at once). QLab-confirmed (2026-10-27), and what we do.
 7. Whether QLab switches the displayed list when a GoTo cue in one list moves another list's playhead. Ours makes that list active, so the console's next `/go` fires it.
