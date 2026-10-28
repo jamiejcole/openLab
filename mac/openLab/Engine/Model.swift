@@ -41,6 +41,20 @@ struct Cue: Hashable, Sendable, Decodable {
     var name: String { raw["name"]?.stringValue ?? "" }
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
 
+    /// The name to show (core's `display_name`, M2.29c): the user's name if set, else an Audio cue's
+    /// file name with its extension (last `/` component, as stored), else empty. Editing writes `name`.
+    var displayName: String {
+        let typed = name
+        if !typed.isEmpty { return typed }
+        guard kindType == "audio", let media = raw["kind"]?["media"]?.stringValue else { return "" }
+        var parts = Substring(media)
+        while parts.hasSuffix("/") { parts = parts.dropLast() }
+        return String(parts.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
+    }
+
+    /// `displayName`, or the kind's label when that is empty (a cue with neither name nor file).
+    var listName: String { displayName.isEmpty ? CueKindStyle.kindLabel(kindType) : displayName }
+
     init(from decoder: Decoder) throws {
         try self.init(json: try JSONValue(from: decoder))
     }
