@@ -8,7 +8,7 @@ Closes #
 IDs (e.g. AUD-07, NFR-02):
 
 ## Tests
-`PREPUSH PASS` line (and the head sha it ran on):
+`PREPUSH PASS <sha>` line (the sha must be the PR head; `scripts/prepush.sh --check` verifies it):
 
 ## Review
 R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows filed #…
