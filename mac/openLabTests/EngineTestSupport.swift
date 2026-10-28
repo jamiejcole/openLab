@@ -86,9 +86,10 @@ final class Rig {
     let client: EngineClient
     let store: WorkspaceStore
 
-    init(mode: FakeEngine.Mode = .single, workspace: ModelID? = nil, snapshot: JSONValue? = nil) throws {
+    /// Bound to the fake's first doc ("1") unless `workspace` says otherwise (nil: the app connection).
+    init(workspace: ModelID? = "1", snapshot: JSONValue? = nil) throws {
         let snap = try snapshot ?? Fixtures.json("server", "welcome")["snapshot"]
-        engine = FakeEngine(mode: mode, snapshot: snap)
+        engine = FakeEngine(snapshot: snap)
         box.token = engine.token
         let box = box
         client = EngineClient(

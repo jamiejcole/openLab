@@ -11,7 +11,21 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppController {
     let session: EngineSession
-    private(set) var windows: [ModelID: WorkspaceWindowController] = [:]
+    /// One window per store, kept by the store (not its doc id): a window outlives an engine
+    /// restart, where its store is rebound to another doc id.
+    private var controllers: [ObjectIdentifier: WorkspaceWindowController] = [:]
+    /// The windows of the bound workspaces, by doc id.
+    var windows: [ModelID: WorkspaceWindowController] {
+        var out: [ModelID: WorkspaceWindowController] = [:]
+        for (doc, store) in session.orderedStores { out[doc] = controllers[ObjectIdentifier(store)] }
+        return out
+    }
+    /// Every workspace window, bound or waiting to be reattached, in open order.
+    var allWindows: [WorkspaceWindowController] {
+        (session.orderedStores.map(\.store) + session.detached.map(\.store)).compactMap {
+            controllers[ObjectIdentifier($0)]
+        }
+    }
     let launcher = LauncherWindowController()
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
@@ -29,7 +43,7 @@ final class AppController {
     /// Per workspace: its `settings.hotkeys` as last read (a change re-reads and warns once).
     /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
     var keyCacheCount: Int { keyCache.count }
-    private var keySubs: [ModelID: AnyCancellable] = [:]
+    private var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
     private var keyCache:
         [ObjectIdentifier: (
             settings: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>, keys: TransportKeys
@@ -39,8 +53,8 @@ final class AppController {
     var isRecordingKey: @MainActor () -> Bool = { NSApp.keyWindow?.firstResponder is HotkeyRecorder }
     /// Menu-bar keys outside the Transport menu; a cue hotkey on one never fires (Cmd-Q stays Quit).
     var menuChords: @MainActor () -> Set<KeyChord> = HotkeyRules.currentMenuChords
-    /// Cues fired by a held key that want `trigger_released`, by key code.
-    private var heldTriggers: [UInt16: [(store: WorkspaceStore, cue: ModelID)]] = [:]
+    /// Cue hotkeys sent down and not yet up, by key code: their `up` goes out on key release.
+    private var heldHotkeys: [UInt16: JSONValue] = [:]
     /// A modal panel or alert is running (cue hotkeys must not reach through it).
     var isModalUp: @MainActor () -> Bool = { NSApp.modalWindow != nil }
     private var resignObserver: Any?
@@ -64,51 +78,58 @@ final class AppController {
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in  // No trigger_released is sent: a cue is never stopped without an observed key release.
-            MainActor.assumeIsolated { self?.heldTriggers = [:] }
+            MainActor.assumeIsolated { self?.heldHotkeys = [:] }
         }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
         launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
-        // $stores / $workspaces publish before the property changes: use the delivered values.
-        subs.append(session.$stores.sink { [weak self] in self?.sync(stores: $0) })
+        subs.append(session.storesChanged.sink { [weak self] in self?.sync() })
+        // $workspaces publishes before the property changes: use the delivered value.
         subs.append(session.$workspaces.sink { [weak self] in self?.updateTitles($0) })
     }
 
     // MARK: Windows
 
-    private func sync(stores: [ModelID: WorkspaceStore]) {
-        for doc in stores.keys.sorted(by: { $0.raw < $1.raw }) where windows[doc] == nil {
-            guard let store = stores[doc] else { continue }
+    /// A window for every store (bound or waiting for a reattach), made in open order; a store
+    /// that left the session takes its window with it.
+    private func sync() {
+        let live = session.orderedStores.map(\.store) + session.detached.map(\.store)
+        for store in live where controllers[ObjectIdentifier(store)] == nil {
             let wc = WorkspaceWindowController(store: store)
-            wc.onCloseRequest = { [weak self] in Task { await self?.closeWorkspace(doc) } }
+            wc.onCloseRequest = { [weak self, weak store] in
+                guard let self, let store else { return }
+                Task { await self.closeWorkspace(store) }
+            }
             wc.onGo = { [weak self] in Task { await self?.go(store) } }
             wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             wc.onRelink = { [weak self] in Task { await self?.relinkMedia(on: store) } }
-            windows[doc] = wc
+            controllers[ObjectIdentifier(store)] = wc
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
             // Only model changes can move keys (runtime ticks must not walk every cue).
-            keySubs[doc] = store.changes.sink { [weak self] change in
+            keySubs[ObjectIdentifier(store)] = store.changes.sink { [weak self] change in
                 switch change {
                 case .reset, .model: MainActor.assumeIsolated { _ = self?.keys(for: store) }
                 case .runtime, .progress, .notices: break
                 }
             }
-            if let n = session.workspaces.first(where: { $0.doc == doc }) { wc.workspaceName = n.name }
-            show(doc)
+            if let doc = session.doc(of: store), let n = session.workspaces.first(where: { $0.doc == doc }) {
+                wc.workspaceName = n.name
+            }
+            show(wc)
         }
-        for doc in windows.keys where stores[doc] == nil { dropWindow(doc) }
+        let liveIDs = Set(live.map(ObjectIdentifier.init))
+        for id in controllers.keys where !liveIDs.contains(id) { dropWindow(id) }
         showLauncherIfNoWindows()
     }
 
-    private func dropWindow(_ doc: ModelID) {
-        guard let wc = windows.removeValue(forKey: doc) else { return }
-        keyCache[ObjectIdentifier(wc.store)] = nil
-        for key in heldTriggers.keys { heldTriggers[key]?.removeAll { $0.store === wc.store } }
-        keySubs[doc] = nil
+    private func dropWindow(_ id: ObjectIdentifier) {
+        guard let wc = controllers.removeValue(forKey: id) else { return }
+        keyCache[id] = nil
+        keySubs[id] = nil
         wc.window?.close()
     }
 
@@ -122,14 +143,19 @@ final class AppController {
 
     /// Fronts (creating nothing) the window of `doc` and hides the launcher.
     func show(_ doc: ModelID) {
-        guard let window = windows[doc]?.window else { return }
+        guard let wc = windows[doc] else { return }
+        show(wc)
+    }
+
+    private func show(_ wc: WorkspaceWindowController) {
+        guard let window = wc.window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         launcher.window?.orderOut(nil)
     }
 
     private var hasWorkspaceWindow: Bool {
-        windows.values.contains { $0.window?.isVisible == true || $0.window?.isMiniaturized == true }
+        controllers.values.contains { $0.window?.isVisible == true || $0.window?.isMiniaturized == true }
     }
 
     func showLauncherIfNoWindows() {
@@ -143,15 +169,15 @@ final class AppController {
 
     /// Dock click with nothing on screen: bring back a minimised workspace, else the launcher.
     func reopen() {
-        if let doc = windows.first(where: { $0.value.window?.isMiniaturized == true })?.key {
-            show(doc)
+        if let wc = allWindows.first(where: { $0.window?.isMiniaturized == true }) {
+            show(wc)
         } else if !hasWorkspaceWindow {
             showLauncher()
         }
     }
 
     func closeAllWindows() {
-        for wc in windows.values { wc.window?.close() }
+        for wc in controllers.values { wc.window?.close() }
         launcher.window?.close()
     }
 
@@ -191,27 +217,37 @@ final class AppController {
         return fireCueHotkeys(chord, event: event) ? nil : event
     }
 
-    /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6). The
-    /// wire has no app-scope hotkey message yet (m5-protocol-requests.md), so each workspace gets a
-    /// `start` for its matching cues; `start` applies the cue's second-trigger rule. Typing keys
-    /// stay with a text field being edited; a held key fires once; a menu key is never taken.
+    /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6): one
+    /// app-scope `hotkey` goes to the engine, which does the matching and applies each cue's
+    /// second-trigger rule. The app only decides whether the key is a cue hotkey of an open
+    /// workspace (to take the event); typing keys stay with a text field being edited, a held key
+    /// fires once and a menu key is never taken.
     private func fireCueHotkeys(_ chord: KeyChord, event: NSEvent) -> Bool {
         if chord.typesCharacters, isTextEditing() { return false }
         if menuChords().contains(chord) || cueHotkeysBlocked() { return false }
-        var matched = false
-        for (_, store) in session.stores.sorted(by: { $0.key.raw < $1.key.raw }) {
-            for id in cueHotkeys(for: store).filter({ $0.chord == chord }).map(\.cue) {
-                matched = true
-                if event.isARepeat { continue }
-                if store.model?.cue(id)?.raw["second_trigger_on_release"] == .bool(true),
-                    !(heldTriggers[event.keyCode] ?? []).contains(where: { $0.store === store && $0.cue == id })
-                {
-                    heldTriggers[event.keyCode, default: []].append((store, id))
-                }
-                Task { await run(.start(cue: id), on: store) }
-            }
+        let matched = session.orderedStores.contains { entry in
+            cueHotkeys(for: entry.store).contains { $0.chord == chord }
         }
-        return matched
+        guard matched, let hotkey = chord.hotkeyJSON, let key = hotkey["key"]?.stringValue else { return false }
+        if event.isARepeat || heldHotkeys[event.keyCode] != nil { return true }
+        heldHotkeys[event.keyCode] = hotkey
+        Task { await sendHotkey(key: key, modifiers: Self.modifiers(of: hotkey), up: false) }
+        return true
+    }
+
+    private static func modifiers(of hotkey: JSONValue) -> HotkeyModifiers {
+        let m = hotkey["modifiers"]
+        return HotkeyModifiers(
+            shift: m?["shift"] == .bool(true), control: m?["control"] == .bool(true),
+            alt: m?["alt"] == .bool(true), command: m?["command"] == .bool(true))
+    }
+
+    /// A refused or undeliverable hotkey beeps and goes to every show log (it was meant for all).
+    private func sendHotkey(key: String, modifiers: HotkeyModifiers, up: Bool) async {
+        if case .failure(let e) = await session.hotkey(key: key, modifiers: modifiers, up: up) {
+            beep()
+            for (_, store) in session.orderedStores { log(e, on: store) }
+        }
     }
 
     /// Keys stay with a modal panel or alert, a sheet, the launcher and a panel that is not ours
@@ -230,10 +266,12 @@ final class AppController {
         return (store.model?.cueHotkeys ?? []).filter { !taken.contains($0.chord) }
     }
 
-    /// Key up: `trigger_released` for the cues this key fired that use second-trigger-on-release.
+    /// Key up: the hotkey's `up`, so the engine releases the cues it fired that use
+    /// second-trigger-on-release.
     func handleKeyUp(_ event: NSEvent) {
-        guard let held = heldTriggers.removeValue(forKey: event.keyCode) else { return }
-        for (store, id) in held { Task { await run(.triggerReleased(cue: id), on: store) } }
+        guard let hotkey = heldHotkeys.removeValue(forKey: event.keyCode), let key = hotkey["key"]?.stringValue
+        else { return }
+        Task { await sendHotkey(key: key, modifiers: Self.modifiers(of: hotkey), up: true) }
     }
 
     private func firePanic() { Task { _ = await panicAll() } }
@@ -247,7 +285,7 @@ final class AppController {
 
     var frontController: WorkspaceWindowController? {
         guard let key = keyWindow() else { return nil }
-        return windows.values.first { $0.window === key }
+        return controllers.values.first { $0.window === key }
     }
 
     /// GO on the list shown in the key window (the sidebar's selection).
@@ -349,7 +387,10 @@ final class AppController {
     /// Esc: every workspace, by the engine's app-scope panic.
     func panicAll() async -> Result<OkBody, EngineError> {
         let result = await session.panicAll()
-        if case .failure(let e) = result { for store in session.stores.values { report(e, on: store) } }
+        if case .failure(let e) = result {
+            beep()
+            for (_, store) in session.orderedStores { log(e, on: store) }
+        }
         return result
     }
 
@@ -364,6 +405,10 @@ final class AppController {
 
     private func report(_ error: EngineError, on store: WorkspaceStore) {
         beep()
+        log(error, on: store)
+    }
+
+    private func log(_ error: EngineError, on store: WorkspaceStore) {
         _ = store.receive(.log(.error, String(format: loc("error.transportFailed"), describe(error))))
     }
 
@@ -372,7 +417,7 @@ final class AppController {
     /// Warnings tab by themselves when the engine reports them playable.
     func relinkMedia(on store: WorkspaceStore) async {
         // It rewrites the workspace's media paths: an edit, locked in Show Mode (SM-01).
-        if windows.values.contains(where: { $0.store === store && $0.isShowMode }) {
+        if controllers[ObjectIdentifier(store)]?.isShowMode == true {
             NSSound.beep()
             return
         }
@@ -397,7 +442,7 @@ final class AppController {
             for id in unmatched {
                 _ = store.receive(.log(.warn, String(format: loc("relink.log.unmatched"), name(id))))
             }
-            windows.values.first { $0.store === store }?.footer.showNotice(message)
+            controllers[ObjectIdentifier(store)]?.footer.showNotice(message)
         case .failure(let e):
             let message = String(format: loc("relink.failed"), describe(e))
             _ = store.receive(.log(.error, message))
@@ -414,12 +459,12 @@ final class AppController {
 
     /// Opens the log window of the key workspace (the first one when none is key).
     func showLog() {
-        (frontController ?? windows.values.first)?.showLog()
+        (frontController ?? allWindows.first)?.showLog()
     }
 
     @discardableResult
     private func go(_ store: WorkspaceStore) async -> Result<OkBody, EngineError>? {
-        guard let list = windows.values.first(where: { $0.store === store })?.cueList.listID else { return nil }
+        guard let list = controllers[ObjectIdentifier(store)]?.cueList.listID else { return nil }
         return await run(.go(list: list), on: store)
     }
 
@@ -435,7 +480,13 @@ final class AppController {
     }
 
     func openWorkspace(url: URL) async {
-        let result = await opened { await self.session.open(path: url.path) }
+        let result = await opened {
+            let first = await self.session.open(path: url.path)
+            // An autosave newer than the file (NFR-05): the engine opened nothing; ask, then open.
+            guard case .failure(.recoveryOffered(_, let name, let modified)) = first else { return first }
+            guard let choice = self.alerts.recoveryOffer(workspace: name, modifiedMs: modified) else { return first }
+            return await self.session.open(path: url.path, recovery: choice)
+        }
         if case .success = result {
             noteRecent(url)
         } else if case .failure(.engine(.alreadyOpen, _)) = result,
@@ -452,7 +503,7 @@ final class AppController {
         let result = await call()
         switch result {
         case .success(let doc): show(doc)
-        case .failure(.engine(.alreadyOpen, _)): break
+        case .failure(.engine(.alreadyOpen, _)), .failure(.recoveryOffered): break  // shown; or Cancel
         case .failure(let e): alerts.showError(String(format: loc("error.openFailed"), describe(e)))
         }
         return result
@@ -460,17 +511,22 @@ final class AppController {
 
     // MARK: Close
 
+    /// The window of `store` asked to close. A window waiting for its show to be reopened after
+    /// an engine restart has no doc to close yet: it stays (beep).
+    @discardableResult
+    func closeWorkspace(_ store: WorkspaceStore) async -> Bool {
+        guard let doc = session.doc(of: store) else {
+            beep()
+            return false
+        }
+        return await closeWorkspace(doc)
+    }
+
     /// The user asked to close a workspace window. False: it stays open.
     @discardableResult
     func closeWorkspace(_ doc: ModelID) async -> Bool {
         guard let store = session.stores[doc], !quitting, closing.insert(doc).inserted else { return false }
         defer { closing.remove(doc) }
-        // A one-workspace engine cannot close a doc (until M4.15f): closing would only hide a show
-        // that keeps playing, so Close Window does nothing there.
-        guard session.mode != .single else {
-            NSSound.beep()
-            return false
-        }
         // One prompt: playing outranks Show Mode (QLab asks before closing a workspace in Show Mode).
         if isPlaying(store) {
             if !alerts.confirmCloseWhilePlaying(workspace: name(of: doc)) { return false }
@@ -480,7 +536,7 @@ final class AppController {
         guard let discard = await resolveUnsaved(doc) else { return false }
         switch await bounded({ await self.session.close(doc: doc, discardChanges: discard) }) {
         case .success?:
-            dropWindow(doc)
+            dropWindow(ObjectIdentifier(store))
         case .failure(let e)?:
             alerts.showError(String(format: loc("error.closeFailed"), describe(e)))
             return false
@@ -505,12 +561,12 @@ final class AppController {
         quitting = true
         defer { quitting = false }
         if engineUnreachable { return alerts.confirmQuitDisconnected() }
-        for doc in Array(windows.keys) {
+        for doc in session.order {
             if await !commitEdits(doc) { return false }
         }
         if session.stores.values.contains(where: isPlaying) {
             if !alerts.confirmQuitWhilePlaying() { return false }
-        } else if windows.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
+        } else if controllers.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
             return false
         }
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {

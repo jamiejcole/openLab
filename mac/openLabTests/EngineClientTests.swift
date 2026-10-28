@@ -27,7 +27,8 @@ final class EngineClientTests: XCTestCase {
         guard case .hello(let h)? = rig.engine.received.first else { return XCTFail("no hello") }
         XCTAssertEqual(h.protocolVersion, protocolVersion)
         XCTAssertEqual(h.token, rig.engine.token)
-        XCTAssertNil(h.workspace)
+        XCTAssertEqual(h.workspace, "1")
+        XCTAssertEqual(rig.client.runToken, rig.engine.token, "the doc id is pinned to this engine run")
         XCTAssertEqual(rig.store.model?.name, "Test")
         XCTAssertEqual(rig.store.revision, 7)
         XCTAssertEqual(rig.store.connectionState, .connected)
@@ -265,7 +266,7 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testBoundClientSendsItsWorkspaceInHello() async throws {
-        let rig = try Rig(mode: .multi, workspace: "1")
+        let rig = try Rig(workspace: "1")
         let ok = await rig.connect()
         XCTAssertTrue(ok)
         guard case .hello(let h)? = rig.engine.received.first else { return XCTFail() }
@@ -301,7 +302,7 @@ final class EngineClientTests: XCTestCase {
 
     func testMissingOrGarbledEngineJSONIsAnEngineNotAvailableState() async throws {
         let missing = try tempFile(nil)
-        let engine = FakeEngine(mode: .single)
+        let engine = FakeEngine()
         let scheduler = ManualScheduler()
         let client = EngineClient(
             transport: engine, infoProvider: { EngineConnectionInfo.load(from: missing) }, scheduler: scheduler)
@@ -324,8 +325,11 @@ final class EngineClientTests: XCTestCase {
 
     func testLaunchArgumentSelectsTheEngine() {
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab"]), .real)
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake"]), .fake(.multi))
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake-single"]), .fake(.single))
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake"]), .fake(crashAfter: nil))
+        XCTAssertEqual(
+            EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake", "-OpenLabFakeCrashAfter", "2"]),
+            .fake(crashAfter: 2))
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake-single"]), .real)
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"]), .real)
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"]), .real)
     }
@@ -333,7 +337,7 @@ final class EngineClientTests: XCTestCase {
     // MARK: Review fixes
 
     func testStopThenStartKeepsTheNewConnectionWhenTheOldOneClosesLate() async throws {
-        let engine = FakeEngine(mode: .single, snapshot: try Fixtures.json("server", "welcome")["snapshot"])
+        let engine = FakeEngine(snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         let transport = LateCloseTransport(engine: engine)
         let token = engine.token
         let client = EngineClient(
@@ -392,7 +396,7 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testSnapshotRequestAnsweredWithErrorFreesTheGate() async throws {
-        let rig = try Rig(mode: .multi)  // unbound: `snapshot` is refused with no_workspace
+        let rig = try Rig(workspace: nil)  // unbound: `snapshot` is refused with no_workspace
         _ = await rig.connect()
         for _ in 0..<2 {
             let r = await rig.client.send { .request(id: $0, .snapshot) }
@@ -416,7 +420,7 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testBoundClientOfAClosedWorkspaceStopsReconnecting() async throws {
-        let rig = try Rig(mode: .multi, workspace: "99")
+        let rig = try Rig(workspace: "99")
         rig.client.start()
         let failed = ConnectionState.failed(.engine(code: .noWorkspace, message: "no such workspace"))
         await assertEventually { rig.client.state == failed }

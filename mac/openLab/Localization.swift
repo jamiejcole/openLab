@@ -12,6 +12,12 @@ func loc(_ key: String) -> String {
 enum AX {
     static let mainWindow = "main-window"
     static let launcherWindow = "launcher-window"
+    static let engineAlarm = "engine-alarm"
+    static let engineAlarmTitle = "engine-alarm-title"
+    static let engineAlarmMessage = "engine-alarm-message"
+    static let engineAlarmDetail = "engine-alarm-detail"
+    static let engineAlarmRestore = "engine-alarm-restore"
+    static let engineAlarmDismiss = "engine-alarm-dismiss"
     static let launcherNew = "launcher-new"
     static let launcherOpen = "launcher-open"
     static let launcherRecentPrefix = "launcher-recent-"

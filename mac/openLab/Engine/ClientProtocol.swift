@@ -220,6 +220,73 @@ enum Request: Hashable, Sendable, Codable {
     }
 }
 
+// A doc id is a JSON number on the wire (the engine's `DocId`, u64); the app keys stores and
+// windows by it as a `ModelID` holding its decimal digits (`ModelID(doc:)`, `docNumber`).
+extension ModelID {
+    /// A doc id as the engine sends it.
+    init(doc: UInt64) { self.init(String(doc)) }
+
+    /// The wire form of a doc id; nil when this is not one.
+    var docNumber: UInt64? { UInt64(raw) }
+
+    /// Encodes this doc id as the engine's number, or fails (a doc id is never anything else).
+    func encodeDoc<K: CodingKey>(in c: inout KeyedEncodingContainer<K>, forKey key: K) throws {
+        guard let n = docNumber else {
+            throw EncodingError.invalidValue(
+                raw, .init(codingPath: c.codingPath + [key], debugDescription: "not a doc id"))
+        }
+        try c.encode(n, forKey: key)
+    }
+}
+
+/// `hello`. `workspace` binds the connection to one open workspace; absent (and omitted from the
+/// JSON) it is the unbound app connection.
+struct Hello: Hashable, Sendable, Codable {
+    var protocolVersion: UInt32
+    var token: String
+    var clientName: String
+    var workspace: ModelID?
+
+    enum CodingKeys: String, CodingKey {
+        case type, token, workspace
+        case protocolVersion = "protocol_version"
+        case clientName = "client_name"
+    }
+
+    init(protocolVersion: UInt32, token: String, clientName: String, workspace: ModelID? = nil) {
+        self.protocolVersion = protocolVersion
+        self.token = token
+        self.clientName = clientName
+        self.workspace = workspace
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try c.decode(UInt32.self, forKey: .protocolVersion)
+        token = try c.decode(String.self, forKey: .token)
+        clientName = try c.decode(String.self, forKey: .clientName)
+        workspace = try c.decodeIfPresent(UInt64.self, forKey: .workspace).map(ModelID.init(doc:))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode("hello", forKey: .type)
+        try c.encode(protocolVersion, forKey: .protocolVersion)
+        try c.encode(token, forKey: .token)
+        try c.encode(clientName, forKey: .clientName)
+        try workspace?.encodeDoc(in: &c, forKey: .workspace)
+    }
+}
+
+/// The modifier keys of a `hotkey` message (all four always on the wire).
+struct HotkeyModifiers: Hashable, Sendable, Codable {
+    var shift = false
+    var control = false
+    /// Option.
+    var alt = false
+    var command = false
+}
+
 enum ClientMessage: Hashable, Sendable, Codable {
     case hello(Hello)
     /// `coalesce`: edits sent with the same key join one undo step (docs/commands.md "Coalescing");
@@ -230,8 +297,14 @@ enum ClientMessage: Hashable, Sendable, Codable {
     case redo(id: UInt64)
     case request(id: UInt64, Request)
     case goodbye(shutdown: Bool)
-    /// Multi-workspace messages (ProvisionalProtocol.swift).
-    case provisional(ProvisionalClientMessage)
+    /// Close a workspace: the bound one, or `doc` from any connection. Refused with
+    /// `unsaved_changes` unless `discardChanges`.
+    case close(id: UInt64, doc: ModelID?, discardChanges: Bool)
+    /// The app-scope Panic (Esc): every open workspace, on any connection.
+    case panic(id: UInt64)
+    /// A cue hotkey went down (`up` false) or up, app-scope: the engine matches it against every
+    /// open workspace's cue hotkeys and starts those cues (or sends them their release).
+    case hotkey(id: UInt64, key: String, modifiers: HotkeyModifiers, up: Bool)
 
     func encode(to encoder: Encoder) throws {
         switch self {
@@ -245,7 +318,17 @@ enum ClientMessage: Hashable, Sendable, Codable {
         case .redo(let id): try encodeTagged("redo", [("id", id)], to: encoder)
         case .request(let id, let r): try encodeTagged("request", [("id", id), ("request", r)], to: encoder)
         case .goodbye(let s): try encodeTagged("goodbye", [("shutdown", s)], to: encoder)
-        case .provisional(let p): try p.encode(to: encoder)
+        case .close(let id, let doc, let discard):
+            var c = encoder.container(keyedBy: Key.self)
+            try c.encode("close", forKey: "type")
+            try c.encode(id, forKey: "id")
+            try doc?.encodeDoc(in: &c, forKey: "doc")
+            if discard { try c.encode(true, forKey: "discard_changes") }
+        case .panic(let id): try encodeTagged("panic", [("id", id)], to: encoder)
+        case .hotkey(let id, let key, let modifiers, let up):
+            try encodeTagged(
+                "hotkey", [("id", id), ("key", key), ("modifiers", modifiers), ("phase", up ? "up" : "down")],
+                to: encoder)
         }
     }
 
@@ -263,13 +346,19 @@ enum ClientMessage: Hashable, Sendable, Codable {
         case "redo": self = .redo(id: try id())
         case "request": self = .request(id: try id(), try c.decode(Request.self, forKey: "request"))
         case "goodbye": self = .goodbye(shutdown: try c.decodeIfPresent(Bool.self, forKey: "shutdown") ?? false)
+        case "close":
+            self = .close(
+                id: try id(), doc: try c.decodeIfPresent(UInt64.self, forKey: "doc").map(ModelID.init(doc:)),
+                discardChanges: try c.decodeIfPresent(Bool.self, forKey: "discard_changes") ?? false)
+        case "panic": self = .panic(id: try id())
+        case "hotkey":
+            self = .hotkey(
+                id: try id(), key: try c.decode(String.self, forKey: "key"),
+                modifiers: try c.decodeIfPresent(HotkeyModifiers.self, forKey: "modifiers") ?? HotkeyModifiers(),
+                up: try c.decodeIfPresent(String.self, forKey: "phase") == "up")
         case let other:
-            if let p = try ProvisionalClientMessage(type: other, from: decoder) {
-                self = .provisional(p)
-            } else {
-                throw DecodingError.dataCorrupted(
-                    .init(codingPath: c.codingPath, debugDescription: "client message \(other)"))
-            }
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: c.codingPath, debugDescription: "client message \(other)"))
         }
     }
 
