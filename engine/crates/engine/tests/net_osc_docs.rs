@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The OSC workspace copy across `revert` and `open`, in front of the real control loop: a
-//! replacement is announced by the broadcast `snapshot` alone (no `model_changed`, no `document`,
-//! the same path after a revert), so the OSC side has to install it. Otherwise `/cue/5/start`
-//! after a `revert` that discarded a renumber would start the cue that used to be 5.
+//! The OSC workspace copy across docs opening and closing, in front of the real control loop
+//! (M4.15f): until OSC addresses every doc (M4.15h) it follows the first open doc, and when that
+//! changes (the first closed) the copy is rebuilt from the new first doc, which no
+//! `model_changed` announces. Otherwise `/cue/5/start` would start the cue that used to be 5.
 
 mod show;
 
@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use openlab_audio::Mixer;
-use openlab_core::protocol::{ClientMessage, Outcome, Request, RequestId, ServerMessage};
+use openlab_core::protocol::{ClientMessage, DocId, Outcome, Request, RequestId, ServerMessage};
 use openlab_core::{Command, CueKind, GroupMode, NumberAssignment, Workspace, save_show};
 use openlab_engine::control::{
     Backend, Control, Inbox, OUTBOUND_CAPACITY, outbound_channel, reply_channel, runner,
@@ -131,7 +131,7 @@ fn request(inbox: &crossbeam_channel::Sender<Inbox>, n: u64, request: Request) -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn osc_follows_a_revert_and_an_open() {
+async fn osc_follows_the_first_doc_as_docs_open_and_close() {
     let dir = tempfile::tempdir().unwrap();
     // Cue A is number 5, cue B number 6.
     let mut ws = workspace(vec![group(1, "5", "A"), group(2, "6", "B")]);
@@ -217,53 +217,40 @@ async fn osc_follows_a_revert_and_an_open() {
     ));
     osc.until_name("/cue/5/name", "B").await;
 
-    // Revert drops the renumber. The cue ids and the path are the same, no `model_changed` is
-    // sent: only the snapshot says the numbers went back, and `/cue/5` is A again.
-    let outcome = tokio::task::block_in_place(|| {
-        request(
-            &inbox_tx,
-            2,
-            Request::Revert {
-                discard_changes: true,
-            },
-        )
-    });
-    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
-    osc.until_name("/cue/5/name", "A").await;
-    // And it starts A, not B.
-    osc.send(&msg("/updates", vec![OscType::Int(1)])).await;
-    osc.send(&msg("/cue/5/start", vec![])).await;
-    let ws_id = ws.id.to_string().to_uppercase();
-    let first_update = guard("a cue state update", async {
-        loop {
-            let m = osc.recv().await;
-            if m.addr
-                .starts_with(&format!("/update/workspace/{ws_id}/cue_id/"))
-            {
-                return m.addr;
-            }
-        }
-    })
-    .await;
-    assert_eq!(
-        first_update,
-        format!("/update/workspace/{ws_id}/cue_id/{}", id(1)),
-        "the cue that is number 5 after the revert"
-    );
-
-    // Open another show: OSC cue commands resolve against it, and the old ids are gone.
+    // Open another show (M4.15f: beside the first): OSC still addresses the first doc.
     let outcome = tokio::task::block_in_place(|| {
         request(
             &inbox_tx,
             3,
             Request::Open {
                 path: other_path.to_string_lossy().into_owned(),
-                discard_changes: true,
                 recovery: None,
             },
         )
     });
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    osc.until_name("/cue/5/name", "B").await;
+    // Close the first: the other is the first doc now, and the OSC copy is rebuilt from it
+    // (no `model_changed` says so: the hub sees the first doc change in the list). OSC cue
+    // commands resolve against it, and the old ids are gone.
+    let (tx, mut rx) = reply_channel();
+    inbox_tx
+        .send(Inbox::Client {
+            message: ClientMessage::Close {
+                id: RequestId(4),
+                doc: Some(DocId(0)),
+                discard_changes: true,
+            },
+            reply: tx,
+        })
+        .unwrap();
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        })
+    ));
     osc.until_name("/cue/5/name", "Q5").await;
     let old = osc.read(&format!("/cue_id/{}/name", id(1))).await;
     assert_eq!(old["status"], "error", "{old}");

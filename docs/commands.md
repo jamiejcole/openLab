@@ -6,7 +6,7 @@ Every change to a workspace is a `Command` (`openlab-core`, `command.rs`, and `c
 let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 ```
 
-`Inverse` is a `Command`: applying it undoes the original, and applying *that* result redoes it. `History` keeps the undo and redo stacks of inverses and is the only thing that should change a workspace in the engine (`History::execute`, `execute_coalescing`, `undo`, `redo`). Undo is unlimited (ED-07). Call `History::clear` when the workspace is replaced (reload, revert).
+`Inverse` is a `Command`: applying it undoes the original, and applying *that* result redoes it. `History` keeps the undo and redo stacks of inverses and is the only thing that should change a workspace in the engine (`History::execute`, `execute_coalescing`, `undo`, `redo`). Undo is unlimited (ED-07). Call `History::clear` when the workspace is changed behind its back (a save-as that re-spells media references).
 
 `History::execute` returns `Ok(true)` if the command changed the workspace and was recorded, `Ok(false)` if it changed nothing.
 

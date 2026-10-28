@@ -426,7 +426,7 @@ final class AppController {
     // MARK: File New / Open
 
     func newWorkspace() async {
-        await opened { await self.session.newWorkspace(discardChanges: $0) }
+        await opened { await self.session.newWorkspace() }
     }
 
     func openWorkspace() async {
@@ -435,7 +435,7 @@ final class AppController {
     }
 
     func openWorkspace(url: URL) async {
-        let result = await opened { await self.session.open(path: url.path, discardChanges: $0) }
+        let result = await opened { await self.session.open(path: url.path) }
         if case .success = result {
             noteRecent(url)
         } else if case .failure(.engine(.alreadyOpen, _)) = result,
@@ -445,15 +445,11 @@ final class AppController {
         }
     }
 
-    /// Runs a new/open call. A one-workspace engine replaces its workspace in place and refuses
-    /// while it is dirty: ask Save / Don't Save for it, then retry.
+    /// Runs a new/open call: another workspace opens beside the ones open (protocol 2), so nothing
+    /// unsaved is in the way.
     @discardableResult
-    private func opened(_ call: (Bool) async -> Result<ModelID, EngineError>) async -> Result<ModelID, EngineError> {
-        var result = await call(false)
-        if case .failure(.engine(.unsavedChanges, _)) = result {
-            guard let discard = await resolveUnsaved(EngineSession.singleDoc) else { return result }
-            result = await call(discard)
-        }
+    private func opened(_ call: () async -> Result<ModelID, EngineError>) async -> Result<ModelID, EngineError> {
+        let result = await call()
         switch result {
         case .success(let doc): show(doc)
         case .failure(.engine(.alreadyOpen, _)): break

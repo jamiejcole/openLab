@@ -263,7 +263,7 @@ fn a_cue_removed_before_the_batch_is_left_alone() {
 }
 
 #[test]
-fn a_batch_from_before_a_revert_is_dropped() {
+fn a_batch_from_before_a_move_to_another_folder_is_dropped() {
     let path = wav(&dc(400, 0.5));
     let fs = FakeFs::new();
     fs.put(&path, 1);
@@ -290,11 +290,17 @@ fn a_batch_from_before_a_revert_is_dropped() {
     fs.remove(&path);
     let stale = s.watch_pass_batch().unwrap();
     fs.put(&path, 1);
+    // Saved into another folder: the catalog (and the watch, its only user) start again.
+    let elsewhere = tempfile::tempdir().unwrap();
     let rid = s.request_id();
     s.send(ClientMessage::Request {
         id: rid,
-        request: Request::Revert {
-            discard_changes: true,
+        request: Request::SaveAs {
+            path: elsewhere
+                .path()
+                .join("moved.openlab")
+                .to_string_lossy()
+                .into_owned(),
         },
     });
     s.settle_media();

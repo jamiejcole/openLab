@@ -2,5 +2,5 @@
   "type": "error",
   "code": "protocol_version_mismatch",
   "message": "this engine speaks protocol 1; the client sent 2",
-  "protocol_version": 1
+  "protocol_version": 2
 }

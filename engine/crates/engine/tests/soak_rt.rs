@@ -443,7 +443,7 @@ impl Driver for Realtime {
     }
 
     fn take_outbound(&mut self) -> Vec<ServerMessage> {
-        std::iter::from_fn(|| self.outbound.try_recv().ok()).collect()
+        std::iter::from_fn(|| self.outbound.try_recv().ok().map(|o| o.message)).collect()
     }
 
     /// Waits for the device to render the next block.

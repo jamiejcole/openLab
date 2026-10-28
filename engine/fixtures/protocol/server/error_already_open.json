@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "already_open",
+  "message": "message",
+  "protocol_version": 2
+}

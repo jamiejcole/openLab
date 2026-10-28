@@ -832,7 +832,7 @@ impl Actor {
 
     /// `false`: the control loop is gone.
     fn broadcast(&mut self, message: ServerMessage) -> bool {
-        // A workspace was opened, created or reverted: the copy is replaced (sessions end if the
+        // The doc sent its whole state again (a save-as moved it): the copy is replaced (sessions end if the
         // workspace or its passcode changed). The stale rule of the WebSocket connections: a
         // snapshot at or below what the copy holds is the one it already has. This only runs
         // while no snapshot request of ours is out, so it cannot be a stale answer to one.

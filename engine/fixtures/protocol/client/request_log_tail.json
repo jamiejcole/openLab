@@ -1,6 +1,6 @@
 {
   "type": "request",
-  "id": 50,
+  "id": 49,
   "request": {
     "type": "log_tail"
   }
