@@ -79,8 +79,10 @@ final class AppControllerTests: XCTestCase {
     private func build() async throws {
         app?.closeAllWindows()
         engine = FakeEngine(snapshot: try Fixtures.json("server", "welcome")["snapshot"])
-        let info = engine.info
-        let session = EngineSession(transport: engine, infoProvider: { .success(info) }, scheduler: sessionScheduler)
+        let engine = engine!
+        // Read afresh each attempt, as engine.json is (a new engine run has a new token).
+        let session = EngineSession(
+            transport: engine, infoProvider: { .success(engine.info) }, scheduler: sessionScheduler)
         app = AppController(
             session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
@@ -1274,5 +1276,39 @@ final class AppControllerTests: XCTestCase {
         app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
         try XCTUnwrap(app.windows[doc]).onRelink?()
         await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
+    }
+
+    // MARK: Window order and engine restarts (M5.19a, M5.2)
+
+    func testWindowsAreInOpenOrderWithTenOrMoreWorkspaces() async throws {
+        for _ in 0..<10 { _ = try await addWorkspace() }
+        XCTAssertEqual(app.allWindows.count, 11)
+        let order = app.allWindows.compactMap { wc in app.session.doc(of: wc.store)?.raw }
+        XCTAssertEqual(order, (1...11).map(String.init), "\"10\" after \"9\", not after \"1\"")
+    }
+
+    func testANewEngineRunKeepsEveryWindowAndRebindsItByReopeningItsFile() async throws {
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/A.openlab"))
+        await assertEventually { app.windows.count == 2 }
+        let before = app.allWindows.map(ObjectIdentifier.init)
+        engine.restart()  // a new engine run is up (its pid alive): doc ids start again
+        var reattached = false
+        let sub = app.session.events.sink { if case .reattached = $0 { reattached = true } }
+        defer { sub.cancel() }
+        for _ in 0..<200 where !reattached {
+            await sessionScheduler.fire()
+            for _ in 0..<20 { await Task.yield() }
+        }
+        XCTAssertTrue(reattached)
+        await assertEventually { app.session.stores.values.allSatisfy { $0.connectionState == .connected } }
+        XCTAssertEqual(app.allWindows.map(ObjectIdentifier.init), before, "the same windows, none made twice")
+        XCTAssertEqual(Set(app.windows.keys), ["1", "2"], "under the new run's doc ids")
+        XCTAssertEqual(app.windows["1"]?.store.model?.name, "Hamlet")
+        XCTAssertEqual(app.windows["2"]?.store.model?.name, "A")
+        let reopened = engine.receivedFrom.compactMap { m -> String? in
+            if case .request(_, .open(let path, _)) = m.message { return path }
+            return nil
+        }
+        XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
     }
 }

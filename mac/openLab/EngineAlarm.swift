@@ -127,6 +127,8 @@ final class EngineAlarmController {
     private let alerts: @MainActor () -> WorkspaceAlerts
     private var subs: [AnyCancellable] = []
     private var isShown: Bool { presenter.isVisible }
+    /// What the last reattach reported (kept when the autosave line is added).
+    private var summary = ""
     /// The latest offer check (tests await it).
     private(set) var offerTask: Task<Void, Never>?
 
@@ -153,6 +155,7 @@ final class EngineAlarmController {
             presenter.show(title: loc("engine.alarm.cannotStart"), message: reason)
         }
         presenter.setRestoreAction(nil)
+        summary = ""
     }
 
     /// A reattach is reported when it ends; with nothing to reattach the offer comes now.
@@ -168,7 +171,8 @@ final class EngineAlarmController {
         if !isShown {
             presenter.show(title: loc("engine.alarm.restarted"), message: loc("engine.alarm.restartedMessage"))
         }
-        presenter.setDetail(lines.joined(separator: "\n"))
+        summary = lines.joined(separator: "\n")
+        presenter.setDetail(summary)
         checkRecovery()
     }
 
@@ -177,14 +181,22 @@ final class EngineAlarmController {
         guard supervisor.recoveryPending else { return }
         supervisor.recoveryPending = false
         offerTask = Task { [weak self] in
-            guard let self, case .success(let entries) = await self.session.scanRecovery() else { return }
+            guard let self else { return }
+            let entries: [RecoveryEntryInfo]
+            switch await self.session.scanRecovery() {
+            case .success(let e): entries = e
+            case .failure(let e):
+                engineLog.error("recovery scan failed: \(String(describing: e), privacy: .public)")
+                return
+            }
             let open = Set(self.session.stores.values.compactMap { $0.model?.id })
             let offer = entries.filter { !open.contains($0.workspaceId) }
             guard !offer.isEmpty else { return }
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
-            self.presenter.setDetail(String(format: loc("engine.alarm.autosaves"), offer.count))
+            let line = String(format: loc("engine.alarm.autosaves"), offer.count)
+            self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
             self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }
         }
     }
