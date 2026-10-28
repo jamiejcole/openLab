@@ -407,7 +407,7 @@ impl Stage {
 }
 
 /// The non-voice unit a fault was blamed on ([`Event::StageFaulted`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FaultStage {
     /// A patch matrix (mixing its bus, or a routing command for it). Its gains were reset to
     /// silence; the control thread re-sends its routing.

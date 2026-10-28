@@ -8,21 +8,51 @@
 //! disabled device output, master or meters stay a warning until the mixer is rebuilt (after
 //! repeated faults no unit could be blamed for), which sends everything again.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use openlab_audio::{CommandKind, FaultStage};
+use openlab_audio::{CommandKind, FaultStage, SampleTime};
 use openlab_core::PatchId;
 use openlab_core::protocol::{LogLevel, WireWarning};
 
 use super::voices::Effects;
 use super::{Control, DocCx, notice};
 
-/// Units the mixer disabled, for the warnings. Cleared by a rebuild.
+/// The engine's view of the mixer's stage faults.
 #[derive(Default)]
-pub(super) struct Disabled {
+pub(super) struct StageFaults {
+    /// Units the mixer disabled, for the warnings. Cleared by a rebuild.
+    disabled: Disabled,
+    /// When each stage's fault was last logged and told: a unit that keeps faulting (further
+    /// apart than the mixer's window, or a rebuild after rebuild) is told about once a second.
+    told: BTreeMap<FaultStage, SampleTime>,
+}
+
+#[derive(Default)]
+struct Disabled {
     outputs: BTreeSet<u16>,
     master: bool,
     meters: bool,
+}
+
+impl StageFaults {
+    /// The warnings in force for the units disabled.
+    pub(super) fn warnings(&self, list: &mut Vec<WireWarning>) {
+        self.disabled.warnings(list);
+    }
+
+    /// Whether a fault of `stage` at `now` is to be logged and told (none was in the second
+    /// before it, at `rate`); a unit disabled is always told (it happens once).
+    fn tell(&mut self, stage: FaultStage, disabled: bool, now: SampleTime, rate: u32) -> bool {
+        let quiet = self
+            .told
+            .get(&stage)
+            .is_some_and(|&t| now < t.saturating_add(u64::from(rate)));
+        if quiet && !disabled {
+            return false;
+        }
+        self.told.insert(stage, now);
+        true
+    }
 }
 
 impl Disabled {
@@ -64,27 +94,40 @@ impl Control {
     /// The mixer reported a fault in `stage` (`disabled`: it gave up on that unit).
     pub(super) fn stage_faulted(&mut self, stage: FaultStage, disabled: bool) {
         self.eng.stage_reports += 1;
-        let what = match stage {
-            FaultStage::Patch(slot) => format!("mixer patch slot {slot}"),
-            FaultStage::Output(o) => format!("device output {}", u32::from(o) + 1),
-            FaultStage::Master => "the mixer master".to_owned(),
-            FaultStage::Meters => "the level meters".to_owned(),
-            FaultStage::Mixer => "the mixer".to_owned(),
-        };
-        let line = match (stage, disabled) {
-            (FaultStage::Mixer, _) => "audio engine fault: faults with no known cause kept \
-                                       repeating; the mixer's routing was rebuilt"
-                .to_owned(),
-            (_, true) => format!("audio engine fault: {what} kept failing and was disabled"),
-            (_, false) => format!("audio engine fault: {what} failed and was reset"),
-        };
-        self.eng.log(LogLevel::Error, line);
+        let now = self.eng.now();
+        let tell = self
+            .eng
+            .stage_faults
+            .tell(stage, disabled, now, self.eng.rate.get());
+        if tell {
+            let what = match stage {
+                FaultStage::Patch(slot) => format!("mixer patch slot {slot}"),
+                FaultStage::Output(o) => format!("device output {}", u32::from(o) + 1),
+                FaultStage::Master => "the mixer master".to_owned(),
+                FaultStage::Meters => "the level meters".to_owned(),
+                FaultStage::Mixer => "the mixer".to_owned(),
+            };
+            let how = match (stage, disabled) {
+                (FaultStage::Mixer, _) => {
+                    "faults with no known cause kept repeating; the mixer's routing was rebuilt"
+                        .to_owned()
+                }
+                (_, true) => format!("{what} kept failing and was disabled"),
+                (_, false) => format!("{what} failed and was reset"),
+            };
+            let count = self.eng.mixer.faulted_stages();
+            self.eng.log(
+                LogLevel::Error,
+                format!("audio engine fault: {how} ({count} mixer stage fault(s) so far)"),
+            );
+        }
         let mut commands = Vec::new();
         let mut told = None;
+        let faults = &mut self.eng.stage_faults.disabled;
         match stage {
-            FaultStage::Patch(slot) => self.patch_faulted(slot, disabled),
+            FaultStage::Patch(slot) => self.patch_faulted(slot, disabled, tell),
             FaultStage::Output(o) if disabled => {
-                self.eng.disabled.outputs.insert(o);
+                faults.outputs.insert(o);
             }
             FaultStage::Output(o) => {
                 commands.extend(self.eng.patches.resend_output(o));
@@ -94,7 +137,7 @@ impl Control {
                     u32::from(o) + 1
                 ));
             }
-            FaultStage::Master if disabled => self.eng.disabled.master = true,
+            FaultStage::Master if disabled => faults.master = true,
             FaultStage::Master => {
                 commands.push(CommandKind::SetMaster { gain: 1.0 });
                 told = Some(
@@ -103,9 +146,9 @@ impl Control {
                         .to_owned(),
                 );
             }
-            FaultStage::Meters => self.eng.disabled.meters |= disabled,
+            FaultStage::Meters => faults.meters |= disabled,
             FaultStage::Mixer => {
-                self.eng.disabled = Disabled::default();
+                *faults = Disabled::default();
                 commands = self.eng.patches.rebuilt();
                 told = Some(
                     "the audio engine kept failing and its routing was rebuilt: sound may have \
@@ -114,18 +157,17 @@ impl Control {
                 );
             }
         }
-        let now = self.eng.now();
         self.eng
             .send_commands(commands.into_iter().map(|c| (now, c)).collect());
-        if let Some(message) = told {
+        if let Some(message) = told.filter(|_| tell) {
             self.each_doc(|cx| cx.tell(message.clone()));
         }
         self.mark_warnings_dirty();
     }
 
     /// Mixer slot `slot` was reset (sent its gains again) or disabled (quarantined; the cues on
-    /// it break and its patch takes another slot).
-    fn patch_faulted(&mut self, slot: u16, disabled: bool) {
+    /// it break and its patch takes another slot). `tell`: the operator is told.
+    fn patch_faulted(&mut self, slot: u16, disabled: bool, tell: bool) {
         let owner = self.eng.patches.owner(slot);
         if disabled {
             self.eng.patches.quarantine(slot);
@@ -138,7 +180,7 @@ impl Control {
         if let Some((doc, patch)) = owner
             && let Some(mut cx) = self.cx_of(doc)
         {
-            cx.patch_faulted(slot, patch, disabled);
+            cx.patch_faulted(slot, patch, disabled, tell);
         }
     }
 
@@ -166,7 +208,7 @@ impl Control {
 }
 
 impl DocCx<'_> {
-    fn patch_faulted(&mut self, slot: u16, patch: PatchId, disabled: bool) {
+    fn patch_faulted(&mut self, slot: u16, patch: PatchId, disabled: bool, tell: bool) {
         let now = self.now();
         let name = self
             .doc
@@ -188,7 +230,9 @@ impl DocCx<'_> {
                  dropped out briefly"
             )
         };
-        fx.notices.push(("audio_fault", message, None));
+        if tell {
+            fx.notices.push(("audio_fault", message, None));
+        }
         self.follow(fx, now);
         if disabled {
             for input in self.sync_patches(false) {

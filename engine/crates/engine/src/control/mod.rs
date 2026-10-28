@@ -390,8 +390,8 @@ struct Engine {
     seen: Seen,
     /// Mixer stage fault reports handled ([`Control::stage_faulted`]).
     stage_reports: u64,
-    /// Mixer units disabled after repeated faults.
-    disabled: faults::Disabled,
+    /// Mixer units disabled after repeated faults, and when each stage was last told.
+    stage_faults: faults::StageFaults,
     last_meters: Option<SampleTime>,
     /// Rendered sample of the previous voice-meter read (reconciliation).
     last_meter_read: Option<SampleTime>,
@@ -649,7 +649,7 @@ impl Control {
             cue_outputs,
             seen: Seen::default(),
             stage_reports: 0,
-            disabled: faults::Disabled::default(),
+            stage_faults: faults::StageFaults::default(),
             last_meters: None,
             last_meter_read: None,
             meter_round: None,
@@ -2758,7 +2758,7 @@ impl DocCx<'_> {
     /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
     /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
     fn device_warnings(&self, list: &mut Vec<WireWarning>) {
-        self.eng.disabled.warnings(list);
+        self.eng.stage_faults.warnings(list);
         if let Some(d) = self.eng.backend.device() {
             let name = &d.info().name;
             if let Some(why) = d.unrecoverable() {
@@ -3077,16 +3077,9 @@ impl Control {
             );
         }
         // Reports counted at the previous check have been drained by now (the mixer counts a
-        // fault just before it queues the report).
-        let counted_before = eng.seen.faulted_stages;
-        let stages = eng.mixer.faulted_stages();
-        if stages > eng.seen.faulted_stages {
-            eng.seen.faulted_stages = stages;
-            eng.log(
-                LogLevel::Error,
-                format!("audio engine fault: {stages} mixer stage fault(s) so far"),
-            );
-        }
+        // fault just before it queues the report). Each report is logged as it is handled.
+        let counted_before =
+            std::mem::replace(&mut eng.seen.faulted_stages, eng.mixer.faulted_stages());
         self.lost_stage_reports(counted_before);
         let eng = &mut self.eng;
         let allocs = eng.backend.alloc_violations();
@@ -4233,6 +4226,15 @@ mod tests {
         let (told, _) = fault_notices(&s.take_outbound());
         assert!(told.iter().any(|m| m.contains("\"Main\"")), "{told:?}");
         assert_eq!(slot(&s), Some(first));
+        // A unit that keeps faulting is told about once a second, not once a fault.
+        s.control_mut()
+            .stage_faulted(FaultStage::Patch(first), false);
+        assert!(s.take_outbound().is_empty());
+        s.run(8000);
+        s.take_outbound();
+        s.control_mut()
+            .stage_faulted(FaultStage::Patch(first), false);
+        assert_eq!(fault_notices(&s.take_outbound()).0.len(), 1);
 
         s.control_mut()
             .stage_faulted(FaultStage::Patch(first), true);
