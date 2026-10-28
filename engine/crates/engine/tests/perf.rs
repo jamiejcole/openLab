@@ -555,6 +555,7 @@ fn performance_budgets() {
         "an edit is super-linear"
     );
     watch_budget();
+    two_doc_budgets(&path);
 }
 
 /// M2.25: the media watch thread may take at most 1% of a core with 2,000 files (half the
@@ -602,4 +603,450 @@ fn rename(id: openlab_core::CueId) -> Command {
         id,
         property: CueProperty::Name { value: "x".into() },
     }
+}
+
+// Two docs (M4.15i, ARCHITECTURE 3.1, docs/control.md "Several docs"). Every doc ticks on the
+// one control thread and renders through the one mixer, so a second 2,000-cue doc must not
+// change what the first costs: the idle wake rate stays one per `MAX_WAIT` (virtual time), an
+// idle tick and an edit cost what one doc's do plus that doc's own share, installing and
+// removing a doc fits in one audio block while another plays, and 64 voices render as fast in
+// two docs as in one.
+
+/// Two docs may cost an idle tick at most this many times one doc's (linear is 2: each doc
+/// ticks its own voices, deadlines and warnings; the engine-wide steps run once).
+const MAX_IDLE_DOC_SCALING: f64 = 3.0;
+/// An edit with a second doc open may cost at most this many times the edit with one doc,
+/// plus [`EDIT_SLACK`] (the edit touches one doc; the tick after it ticks both).
+const MAX_EDIT_DOC_SCALING: f64 = 1.5;
+const EDIT_SLACK: Duration = Duration::from_micros(500);
+/// ARCHITECTURE 3.1: installing a doc on the control thread is "within one audio block
+/// (~5 ms)": 256 frames at 48 kHz. The gate takes this or the perf show's own block, whichever
+/// is shorter, divided by [`HEADROOM`].
+const ARCH_BLOCK: Duration = Duration::from_nanos(256 * 1_000_000_000 / 48_000);
+/// Two docs' 64 voices may render at most this much slower than one doc's (the mixer knows
+/// slots, not docs: two docs are two patch slots).
+const MAX_RENDER_DOC_SCALING: f64 = 1.25;
+/// NFR-23 / QA-06 via cpu_budget: 64 voices with fades render at least this many times faster
+/// than real time on the CI runner.
+const MIN_REALTIME_RATIO: f64 = 10.0;
+
+fn second_workspace() -> openlab_core::Workspace {
+    let mut ws = big_workspace();
+    ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(2));
+    ws.name = "second".into();
+    ws
+}
+
+/// Maps the usual patch of `ws` to the offline device too.
+fn map(c: &mut openlab_engine::control::ControlConfig, ws: &openlab_core::Workspace) {
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_id(),
+            openlab_core::PatchMapping {
+                device: "Offline".into(),
+                channels: vec![0, 1],
+            },
+        )
+        .unwrap();
+}
+
+/// `first` open, then the second 2,000-cue show opened from `second` (its file), every probe
+/// answered and both idle.
+fn two_docs(
+    first: openlab_core::Workspace,
+    second: &std::path::Path,
+) -> (OfflineShow, openlab_core::protocol::DocId) {
+    let mut c = config(&first);
+    map(&mut c, &second_workspace());
+    let mut s = OfflineShow::new(first, mixer_config(), c).unwrap();
+    s.settle_media();
+    let doc = s
+        .open_doc(openlab_engine::control::DocSource::Open {
+            path: second.to_path_buf(),
+            recovery: None,
+        })
+        .unwrap();
+    s.settle_media();
+    s.run(BLOCK * 8);
+    s.take_outbound();
+    (s, doc)
+}
+
+#[test]
+fn two_open_docs_idle_at_one_docs_wake_rate() {
+    let second = show_file(&second_workspace());
+    let (mut s, doc) = two_docs(big_workspace(), &second);
+    assert_eq!(s.control().doc_ids().len(), 2);
+    assert!(s.control().is_idle());
+    let cues = count(&s.control().doc(doc).unwrap().workspace().cue_lists[0].cues);
+    assert!(cues >= 2_000, "{cues}");
+    let builds = s.control().plan_builds();
+    let seconds = 20;
+    let (wakes, longest, shortest) = idle_loop(&mut s, seconds);
+    // The same wake rate as one doc (`an_idle_loop_sleeps_instead_of_spinning`): the wait is
+    // the shortest any doc asks for, and an idle doc asks for none.
+    assert_eq!((shortest, longest), (MAX_WAIT, MAX_WAIT));
+    assert_eq!(
+        wakes,
+        seconds * 1_000_000_000 / MAX_WAIT.as_nanos() as u64,
+        "wakes over {seconds} virtual seconds"
+    );
+    assert!(s.take_outbound().is_empty());
+    assert_eq!(s.control().plan_builds(), builds);
+    assert!(s.control().is_idle());
+    assert_eq!(s.stalls(), 0);
+}
+
+/// One edit sent to `doc` and the tick after it, as [`performance_budgets`] times them.
+fn edit_in(s: &mut OfflineShow, doc: openlab_core::protocol::DocId, edit: Command) -> Duration {
+    let id = s.request_id();
+    let t = Instant::now();
+    let replies = s.send_doc(
+        doc,
+        ClientMessage::Command {
+            id,
+            command: Box::new(edit),
+            coalesce: None,
+        },
+    );
+    s.tick();
+    let took = t.elapsed();
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    took
+}
+
+/// The two edits of the two-doc gate: rename one cue, batch set 200.
+fn doc_edits(ws: &openlab_core::Workspace) -> [Command; 2] {
+    let leaf = ws.cue_lists[0].cues[(GROUPS + 5) as usize].id;
+    [
+        rename(leaf),
+        Command::BatchSet {
+            ids: first_audio_ids(ws, 200),
+            property: CueProperty::Armed { value: false },
+        },
+    ]
+}
+
+/// The timed two-doc gates, run from [`performance_budgets`] after the one-doc ones.
+fn two_doc_budgets(one_doc_path: &std::path::Path) {
+    let second = show_file(&second_workspace());
+    let failures = [
+        two_doc_idle(one_doc_path, &second),
+        two_doc_edits(one_doc_path, &second),
+        install_and_remove(&second),
+        shared_render(),
+    ];
+    let failed: Vec<String> = failures.into_iter().flatten().collect();
+    assert!(failed.is_empty(), "two-doc gates: {failed:#?}");
+}
+
+/// An idle tick's cost with `s` open, best of [`RUNS`] of 1,000 ticks.
+fn idle_tick(s: &mut OfflineShow) -> Duration {
+    s.run(BLOCK * 8);
+    assert!(s.control().is_idle());
+    best(RUNS, || {
+        let t = Instant::now();
+        for _ in 0..1_000 {
+            s.tick();
+        }
+        t.elapsed() / 1_000
+    })
+}
+
+/// NFR-25 with two docs: an idle tick costs at most [`MAX_IDLE_DOC_SCALING`] times one doc's,
+/// and within the idle CPU limit at the wake rate `two_open_docs_idle_at_one_docs_wake_rate`
+/// proves.
+fn two_doc_idle(one_doc_path: &std::path::Path, second: &std::path::Path) -> Option<String> {
+    let (mut one, _) = open(one_doc_path);
+    let one = idle_tick(&mut one);
+    let (mut two, _) = two_docs(big_workspace(), second);
+    let two = idle_tick(&mut two);
+    let cpu = two.as_secs_f64() / MAX_WAIT.as_secs_f64();
+    let limit = IDLE_CPU_LIMIT / f64::from(HEADROOM);
+    eprintln!(
+        "two docs idle tick: {two:?} ({:.2}x one doc's {one:?}; limit {MAX_IDLE_DOC_SCALING}x) = {:.4}% of a core (limit {:.1}%)",
+        ratio(two, one),
+        cpu * 100.0,
+        limit * 100.0
+    );
+    if cpu >= limit {
+        return Some(format!("two docs idle tick {two:?}: {:.4}%", cpu * 100.0));
+    }
+    (ratio(two, one) > MAX_IDLE_DOC_SCALING)
+        .then(|| format!("two docs idle tick {two:?} vs one doc's {one:?}"))
+}
+
+/// NFR-24 with two docs: renaming a cue and setting 200 cues in the second doc costs what it
+/// costs with one doc open (within [`MAX_EDIT_DOC_SCALING`] and [`EDIT_SLACK`]) and stays
+/// under the edit limit.
+fn two_doc_edits(one_doc_path: &std::path::Path, second: &std::path::Path) -> Option<String> {
+    let edit_limit = EDIT_LIMIT * 3 / 4;
+    let names = ["rename one cue", "batch set 200 cues"];
+    let mut one = [Duration::MAX; 2];
+    let mut two = [Duration::MAX; 2];
+    for _ in 0..RUNS {
+        let (mut s, _) = open(one_doc_path);
+        let doc = s.control().doc_ids()[0];
+        let w = s.control().workspace().clone();
+        for (i, edit) in doc_edits(&w).into_iter().enumerate() {
+            one[i] = one[i].min(edit_in(&mut s, doc, edit));
+        }
+        let (mut s, doc) = two_docs(big_workspace(), second);
+        let w = s.control().doc(doc).unwrap().workspace().clone();
+        for (i, edit) in doc_edits(&w).into_iter().enumerate() {
+            two[i] = two[i].min(edit_in(&mut s, doc, edit));
+        }
+    }
+    let mut failed = Vec::new();
+    for i in 0..2 {
+        let allowed = one[i].mul_f64(MAX_EDIT_DOC_SCALING) + EDIT_SLACK;
+        eprintln!(
+            "two docs edit {}: {:?} ({:.2}x one doc's {:?}; limit {allowed:?} and {edit_limit:?})",
+            names[i],
+            two[i],
+            ratio(two[i], one[i]),
+            one[i]
+        );
+        if two[i] >= edit_limit || two[i] > allowed {
+            failed.push(format!("{}: {:?} vs {:?}", names[i], two[i], one[i]));
+        }
+    }
+    (!failed.is_empty()).then(|| failed.join("; "))
+}
+
+/// Opening and closing a 2,000-cue doc while another plays: the control thread's part of each
+/// (the install of the parts the document worker built; the close) and the wake after it fit
+/// in one audio block ([`ARCH_BLOCK`], or the show's block if shorter) over [`HEADROOM`], and
+/// the playing doc's cue plays on without a late start.
+fn install_and_remove(second: &std::path::Path) -> Option<String> {
+    use openlab_engine::control::DocSource;
+    let block = Duration::from_secs_f64(secs(BLOCK));
+    let limit = block.min(ARCH_BLOCK) / HEADROOM;
+    // The first doc plays a long cue throughout.
+    let long = wav(&dc(RATE as usize * 600, 0.25));
+    let mut first = big_workspace();
+    first.cue_lists[0].cues.push(audio(9_100_000, &long, 0));
+    let mut c = config(&first);
+    map(&mut c, &second_workspace());
+    // The watch thread, as the engine runs it: in manual mode its own work (a path's volume,
+    // its stat state) would be done on the control thread, which it never is live.
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Thread;
+    let mut s = OfflineShow::new(first, mixer_config(), c).unwrap();
+    s.settle_media();
+    s.transport(openlab_core::protocol::TransportAction::Start { cue: id(9_100_000) });
+    s.run(BLOCK * 4);
+    let playing = |s: &OfflineShow| {
+        s.control().engine().state(id(9_100_000)) == openlab_core::CueState::Running
+    };
+    assert!(playing(&s));
+    let names = [
+        "install",
+        "wake after install",
+        "remove",
+        "wake after remove",
+    ];
+    let mut took = [Duration::MAX; 4];
+    for _ in 0..RUNS {
+        s.take_outbound();
+        let rid = s.request_id();
+        let (tx, _rx) = openlab_engine::control::reply_channel();
+        s.control_mut().open_doc(
+            DocSource::Open {
+                path: second.to_path_buf(),
+                recovery: None,
+            },
+            rid,
+            &tx,
+        );
+        let answer = s.next_doc_answer().expect("the document worker answers");
+        let t = Instant::now();
+        s.deliver(answer);
+        took[0] = took[0].min(t.elapsed());
+        let t = Instant::now();
+        s.control_mut().tick();
+        took[1] = took[1].min(t.elapsed());
+        let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
+        s.settle_media();
+        s.run(BLOCK * 4);
+        let t = Instant::now();
+        s.control_mut().close_doc(doc, false).unwrap();
+        took[2] = took[2].min(t.elapsed());
+        let t = Instant::now();
+        s.control_mut().tick();
+        took[3] = took[3].min(t.elapsed());
+        s.settle_docs();
+        s.run(BLOCK * 4);
+        assert!(playing(&s), "the first doc's cue plays on");
+    }
+    let late = warnings(&s.take_outbound())
+        .iter()
+        .any(|w| matches!(w, openlab_core::protocol::WireWarning::LateStart { .. }));
+    assert!(!late, "a late start in the playing doc");
+    assert_eq!(s.stalls(), 0);
+    let mut failed = Vec::new();
+    for (name, took) in names.iter().zip(took) {
+        eprintln!("2,000-cue doc {name}: {took:?} (limit {limit:?})");
+        if took >= limit {
+            failed.push(format!("{name}: {took:?}"));
+        }
+    }
+    (!failed.is_empty()).then(|| failed.join("; "))
+}
+
+/// Render rate at 48 kHz, block 512 (cpu_budget's gate) of 64 stereo cues fading in throughout
+/// the measured window: all in one doc, or 32 in each of two. Only the mixer callback is
+/// timed ([`OfflineShow::step_timed`]). Returns audio seconds per render second.
+fn render_rate(split: bool) -> f64 {
+    const RATE48: u32 = 48_000;
+    const BLOCK48: u64 = 512;
+    const WARMUP: u64 = 40;
+    const MEASURED: u64 = 1_000; // 10.7 s of audio
+    let seconds = ((WARMUP + MEASURED + 8) * BLOCK48) as f64 / f64::from(RATE48) + 1.0;
+    let media = stereo_wav48(seconds);
+    let cue_of = |n: u128| {
+        let mut c = audio(n, &media, 0);
+        if let CueKind::Audio {
+            fade_in,
+            levels,
+            preload,
+            ..
+        } = &mut c.kind
+        {
+            *preload = true;
+            *fade_in = FadeSpec {
+                duration: seconds,
+                curve: [FadeCurve::Linear, FadeCurve::EqualPower, FadeCurve::SCurve]
+                    [n as usize % 3],
+            };
+            levels.crosspoints.push(openlab_core::Crosspoint {
+                input: 1,
+                output: 1,
+                db: 0.0,
+                mute: false,
+            });
+        }
+        c
+    };
+    let (a_cues, b_cues): (Vec<u128>, Vec<u128>) = if split {
+        ((1..=32).collect(), (33..=64).collect())
+    } else {
+        ((1..=64).collect(), vec![])
+    };
+    let a = workspace(a_cues.iter().map(|&n| cue_of(n)).collect());
+    let mut b = workspace(b_cues.iter().map(|&n| cue_of(n)).collect());
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(2));
+    let mut c = openlab_engine::control::ControlConfig::new(RATE48, BLOCK48);
+    c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
+    c.devices = vec![openlab_core::DeviceInfo {
+        name: "Offline".into(),
+        output_channels: 2,
+    }];
+    map(&mut c, &a);
+    map(&mut c, &b);
+    c.mixer_patches = 2;
+    let mixer = openlab_audio::MixerConfig {
+        sample_rate: RATE48,
+        output_channels: 2,
+        max_block_frames: BLOCK48 as usize,
+        max_voices: 96,
+        max_voice_channels: 8,
+        patches: 2,
+        lookahead_ms: 500,
+    };
+    let mut s = OfflineShow::new(a, mixer, c).unwrap();
+    s.settle_media();
+    let docs = if split {
+        let doc = s
+            .open_doc(openlab_engine::control::DocSource::Workspace(Box::new(b)))
+            .unwrap();
+        s.settle_media();
+        vec![(s.control().doc_ids()[0], a_cues), (doc, b_cues)]
+    } else {
+        vec![(s.control().doc_ids()[0], a_cues)]
+    };
+    for (doc, cues) in &docs {
+        for &n in cues {
+            s.transport_doc(
+                *doc,
+                openlab_core::protocol::TransportAction::Start { cue: id(n) },
+            );
+        }
+    }
+    for _ in 0..WARMUP {
+        s.step();
+    }
+    let voices: usize = docs
+        .iter()
+        .map(|(doc, cues)| {
+            let d = s.control().doc(*doc).unwrap();
+            cues.iter()
+                .filter(|&&n| d.engine().state(id(n)) == openlab_core::CueState::Running)
+                .count()
+        })
+        .sum();
+    assert_eq!(voices, 64, "every cue plays");
+    let mut rendered = Duration::ZERO;
+    for _ in 0..MEASURED {
+        rendered += s.step_timed();
+    }
+    assert_eq!(s.stalls(), 0);
+    let tail = &s.audio()[s.audio().len() - BLOCK48 as usize * 2..];
+    assert!(tail.iter().all(|v| v.is_finite()) && tail.iter().any(|v| *v != 0.0));
+    (MEASURED * BLOCK48) as f64 / f64::from(RATE48) / rendered.as_secs_f64().max(1e-9)
+}
+
+/// A stereo 32-bit float WAV at 48 kHz of `seconds`, two different sines.
+fn stereo_wav48(seconds: f64) -> std::path::PathBuf {
+    let frames = (seconds * 48_000.0) as usize;
+    let mut v = Vec::with_capacity(44 + frames * 8);
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&((36 + frames * 8) as u32).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&3u16.to_le_bytes());
+    v.extend_from_slice(&2u16.to_le_bytes());
+    v.extend_from_slice(&48_000u32.to_le_bytes());
+    v.extend_from_slice(&(48_000u32 * 8).to_le_bytes());
+    v.extend_from_slice(&8u16.to_le_bytes());
+    v.extend_from_slice(&32u16.to_le_bytes());
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&((frames * 8) as u32).to_le_bytes());
+    for i in 0..frames {
+        let t = i as f32 / 48_000.0;
+        for f in [220.0f32, 331.0] {
+            v.extend_from_slice(&(0.1 * (std::f32::consts::TAU * f * t).sin()).to_le_bytes());
+        }
+    }
+    file("wav", &v)
+}
+
+/// 64 voices across two docs render within cpu_budget's budget ([`MIN_REALTIME_RATIO`]) and
+/// within [`MAX_RENDER_DOC_SCALING`] of 64 in one doc. Best of three of each.
+fn shared_render() -> Option<String> {
+    let mut one: f64 = 0.0;
+    let mut two: f64 = 0.0;
+    for _ in 0..3 {
+        one = one.max(render_rate(false));
+        two = two.max(render_rate(true));
+    }
+    eprintln!(
+        "64 voices at 48 kHz, block 512: one doc {one:.1}x real time, two docs {two:.1}x ({:.2}x slower; limit {MAX_RENDER_DOC_SCALING}x; budget {MIN_REALTIME_RATIO}x)",
+        one / two.max(1e-9)
+    );
+    if two < MIN_REALTIME_RATIO {
+        return Some(format!("two docs render {two:.1}x real time"));
+    }
+    (one / two.max(1e-9) > MAX_RENDER_DOC_SCALING)
+        .then(|| format!("two docs render {two:.1}x vs one doc's {one:.1}x"))
 }

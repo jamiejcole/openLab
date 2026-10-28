@@ -335,11 +335,40 @@ impl OfflineShow {
     /// Renders one block: answers in, streams settled, the block rendered (and captured), then
     /// a control tick.
     pub fn step(&mut self) {
+        let _ = self.step_timed();
+    }
+
+    /// [`Self::step`], returning how long the render alone took (the mixer callback: not the
+    /// waits for the disk workers, not the tick). For the render budget gates.
+    pub fn step_timed(&mut self) -> Duration {
         self.pump_inbox();
         self.settle_streams();
+        let t = std::time::Instant::now();
         self.renderer.render_into(&mut self.buf, &[self.block]);
+        let took = t.elapsed();
         self.capture.extend_from_slice(&self.buf);
         self.control.tick();
+        took
+    }
+
+    /// Waits (bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`]) for the document
+    /// worker's next answer, handling every other message meanwhile, and returns it unhandled,
+    /// so a test can time what the control thread does with it ([`Self::deliver`]).
+    pub fn next_doc_answer(&mut self) -> Option<Inbox> {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.inbox.recv_timeout(left) {
+                Ok(msg @ Inbox::Doc(_)) => return Some(msg),
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) => {
+                    self.stalls += 1;
+                    return None;
+                }
+            }
+        }
     }
 
     /// Renders `frames` (whole blocks) with no control tick in between: a control thread that

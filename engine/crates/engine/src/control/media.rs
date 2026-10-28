@@ -588,22 +588,29 @@ pub struct Stuck {
 pub struct Indexed {
     index: CueIndex,
     uses: HashMap<CueId, Use>,
-    /// Files in workspace order (the order their probes go out).
-    order: Vec<String>,
+    /// Files in workspace order (the order their probes go out), each with its path resolved
+    /// against `show_dir` ([`media_path`]): resolving 2,000 references took about 40% of a
+    /// doc's install on the control thread (M4.15i).
+    order: Vec<(String, Option<PathBuf>)>,
+    show_dir: Option<PathBuf>,
     visited: u64,
 }
 
-/// Reads every cue of `ws` once: the cue index and each audio cue's file.
-pub fn index_workspace(ws: &Workspace) -> Indexed {
+/// Reads every cue of `ws` once: the cue index and each audio cue's file, resolved against
+/// `show_dir`.
+pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
     let mut uses: HashMap<CueId, Use> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
+    let mut order: Vec<(String, Option<PathBuf>)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut visited = 0;
     let index = CueIndex::build_visiting(ws, |cue| {
         visited += 1;
         if let Some((key, preload)) = media_use(cue) {
             if seen.insert(key.to_owned()) {
-                order.push(key.to_owned());
+                order.push((
+                    key.to_owned(),
+                    media_path(&MediaRef::new(key.to_owned()), show_dir),
+                ));
             }
             uses.insert(
                 cue.id,
@@ -618,6 +625,7 @@ pub fn index_workspace(ws: &Workspace) -> Indexed {
         index,
         uses,
         order,
+        show_dir: show_dir.map(Path::to_path_buf),
         visited,
     }
 }
@@ -972,7 +980,8 @@ impl MediaCatalog {
     /// changed their mind. Probes go out in workspace order; files near a playhead are moved
     /// ahead with [`Self::prioritize`].
     pub fn sync(&mut self, ws: &Workspace) {
-        self.sync_indexed(index_workspace(ws));
+        let indexed = index_workspace(ws, self.show_dir.as_deref());
+        self.sync_indexed(indexed);
     }
 
     /// [`Self::sync`] from a workspace already read ([`index_workspace`], off the control
@@ -986,11 +995,14 @@ impl MediaCatalog {
             index,
             uses,
             order,
+            show_dir,
             visited,
         } = indexed;
+        // Paths resolved against another folder than this catalog's are resolved again.
+        let resolved = show_dir == self.show_dir;
         self.index = index;
         self.cues_read += visited;
-        let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+        let mut counts: HashMap<&str, (usize, usize)> = HashMap::with_capacity(order.len());
         for u in uses.values() {
             let n = counts.entry(u.key.as_str()).or_default();
             n.0 += 1;
@@ -1011,9 +1023,15 @@ impl MediaCatalog {
         });
         give_back(&mut self.reserved, &self.pool.preloads, freed);
         let mut asked = Vec::new();
-        for key in &order {
+        self.entries
+            .reserve(order.len().saturating_sub(self.entries.len()));
+        for (key, path) in &order {
             if !self.entries.contains_key(key.as_str()) {
-                self.request(key.clone());
+                if resolved {
+                    self.request_at(key.clone(), path.clone());
+                } else {
+                    self.request(key.clone());
+                }
                 asked.push(key.as_str());
             }
         }
@@ -1025,7 +1043,16 @@ impl MediaCatalog {
                 e.preloaders = preloaders;
             }
         }
-        let mut keys: Vec<String> = self.entries.keys().cloned().collect();
+        // `settle_preload` of a file not probed yet only notes whether a cue wants it
+        // preloaded: done in place, so a fresh catalog's thousands of keys are not copied.
+        let mut keys: Vec<String> = Vec::new();
+        for (key, e) in &mut self.entries {
+            if matches!(e.probe, Probe::Ready(_)) {
+                keys.push(key.clone());
+            } else {
+                e.wants_preload = e.preloaders > 0;
+            }
+        }
         keys.sort_unstable();
         for key in keys {
             self.settle_preload(&key);
@@ -1275,9 +1302,14 @@ impl MediaCatalog {
     }
 
     fn request(&mut self, key: String) {
+        let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
+        self.request_at(key, path);
+    }
+
+    /// [`Self::request`] of `key`, already resolved to `path`.
+    fn request_at(&mut self, key: String, path: Option<PathBuf>) {
         self.next_ticket += 1;
         let ticket = self.next_ticket;
-        let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
         let asked = match &path {
             Some(path) => self
                 .pool
@@ -1296,8 +1328,9 @@ impl MediaCatalog {
         {
             self.jobs += u64::from(asked);
         }
-        // A new entry, or one that fails at once: what `media` gives may change.
-        if !asked || !self.entries.contains_key(&key) {
+        // A new entry, or one that fails at once: what `media` gives may change (when every
+        // cue is to be checked again anyway, the checks do not read the keys).
+        if !self.plan_changes.all && (!asked || !self.entries.contains_key(&key)) {
             self.plan_changes.keys.insert(key.clone());
         }
         match self.entries.get_mut(&key) {
@@ -1921,6 +1954,49 @@ mod tests {
         cat.sync(&ws);
         assert!(cat.take_key_changes().is_empty());
         assert!(matches!(cat.get("sounds/rel.wav"), Some(Probe::Failed)));
+    }
+
+    /// A doc's files are resolved off the control thread, against its show folder (M4.15i);
+    /// an index resolved against another folder than the catalog's is resolved again.
+    #[test]
+    fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write_wav(dir.path(), "a.wav");
+        let (mut ws, template) = template();
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(901));
+        set_media(&mut c, "a.wav", false);
+        ws.cue_lists[0].cues = vec![c];
+        let elsewhere = tempfile::tempdir().unwrap();
+        for against in [dir.path(), elsewhere.path()] {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let mut cat = MediaCatalog::with_own_pool(
+                tx,
+                Some(dir.path().to_path_buf()),
+                0,
+                openlab_audio::probe,
+                Duration::from_secs(60),
+                ProbeClock::system(),
+            )
+            .unwrap();
+            cat.sync_indexed(index_workspace(&ws, Some(against)));
+            let watched: Vec<PathBuf> = cat
+                .take_key_changes()
+                .into_iter()
+                .filter_map(|c| match c {
+                    KeyChange::Watch { path, .. } => Some(path),
+                    _ => None,
+                })
+                .collect();
+            let want = media_path(&MediaRef::new("a.wav"), Some(dir.path())).unwrap();
+            assert_eq!(watched, vec![want], "resolved against {against:?}");
+            let mut got = 0;
+            settle(&mut cat, &rx, &mut got);
+            assert!(
+                matches!(cat.get("a.wav"), Some(Probe::Ready(_))),
+                "resolved against {against:?}"
+            );
+        }
     }
 
     #[test]

@@ -177,7 +177,8 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
     // Sample 0: nothing runs yet, so what this decides (problems, playheads) does not depend
     // on the time; the control thread hands the engine the real time from its next call on.
     let actions = engine.handle(&loaded.workspace, Input::Tick, 0);
-    let indexed = index_workspace(&loaded.workspace);
+    let show_dir = loaded.path.as_deref().and_then(folder_of);
+    let indexed = index_workspace(&loaded.workspace, show_dir.as_deref());
     let mut checks = PlanChecks::default();
     checks.check_all(&loaded.workspace, &NoProbes, config.sample_rate());
     DocParts {

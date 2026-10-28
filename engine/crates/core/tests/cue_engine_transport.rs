@@ -358,6 +358,25 @@ fn panic_cancels_pending_pre_waits_continues_and_devamp_next_cues() {
     rig.assert_quiet();
 }
 
+/// A Panic with nothing running does nothing (it skips walking the cues, M4.15i: closing an
+/// idle 2,000-cue doc panics it twice), yet its window opens as always: a cue started in it is
+/// stopped at once by the next Panic, as a second press.
+#[test]
+fn a_panic_with_nothing_running_does_nothing_but_opens_its_window() {
+    let mut rig = Rig::new(vec![sound(1), grp(2, GroupMode::Timeline, vec![sound(3)])]);
+    let first = rig.panic(0);
+    assert!(voice_stops(&first).is_empty(), "{first:?}");
+    for n in 1..=3 {
+        assert!(changes(&first, n).is_empty());
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+    rig.start(100, 1);
+    let second = rig.panic(500);
+    assert_eq!(voice_stops(&second), vec![(id(1), 500, None)]);
+    assert_eq!(changes(&second, 1), vec![(CueState::Idle, 500)]);
+    rig.assert_quiet();
+}
+
 #[test]
 fn a_second_panic_during_the_fade_stops_everything_at_once() {
     let mut rig = Rig::new(vec![sound(1), grp(2, GroupMode::Timeline, vec![sound(3)])]);

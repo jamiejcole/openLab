@@ -51,6 +51,11 @@ impl CueEngine {
         // Previews are the operator's own listening, not the show, but Panic means everything
         // stops: they fade out with the show (QLab checks V4, V6).
         self.panic_previews((!hard).then_some(end), cx);
+        // Only cues with a runtime are touched: with none, the walk of every cue is skipped
+        // (closing an idle 2,000-cue doc panics it twice, within one audio block: M4.15i).
+        if self.slots.is_empty() {
+            return;
+        }
         for tree in Self::trees(cx) {
             for cue in tree.into_iter().rev() {
                 if !self.slots.contains_key(&cue) {
