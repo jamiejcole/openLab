@@ -946,7 +946,10 @@ impl Voices {
                     ));
                 }
             }
-            Event::PendingFull { .. } | Event::LoopReached { .. } | Event::SliceEnded { .. } => {}
+            Event::PendingFull { .. }
+            | Event::LoopReached { .. }
+            | Event::SliceEnded { .. }
+            | Event::StageFaulted { .. } => {}
         }
     }
 

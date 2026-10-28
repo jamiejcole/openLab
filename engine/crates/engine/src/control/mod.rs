@@ -1250,7 +1250,7 @@ fn event_voice(e: &Event) -> Option<VoiceId> {
         | Event::SliceEnded { voice, .. }
         | Event::DevampScheduled { voice, .. }
         | Event::DevampIgnored { voice, .. } => Some(*voice),
-        Event::PendingFull { .. } => None,
+        Event::PendingFull { .. } | Event::StageFaulted { .. } => None,
     }
 }
 
