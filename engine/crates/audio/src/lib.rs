@@ -23,6 +23,7 @@ mod output;
 mod pcm;
 mod plan;
 mod resample;
+mod riff_check;
 mod stream;
 mod waveform;
 
