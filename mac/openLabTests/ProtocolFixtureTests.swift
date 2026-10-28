@@ -57,6 +57,20 @@ final class ProtocolFixtureTests: XCTestCase {
         }
     }
 
+    func testSetPatchMappingSetsAndClears() throws {
+        let set = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_patch_mapping").utf8))
+        guard case .request(_, .setPatchMapping(let patch, let mapping)) = set else { return XCTFail("set") }
+        XCTAssertEqual(patch, "00000000-0000-0000-0000-000000000070")
+        XCTAssertEqual(mapping, PatchMapping(device: "Scarlett 18i20", channels: [2, 3]))
+        let clear = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "request_clear_patch_mapping").utf8))
+        guard case .request(_, .setPatchMapping(_, let cleared)) = clear else { return XCTFail("clear") }
+        XCTAssertNil(cleared)
+        // A clear is sent as an explicit null, as the fixture has it.
+        XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
+    }
+
     func testDecodedValuesAreRight() throws {
         guard case .welcome(let v, let snap) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")
