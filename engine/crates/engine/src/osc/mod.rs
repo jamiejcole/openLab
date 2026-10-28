@@ -13,7 +13,7 @@ pub mod fuzz;
 mod pattern;
 mod session;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use openlab_core::protocol::DocId;
@@ -38,9 +38,9 @@ pub use pattern::{
     has_pattern_chars,
 };
 pub use session::{
-    Budget, Budgets, ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES,
-    MAX_KNOWN_IPS, MAX_PEERS, OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC, Peer,
-    REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
+    Budget, Budgets, ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, Lockouts,
+    MAX_BAD_PASSCODES, MAX_KNOWN_IPS, MAX_PEERS, OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC,
+    Peer, REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
 };
 
 /// The UDP port QLab listens on, and so do we (UDP and TCP).
@@ -141,6 +141,14 @@ pub struct Osc {
     /// One table per open doc (ARCHITECTURE section 7: `/connect`, its passcode, sessions and
     /// lockouts are per peer and doc). Doc ids rise in open order, so this is open order too.
     docs: BTreeMap<DocId, Sessions>,
+    /// Wrong-passcode failures per IP and in all, for every doc together: a guesser gets no
+    /// fresh budget per doc.
+    lockouts: Lockouts,
+    /// What each peer asked of the application with `/updates` and `/udpReplyPort`. These are
+    /// not workspace settings (QLab: a client asks for updates, and for its own reply port), so
+    /// a doc opened later gets them for the peers that asked, and a closed doc does not take
+    /// them along.
+    wishes: HashMap<Peer, Wish>,
     /// Per source IP, whatever doc a reply is about.
     budgets: Budgets,
     /// (peer, name) pairs already warned about an ambiguous workspace name.
@@ -164,6 +172,14 @@ impl Default for Osc {
             reply_port: OSC_REPLY_PORT,
         })
     }
+}
+
+/// A peer's application-level requests, kept until it goes silent (UDP) or disconnects (TCP).
+#[derive(Debug, Default)]
+struct Wish {
+    updates: bool,
+    reply_port: Option<u16>,
+    last_seen: Duration,
 }
 
 /// What a message's replies need to know.
@@ -190,6 +206,8 @@ impl Osc {
     pub fn with_info(info: ServerInfo) -> Self {
         Self {
             docs: BTreeMap::new(),
+            lockouts: Lockouts::default(),
+            wishes: HashMap::new(),
             budgets: Budgets::default(),
             ambiguous_warned: Vec::new(),
             dedupe: Dedupe::default(),
@@ -213,6 +231,44 @@ impl Osc {
 
     fn sessions(&mut self, doc: DocId) -> &mut Sessions {
         self.docs.entry(doc).or_default()
+    }
+
+    /// Gives a doc this endpoint has not seen yet the `/updates` and `/udpReplyPort` of the peers
+    /// that asked before it opened (`access`: its passcode table). A peer that may not view the
+    /// doc keeps no reply port in it, as when it sends one there.
+    pub fn open_doc(&mut self, doc: DocId, now: Duration, access: &OscAccess) {
+        if self.docs.contains_key(&doc) {
+            return;
+        }
+        let may_view = access.no_passcode.allows(OscRight::View);
+        let sessions = self.docs.entry(doc).or_default();
+        sessions.set_strangers_may_view(may_view);
+        for (peer, wish) in &self.wishes {
+            let alive =
+                matches!(peer, Peer::Tcp { .. }) || now.saturating_sub(wish.last_seen) < UDP_IDLE;
+            if !alive {
+                continue;
+            }
+            if wish.updates {
+                sessions.set_updates(*peer, wish.last_seen, true);
+            }
+            if let Some(port) = wish.reply_port.filter(|_| may_view) {
+                sessions.set_reply_port(*peer, wish.last_seen, port);
+            }
+        }
+    }
+
+    /// Records (or, with nothing left to remember, forgets) what `peer` asked for.
+    fn note_wish(&mut self, peer: Peer, now: Duration, set: impl FnOnce(&mut Wish)) {
+        if !self.wishes.contains_key(&peer) && self.wishes.len() >= MAX_PEERS {
+            return;
+        }
+        let wish = self.wishes.entry(peer).or_default();
+        set(wish);
+        wish.last_seen = now;
+        if !wish.updates && wish.reply_port.is_none() {
+            self.wishes.remove(&peer);
+        }
     }
 
     /// Peers that asked any doc for updates (`/updates 1`). A UDP peer silent for [`UDP_IDLE`]
@@ -263,11 +319,13 @@ impl Osc {
         for sessions in self.docs.values_mut() {
             sessions.remove(peer);
         }
+        self.wishes.remove(&peer);
         self.dedupe.forget(peer);
     }
 
     /// Drops every `/connect`, subscription and known address of every doc.
     pub fn reset_sessions(&mut self) {
+        self.wishes.clear();
         for sessions in self.docs.values_mut() {
             sessions.clear();
         }
@@ -464,13 +522,27 @@ impl Osc {
             for sessions in self.docs.values_mut() {
                 sessions.expire(now);
             }
+            self.lockouts.expire(now);
+            self.wishes.retain(|p, w| {
+                matches!(p, Peer::Tcp { .. }) || now.saturating_sub(w.last_seen) < UDP_IDLE
+            });
             self.budgets.expire(now);
             self.dedupe.expire(now);
             self.last_expire = now;
         }
+        for d in docs {
+            self.open_doc(d.doc, now, d.show.access());
+        }
         // A UDP session lives while the peer sends anything, to whichever doc.
         for sessions in self.docs.values_mut() {
             sessions.touch(peer, now);
+        }
+        if let Some(wish) = self.wishes.get_mut(&peer) {
+            if matches!(peer, Peer::Udp(_)) && now.saturating_sub(wish.last_seen) >= UDP_IDLE {
+                self.wishes.remove(&peer);
+            } else {
+                wish.last_seen = now;
+            }
         }
         match decode_packet(bytes) {
             Ok(messages) => {
@@ -574,7 +646,9 @@ impl Osc {
             }
         }
         match target {
-            Some(doc) => self.doc_message(peer, now, (message, &parsed), doc, false, out),
+            Some(doc) => {
+                self.doc_message(peer, now, (message, &parsed), doc, true, out);
+            }
             // QLab 5: a message without the prefix goes to every open workspace on the port,
             // and each answers for itself.
             None => {
@@ -586,8 +660,12 @@ impl Osc {
                         docs.iter()
                             .any(|d| session::passcode_matches(d.show.access(), &given))
                     });
+                // The lockouts are shared by the docs, so one wrong guess is one failure, however
+                // many docs answer it.
+                let mut count = !accepted_somewhere;
                 for doc in docs {
-                    self.doc_message(peer, now, (message, &parsed), *doc, accepted_somewhere, out);
+                    let counted = self.doc_message(peer, now, (message, &parsed), *doc, count, out);
+                    count &= !counted;
                 }
             }
         }
@@ -637,9 +715,9 @@ impl Osc {
         now: Duration,
         (message, parsed): (&OscMessage, &Parsed),
         target: DocShow<'_>,
-        accepted_elsewhere: bool,
+        count_failure: bool,
         out: &mut Outcome,
-    ) {
+    ) -> bool {
         let DocShow { doc, show } = target;
         let access = show.access();
         self.sessions(doc)
@@ -661,21 +739,22 @@ impl Osc {
         };
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
-            let result = self.sessions(doc).connect_counting(
+            let (result, counted) = self.docs.entry(doc).or_default().connect_counting(
+                &mut self.lockouts,
                 peer,
                 now,
                 access,
                 given.as_deref(),
-                !accepted_elsewhere,
+                count_failure,
             );
             let reply = reply_for_connect(result);
             self.push_reply(&ask, &reply, out);
-            return;
+            return counted;
         }
         if required_right(&parsed.address, &message.args).is_some_and(|r| !rights.allows(r)) {
             self.stats.denied += 1;
             self.push_reply(&ask, &Reply::denied(), out);
-            return;
+            return false;
         }
         let resolved = resolve(show, parsed, &message.args, &mut self.call_match_budget);
         if resolved.unknown {
@@ -689,7 +768,7 @@ impl Osc {
             // cannot tell a trigger from a missing cue.
             self.stats.rejected += 1;
             self.push_reply(&ask, &Reply::error(), out);
-            return;
+            return false;
         }
         for input in resolved.inputs {
             if out.inputs.len() >= MAX_INPUTS_PER_CALL {
@@ -705,10 +784,11 @@ impl Osc {
             }
             self.push_reply(&ask, reply, out);
         }
+        false
     }
 
-    /// `/updates 1` and `/updates 0`, for every open doc (an application message: it cannot be
-    /// sent to one). QLab sends no reply when it is allowed; a bad argument, no doc open, or a
+    /// `/updates 1` and `/updates 0`, for every open doc and any opened later (an application
+    /// message: it cannot be sent to one; it is the peer's, not the workspace's). QLab sends no reply when it is allowed; a bad argument, no doc open, or a
     /// doc with no room for another peer is one `error`.
     fn updates(
         &mut self,
@@ -730,6 +810,9 @@ impl Osc {
                         .set_strangers_may_view(d.show.access().no_passcode.allows(OscRight::View));
                     refused |= !sessions.set_updates(peer, now, on);
                 }
+                if !refused {
+                    self.note_wish(peer, now, |w| w.updates = on);
+                }
                 refused
             }
         };
@@ -741,7 +824,8 @@ impl Osc {
     }
 
     /// `/udpReplyPort {port}`: QLab sends no reply when it is allowed, like `/updates`. It needs
-    /// View in some doc, and is kept in the session of each doc where the peer has it. Ignored
+    /// View in some doc, and is kept in the session of each doc where the peer has it and for docs
+    /// opened later (where it again needs View). Ignored
     /// over TCP (replies go back on the connection).
     fn udp_reply_port(
         &mut self,
@@ -775,6 +859,9 @@ impl Osc {
                     sessions
                         .set_strangers_may_view(d.show.access().no_passcode.allows(OscRight::View));
                     refused |= !sessions.set_reply_port(peer, now, port);
+                }
+                if !refused {
+                    self.note_wish(peer, now, |w| w.reply_port = Some(port));
                 }
                 refused
             }
