@@ -379,7 +379,8 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.sent.count == 2 }
         XCTAssertEqual(
             lastKind?["levels"]?["crosspoints"]?.arrayValue,
-            [.object(["input": .double(0), "output": .double(1), "db": .double(-120)])], "activated at -inf, as in QLab")
+            [.object(["input": .double(0), "output": .double(1), "db": .double(-120)])], "activated at -inf, as in QLab"
+        )
 
         p.select(.master)
         p.activeCheck.state = .off

@@ -86,7 +86,9 @@ struct LevelSet: Equatable {
             outputs = (levels["outputs"]?.arrayValue ?? []).map {
                 Output(db: $0["db"]?.doubleValue ?? LevelText.silence, mute: $0["mute"] == .bool(true))
             }
-            gangs = (levels["gangs"]?.arrayValue ?? []).map { ($0.arrayValue ?? []).compactMap { $0.doubleValue.map(Int.init) } }
+            gangs = (levels["gangs"]?.arrayValue ?? []).map {
+                ($0.arrayValue ?? []).compactMap { $0.doubleValue.map(Int.init) }
+            }
         }
         for x in levels["crosspoints"]?.arrayValue ?? [] {
             guard let i = x["input"]?.doubleValue, let o = x["output"]?.doubleValue, let db = x["db"]?.doubleValue,
@@ -104,7 +106,9 @@ struct LevelSet: Equatable {
         levels.set("master_db", master.map(num) ?? (isFade ? .null : num(LevelText.silence)))
         let points = crosspoints.keys.sorted().map { p -> JSONValue in
             let c = crosspoints[p] ?? Cross(db: LevelText.silence)
-            var o: [String: JSONValue] = ["input": .int(Int64(p.input)), "output": .int(Int64(p.output)), "db": num(c.db)]
+            var o: [String: JSONValue] = [
+                "input": .int(Int64(p.input)), "output": .int(Int64(p.output)), "db": num(c.db),
+            ]
             if !isFade { o["mute"] = .bool(c.mute) }
             return .object(o)
         }
@@ -115,7 +119,8 @@ struct LevelSet: Equatable {
             levels.set("output_db", .array(out.map { $0.db.map(num) ?? .null }))
         } else {
             levels.set(
-                "outputs", .array(outputs.map { .object(["db": num($0.db ?? LevelText.silence), "mute": .bool($0.mute)]) }))
+                "outputs",
+                .array(outputs.map { .object(["db": num($0.db ?? LevelText.silence), "mute": .bool($0.mute)]) }))
             levels.set("gangs", .array(gangs.map { .array($0.map { .int(Int64($0)) }) }))
         }
         kind.set("levels", levels)
@@ -135,7 +140,8 @@ struct LevelSet: Equatable {
         switch slot {
         case .master: return master
         case .output(let o): return outputs.indices.contains(o) ? outputs[o].db : (isFade ? nil : LevelText.silence)
-        case .cross(let i, let o): return crosspoints[Point(input: i, output: o)]?.db ?? (isFade ? nil : LevelText.silence)
+        case .cross(let i, let o):
+            return crosspoints[Point(input: i, output: o)]?.db ?? (isFade ? nil : LevelText.silence)
         }
     }
 

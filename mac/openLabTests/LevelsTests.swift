@@ -179,7 +179,8 @@ final class LevelSetTests: XCTestCase {
         XCTAssertTrue(s.crosspoints.isEmpty)
         var raw = FakeEngine.audioKind("a.wav")
         raw["levels"]?.set(
-            "crosspoints", .array([.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])]))
+            "crosspoints",
+            .array([.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])]))
         XCTAssertEqual(LevelSet(kind: raw)?.crosspoints.count, 0, "a damaged entry is ignored, not trusted")
     }
 }

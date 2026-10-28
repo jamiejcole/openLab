@@ -26,7 +26,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let scroll = NSScrollView()
     let cellLabel = NSTextField(labelWithString: "")
     let levelField = NSTextField()
-    let fader = LevelFader(value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: LevelText.maxDb, target: nil, action: nil)
+    let fader = LevelFader(
+        value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: LevelText.maxDb, target: nil, action: nil)
     let muteCheck = NSButton(checkboxWithTitle: loc("levels.mute"), target: nil, action: nil)
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
     let gangField = NSTextField()
@@ -144,7 +145,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     private func refreshStrip() {
         guard let levels else {
-            for c in [levelField, fader, muteCheck, activeCheck, gangField, silentButton, fromTargetButton] as [NSControl] {
+            for c in [levelField, fader, muteCheck, activeCheck, gangField, silentButton, fromTargetButton]
+                as [NSControl]
+            {
                 c.isEnabled = false
             }
             cellLabel.stringValue = ""
