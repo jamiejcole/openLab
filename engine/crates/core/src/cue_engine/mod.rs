@@ -1745,7 +1745,6 @@ impl CueEngine {
     }
 }
 
-/// Sends what is needed to silence and free a slot's voice at once.
 /// Whether `cue` is a child of a playlist group with no run of its own, which a child's end
 /// carries on (`follow_through`).
 fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
@@ -1761,6 +1760,7 @@ fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
     })
 }
 
+/// Sends what is needed to silence and free a slot's voice at once.
 fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
     match slot {
         Slot::Loaded(Loaded {
