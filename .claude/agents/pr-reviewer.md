@@ -60,3 +60,4 @@ Not reviewed / uncertain: <anything you couldn't verify>
 ```
 
 Write "none" under an empty severity. VERDICT is CHANGES REQUIRED if there is any High or any Medium.
+- QLab behaviour claims: check them with `~/qlab-ref/qlab-ref search "<words>"` (local QLab 5.6 manual; cite pages, never paste text) before rating a behaviour finding.

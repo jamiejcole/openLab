@@ -15,7 +15,7 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 - Do only the tasks you were assigned (they are GitHub issues; the brief gives the numbers). Report discovered extra work in your report (the orchestrator files the issue) rather than doing it.
 - Commit each working step as you go (plain `git commit`), not one big commit at the end.
 - Tests: one regression test per bug, no variant matrices. Don't fix states only a property generator, fuzzer or contrived input can reach: report them.
-- QLab behaviour: research https://qlab.app/docs/v5/ first. If it doesn't settle it, implement the most likely behaviour and add a row to `docs/todo/open-qlab-questions.md`; don't wait for an answer.
+- QLab behaviour: search the local QLab 5 manual index first: `~/qlab-ref/qlab-ref search "<words>"` (then `show <page>` / `section "<title>"`; QLab 5.6 reference manual, local to this Mac, never copied into the repo: paraphrase and cite pages), then the online docs (https://qlab.app/docs/v5/). If it doesn't settle it, implement the most likely behaviour and add a row to `docs/todo/open-qlab-questions.md`; don't wait for an answer.
 - The machine is shared with parallel agents (and sccache). Never wait on machine-wide process checks (e.g. `pgrep cargo`); wait only on your own command.
 - Write tests alongside the code: behaviour tests for every requirement the task cites, error-path tests, and property tests where the brief or ARCHITECTURE calls for them. Tests use the virtual clock / offline render driver — never real-time sleeps.
 - Keep `openlab-core` pure. Keep the audio thread real-time safe. No `unwrap`/`expect`/`panic!` outside tests.
