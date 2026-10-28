@@ -420,6 +420,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_run_is_live_while_its_marker_is_held_and_not_after() {
+        // Expects the dropped marker's lock to be free at once (see the helper).
+        let _serial = serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         assert!(!is_live(&dir, 1), "no marker");
