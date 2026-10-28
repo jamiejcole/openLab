@@ -7,7 +7,7 @@
 
 mod show;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -810,33 +810,8 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
     let mut stalled = f.client().await;
     let mut live = f.client().await;
     let total = 1500usize;
-    let producer = {
-        let out = f.out.clone();
-        thread::spawn(move || {
-            for n in 0..total {
-                // 16 KiB each: far more than the socket buffers and the client queue hold.
-                let message = format!("{n:08}{}", "x".repeat(16 * 1024));
-                // The control loop's own channel never stays full because the fan-out never
-                // waits for a client; one that does not drain within the guard means it blocked.
-                let mut m = ServerMessage::Log {
-                    level: LogLevel::Info,
-                    message,
-                };
-                let deadline = std::time::Instant::now() + GUARD;
-                loop {
-                    match out.try_send(m) {
-                        Ok(()) => break,
-                        Err(TrySendError::Full(back)) => {
-                            assert!(std::time::Instant::now() < deadline, "fan-out blocked");
-                            m = back;
-                            thread::yield_now();
-                        }
-                        Err(TrySendError::Closed(_)) => panic!("fan-out gone"),
-                    }
-                }
-            }
-        })
-    };
+    let read = Arc::new(AtomicUsize::new(0));
+    let producer = paced_logs(&f.out, total, &read);
     for n in 0..total {
         match next(&mut live).await {
             Some(ServerMessage::Log { message, .. }) => {
@@ -844,6 +819,7 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
             }
             other => panic!("{other:?}"),
         }
+        read.store(n + 1, Ordering::Release);
     }
     producer.join().unwrap();
     // The live client still gets replies.
@@ -1109,6 +1085,38 @@ async fn a_snapshot_older_than_what_the_client_has_is_followed_by_a_fresh_one() 
 // --- slow-client policy and limits -----------------------------------------------------------
 
 /// Hands `m` to the fan-out from a plain thread, failing if it does not drain within the guard.
+/// `total` 16 KiB logs (far more than the socket buffers and a client queue hold), never more
+/// than [`LEAD`] ahead of what the reading client has counted in `read`. A client that reads is
+/// only promised every message while the engine does not outrun its connection by a whole
+/// queue (past that it is resynced: a snapshot instead of the backlog); unpaced, an optimised
+/// build's producer outruns any socket, and the reading client was resynced too.
+fn paced_logs(out: &Out, total: usize, read: &Arc<AtomicUsize>) -> thread::JoinHandle<()> {
+    const LEAD: usize = 256;
+    let (out, read) = (out.clone(), Arc::clone(read));
+    thread::spawn(move || {
+        for n in 0..total {
+            let deadline = std::time::Instant::now() + GUARD;
+            while n >= read.load(Ordering::Acquire) + LEAD {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the client stopped reading"
+                );
+                thread::yield_now();
+            }
+            let message = format!("{n:08}{}", "x".repeat(16 * 1024));
+            // The control loop's own channel never stays full because the fan-out never waits
+            // for a client; one that does not drain within the guard means it blocked.
+            push(
+                &out,
+                ServerMessage::Log {
+                    level: LogLevel::Info,
+                    message,
+                },
+            );
+        }
+    })
+}
+
 fn push(out: &Out, mut m: ServerMessage) {
     let deadline = std::time::Instant::now() + GUARD;
     loop {
@@ -1144,21 +1152,8 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     let mut live = f.client().await;
     // Far more than the socket buffers and the 1024-message queue hold (16 KiB each).
     let total = 4000usize;
-    let producer = {
-        let out = f.out.clone();
-        thread::spawn(move || {
-            for n in 0..total {
-                let message = format!("{n:08}{}", "x".repeat(16 * 1024));
-                push(
-                    &out,
-                    ServerMessage::Log {
-                        level: LogLevel::Info,
-                        message,
-                    },
-                );
-            }
-        })
-    };
+    let read = Arc::new(AtomicUsize::new(0));
+    let producer = paced_logs(&f.out, total, &read);
     // The fan-out offers each message to every client in turn: once the live client has the
     // last one, the stalled client's queue has overflowed.
     for n in 0..total {
@@ -1168,6 +1163,7 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
             }
             other => panic!("{other:?}"),
         }
+        read.store(n + 1, Ordering::Release);
     }
     producer.join().unwrap();
     // It reads again: some logs (what was already on the way), then a fresh snapshot instead
