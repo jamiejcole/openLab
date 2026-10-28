@@ -118,6 +118,18 @@ struct ProgressItem: Hashable, Sendable, Decodable {
     let remaining: Double?
 }
 
+/// A pre-wait or post-wait counting down (M4.2e), in seconds; it always has an end.
+struct WaitProgress: Hashable, Sendable, Decodable {
+    enum Kind: String, Hashable, Sendable, Decodable {
+        case preWait = "pre_wait"
+        case postWait = "post_wait"
+    }
+    let cue: ModelID
+    let wait: Kind
+    let elapsed: Double
+    let remaining: Double
+}
+
 struct OutputMeter: Sendable, Decodable {
     let patch: ModelID
     let peaks: [Float]
@@ -428,7 +440,8 @@ enum ServerMessage: Sendable, Decodable {
     case modelChanged(revision: UInt64, upserts: [Upsert], deletes: [Delete])
     case document(DocumentState)
     case runtime(seq: UInt64, changes: [RuntimeChange])
-    case progress([ProgressItem])
+    /// Actions in progress, and pre-wait / post-wait countdowns (`waits`, absent: none).
+    case progress([ProgressItem], waits: [WaitProgress])
     case meters(outputs: [OutputMeter], cues: [CueMeter])
     case log(LogLevel, String)
     /// One new show-log record (M4.7c). Lossy and rate-limited: a gap in `seq` means records to
@@ -461,7 +474,8 @@ enum ServerMessage: Sendable, Decodable {
             self = .modelChanged(revision: try d("revision"), upserts: try d("upserts"), deletes: try d("deletes"))
         case "document": self = .document(try d("document"))
         case "runtime": self = .runtime(seq: try d("seq"), changes: try d("changes"))
-        case "progress": self = .progress(try d("items"))
+        case "progress":
+            self = .progress(try d("items"), waits: try c.decodeIfPresent([WaitProgress].self, forKey: "waits") ?? [])
         case "meters": self = .meters(outputs: try d("outputs"), cues: try d("cues"))
         case "log": self = .log(try d("level"), try d("message"))
         case "log_entry": self = .logEntry(seq: try d("seq"), try d("entry"))

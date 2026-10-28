@@ -641,6 +641,32 @@ fn fixtures() -> Vec<(String, Sample)> {
                     remaining: None,
                 },
             ],
+            waits: vec![],
+        }),
+    );
+    // M4.2e: pre-wait and post-wait countdowns; cue 12's Wait action runs beside its post-wait.
+    add(
+        "progress_waits",
+        server(ServerMessage::Progress {
+            items: vec![ProgressItem {
+                cue: cue_id(12),
+                elapsed: 1.0,
+                remaining: Some(4.0),
+            }],
+            waits: vec![
+                WaitProgress {
+                    cue: cue_id(12),
+                    wait: WireWait::PostWait,
+                    elapsed: 1.0,
+                    remaining: 2.0,
+                },
+                WaitProgress {
+                    cue: cue_id(13),
+                    wait: WireWait::PreWait,
+                    elapsed: 0.5,
+                    remaining: 1.5,
+                },
+            ],
         }),
     );
     add(
@@ -1483,6 +1509,12 @@ fn progress_and_meters_are_sanitised_not_refused() {
             elapsed,
             remaining,
         }],
+        waits: vec![WaitProgress {
+            cue: cue_id(2),
+            wait: WireWait::PreWait,
+            elapsed,
+            remaining: remaining.unwrap_or(0.0),
+        }],
     };
     let reread = |m: &ServerMessage| decode_server(&encode_server(m).unwrap()).unwrap();
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.001] {
@@ -1543,6 +1575,29 @@ fn progress_and_meters_are_sanitised_not_refused() {
     );
     // A server frame with a null where a number belongs is malformed.
     assert!(decode_server(r#"{"type":"progress","items":[{"cue":"00000000-0000-0000-0000-000000000001","elapsed":null,"remaining":null}]}"#).is_err());
+}
+
+#[test]
+fn progress_waits_are_optional_and_strict() {
+    // An engine before M4.2e sends no `waits`: it reads as none, and none is not written.
+    let bare = r#"{"type":"progress","items":[]}"#;
+    assert_eq!(
+        decode_server(bare).unwrap(),
+        ServerMessage::Progress {
+            items: vec![],
+            waits: vec![],
+        }
+    );
+    assert_eq!(encode_server(&decode_server(bare).unwrap()).unwrap(), bare);
+    let wait = |body: &str| {
+        decode_server(&format!(
+            r#"{{"type":"progress","items":[],"waits":[{{"cue":"00000000-0000-0000-0000-000000000001",{body}}}]}}"#
+        ))
+    };
+    assert!(wait(r#""wait":"pre_wait","elapsed":1,"remaining":2"#).is_ok());
+    // A wait always has an end; an unknown kind is an error, as for any nested enum.
+    assert!(wait(r#""wait":"pre_wait","elapsed":1,"remaining":null"#).is_err());
+    assert!(wait(r#""wait":"action","elapsed":1,"remaining":2"#).is_err());
 }
 
 #[test]

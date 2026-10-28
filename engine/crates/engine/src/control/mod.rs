@@ -53,13 +53,13 @@ use openlab_core::protocol::{
     ClientMessage, CueMeter, CueProblems, CueStateEntry, DeviceEntry, DocumentState, ErrorBody,
     ErrorCode, HotkeyPhase, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome, OutputMeter,
     PlayheadEntry, ProgressItem, Request, ResultData, RuntimeChange, ServerMessage, Snapshot,
-    TransportAction, WireProblem, WireWarning, WorkspaceInfo,
+    TransportAction, WaitProgress, WireProblem, WireWait, WireWarning, WorkspaceInfo,
 };
 use openlab_core::{
     Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
     DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, NetworkPatchId, OscArg, PatchResolution, SampleTime, Workspace, model_changes,
-    model_changes_indexed, seconds_to_samples,
+    MediaStatus, NetworkPatchId, OscArg, PatchResolution, SampleTime, Timer, Workspace,
+    model_changes, model_changes_indexed, seconds_to_samples,
 };
 
 pub use docs::{
@@ -2435,7 +2435,7 @@ impl DocCx<'_> {
         let period = (u64::from(self.eng.rate.get()) / REPORT_HZ).max(1);
         let due = |last: Option<SampleTime>| last.is_none_or(|l| rendered >= l + period);
         if due(self.doc.last_progress) {
-            let items: Vec<ProgressItem> = self
+            let mut items: Vec<ProgressItem> = self
                 .doc
                 .voices
                 .progress(rendered)
@@ -2446,9 +2446,37 @@ impl DocCx<'_> {
                     remaining: left.map(|l| self.seconds(l)),
                 })
                 .collect();
-            if !items.is_empty() {
+            // Cues without a voice: their actions join the voices' (an audio cue's action is
+            // never among them), their pre-waits and post-waits go in `waits` (M4.2e).
+            let mut waits: Vec<WaitProgress> = Vec::new();
+            let voiced = items.len();
+            for t in self.doc.engine.timers(rendered) {
+                let elapsed = self.seconds(t.elapsed);
+                let wait = match t.timer {
+                    Timer::Action => {
+                        items.push(ProgressItem {
+                            cue: t.cue,
+                            elapsed,
+                            remaining: t.remaining.map(|l| self.seconds(l)),
+                        });
+                        continue;
+                    }
+                    Timer::PreWait => WireWait::PreWait,
+                    Timer::PostWait => WireWait::PostWait,
+                };
+                waits.push(WaitProgress {
+                    cue: t.cue,
+                    wait,
+                    elapsed,
+                    remaining: self.seconds(t.remaining.unwrap_or(0)),
+                });
+            }
+            if items.len() > voiced {
+                items.sort_by_key(|i| i.cue);
+            }
+            if !items.is_empty() || !waits.is_empty() {
                 self.doc.last_progress = Some(rendered);
-                let mut m = ServerMessage::Progress { items };
+                let mut m = ServerMessage::Progress { items, waits };
                 m.sanitise();
                 self.eng.out.send_lossy(Some(self.doc.id), m);
             }

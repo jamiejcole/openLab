@@ -213,7 +213,7 @@ fn progress_and_meters_stay_at_or_below_30_hz() {
     let progress: Vec<_> = msgs
         .iter()
         .filter_map(|m| match m {
-            ServerMessage::Progress { items } => Some(items.clone()),
+            ServerMessage::Progress { items, .. } => Some(items.clone()),
             _ => None,
         })
         .collect();

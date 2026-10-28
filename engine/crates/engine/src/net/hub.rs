@@ -260,7 +260,10 @@ mod tests {
             hub.deliver(&Outgoing::all(log(n)));
         }
         hub.deliver(&Outgoing::all(meters()));
-        hub.deliver(&Outgoing::all(ServerMessage::Progress { items: vec![] }));
+        hub.deliver(&Outgoing::all(ServerMessage::Progress {
+            items: vec![],
+            waits: vec![],
+        }));
         let kinds = drain(&mut r.rx);
         assert_eq!(kinds.len(), CLIENT_QUEUE / 2);
         assert_eq!(kinds.iter().filter(|k| **k == Kind::Lossy).count(), 1);
@@ -269,7 +272,10 @@ mod tests {
             hub.deliver(&Outgoing::all(log(n)));
         }
         hub.deliver(&Outgoing::all(meters()));
-        hub.deliver(&Outgoing::all(ServerMessage::Progress { items: vec![] }));
+        hub.deliver(&Outgoing::all(ServerMessage::Progress {
+            items: vec![],
+            waits: vec![],
+        }));
         hub.deliver(&Outgoing::all(log(0)));
         let kinds = drain(&mut r.rx);
         assert_eq!(kinds.len(), CLIENT_QUEUE / 2 + 1);
@@ -518,7 +524,10 @@ mod tap_tests {
         ));
         tap.offer(&Outgoing::doc(
             DocId(0),
-            ServerMessage::Progress { items: vec![] },
+            ServerMessage::Progress {
+                items: vec![],
+                waits: vec![],
+            },
         ));
         // A workspace replacement is announced by its snapshot alone.
         tap.offer(&Outgoing::doc(

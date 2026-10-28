@@ -41,6 +41,8 @@ pub(super) struct Loaded {
     /// meanwhile.
     pub pre_wait_left: SampleTime,
     pub action_offset: SampleTime,
+    /// The whole pre-wait at load, so its countdown shows how much of it the load skipped.
+    pub pre_wait_total: SampleTime,
     /// A `LoadVoice` was sent for this run.
     pub voice: bool,
 }
@@ -86,8 +88,13 @@ pub(super) struct Run {
     pub phase: Phase,
     /// Samples into the action it starts from (load-to-time past the pre-wait).
     pub action_offset: SampleTime,
+    /// The whole pre-wait (also the part a load to time skipped), for its countdown
+    /// (`CueEngine::timers`).
+    pub pre_wait_total: SampleTime,
     /// Auto-continue: the next cue is triggered on this sample.
     pub post_wait: Option<SampleTime>,
+    /// The whole post-wait (also the part a load to time skipped), for its countdown.
+    pub post_wait_total: SampleTime,
     /// Auto-follow, as the continue mode was when the action started.
     pub follow: bool,
     pub voice: Voice,
@@ -234,7 +241,9 @@ impl Run {
             seq,
             phase,
             action_offset: 0,
+            pre_wait_total: 0,
             post_wait: None,
+            post_wait_total: 0,
             follow: false,
             voice: Voice::None,
             length: None,

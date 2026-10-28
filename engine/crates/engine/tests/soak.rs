@@ -248,7 +248,7 @@ impl Driver for TwoDocs {
             .into_iter()
             .filter(|m| match m {
                 ServerMessage::Runtime { changes, .. } => !changes.iter().all(Self::is_beside),
-                ServerMessage::Progress { items } => items.iter().all(|i| i.cue != beside),
+                ServerMessage::Progress { items, .. } => items.iter().all(|i| i.cue != beside),
                 ServerMessage::Meters { cues, .. } => cues.iter().all(|c| c.cue != beside),
                 _ => true,
             })

@@ -167,7 +167,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             return applyRuntime(seq: seq, changes: changes)
         case .document(let d):
             document = d
-        case .progress(let items):
+        case .progress(let items, _):
             let old = progress
             progress = Dictionary(items.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
             let touched = Set(old.keys).union(progress.keys)

@@ -72,9 +72,13 @@ pub enum ServerMessage {
         seq: u64,
         changes: Vec<RuntimeChange>,
     },
-    /// Elapsed and remaining time of running cues, at most 30 Hz, only while something runs.
+    /// Elapsed and remaining time of running cues, at most 30 Hz, only while something runs or
+    /// waits. `items`: actions (audio cues' voices, and cues without a voice); `waits`: pre-wait
+    /// and post-wait countdowns (absent when there are none, M4.2e).
     Progress {
         items: Vec<ProgressItem>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waits: Vec<WaitProgress>,
     },
     /// Peak levels, at most 30 Hz, only while something plays.
     Meters {
@@ -639,6 +643,23 @@ pub struct ProgressItem {
     pub remaining: Option<f64>,
 }
 
+/// A pre-wait or post-wait counting down, in seconds. A cue can have both an action item and a
+/// post-wait at once.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaitProgress {
+    pub cue: CueId,
+    pub wait: WireWait,
+    pub elapsed: f64,
+    pub remaining: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireWait {
+    PreWait,
+    PostWait,
+}
+
 /// Peak since the previous meters message: linear amplitude per channel, 0.0 silent, 1.0 full
 /// scale (it can go above 1.0: that is a clip). Linear rather than dBFS so silence is a plain
 /// 0 and the UI chooses its own scale.
@@ -670,10 +691,14 @@ impl ServerMessage {
     pub fn sanitise(&mut self) {
         let clean = |v: f64| if v.is_finite() && v > 0.0 { v } else { 0.0 };
         match self {
-            Self::Progress { items } => {
+            Self::Progress { items, waits } => {
                 for item in items {
                     item.elapsed = clean(item.elapsed);
                     item.remaining = item.remaining.map(clean);
+                }
+                for wait in waits {
+                    wait.elapsed = clean(wait.elapsed);
+                    wait.remaining = clean(wait.remaining);
                 }
             }
             Self::Meters { outputs, cues } => {
