@@ -155,6 +155,31 @@ jobs:
           name: fuzz-artifacts
           path: engine/fuzz/artifacts/
 
+  # QA-09: AddressSanitizer, ThreadSanitizer and Miri (the undefined-behaviour check; Rust has no UBSan) on a
+  # pinned nightly. Slow, so nightly and on demand only, never on a PR or push.
+  sanitizers:
+    name: Sanitizers (${{ matrix.check }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [sanitize-address, sanitize-thread, miri]
+    env:
+      # Pinned so a nightly regression cannot turn the gate red unprompted; bump deliberately.
+      SAN_TOOLCHAIN: nightly-2026-10-15
+      SAN_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+      # openlab-audio's default `device` feature pulls in cpal, which needs ALSA headers on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - run: rustup toolchain install "$SAN_TOOLCHAIN" --profile minimal -c rust-src -c miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          key: ${{ matrix.check }}
+      - run: make ${{ matrix.check }} SAN_TOOLCHAIN="$SAN_TOOLCHAIN" SAN_TARGET="$SAN_TARGET"
+
   mac:
     name: macOS app
     needs: changes
@@ -190,7 +215,7 @@ jobs:
   result:
     name: CI Result
     if: always()
-    needs: [changes, rust, cargo-deny, fuzz, mac]
+    needs: [changes, rust, cargo-deny, fuzz, sanitizers, mac]
     runs-on: ubuntu-24.04
     steps:
       - env:
@@ -201,12 +226,12 @@ jobs:
             case "$r" in success|skipped) ;; *) exit 1 ;; esac
           done
 
-  # A failed run on main opens (or comments on) one `ci-red` issue, so a red main is never silent:
-  # some jobs (macOS Intel) run only on main.
+  # A failed run on main (or the nightly schedule) opens (or comments on) one `ci-red` issue, so a red main
+  # is never silent: some jobs (macOS Intel) run only on main, the sanitizers only nightly.
   alert:
     name: Alert on red main
     needs: [result]
-    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: failure() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule')
     runs-on: ubuntu-24.04
     permissions:
       issues: write

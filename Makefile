@@ -4,8 +4,11 @@ SPDX := SPDX-License-Identifier: GPL-3.0-or-later
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
+# Sanitizers need nightly (-Zsanitizer, -Zbuild-std); pinned like the fuzz job, bump deliberately.
+SAN_TOOLCHAIN ?= nightly-2026-10-15
+SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz prepush
+.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush
 
 lint:
 	@missing=$$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' Makefile | xargs grep -L "$(SPDX)"); \
@@ -40,6 +43,27 @@ fuzz:
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
 		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
+
+# Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09, docs/ARCHITECTURE.md §11).
+# Needs: rustup toolchain install $(SAN_TOOLCHAIN) --profile minimal -c rust-src -c miri
+# Rust has no -Zsanitizer=undefined; Miri is the undefined-behaviour check, and runs on core only (no I/O, no FFI).
+# --lib --tests skips doctests (rustdoc does not support -Zsanitizer reliably). Ignored tests (real-time, perf,
+# soak, CPU budget) stay ignored: their bounds are wall-clock and mean nothing under a 2-10x slowdown.
+# Skipped by name, each because a sanitizer cannot give a meaningful answer:
+#   (none yet; add `--skip name` here with the reason)
+SAN_TEST := cargo +$(SAN_TOOLCHAIN) test -Zbuild-std --target $(SAN_TARGET) --workspace --locked --lib --tests --no-fail-fast
+sanitize: sanitize-address sanitize-thread miri
+
+sanitize-address:
+	cd engine && RUSTFLAGS="-Zsanitizer=address" RUSTDOCFLAGS="-Zsanitizer=address" $(SAN_TEST)
+
+# TSan needs every crate instrumented, hence -Zbuild-std; on macOS it is not supported for all targets.
+sanitize-thread:
+	cd engine && RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST)
+
+# Subset: core unit tests, a short proptest budget (Miri is ~100x slower), no file-system isolation break needed.
+miri:
+	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked
 
 test-mac: project
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test
