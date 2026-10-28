@@ -679,7 +679,7 @@ impl Control {
         self.poll_orphan_saves();
         self.eng.settings_tick();
         self.health();
-        let paths = self.docs.iter().map(|d| d.show_path.clone()).collect();
+        let paths = self.docs.iter().map(|d| d.show_path.as_deref());
         self.eng.observe_tick(paths);
         self.eng.mixer.pump();
     }

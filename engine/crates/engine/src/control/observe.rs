@@ -5,7 +5,7 @@
 //! `status`. The decisions about files, rotation, cadence and crash reports are in `diag`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use openlab_core::protocol::{
     DeviceState, DeviceStatus, LogEntry, LogKind, LogLevel, RuntimeChange, ServerMessage,
@@ -237,8 +237,24 @@ impl Engine {
 
     /// Once per tick: the crash hook's workspace paths (`paths`: every open doc's show file),
     /// a note when log records were lost, and the `status` message when one is due.
-    pub(super) fn observe_tick(&mut self, paths: Vec<Option<PathBuf>>) {
-        if self.observe.paths != paths {
+    pub(super) fn observe_tick<'p>(
+        &mut self,
+        paths: impl Iterator<Item = Option<&'p Path>> + Clone,
+    ) {
+        // Compared in place: nothing is built on the (usual) tick where nothing changed.
+        let same = {
+            let mut known = self.observe.paths.iter();
+            let mut now = paths.clone();
+            loop {
+                match (known.next(), now.next()) {
+                    (None, None) => break true,
+                    (Some(a), Some(b)) if a.as_deref() == b => {}
+                    _ => break false,
+                }
+            }
+        };
+        if !same {
+            let paths: Vec<Option<PathBuf>> = paths.map(|p| p.map(Path::to_path_buf)).collect();
             // The open shows, in open order; untitled ones are left out.
             let named: Vec<String> = paths
                 .iter()
