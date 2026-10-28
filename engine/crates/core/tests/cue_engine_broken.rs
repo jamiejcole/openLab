@@ -1312,3 +1312,114 @@ fn a_device_lost_break_without_any_patch_status_stays_until_reset() {
     rig.at(10_010, Input::Reset { cue: id(1) });
     assert_eq!(rig.state(1), CueState::Idle);
 }
+
+// ----- a lost device moves nothing on (M2.31 review M3) -----
+
+fn disarm_cue(n: u128, target: u128) -> Cue {
+    cue(
+        n,
+        CueKind::Disarm {
+            target: Some(id(target)),
+        },
+    )
+}
+
+fn playlist_of(n: u128, loop_: bool, children: Vec<Cue>) -> Cue {
+    cue(
+        n,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_,
+                shuffle: false,
+            },
+            children,
+        },
+    )
+}
+
+fn missing() -> PatchResolution {
+    PatchResolution::DeviceMissing {
+        device: "Interface".into(),
+    }
+}
+
+fn set_armed(actions: &[Action]) -> Vec<(CueId, bool)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::SetArmed { cue, armed } => Some((*cue, *armed)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The binary marks the patch missing, then fails each run that played on it, then sends
+/// `DeviceLost` (control/mod.rs). Between the failure and `DeviceLost` the playlist must not move
+/// on: its next audio child would be refused as broken, but a control cue would act (a Disarm is
+/// saved with the show), and a looping playlist of such children spun it to the chain limit.
+#[test]
+fn a_device_lost_failure_does_not_move_a_playlist_on() {
+    for (loop_, on_its_own) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut rig = Rig::new(vec![
+            playlist_of(1, loop_, vec![sound(2), disarm_cue(3, 9), sound(4)]),
+            sound(9),
+        ]);
+        rig.device(0, 1, mapped());
+        rig.start(0, if on_its_own { 2 } else { 1 });
+        rig.device(100, 1, missing());
+        let failed = lose_device(&mut rig, 100, 2);
+        let case = format!("loop {loop_}, on its own {on_its_own}: {failed:?}");
+        assert!(starts(&failed).is_empty(), "{case}");
+        assert!(voice_starts(&failed).is_empty(), "{case}");
+        assert!(set_armed(&failed).is_empty(), "{case}");
+        assert!(warnings(&failed).is_empty(), "{case}");
+        assert_eq!(rig.state(2), CueState::Broken);
+        assert_eq!(rig.state(3), CueState::Idle);
+        // The group stopped (its child left as a stopped one); nothing it held is pending.
+        assert!(!rig.state(1).is_active(), "{case}");
+        let stopped = rig.at(100, Input::DeviceLost);
+        assert!(starts(&stopped).is_empty(), "{case}");
+        let later = rig.tick(100_000);
+        assert!(starts(&later).is_empty(), "{case}");
+        assert!(set_armed(&later).is_empty(), "{case}");
+    }
+}
+
+/// The same for the cue after a plain cue: a lost device's failure fires neither its auto-follow
+/// (also when it had not played yet, `StartFailed`) nor its auto-continue.
+#[test]
+fn a_device_lost_failure_fires_no_continue_of_a_plain_cue() {
+    for (mode, unplayed) in [(AF, false), (AF, true), (AC, false), (AC, true)] {
+        let mut rig = Rig::new(vec![
+            timed(sound(1), 0.0, 0.5, mode),
+            disarm_cue(2, 9),
+            sound(9),
+        ]);
+        rig.device(0, 1, mapped());
+        rig.start(0, 1);
+        rig.device(100, 1, missing());
+        let run = rig.engine.run_of(id(1)).unwrap();
+        let (cue, reason) = (id(1), BrokenReason::DeviceLost);
+        let failed = rig.at(
+            100,
+            if unplayed {
+                Input::StartFailed { cue, run, reason }
+            } else {
+                Input::ActionFailed { cue, run, reason }
+            },
+        );
+        let later = rig.tick(100_000);
+        for actions in [&failed, &later] {
+            assert!(
+                starts(actions).is_empty(),
+                "{mode:?} {unplayed}: {actions:?}"
+            );
+            assert!(
+                set_armed(actions).is_empty(),
+                "{mode:?} {unplayed}: {actions:?}"
+            );
+        }
+        assert_eq!(rig.state(1), CueState::Broken);
+        assert_eq!(rig.state(2), CueState::Idle);
+    }
+}
