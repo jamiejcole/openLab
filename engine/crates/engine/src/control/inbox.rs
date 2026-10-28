@@ -22,8 +22,8 @@ pub enum Inbox {
     /// one `result` (a `snapshot` request also gets its `snapshot` there first); broadcasts go
     /// to the outbound channel.
     ///
-    /// Addressed to the first open doc: what the OSC listeners send until they address each
-    /// doc (M4.15h), and the engine's tests.
+    /// Addressed to the first open doc: the engine's tests and the offline driver. (The OSC
+    /// listeners send [`Inbox::Conn`], to each doc, since M4.15h.)
     Client {
         message: ClientMessage,
         reply: ReplyTx,
