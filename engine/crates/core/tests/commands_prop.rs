@@ -962,7 +962,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases(128)))]
 
     /// `BatchSet` is applied in place with rollback. The oracle is the plain `Transaction` of the
-    /// same sets, which snapshots the whole workspace: result, inverse and workspace bytes must
+    /// same sets, which rolls back with the inverses of the sets it applied: result, inverse and workspace bytes must
     /// match whether the batch applies or one cue (a missing id, a cue without the property, an
     /// invalid value halfway) refuses it, and undo and redo must restore exactly.
     #[test]
@@ -1088,6 +1088,221 @@ proptest! {
         };
         history.execute(&mut ws, fresh).unwrap();
         prop_assert!(!history.can_redo(), "redo survived an edit (had redo: {redoable})");
+    }
+}
+
+/// A command that is refused whatever the workspace holds.
+fn always_refused(kind: u8) -> Command {
+    match kind % 6 {
+        0 => Command::RemoveCue {
+            id: cue_id(987_654),
+        },
+        1 => Command::SetCueProperty {
+            id: cue_id(987_654),
+            property: CueProperty::Flagged { value: true },
+        },
+        2 => Command::Transaction { commands: vec![] },
+        3 => Command::RemoveCueList {
+            id: list_id(987_654),
+        },
+        4 => Command::AddPatch {
+            index: usize::MAX,
+            patch: patch(987_654, 2),
+        },
+        _ => Command::SetPatchProperty {
+            id: patch_id(987_654),
+            property: PatchProperty::MasterDb { value: 0.0 },
+        },
+    }
+}
+
+/// [`base`] plus what load accepts as it is but a command would refuse as a new value, put
+/// through a show file: a network patch on port 0 that a cue uses, a legacy passcode that is
+/// not digits (in the generator's pool, so it gets removed), cue and transport hotkeys load only
+/// warns about, -0.0 values, a fade whose target is missing and an audio cue on a missing patch.
+fn hostile_base() -> Workspace {
+    let mut ws = base();
+    ws.network_patches.push(NetworkPatch {
+        id: net_id(3),
+        name: "Zero".into(),
+        host: "".into(),
+        port: 0,
+        protocol: NetworkProtocol::Udp,
+    });
+    ws.settings.osc_access.passcodes.push(OscPasscode {
+        passcode: "12ab".into(),
+        rights: OscRights {
+            view: true,
+            edit: true,
+            control: false,
+        },
+    });
+    ws.settings.hotkeys.go = Some(Hotkey {
+        key: "Space Bar".into(),
+        modifiers: Modifiers::default(),
+    });
+    ws.settings.master_db = -0.0;
+    let mut hot = common::cue(901, CueKind::Memo);
+    hot.triggers.hotkey = Some(Hotkey {
+        key: "A".into(),
+        modifiers: Modifiers::default(),
+    });
+    hot.pre_wait = -0.0;
+    let mut net = common::cue(
+        902,
+        CueKind::Network {
+            destination: net_id(3),
+            address: "/go".into(),
+            args: vec![],
+        },
+    );
+    net.number = Some("12".into());
+    let mut lost = common::cue(903, audio());
+    if let CueKind::Audio { patch, .. } = &mut lost.kind {
+        *patch = patch_id(77);
+    }
+    ws.cue_lists[0].cues = vec![hot, net, common::cue(904, fade(999)), lost];
+    let loaded = load_show(&show_text(&ws)).unwrap().workspace;
+    assert_eq!(loaded.network_patches.last().unwrap().port, 0);
+    assert_eq!(loaded.settings.osc_access.passcodes.len(), 1);
+    assert!(
+        loaded
+            .find_cue(cue_id(901))
+            .unwrap()
+            .triggers
+            .hotkey
+            .is_some()
+    );
+    loaded
+}
+
+/// A workspace and id generator after the random `prefix`, from [`base`] or [`hostile_base`].
+fn after_prefix_from(hostile: bool, prefix: &[Pick]) -> (Workspace, Gen) {
+    let (mut ws, mut g) = (
+        if hostile { hostile_base() } else { base() },
+        Gen { next: 1000 },
+    );
+    for p in prefix {
+        if let Some(command) = build(&ws, &mut g, p.op, p) {
+            let _ = ws.apply(command);
+        }
+    }
+    (ws, g)
+}
+
+/// Random edits of every kind, each built against the state the earlier ones leave, as one
+/// transaction's commands. A built transaction is mostly spliced in (its commands were built
+/// in order); kept whole it is a nested transaction, refused. Returns the commands and the
+/// index of the first one that is refused, if any.
+fn transaction_commands(
+    ws: &Workspace,
+    g: &mut Gen,
+    inner: &[Pick],
+    keep_refused: bool,
+) -> (Vec<Command>, Option<usize>) {
+    let mut evolving = ws.clone();
+    let mut commands: Vec<Command> = Vec::new();
+    let mut first_refused = None;
+    for p in inner {
+        let Some(built) = build(&evolving, g, p.op, p) else {
+            continue;
+        };
+        let parts = match built {
+            Command::Transaction { commands } if p.b % 4 != 0 => commands,
+            other => vec![other],
+        };
+        for command in parts {
+            let refused = matches!(command, Command::Transaction { .. })
+                || evolving.apply(command.clone()).is_err();
+            if refused && !keep_refused {
+                continue;
+            }
+            if refused && first_refused.is_none() {
+                first_refused = Some(commands.len());
+            }
+            commands.push(command);
+        }
+    }
+    (commands, first_refused)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases(256)))]
+
+    /// A transaction refused at a random command is rolled back with the inverses of the
+    /// commands before it (M1.19): the workspace is exactly as before, the error names the
+    /// first refused command, and the history records nothing. A command that is always
+    /// refused is put in at a random place; a random edit may be refused earlier. Half start
+    /// from a loaded show holding values a command would refuse ([`hostile_base`]).
+    #[test]
+    fn a_refused_transaction_rolls_back_exactly(
+        hostile in any::<bool>(),
+        prefix in picks(30),
+        inner in picks(14),
+        fail_at in any::<proptest::sample::Index>(),
+        failure in any::<u8>(),
+    ) {
+        let (ws, mut g) = after_prefix_from(hostile, &prefix);
+        let (mut commands, first_refused) = transaction_commands(&ws, &mut g, &inner, true);
+        let at = fail_at.index(commands.len() + 1);
+        commands.insert(at, always_refused(failure));
+        let expected = first_refused.filter(|&first| first < at).unwrap_or(at);
+
+        let mut work = ws.clone();
+        let mut history = History::new();
+        match history.execute(&mut work, Command::Transaction { commands }) {
+            Err(CommandError::InTransaction { index, .. }) => prop_assert_eq!(index, expected),
+            other => prop_assert!(false, "expected a refusal at {}, got {:?}", expected, other),
+        }
+        prop_assert_eq!(&work, &ws);
+        prop_assert_eq!(format!("{work:?}"), format!("{ws:?}"));
+        prop_assert_eq!(bytes(&work), bytes(&ws));
+        prop_assert!(!history.can_undo() && !history.can_redo());
+    }
+
+    /// An undo step is a transaction applied as a restore. A random edit made behind the
+    /// history's back may make it refused partway; then it is rolled back like any
+    /// transaction: the workspace is exactly as before the undo and the step stays. Without
+    /// the edit, undo and redo restore exactly.
+    #[test]
+    fn an_undo_refused_partway_changes_nothing(
+        hostile in any::<bool>(),
+        prefix in picks(30),
+        inner in picks(14),
+        meddle in proptest::option::of(pick()),
+    ) {
+        let (ws, mut g) = after_prefix_from(hostile, &prefix);
+        let (commands, _) = transaction_commands(&ws, &mut g, &inner, false);
+        let mut work = ws.clone();
+        let mut history = History::new();
+        let changed = history.execute(&mut work, Command::Transaction { commands }).unwrap();
+        let after = work.clone();
+        if let Some(p) = &meddle
+            && let Some(command) = build(&work, &mut g, p.op, p)
+        {
+            let _ = work.apply(command);
+        }
+        let before = work.clone();
+        match history.undo(&mut work) {
+            Ok(undone) => {
+                prop_assert_eq!(undone, changed);
+                if before == after {
+                    prop_assert_eq!(&work, &ws);
+                    prop_assert_eq!(bytes(&work), bytes(&ws));
+                    prop_assert_eq!(history.redo(&mut work).unwrap(), changed);
+                    prop_assert_eq!(&work, &after);
+                }
+            }
+            Err(error) => {
+                prop_assert!(
+                    !matches!(error, CommandError::RollbackFailed { .. }),
+                    "{error}"
+                );
+                prop_assert_eq!(&work, &before);
+                prop_assert_eq!(format!("{work:?}"), format!("{before:?}"));
+                prop_assert_eq!(history.undo_len(), 1);
+            }
+        }
     }
 }
 
