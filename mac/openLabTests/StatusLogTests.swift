@@ -296,6 +296,34 @@ final class StatusLogTests: XCTestCase {
         await assertEventually { rig.store.logSeq == UInt64.max }
     }
 
+    /// A burst of gaps is one re-read in flight and at most one after it, never one per gap.
+    func testABurstOfLogGapsIsAtMostTwoTailReads() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        log.showWindow(nil)
+        defer { log.close() }
+        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
+        func push(_ seq: Int) {
+            rig.engine.push(
+                #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"info","kind":"go","message":"m"}}"#)
+        }
+        rig.engine.holdResults = true
+        push(1)
+        push(5)
+        await assertEventually { tails() == 1 }
+        // Ten more gaps while that read is out: one more read after it, not ten.
+        for seq in stride(from: 9, through: 45, by: 4) { push(seq) }
+        await settle()
+        XCTAssertEqual(tails(), 1)
+        rig.engine.holdResults = false
+        rig.engine.releaseResults()
+        await assertEventually { tails() == 2 }
+        await settle()
+        XCTAssertEqual(tails(), 2)
+    }
+
     func testDroppedRecordsAreMentioned() async throws {
         let rig = try Rig()
         let log = LogWindowController(store: rig.store)
