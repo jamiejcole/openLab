@@ -37,9 +37,9 @@ impl CueEngine {
             if run.is_broken() {
                 continue;
             }
-            let Some(given) = run.given.as_ref() else {
+            if run.given.is_none() {
                 continue;
-            };
+            }
             let cue = if duplicates {
                 ws.find_cue(*id)
             } else {
@@ -48,19 +48,26 @@ impl CueEngine {
             let Some(CueKind::Audio { levels, .. }) = cue.map(|c| &c.kind) else {
                 continue;
             };
-            if levels == given {
+            let Some(given) = run.given.as_mut() else {
+                continue;
+            };
+            if *levels == given.model {
                 continue;
             }
-            let edits = level::level_edits(given, levels);
-            run.given = Some(levels.clone());
-            for LevelEdit { param, gain, muted } in edits {
+            given.model = levels.clone();
+            let edits = level::level_edits(&given.played, &level::played(levels));
+            for LevelEdit { param, to, muted } in edits {
                 if let Some(held) = run.levels.get(&param) {
                     if held.owner.is_some() && !muted {
+                        // The fade keeps it; the voice was not given the edit, which stays owed.
                         continue;
                     }
                     // A fade set it (and is done with it) or a mute takes it from a fade: the
                     // model rules it again, as an untouched level.
                     run.levels.remove(&param);
+                }
+                if let Some(given) = run.given.as_mut() {
+                    given.played.insert(param, to);
                 }
                 let at = run.commit(cx.now.max(started), cx.horizon);
                 cx.out.push(Action::Ramp {
@@ -68,7 +75,7 @@ impl CueEngine {
                     run: run.run,
                     at,
                     param,
-                    gain,
+                    gain: to.0,
                     // On the voice's own start sample nothing has been heard yet.
                     frames: if at <= first { 0 } else { frames },
                     curve: FadeCurve::Linear,

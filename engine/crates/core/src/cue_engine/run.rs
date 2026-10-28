@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cue::{CueLevels, FadeCurve};
 use crate::model::CueId;
 
-use super::level::{Level, LevelParam};
+use super::level::{Level, LevelParam, Played};
 use super::time::SampleTime;
 use super::types::{BrokenReason, CueState, RunId};
 
@@ -133,14 +133,24 @@ pub(super) struct Run {
     pub levels: BTreeMap<LevelParam, Level>,
     /// Audio cues: the Fade cues whose ramps are moving its levels now (it reports `fading`).
     pub faders: BTreeSet<CueId>,
-    /// Audio cues with a started voice: the model's levels as the voice was last given them (at
-    /// its start, and by every level edit since), so an edit sends the voice only what changed
-    /// (`live_levels.rs`).
-    pub given: Option<CueLevels>,
+    /// Audio cues with a started voice: what the voice has been given (`live_levels.rs`).
+    pub given: Option<Given>,
     /// Audio cues: a devamp sent for its voice and not yet carried out.
     pub devamp: Option<DevampWait>,
     /// Fade cues, from their action start: what the fade is doing.
     pub fade: Option<FadeRun>,
+}
+
+/// The levels an audio cue's voice has been given: the model's at its start, and each edit
+/// sent to it since. A level an edit left to a fade keeps what the voice was given before,
+/// so the edit is still owed and goes out with the next edit after the fade lets go.
+#[derive(Clone, Debug)]
+pub(super) struct Given {
+    /// The model's levels as of the last comparison (a call with the same levels compares
+    /// nothing).
+    pub model: CueLevels,
+    /// Per parameter, the gain and mute the voice was given (missing: silent).
+    pub played: BTreeMap<LevelParam, Played>,
 }
 
 /// A devamp sent to a cue's voice by a Devamp cue.

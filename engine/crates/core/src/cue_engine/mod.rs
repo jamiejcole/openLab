@@ -278,9 +278,13 @@ impl CueEngine {
             if changed && !signalled && self.unsignalled_model_changes() == counted {
                 self.note_unsignalled();
             }
-            self.follow_level_edits(&mut cx);
         }
         self.advance(&mut cx);
+        // After the deadlines due in this call: a fade ending in it has let go of its levels,
+        // so an edit of one is not left to it.
+        if follow_edits {
+            self.follow_level_edits(&mut cx);
+        }
         self.apply(input, &mut cx);
         self.drain(&mut cx);
         self.advance(&mut cx);
@@ -1756,7 +1760,10 @@ impl CueEngine {
                 };
                 // The binary starts the voice with the model's levels as they are now.
                 if let CueKind::Audio { levels, .. } = &model.kind {
-                    run.given = Some(levels.clone());
+                    run.given = Some(run::Given {
+                        model: levels.clone(),
+                        played: level::played(levels),
+                    });
                 }
             }
             Act::Send => {

@@ -72,91 +72,70 @@ pub const EDIT_RAMP_SECONDS: f64 = 0.010;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LevelEdit {
     pub param: LevelParam,
-    /// The gain (linear) the voice plays it at under the new levels.
-    pub gain: f32,
+    /// What the voice plays it at under the new levels (linear gain, muted).
+    pub to: Played,
     /// The edit muted it (a mute always takes effect, also on a level a fade is moving).
     pub muted: bool,
 }
 
-/// What a voice plays one parameter at under `levels`: its gain and whether it is muted. As the
-/// binary starts a voice: unlisted outputs and crosspoints are silent, muted ones are 0.
-type Played = (f32, bool);
+/// What a voice plays one parameter at: its gain and whether it is muted (a mute is gain 0).
+pub(super) type Played = (f32, bool);
 
-fn played_output(levels: &CueLevels, o: usize) -> Played {
-    match levels.outputs.get(o) {
-        Some(out) if out.mute => (0.0, true),
-        Some(out) => (db_to_gain(out.db), false),
-        None => (0.0, false),
-    }
-}
+/// A parameter a voice was given nothing for: silent, not muted.
+const SILENT: Played = (0.0, false);
 
-/// The crosspoints a voice can have (both indices below [`MAX_CHANNELS`]); the first listed
-/// wins, as for [`model_gain`] (the model has no duplicates once validated).
-fn played_crosspoints(levels: &CueLevels) -> BTreeMap<(u32, u32), Played> {
-    let mut out = BTreeMap::new();
-    for c in &levels.crosspoints {
-        if c.input < MAX_CHANNELS && c.output < MAX_CHANNELS {
-            let played = if c.mute {
-                (0.0, true)
-            } else {
-                (db_to_gain(c.db), false)
-            };
-            out.entry((c.input, c.output)).or_insert(played);
-        }
-    }
-    out
-}
-
-/// Every parameter whose gain or mute differs between a voice given `old` and one given `new`,
-/// in parameter order. Ganging alone changes nothing. Bounded by the levels' size (at most 1 +
-/// 64 outputs + their crosspoints), whatever led to the change.
-pub(super) fn level_edits(old: &CueLevels, new: &CueLevels) -> Vec<LevelEdit> {
-    let mut out = Vec::new();
-    if old == new {
-        return out;
-    }
-    let mut push = |param: LevelParam, was: Played, now: Played| {
-        if was != now {
-            out.push(LevelEdit {
-                param,
-                gain: now.0,
-                muted: now.1 && !was.1,
-            });
+/// What a voice is given under `levels`, as the binary starts one: the master, each listed
+/// output (below [`MAX_CHANNELS`]) and each listed crosspoint (both indices below it; the first
+/// listed wins, as for [`model_gain`], and the model has no duplicates once validated). Any
+/// other parameter is silent. Bounded by the levels' size (at most 1 + 64 + 64 × 64 entries).
+pub(super) fn played(levels: &CueLevels) -> BTreeMap<LevelParam, Played> {
+    let gain = |db: f64, mute: bool| {
+        if mute {
+            (0.0, true)
+        } else {
+            (db_to_gain(db), false)
         }
     };
-    push(
-        LevelParam::Master,
-        (db_to_gain(old.master_db), false),
-        (db_to_gain(new.master_db), false),
-    );
-    let outputs = old
-        .outputs
-        .len()
-        .max(new.outputs.len())
-        .min(MAX_CHANNELS as usize);
-    for o in 0..outputs {
-        if let Ok(param) = u32::try_from(o) {
-            push(
-                LevelParam::Output(param),
-                played_output(old, o),
-                played_output(new, o),
-            );
+    let mut out = BTreeMap::new();
+    out.insert(LevelParam::Master, gain(levels.master_db, false));
+    for (o, output) in levels.outputs.iter().enumerate() {
+        if let Ok(o) = u32::try_from(o)
+            && o < MAX_CHANNELS
+        {
+            out.insert(LevelParam::Output(o), gain(output.db, output.mute));
         }
     }
-    if old.crosspoints != new.crosspoints {
-        let (was, now) = (played_crosspoints(old), played_crosspoints(new));
-        let keys: BTreeSet<(u32, u32)> = was.keys().chain(now.keys()).copied().collect();
-        let silent = (0.0, false);
-        for (input, output) in keys {
-            let key = (input, output);
-            push(
-                LevelParam::Crosspoint { input, output },
-                was.get(&key).copied().unwrap_or(silent),
-                now.get(&key).copied().unwrap_or(silent),
-            );
+    for c in &levels.crosspoints {
+        if c.input < MAX_CHANNELS && c.output < MAX_CHANNELS {
+            let param = LevelParam::Crosspoint {
+                input: c.input,
+                output: c.output,
+            };
+            out.entry(param).or_insert(gain(c.db, c.mute));
         }
     }
     out
+}
+
+/// Every parameter whose gain or mute under `now` (from [`played`]) differs from what the
+/// voice was `given`, in parameter order. Ganging alone changes nothing.
+pub(super) fn level_edits(
+    given: &BTreeMap<LevelParam, Played>,
+    now: &BTreeMap<LevelParam, Played>,
+) -> Vec<LevelEdit> {
+    let params: BTreeSet<LevelParam> = given.keys().chain(now.keys()).copied().collect();
+    params
+        .into_iter()
+        .filter_map(|param| {
+            let was = given.get(&param).copied().unwrap_or(SILENT);
+            let is = now.get(&param).copied().unwrap_or(SILENT);
+            (was != is).then_some(LevelEdit {
+                param,
+                to: is,
+                muted: is.1 && !was.1,
+            })
+        })
+        .collect()
 }
 
 /// dB to linear amplitude, exactly as the mixer converts it: at or below [`SILENCE_DB`] (and
@@ -367,32 +346,33 @@ mod tests {
             }],
             gangs: vec![],
         };
-        assert!(level_edits(&old, &old).is_empty());
+        let edits = |a: &CueLevels, b: &CueLevels| level_edits(&played(a), &played(b));
+        assert!(edits(&old, &old).is_empty());
         // An output removed is silent; one added comes up; a muted one at -inf is still a mute.
         let mut new = old.clone();
         new.outputs = vec![out(SILENCE_DB, true)];
         let mut grown = old.clone();
         grown.outputs.push(out(-3.0, false));
         assert_eq!(
-            level_edits(&old, &new),
+            edits(&old, &new),
             vec![
                 LevelEdit {
                     param: LevelParam::Output(0),
-                    gain: 0.0,
+                    to: (0.0, true),
                     muted: true
                 },
                 LevelEdit {
                     param: LevelParam::Output(1),
-                    gain: 0.0,
+                    to: (0.0, false),
                     muted: false
                 },
             ]
         );
         assert_eq!(
-            level_edits(&old, &grown),
+            edits(&old, &grown),
             vec![LevelEdit {
                 param: LevelParam::Output(2),
-                gain: db_to_gain(-3.0),
+                to: (db_to_gain(-3.0), false),
                 muted: false
             }]
         );
@@ -404,7 +384,7 @@ mod tests {
             db: 0.0,
             mute: false,
         });
-        assert!(level_edits(&old, &wide).is_empty());
+        assert!(edits(&old, &wide).is_empty());
         assert_eq!(edit_frames(1000), 10);
         assert_eq!(edit_frames(48_000), 480);
         assert_eq!(edit_frames(1), 1);

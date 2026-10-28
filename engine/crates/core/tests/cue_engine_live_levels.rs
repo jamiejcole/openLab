@@ -339,6 +339,36 @@ fn ramps_any_curve(actions: &[Action]) -> Vec<f32> {
 }
 
 #[test]
+fn an_edit_in_the_call_that_ends_the_fade_owning_the_level_is_heard() {
+    // Review M1: the fade ends on 1100; the first call after it carries the edit. The fade's
+    // end is carried out in that call, so the edit is no longer the fade's and must be sent.
+    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    rig.tick(1000);
+    assert_eq!(
+        ramps(&rig.edit(1105, 1, |l| l.master_db = -6.0)),
+        vec![edit(1105, M, -6.0)]
+    );
+    assert_eq!(rig.engine.fade_level(id(1), M, 1105), None);
+}
+
+#[test]
+fn an_edit_held_back_by_a_fade_is_sent_with_the_next_edit_after_it() {
+    // An edit of a level the fade owns is not given to the voice, so it is still owed: the
+    // next edit of the cue once the fade has let go sends it.
+    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    assert!(ramps(&rig.edit(200, 1, |l| l.master_db = -6.0)).is_empty());
+    rig.tick(1100);
+    assert_eq!(
+        ramps(&rig.edit(1200, 1, |l| l.outputs[1].db = -3.0)),
+        vec![edit(1200, M, -6.0), edit(1200, LevelParam::Output(1), -3.0)]
+    );
+}
+
+#[test]
 fn an_edit_of_a_paused_cue_is_sent_and_kept_through_the_resume() {
     let mut rig = Rig::new(vec![sound(1)]);
     rig.start(0, 1);
