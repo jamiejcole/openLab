@@ -138,7 +138,6 @@ pub struct Sessions {
     failures: HashMap<IpAddr, Failures>,
     global_start: Duration,
     global_count: u32,
-    budgets: HashMap<(IpAddr, Budget), Bucket>,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
     /// Whether a peer that has not connected may view (No Passcode has View): then sessions
@@ -210,6 +209,21 @@ impl Sessions {
         access: &OscAccess,
         given: Option<&str>,
     ) -> ConnectResult {
+        self.connect_counting(peer, now, access, given, true)
+    }
+
+    /// As [`Sessions::connect`]; with `count_failure` false a passcode not in this table is
+    /// answered `BadPasscode` without counting towards the lockouts. For an un-prefixed
+    /// `/connect` that another open doc's table accepted: a console connecting to two docs with
+    /// their two passcodes is not guessing, and must not lock itself out of either.
+    pub fn connect_counting(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        access: &OscAccess,
+        given: Option<&str>,
+        count_failure: bool,
+    ) -> ConnectResult {
         let current = self.rights(peer);
         let guess = given.filter(|_| !access.passcodes.is_empty());
         let Some(guess) = guess else {
@@ -234,7 +248,9 @@ impl Sessions {
         let Some(rights) = matched else {
             // A wrong guess counts even during a lockout, and a connected peer's counts too (it
             // stays connected): otherwise it could search the table for more rights for free.
-            self.record_failure(peer.ip(), now);
+            if count_failure {
+                self.record_failure(peer.ip(), now);
+            }
             if current.is_some() {
                 self.touch(peer, now);
             }
@@ -403,6 +419,59 @@ impl Sessions {
         self.failures.retain(|_, f| {
             f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
         });
+    }
+
+    /// Makes room for one more session without rights: the cap is on those only.
+    fn evict_rightless_over_cap(&mut self) {
+        if self.strangers_may_view {
+            return;
+        }
+        while self.peers.values().filter(|s| s.rights.is_none()).count() >= MAX_RIGHTLESS_SESSIONS {
+            let oldest = self
+                .peers
+                .iter()
+                .filter(|(_, s)| s.rights.is_none())
+                .min_by_key(|(_, s)| s.last_seen)
+                .map(|(p, _)| *p);
+            match oldest {
+                Some(p) => self.peers.remove(&p),
+                None => break,
+            };
+        }
+    }
+
+    fn ensure(&mut self, peer: Peer, now: Duration) -> bool {
+        if self.peers.contains_key(&peer) {
+            return true;
+        }
+        if self.peers.len() >= MAX_PEERS {
+            return false;
+        }
+        self.evict_rightless_over_cap();
+        self.peers.insert(
+            peer,
+            Session {
+                rights: None,
+                updates: false,
+                reply_port: None,
+                last_seen: now,
+            },
+        );
+        true
+    }
+}
+
+/// The reply byte budget of each UDP source address (docs/osc.md, "Limits"). Per IP, whatever
+/// workspace the replies are about: several open docs must not multiply what a forged source
+/// can be sent.
+#[derive(Debug, Default)]
+pub struct Budgets {
+    budgets: HashMap<(IpAddr, Budget), Bucket>,
+}
+
+impl Budgets {
+    /// Drops the buckets that have refilled.
+    pub fn expire(&mut self, now: Duration) {
         self.budgets.retain(|(_, kind), b| {
             let (burst, rate) = kind.limits();
             refilled(b.tokens, b.updated, now, burst, rate) < burst
@@ -447,45 +516,15 @@ impl Sessions {
             false
         }
     }
+}
 
-    /// Makes room for one more session without rights: the cap is on those only.
-    fn evict_rightless_over_cap(&mut self) {
-        if self.strangers_may_view {
-            return;
-        }
-        while self.peers.values().filter(|s| s.rights.is_none()).count() >= MAX_RIGHTLESS_SESSIONS {
-            let oldest = self
-                .peers
-                .iter()
-                .filter(|(_, s)| s.rights.is_none())
-                .min_by_key(|(_, s)| s.last_seen)
-                .map(|(p, _)| *p);
-            match oldest {
-                Some(p) => self.peers.remove(&p),
-                None => break,
-            };
-        }
+/// Whether `given` is a passcode of `access`'s table (every row compared, as in `connect`).
+pub fn passcode_matches(access: &OscAccess, given: &str) -> bool {
+    let mut matched = false;
+    for row in &access.passcodes {
+        matched |= constant_time_eq(&row.passcode, given);
     }
-
-    fn ensure(&mut self, peer: Peer, now: Duration) -> bool {
-        if self.peers.contains_key(&peer) {
-            return true;
-        }
-        if self.peers.len() >= MAX_PEERS {
-            return false;
-        }
-        self.evict_rightless_over_cap();
-        self.peers.insert(
-            peer,
-            Session {
-                rights: None,
-                updates: false,
-                reply_port: None,
-                last_seen: now,
-            },
-        );
-        true
-    }
+    matched
 }
 
 /// Tokens after refilling for the time since `updated`, capped at the burst size.
