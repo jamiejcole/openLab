@@ -15,7 +15,7 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION,
+    ClientMessage, DocId, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION,
     ProtocolError, Request, RequestId, ServerMessage, decode_client, decode_hello, encode_server,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -84,7 +84,9 @@ impl Default for ServerConfig {
             write_timeout: Duration::from_secs(10),
             revision_wait: Duration::from_secs(2),
             snapshot_wait: Duration::from_secs(60),
-            max_connections: 16,
+            // Two per open workspace (its window and a spare) plus the app connections, with
+            // room for M4.15's 8 workspaces.
+            max_connections: 32,
             max_handshaking: 8,
             refusal_log_interval: Duration::from_secs(10),
             osc: None,
@@ -330,12 +332,14 @@ fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
     }
 }
 
-/// Checks the first frame. `Err` is the refusal to send before closing.
-fn authenticate(shared: &Shared, text: &str) -> Result<(), ServerMessage> {
+/// Checks the first frame: the workspace the connection binds to (`None`: an app connection).
+/// `Err` is the refusal to send before closing.
+fn authenticate(shared: &Shared, text: &str) -> Result<Option<DocId>, ServerMessage> {
     match decode_hello(text) {
         Ok(ClientMessage::Hello {
             protocol_version,
             token,
+            workspace,
             ..
         }) => {
             if !constant_time_eq(token.as_bytes(), shared.token.as_bytes()) {
@@ -346,7 +350,7 @@ fn authenticate(shared: &Shared, text: &str) -> Result<(), ServerMessage> {
                     &format!("the engine speaks protocol {PROTOCOL_VERSION}"),
                 ))
             } else {
-                Ok(())
+                Ok(workspace)
             }
         }
         // Any other message first (docs/protocol.md section 2).
@@ -379,16 +383,19 @@ async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermi
         Ok(Some(Ok(Message::Text(text)))) => text,
         _ => return,
     };
-    if let Err(refusal) = authenticate(&shared, hello.as_str()) {
-        if let Ok(text) = encode_server(&refusal) {
-            let _ = timeout(shared.config.write_timeout, ws.send(Message::text(text))).await;
+    let doc = match authenticate(&shared, hello.as_str()) {
+        Ok(doc) => doc,
+        Err(refusal) => {
+            if let Ok(text) = encode_server(&refusal) {
+                let _ = timeout(shared.config.write_timeout, ws.send(Message::text(text))).await;
+            }
+            let _ = timeout(shared.config.write_timeout, ws.close(None)).await;
+            return;
         }
-        let _ = timeout(shared.config.write_timeout, ws.close(None)).await;
-        return;
-    }
+    };
     authed.store(true, Ordering::Release);
     drop(pending);
-    run(shared, ws).await;
+    run(shared, ws, doc).await;
 }
 
 /// The connection ended (or must end).
@@ -404,6 +411,8 @@ struct Held {
 struct Conn {
     ws: Ws,
     shared: Arc<Shared>,
+    /// The doc this connection is bound to; `None`: the app connection.
+    doc: Option<DocId>,
     hub_id: u64,
     bcast: mpsc::Receiver<Broadcast>,
     lagged: Arc<AtomicBool>,
@@ -417,7 +426,8 @@ struct Conn {
     /// Client requests sent to the control loop whose `result` has not been written yet.
     inflight: usize,
     /// Requests that answer with a `snapshot` (the server's own, id [`INTERNAL_ID`], and the
-    /// client's `snapshot`/`open`/`new`/`revert`) whose `result` has not arrived. While one is
+    /// client's `snapshot`; on an app connection the `workspaces` list) whose `result` has not
+    /// arrived. While one is
     /// out, broadcasts wait in the queue: one made after the control loop took the snapshot
     /// must not reach the client before it (the snapshot would then take the client back),
     /// and one made before is filtered against the snapshot's revision and seq.
@@ -428,11 +438,12 @@ struct Conn {
     last_heard: Instant,
 }
 
-async fn run(shared: Arc<Shared>, ws: Ws) {
-    let registration = shared.hub.register();
+async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
+    let registration = shared.hub.register(doc);
     let (reply_tx, reply_rx) = reply_channel();
     let mut conn = Conn {
         ws,
+        doc,
         hub_id: registration.id,
         bcast: registration.rx,
         lagged: registration.lagged,
@@ -459,34 +470,70 @@ fn request_id(message: &ClientMessage) -> Option<RequestId> {
         | ClientMessage::Transport { id, .. }
         | ClientMessage::Undo { id }
         | ClientMessage::Redo { id }
-        | ClientMessage::Request { id, .. } => Some(*id),
+        | ClientMessage::Request { id, .. }
+        | ClientMessage::Close { id, .. }
+        | ClientMessage::Panic { id }
+        | ClientMessage::Hotkey { id, .. } => Some(*id),
         ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => None,
     }
 }
 
-/// Whether the control loop answers this with a `snapshot` (docs/protocol.md section 3).
+/// Whether the control loop answers this with a `snapshot` (docs/protocol.md section 3; the
+/// `workspaces` list on an app connection).
 fn answers_with_snapshot(message: &ClientMessage) -> bool {
     matches!(
         message,
         ClientMessage::Request {
-            request: Request::Snapshot
-                | Request::Open { .. }
-                | Request::OpenRecovery { .. }
-                | Request::New { .. }
-                | Request::Revert { .. },
+            request: Request::Snapshot,
             ..
         }
+    )
+}
+
+/// A transport action, the app-scope panic or a hotkey: a trigger the show log records.
+fn is_trigger(message: &ClientMessage) -> bool {
+    matches!(
+        message,
+        ClientMessage::Transport { .. }
+            | ClientMessage::Panic { .. }
+            | ClientMessage::Hotkey { .. }
     )
 }
 
 impl Conn {
     async fn session(&mut self) -> Result<(), Closed> {
         // The hub is registered before the snapshot is taken, so a change in between is
-        // queued; the revision filter drops what the snapshot already contains.
+        // queued; the revision filter drops what the snapshot already contains. A connection
+        // bound to a doc that is not open is refused (`no_workspace`): the doc's `snapshot`
+        // answers that, and a doc closed after it gives the connection `closed`.
         self.ask_snapshot()?;
-        let snapshot = loop {
+        let welcome = loop {
             match timeout(SNAPSHOT_WAIT, self.reply_rx.recv()).await {
-                Ok(Some(ServerMessage::Snapshot { snapshot })) => break snapshot,
+                Ok(Some(ServerMessage::Snapshot { snapshot })) => {
+                    self.last_rev = snapshot.revision;
+                    self.last_seq = snapshot.runtime_seq;
+                    break ServerMessage::Welcome {
+                        protocol_version: PROTOCOL_VERSION,
+                        doc: self.doc,
+                        snapshot: Some(snapshot),
+                        workspaces: None,
+                    };
+                }
+                Ok(Some(ServerMessage::Workspaces { workspaces })) => {
+                    break ServerMessage::Welcome {
+                        protocol_version: PROTOCOL_VERSION,
+                        doc: None,
+                        snapshot: None,
+                        workspaces: Some(workspaces),
+                    };
+                }
+                Ok(Some(ServerMessage::Result {
+                    id: INTERNAL_ID,
+                    outcome: Outcome::Error(e),
+                })) => {
+                    let _ = self.send(&error_message(e.code, &e.message)).await;
+                    return Err(Closed);
+                }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => {
                     let _ = self
@@ -499,13 +546,7 @@ impl Conn {
                 }
             }
         };
-        self.last_rev = snapshot.revision;
-        self.last_seq = snapshot.runtime_seq;
-        self.send(&ServerMessage::Welcome {
-            protocol_version: PROTOCOL_VERSION,
-            snapshot,
-        })
-        .await?;
+        self.send(&welcome).await?;
 
         let mut shutdown = self.shared.shutdown.clone();
         let wake = self.wake.clone();
@@ -600,16 +641,37 @@ impl Conn {
 
     fn ask_snapshot(&mut self) -> Result<(), Closed> {
         self.snapshot_waits.push((INTERNAL_ID, Instant::now()));
+        self.to_control(ClientMessage::Request {
+            id: INTERNAL_ID,
+            request: Request::Snapshot,
+        })
+    }
+
+    /// Hands a message to the control loop, for the doc this connection is bound to.
+    fn to_control(&self, message: ClientMessage) -> Result<(), Closed> {
         self.shared
             .inbox
-            .send(Inbox::Client {
-                message: ClientMessage::Request {
-                    id: INTERNAL_ID,
-                    request: Request::Snapshot,
-                },
+            .send(Inbox::Conn {
+                doc: self.doc,
+                message,
                 reply: self.reply_tx.clone(),
             })
             .map_err(|_| Closed)
+    }
+
+    /// The doc was closed: what the control loop answered before it closed is written (its
+    /// replies are in the reply channel already: they are sent before the broadcast), then
+    /// `closed`, and the connection ends.
+    async fn doc_closed(&mut self, closed: &str) -> Result<(), Closed> {
+        // Nothing is held back any more: no later `model_changed` of this doc will come.
+        while let Some(h) = self.held.pop_front() {
+            self.send(&h.message).await?;
+        }
+        while let Ok(m) = self.reply_rx.try_recv() {
+            self.send(&m).await?;
+        }
+        self.send_text(closed).await?;
+        Err(Closed)
     }
 
     /// The client's queue overflowed (or a message could not be encoded): throw the queue away
@@ -673,6 +735,7 @@ impl Conn {
                 self.send_text(&b.text).await?;
                 return self.release_held().await;
             }
+            Kind::Closed => return self.doc_closed(&b.text).await,
             Kind::State | Kind::Lossy => return self.send_text(&b.text).await,
         }
         self.send_text(&b.text).await?;
@@ -718,6 +781,13 @@ impl Conn {
                 if let Some(i) = self.snapshot_waits.iter().position(|(w, _)| w == id) {
                     self.snapshot_waits.swap_remove(i);
                     if *id == INTERNAL_ID {
+                        // A resync of a doc closed meanwhile (its `closed` was thrown away
+                        // with the queue): the connection ends as it would have.
+                        if let (Some(doc), Outcome::Error(_)) = (self.doc, outcome)
+                            && let Ok(text) = encode_server(&ServerMessage::Closed { doc })
+                        {
+                            return self.doc_closed(&text).await;
+                        }
                         return self.release_held().await;
                     }
                 }
@@ -775,10 +845,7 @@ impl Conn {
                 if shutdown {
                     // The control loop stops the show and ends (docs/network.md); the process
                     // exit is the host's.
-                    let _ = self.shared.inbox.send(Inbox::Client {
-                        message: ClientMessage::Goodbye { shutdown: true },
-                        reply: self.reply_tx.clone(),
-                    });
+                    let _ = self.to_control(ClientMessage::Goodbye { shutdown: true });
                 }
                 Err(Closed)
             }
@@ -799,20 +866,15 @@ impl Conn {
                     self.snapshot_waits.push((id, Instant::now()));
                 }
                 self.inflight += 1;
-                // Edits and requests are the UI's own business; a transport action is a
-                // trigger the show log records (DX-02). The hotkey/UI split is not visible on
-                // the wire: both arrive as `ui`.
-                if matches!(other, ClientMessage::Transport { .. }) {
+                // Edits and requests are the UI's own business; a transport action, the panic
+                // and a hotkey are triggers the show log records (DX-02).
+                if is_trigger(&other) {
                     let _ = self.shared.inbox.send(Inbox::Trigger {
                         source: "ui".to_owned(),
                         detail: super::describe(&other),
                     });
                 }
-                let sent = self.shared.inbox.send(Inbox::Client {
-                    message: other,
-                    reply: self.reply_tx.clone(),
-                });
-                if sent.is_err() {
+                if self.to_control(other).is_err() {
                     let _ = self
                         .send(&error_message(
                             ErrorCode::Internal,

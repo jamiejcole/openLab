@@ -53,6 +53,8 @@ struct SaveJob {
     now_ms: i64,
     keep: u32,
     revision: u64,
+    /// Show files of other open workspaces: the save is refused if `path` is one of them.
+    others: Vec<PathBuf>,
     reply: SaveReply,
 }
 
@@ -163,6 +165,21 @@ impl SaveWriter {
         keep: u32,
         revision: u64,
     ) -> Receiver<Result<SaveReport, PersistError>> {
+        self.save_unless(workspace, path, now_ms, keep, revision, Vec::new())
+    }
+
+    /// As [`Self::save`], refused with [`PersistError::OpenElsewhere`] (nothing written) when
+    /// `path` names the same file as one of `others` (compared by [`super::file_key`] on this
+    /// thread, so a symlinked or otherwise re-spelled path is caught too).
+    pub fn save_unless(
+        &self,
+        workspace: Workspace,
+        path: PathBuf,
+        now_ms: i64,
+        keep: u32,
+        revision: u64,
+        others: Vec<PathBuf>,
+    ) -> Receiver<Result<SaveReport, PersistError>> {
         let (reply, answer) = mpsc::channel();
         let mut state = self.shared.lock();
         if state.closing {
@@ -175,6 +192,7 @@ impl SaveWriter {
             now_ms,
             keep,
             revision,
+            others,
             reply,
         };
         match state.saves.iter_mut().find(|p| p.path == job.path) {
@@ -329,7 +347,12 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send)>)
                 if let Some(hook) = hook {
                     hook(JobKind::Save);
                 }
-                let result = save_workspace(dirs, &job.path, &job.workspace, job.now_ms, job.keep);
+                let target = super::file_key(&job.path);
+                let result = if job.others.iter().any(|o| super::file_key(o) == target) {
+                    Err(PersistError::OpenElsewhere(job.path.clone()))
+                } else {
+                    save_workspace(dirs, &job.path, &job.workspace, job.now_ms, job.keep)
+                };
                 if result.is_ok() {
                     let mut state = shared.lock();
                     let id = job.workspace.id;

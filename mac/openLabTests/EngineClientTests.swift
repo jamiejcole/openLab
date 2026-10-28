@@ -25,7 +25,7 @@ final class EngineClientTests: XCTestCase {
         let connected = await rig.connect()
         XCTAssertTrue(connected)
         guard case .hello(let h)? = rig.engine.received.first else { return XCTFail("no hello") }
-        XCTAssertEqual(h.protocolVersion, 1)
+        XCTAssertEqual(h.protocolVersion, protocolVersion)
         XCTAssertEqual(h.token, rig.engine.token)
         XCTAssertNil(h.workspace)
         XCTAssertEqual(rig.store.model?.name, "Test")
@@ -93,8 +93,8 @@ final class EngineClientTests: XCTestCase {
         rig.engine.holdResults = true
         for _ in 0..<3 { rig.client.requestSnapshot() }
         XCTAssertEqual(rig.engine.requestCount { $0 == .snapshot }, 1)
-        // New / open also answer with a snapshot, so they are held back too.
-        let blocked = await rig.client.send { .request(id: $0, .new()) }
+        // A second snapshot request is held back too.
+        let blocked = await rig.client.send { .request(id: $0, .snapshot) }
         XCTAssertEqual(blocked, .failure(.snapshotAlreadyPending))
         XCTAssertEqual(rig.engine.requestCount { $0 == .snapshot }, 1)
         // Anything else still goes through.
@@ -208,7 +208,7 @@ final class EngineClientTests: XCTestCase {
         let rig = try Rig()
         rig.engine.refuseAuth = .protocolVersionMismatch
         rig.client.start()
-        await assertEventually { rig.client.state == .failed(.versionMismatch(engineVersion: 1)) }
+        await assertEventually { rig.client.state == .failed(.versionMismatch(engineVersion: protocolVersion)) }
         await settle()
         let waiting = await rig.scheduler.requested
         XCTAssertTrue(waiting.isEmpty, "no retry after a version mismatch")
@@ -265,11 +265,11 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testBoundClientSendsItsWorkspaceInHello() async throws {
-        let rig = try Rig(mode: .multi, workspace: "doc-1")
+        let rig = try Rig(mode: .multi, workspace: "1")
         let ok = await rig.connect()
         XCTAssertTrue(ok)
         guard case .hello(let h)? = rig.engine.received.first else { return XCTFail() }
-        XCTAssertEqual(h.workspace, "doc-1")
+        XCTAssertEqual(h.workspace, "1")
         XCTAssertEqual(rig.store.model?.name, "Test")
     }
 
@@ -416,7 +416,7 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testBoundClientOfAClosedWorkspaceStopsReconnecting() async throws {
-        let rig = try Rig(mode: .multi, workspace: "no-such-doc")
+        let rig = try Rig(mode: .multi, workspace: "99")
         rig.client.start()
         let failed = ConnectionState.failed(.engine(code: .noWorkspace, message: "no such workspace"))
         await assertEventually { rig.client.state == failed }

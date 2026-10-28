@@ -14,13 +14,16 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
+use openlab_core::protocol::DocId;
 use openlab_core::protocol::{
     ClientMessage, Delete, DocumentState, ErrorCode, LogLevel, OkBody, Outcome, PROTOCOL_VERSION,
     Request, RequestId, ServerMessage, Snapshot, TransportAction, Upsert, decode_server,
     encode_client,
 };
 use openlab_core::{Command, CueKind, CueProperty, GroupMode};
-use openlab_engine::control::{Inbox, OUTBOUND_CAPACITY, OutboundTx, ReplyTx, outbound_channel};
+use openlab_engine::control::{
+    Inbox, OUTBOUND_CAPACITY, OutboundTx, Outgoing, ReplyTx, outbound_channel,
+};
 use openlab_engine::net::{ServerConfig, WsServer};
 use show::{cue, id, list_id, workspace};
 use tokio::net::TcpStream;
@@ -42,6 +45,26 @@ async fn guard<F: std::future::Future>(what: &str, f: F) -> F::Output {
     }
 }
 
+/// The doc the stand-in control thread plays and the test clients bind to.
+const DOC: DocId = DocId(0);
+
+/// The control loop's outbound channel, as the stand-in uses it: every message is about [`DOC`].
+#[derive(Clone)]
+struct Out(OutboundTx);
+
+impl Out {
+    fn try_send(&self, m: ServerMessage) -> Result<(), TrySendError<ServerMessage>> {
+        self.0.try_send(Outgoing::doc(DOC, m)).map_err(|e| match e {
+            TrySendError::Full(o) => TrySendError::Full(o.message),
+            TrySendError::Closed(o) => TrySendError::Closed(o.message),
+        })
+    }
+
+    fn blocking_send(&self, m: ServerMessage) -> Result<(), ()> {
+        self.0.blocking_send(Outgoing::doc(DOC, m)).map_err(|_| ())
+    }
+}
+
 #[derive(Default)]
 struct Control {
     revision: AtomicU64,
@@ -59,7 +82,7 @@ struct Control {
 
 struct Fix {
     server: WsServer,
-    out: OutboundTx,
+    out: Out,
     inbox: Sender<Inbox>,
     control: Arc<Control>,
     thread: Option<thread::JoinHandle<()>>,
@@ -98,10 +121,12 @@ fn ok(id: RequestId, revision: Option<u64>) -> ServerMessage {
 /// Answers like the real control loop: a command bumps the revision, broadcasts
 /// `model_changed`, then replies.
 /// Replies go to a connection that may already be gone: not an error here.
-fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
+fn control_thread(rx: &Receiver<Inbox>, out: &Out, c: &Control) {
     while let Ok(msg) = rx.recv() {
         let (message, reply) = match msg {
-            Inbox::Client { message, reply } => (message, reply),
+            Inbox::Client { message, reply } | Inbox::Conn { message, reply, .. } => {
+                (message, reply)
+            }
             Inbox::Log { message, .. } => {
                 c.logs.lock().unwrap().push(message);
                 continue;
@@ -168,6 +193,11 @@ fn control_thread(rx: &Receiver<Inbox>, out: &OutboundTx, c: &Control) {
                     c.shutdown.store(true, Ordering::SeqCst);
                 }
             }
+            ClientMessage::Close { id, .. }
+            | ClientMessage::Panic { id }
+            | ClientMessage::Hotkey { id, .. } => {
+                let _ = reply.send(ok(id, None));
+            }
             ClientMessage::Hello { .. } => {}
         }
     }
@@ -186,6 +216,7 @@ impl Control {
 fn fixture_with(config: ServerConfig) -> Fix {
     let (inbox, rx) = crossbeam_channel::unbounded();
     let (out, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+    let out = Out(out);
     let control = Arc::new(Control::default());
     let server = WsServer::start(inbox.clone(), outbound, config).unwrap();
     let thread = {
@@ -241,6 +272,7 @@ fn hello_text(token: &str, version: u32, name: &str) -> String {
         protocol_version: version,
         token: token.into(),
         client_name: name.into(),
+        workspace: Some(DOC),
     })
     .unwrap()
 }
@@ -345,9 +377,12 @@ async fn a_valid_hello_is_welcomed_with_a_snapshot() {
     match next(&mut c).await {
         Some(ServerMessage::Welcome {
             protocol_version,
-            snapshot,
+            doc,
+            snapshot: Some(snapshot),
+            ..
         }) => {
             assert_eq!(protocol_version, PROTOCOL_VERSION);
+            assert_eq!(doc, Some(DOC));
             assert_eq!(snapshot.revision, 7);
         }
         other => panic!("{other:?}"),
@@ -1055,7 +1090,7 @@ async fn a_snapshot_older_than_what_the_client_has_is_followed_by_a_fresh_one() 
 // --- slow-client policy and limits -----------------------------------------------------------
 
 /// Hands `m` to the fan-out from a plain thread, failing if it does not drain within the guard.
-fn push(out: &OutboundTx, mut m: ServerMessage) {
+fn push(out: &Out, mut m: ServerMessage) {
     let deadline = std::time::Instant::now() + GUARD;
     loop {
         match out.try_send(m) {

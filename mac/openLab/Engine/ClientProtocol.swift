@@ -115,16 +115,15 @@ enum TransportAction: Hashable, Sendable, Codable {
 
 enum RecoveryChoice: String, Hashable, Sendable, Codable { case restore, ignore }
 
+/// `new`, `open` and `open_recovery` open another workspace beside the ones open (protocol 2): the
+/// result carries `opened { doc }` and a connection bound to that doc gets its snapshot.
 enum Request: Hashable, Sendable, Codable {
-    case new(discardChanges: Bool = false)
-    case open(path: String, discardChanges: Bool = false, recovery: RecoveryChoice? = nil)
-    case openRecovery(
-        workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil, discardChanges: Bool = false)
+    case new
+    case open(path: String, recovery: RecoveryChoice? = nil)
+    case openRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case scanRecovery
     case save
     case saveAs(path: String)
-    /// Present for the fixtures only; no store API sends it (QLab 5 has no Revert; ARCHITECTURE §6).
-    case revert(discardChanges: Bool = false)
     case relink(folder: String)
     case listDevices
     case preshowCheck
@@ -133,40 +132,32 @@ enum Request: Hashable, Sendable, Codable {
     case setOutputOverrides(networkDisabled: Bool)
     case snapshot
 
-    /// Replies with a `snapshot`, so the engine holds this connection's broadcasts until the
-    /// `result` (docs/network.md "Ordering and gaps").
+    /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
+    /// holds this connection's broadcasts until the `result` (docs/network.md "Ordering and gaps").
     var answersWithSnapshot: Bool {
         switch self {
-        case .snapshot, .new, .open, .openRecovery, .revert: return true
+        case .snapshot: return true
         default: return false
         }
     }
 
     private var wire: (String, Fields) {
         func opt(_ f: inout Fields, _ k: String, _ v: (any Encodable)?) { if let v { f.append((k, v)) } }
-        func flag(_ f: inout Fields, _ v: Bool) { if v { f.append(("discard_changes", true)) } }
         var f: Fields = []
         switch self {
-        case .new(let d):
-            flag(&f, d)
-            return ("new", f)
-        case .open(let p, let d, let r):
+        case .new: return ("new", [])
+        case .open(let p, let r):
             f.append(("path", p))
-            flag(&f, d)
             opt(&f, "recovery", r)
             return ("open", f)
-        case .openRecovery(let w, let h, let m, let d):
+        case .openRecovery(let w, let h, let m):
             f.append(("workspace_id", w))
             opt(&f, "path_hash", h)
             opt(&f, "modified_ms", m)
-            flag(&f, d)
             return ("open_recovery", f)
         case .scanRecovery: return ("scan_recovery", [])
         case .save: return ("save", [])
         case .saveAs(let p): return ("save_as", [("path", p)])
-        case .revert(let d):
-            flag(&f, d)
-            return ("revert", f)
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
         case .preshowCheck: return ("preshow_check", [])
@@ -182,22 +173,20 @@ enum Request: Hashable, Sendable, Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Key.self)
-        let discard = try c.decodeIfPresent(Bool.self, forKey: "discard_changes") ?? false
         switch try c.decode(String.self, forKey: "type") {
-        case "new": self = .new(discardChanges: discard)
+        case "new": self = .new
         case "open":
             self = .open(
-                path: try c.decode(String.self, forKey: "path"), discardChanges: discard,
+                path: try c.decode(String.self, forKey: "path"),
                 recovery: try c.decodeIfPresent(RecoveryChoice.self, forKey: "recovery"))
         case "open_recovery":
             self = .openRecovery(
                 workspaceId: try c.decode(ModelID.self, forKey: "workspace_id"),
                 pathHash: try c.decodeIfPresent(String.self, forKey: "path_hash"),
-                modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"), discardChanges: discard)
+                modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"))
         case "scan_recovery": self = .scanRecovery
         case "save": self = .save
         case "save_as": self = .saveAs(path: try c.decode(String.self, forKey: "path"))
-        case "revert": self = .revert(discardChanges: discard)
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
         case "preshow_check": self = .preshowCheck

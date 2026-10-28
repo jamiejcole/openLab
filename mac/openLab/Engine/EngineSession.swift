@@ -59,25 +59,21 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     // MARK: Calls
 
-    func newWorkspace(discardChanges: Bool = false) async -> Result<ModelID, EngineError> {
-        await opened(appClient.send { .request(id: $0, .new(discardChanges: discardChanges)) })
+    func newWorkspace() async -> Result<ModelID, EngineError> {
+        await opened(appClient.send { .request(id: $0, .new) })
     }
 
-    func open(path: String, discardChanges: Bool = false, recovery: RecoveryChoice? = nil) async -> Result<
-        ModelID, EngineError
-    > {
-        await opened(
-            appClient.send { .request(id: $0, .open(path: path, discardChanges: discardChanges, recovery: recovery)) })
+    func open(path: String, recovery: RecoveryChoice? = nil) async -> Result<ModelID, EngineError> {
+        await opened(appClient.send { .request(id: $0, .open(path: path, recovery: recovery)) })
     }
 
-    func openRecovery(_ entry: RecoveryEntryInfo, discardChanges: Bool = false) async -> Result<ModelID, EngineError> {
+    func openRecovery(_ entry: RecoveryEntryInfo) async -> Result<ModelID, EngineError> {
         await opened(
             appClient.send {
                 .request(
                     id: $0,
                     .openRecovery(
-                        workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs,
-                        discardChanges: discardChanges))
+                        workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs))
             })
     }
 
@@ -97,8 +93,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         return result.map { _ in () }
     }
 
-    /// App-scope panic: the ordinary `transport: panic`, which a multi-workspace engine applies to
-    /// every open workspace.
+    /// App-scope panic: `transport: panic` on the app connection, which the engine applies to every
+    /// open workspace (as its `panic` message; M5 may send that instead).
     func panicAll() async -> Result<OkBody, EngineError> {
         await appClient.send { .transport(id: $0, .panic) }
     }

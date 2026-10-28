@@ -21,7 +21,18 @@ pub enum Inbox {
     /// `command`, `transport`, `undo`, `redo` and `request` is answered on `reply` with exactly
     /// one `result` (a `snapshot` request also gets its `snapshot` there first); broadcasts go
     /// to the outbound channel.
+    ///
+    /// Addressed to the first open doc: what the OSC listeners send until they address each
+    /// doc (M4.15h), and the engine's tests.
     Client {
+        message: ClientMessage,
+        reply: ReplyTx,
+    },
+    /// A message on a WebSocket connection (M4.15f): one bound to `doc` (`hello { workspace }`),
+    /// or the app connection (`None`), which may send only the app-scope messages. Answered as
+    /// [`Inbox::Client`] is.
+    Conn {
+        doc: Option<super::DocId>,
         message: ClientMessage,
         reply: ReplyTx,
     },
@@ -34,7 +45,7 @@ pub enum Inbox {
     /// (internal feedback, docs/control.md "Network output"), for the doc that sent it (dropped
     /// if it has closed since).
     Net(super::DocId, super::netout::NetAnswer),
-    /// The document worker's answer to an open, revert or scan (internal feedback,
+    /// The document worker's answer to an open or a recovery scan (internal feedback,
     /// docs/control.md "Documents"). One read runs at a time engine-wide, so its ticket names
     /// the request, and the request the doc.
     Doc(super::docs::DocAnswer),
@@ -66,6 +77,30 @@ pub enum ProbeAnswer {
     },
 }
 
+/// One broadcast and the doc it is about: `doc: None` is the engine's own (`log`, `log_entry`,
+/// `status`) and goes to every connection; a doc's goes to the connections bound to it. The
+/// `workspaces` list goes to the app connections whatever `doc` says.
+#[derive(Clone, Debug)]
+pub struct Outgoing {
+    pub doc: Option<super::DocId>,
+    pub message: ServerMessage,
+}
+
+impl Outgoing {
+    /// An engine-wide message.
+    pub fn all(message: ServerMessage) -> Self {
+        Self { doc: None, message }
+    }
+
+    /// A message about doc `doc`.
+    pub fn doc(doc: super::DocId, message: ServerMessage) -> Self {
+        Self {
+            doc: Some(doc),
+            message,
+        }
+    }
+}
+
 /// Messages for every client. Bounded, so a stalled network thread cannot grow the engine's
 /// memory. Meters and progress are dropped first (once the channel is half full: the next ones
 /// replace them anyway). Sequenced messages (`runtime`, `model_changed`) that do not fit are
@@ -92,8 +127,8 @@ pub fn reply_channel() -> (ReplyTx, ReplyRx) {
 }
 
 /// The control loop's side of the broadcast channel.
-pub type OutboundTx = mpsc::Sender<ServerMessage>;
-pub type OutboundRx = mpsc::Receiver<ServerMessage>;
+pub type OutboundTx = mpsc::Sender<Outgoing>;
+pub type OutboundRx = mpsc::Receiver<Outgoing>;
 
 /// The broadcast channel, holding `capacity` messages (at least one).
 pub fn outbound_channel(capacity: usize) -> (OutboundTx, OutboundRx) {
@@ -109,16 +144,16 @@ impl Outbound {
         }
     }
 
-    /// A sequenced or log message.
-    pub fn send(&mut self, message: ServerMessage) {
-        if self.offer(message).is_err() {
+    /// A sequenced or log message, about `doc` (`None`: the engine's).
+    pub fn send(&mut self, doc: Option<super::DocId>, message: ServerMessage) {
+        if self.offer(Outgoing { doc, message }).is_err() {
             self.dropped += 1;
         }
     }
 
     /// Meters and progress: dropped while the channel is half full, to keep room for the rest.
-    pub fn send_lossy(&mut self, message: ServerMessage) {
-        if self.try_lossy(message).is_err() {
+    pub fn send_lossy(&mut self, doc: Option<super::DocId>, message: ServerMessage) {
+        if self.try_lossy(doc, message).is_err() {
             self.lossy_dropped += 1;
         }
     }
@@ -127,21 +162,25 @@ impl Outbound {
     /// it: for `log_entry`, whose losses the client sees in its `seq` and the caller offers
     /// again. (Counting them would make the "not keeping up" notice, itself a pushed record,
     /// report its own loss.)
-    pub fn try_lossy(&mut self, message: ServerMessage) -> Result<(), ServerMessage> {
+    pub fn try_lossy(
+        &mut self,
+        doc: Option<super::DocId>,
+        message: ServerMessage,
+    ) -> Result<(), ServerMessage> {
         let max = self.tx.max_capacity();
         let queued = max.saturating_sub(self.tx.capacity());
         if queued * 2 >= max {
             return Err(message);
         }
-        match self.tx.try_send(message) {
+        match self.tx.try_send(Outgoing { doc, message }) {
             Ok(()) | Err(TrySendError::Closed(_)) => Ok(()),
-            Err(TrySendError::Full(m)) => Err(m),
+            Err(TrySendError::Full(m)) => Err(m.message),
         }
     }
 
-    /// A state message; `false` if it did not fit and must be sent again later.
-    pub fn send_state(&mut self, message: ServerMessage) -> bool {
-        self.offer(message).is_ok()
+    /// A state message about `doc`; `false` if it did not fit and must be sent again later.
+    pub fn send_state(&mut self, doc: Option<super::DocId>, message: ServerMessage) -> bool {
+        self.offer(Outgoing { doc, message }).is_ok()
     }
 
     /// Whether a message would fit now.
@@ -149,7 +188,7 @@ impl Outbound {
         self.tx.capacity() > 0
     }
 
-    fn offer(&mut self, message: ServerMessage) -> Result<(), ()> {
+    fn offer(&mut self, message: Outgoing) -> Result<(), ()> {
         match self.tx.try_send(message) {
             // Nobody listens (no network layer yet): nothing to lose.
             Ok(()) | Err(TrySendError::Closed(_)) => Ok(()),

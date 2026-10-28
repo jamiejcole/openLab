@@ -15,14 +15,15 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 use openlab_audio::{Mixer, MixerConfig, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, ErrorBody, ErrorCode, Outcome, RequestId, ServerMessage, TransportAction,
+    ClientMessage, ErrorBody, ErrorCode, HotkeyPhase, Outcome, RequestId, ServerMessage,
+    TransportAction,
 };
 use openlab_core::{Hotkey, SampleTime, Workspace};
 
 use super::watch::{WatchAnswer, WatchBatch};
 use super::{
     Backend, Control, ControlConfig, ControlError, DocId, DocSource, Flow, Inbox,
-    OUTBOUND_CAPACITY, OutboundRx, outbound_channel, reply_channel,
+    OUTBOUND_CAPACITY, OutboundRx, Outgoing, outbound_channel, reply_channel,
 };
 
 /// How long the driver waits for a disk worker or a probe before giving up on a block (and
@@ -220,14 +221,45 @@ impl OfflineShow {
 
     /// App-scope Panic ([`Control::panic_all`]).
     pub fn panic_all(&mut self) {
-        self.pump_inbox();
-        self.control.panic_all();
+        let id = self.request_id();
+        self.send_app(ClientMessage::Panic { id });
     }
 
-    /// App-scope hotkey ([`Control::hotkey`]).
+    /// App-scope hotkey down ([`Control::hotkey`]), as the `hotkey` message on an app
+    /// connection.
     pub fn hotkey(&mut self, hotkey: &Hotkey) {
+        self.hotkey_phase(hotkey, HotkeyPhase::Down);
+    }
+
+    /// App-scope hotkey release ([`Control::hotkey_released`]).
+    pub fn hotkey_up(&mut self, hotkey: &Hotkey) {
+        self.hotkey_phase(hotkey, HotkeyPhase::Up);
+    }
+
+    fn hotkey_phase(&mut self, hotkey: &Hotkey, phase: HotkeyPhase) {
+        let id = self.request_id();
+        self.send_app(ClientMessage::Hotkey {
+            id,
+            key: hotkey.key.clone(),
+            modifiers: hotkey.modifiers,
+            phase,
+        });
+    }
+
+    /// Sends a message as an app connection (one bound to no doc) would, and returns the
+    /// replies.
+    pub fn send_app(&mut self, message: ClientMessage) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
         self.pump_inbox();
-        self.control.hotkey(hotkey);
+        let _ = self.control.handle(Inbox::Conn {
+            doc: None,
+            message,
+            reply: tx,
+        });
+        if self.control.docs_busy() > 0 {
+            self.settle_docs();
+        }
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A transport action with a fresh request id.
@@ -368,8 +400,16 @@ impl OfflineShow {
             .collect()
     }
 
-    /// Messages broadcast since the last call.
+    /// Messages broadcast since the last call (whichever doc each is about).
     pub fn take_outbound(&mut self) -> Vec<ServerMessage> {
+        self.take_outbound_tagged()
+            .into_iter()
+            .map(|o| o.message)
+            .collect()
+    }
+
+    /// Messages broadcast since the last call, with the doc each is about.
+    pub fn take_outbound_tagged(&mut self) -> Vec<Outgoing> {
         std::iter::from_fn(|| self.outbound.try_recv().ok()).collect()
     }
 

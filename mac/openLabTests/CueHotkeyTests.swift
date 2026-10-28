@@ -325,7 +325,7 @@ final class CueHotkeyFiringTests: XCTestCase {
             #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(try upsert.text())],"deletes":[]}"#,
             doc: doc)
         await assertEventually { store.model?.cue(second) != nil }
-        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        let first = try XCTUnwrap(app.session.stores["1"])
         _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
         await assertEventually { first.model?.cue(intro)?.raw["triggers"]?["hotkey"] != .null }
     }
@@ -356,7 +356,7 @@ final class CueHotkeyFiringTests: XCTestCase {
         keyDoc = nil  // no workspace window is key (launcher or alert in front)
         XCTAssertNil(app.handleKeyDown(try event("x")), "consumed")
         await assertEventually { !sent(.start(cue: intro)).isEmpty && !sent(.start(cue: second)).isEmpty }
-        XCTAssertEqual(sent(.start(cue: intro)), ["doc-1"])
+        XCTAssertEqual(sent(.start(cue: intro)), ["1"])
         XCTAssertEqual(sent(.start(cue: second)), [secondDoc])
     }
 
@@ -408,7 +408,7 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     func testAMenuKeyIsNeverTakenByACue() async throws {
-        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        let first = try XCTUnwrap(app.session.stores["1"])
         _ = await first.send(
             command: .setProperty(intro, .triggers(hotkey: KeyChord("q", [.command]).hotkeyJSON, osc: nil)))
         await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord("q", [.command]) } == true }
@@ -419,8 +419,8 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     func testFixedDefaultKeysYieldToACueHotkey() async throws {
-        keyDoc = "doc-1"
-        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        keyDoc = "1"
+        let first = try XCTUnwrap(app.session.stores["1"])
         for key in ["v", "l"] {
             _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
             await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
@@ -436,8 +436,8 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {
-        keyDoc = "doc-1"
-        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        keyDoc = "1"
+        let first = try XCTUnwrap(app.session.stores["1"])
         _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(" ").hotkeyJSON, osc: nil)))
         await assertEventually { first.model?.cueHotkeys.contains { $0.chord == KeyChord(" ") } == true }
         XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "), "GO keeps its key")
@@ -505,7 +505,7 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
-        let first = try XCTUnwrap(app.session.stores["doc-1"])
+        let first = try XCTUnwrap(app.session.stores["1"])
         _ = await first.send(
             command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, osc: nil)))
         await assertEventually { first.model?.cue(intro)?.raw["triggers"]?["hotkey"] != .null }
