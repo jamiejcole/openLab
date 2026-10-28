@@ -229,7 +229,7 @@ struct WorkerFlags {
 
 type ClearRx = Receiver<Result<(), PersistError>>;
 
-/// Document state of the control loop.
+/// The document worker and the save writer, shared by every workspace.
 pub(super) struct Docs {
     writer: Option<SaveWriter>,
     jobs: Sender<DocJob>,
@@ -248,8 +248,13 @@ pub(super) struct Docs {
     timeout_ms: i64,
     ticket: u64,
     pending: Option<PendingDoc>,
-    saves: Vec<PendingSave>,
+    /// Autosave removals in flight: they outlive the workspace they were for.
     clears: Vec<ClearRx>,
+}
+
+/// One workspace's file state: its saves and autosave in flight, autosave pacing, load notices.
+pub(super) struct DocFile {
+    saves: Vec<PendingSave>,
     autosave: Option<AutosaveRx>,
     autosave_failed: bool,
     /// The revision last handed to the autosave.
@@ -262,6 +267,27 @@ pub(super) struct Docs {
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
+}
+
+impl DocFile {
+    pub(super) fn new() -> Self {
+        Self {
+            saves: Vec::new(),
+            autosave: None,
+            autosave_failed: false,
+            autosaved_revision: None,
+            dirty_since: None,
+            last_autosave: None,
+            epoch: 0,
+            notices: Vec::new(),
+            resend_snapshot: false,
+        }
+    }
+
+    /// Saves and the autosave in flight: tests wait until it is zero.
+    pub(super) fn busy(&self) -> usize {
+        self.saves.len() + usize::from(self.autosave.is_some())
+    }
 }
 
 impl Docs {
@@ -290,16 +316,7 @@ impl Docs {
             timeout_ms: i64::try_from(config.doc_timeout.as_millis()).unwrap_or(i64::MAX),
             ticket: 0,
             pending: None,
-            saves: Vec::new(),
             clears: Vec::new(),
-            autosave: None,
-            autosave_failed: false,
-            autosaved_revision: None,
-            dirty_since: None,
-            last_autosave: None,
-            epoch: 0,
-            notices: Vec::new(),
-            resend_snapshot: false,
         };
         docs.spawn_worker()?;
         Ok(docs)
@@ -335,12 +352,9 @@ impl Docs {
             .map(|_| ())
     }
 
-    /// Requests being worked on (a read, a save): tests wait until it is zero.
+    /// The read and the autosave removals in flight (a doc's saves: [`DocFile::busy`]).
     pub(super) fn busy(&self) -> usize {
-        usize::from(self.pending.is_some())
-            + self.saves.len()
-            + self.clears.len()
-            + usize::from(self.autosave.is_some())
+        usize::from(self.pending.is_some()) + self.clears.len()
     }
 }
 
@@ -671,13 +685,13 @@ fn folder_of(path: &Path) -> Option<PathBuf> {
 
 impl Control {
     fn is_dirty(&self) -> bool {
-        self.revision != self.saved_revision
+        self.doc.revision != self.doc.saved_revision
     }
 
     /// A document request (everything in `Request` but `snapshot`, `list_devices`, `relink`).
     pub(super) fn doc_request(&mut self, id: RequestId, request: Request, to: &ReplyTx) {
         match request {
-            Request::Save => match self.config.show_path.clone() {
+            Request::Save => match self.doc.show_path.clone() {
                 Some(path) => self.start_save(id, to, path),
                 None => fail(
                     to,
@@ -758,7 +772,7 @@ impl Control {
                 self.send_job(job, id, to);
             }
             Request::Revert { discard_changes } => {
-                let Some(path) = self.config.show_path.clone() else {
+                let Some(path) = self.doc.show_path.clone() else {
                     fail(
                         to,
                         id,
@@ -786,7 +800,7 @@ impl Control {
     /// time, and not over unsaved edits unless the request discards them. `reads`: the request
     /// needs the document worker.
     fn doc_gate(&self, id: RequestId, to: &ReplyTx, discard: bool, reads: bool) -> bool {
-        if self.docs.pending.is_some() {
+        if self.eng.docs.pending.is_some() {
             fail(
                 to,
                 id,
@@ -795,7 +809,7 @@ impl Control {
             );
             return false;
         }
-        if reads && self.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
+        if reads && self.eng.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
             fail(
                 to,
                 id,
@@ -817,20 +831,20 @@ impl Control {
     }
 
     fn next_ticket(&mut self, id: RequestId, to: &ReplyTx, discard: bool) -> u64 {
-        self.docs.ticket += 1;
-        self.docs.pending = Some(PendingDoc {
-            ticket: self.docs.ticket,
+        self.eng.docs.ticket += 1;
+        self.eng.docs.pending = Some(PendingDoc {
+            ticket: self.eng.docs.ticket,
             id,
             reply: to.clone(),
             discard,
-            started_ms: self.config.clock.now_ms(),
+            started_ms: self.eng.config.clock.now_ms(),
         });
-        self.docs.ticket
+        self.eng.docs.ticket
     }
 
     fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
-        if self.docs.jobs.send(job).is_err() {
-            self.docs.pending = None;
+        if self.eng.docs.jobs.send(job).is_err() {
+            self.eng.docs.pending = None;
             fail(
                 to,
                 id,
@@ -842,7 +856,12 @@ impl Control {
 
     /// The document worker's answer.
     pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
-        let Some(pending) = self.docs.pending.take_if(|p| p.ticket == answer.ticket()) else {
+        let Some(pending) = self
+            .eng
+            .docs
+            .pending
+            .take_if(|p| p.ticket == answer.ticket())
+        else {
             return;
         };
         let (id, to) = (pending.id, &pending.reply);
@@ -906,12 +925,13 @@ impl Control {
         // Whatever the engine did not own any more.
         let floor = self.stop_floor();
         let stops: Vec<_> = self
+            .doc
             .voices
             .playing_ids()
             .into_iter()
             .map(|voice| {
                 (
-                    self.voices.stop_date(voice, now, floor),
+                    self.doc.voices.stop_date(voice, now, floor),
                     CommandKind::StopVoice {
                         voice,
                         fade: Fade::NONE,
@@ -920,11 +940,11 @@ impl Control {
             })
             .collect();
         self.send_commands(stops);
-        self.voices.forget_all();
-        self.deferred.clear();
-        self.pending_media.clear();
-        self.ready_media.clear();
-        self.mixer.pump();
+        self.doc.voices.forget_all();
+        self.doc.deferred.clear();
+        self.doc.pending_media.clear();
+        self.doc.ready_media.clear();
+        self.eng.mixer.pump();
     }
 
     /// Replaces the workspace: stops the show, rebuilds the cue engine, history, media catalog
@@ -938,8 +958,8 @@ impl Control {
             notices,
             clear_autosave,
         } = loaded;
-        let same_file = self.ws.id == workspace.id
-            && match (&self.config.show_path, &path) {
+        let same_file = self.doc.ws.id == workspace.id
+            && match (&self.doc.show_path, &path) {
                 (Some(a), Some(b)) => same_path(a, b),
                 (None, None) => true,
                 _ => false,
@@ -951,60 +971,65 @@ impl Control {
             let (id, from) = if clear_autosave {
                 (workspace.id, path.clone())
             } else {
-                (self.ws.id, self.config.show_path.clone())
+                (self.doc.ws.id, self.doc.show_path.clone())
             };
             self.clear_autosave_of(id, from);
         }
         self.stop_everything();
-        self.docs.epoch += 1;
+        self.doc.file.epoch += 1;
         // A new engine: its run ids restart, which cannot meet the old ones (the voices are
         // forgotten and mixer voice ids are never reused).
-        match openlab_core::EngineConfig::new(self.rate.get(), self.block, self.config.seed) {
-            Ok(config) => self.engine = openlab_core::CueEngine::new(config),
+        match openlab_core::EngineConfig::new(
+            self.eng.rate.get(),
+            self.eng.block,
+            self.eng.config.seed,
+        ) {
+            Ok(config) => self.doc.engine = openlab_core::CueEngine::new(config),
             // Cannot happen (the same values built the first engine); the old engine, with
             // everything stopped, is the safe thing to keep.
             Err(e) => self.log(LogLevel::Error, format!("cue engine not rebuilt: {e}")),
         }
-        self.ws = workspace;
-        self.history = History::new();
-        self.checks = super::checks::PlanChecks::default();
-        self.config.show_path = path;
-        self.observe.reset();
+        self.doc.ws = workspace;
+        self.doc.history = History::new();
+        self.doc.checks = super::checks::PlanChecks::default();
+        self.doc.show_path = path;
+        self.eng.observe.reset();
         self.log_kind(
             LogKind::Document,
             LogLevel::Info,
-            match &self.config.show_path {
+            match &self.doc.show_path {
                 Some(p) => format!("workspace opened: {}", p.display()),
                 None => "workspace opened: untitled".to_owned(),
             },
         );
-        self.media.reset(self.show_dir(), &self.ws);
-        self.docs.notices = notices;
-        self.revision += 1;
-        self.saved_revision = if dirty {
-            self.revision.saturating_sub(1)
+        self.doc.media.reset(self.show_dir(), &self.doc.ws);
+        self.doc.file.notices = notices;
+        self.doc.revision += 1;
+        self.doc.saved_revision = if dirty {
+            self.doc.revision.saturating_sub(1)
         } else {
-            self.revision
+            self.doc.revision
         };
-        self.docs.dirty_since = None;
-        self.docs.last_autosave = None;
-        self.docs.autosaved_revision = None;
+        self.doc.file.dirty_since = None;
+        self.doc.file.last_autosave = None;
+        self.doc.file.autosaved_revision = None;
         let now = self.now();
-        self.engine.model_changed();
+        self.doc.engine.model_changed();
         let mut inputs = vec![Input::Tick];
         inputs.extend(self.sync_workspace(true));
         for input in inputs {
             self.feed(input, now);
         }
-        self.warnings_dirty = false;
+        self.doc.warnings_dirty = false;
         self.refresh_warnings();
-        self.mixer.pump();
+        self.eng.mixer.pump();
     }
 
     /// Queues the removal of a workspace's recovery file behind the writer's current job.
     fn clear_autosave_of(&mut self, workspace: WorkspaceId, show_path: Option<PathBuf>) {
-        if let Some(writer) = &self.docs.writer {
-            self.docs
+        if let Some(writer) = &self.eng.docs.writer {
+            self.eng
+                .docs
                 .clears
                 .push(writer.clear_recovery(workspace, show_path));
         }
@@ -1020,32 +1045,35 @@ impl Control {
                 snapshot: Box::new(snapshot.clone()),
             },
         );
-        self.docs.resend_snapshot = !self.out.send_state(ServerMessage::Snapshot {
+        self.doc.file.resend_snapshot = !self.eng.out.send_state(ServerMessage::Snapshot {
             snapshot: Box::new(snapshot),
         });
         reply(
             to,
             ServerMessage::Warnings {
-                warnings: self.warnings.clone(),
+                warnings: self.doc.warnings.clone(),
             },
         );
-        reply(to, ok(id, Some(self.revision)));
+        reply(to, ok(id, Some(self.doc.revision)));
     }
 
     /// Sends the snapshot to every client again (the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
         let snapshot = Box::new(self.snapshot());
-        self.docs.resend_snapshot = !self.out.send_state(ServerMessage::Snapshot { snapshot });
+        self.doc.file.resend_snapshot = !self
+            .eng
+            .out
+            .send_state(ServerMessage::Snapshot { snapshot });
     }
 
     fn show_dir(&self) -> Option<PathBuf> {
-        self.config.show_path.as_deref().and_then(folder_of)
+        self.doc.show_path.as_deref().and_then(folder_of)
     }
 
     // ---- Saving -----------------------------------------------------------------------------
 
     fn start_save(&mut self, id: RequestId, to: &ReplyTx, path: PathBuf) {
-        let Some(writer) = &self.docs.writer else {
+        let Some(writer) = &self.eng.docs.writer else {
             fail(
                 to,
                 id,
@@ -1056,10 +1084,10 @@ impl Control {
         };
         let new_dir = folder_of(&path);
         let old_dir = self.show_dir();
-        let moved = self.config.show_path.as_deref() != Some(path.as_path())
+        let moved = self.doc.show_path.as_deref() != Some(path.as_path())
             && new_dir.is_some()
             && new_dir != old_dir;
-        let mut copy = self.ws.clone();
+        let mut copy = self.doc.ws.clone();
         let mut rebased = false;
         if moved && let Some(new_dir) = &new_dir {
             let relinks = rebase(&copy, old_dir.as_deref(), new_dir);
@@ -1072,26 +1100,26 @@ impl Control {
             copy,
             path.clone(),
             self.config_clock_ms(),
-            self.config.machine.backup_keep,
-            self.revision,
+            self.eng.config.machine.backup_keep,
+            self.doc.revision,
         );
-        self.docs.saves.push(PendingSave {
+        self.doc.file.saves.push(PendingSave {
             rx,
-            revision: self.revision,
+            revision: self.doc.revision,
             path,
-            epoch: self.docs.epoch,
+            epoch: self.doc.file.epoch,
             rebase: rebased,
             waiters: vec![(id, to.clone())],
         });
     }
 
     fn config_clock_ms(&self) -> i64 {
-        self.config.clock.now_ms()
+        self.eng.config.clock.now_ms()
     }
 
     /// Collects what the writer thread has finished, and starts an autosave when one is due.
     pub(super) fn docs_tick(&mut self) {
-        if self.docs.resend_snapshot && self.out.has_room() {
+        if self.doc.file.resend_snapshot && self.eng.out.has_room() {
             self.resend_snapshot();
         }
         self.check_stalled_read();
@@ -1102,14 +1130,14 @@ impl Control {
     }
 
     fn poll_saves(&mut self) {
-        if self.docs.saves.is_empty() {
+        if self.doc.file.saves.is_empty() {
             return;
         }
         // Collect every answer first: a superseded save is answered with the save that replaced
         // it, which may be later in the list (or already finished).
         let mut waiting = Vec::new();
         let mut finished = Vec::new();
-        for save in std::mem::take(&mut self.docs.saves) {
+        for save in std::mem::take(&mut self.doc.file.saves) {
             match save.rx.try_recv() {
                 Ok(result) => finished.push((save, result)),
                 Err(TryRecvError::Empty) => waiting.push(save),
@@ -1146,7 +1174,7 @@ impl Control {
         for (save, result) in finished {
             self.save_done(save, result);
         }
-        self.docs.saves.extend(waiting);
+        self.doc.file.saves.extend(waiting);
     }
 
     fn save_done(&mut self, save: PendingSave, result: Result<SaveReport, PersistError>) {
@@ -1155,7 +1183,7 @@ impl Control {
                 for warning in report.warnings {
                     self.log(LogLevel::Warn, warning);
                 }
-                if save.epoch == self.docs.epoch {
+                if save.epoch == self.doc.file.epoch {
                     self.saved(&save);
                 }
                 for (id, to) in &save.waiters {
@@ -1177,8 +1205,8 @@ impl Control {
 
     /// A save of this workspace is on disk.
     fn saved(&mut self, save: &PendingSave) {
-        let clean_before = self.revision == save.revision;
-        self.saved_revision = save.revision;
+        let clean_before = self.doc.revision == save.revision;
+        self.doc.saved_revision = save.revision;
         self.record(
             LogKind::Document,
             LogLevel::Info,
@@ -1186,15 +1214,15 @@ impl Control {
             None,
             None,
         );
-        if self.config.show_path.as_deref() != Some(save.path.as_path()) {
+        if self.doc.show_path.as_deref() != Some(save.path.as_path()) {
             let old_dir = self.show_dir();
-            self.config.show_path = Some(save.path.clone());
+            self.doc.show_path = Some(save.path.clone());
             if self.show_dir() != old_dir {
                 self.moved_folder(old_dir.as_deref(), save.rebase, clean_before);
             }
         }
         if !self.is_dirty() {
-            self.docs.dirty_since = None;
+            self.doc.file.dirty_since = None;
         }
         self.document();
     }
@@ -1206,21 +1234,21 @@ impl Control {
     fn moved_folder(&mut self, old_dir: Option<&Path>, rebase_refs: bool, clean_before: bool) {
         let mut changed = false;
         if rebase_refs && let Some(new_dir) = self.show_dir() {
-            let relinks = rebase(&self.ws, old_dir, &new_dir);
+            let relinks = rebase(&self.doc.ws, old_dir, &new_dir);
             if !relinks.is_empty() {
-                let command = relink_command(&self.ws, &relinks);
-                changed = self.ws.apply(command).is_ok();
+                let command = relink_command(&self.doc.ws, &relinks);
+                changed = self.doc.ws.apply(command).is_ok();
             }
         }
-        self.media.reset(self.show_dir(), &self.ws);
+        self.doc.media.reset(self.show_dir(), &self.doc.ws);
         if changed {
-            self.history = History::new();
-            self.revision += 1;
+            self.doc.history = History::new();
+            self.doc.revision += 1;
             // The copy on disk has the same references; it lacks only edits made meanwhile.
             if clean_before {
-                self.saved_revision = self.revision;
+                self.doc.saved_revision = self.doc.revision;
             }
-            self.engine.model_changed();
+            self.doc.engine.model_changed();
         }
         let inputs = self.sync_workspace(false);
         let now = self.now();
@@ -1237,26 +1265,27 @@ impl Control {
     /// never does, it is one leaked thread, bounded by [`MAX_STUCK_WORKERS`]) and a fresh one
     /// takes over the shared queue.
     fn check_stalled_read(&mut self) {
-        let Some(pending) = &self.docs.pending else {
+        let Some(pending) = &self.eng.docs.pending else {
             return;
         };
         let elapsed = self
+            .eng
             .config
             .clock
             .now_ms()
             .saturating_sub(pending.started_ms);
-        if elapsed < self.docs.timeout_ms {
+        if elapsed < self.eng.docs.timeout_ms {
             return;
         }
         // The worker has answered and the answer is in the inbox, not yet applied: it is not
         // stuck. Leave the request to that answer.
         // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
-        if !self.docs.worker.busy.load(Ordering::SeqCst)
-            && elapsed < self.docs.timeout_ms.saturating_mul(2)
+        if !self.eng.docs.worker.busy.load(Ordering::SeqCst)
+            && elapsed < self.eng.docs.timeout_ms.saturating_mul(2)
         {
             return;
         }
-        let Some(pending) = self.docs.pending.take() else {
+        let Some(pending) = self.eng.docs.pending.take() else {
             return;
         };
         fail(
@@ -1265,12 +1294,12 @@ impl Control {
             ErrorCode::Io,
             format!(
                 "reading the file did not finish within {} s; its volume may have stopped answering",
-                self.docs.timeout_ms / 1000
+                self.eng.docs.timeout_ms / 1000
             ),
         );
-        self.docs.worker.abandoned.store(true, Ordering::SeqCst);
-        self.docs.stuck.fetch_add(1, Ordering::SeqCst);
-        if let Err(e) = self.docs.spawn_worker() {
+        self.eng.docs.worker.abandoned.store(true, Ordering::SeqCst);
+        self.eng.docs.stuck.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = self.eng.docs.spawn_worker() {
             self.log(
                 LogLevel::Error,
                 format!("could not start a replacement document worker: {e}"),
@@ -1284,7 +1313,7 @@ impl Control {
 
     fn poll_clears(&mut self) {
         let mut waiting = Vec::new();
-        for rx in std::mem::take(&mut self.docs.clears) {
+        for rx in std::mem::take(&mut self.eng.docs.clears) {
             match rx.try_recv() {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => self.log(
@@ -1295,11 +1324,11 @@ impl Control {
                 Err(TryRecvError::Disconnected) => {}
             }
         }
-        self.docs.clears = waiting;
+        self.eng.docs.clears = waiting;
     }
 
     fn poll_autosave(&mut self) {
-        let Some(rx) = &self.docs.autosave else {
+        let Some(rx) = &self.doc.file.autosave else {
             return;
         };
         let result = match rx.try_recv() {
@@ -1307,72 +1336,79 @@ impl Control {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(PersistError::WriterGone),
         };
-        self.docs.autosave = None;
+        self.doc.file.autosave = None;
         match result {
-            Ok(_) => self.docs.autosave_failed = false,
+            Ok(_) => self.doc.file.autosave_failed = false,
             Err(e) => {
                 // Said once per run of failures: it repeats every interval otherwise.
-                if !self.docs.autosave_failed {
+                if !self.doc.file.autosave_failed {
                     self.log(LogLevel::Warn, format!("autosave failed: {e}"));
                 }
-                self.docs.autosave_failed = true;
+                self.doc.file.autosave_failed = true;
                 // Try the same revision again next time.
-                self.docs.autosaved_revision = None;
+                self.doc.file.autosaved_revision = None;
             }
         }
     }
 
     fn autosave_if_due(&mut self) {
         if !self.is_dirty() {
-            self.docs.dirty_since = None;
+            self.doc.file.dirty_since = None;
             return;
         }
         let now_ms = self.config_clock_ms();
-        let dirty_since = *self.docs.dirty_since.get_or_insert(now_ms);
-        if self.docs.autosave.is_some() || self.docs.autosaved_revision == Some(self.revision) {
+        let dirty_since = *self.doc.file.dirty_since.get_or_insert(now_ms);
+        if self.doc.file.autosave.is_some()
+            || self.doc.file.autosaved_revision == Some(self.doc.revision)
+        {
             return;
         }
         let seconds = |ms: i64| ms as f64 / 1000.0;
-        let interval = self.ws.settings.autosave_interval.max(MIN_AUTOSAVE_SECS);
+        let interval = self
+            .doc
+            .ws
+            .settings
+            .autosave_interval
+            .max(MIN_AUTOSAVE_SECS);
         if !autosave_due(
             Some(seconds(dirty_since)),
-            self.docs.last_autosave.map(seconds),
+            self.doc.file.last_autosave.map(seconds),
             seconds(now_ms),
             interval,
         ) {
             return;
         }
-        let Some(writer) = &self.docs.writer else {
+        let Some(writer) = &self.eng.docs.writer else {
             return;
         };
         let rx = writer.autosave(
-            self.ws.clone(),
-            self.config.show_path.clone(),
-            self.revision,
+            self.doc.ws.clone(),
+            self.doc.show_path.clone(),
+            self.doc.revision,
         );
-        self.docs.autosave = Some(rx);
-        self.docs.autosaved_revision = Some(self.revision);
-        self.docs.last_autosave = Some(now_ms);
+        self.doc.file.autosave = Some(rx);
+        self.doc.file.autosaved_revision = Some(self.doc.revision);
+        self.doc.file.last_autosave = Some(now_ms);
     }
 
     /// Answers the document workers have posted so far (tests wait for one to be in the inbox).
     pub fn doc_answers_posted(&self) -> u64 {
-        self.docs.answered.load(Ordering::SeqCst)
+        self.eng.docs.answered.load(Ordering::SeqCst)
     }
 
     /// Document workers abandoned in a stalled read that have not returned yet.
     pub fn stuck_doc_workers(&self) -> usize {
-        self.docs.stuck.load(Ordering::SeqCst)
+        self.eng.docs.stuck.load(Ordering::SeqCst)
     }
 
     /// Requests, saves and autosaves still being worked on.
     pub fn docs_busy(&self) -> usize {
-        self.docs.busy()
+        self.eng.docs.busy() + self.doc.file.busy()
     }
 
     /// The show file the workspace is saved to, if it has one.
     pub fn show_path(&self) -> Option<&Path> {
-        self.config.show_path.as_deref()
+        self.doc.show_path.as_deref()
     }
 
     pub fn is_unsaved(&self) -> bool {
@@ -1380,7 +1416,7 @@ impl Control {
     }
 
     pub fn runtime_seq(&self) -> u64 {
-        self.runtime_seq
+        self.doc.runtime_seq
     }
 }
 
