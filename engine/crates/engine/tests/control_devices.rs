@@ -5,7 +5,12 @@
 //! at once and do not come back, as in QLab 5), output delays and dropped outputs. A stand-in
 //! device layer (`show::device`) replaces cpal; a test-driven wall clock replaces time.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 mod show;
 

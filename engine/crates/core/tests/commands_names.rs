@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Names and hosts (M1.20): the workspace rename, and the length and character rule for the
 //! names of the workspace, cue lists, patches and network patches and for network hosts. A new

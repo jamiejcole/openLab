@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Peak meters (AUD-19) and the xrun counter (NFR-27): exact peaks at the device outputs and per
 //! voice cue output, read-and-reset semantics across arbitrary block splits, voice attribution

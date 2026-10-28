@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! A golden checksum of the mixer's output over a varied workload (M3.19 L1): the speed-ups of
 //! the mix loop are meant to be bit-identical, and this pins that down across platforms. Only

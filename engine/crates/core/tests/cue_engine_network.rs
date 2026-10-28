@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Network cues (CT-30) and their problems (NFR-07), per docs/cue-engine.md "Network cues".
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.

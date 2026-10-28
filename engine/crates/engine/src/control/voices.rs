@@ -975,7 +975,10 @@ impl Voices {
             return;
         };
         let (cue, run) = (r.cue, r.run);
-        if !current {
+        // The mixer dropped the voice because its render kept panicking: the cue breaks, also
+        // when a resume that re-keyed it is still on its way.
+        let faulted = reason == FinishReason::Faulted;
+        if !current && !faulted {
             // The voice ended before the resume that re-keyed it applied, so the mixer ignored
             // the resume: report the end with the fresh run (M2-E (a)), after the resume.
             if let Some(r) = self.remove(id) {
@@ -984,7 +987,8 @@ impl Voices {
             }
             return;
         }
-        let failed = r.stream_failed
+        let failed = faulted
+            || r.stream_failed
             || (reason == FinishReason::EndOfStream
                 && r.stream.as_ref().is_some_and(|h| h.error().is_some()));
         // Ended after a pending pause: the engine ignores the report (a paused voice cannot
@@ -1013,6 +1017,13 @@ impl Voices {
                 |r| r.failure(BrokenReason::StreamFailed),
             );
             fx.feedback.push(input);
+            if faulted {
+                fx.notices.push((
+                    "audio_fault",
+                    "a cue's audio kept failing while it played and was stopped".to_owned(),
+                    Some(cue),
+                ));
+            }
         } else {
             fx.feedback.push(Input::ActionEnded { cue, run, at });
         }
@@ -1544,5 +1555,68 @@ mod tests {
                 assert_eq!(v.is_idle(), !kept, "{case}");
             }
         }
+    }
+
+    /// A voice the mixer dropped for faulting breaks its cue with a notice, also after a
+    /// pending pause (a fault is not an end the resume could report).
+    #[test]
+    fn a_faulted_voice_breaks_its_cue_with_a_notice() {
+        let cue = CueId(uuid::Uuid::from_u128(1));
+        for paused_at in [None, Some(100)] {
+            let mut v = Voices::new();
+            let run = RunId(7);
+            let mut r = rec(cue, run, false);
+            r.paused_at = paused_at;
+            v.insert(VoiceId(1), r);
+            let mut fx = Effects::default();
+            v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+            assert!(
+                matches!(
+                    fx.feedback.as_slice(),
+                    [Input::ActionFailed {
+                        reason: BrokenReason::StreamFailed,
+                        ..
+                    } | Input::StartFailed {
+                        reason: BrokenReason::StreamFailed,
+                        ..
+                    }]
+                ),
+                "{:?}",
+                fx.feedback
+            );
+            assert_eq!(fx.notices.len(), 1);
+            assert_eq!(fx.notices[0].0, "audio_fault");
+            assert_eq!(fx.notices[0].2, Some(cue));
+            assert!(v.is_idle());
+        }
+    }
+
+    /// Regression (#302): a voice dropped under its old id while the resume that re-keyed it
+    /// is on its way breaks its cue too, rather than ending it.
+    #[test]
+    fn a_faulted_voice_under_its_old_id_breaks_its_cue() {
+        let cue = CueId(uuid::Uuid::from_u128(1));
+        let mut v = Voices::new();
+        v.insert(VoiceId(2), rec(cue, RunId(8), false));
+        v.aliases.insert(VoiceId(1), (VoiceId(2), RunId(7)));
+        let mut fx = Effects::default();
+        v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+        assert!(fx.deferred.is_empty(), "{:?}", fx.deferred);
+        assert!(
+            matches!(
+                fx.feedback.as_slice(),
+                [Input::ActionFailed {
+                    reason: BrokenReason::StreamFailed,
+                    ..
+                } | Input::StartFailed {
+                    reason: BrokenReason::StreamFailed,
+                    ..
+                }]
+            ),
+            "{:?}",
+            fx.feedback
+        );
+        assert_eq!(fx.notices.len(), 1);
+        assert_eq!(fx.notices[0].0, "audio_fault");
     }
 }

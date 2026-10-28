@@ -30,6 +30,23 @@ use crate::osc_access::{
 /// QLab 5 documents no limit (docs/todo/open-qlab-questions.md, row 13).
 pub const MAX_NAME_SCALARS: usize = 256;
 
+/// Longest cue name, in bytes: 256 characters of any script (at most 4 bytes each), as for the
+/// names [`MAX_NAME_SCALARS`] bounds. Cue names are free text otherwise (QLab 5 sets no rule).
+pub const MAX_CUE_NAME_BYTES: usize = 4 * MAX_NAME_SCALARS;
+
+/// Longest cue notes, in bytes (the bound on a Network cue's string argument too).
+pub const MAX_CUE_NOTES_BYTES: usize = 64 * 1024;
+
+/// Hard bounds on a Network cue's address and arguments. QLab 5 accepts a malformed message and
+/// shows the cue broken until it is fixed (manual pp. 371-372), so the send limits in `network`
+/// are not enforced at the edit: the cue engine reports `network_message_invalid` and never
+/// sends. These bounds, far above the send limits (512 / 32 / 4096 bytes), only keep a hostile
+/// or broken client from filling the document with megabytes through one command. Load keeps a
+/// value over them and warns ([`IssueKind::TooLarge`]).
+pub const MAX_NETWORK_ADDRESS_BYTES: usize = 64 * 1024;
+pub const MAX_NETWORK_ARGS: usize = 1024;
+pub const MAX_NETWORK_STRING_BYTES: usize = 64 * 1024;
+
 /// Why `name` is refused as a new name (workspace, cue list, patch, network patch): too long, or
 /// holding a control character (NUL, a newline, a tab, escape codes), which no single-line name
 /// field can show. Load keeps such a name and warns ([`IssueKind::InvalidName`]).
@@ -184,6 +201,10 @@ pub enum IssueKind {
     /// `network_patches.name`, `network_patches.host`) is over-long or has a control character:
     /// kept as it is, since load never refuses a show; editing it needs a valid value.
     InvalidName { field: &'static str },
+    /// The cue's `field` (`name`, `notes`, `address`, `args`, `args.value`) is over its memory
+    /// bound of `limit` (bytes; entries for `args`): kept as it is, since load never refuses a
+    /// show; an edit cannot put such a value in a cue.
+    TooLarge { field: &'static str, limit: usize },
 }
 
 impl fmt::Display for ValidationIssue {
@@ -287,6 +308,10 @@ impl fmt::Display for ValidationIssue {
                 f,
                 "{field} is too long or has a control character; kept as it is"
             ),
+            IssueKind::TooLarge { field, limit } => {
+                let unit = if *field == "args" { "entries" } else { "bytes" };
+                write!(f, "{field} is longer than {limit} {unit}")
+            }
             IssueKind::SecondTriggerNeedsPlaylist => write!(
                 f,
                 "second trigger plays the next or previous child, which only a playlist group \
@@ -472,6 +497,12 @@ impl Checker {
         }
     }
 
+    fn too_large(&mut self, cue_id: Option<CueId>, field: &'static str, len: usize, limit: usize) {
+        if len > limit {
+            self.warn(cue_id, IssueKind::TooLarge { field, limit });
+        }
+    }
+
     fn count(&mut self, cue_id: Option<CueId>, field: &'static str, count: usize) {
         if count > 0 {
             self.warn(cue_id, IssueKind::IndexOutOfRange { field, count });
@@ -639,6 +670,8 @@ impl Checker {
                     cue.number = Some(number);
                 }
             }
+            self.too_large(id, "name", cue.name.len(), MAX_CUE_NAME_BYTES);
+            self.too_large(id, "notes", cue.notes.len(), MAX_CUE_NOTES_BYTES);
             self.hotkey(id, "triggers.hotkey", cue.triggers.hotkey.as_ref());
             self.time(id, "pre_wait", &mut cue.pre_wait);
             self.time(id, "post_wait", &mut cue.post_wait);
@@ -703,7 +736,18 @@ impl Checker {
             }
             CueKind::Load { load_to_time, .. } => self.time(id, "load_to_time", load_to_time),
             CueKind::Wait { duration } => self.time(id, "duration", duration),
-            CueKind::Network { args, .. } => {
+            CueKind::Network { address, args, .. } => {
+                self.too_large(id, "address", address.len(), MAX_NETWORK_ADDRESS_BYTES);
+                self.too_large(id, "args", args.len(), MAX_NETWORK_ARGS);
+                let longest = args
+                    .iter()
+                    .map(|a| match a {
+                        OscArg::String { value } => value.len(),
+                        _ => 0,
+                    })
+                    .max()
+                    .unwrap_or(0);
+                self.too_large(id, "args.value", longest, MAX_NETWORK_STRING_BYTES);
                 for arg in args {
                     // An f32 read from a larger JSON number becomes infinite.
                     if let OscArg::Float { value } = arg

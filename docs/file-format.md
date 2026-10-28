@@ -1,6 +1,6 @@
 # openLab show file format
 
-Status: format version **2** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
+Status: format version **5** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
 
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the
@@ -108,6 +108,7 @@ cue, and the cue shows as broken where it cannot run.
 | OSC rights with Edit or Control but no View | Warning (`OscRightsNeedView`); Edit and Control are cleared |
 | An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
 | An OSC passcode that is not made of digits only | Warning (`OscPasscodeNotDigits`); kept, since dropping it would change who can connect (a v3 passcode may be any text) |
+| A cue name over 1024 bytes, cue notes over 64 KiB, or a Network cue address over 64 KiB, more than 1024 arguments or a string argument over 64 KiB | Warning (`TooLarge`, per cue and field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
 | A workspace, cue list, patch or network patch name over 256 characters or with a control character, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one (M1.20) |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 

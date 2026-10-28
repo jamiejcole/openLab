@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
+#![allow(clippy::indexing_slicing)]
 
 //! Media through the control loop: probes on workers feed the cue engine's availability inputs
 //! (broken cues before they are triggered, NFR-07), a failing stream breaks its cue with a

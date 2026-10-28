@@ -857,11 +857,12 @@ fn a_changed_patch_set_or_cue_list_set_rebuilds_everything() {
 
 #[test]
 fn an_unsignalled_edit_that_moves_cues_is_caught_up_at_the_next_structural_edit_or_go() {
-    // Not signalling an edit is the caller's breach. Release builds trust the signal, so the
-    // playhead cue deleted that way stays where it was until the next signalled structural
-    // edit (or a GO, which resyncs a playhead whose cue is gone); debug builds catch it at
-    // once on an unsignalled call and count it. A signalled edit is trusted in both builds,
-    // so the structural case below runs the same code in each.
+    // Not signalling an edit is the caller's breach. Debug builds catch it at once on an
+    // unsignalled call and count it; release builds catch a top-level delete like this one at
+    // once too (the outline check, `shape.rs`), and an edit inside a group only at the next
+    // signalled structural edit or a GO, which resyncs a playhead whose cue is gone. A
+    // signalled edit is trusted in both builds, so the structural case below runs the same
+    // code in each.
     let config = EngineConfig::new(RATE, 0, 1).unwrap();
     let setup = || {
         let mut ws = workspace(vec![memo(1), memo(2), memo(3)]);
@@ -905,16 +906,11 @@ fn an_unsignalled_edit_that_moves_cues_is_caught_up_at_the_next_structural_edit_
     assert!(started(&actions, id(3)));
     assert_eq!(engine.playhead(list_id(1)), Some(id(4)));
 
-    // A plain tick: debug builds catch it at once and count it; release builds leave the
-    // playhead alone until something resyncs it.
+    // A plain tick catches it at once and counts it, in both builds.
     let (ws, mut engine) = setup();
     engine.handle(&ws, Input::Tick, 20);
-    if cfg!(debug_assertions) {
-        assert_eq!(engine.unsignalled_model_changes(), 1);
-        assert_eq!(engine.playhead(list_id(1)), Some(id(3)));
-    } else {
-        assert_eq!(engine.playhead(list_id(1)), Some(id(2)));
-    }
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+    assert_eq!(engine.playhead(list_id(1)), Some(id(3)));
 
     // A GO resyncs and starts the next surviving cue.
     let (ws, mut engine) = setup();

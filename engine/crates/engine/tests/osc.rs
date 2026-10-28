@@ -2,7 +2,12 @@
 
 //! The socket-free OSC layer (M4.5 part 1): codec, SLIP, dispatch, sessions, replies.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};

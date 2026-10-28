@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Level, mute and routing edits on a playing audio cue (M5.9b, AUD-06, AUD-08, NFR-01),
 //! through the control loop and rendered offline: the edit is heard within the 10 ms edit ramp

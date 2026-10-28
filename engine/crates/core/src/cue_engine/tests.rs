@@ -389,3 +389,28 @@ fn a_go_whose_playhead_cue_was_deleted_unsignalled_follows_the_edit() {
     assert!(!go.iter().any(|a| matches!(a, Action::GoIgnored { .. })));
     assert_eq!(engine.unsignalled_model_changes(), 1);
 }
+
+/// Release builds (here forced, as debug builds run the full check on every call): a cue
+/// deleted without `model_changed` is noticed by the outline check, counted and followed.
+#[test]
+fn a_top_level_cue_deleted_unsignalled_is_counted_and_followed_in_release() {
+    let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
+    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+    engine.release_checks = true;
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(engine.handle(&ws, Input::Tick, 1), vec![]);
+    let mut gone = ws.clone();
+    gone.cue_lists[0].cues.remove(0);
+    let out = engine.handle(&gone, Input::Tick, 2);
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+    assert!(
+        out.contains(&Action::PlayheadChanged {
+            list: CueListId(Uuid::from_u128(1)),
+            cue: Some(id(2)),
+        }),
+        "{out:?}"
+    );
+    // Recorded: the next call finds nothing new.
+    assert_eq!(engine.handle(&gone, Input::Tick, 3), vec![]);
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+}
