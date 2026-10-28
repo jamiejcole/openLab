@@ -240,7 +240,8 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertEqual(events.first, .newEngineRun)
         // Hamlet had unsaved changes and no autosave newer than its file: they are lost, and said so.
         XCTAssertEqual(events.last, .reattached(failures: [], restored: [], editsLost: ["Test"]))
-        XCTAssertTrue(before[0].logEntries.contains { $0 == LogEntry(level: .warn, message: loc("engine.reattach.editsLost")) })
+        XCTAssertTrue(
+            before[0].logEntries.contains { $0 == LogEntry(level: .warn, message: loc("engine.reattach.editsLost")) })
         // The same three stores, plus one for the other client's show; none made twice.
         let now = Set(s.orderedStores.map { ObjectIdentifier($0.store) })
         XCTAssertTrue(now.isSuperset(of: before.map(ObjectIdentifier.init)))

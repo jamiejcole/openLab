@@ -324,7 +324,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
                 case .fileEditsLost:
                     _ = next.store.receive(.log(.warn, loc("engine.reattach.editsLost")))
                     reattachEditsLost.append(next.info.name)
-                    engineLog.error("reopened \(next.info.name, privacy: .public) from its file: its unsaved edits had no autosave")
+                    engineLog.error(
+                        "reopened \(next.info.name, privacy: .public) from its file: its unsaved edits had no autosave")
                 }
             case .failed(let reason):
                 detached.removeFirst()

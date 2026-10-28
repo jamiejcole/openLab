@@ -523,6 +523,27 @@ final class SystemEngineProcessesTests: XCTestCase {
         p.signal(getpid(), .terminate)
     }
 
+    /// A live process whose program is named `openlab-engine` (a copy of sleep) reads as an engine,
+    /// and once it has exited it does not.
+    @MainActor
+    func testALiveProcessNamedOpenLabEngineIsAnEngine() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let program = dir.appendingPathComponent(SystemEngineProcesses.engineName)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: program)
+        let child = Process()
+        child.executableURL = program
+        child.arguments = ["30"]
+        try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        let p = SystemEngineProcesses(executable: nil, bundleID: "x", infoURL: URL(fileURLWithPath: "/nonexistent"))
+        XCTAssertTrue(p.isEngine(child.processIdentifier))
+        child.terminate()
+        child.waitUntilExit()
+        XCTAssertFalse(p.isEngine(child.processIdentifier), "gone once it exited")
+    }
+
     @MainActor
     func testAMissingProgramIsAnErrorNotACrash() {
         let missing = URL(fileURLWithPath: "/nonexistent/openlab-engine")
