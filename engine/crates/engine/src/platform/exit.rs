@@ -46,6 +46,8 @@ mod tests {
 
     #[test]
     fn exit_now_ends_the_process_with_its_code_and_runs_no_exit_handler() {
+        // The child shares our open files until its exec: no lock may be let go meanwhile.
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

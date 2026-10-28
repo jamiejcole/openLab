@@ -150,6 +150,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn opening_a_fifo_is_refused_without_blocking() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let dir = tempfile::tempdir().unwrap();
         let fifo = dir.path().join("show.openlab");
         let made = std::process::Command::new("mkfifo")

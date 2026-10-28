@@ -6,13 +6,15 @@
 //!
 //! - while starting (no control loop yet, so no workspace and nothing to save): exit at once;
 //! - while running: the graceful shutdown (the control loop stops the show and writes the
-//!   recovery files), with a watchdog that forces the exit after [`FORCE_AFTER_SIGNAL`];
-//! - while stopping: a second signal forces the exit at once ("press Ctrl-C again").
+//!   recovery files);
+//! - while stopping: the first signal changes nothing (the shutdown is under way, perhaps after
+//!   `goodbye`); a second one forces the exit at once ("press Ctrl-C again").
 //!
-//! However the loop ended (a signal, `goodbye`, stdin), once it has ended the rest of the exit
-//! is bounded by [`FORCE_AFTER_LOOP`]. A forced exit removes this run's `engine.json` (a client
-//! must not try a port nobody serves), leaves the run marker (the next start reports the
-//! unclean end) and runs no exit handlers ([`exit_now`]).
+//! From the first signal while running, or the end of the control loop however it ended
+//! (`goodbye`, stdin), whichever comes first, one deadline bounds the whole exit:
+//! [`EXIT_DEADLINE`]. A forced exit removes this run's `engine.json` (a client must not try a
+//! port nobody serves), leaves the run marker (the next start reports the unclean end) and runs
+//! no exit handlers ([`exit_now`]).
 //!
 //! [`exit_now`]: crate::platform::exit::exit_now
 
@@ -25,17 +27,20 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 use openlab_core::protocol::LogLevel;
 
-use super::engine_file;
-use crate::control::Inbox;
+use super::{LOG_FLUSH_WAIT, engine_file};
+use crate::control::{Inbox, SHUTDOWN_WAIT};
+use crate::persist::DROP_WAIT;
 use crate::platform::signals::Signal;
 
-/// From a signal to a forced exit. The graceful path fits well inside it (final recovery
-/// writes 10 s, the writers' bounded drops, the log flush 3 s), and it stays under the 25 s the
-/// app gives an engine after SIGTERM before it sends SIGKILL.
-pub const FORCE_AFTER_SIGNAL: Duration = Duration::from_secs(20);
-/// From the end of the control loop to a forced exit: the server stops, the log is flushed
-/// (at most 3 s) and the files go.
-pub const FORCE_AFTER_LOOP: Duration = Duration::from_secs(8);
+/// From the start of the shutdown to a forced exit. It covers the graceful path at its worst
+/// (final recovery writes, then the save and settings writers' bounded drops one after the
+/// other, then the log flush: 10 + 5 + 5 + 3 s) with a second to spare, and stays under the
+/// 25 s the app gives an engine after SIGTERM before it sends SIGKILL.
+pub const EXIT_DEADLINE: Duration = SHUTDOWN_WAIT
+    .saturating_add(DROP_WAIT)
+    .saturating_add(DROP_WAIT)
+    .saturating_add(LOG_FLUSH_WAIT)
+    .saturating_add(Duration::from_secs(1));
 
 /// Exit status of a forced exit (a signal while starting is a clean, early end: 0).
 const FORCED: i32 = 1;
@@ -44,16 +49,25 @@ enum Phase {
     Starting,
     /// The control loop is about to run (or runs): a signal asks it to shut down.
     Running(Sender<Inbox>),
-    Stopping,
+    /// The shutdown is under way; `signalled`: a signal has been seen since it began (the next
+    /// one forces the exit).
+    Stopping {
+        signalled: bool,
+    },
+}
+
+struct State {
+    phase: Phase,
+    /// The deadline's watchdog is running.
+    armed: bool,
 }
 
 /// Shared by the host and the signal thread.
 pub struct Stop {
-    phase: Mutex<Phase>,
+    state: Mutex<State>,
     /// This run's `engine.json`, removed by a forced exit when it still names this process.
     engine_file: Option<PathBuf>,
-    after_signal: Duration,
-    after_loop: Duration,
+    deadline: Duration,
     exit: Box<dyn Fn(i32) + Send + Sync>,
 }
 
@@ -63,75 +77,88 @@ impl Stop {
         engine_file: Option<PathBuf>,
         exit: impl Fn(i32) + Send + Sync + 'static,
     ) -> Arc<Self> {
-        Self::with_bounds(engine_file, FORCE_AFTER_SIGNAL, FORCE_AFTER_LOOP, exit)
+        Self::with_deadline(engine_file, EXIT_DEADLINE, exit)
     }
 
-    fn with_bounds(
+    fn with_deadline(
         engine_file: Option<PathBuf>,
-        after_signal: Duration,
-        after_loop: Duration,
+        deadline: Duration,
         exit: impl Fn(i32) + Send + Sync + 'static,
     ) -> Arc<Self> {
         Arc::new(Self {
-            phase: Mutex::new(Phase::Starting),
+            state: Mutex::new(State {
+                phase: Phase::Starting,
+                armed: false,
+            }),
             engine_file,
-            after_signal,
-            after_loop,
+            deadline,
             exit: Box::new(exit),
         })
     }
 
     /// The control loop is about to run: from now on a signal is a graceful shutdown.
     pub fn running(&self, inbox: Sender<Inbox>) {
-        let mut phase = self.lock();
-        if matches!(*phase, Phase::Starting) {
-            *phase = Phase::Running(inbox);
+        let mut state = self.lock();
+        if matches!(state.phase, Phase::Starting) {
+            state.phase = Phase::Running(inbox);
         }
     }
 
-    /// The control loop has ended: the rest of the exit is bounded.
+    /// The control loop has ended: the rest of the exit is bounded (if a signal has not
+    /// started the deadline already).
     pub fn loop_ended(self: &Arc<Self>) {
-        *self.lock() = Phase::Stopping;
-        self.force_later(
-            self.after_loop,
-            "the engine did not exit after its shutdown",
-        );
+        let mut state = self.lock();
+        let signalled = matches!(state.phase, Phase::Stopping { signalled: true });
+        state.phase = Phase::Stopping { signalled };
+        let arm = !std::mem::replace(&mut state.armed, true);
+        drop(state);
+        if arm {
+            self.force_later();
+        }
     }
 
     /// A shutdown signal arrived (module docs).
     pub fn signal(self: &Arc<Self>, signal: Signal) {
-        let mut phase = self.lock();
-        match std::mem::replace(&mut *phase, Phase::Stopping) {
+        let mut state = self.lock();
+        let before = std::mem::replace(&mut state.phase, Phase::Stopping { signalled: true });
+        match before {
             Phase::Starting => {
-                drop(phase);
+                drop(state);
                 self.force(0, &format!("{}: exiting while starting", signal.name()));
             }
             Phase::Running(inbox) => {
-                drop(phase);
+                let arm = !std::mem::replace(&mut state.armed, true);
+                drop(state);
                 let _ = inbox.send(Inbox::Log {
                     level: LogLevel::Info,
                     message: format!("{}: shutting down", signal.name()),
                 });
                 let _ = inbox.send(Inbox::Shutdown);
-                self.force_later(
-                    self.after_signal,
-                    "the shutdown did not finish in time; exiting",
-                );
+                if arm {
+                    self.force_later();
+                }
             }
-            Phase::Stopping => {
-                drop(phase);
+            Phase::Stopping { signalled: false } => {
+                drop(state);
+                super::say(&format!(
+                    "{}: already shutting down; send it again to exit now",
+                    signal.name()
+                ));
+            }
+            Phase::Stopping { signalled: true } => {
+                drop(state);
                 self.force(FORCED, &format!("{} again: exiting now", signal.name()));
             }
         }
     }
 
-    fn force_later(self: &Arc<Self>, after: Duration, why: &'static str) {
+    fn force_later(self: &Arc<Self>) {
         let stop = Arc::clone(self);
         let spawned = thread::Builder::new()
             .name("openlab-exit".into())
             .spawn(move || {
-                thread::sleep(after);
-                stop.force(FORCED, why);
+                thread::sleep(stop.deadline);
+                stop.force(FORCED, "the shutdown did not finish in time; exiting");
             });
         if spawned.is_err() {
             super::say("could not start the exit watchdog; a hung shutdown needs SIGKILL");
@@ -148,8 +175,8 @@ impl Stop {
         (self.exit)(code);
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Phase> {
-        self.phase.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -161,7 +188,7 @@ mod tests {
 
     fn recorded(after: Duration) -> (Arc<Stop>, crossbeam_channel::Receiver<i32>) {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let stop = Stop::with_bounds(None, after, after, move |code| {
+        let stop = Stop::with_deadline(None, after, move |code| {
             let _ = tx.send(code);
         });
         (stop, rx)
@@ -191,7 +218,7 @@ mod tests {
         };
         let _file = EngineFile::write(&path, info).unwrap();
         let (tx, exits) = crossbeam_channel::unbounded();
-        let stop = Stop::with_bounds(Some(path.clone()), GUARD, GUARD, move |code| {
+        let stop = Stop::with_deadline(Some(path.clone()), GUARD, move |code| {
             let _ = tx.send(code);
         });
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
@@ -228,5 +255,30 @@ mod tests {
         stop.running(inbox_tx);
         stop.loop_ended();
         assert_eq!(exits.recv_timeout(GUARD), Ok(FORCED));
+    }
+
+    /// After the loop ended (say after `goodbye`), a first signal (the app ending an engine
+    /// that no longer answers) lets the exit finish: only a second one forces it.
+    #[test]
+    fn after_the_loop_ended_only_a_second_signal_forces_the_exit() {
+        let (stop, exits) = recorded(GUARD);
+        let (inbox_tx, _inbox) = crossbeam_channel::unbounded();
+        stop.running(inbox_tx);
+        stop.loop_ended();
+        stop.signal(Signal::Term);
+        assert!(
+            exits.try_recv().is_err(),
+            "the first signal forced the exit"
+        );
+        stop.signal(Signal::Term);
+        assert_eq!(exits.try_recv(), Ok(FORCED));
+    }
+
+    /// The deadline covers the graceful path at its worst and beats the app's SIGKILL (25 s).
+    #[test]
+    fn the_exit_deadline_covers_the_graceful_path_and_beats_the_apps_kill() {
+        let worst = SHUTDOWN_WAIT + DROP_WAIT + DROP_WAIT + LOG_FLUSH_WAIT;
+        assert!(EXIT_DEADLINE > worst, "{EXIT_DEADLINE:?} <= {worst:?}");
+        assert!(EXIT_DEADLINE < Duration::from_secs(25), "{EXIT_DEADLINE:?}");
     }
 }

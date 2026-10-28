@@ -571,6 +571,7 @@ mod tests {
     /// the first is still starting (no `engine.json` yet), and named once the file is there.
     #[test]
     fn a_second_start_is_refused_by_the_instance_lock() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let dirs = AppDirs::new(root.path());
         let first = lock_instance(&dirs).unwrap();
