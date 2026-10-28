@@ -145,7 +145,7 @@ extension CueEditor {
             }
             kind.set("media", .string(Self.mediaPath(url)))
             cue.set("kind", kind)
-            cue.set("name", .string(url.deletingPathExtension().lastPathComponent))
+            // No name: the cue follows its file (M2.29c), so a renamed file shows at once.
             commands.append(.addCue(cue, list: list, parent: parent, index: index + n))
             ids.append(id)
         }
