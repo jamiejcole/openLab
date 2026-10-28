@@ -161,6 +161,8 @@ jobs:
     name: Sanitizers (${{ matrix.check }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    # TSan took ~20 min on an M-series Mac; a hung test must not hold a runner for the 6 h default.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
