@@ -72,14 +72,38 @@ impl History {
     /// Undoes the latest step. `Ok(false)` if there is nothing to undo. If the step is refused
     /// it stays on the stack and the workspace is unchanged.
     pub fn undo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
-        self.open = None;
-        step(&mut self.undo, &mut self.redo, workspace).inspect_err(|e| self.drop_if_stale(e))
+        self.undo_unless(workspace, |_| None)
     }
 
     /// Redoes the latest undone step. `Ok(false)` if there is nothing to redo.
     pub fn redo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
+        self.redo_unless(workspace, |_| None)
+    }
+
+    /// As [`undo`](Self::undo), but `refuse` is shown the workspace the step leaves: if it
+    /// returns an error, the step is reverted and refused with that error, so the workspace and
+    /// both stacks are as they were and the step can be undone later. The binary refuses an undo
+    /// that would stop a cue that is playing this way (M5.10d); the check needs the runtime,
+    /// which the history does not know. Reverting costs what the step touched.
+    pub fn undo_unless(
+        &mut self,
+        workspace: &mut Workspace,
+        refuse: impl FnOnce(&Workspace) -> Option<CommandError>,
+    ) -> Result<bool, CommandError> {
         self.open = None;
-        step(&mut self.redo, &mut self.undo, workspace).inspect_err(|e| self.drop_if_stale(e))
+        step(&mut self.undo, &mut self.redo, workspace, refuse)
+            .inspect_err(|e| self.drop_if_stale(e))
+    }
+
+    /// As [`undo_unless`](Self::undo_unless), for [`redo`](Self::redo).
+    pub fn redo_unless(
+        &mut self,
+        workspace: &mut Workspace,
+        refuse: impl FnOnce(&Workspace) -> Option<CommandError>,
+    ) -> Result<bool, CommandError> {
+        self.open = None;
+        step(&mut self.redo, &mut self.undo, workspace, refuse)
+            .inspect_err(|e| self.drop_if_stale(e))
     }
 
     /// The command the next [`undo`](Self::undo) applies: its [`footprint`](Command::footprint)
@@ -220,16 +244,33 @@ fn step(
     from: &mut Vec<Inverse>,
     to: &mut Vec<Inverse>,
     workspace: &mut Workspace,
+    refuse: impl FnOnce(&Workspace) -> Option<CommandError>,
 ) -> Result<bool, CommandError> {
     let Some(command) = from.pop() else {
         return Ok(false);
     };
     // Applying consumes the command, so keep a copy to put back if it is refused.
     match workspace.apply_restoring(command.clone()) {
-        Ok(reverse) => {
-            to.push(reverse);
-            Ok(true)
-        }
+        Ok(reverse) => match refuse(workspace) {
+            None => {
+                to.push(reverse);
+                Ok(true)
+            }
+            Some(refusal) => {
+                // The reverse puts back exactly what the step changed; the original step goes
+                // back on its stack (the reverse's own inverse would be an equal command).
+                let restored = workspace.apply_restoring(reverse);
+                from.push(command);
+                match restored {
+                    Ok(_) => Err(refusal),
+                    Err(rollback) => Err(CommandError::RollbackFailed {
+                        index: 0,
+                        source: Box::new(refusal),
+                        rollback: Box::new(rollback),
+                    }),
+                }
+            }
+        },
         Err(error) => {
             from.push(command);
             Err(error)
@@ -287,5 +328,79 @@ mod tests {
         });
         assert_eq!(history.open, None);
         assert!(!history.can_undo());
+    }
+
+    fn one_list() -> Workspace {
+        Workspace::new_empty(
+            WorkspaceId(Uuid::from_u128(1)),
+            CueListId(Uuid::from_u128(1)),
+            PatchId(Uuid::from_u128(1)),
+        )
+    }
+
+    fn rename(name: &str) -> Command {
+        Command::RenameCueList {
+            id: CueListId(Uuid::from_u128(1)),
+            name: name.into(),
+        }
+    }
+
+    fn refusal() -> CommandError {
+        CommandError::CueIsActive(crate::model::CueId(Uuid::from_u128(7)))
+    }
+
+    /// A step its check refuses is put back: the workspace and both stacks are as before, and
+    /// the same step goes through once the check passes (M5.10d).
+    #[test]
+    fn a_refused_step_is_reverted_and_stays_on_its_stack() {
+        let mut ws = one_list();
+        let mut history = History::new();
+        history.execute(&mut ws, rename("a")).unwrap();
+        history.execute(&mut ws, rename("b")).unwrap();
+        history.undo(&mut ws).unwrap();
+        let before = ws.clone();
+        let (peek_undo, peek_redo) = (history.peek_undo().cloned(), history.peek_redo().cloned());
+
+        let err = history.undo_unless(&mut ws, |after| {
+            assert_eq!(after.cue_lists[0].name, "Main Cue List");
+            Some(refusal())
+        });
+        assert_eq!(err, Err(refusal()));
+        let err = history.redo_unless(&mut ws, |after| {
+            assert_eq!(after.cue_lists[0].name, "b");
+            Some(refusal())
+        });
+        assert_eq!(err, Err(refusal()));
+        assert_eq!(ws, before);
+        assert_eq!((history.undo_len(), history.redo_len()), (1, 1));
+        assert_eq!(history.peek_undo().cloned(), peek_undo);
+        assert_eq!(history.peek_redo().cloned(), peek_redo);
+
+        assert_eq!(history.redo_unless(&mut ws, |_| None), Ok(true));
+        assert_eq!(ws.cue_lists[0].name, "b");
+        assert_eq!(history.undo(&mut ws), Ok(true));
+        assert_eq!(history.undo(&mut ws), Ok(true));
+        assert_eq!(ws.cue_lists[0].name, "Main Cue List");
+    }
+
+    /// If putting a refused step back fails (only a wrong inverse can), the workspace is partly
+    /// changed: the error says so and the steps go, as for any failed rollback.
+    #[cfg(feature = "fault-injection")]
+    #[test]
+    fn a_refused_step_that_cannot_be_put_back_drops_the_steps() {
+        let mut ws = one_list();
+        let mut history = History::new();
+        let both = Command::Transaction {
+            commands: vec![rename("a"), rename("b")],
+        };
+        history.execute(&mut ws, both).unwrap();
+        // The undo itself goes through; putting it back is refused at its first command.
+        crate::command::fault::inject(1, 0, false);
+        let err = history.undo_unless(&mut ws, |_| Some(refusal()));
+        assert!(
+            matches!(&err, Err(CommandError::RollbackFailed { source, .. }) if **source == refusal()),
+            "{err:?}"
+        );
+        assert!(!history.can_undo() && !history.can_redo());
     }
 }
