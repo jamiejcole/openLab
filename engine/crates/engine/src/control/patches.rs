@@ -627,6 +627,11 @@ impl Patches {
         }
     }
 
+    /// Whether slot `slot` is quarantined ([`Self::quarantine`]).
+    pub fn is_quarantined(&self, slot: u16) -> bool {
+        self.quarantined.contains(&slot)
+    }
+
     /// The mixer rebuilt its non-voice state after repeated faults (every slot silent and
     /// enabled, every device output silent with no delay, the master silent): the commands
     /// that bring all of it back to what was last sent. Quarantined slots are free again.

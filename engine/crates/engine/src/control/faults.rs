@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use openlab_audio::{CommandKind, FaultStage, SampleTime};
+use openlab_audio::{CommandKind, DisabledUnits, FaultStage, SampleTime};
 use openlab_core::PatchId;
 use openlab_core::protocol::{LogLevel, WireWarning};
 
@@ -94,6 +94,10 @@ impl Control {
     /// The mixer reported a fault in `stage` (`disabled`: it gave up on that unit).
     pub(super) fn stage_faulted(&mut self, stage: FaultStage, disabled: bool) {
         self.eng.stage_reports += 1;
+        self.answer_stage_fault(stage, disabled);
+    }
+
+    fn answer_stage_fault(&mut self, stage: FaultStage, disabled: bool) {
         let now = self.eng.now();
         let tell = self
             .eng
@@ -204,6 +208,39 @@ impl Control {
         let commands = self.eng.patches.resend_all();
         self.eng
             .send_commands(commands.into_iter().map(|c| (now, c)).collect());
+    }
+}
+
+impl Control {
+    /// Units the mixer had disabled at the previous health check (`before`; every report
+    /// queued by then has been drained) and still has (`now`: a rebuild since re-enabled the
+    /// others) that the control thread was never told of: their report was lost to a full
+    /// event queue, so they are answered now as reported.
+    pub(super) fn lost_disabled_reports(&mut self, before: DisabledUnits, now: DisabledUnits) {
+        let still: Vec<FaultStage> = now.stages().collect();
+        let unknown: Vec<FaultStage> = before
+            .stages()
+            .filter(|stage| still.contains(stage))
+            .filter(|&stage| !self.knows_disabled(stage))
+            .collect();
+        for stage in unknown {
+            self.eng.log(
+                LogLevel::Error,
+                format!("audio engine fault: the report of a disabled {stage:?} was lost"),
+            );
+            self.answer_stage_fault(stage, true);
+        }
+    }
+
+    fn knows_disabled(&self, stage: FaultStage) -> bool {
+        let d = &self.eng.stage_faults.disabled;
+        match stage {
+            FaultStage::Patch(slot) => self.eng.patches.is_quarantined(slot),
+            FaultStage::Output(o) => d.outputs.contains(&o),
+            FaultStage::Master => d.master,
+            FaultStage::Meters => d.meters,
+            FaultStage::Mixer => true,
+        }
     }
 }
 

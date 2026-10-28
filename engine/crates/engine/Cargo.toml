@@ -43,6 +43,9 @@ uuid = { version = "1.29.0", default-features = false }
 openlab-engine = { path = ".", features = ["test-support"] }
 openlab-core = { path = "../core", features = ["fault-injection"] }
 proptest = "1.12.0"
+# A constant source for a voice sent straight to the mixer (control unit tests); already the
+# audio crate's queue.
+rtrb = "0.4.0"
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake", "connect"] }
