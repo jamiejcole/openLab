@@ -117,7 +117,7 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 | `model_changed` | `revision`, `upserts`, `deletes` | below |
 | `document` | `document {path, dirty, can_undo, can_redo, show_mode?}` | save state, undo availability or Show Mode changed; `show_mode` absent means `false` (fixture `server/document_show_mode.json`) |
 | `runtime` | `seq`, `changes` | cue state changes, event-driven; applied in order |
-| `progress` | `items [{cue, elapsed, remaining}]` | seconds; `remaining` null when there is no end; at most 30 Hz, only while a cue runs |
+| `progress` | `items [{cue, elapsed, remaining}]`, `waits? [{cue, wait, elapsed, remaining}]` | seconds; at most 30 Hz, only while a cue runs or waits. Below; fixtures `server/progress.json`, `server/progress_waits.json` |
 | `meters` | `outputs [{patch, peaks}]`, `cues [{cue, peaks}]` | linear peak per channel since the previous message; at most 30 Hz, only while audio plays |
 | `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | engine notices as they happen, with no time stamp; the timed, structured record of everything (GO, cue starts and stops, triggers, document events) is the show log, fetched with `log_tail` (below) |
 | `log_entry` | `seq`, `entry` (a show-log entry, below) | each new show-log record as the engine makes it (M4.7c), for a live log view; lossy and rate-limited, below |
@@ -127,6 +127,15 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 | `warnings` | `warnings [warning]` | the warnings feed (DX-01): workspace-level notices in force (load repairs, damaged media, device problems, ...); broken cues are not here: their rows, with the cue id for click-through, come from `problems` in the snapshot and `runtime`; **replaces** the previous list; empty clears it |
 | `result` | `id`, then `ok {revision?, data?}` or `error {code, message}` | exactly one of `ok` / `error` |
 | `error` | `code`, `message`, `protocol_version` | not tied to a request (see section 2) |
+
+### Progress
+
+`progress` goes to the connections bound to the doc whose cues it reports (section 2), at most 30 Hz in sample time, and only while something in the doc counts: nothing is sent while every cue is idle or loaded, and no wake is added for it (it rides on the control loop's usual wakes).
+
+- `items`: actions in progress. An audio cue's from its voice (`elapsed` its position in the file's action, offset included); a cue without a voice (Wait, Fade, Group, ...; M4.2e) from its run: `elapsed` since its action start (plus a load-to-time offset). `remaining` is null when there is no end (an infinite loop, a cue waiting for feedback, a group with a busy child). A broken run skips its action and has no item.
+- `waits` (M4.2e; absent when empty, so a client that predates it reads none): `wait` is `pre_wait` or `post_wait` (an auto-continue's post-wait, counted from the action start, or a halted playlist's wait for its auto-follow); `remaining` is never null. A cue can be in both lists at once (an action with its post-wait). The countdowns keep their schedule for a cue that is broken or skipped (docs/cue-engine.md, rule 2).
+- A paused cue's entries keep coming with the values it froze at (as for a paused voice). Stop, Reset and Panic end them with the run.
+- Times are sanitised (section 1); the full rules are in docs/cue-engine.md, "Timer progress".
 
 ### Pre-show check (M4.8)
 

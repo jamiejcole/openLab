@@ -366,7 +366,7 @@ impl Ws {
                     }
                 }
             }
-            ServerMessage::Progress { items } => {
+            ServerMessage::Progress { items, .. } => {
                 self.progress = items
                     .iter()
                     .map(|p| (p.cue, p.elapsed, p.remaining))
