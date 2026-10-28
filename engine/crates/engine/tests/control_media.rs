@@ -384,6 +384,8 @@ fn fresh_paths_never_land_on_an_earlier_runs_files() {
     for p in &left {
         std::fs::remove_file(p).unwrap();
     }
+    // The planted folder may hold a real earlier run's files too: they go with it.
+    let _ = std::fs::remove_dir_all(&old);
 }
 
 /// The probe of a named pipe blocks until a writer opens it: the control loop must keep running
