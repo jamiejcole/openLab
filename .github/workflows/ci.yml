@@ -103,7 +103,11 @@ jobs:
       # control loop, with real timer wake-ups and a device stand-in rendering in real time
       # (jitter, xruns, late starts, counts); about four minutes with its final checkpoint.
       # Nightly and on demand only: its bounds depend on a shared runner's timer, and a noisy
-      # night must not turn a push to main red.
+      # night must not turn a push to main red. The test first measures the host and skips, with
+      # the measurement in the log, when one-block (8 ms) sleeps overshoot by more than a block:
+      # both hosted macOS VMs do with their CPUs idle (Intel 26-36 ms at p50, arm64 13-18 ms;
+      # issue #213), so here it normally skips. On a machine that must keep real time, set
+      # OPENLAB_SOAK_RT_REQUIRE=1 to make a refusal fail instead.
       - name: Soak test (3 min real time)
         if: matrix.os == 'macos-26-intel' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
