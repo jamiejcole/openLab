@@ -175,6 +175,7 @@ Notes and decisions go in the PR, the task's docs or `docs/handoff/`.
   - [x] M4.15d (L) Split `Control` into shared `Engine` + `Doc`, one doc
   - [x] M4.15d1 (S-M; with M4.15e) Per-doc probe pool, `MediaWatch`, `NetOut`, `Observe` states
   - [x] M4.15e (L; in review) N docs through a test API: DocId, routing, close, cap of 8
+  - [x] M4.15e1 Engine-wide preload budget across docs [AUD-05]
   - [ ] M4.15f (L; after M4.15e) Protocol and hub: bound connections, `workspaces`, `opened`/`closed`, `close`
   - [ ] M4.15g (M; after M4.15f) Engine starts with no docs, final recovery write for every dirty doc
   - [ ] M4.15h (M-L; after M4.5b, M4.5c) OSC over several docs: one listener, mirror per doc, routing
