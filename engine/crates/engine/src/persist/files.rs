@@ -12,8 +12,17 @@ use super::PersistError;
 /// Reads a UTF-8 text file of at most `limit` bytes. Larger files are refused without being
 /// read in full, so a huge or hostile file cannot exhaust memory.
 pub fn read_text(path: &Path, limit: usize) -> Result<String, PersistError> {
+    let bytes = read_bytes(path, limit)?;
+    String::from_utf8(bytes).map_err(|_| PersistError::NotText(path.to_path_buf()))
+}
+
+/// [`read_text`] without the UTF-8 check.
+pub(crate) fn read_bytes(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
     // Opening a FIFO (or a device) for reading can block for ever: only regular files are read.
-    // `metadata` does not open the file, so it cannot hang on a pipe.
+    // `metadata` does not open the file, so it cannot hang on a pipe. The opened file is checked
+    // again, which only guards a directory or device swapped in between: `File::open` on a FIFO
+    // blocks before that check can run, so a swap to a FIFO in that window is not caught (no
+    // portable O_NONBLOCK without libc).
     let meta = fs::metadata(path).map_err(PersistError::io("open", path))?;
     if !meta.is_file() {
         return Err(PersistError::io("open", path)(std::io::Error::new(
@@ -22,6 +31,13 @@ pub fn read_text(path: &Path, limit: usize) -> Result<String, PersistError> {
         )));
     }
     let file = File::open(path).map_err(PersistError::io("open", path))?;
+    let opened = file.metadata().map_err(PersistError::io("open", path))?;
+    if !opened.is_file() {
+        return Err(PersistError::io("open", path)(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
+    }
     let limit = limit as u64;
     let mut bytes = Vec::new();
     file.take(limit.saturating_add(1))
@@ -35,7 +51,22 @@ pub fn read_text(path: &Path, limit: usize) -> Result<String, PersistError> {
             limit,
         });
     }
-    String::from_utf8(bytes).map_err(|_| PersistError::NotText(path.to_path_buf()))
+    Ok(bytes)
+}
+
+/// Whether `path` is a regular file: `Ok(true)`, absent (`Ok(false)`), or something else (a FIFO,
+/// socket, device or directory, also through a symlink), which is an error. Never opens the path
+/// (opening a FIFO blocks), so it cannot hang. A dangling symlink counts as absent.
+pub(crate) fn regular_file_or_absent(path: &Path) -> Result<bool, PersistError> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(true),
+        Ok(_) => Err(PersistError::io("use", path)(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(PersistError::io("inspect", path)(e)),
+    }
 }
 
 /// Modification time in milliseconds since the Unix epoch, or `None` if the file is missing or
