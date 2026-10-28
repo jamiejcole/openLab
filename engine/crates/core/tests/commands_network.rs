@@ -285,3 +285,66 @@ fn the_footprint_is_the_cue() {
     let c = set(1, address("/x"));
     assert!(c.footprint().edited.contains(&cue_id(1)));
 }
+
+/// A cue that a show file carries with a bad address and too many arguments (load repairs only
+/// non-finite floats). Each half can be mended on its own, and both in one transaction.
+fn loaded_invalid() -> Workspace {
+    let mut w = ws();
+    if let CueKind::Network { address, args, .. } = &mut w.cue_lists[0].cues[0].kind {
+        *address = "bad".into();
+        *args = vec![OscArg::Int { value: 0 }; 40];
+    }
+    let text = save_show(&w).unwrap();
+    let loaded = load_show(&text).unwrap().workspace;
+    assert_eq!(network(&loaded).1, "bad");
+    assert_eq!(network(&loaded).2.len(), 40);
+    loaded
+}
+
+#[test]
+fn a_cue_loaded_invalid_is_mended_one_half_at_a_time() {
+    let mut w = loaded_invalid();
+    w.apply(set(1, address("/ok"))).unwrap();
+    w.apply(set(1, args(vec![OscArg::Int { value: 1 }])))
+        .unwrap();
+    assert_eq!(network(&w).1, "/ok");
+    let mut w = loaded_invalid();
+    w.apply(set(1, args(vec![]))).unwrap();
+    w.apply(set(1, address("/ok"))).unwrap();
+}
+
+#[test]
+fn a_cue_loaded_invalid_is_mended_by_a_transaction_of_both() {
+    let mut w = loaded_invalid();
+    let mut history = History::new();
+    history
+        .execute(
+            &mut w,
+            Command::Transaction {
+                commands: vec![set(1, address("/ok")), set(1, args(vec![]))],
+            },
+        )
+        .unwrap();
+    assert_eq!((network(&w).1.as_str(), network(&w).2.len()), ("/ok", 0));
+    history.undo(&mut w).unwrap();
+    assert_eq!(network(&w).1, "bad");
+}
+
+#[test]
+fn a_value_still_invalid_by_itself_is_refused_on_a_cue_loaded_invalid() {
+    let mut w = loaded_invalid();
+    assert!(w.apply(set(1, address("still bad"))).is_err());
+    assert!(
+        w.apply(set(1, args(vec![OscArg::Int { value: 0 }; 33])))
+            .is_err()
+    );
+}
+
+#[test]
+fn setting_the_current_value_of_a_loaded_invalid_cue_is_a_no_op() {
+    let mut w = loaded_invalid();
+    let before = w.clone();
+    let inverse = w.apply(set(1, address("bad"))).unwrap();
+    assert_eq!(inverse, Command::Transaction { commands: vec![] });
+    assert_eq!(w, before);
+}

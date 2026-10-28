@@ -904,12 +904,11 @@ fn set_property(
         }
     }
 
-    if !restoring {
-        check_network_value(ws, cue, &property)?;
-    }
-
     if old == property {
         return Ok(no_change());
+    }
+    if !restoring {
+        check_network_value(ws, cue, &property)?;
     }
     let cue = cue_at_mut(ws, &path).ok_or(CommandError::Internal)?;
     if !property.write(cue) {
@@ -918,8 +917,10 @@ fn set_property(
     Ok(Command::SetCueProperty { id, property: old })
 }
 
-/// What a new Network destination, address or argument list has to satisfy. The message is
-/// judged whole, with the cue's other half, so the size limit holds for the pair.
+/// What a new Network destination, address or argument list has to satisfy. The new value is
+/// judged on its own, so a cue loaded with a bad address or argument list can be mended one half
+/// at a time; the pair is only refused for a size the new value introduces (the same rule as
+/// `Kind` and `Triggers`: the edit answers for what it adds, not for what the cue already had).
 fn check_network_value(
     ws: &Workspace,
     cue: &Cue,
@@ -928,7 +929,7 @@ fn check_network_value(
     let CueKind::Network { address, args, .. } = &cue.kind else {
         return Ok(());
     };
-    let (new_address, new_args) = match property {
+    let (alone, pair) = match property {
         CueProperty::Destination { value } => {
             return if ws.network_patches.iter().any(|p| p.id == *value) {
                 Ok(())
@@ -936,11 +937,17 @@ fn check_network_value(
                 Err(CommandError::NetworkPatchNotFound(*value))
             };
         }
-        CueProperty::Address { value } => (value.as_str(), args.as_slice()),
-        CueProperty::Args { value } => (address.as_str(), value.as_slice()),
+        CueProperty::Address { value } => (check_message(value, &[]), check_message(value, args)),
+        CueProperty::Args { value } => (check_message("/", value), check_message(address, value)),
         _ => return Ok(()),
     };
-    check_message(new_address, new_args).map_err(CommandError::InvalidMessage)
+    alone.map_err(CommandError::InvalidMessage)?;
+    if pair == Err(MessageIssue::TooLarge)
+        && check_message(address, args) != Err(MessageIssue::TooLarge)
+    {
+        return Err(CommandError::InvalidMessage(MessageIssue::TooLarge));
+    }
+    Ok(())
 }
 
 /// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.
