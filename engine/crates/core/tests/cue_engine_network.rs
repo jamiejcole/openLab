@@ -464,3 +464,49 @@ fn an_edited_network_cue_sends_the_edited_message() {
         }]
     );
 }
+
+/// QLab parity (manual pp. 371-372): a malformed address typed into the cue is accepted, the cue
+/// shows broken (`network_message_invalid`) and sends nothing; fixing it clears the problem.
+#[test]
+fn a_malformed_address_edit_breaks_the_cue_until_it_is_fixed() {
+    let mut rig = Rig::new(vec![network(1), memo(2)]);
+    let edit = |rig: &mut Rig, value: &str| {
+        rig.ws
+            .apply(Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Address {
+                    value: value.into(),
+                },
+            })
+            .unwrap();
+        rig.at(1, Input::Tick);
+    };
+    edit(&mut rig, "lx go");
+    assert!(matches!(
+        rig.problems(1).as_slice(),
+        [CueProblem::NetworkMessageInvalid { .. }]
+    ));
+    assert_eq!(rig.engine.state(id(1)), CueState::Broken);
+    assert!(sends(&rig.go(2)).is_empty());
+    edit(&mut rig, "/lx/go");
+    assert!(rig.problems(1).is_empty());
+    assert_ne!(rig.engine.state(id(1)), CueState::Broken);
+}
+
+/// A destination naming no patch is accepted by the edit; the cue shows broken and sends nothing.
+#[test]
+fn an_unknown_destination_edit_breaks_the_cue() {
+    let mut rig = Rig::new(vec![network(1)]);
+    rig.ws
+        .apply(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::Destination { value: net_id(9) },
+        })
+        .unwrap();
+    rig.at(1, Input::Tick);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NetworkPatchMissing { patch: net_id(9) }]
+    );
+    assert!(sends(&rig.go(2)).is_empty());
+}
