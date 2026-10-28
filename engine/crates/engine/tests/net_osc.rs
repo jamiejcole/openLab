@@ -1224,6 +1224,84 @@ async fn the_tcp_connection_cap_refuses_the_next_connection_and_logs_it() {
 }
 
 #[tokio::test]
+async fn one_host_past_its_connection_cap_is_refused_while_the_table_has_room() {
+    let f = fixture_with(test_workspace(), |c| {
+        c.max_tcp_connections = 8;
+        c.max_tcp_connections_per_host = 2;
+    })
+    .await;
+    let mut a = f.tcp().await;
+    let mut b = f.tcp().await;
+    for t in [&mut a, &mut b] {
+        t.send(&msg("/cue/1/name", vec![])).await;
+        assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    }
+    let mut c = f.tcp().await;
+    assert!(
+        c.recv().await.is_none(),
+        "a third connection from one host was served"
+    );
+    assert_eq!(f.stats().tcp_refused, 1);
+    f.control
+        .wait_for("the refusal log", |c| {
+            c.logs.lock().unwrap().iter().any(|l| {
+                l == "OSC server refused 1 connection(s): per-host connection limit (2) reached by 127.0.0.1"
+            })
+        })
+        .await;
+    // The host's own connections are still served (another host's slots are in the unit test
+    // of `HostSlots`: every test peer is 127.0.0.1).
+    a.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
+    drop(b);
+}
+
+/// A console on flaky Wi-Fi leaves dead connections behind each time it reconnects. At its
+/// cap its next connection closes its own longest-idle one instead of being refused; with all
+/// of them subscribed it is refused.
+#[tokio::test]
+async fn a_host_at_its_cap_with_idle_connections_still_gets_a_new_one_served() {
+    let f = fixture_with(test_workspace(), |c| {
+        c.max_tcp_connections = 8;
+        c.max_tcp_connections_per_host = 2;
+        c.tcp_idle_evict = Duration::ZERO;
+    })
+    .await;
+    let mut a = f.tcp().await;
+    a.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&a.recv().await.unwrap())["status"], "ok");
+    let mut b = f.tcp().await;
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    let mut c = f.tcp().await;
+    c.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&c.recv().await.unwrap())["status"], "ok");
+    assert!(
+        a.recv().await.is_none(),
+        "the host's oldest idle connection stayed"
+    );
+    assert_eq!(f.stats().tcp_refused, 0);
+    b.send(&msg("/cue/1/name", vec![])).await;
+    assert_eq!(body(&b.recv().await.unwrap())["status"], "ok");
+    // All of the host's connections subscribed: none may be closed, the next is refused.
+    b.subscribe().await;
+    c.subscribe().await;
+    let mut d = f.tcp().await;
+    assert!(
+        d.recv().await.is_none(),
+        "a connection past the cap was served"
+    );
+    assert_eq!(f.stats().tcp_refused, 1);
+    f.control
+        .wait_for("the refusal log", |s| {
+            s.logs.lock().unwrap().iter().any(|l| {
+                l == "OSC server refused 1 connection(s): per-host connection limit (2) reached by 127.0.0.1"
+            })
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
     let ws = test_workspace();
     let (ctl, _mixer) = Mixer::new(show::mixer_config()).unwrap();
@@ -1956,8 +2034,11 @@ async fn a_peer_that_asks_and_does_not_read_cannot_make_the_server_hold_gigabyte
 #[tokio::test]
 async fn the_tcp_connection_cap_defaults_to_256() {
     assert_eq!(OscConfig::default().max_tcp_connections, 256);
+    assert_eq!(OscConfig::default().max_tcp_connections_per_host, 16);
+    // Every test peer is one host: lift its own cap to see the table's.
     let f = fixture_with(test_workspace(), |c| {
         c.max_tcp_connections = OscConfig::default().max_tcp_connections;
+        c.max_tcp_connections_per_host = usize::MAX;
     })
     .await;
     // Many connections at once are served.

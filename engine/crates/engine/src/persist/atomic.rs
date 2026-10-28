@@ -178,6 +178,79 @@ pub(crate) fn write_atomic_inner(
     Ok(())
 }
 
+/// Writes `bytes` to the first of `candidates` that does not exist, never replacing a file:
+/// written and synced under a temp name beside the first candidate, then put in place with
+/// [`rename_no_replace`]. Returns the name used. Every candidate taken is `AlreadyExists`.
+pub(crate) fn write_new(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    bytes: &[u8],
+) -> Result<PathBuf, PersistError> {
+    let mut candidates = candidates.into_iter().peekable();
+    let Some(first) = candidates.peek().cloned() else {
+        return Err(PersistError::io("write", Path::new(""))(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no file name to write",
+        )));
+    };
+    let Some(name) = first.file_name() else {
+        return Err(PersistError::io("write", &first)(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path has no file name",
+        )));
+    };
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let (tmp, mut file) = create_tmp(&first, name, &COUNTER)?;
+    if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&tmp);
+        return Err(PersistError::io("write", &tmp)(source));
+    }
+    drop(file);
+    for candidate in candidates {
+        match rename_no_replace(&tmp, &candidate) {
+            Ok(()) => {
+                sync_parent(&candidate);
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(PersistError::io("write", &candidate)(source));
+            }
+        }
+    }
+    let _ = fs::remove_file(&tmp);
+    Err(PersistError::io("write", &first)(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "every free name is taken",
+    )))
+}
+
+/// Moves `from` to `to` only if nothing is at `to` (`AlreadyExists` then, `from` left as it
+/// was): a backup or a set-aside recovery file must never replace another. A hard link is the
+/// portable rename that refuses an existing name, atomically. Where the file system has no hard
+/// links (FAT, exFAT, some shares) it falls back to a check, then a rename, which only another
+/// process creating that very name in between can defeat (the instance lock keeps a second
+/// engine out).
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => match fs::remove_file(from) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Not a move after all: take the new name back so `from` is still the only one.
+                let _ = fs::remove_file(to);
+                Err(e)
+            }
+        },
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => {
+            if fs::symlink_metadata(to).is_ok() {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            fs::rename(from, to)
+        }
+    }
+}
+
 /// How many temp names one write tries before giving up.
 const TMP_NAME_TRIES: u32 = 16;
 
@@ -468,6 +541,22 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"old");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_an_existing_name_and_leaves_both_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("new"), dir.path().join("old"));
+        fs::write(&from, "new").unwrap();
+        fs::write(&to, "old").unwrap();
+        let err = rename_no_replace(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&from).unwrap(), "new");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "old");
+        fs::remove_file(&to).unwrap();
+        rename_no_replace(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(fs::read_to_string(&to).unwrap(), "new");
     }
 
     #[test]

@@ -67,11 +67,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     static let maxRuntimeWarnings = 100
     static let maxLogEntries = 500
 
-    /// `ownsDelegate: false` when something else (the session on a one-workspace engine) owns the
-    /// client and forwards its messages to `receive`.
-    init(client: EngineClient, ownsDelegate: Bool = true) {
+    /// The engine closed this workspace (`closed` on its connection): its window goes at once.
+    var onClosed: (() -> Void)?
+
+    init(client: EngineClient) {
         self.client = client
-        if ownsDelegate { client.delegate = self }
+        client.delegate = self
         connectionState = client.state
         stateSub = client.$state.sink { [weak self] state in
             self?.connectionState = state
@@ -103,8 +104,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func hardStopAll() async -> Result<OkBody, EngineError> { await transport(.hardStopAll) }
     func panicCue(_ cue: ModelID) async -> Result<OkBody, EngineError> { await transport(.panicCue(cue: cue)) }
 
-    func send(command: Command) async -> Result<OkBody, EngineError> {
-        await client.send { .command(id: $0, command) }
+    /// `coalesce`: edits sent with the same key join one undo step (a fader drag; docs/commands.md).
+    func send(command: Command, coalesce: String? = nil) async -> Result<OkBody, EngineError> {
+        await client.send { .command(id: $0, command, coalesce: coalesce) }
     }
 
     func setProperty(_ cue: ModelID, _ property: CueProperty) async -> Result<OkBody, EngineError> {
@@ -181,7 +183,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
             status = s
-        case .meters, .logEntry, .result, .error, .provisional, .unknown:
+        case .closed(let doc):
+            if doc == client.workspace { onClosed?() }
+        case .meters, .logEntry, .result, .error, .appWelcome, .workspaces, .unknown:
             // Meters and live log records have no consumer yet (the log window reads
             // `log_tail`); the rest belong to the client or session.
             break

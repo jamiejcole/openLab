@@ -16,6 +16,7 @@ use openlab_core::{
     load_show, save_show,
 };
 
+use super::atomic::rename_no_replace;
 use super::{
     AppDirs, PersistError, modified_ms, read_text, recovery_stem, unique_sibling, write_atomic,
 };
@@ -200,21 +201,19 @@ fn move_stale(
     modified: Option<i64>,
 ) -> Option<PathBuf> {
     let stem = recovery_stem(workspace, Some(show_path));
-    let mut ms = modified.unwrap_or(0).max(0);
-    let mut target = dirs
-        .recovery_dir()
-        .join(format!("{stem}.{ms:015}{STALE_SUFFIX}"));
-    // Two stale files with the same time keep distinct names.
-    for _ in 0..100 {
-        if !target.exists() {
-            break;
-        }
-        ms += 1;
-        target = dirs
-            .recovery_dir()
-            .join(format!("{stem}.{ms:015}{STALE_SUFFIX}"));
-    }
-    fs::rename(path, &target).ok()?;
+    let ms = modified.unwrap_or(0).max(0);
+    // Two stale files with the same time keep distinct names, and one never replaces another:
+    // with every name taken the file stays where it is (offered as stale again next time).
+    let target = (0..100)
+        .map(|n| {
+            dirs.recovery_dir()
+                .join(format!("{stem}.{:015}{STALE_SUFFIX}", ms.saturating_add(n)))
+        })
+        .find_map(|target| match rename_no_replace(path, &target) {
+            Ok(()) => Some(Some(target)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
+            Err(_) => Some(None),
+        })??;
     // Oldest first by name (zero-padded time); keep the newest few.
     let all = stale_files(dirs, &stem);
     for old in all.iter().take(all.len().saturating_sub(KEEP_STALE)) {

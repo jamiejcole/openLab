@@ -12,8 +12,9 @@ enum EngineError: Error, Equatable, Sendable {
     case encoding(String)
     /// A `snapshot` is already out; never pipelined (docs/network.md).
     case snapshotAlreadyPending
-    /// The engine in use does not have this feature (the multi-workspace calls on a one-workspace engine).
-    case unsupported
+    /// `open` found an autosave newer than the show file and opened nothing (`recovery_offer`):
+    /// ask, then repeat the `open` with a choice.
+    case recoveryOffered(path: String, workspaceName: String, modifiedMs: Int64)
 }
 
 enum ConnectionFailure: Equatable, Sendable {
@@ -25,6 +26,11 @@ enum ConnectionFailure: Equatable, Sendable {
     case lost
     case engine(code: ErrorCode, message: String)
     case transport(String)
+    /// The engine closed this connection's workspace (`closed`): never reconnect to it.
+    case workspaceClosed
+    /// `engine.json` names another engine run than the one this workspace connection was bound in:
+    /// doc ids restart in a new run, so the old one could name another show. The session rebinds.
+    case engineRestarted
 }
 
 enum ConnectionState: Equatable, Sendable {
@@ -77,7 +83,14 @@ final class EngineClient: ObservableObject {
     private var handshakeTimedOut = false
     private let policy: ReconnectPolicy
     private let clientName: String
-    private let workspace: ModelID?
+    /// The doc this connection is bound to; nil for the app connection.
+    private(set) var workspace: ModelID?
+    /// For a bound connection: the token of the engine run its doc id belongs to (nil: any run).
+    private(set) var runToken: String?
+    /// `engine.json` as read for the connection that last reached `welcome` (kept after a drop:
+    /// the supervisor asks whether that engine is still alive).
+    private(set) var connectedRun: EngineConnectionInfo?
+    private var workspaceClosed = false
 
     private var runTask: Task<Void, Never>?
     private var connection: (any EngineConnection)?
@@ -93,8 +106,9 @@ final class EngineClient: ObservableObject {
         infoProvider: @escaping @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>,
         scheduler: Scheduler = SystemScheduler(), handshakeScheduler: Scheduler = SystemScheduler(),
         policy: ReconnectPolicy = ReconnectPolicy(),
-        clientName: String = "openLab for macOS", workspace: ModelID? = nil
+        clientName: String = "openLab for macOS", workspace: ModelID? = nil, runToken: String? = nil
     ) {
+        self.runToken = runToken
         self.handshakeScheduler = handshakeScheduler
         self.transport = transport
         self.infoProvider = infoProvider
@@ -107,6 +121,15 @@ final class EngineClient: ObservableObject {
     func start() {
         guard runTask == nil else { return }
         runTask = Task { await run() }
+    }
+
+    /// Binds this connection to `doc` of the engine run with `runToken` and connects again (a
+    /// window reattached to its reopened show after an engine restart). Requests in flight fail.
+    func rebind(workspace doc: ModelID, runToken token: String?) {
+        stop()
+        workspace = doc
+        runToken = token
+        start()
     }
 
     func stop() {
@@ -178,8 +201,9 @@ final class EngineClient: ObservableObject {
             if Task.isCancelled { return }
             if result.reachedWelcome { attempt = 0 }
             switch result.failure {
-            case .versionMismatch, .engine(.noWorkspace, _):
-                // Retrying cannot help: a version mismatch, or a workspace the engine closed.
+            case .versionMismatch, .engine(.noWorkspace, _), .workspaceClosed, .engineRestarted:
+                // Retrying cannot help: a version mismatch, a workspace the engine closed, or a
+                // doc id of an engine run that is gone.
                 state = .failed(result.failure)
                 return
             default: break
@@ -197,6 +221,7 @@ final class EngineClient: ObservableObject {
         case .failure: return (.engineNotAvailable, false)
         case .success(let i): info = i
         }
+        if let runToken, workspace != nil, info.token != runToken { return (.engineRestarted, false) }
         let conn: any EngineConnection
         do { conn = try await transport.connect(info: info) } catch {
             return (.transport(error.localizedDescription), false)
@@ -208,6 +233,7 @@ final class EngineClient: ObservableObject {
         connection = conn
         nextRequestID = 1
         handshakeTimedOut = false
+        workspaceClosed = false
         let timer = Task { [handshakeScheduler, timeout = policy.handshakeTimeout] in
             do { try await handshakeScheduler.sleep(seconds: timeout) } catch { return }
             if !Task.isCancelled {
@@ -244,9 +270,11 @@ final class EngineClient: ObservableObject {
                 }
                 if !welcomed {
                     switch message {
-                    case .welcome, .provisional(.appWelcome):
+                    case .welcome, .appWelcome:
                         welcomed = true
                         timer.cancel()
+                        connectedRun = info
+                        if workspace != nil, runToken == nil { runToken = info.token }
                         _ = delegate?.engineClient(self, didReceive: message)
                         state = .connected
                     case .error(let code, let detail, let engineVersion):
@@ -264,6 +292,7 @@ final class EngineClient: ObservableObject {
                 }
             }
         } catch {
+            if workspaceClosed { return (.workspaceClosed, welcomed) }
             return (handshakeTimedOut && !welcomed ? .transport("no welcome") : .lost, welcomed)
         }
     }
@@ -302,6 +331,15 @@ final class EngineClient: ObservableObject {
             engineErrors.send(ErrorBody(code: code, message: text))
         case .unknown(let type):
             engineLog.notice("ignoring unknown server message type \(type, privacy: .public)")
+        case .closed(let doc):
+            // Only this connection's own doc: a `closed` naming another must not close a window.
+            guard workspace != nil, doc == workspace else {
+                engineLog.error("closed for doc \(doc.raw, privacy: .public) on another connection ignored")
+                return
+            }
+            // The engine closes the connection next; the run loop then stops instead of retrying.
+            workspaceClosed = true
+            _ = delegate?.engineClient(self, didReceive: message)
         default:
             if delegate?.engineClient(self, didReceive: message) == .gap { requestSnapshot() }
         }

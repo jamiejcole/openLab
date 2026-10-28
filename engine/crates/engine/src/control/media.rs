@@ -558,6 +558,13 @@ pub struct ProbePool {
     /// [`MAX_ABANDONED_WORKERS`] was reached (reported once).
     limit_reported: bool,
     limit_unread: bool,
+    /// A replacement worker could not be started: tried again every watchdog tick. Set while
+    /// that lasts; the change is reported once each way ([`ProbePool::take_worker_note`]).
+    spawn_failing: bool,
+    worker_note: Option<WorkerNote>,
+    /// Tests: the next this many [`ProbePool::spawn`] calls fail as the OS would.
+    #[cfg(test)]
+    fail_spawns: u32,
     timeout: Duration,
     clock: ProbeClock,
     /// Bytes every doc's preloads hold together (AUD-05: one budget for the engine).
@@ -573,6 +580,15 @@ pub struct PoolHandle {
     high: Sender<Job>,
     low: Sender<Job>,
     gate: Arc<Mutex<Gate>>,
+}
+
+/// A change in whether the pool can start the workers it replaces stuck ones with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerNote {
+    /// A replacement could not be started (the OS's reason); retried every tick.
+    SpawnFailed(String),
+    /// The pool has all its workers again.
+    Restored,
 }
 
 /// A probe the watchdog gave up on: the doc and file it was for.
@@ -652,6 +668,10 @@ impl ProbePool {
             abandoned: 0,
             limit_reported: false,
             limit_unread: false,
+            spawn_failing: false,
+            worker_note: None,
+            #[cfg(test)]
+            fail_spawns: 0,
             timeout,
             clock,
             preloads: Arc::default(),
@@ -684,6 +704,11 @@ impl ProbePool {
     }
 
     fn spawn(&mut self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_spawns > 0 {
+            self.fail_spawns -= 1;
+            return Err(std::io::Error::other("injected spawn failure"));
+        }
         let state = Arc::new(WorkerState {
             busy: Mutex::new(None),
             abandoned: AtomicBool::new(false),
@@ -750,9 +775,9 @@ impl ProbePool {
             let w = self.workers.remove(i);
             w.abandoned.store(true, Ordering::Release);
             self.abandoned += 1;
-            let _ = self.spawn();
             out.push(Stuck { doc, key, ticket });
         }
+        self.replenish();
         // Jobs that waited for a stalled volume run when it works again, or one at a time as
         // trials: a trial that answers (or a stalled volume the watch sees healthy again) ends
         // the wait for all of them.
@@ -762,6 +787,30 @@ impl ProbePool {
             let _ = queue.send(job);
         }
         out
+    }
+
+    /// Starts workers until there are [`PROBE_WORKERS`] again (stuck ones replaced). A start
+    /// that fails (out of threads or memory) is noted and tried again on the next tick; the
+    /// waiting probes run once a worker is up.
+    fn replenish(&mut self) {
+        while self.workers.len() < PROBE_WORKERS {
+            if let Err(e) = self.spawn() {
+                if !self.spawn_failing {
+                    self.spawn_failing = true;
+                    self.worker_note = Some(WorkerNote::SpawnFailed(e.to_string()));
+                }
+                return;
+            }
+        }
+        if self.spawn_failing {
+            self.spawn_failing = false;
+            self.worker_note = Some(WorkerNote::Restored);
+        }
+    }
+
+    /// What changed about starting replacement workers since the last call, if anything.
+    pub fn take_worker_note(&mut self) -> Option<WorkerNote> {
+        self.worker_note.take()
     }
 
     /// The volumes the media watch reports stalled: the probes defer to them too.
@@ -3248,6 +3297,48 @@ mod tests {
             assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
         }
         assert_eq!(cat.take_volume_events(), vec![(DEAD.to_owned(), false)]);
+    }
+
+    #[cfg(unix)]
+    static RESPAWN_FILE: Hang = Hang::new();
+
+    #[cfg(unix)]
+    fn respawn_probe(path: &Path) -> Result<Probed, MediaError> {
+        if path == Path::new("/respawn/hang.wav") {
+            RESPAWN_FILE.block();
+        }
+        fake(path)
+    }
+
+    /// M9: a stuck worker whose replacement cannot start (out of threads) is reported once,
+    /// and the replacement is started on a later tick, not left missing for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_worker_that_cannot_start_is_reported_and_retried() {
+        let (mut cat, rx, ms) = timed_catalog(respawn_probe);
+        cat.request("/respawn/hang.wav".to_owned());
+        RESPAWN_FILE.wait_entered(1);
+        advance(&ms, 31);
+        cat.own_pool.as_mut().unwrap().fail_spawns = 2;
+        assert_eq!(cat.watchdog().len(), 1);
+        let pool = cat.own_pool.as_mut().unwrap();
+        assert_eq!(pool.workers(), PROBE_WORKERS - 1);
+        assert!(
+            matches!(pool.take_worker_note(), Some(WorkerNote::SpawnFailed(e)) if e.contains("injected")),
+        );
+        // Still failing: tried again, not reported again.
+        cat.watchdog();
+        let pool = cat.own_pool.as_mut().unwrap();
+        assert_eq!(pool.workers(), PROBE_WORKERS - 1);
+        assert_eq!(pool.take_worker_note(), None);
+        // The next tick starts it.
+        cat.watchdog();
+        let pool = cat.own_pool.as_mut().unwrap();
+        assert_eq!(pool.workers(), PROBE_WORKERS);
+        assert_eq!(pool.take_worker_note(), Some(WorkerNote::Restored));
+        cat.request("/respawn/fine.wav".to_owned());
+        assert!(cat.answer(next_answer(&rx)).is_some());
+        RESPAWN_FILE.open();
     }
 
     #[cfg(unix)]

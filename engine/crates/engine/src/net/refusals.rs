@@ -2,6 +2,7 @@
 
 //! Rate-limited logging of refused connections, shared by the WebSocket and OSC listeners.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
@@ -17,7 +18,7 @@ pub struct Refusals {
     name: &'static str,
     interval: Duration,
     count: u64,
-    limit: &'static str,
+    limit: Cow<'static, str>,
     last_log: Option<Instant>,
 }
 
@@ -27,14 +28,14 @@ impl Refusals {
             name,
             interval,
             count: 0,
-            limit: "",
+            limit: Cow::Borrowed(""),
             last_log: None,
         }
     }
 
-    pub fn refused(&mut self, inbox: &Sender<Inbox>, limit: &'static str) {
+    pub fn refused(&mut self, inbox: &Sender<Inbox>, limit: impl Into<Cow<'static, str>>) {
         self.count += 1;
-        self.limit = limit;
+        self.limit = limit.into();
         if self.due().is_some_and(|t| t <= Instant::now()) {
             self.flush(inbox);
         }
