@@ -1030,23 +1030,27 @@ impl Control {
     /// doc; a stage fault is the engine's ([`Self::stage_faulted`]).
     fn route_mixer_events(&mut self) {
         while let Some(e) = self.eng.mixer.poll_event() {
-            if let Event::StageFaulted {
-                stage, disabled, ..
-            } = e
-            {
-                self.stage_faulted(stage, disabled);
-                continue;
-            }
-            let Some(voice) = event_voice(&e) else {
-                continue;
-            };
-            let Some(owner) = self.eng.voice_ids.owner(voice) else {
-                continue;
-            };
-            if let Some(doc) = self.docs.iter_mut().find(|d| d.id == owner) {
-                doc.events.push(e);
-                doc.events_routed += 1;
-            }
+            self.route_mixer_event(e);
+        }
+    }
+
+    fn route_mixer_event(&mut self, e: Event) {
+        if let Event::StageFaulted {
+            stage, disabled, ..
+        } = e
+        {
+            self.stage_faulted(stage, disabled);
+            return;
+        }
+        let Some(voice) = event_voice(&e) else {
+            return;
+        };
+        let Some(owner) = self.eng.voice_ids.owner(voice) else {
+            return;
+        };
+        if let Some(doc) = self.docs.iter_mut().find(|d| d.id == owner) {
+            doc.events.push(e);
+            doc.events_routed += 1;
         }
     }
 
@@ -4221,8 +4225,14 @@ mod tests {
         };
         let first = slot(&s).unwrap();
 
+        // As the mixer's event queue hands it over.
         s.control_mut()
-            .stage_faulted(FaultStage::Patch(first), false);
+            .route_mixer_event(openlab_audio::Event::StageFaulted {
+                stage: FaultStage::Patch(first),
+                at: 0,
+                disabled: false,
+            });
+        assert_eq!(s.control().eng.stage_reports, 1);
         let (told, _) = fault_notices(&s.take_outbound());
         assert!(told.iter().any(|m| m.contains("\"Main\"")), "{told:?}");
         assert_eq!(slot(&s), Some(first));
