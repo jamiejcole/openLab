@@ -693,13 +693,13 @@ fn v4_pause_all_pauses_previews_and_resume_all_resumes_them() {
         }]
     );
     assert!(rig.engine.is_previewing(id(1)), "paused, still a preview");
-    // The end report of carrying out the pause is ignored.
+    // The end report of carrying out the pause (dated after it) is ignored.
     let out = rig.at(
         410,
         Input::ActionEnded {
             cue: id(1),
             run: first,
-            at: 400,
+            at: 401,
         },
     );
     assert!(out.is_empty(), "{out:?}");

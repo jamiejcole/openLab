@@ -1958,12 +1958,13 @@ fn failed_paused_voice_is_stopped() {
 
 #[test]
 fn end_report_dated_during_a_pause_is_ignored() {
-    // A pause built as stop + restart reports the stop as the voice ending (review M1).
+    // A paused voice cannot end by itself: a report dated after the pause sample comes from
+    // carrying out the pause (review M1). One dated on it is an end (M2.34).
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
     rig.start(0, 1);
     let run = rig.engine.run_of(id(1)).unwrap();
     rig.at(500, Input::Pause { cue: id(1) });
-    assert!(rig.ended(520, 1, 500).is_empty());
+    assert!(rig.ended(520, 1, 501).is_empty());
     assert_eq!(rig.state(1), CueState::Paused);
     assert_eq!(rig.state(2), CueState::Idle);
     let resume = rig.at(1000, Input::Resume { cue: id(1) });

@@ -341,8 +341,8 @@ impl CueEngine {
     }
 
     /// Feedback: the voice of a preview ended by itself. Returns whether `run` was a preview's.
-    /// An end dated on or after a pause comes from carrying out the pause and is ignored, as for
-    /// a show cue.
+    /// An end dated after a pause comes from carrying out the pause and is ignored, as for a show
+    /// cue; one dated on the pause sample is an end (M2.34, see `CueEngine::action_ended`).
     pub(super) fn preview_ended(
         &mut self,
         cue: CueId,
@@ -359,7 +359,7 @@ impl CueEngine {
         if preview.run != run {
             return false;
         }
-        if preview.paused_at.is_some_and(|p| at >= p) {
+        if preview.paused_at.is_some_and(|p| at > p) {
             return true;
         }
         self.previews.remove(&cue);
