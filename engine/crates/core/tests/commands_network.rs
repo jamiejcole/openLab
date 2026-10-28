@@ -113,99 +113,67 @@ fn other_kinds_do_not_have_the_properties() {
 }
 
 #[test]
-fn hostile_values_are_refused_and_change_nothing() {
+fn an_oversize_value_is_refused_and_changes_nothing() {
+    // Far above the send limits (512 / 32 / 4096): only memory-bounding, never normal typing.
     let mut w = ws();
     let before = w.clone();
-    let many = vec![OscArg::Int { value: 0 }; 33];
-    let long = "/".to_string() + &"a".repeat(512);
-    let cases: Vec<(CueProperty, CommandError)> = vec![
+    let cases = [
         (
-            CueProperty::Destination { value: net_id(9) },
-            CommandError::NetworkPatchNotFound(net_id(9)),
+            address(&format!("/{}", "a".repeat(64 * 1024))),
+            MessageIssue::AddressTooLong,
         ),
         (
-            address("go"),
-            CommandError::InvalidMessage(MessageIssue::NotAnAddress),
-        ),
-        (
-            address(""),
-            CommandError::InvalidMessage(MessageIssue::NotAnAddress),
-        ),
-        (
-            address(&long),
-            CommandError::InvalidMessage(MessageIssue::AddressTooLong),
-        ),
-        (
-            address("/a b"),
-            CommandError::InvalidMessage(MessageIssue::AddressCharacter),
-        ),
-        (
-            address("/a\0b"),
-            CommandError::InvalidMessage(MessageIssue::AddressCharacter),
-        ),
-        (
-            args(many),
-            CommandError::InvalidMessage(MessageIssue::TooManyArgs),
+            args(vec![OscArg::Int { value: 0 }; 1025]),
+            MessageIssue::TooManyArgs,
         ),
         (
             args(vec![OscArg::Float { value: f32::NAN }]),
-            CommandError::InvalidMessage(MessageIssue::FloatNotFinite),
-        ),
-        (
-            args(vec![OscArg::Float {
-                value: f32::INFINITY,
-            }]),
-            CommandError::InvalidMessage(MessageIssue::FloatNotFinite),
+            MessageIssue::FloatNotFinite,
         ),
         (
             args(vec![OscArg::String {
-                value: "a\0".into(),
+                value: "x".repeat(64 * 1024 + 1),
             }]),
-            CommandError::InvalidMessage(MessageIssue::StringNul),
-        ),
-        (
-            args(vec![OscArg::String {
-                value: "x".repeat(4097),
-            }]),
-            CommandError::InvalidMessage(MessageIssue::StringTooLong),
-        ),
-        // Eight strings of 1100 bytes each fit the per-string limit but not the message.
-        (
-            args(vec![
-                OscArg::String {
-                    value: "x".repeat(1100)
-                };
-                8
-            ]),
-            CommandError::InvalidMessage(MessageIssue::TooLarge),
+            MessageIssue::StringTooLong,
         ),
     ];
-    for (property, error) in cases {
+    for (property, issue) in cases {
         assert_eq!(
-            w.apply(set(1, property.clone())),
-            Err(error),
-            "{property:?}"
+            w.apply(set(1, property)),
+            Err(CommandError::InvalidMessage(issue))
         );
         assert_eq!(w, before);
     }
 }
 
 #[test]
-fn the_size_limit_holds_for_the_pair() {
+fn a_malformed_message_is_accepted_and_undoes() {
     let mut w = ws();
-    let big = vec![
-        OscArg::String {
-            value: "x".repeat(4000)
-        };
-        2
-    ];
-    w.apply(set(1, args(big))).unwrap();
     let before = w.clone();
-    assert!(matches!(
-        w.apply(set(1, address(&format!("/{}", "a".repeat(300))))),
-        Err(CommandError::InvalidMessage(MessageIssue::TooLarge))
-    ));
+    let mut history = History::new();
+    for p in [
+        address("go"),
+        address("/a b"),
+        address("/"),
+        args(vec![OscArg::Int { value: 0 }; 100]),
+        args(vec![OscArg::String {
+            value: "x".repeat(5000),
+        }]),
+    ] {
+        assert!(history.execute(&mut w, set(1, p)).unwrap());
+    }
+    for _ in 0..5 {
+        history.undo(&mut w).unwrap();
+    }
     assert_eq!(w, before);
+}
+
+#[test]
+fn an_unknown_destination_is_accepted() {
+    let mut w = ws();
+    w.apply(set(1, CueProperty::Destination { value: net_id(9) }))
+        .unwrap();
+    assert_eq!(network(&w).0, net_id(9));
 }
 
 #[test]
@@ -328,16 +296,6 @@ fn a_cue_loaded_invalid_is_mended_by_a_transaction_of_both() {
     assert_eq!((network(&w).1.as_str(), network(&w).2.len()), ("/ok", 0));
     history.undo(&mut w).unwrap();
     assert_eq!(network(&w).1, "bad");
-}
-
-#[test]
-fn a_value_still_invalid_by_itself_is_refused_on_a_cue_loaded_invalid() {
-    let mut w = loaded_invalid();
-    assert!(w.apply(set(1, address("still bad"))).is_err());
-    assert!(
-        w.apply(set(1, args(vec![OscArg::Int { value: 0 }; 33])))
-            .is_err()
-    );
 }
 
 #[test]

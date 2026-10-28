@@ -23,12 +23,9 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 
 ## Network cue properties (M4.6a)
 
-`destination`, `address` and `args` of `CueProperty` apply to Network cues only (`PropertyNotApplicable` on any other kind); they undo, redo, coalesce (one gesture key, one slot per property) and batch like the other properties. A new value is refused, changing nothing, unless:
+`destination`, `address` and `args` of `CueProperty` apply to Network cues only (`PropertyNotApplicable` on any other kind); they undo, redo, coalesce (one gesture key, one slot per property) and batch like the other properties. As in QLab 5 (manual pp. 371-372), the editor **accepts a malformed message and a destination that names no network patch** (or none): the cue shows broken, with `network_message_invalid` / `network_patch_missing` (docs/protocol.md), until it is fixed, and a broken cue never sends.
 
-- `destination` names an existing network patch (`NetworkPatchNotFound`). Removing a patch a cue uses stays a broken-cue state; undo, redo and rollback skip this check so they can restore one.
-- `address` and `args` each pass `network::check_message` on their own (the other half stands in as empty / `/`), and the pair must not newly exceed the size limit, so a cue loaded with a bad half can be mended one half at a time; the checks are: the address starts with `/`, is at most 512 bytes of printable ASCII without spaces (pattern characters `* ? [ ] { }` are allowed), at most 32 arguments, strings at most 4096 bytes with no NUL, floats finite, the encoded message at most 8192 bytes (`InvalidMessage(reason)`). Ints and bools cannot be invalid.
-
-QLab 5's Network cue page (qlab.app/docs/v5/networking/network-cues/) describes the address and arguments as typed text and does not say what happens to a malformed one; we refuse it at the edit (open-qlab-questions.md), so a client cannot put a cue into a state the cue engine would break on.
+Only memory bounds are refused (`InvalidMessage(reason)`, nothing changes): an address over 64 KiB, more than 1024 arguments, a string argument over 64 KiB, or a non-finite float (JSON cannot hold one). They sit far above the send limits (512 bytes, 32 arguments, 4096 bytes per string, 8192 per message; `network::check_message`), so normal typing is never refused; they only stop a hostile client filling the document through one command.
 
 ## Commands
 
