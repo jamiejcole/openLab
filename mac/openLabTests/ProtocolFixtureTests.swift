@@ -86,16 +86,19 @@ final class ProtocolFixtureTests: XCTestCase {
     }
 
     func testProgressWaitsDecodeAndDefaultToNone() throws {
-        guard case .progress(let items, let waits) = try ServerMessage.decode(try Fixtures.text("server", "progress_waits"))
-        else { return XCTFail("progress_waits") }
+        let text = try Fixtures.text("server", "progress_waits")
+        guard case .progress(let items, let waits) = try ServerMessage.decode(text) else {
+            return XCTFail("progress_waits")
+        }
         XCTAssertEqual(items.first?.remaining, 4.0)
         XCTAssertEqual(waits.map(\.wait), [.postWait, .preWait])
         XCTAssertEqual(waits.first?.cue, items.first?.cue)
         XCTAssertEqual(waits.last?.elapsed, 0.5)
         XCTAssertEqual(waits.last?.remaining, 1.5)
         // An engine before M4.2e sends no `waits`.
-        guard case .progress(_, let none) = try ServerMessage.decode(try Fixtures.text("server", "progress"))
-        else { return XCTFail("progress") }
+        guard case .progress(_, let none) = try ServerMessage.decode(try Fixtures.text("server", "progress")) else {
+            return XCTFail("progress")
+        }
         XCTAssertEqual(none, [])
     }
 

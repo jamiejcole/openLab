@@ -108,6 +108,8 @@ fn a_wait_cue_shows_its_action_and_a_group_its_elapsed_time() {
             (3, Timer::PreWait, 1000, Some(9000)),
         ]
     );
+    // Due but not ticked yet: the Wait cue stands at its end, never beyond.
+    assert_eq!(rig.read(3500)[0], (1, Timer::Action, 3000, Some(0)));
     assert_eq!(rig.timers(3000)[0], (2, Timer::Action, 3000, None));
 }
 
