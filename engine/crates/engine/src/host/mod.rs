@@ -288,7 +288,36 @@ fn run_with(
         ..ServerConfig::default()
     };
     let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
-    // Before the loop starts: a failure leaves nothing running.
+    let control = Control::empty(
+        ctl,
+        Backend::Device(Box::new(device)),
+        config,
+        inbox_tx.clone(),
+        out_tx,
+    )?;
+    open_at_start(&options.open, &inbox_tx)?;
+    if signals {
+        let signal_inbox = inbox_tx.clone();
+        signals::spawn_waiter(move |signal| {
+            let _ = signal_inbox.send(Inbox::Log {
+                level: LogLevel::Info,
+                message: format!("{}: shutting down", signal.name()),
+            });
+            let _ = signal_inbox.send(Inbox::Shutdown);
+        })
+        .map_err(HostError::Thread)?;
+    }
+    if options.watch_stdin {
+        let stdin_inbox = inbox_tx.clone();
+        thread::Builder::new()
+            .name("openlab-stdin".into())
+            .spawn(move || {
+                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+                let _ = stdin_inbox.send(Inbox::Shutdown);
+            })
+            .map_err(HostError::Thread)?;
+    }
+    // Last before the loop: a client that finds the file finds an engine about to serve it.
     let engine_file = match dirs {
         Some(dirs) => {
             let path = dirs.engine_file_path();
@@ -314,40 +343,19 @@ fn run_with(
             None
         }
     };
-    if signals {
-        let signal_inbox = inbox_tx.clone();
-        signals::spawn_waiter(move |signal| {
-            let _ = signal_inbox.send(Inbox::Log {
-                level: LogLevel::Info,
-                message: format!("{}: shutting down", signal.name()),
-            });
-            let _ = signal_inbox.send(Inbox::Shutdown);
-        })
-        .map_err(HostError::Thread)?;
-    }
-    if options.watch_stdin {
-        let stdin_inbox = inbox_tx.clone();
-        thread::Builder::new()
-            .name("openlab-stdin".into())
-            .spawn(move || {
-                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
-                let _ = stdin_inbox.send(Inbox::Shutdown);
-            })
-            .map_err(HostError::Thread)?;
-    }
-    let control = Control::empty(
-        ctl,
-        Backend::Device(Box::new(device)),
-        config,
-        inbox_tx.clone(),
-        out_tx,
-    )?;
-    open_at_start(&options.open, &inbox_tx)?;
     say(&format!("listening on 127.0.0.1:{}", server.port()));
-    let worker = thread::Builder::new()
+    let worker = match thread::Builder::new()
         .name("openlab-control".into())
         .spawn(move || runner::run(control, &inbox))
-        .map_err(HostError::Thread)?;
+    {
+        Ok(worker) => worker,
+        Err(e) => {
+            if let Some(file) = engine_file {
+                let _ = file.remove();
+            }
+            return Err(HostError::Thread(e));
+        }
+    };
     // The control loop stops the show and writes the recovery files; dropping it ends the
     // device thread, which drops the stream (and the mixer) there.
     let joined = join_control(worker);

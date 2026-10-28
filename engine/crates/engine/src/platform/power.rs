@@ -43,8 +43,9 @@ fn serve(wants: &Receiver<bool>, inbox: &Sender<Inbox>) {
                 Ok(a) => {
                     held = Some(a);
                     warned = false;
+                    // Debug: it changes with every cue that runs in an otherwise idle show.
                     log(
-                        LogLevel::Info,
+                        LogLevel::Debug,
                         "keeping the computer and display awake".into(),
                     );
                 }
@@ -62,7 +63,7 @@ fn serve(wants: &Receiver<bool>, inbox: &Sender<Inbox>) {
         } else if !want && let Some(a) = held.take() {
             drop(a);
             log(
-                LogLevel::Info,
+                LogLevel::Debug,
                 "the computer and display may sleep again".into(),
             );
         }

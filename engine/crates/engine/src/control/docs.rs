@@ -1844,6 +1844,7 @@ impl Control {
     pub(super) fn final_recovery_writes(&mut self, wait: Duration) -> FinalWrites {
         let mut counts = FinalWrites::default();
         let mut waiting: Vec<(String, AutosaveRx)> = Vec::new();
+        let mut logs_early: Vec<String> = Vec::new();
         for doc in &mut self.docs {
             if !doc.is_dirty() {
                 continue;
@@ -1861,12 +1862,25 @@ impl Control {
                         file.autosaved_revision = Some(doc.revision);
                         waiting.push((name, rx));
                     }
-                    None => counts.failed += 1,
+                    None => {
+                        counts.failed += 1;
+                        logs_early.push(name);
+                    }
                 },
             }
         }
         let deadline = Instant::now() + wait;
-        let mut logs = Vec::new();
+        let mut logs: Vec<(LogLevel, String)> = logs_early
+            .into_iter()
+            .map(|name| {
+                (
+                    LogLevel::Error,
+                    format!(
+                        "the unsaved changes of \"{name}\" are lost: no application-support folder to write a recovery file to"
+                    ),
+                )
+            })
+            .collect();
         for (name, rx) in waiting {
             let left = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(left) {

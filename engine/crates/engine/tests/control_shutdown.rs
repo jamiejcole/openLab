@@ -345,3 +345,30 @@ fn show_mode_and_running_cues_keep_the_computer_awake() {
     s.shutdown();
     assert_eq!(said(&awake), [false]);
 }
+
+/// Without an app-support folder there is nowhere to write: counted and logged, not silent.
+#[test]
+fn unsaved_changes_with_nowhere_to_write_are_logged_at_shutdown() {
+    let env = env();
+    let (mut s, _clock) = launch(&env, |c| c.app_dirs = None);
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    edit(
+        &mut s,
+        doc,
+        Command::RenameWorkspace {
+            name: "Nowhere".into(),
+        },
+    );
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            failed: 1,
+            ..FinalWrites::default()
+        }
+    );
+    let errors = errors(&mut s);
+    assert!(
+        errors.iter().any(|e| e.contains("\"Nowhere\"")),
+        "{errors:?}"
+    );
+}
