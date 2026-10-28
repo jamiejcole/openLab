@@ -150,6 +150,7 @@ If the session was cut off, resume with the `orchestrate` skill (up to 3 agents 
 - [x] M2.31 A stream failure during a Panic fade (or a stop fade) no longer starts another cue — found by cue_engine_prop
 - [x] M2.32 Group preview with duplicate ids previews an audio child whose id find_cue resolves to a non-audio cue — cue_engine_prop seed 3aa595d4
 - [x] M2.33 An end report dated before a Pause All, arriving after it, still starts follow-on cues while the show is paused
+- [ ] M2.34 A voice ending exactly on the Pause All sample is dropped as the pause: a preview (and maybe a show cue) stays paused with no voice until Resume All — cue_engine_prop seed 886fa41f
 
 ## M3 — Audio engine (`openlab-audio`)
 - [x] M3.1 Offline render driver + RT-safety harness (`assert_no_alloc`, `catch_unwind` in callback) [NFR-02, QA-03]
