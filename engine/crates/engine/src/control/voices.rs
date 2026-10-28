@@ -978,11 +978,14 @@ impl Voices {
         let failed = r.stream_failed
             || (reason == FinishReason::EndOfStream
                 && r.stream.as_ref().is_some_and(|h| h.error().is_some()));
-        // Ended at or after a pending pause: the engine ignores the report (a paused voice
-        // cannot end), so keep the record for the resume to report the end afresh.
+        // Ended after a pending pause: the engine ignores the report (a paused voice cannot
+        // end), so keep the record for the resume to report the end afresh. An end on the pause
+        // sample left nothing to pause: the engine takes it as the end (M2.34) and resumes
+        // nothing, so a record kept for it would stay for the session (and, for a show cue,
+        // keep the cue from being primed again).
         if !failed
             && let Some(p) = r.paused_at
-            && at >= p
+            && at > p
             && reason != FinishReason::Stopped
         {
             r.phase = Phase::Ended;
@@ -1499,5 +1502,32 @@ mod tests {
         ];
         assert_eq!(rest_after_loop(&t, 100), None);
         assert_eq!(rest_after_loop(&t, 0), None);
+    }
+
+    /// M2.34: a voice the mixer reports ended on its pause sample is gone (the engine takes it
+    /// as the end and sends no resume); one ended after it is kept for the resume. Show cues and
+    /// previews alike: a kept show-cue record would block its cue's prime.
+    #[test]
+    fn an_end_on_the_pause_sample_frees_the_record_and_one_after_it_keeps_it() {
+        let cue = CueId(uuid::Uuid::from_u128(1));
+        for preview in [false, true] {
+            for (at, kept) in [(99, false), (100, false), (101, true)] {
+                let mut v = Voices::new();
+                let run = RunId(7);
+                let mut r = rec(cue, run, preview);
+                r.paused_at = Some(100);
+                v.insert(VoiceId(1), r);
+                let mut fx = Effects::default();
+                v.finished(VoiceId(1), at, FinishReason::EndOfStream, &mut fx);
+                let case = format!("preview {preview}, end on {at}");
+                assert_eq!(
+                    fx.feedback,
+                    vec![Input::ActionEnded { cue, run, at }],
+                    "{case}"
+                );
+                assert_eq!(v.live(), usize::from(kept), "{case}");
+                assert_eq!(v.is_idle(), !kept, "{case}");
+            }
+        }
     }
 }
