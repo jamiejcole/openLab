@@ -170,6 +170,150 @@ fn soak(seed: u64, total_secs: u64, checkpoint_secs: u64) -> Report {
     s.report
 }
 
+/// The cue the second doc plays over and over (an id the generated show never uses).
+const BESIDE: u128 = 900_000_001;
+
+/// The offline driver with a second doc open beside the show (M4.15e): it plays a cue of its
+/// own on output 2 over and over, and stops (Panic twice) whenever the operator panics, until
+/// the operator's next transport action, so the checkpoints still find everything quiet. Its
+/// broadcasts are left out of what the operator sees (untagged until M4.15f).
+struct TwoDocs {
+    inner: Offline,
+    beside: openlab_engine::control::DocId,
+    quiet: bool,
+    starts: u64,
+}
+
+impl TwoDocs {
+    fn new(built: &Built) -> Self {
+        let mut inner = Offline::new(built);
+        let path = show::wav(&show::dc(3 * u64::from(show::RATE) as usize, 0.125));
+        let mut ws = show::workspace(vec![show::audio(BESIDE, &path, 1)]);
+        ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(BESIDE));
+        let beside = inner
+            .s
+            .open_doc(openlab_engine::control::DocSource::Workspace(Box::new(ws)))
+            .unwrap();
+        inner.s.settle_media();
+        // What opening it said (a default mapping, its first playhead) is not the show's.
+        inner.s.take_outbound();
+        Self {
+            inner,
+            beside,
+            quiet: false,
+            starts: 0,
+        }
+    }
+
+    fn is_beside(c: &openlab_core::protocol::RuntimeChange) -> bool {
+        use openlab_core::protocol::RuntimeChange as C;
+        let beside = show::id(BESIDE);
+        match c {
+            C::CueState { cue, .. } | C::Problems { cue, .. } | C::Preview { cue, .. } => {
+                *cue == beside
+            }
+            C::Playhead { cue, .. } => *cue == Some(beside),
+            _ => false,
+        }
+    }
+}
+
+impl Driver for TwoDocs {
+    const START_SLACK: SampleTime = 0;
+
+    fn send(&mut self, message: ClientMessage) -> Vec<ServerMessage> {
+        if let ClientMessage::Transport { action, .. } = &message {
+            if matches!(action, openlab_core::protocol::TransportAction::Panic) {
+                for _ in 0..2 {
+                    self.inner
+                        .s
+                        .transport_doc(self.beside, openlab_core::protocol::TransportAction::Panic);
+                }
+                self.quiet = true;
+            } else {
+                self.quiet = false;
+            }
+        }
+        self.inner.send(message)
+    }
+
+    fn request_id(&mut self) -> RequestId {
+        self.inner.request_id()
+    }
+
+    fn take_outbound(&mut self) -> Vec<ServerMessage> {
+        let beside = show::id(BESIDE);
+        self.inner
+            .take_outbound()
+            .into_iter()
+            .filter(|m| match m {
+                ServerMessage::Runtime { changes, .. } => !changes.iter().all(Self::is_beside),
+                ServerMessage::Progress { items } => items.iter().all(|i| i.cue != beside),
+                ServerMessage::Meters { cues, .. } => cues.iter().all(|c| c.cue != beside),
+                _ => true,
+            })
+            .collect()
+    }
+
+    fn step(&mut self) {
+        if !self.quiet
+            && self
+                .inner
+                .s
+                .control()
+                .doc(self.beside)
+                .is_some_and(|d| d.engine().state(show::id(BESIDE)) == openlab_core::CueState::Idle)
+        {
+            self.inner.s.transport_doc(
+                self.beside,
+                openlab_core::protocol::TransportAction::Start {
+                    cue: show::id(BESIDE),
+                },
+            );
+            self.starts += 1;
+        }
+        self.inner.step();
+    }
+
+    fn with<T: Send + 'static>(&mut self, f: impl FnOnce(&mut Control) -> T + Send + 'static) -> T {
+        self.inner.with(f)
+    }
+
+    fn now(&self) -> SampleTime {
+        self.inner.now()
+    }
+
+    fn counts(&mut self) -> Counts {
+        self.inner.counts()
+    }
+
+    fn start_probe(&mut self) -> SampleTime {
+        self.inner.start_probe()
+    }
+
+    fn take_probe(&mut self) -> Vec<f32> {
+        self.inner.take_probe()
+    }
+}
+
+/// The soak with a second doc playing beside the show (M4.15e): the show keeps every
+/// invariant, sample-exact heartbeats included, and the second doc kept playing.
+#[test]
+fn ten_virtual_minutes_with_a_second_doc_playing_beside_keep_every_invariant() {
+    let built = build();
+    let mut s = Soak::new(TwoDocs::new(&built), &built, 0x0e11_ab5a);
+    s.run(600, 100, |_| {});
+    println!("{:#?}", s.report);
+    assert_realistic(&s.report, true);
+    assert!(s.report.checkpoints >= 6);
+    // Three seconds a play: it played through most of the run.
+    assert!(
+        s.d.starts > 60,
+        "the second doc played {} times",
+        s.d.starts
+    );
+}
+
 #[test]
 fn ten_virtual_minutes_of_a_show_keep_every_invariant() {
     let r = soak(0x0e11_ab5a, 600, 100);

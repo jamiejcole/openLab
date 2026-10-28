@@ -25,6 +25,27 @@ use openlab_core::{Cue, CueId, CueKind, SampleTime, SliceMarker, Workspace};
 use super::media::{MediaCatalog, PlanChanges, Ready};
 use super::plan::{PlanFailure, PlanSpec, cue_slices};
 
+/// Where the checks find a file's probe: the doc's catalog, or [`NoProbes`] for a workspace
+/// whose files are not probed yet (a doc being built off the control thread).
+pub trait Probes {
+    fn ready(&self, key: &str) -> Option<&Arc<Ready>>;
+}
+
+impl Probes for MediaCatalog {
+    fn ready(&self, key: &str) -> Option<&Arc<Ready>> {
+        MediaCatalog::ready(self, key)
+    }
+}
+
+/// No file is probed yet.
+pub struct NoProbes;
+
+impl Probes for NoProbes {
+    fn ready(&self, _: &str) -> Option<&Arc<Ready>> {
+        None
+    }
+}
+
 /// A cue's last plan check against a probe of its file.
 struct Entry {
     /// Held, not just compared by address: a freed probe's address can come back for another.
@@ -142,7 +163,7 @@ impl PlanChecks {
     pub fn check_all(
         &mut self,
         ws: &Workspace,
-        media: &MediaCatalog,
+        media: &impl Probes,
         rate: NonZeroU32,
     ) -> Vec<(CueId, String)> {
         self.walks += 1;
@@ -182,7 +203,7 @@ impl PlanChecks {
     }
 
     /// Brings what is kept about `id` in line with `cue` (`None`: gone) and its file's probe.
-    fn update(&mut self, id: CueId, cue: Option<&Cue>, media: &MediaCatalog, rate: NonZeroU32) {
+    fn update(&mut self, id: CueId, cue: Option<&Cue>, media: &impl Probes, rate: NonZeroU32) {
         self.examined += 1;
         let Some((key, spec)) = cue.and_then(audio_spec) else {
             self.forget(id);

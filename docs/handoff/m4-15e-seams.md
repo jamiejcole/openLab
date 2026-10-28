@@ -1,7 +1,20 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # M4.15e seams left by M4.15d
 
-M4.15d split `Control` into a shared `Engine` and one `Doc` (docs/control.md "Engine and docs"). With exactly one doc nothing below misbehaves. Each item is a place that assumes one doc; each is marked `// M4.15e:` (with the letter below) in `engine/crates/engine/src/control/`. M4.15e (and M4.15d1, which points here) must fix them before a second doc is installed.
+M4.15d split `Control` into a shared `Engine` and one `Doc` (docs/control.md "Engine and docs"). With exactly one doc nothing below misbehaves. Each item is a place that assumes one doc; each was marked `// M4.15e:` (with the letter below) in `engine/crates/engine/src/control/`. M4.15e (and M4.15d1, which points here) must fix them before a second doc is installed.
+
+**All resolved in M4.15e** (the `// M4.15e:` markers are gone; docs/control.md "Several docs" describes the result). Per item, how:
+
+- (a) `mapping_warned` is keyed `(DocId, WorkspaceId, PatchId, device)`; a doc's retain drops only its own stale entries (the one-doc rule unchanged), a closed doc's go at close.
+- (b) `Control::device_restored` sets the new lookahead in every doc's cue engine before `eng.block` changes; if one cannot, all are set back to the old block and one warning is logged.
+- (c) the unsignalled-change high-water mark is per doc (`Doc::seen_unsignalled`).
+- (d) `Control::begin_meter_round` reads the output and voice meters once per report period into a `MeterRound`; each doc's `reports` takes its cues' peaks, its patches' outputs and reconciles its started voices against the voices listed; `last_progress` and `meters_live` stay per doc.
+- (e) `Patches` keeps one free list and per-doc slot maps keyed `(DocId, PatchId)`; a slot belongs to one doc's patch, so that doc's `slots_in_use` is all that can hold it back (no cross-doc union is needed); `release_doc` frees a closed doc's slots, and docs waiting for a slot sync again on the next wake (`take_freed`).
+- (f) `Control::tick` runs the device poll, the mixer event drain (routed by `VoiceIds::owner`), the watch, the meter read, the probe watchdog, slot hand-outs, `check_stalled_read`, `poll_clears`, settings, health and status once per wake, and works with zero docs; device loss/return, health's resends and shutdown loop over the docs for their parts.
+- (g) `Inbox::Probe(DocId, _)` and `Inbox::Net(DocId, _)` are tagged and dropped for a closed doc. `Inbox::Doc` needs no tag: one read runs at a time engine-wide, its ticket names the pending request, and the request names its doc (`Target`), so an answer for a closed doc answers `no_workspace`. `Inbox::Watch` needs none either: the one watch's events name files, and `WatchShare` hands each to every doc that watches it.
+- (h) `Observe`'s cue states are keyed `(DocId, CueId)` and reset per doc; the crash hook gets every open doc's show path (in open order, `; `-separated; `None` when none is saved, as before).
+
+Placement moves, done: the probe pool is the engine's (`ProbePool`, 2 workers, jobs and answers tagged); the media watch is one `MediaWatch` behind `WatchShare` with per-file counts; `NetOut` stays per doc, with the look-up bound (`LookupThreads`) and the PB-10 flag shared by the engine.
 
 ## Single-doc assumptions
 

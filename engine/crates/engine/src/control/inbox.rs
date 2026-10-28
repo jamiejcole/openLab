@@ -25,19 +25,22 @@ pub enum Inbox {
         message: ClientMessage,
         reply: ReplyTx,
     },
-    // M4.15e: Probe, Net, Watch and Doc answers carry no DocId; route them by doc (seams
-    // note (g)).
-    /// A probe worker's answer (internal feedback).
-    Probe(ProbeAnswer),
+    /// A probe worker's answer (internal feedback), for the doc whose catalog asked: the loop
+    /// drops it if that doc has closed since.
+    Probe(super::DocId, ProbeAnswer),
     /// The device thread's answer (internal feedback, docs/control.md "Devices").
     Device(super::devices::DeviceAnswer),
     /// A network worker's answer: a message that could not be sent, a host look-up done
-    /// (internal feedback, docs/control.md "Network output").
-    Net(super::netout::NetAnswer),
+    /// (internal feedback, docs/control.md "Network output"), for the doc that sent it (dropped
+    /// if it has closed since).
+    Net(super::DocId, super::netout::NetAnswer),
     /// The document worker's answer to an open, revert or scan (internal feedback,
-    /// docs/control.md "Documents").
+    /// docs/control.md "Documents"). One read runs at a time engine-wide, so its ticket names
+    /// the request, and the request the doc.
     Doc(super::docs::DocAnswer),
-    /// The media watch's findings (internal feedback, docs/control.md "Media watch").
+    /// The media watch's findings (internal feedback, docs/control.md "Media watch"). One
+    /// watch serves every doc: its events name files, and the loop hands each to the docs that
+    /// watch it.
     Watch(super::watch::WatchAnswer),
     /// A log entry from another thread (the network layer), sent out like the loop's own.
     Log { level: LogLevel, message: String },

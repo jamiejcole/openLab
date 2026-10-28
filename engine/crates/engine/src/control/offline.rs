@@ -14,13 +14,15 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use openlab_audio::{Mixer, MixerConfig, OfflineRenderer};
-use openlab_core::protocol::{ClientMessage, RequestId, ServerMessage, TransportAction};
-use openlab_core::{SampleTime, Workspace};
+use openlab_core::protocol::{
+    ClientMessage, ErrorBody, ErrorCode, Outcome, RequestId, ServerMessage, TransportAction,
+};
+use openlab_core::{Hotkey, SampleTime, Workspace};
 
 use super::watch::{WatchAnswer, WatchBatch};
 use super::{
-    Backend, Control, ControlConfig, ControlError, Flow, Inbox, OUTBOUND_CAPACITY, OutboundRx,
-    outbound_channel, reply_channel,
+    Backend, Control, ControlConfig, ControlError, DocId, DocSource, Flow, Inbox,
+    OUTBOUND_CAPACITY, OutboundRx, outbound_channel, reply_channel,
 };
 
 /// How long the driver waits for a disk worker or a probe before giving up on a block (and
@@ -157,6 +159,75 @@ impl OfflineShow {
                 let _ = self.control.handle(msg);
             }
         }
+    }
+
+    /// Sends a client message to doc `doc` (as a connection bound to it would) and returns the
+    /// replies.
+    pub fn send_doc(&mut self, doc: DocId, message: ClientMessage) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle_doc(doc, message, &tx);
+        if self.control.docs_busy() > 0 {
+            self.settle_docs();
+        }
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// A transport action for doc `doc`, with a fresh request id.
+    pub fn transport_doc(&mut self, doc: DocId, action: TransportAction) -> Vec<ServerMessage> {
+        let id = self.request_id();
+        self.send_doc(doc, ClientMessage::Transport { id, action })
+    }
+
+    /// Opens another doc ([`Control::open_doc`]) and waits until it is installed (its probes
+    /// are not waited for: [`Self::settle_media`]). Its id, or the error it was refused with.
+    pub fn open_doc(&mut self, source: DocSource) -> Result<DocId, ErrorBody> {
+        let id = self.request_id();
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        self.control.open_doc(source, id, &tx);
+        if self.control.docs_busy() > 0 {
+            self.settle_docs();
+        }
+        let replies: Vec<ServerMessage> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let opened = self.control.take_opened();
+        for reply in replies {
+            if let ServerMessage::Result {
+                id: rid,
+                outcome: Outcome::Error(e),
+            } = reply
+                && rid == id
+            {
+                return Err(e);
+            }
+        }
+        opened
+            .into_iter()
+            .find(|(rid, _)| *rid == id)
+            .map(|(_, doc)| doc)
+            .ok_or_else(|| ErrorBody::new(ErrorCode::Internal, "no answer"))
+    }
+
+    /// Closes doc `doc` ([`Control::close_doc`]) and waits for the autosave removal it asks for.
+    pub fn close_doc(&mut self, doc: DocId, discard_changes: bool) -> Result<(), ErrorBody> {
+        self.pump_inbox();
+        let result = self.control.close_doc(doc, discard_changes);
+        if self.control.docs_busy() > 0 {
+            self.settle_docs();
+        }
+        result
+    }
+
+    /// App-scope Panic ([`Control::panic_all`]).
+    pub fn panic_all(&mut self) {
+        self.pump_inbox();
+        self.control.panic_all();
+    }
+
+    /// App-scope hotkey ([`Control::hotkey`]).
+    pub fn hotkey(&mut self, hotkey: &Hotkey) {
+        self.pump_inbox();
+        self.control.hotkey(hotkey);
     }
 
     /// A transport action with a fresh request id.

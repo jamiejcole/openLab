@@ -474,6 +474,13 @@ impl Param {
         self.ramp = None;
     }
 
+    /// Ends a ramp at once on its target (nothing has been heard through it yet).
+    pub(crate) fn finish(&mut self) {
+        if let Some(r) = self.ramp.take() {
+            self.value = r.to;
+        }
+    }
+
     /// Ramps from the current value to `to`, starting at the next sample.
     pub(crate) fn ramp_to(&mut self, to: f32, frames: u64, curve: Curve) {
         if frames == 0 {

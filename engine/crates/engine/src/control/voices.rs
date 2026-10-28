@@ -48,6 +48,8 @@ pub struct Effects {
 
 /// The environment voice actions are carried out in.
 pub struct Env<'a> {
+    /// The doc the voices belong to: new ids are recorded as its, and patch slots are its.
+    pub doc: super::DocId,
     pub ws: &'a Workspace,
     pub media: &'a MediaCatalog,
     pub streamer: &'a mut DiskStreamer,
@@ -300,7 +302,7 @@ impl Voices {
 
     fn load(&mut self, cue: CueId, run: RunId, offset: u64, env: &mut Env<'_>, fx: &mut Effects) {
         self.release(run);
-        let id = env.ids.next();
+        let id = env.ids.next(env.doc);
         let prepared = match self.prepare(cue, offset, env, fx) {
             Ok(p) => Some(p),
             Err(PrepError::Pending) => None,
@@ -353,7 +355,7 @@ impl Voices {
             }
             _ => {
                 self.release(run);
-                let id = env.ids.next();
+                let id = env.ids.next(env.doc);
                 let prepared = if preview {
                     None
                 } else {
@@ -591,7 +593,7 @@ impl Voices {
         let Some(old) = self.by_run.get(&paused).copied() else {
             return;
         };
-        let new = env.ids.next();
+        let new = env.ids.next(env.doc);
         let Some(mut r) = self.recs.remove(&old) else {
             return;
         };
@@ -816,10 +818,12 @@ impl Voices {
         usable.then_some((prime.prepared, prime.total))
     }
 
-    /// Keeps exactly `wanted` primed (in order, at most `max`): new ones are prepared, ones no
-    /// longer wanted or out of date are released.
-    pub fn prime(&mut self, wanted: &[CueId], max: usize, env: &mut Env<'_>) {
+    /// Keeps exactly `wanted` primed (in order, most urgent first, at most `max`): new ones are
+    /// prepared, at most `burst` of them; ones no longer wanted or out of date are released.
+    /// Returns whether the burst limit left some unmade.
+    pub fn prime(&mut self, wanted: &[CueId], max: usize, burst: usize, env: &mut Env<'_>) -> bool {
         let wanted: Vec<CueId> = wanted.iter().copied().take(max).collect();
+        let mut made = 0;
         self.primes
             .retain(|cue, p| wanted.contains(cue) && sig_of(env, *cue).as_ref() == Some(&p.sig));
         for cue in wanted {
@@ -835,9 +839,13 @@ impl Voices {
             let Some(sig) = sig_of(env, cue) else {
                 continue;
             };
+            if made >= burst {
+                return true;
+            }
             // A prime that cannot be made now (probe pending or failed) is tried again later.
             let mut quiet = Effects::default();
             if let Ok((prepared, total)) = self.prepare(cue, 0, env, &mut quiet) {
+                made += 1;
                 self.primes.insert(
                     cue,
                     Prime {
@@ -848,6 +856,7 @@ impl Voices {
                 );
             }
         }
+        false
     }
 
     /// Checks the streams of live voices for failures: each failed run is reported once.
@@ -1012,6 +1021,12 @@ impl Voices {
     /// Ids that left since the last meter read, with their cues. Cleared by the caller's read.
     pub fn take_gone(&mut self) -> Vec<(VoiceId, CueId)> {
         std::mem::take(&mut self.gone)
+    }
+
+    /// Whether a mixer event of `voice` could still mean anything here (a live record or an
+    /// alias of one): an id this returns false for is never looked up again.
+    pub fn knows(&self, voice: VoiceId) -> bool {
+        self.resolve(voice).is_some()
     }
 
     /// The cue a mixer voice id belongs to (current or alias).
@@ -1429,8 +1444,8 @@ fn voice_start(
     else {
         return None;
     };
-    let mixer_patch = env.patches.mixer_patch(*patch)?;
-    let patch_outputs = env.patches.outputs(*patch);
+    let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
+    let patch_outputs = env.patches.outputs(env.doc, *patch);
     let (mut vs, handle) = prepared.into_voice(id, env.cue_outputs);
     vs.patch = mixer_patch;
     vs.gain = db_to_gain(levels.master_db);
