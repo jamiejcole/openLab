@@ -61,6 +61,7 @@ fn prepared(ws: &Workspace, command: Command) -> Result<Command, CommandError> {
         &MediaPaths {
             show_dir: None,
             style: PathStyle::Posix,
+            same_file: &|_, _| true,
         },
         &mut || {
             next += 1;

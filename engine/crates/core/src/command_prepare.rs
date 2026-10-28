@@ -9,28 +9,34 @@
 
 use crate::command::{Command, CommandError, CueProperty, prepare_paste};
 use crate::cue::{Cue, CueKind, MediaRef};
-use crate::media_path::{PathStyle, portable_ref};
+use crate::media_path::{PathStyle, portable_ref_checked};
 use crate::model::{CueId, Workspace};
 use crate::tree::walk_mut;
 
 /// How media paths are stored in this workspace.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct MediaPaths<'a> {
     /// The show file's folder; `None` for a show never saved, whose paths stay as given (made
     /// portable only).
     pub show_dir: Option<&'a str>,
     /// How the host spells paths.
     pub style: PathStyle,
+    /// Whether two absolute paths name the same file. A path inside the show folder is stored
+    /// relative only when this says the relative result is the file the client sent: core's
+    /// comparison ignores case and collapses `..` lexically, which a case-sensitive volume or a
+    /// symlink can contradict. Core has no file system, so the engine answers (`as_sent`, then
+    /// the path the relative result resolves to). Unsure must be `false`.
+    pub same_file: &'a dyn Fn(&str, &str) -> bool,
 }
 
 impl MediaPaths<'_> {
     fn store(&self, media: &MediaRef) -> MediaRef {
-        // An empty path is "no file yet" to the cue engine; `portable_ref` would turn it into the
+        // An empty path is "no file yet" to the cue engine; `portable_ref_checked` would turn it into the
         // show folder.
         if media.as_str().is_empty() {
             return media.clone();
         }
-        portable_ref(media.as_str(), self.show_dir, self.style)
+        portable_ref_checked(media.as_str(), self.show_dir, self.style, self.same_file)
     }
 
     fn store_cues(&self, cues: &mut [Cue]) {

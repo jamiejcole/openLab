@@ -181,18 +181,45 @@ pub fn resolve(media: &str, dir: &str) -> String {
 
 /// Builds the [`MediaRef`] for a file the user picked: forward slashes (also for a native
 /// Windows relative path), NFC, relative to `show_dir` when inside it and absolute otherwise.
-/// A relative `native` is taken as relative to the show folder. With no usable `show_dir` (an
-/// unsaved workspace) the path is only normalised.
+/// A path that is already relative is kept as written (apart from slashes and NFC): it may
+/// climb out of the show folder on purpose (`../Audio/x.wav`), and the file format reads such
+/// paths as written. With no usable `show_dir` (an unsaved workspace) an absolute path is only
+/// normalised.
+///
+/// This trusts the lexical comparison; [`portable_ref_checked`] is the form that asks the file
+/// system.
 pub fn portable_ref(native: &str, show_dir: Option<&str>, style: PathStyle) -> MediaRef {
+    portable_ref_checked(native, show_dir, style, &|_, _| true)
+}
+
+/// [`portable_ref`] that stores a relative path only when `same_file` confirms it names the file
+/// the client sent. The comparison is case-insensitive and collapses `..` lexically, which is
+/// wrong on a case-sensitive volume and through a symlink; core has no file system, so the caller
+/// answers. `same_file(as_sent, candidate)` gets the absolute path as the client wrote it (NFC,
+/// forward slashes, `..` not collapsed) and the absolute path the relative result would resolve
+/// to. When it says no, the path is kept as sent.
+pub fn portable_ref_checked(
+    native: &str,
+    show_dir: Option<&str>,
+    style: PathStyle,
+    same_file: &dyn Fn(&str, &str) -> bool,
+) -> MediaRef {
     let path = normalize_nfc(&to_portable(native, style));
+    if !is_absolute(&path) {
+        return MediaRef::new(path);
+    }
     let Some(dir) = show_dir
         .map(|d| normalize_nfc(&to_portable(d, style)))
         .filter(|d| is_absolute(d))
     else {
         return MediaRef::new(lexical_normalize(&path));
     };
-    let absolute = resolve(&path, &dir);
-    MediaRef::new(relativize(&absolute, &dir).unwrap_or(absolute))
+    let absolute = lexical_normalize(&path);
+    match relativize(&absolute, &dir) {
+        Some(relative) if same_file(&path, &resolve(&relative, &dir)) => MediaRef::new(relative),
+        Some(_) => MediaRef::new(path),
+        None => MediaRef::new(absolute),
+    }
 }
 
 #[cfg(test)]
@@ -263,11 +290,49 @@ mod tests {
             "media/b.wav"
         );
         assert_eq!(r("/Show/../Other/b.wav", Some("/Show"), P), "/Other/b.wav");
-        // A relative path climbing out of the show folder becomes absolute.
-        assert_eq!(r("../Lib/b.wav", Some("/Show"), P), "/Lib/b.wav");
         assert_eq!(lexical_normalize("/../../a"), "/a");
         assert_eq!(lexical_normalize("../../a/../b"), "../../b");
         assert_eq!(lexical_normalize("C:/a/../../b"), "C:/b");
+    }
+
+    #[test]
+    fn a_relative_path_is_kept_as_written() {
+        // It may leave the show folder on purpose (Show/ and Audio/ side by side).
+        assert_eq!(r("../Audio/b.wav", Some("/Show"), P), "../Audio/b.wav");
+        assert_eq!(r("../Audio/b.wav", None, P), "../Audio/b.wav");
+        assert_eq!(r("a/./b.wav", Some("/Show"), P), "a/./b.wav");
+        assert_eq!(
+            r(r"..\Audio\b.wav", Some(r"C:\Show"), W),
+            "../Audio/b.wav"
+        );
+    }
+
+    #[test]
+    fn a_relative_result_needs_the_file_system_to_agree() {
+        let check = |as_sent: &str, dir: &str, answer: bool| {
+            let seen = std::cell::RefCell::new(None);
+            let out = portable_ref_checked(as_sent, Some(dir), P, &|a, b| {
+                *seen.borrow_mut() = Some((a.to_owned(), b.to_owned()));
+                answer
+            });
+            (out.as_str().to_owned(), seen.into_inner())
+        };
+        let (out, seen) = check("/Show/media/link/../x.wav", "/Show", true);
+        assert_eq!(out, "media/x.wav");
+        // The checker sees the path as sent, not the collapsed one.
+        assert_eq!(
+            seen,
+            Some((
+                "/Show/media/link/../x.wav".to_owned(),
+                "/Show/media/x.wav".to_owned()
+            ))
+        );
+        // Refused: the path stays as the client wrote it.
+        let (out, _) = check("/Show/media/link/../x.wav", "/Show", false);
+        assert_eq!(out, "/Show/media/link/../x.wav");
+        // A path outside the folder is never offered to the checker.
+        let (out, seen) = check("/Other/x.wav", "/Show", false);
+        assert_eq!((out.as_str(), seen), ("/Other/x.wav", None));
     }
 
     #[test]

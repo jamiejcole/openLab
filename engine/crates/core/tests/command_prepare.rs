@@ -44,6 +44,7 @@ fn prepared(command: Command, dir: Option<&str>, style: PathStyle) -> Command {
             &MediaPaths {
                 show_dir: dir,
                 style,
+                same_file: &|_, _| true,
             },
             &mut || {
                 next += 1;
@@ -226,6 +227,7 @@ fn a_prepared_paste_applies_and_an_unprepared_one_is_refused() {
             &MediaPaths {
                 show_dir: None,
                 style: POSIX,
+                same_file: &|_, _| true,
             },
             &mut || cue_id(77),
         )
@@ -277,6 +279,7 @@ fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
             &MediaPaths {
                 show_dir: None,
                 style: POSIX,
+                same_file: &|_, _| true,
             },
             &mut || {
                 next += 1;
@@ -312,4 +315,69 @@ fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
     assert_eq!(kids[1].number, None, "repeated inside the clipboard");
     assert_eq!(kids[2].number, None, "empty");
     assert_eq!(cues[1].number.as_deref(), Some("8"));
+}
+
+/// `docs/file-format.md` 4.3: a path already in a file is read as written. Copying such a cue
+/// must not turn `../Audio/x.wav` into an absolute path that breaks when the folders move.
+#[test]
+fn a_relative_path_leaving_the_show_folder_is_kept_when_pasted_or_edited() {
+    let paste = Command::PasteClipboard {
+        at: pos(),
+        cues: vec![audio_at(1, "../Audio/x.wav")],
+    };
+    let Command::Paste { cues, .. } = prepared(paste, Some("/Show"), POSIX) else {
+        panic!("paste");
+    };
+    assert_eq!(media(&cues[0]), "../Audio/x.wav");
+    let edit = Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Kind {
+            value: audio_at(1, "../Audio/x.wav").kind,
+        },
+    };
+    let Command::SetCueProperty {
+        property: CueProperty::Kind { value },
+        ..
+    } = prepared(edit, Some("/Show"), POSIX)
+    else {
+        panic!("kind");
+    };
+    let CueKind::Audio { media: Some(m), .. } = value else {
+        panic!("audio");
+    };
+    assert_eq!(m.as_str(), "../Audio/x.wav");
+}
+
+/// A case-sensitive volume can hold `/Vol/Show` and `/Vol/show`; core's case-insensitive match
+/// must not store a relative path the file system says names another file.
+#[test]
+fn a_path_the_file_system_does_not_confirm_is_not_made_relative() {
+    let command = Command::AddCue {
+        at: pos(),
+        cue: audio_at(1, "/Vol/show/x.wav"),
+        auto_number: true,
+    };
+    let seen = std::cell::RefCell::new(Vec::new());
+    let Command::AddCue { cue, .. } = command
+        .prepare(
+            &workspace(vec![]),
+            &MediaPaths {
+                show_dir: Some("/Vol/Show"),
+                style: POSIX,
+                same_file: &|a, b| {
+                    seen.borrow_mut().push((a.to_owned(), b.to_owned()));
+                    false
+                },
+            },
+            &mut || cue_id(1),
+        )
+        .unwrap()
+    else {
+        panic!("add");
+    };
+    assert_eq!(media(&cue), "/Vol/show/x.wav");
+    assert_eq!(
+        seen.into_inner(),
+        [("/Vol/show/x.wav".to_owned(), "/Vol/Show/x.wav".to_owned())]
+    );
 }
