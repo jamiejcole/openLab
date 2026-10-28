@@ -294,6 +294,41 @@ struct NoDoc {
     engine: CueEngine,
 }
 
+/// New primes one doc makes per pass while the pool is contended: a doc taking over another's
+/// share fills its rings a few at a time, not in one disk burst beside a playing show.
+const PRIME_BURST: usize = 4;
+
+/// A doc's use of the engine's prime pool.
+#[derive(Clone, Copy, Debug, Default)]
+struct PrimeUse {
+    /// Cues it would keep primed (at most `max_primes`).
+    want: usize,
+    /// Primes it holds.
+    held: usize,
+    /// The allowance its last pass kept to: below `want`, it takes more when the allowance
+    /// grows (another doc let go or closed).
+    cap: usize,
+}
+
+/// `pool` shared out max-min fairly between `wants` (in the same order): a want that fits its
+/// fair share is met, and what it leaves goes to the larger ones. The shares sum to at most
+/// `pool`, and to the sum of the wants when they fit.
+fn share_out(pool: usize, wants: &[usize]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..wants.len()).collect();
+    order.sort_by_key(|&i| wants.get(i).copied().unwrap_or(0));
+    let mut shares = vec![0; wants.len()];
+    let mut left = pool;
+    for (k, &i) in order.iter().enumerate() {
+        let fair = left / (wants.len() - k);
+        let take = wants.get(i).copied().unwrap_or(0).min(fair);
+        if let Some(s) = shares.get_mut(i) {
+            *s = take;
+        }
+        left -= take;
+    }
+    shares
+}
+
 /// One meter read of this wake, shared by every doc's report (seams note (d): read once,
 /// handed out per doc).
 #[derive(Clone, Copy)]
@@ -368,8 +403,10 @@ struct Engine {
     inbox: Sender<Inbox>,
     /// The next doc's id; never reused.
     next_doc: u64,
-    /// Docs open (the primes' share of the stream permits is split between them).
+    /// Docs open (log lines name their doc while there are several).
     open_docs: usize,
+    /// Each doc's use of the prime pool as of its last priming pass.
+    primes: std::collections::BTreeMap<DocId, PrimeUse>,
     /// Docs installed by [`Control::open_doc`] and the request each answered (until taken).
     opened: Vec<(openlab_core::protocol::RequestId, DocId)>,
 }
@@ -518,6 +555,7 @@ impl Control {
             inbox,
             next_doc: 0,
             open_docs: 1,
+            primes: std::collections::BTreeMap::new(),
             opened: Vec::new(),
         };
         if let Some(e) = writer_error {
@@ -696,6 +734,7 @@ impl Control {
         self.begin_meter_round();
         self.each_doc(|cx| cx.tick());
         self.end_meter_round();
+        self.balance_primes();
         self.follow_key_changes();
         self.probe_watchdog();
         self.hand_out_freed_slots();
@@ -765,6 +804,24 @@ impl Control {
         }
         if changed {
             self.mark_warnings_dirty();
+        }
+    }
+
+    /// The docs' prime allowances follow each other's wants: a doc holding more than it may
+    /// now lets go (least urgent first, at its next pass), and one held short while another
+    /// let go takes its share up. A doc's wants change only at its own passes, so an idle
+    /// doc opening beside a busy one makes no doc re-prime.
+    fn balance_primes(&mut self) {
+        for doc in &mut self.docs {
+            let Some(usage) = self.eng.primes.get(&doc.id).copied() else {
+                continue;
+            };
+            let allowed = self.eng.prime_allowance(doc.id);
+            // Not on a mere shortfall of primes (a probe pending, a file missing): only a
+            // change of allowance, so an unchanged show costs no priming passes.
+            if usage.held > allowed || (usage.cap < usage.want && allowed > usage.cap) {
+                doc.primes_dirty = true;
+            }
         }
     }
 
@@ -964,17 +1021,34 @@ impl Engine {
         Some(DocId(id))
     }
 
-    /// Streams one doc may keep primed (ARCHITECTURE §3.5). The disk streamer's open-stream
-    /// limit is the engine's, and a start that finds no permit fails (`stream_failed`), so
-    /// primes, which are only a head start, never hold more than half the permits, split
-    /// evenly between the open docs (M4.15e review M3): another doc's idle primes can never
-    /// refuse a start. One doc with the defaults keeps its 64.
-    fn prime_cap(&self) -> usize {
-        let engine = self
-            .config
+    /// Primed streams the whole engine may hold (ARCHITECTURE §3.5): `max_primes`, and never
+    /// more than half the disk streamer's open-stream limit, which is the engine's. A start
+    /// that finds no permit fails (`stream_failed`), and primes are only a head start, so the
+    /// other half is always left for starts (M4.15e review M3). 64 with the defaults.
+    fn prime_pool(&self) -> usize {
+        self.config
             .max_primes
-            .min(self.config.streamer.max_streams / 2);
-        engine / self.open_docs.max(1)
+            .min(self.config.streamer.max_streams / 2)
+    }
+
+    /// What doc `doc` may hold of the prime pool now, by demand (review M-C): every doc's
+    /// wants as of its last priming pass, shared out max-min fairly ([`share_out`]). While the
+    /// wants fit the pool each doc gets all it wants, so an idle doc beside a busy show takes
+    /// nothing from it; only when they do not fit is each held to its fair share.
+    fn prime_allowance(&self, doc: DocId) -> usize {
+        let pool = self.prime_pool();
+        let wants: Vec<usize> = self.primes.values().map(|u| u.want).collect();
+        let shares = share_out(pool, &wants);
+        self.primes
+            .keys()
+            .zip(shares)
+            .find(|(d, _)| **d == doc)
+            .map_or(pool, |(_, s)| s)
+    }
+
+    /// Whether the docs' prime wants together exceed the pool.
+    fn primes_contended(&self) -> bool {
+        self.primes.values().map(|u| u.want).sum::<usize>() > self.prime_pool()
     }
 
     /// PB-10: whether the network output override is on.
@@ -2018,7 +2092,17 @@ impl DocCx<'_> {
             .collect();
         self.doc.media.prioritize(keys.iter().map(String::as_str));
         let floor = self.stop_floor();
-        let cap = self.eng.prime_cap();
+        let want = wanted.len().min(self.eng.config.max_primes);
+        let id = self.doc.id;
+        let entry = self.eng.primes.entry(id).or_default();
+        entry.want = want;
+        let cap = self.eng.prime_allowance(id);
+        // Fills only a few new rings per pass while docs share a short pool.
+        let burst = if self.eng.primes_contended() {
+            PRIME_BURST
+        } else {
+            usize::MAX
+        };
         let mut env = Env {
             doc: self.doc.id,
             ws: &self.doc.ws,
@@ -2031,7 +2115,15 @@ impl DocCx<'_> {
             now,
             floor,
         };
-        self.doc.voices.prime(&wanted, cap, &mut env);
+        let cut = self.doc.voices.prime(&wanted, cap, burst, &mut env);
+        let held = self.doc.voices.primed().count();
+        let entry = self.eng.primes.entry(id).or_default();
+        entry.held = held;
+        entry.cap = cap;
+        if cut {
+            // The rest of the burst-limited fill comes on the next passes.
+            self.doc.primes_dirty = true;
+        }
     }
 
     /// Progress and meters, each at most [`REPORT_HZ`] in sample time; reconciliation of lost

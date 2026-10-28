@@ -326,8 +326,9 @@ struct Lookup {
     failing: bool,
 }
 
-/// Look-up threads alive in the whole engine, every doc's (at most [`MAX_LOOKUPS`]). A thread
-/// counts itself off when it ends, whether or not its doc is still open.
+/// Look-up slots taken in the whole engine, every doc's (at most [`MAX_LOOKUPS`]). A look-up
+/// holds its slot until its doc has taken its answer, as within one doc; a closed doc's
+/// look-ups hold theirs until their thread ends (they may hang).
 #[derive(Clone, Default)]
 pub struct LookupThreads(Arc<AtomicUsize>);
 
@@ -337,12 +338,33 @@ impl LookupThreads {
     }
 }
 
-/// Counts a look-up thread off when it ends (a panic in the resolver included).
-struct Alive(Arc<AtomicUsize>);
+/// One look-up's slot, given back exactly once: by its doc when the answer is taken, or, once
+/// the doc is gone, by the thread when it ends (whichever of the doc's drop and the thread's
+/// end comes second sees the other's flag).
+struct Slot {
+    count: Arc<AtomicUsize>,
+    given_back: AtomicBool,
+    ended: AtomicBool,
+    orphaned: AtomicBool,
+}
 
-impl Drop for Alive {
+impl Slot {
+    fn give_back(&self) {
+        if !self.given_back.swap(true, Ordering::SeqCst) {
+            self.count.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Marks a look-up thread ended (a panic in the resolver included).
+struct Ended(Arc<Slot>);
+
+impl Drop for Ended {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.ended.store(true, Ordering::SeqCst);
+        if self.0.orphaned.load(Ordering::SeqCst) {
+            self.0.give_back();
+        }
     }
 }
 
@@ -358,8 +380,10 @@ pub struct NetOut {
     lookups: HashMap<NetworkPatchId, Lookup>,
     /// This doc's look-up threads that have not answered yet, by ticket.
     running: HashMap<u64, (String, u16)>,
-    /// Every doc's live look-up threads: the bound on threads.
+    /// Every doc's look-up slots taken: the bound on threads.
     alive: LookupThreads,
+    /// This doc's slots, by ticket (as `running`).
+    slots: HashMap<u64, Arc<Slot>>,
     limit_hit: bool,
     limit_note: bool,
     /// Log lines for the caller ([`NetOut::take_notes`]).
@@ -369,6 +393,18 @@ pub struct NetOut {
     /// failure, so zero means every answer is already in the inbox (the offline driver waits
     /// on it).
     outstanding: Arc<AtomicUsize>,
+}
+
+impl Drop for NetOut {
+    /// A closed doc's look-ups in flight keep their slots until their threads end.
+    fn drop(&mut self) {
+        for slot in self.slots.values() {
+            slot.orphaned.store(true, Ordering::SeqCst);
+            if slot.ended.load(Ordering::SeqCst) {
+                slot.give_back();
+            }
+        }
+    }
 }
 
 /// Reachability changes for `Input::NetworkAvailability`.
@@ -408,6 +444,7 @@ impl NetOut {
             lookups: HashMap::new(),
             running: HashMap::new(),
             alive,
+            slots: HashMap::new(),
             limit_hit: false,
             limit_note: false,
             notes: Vec::new(),
@@ -534,6 +571,9 @@ impl NetOut {
         };
         // The thread is gone, whatever it was for: its slot is free again.
         self.running.remove(&ticket);
+        if let Some(slot) = self.slots.remove(&ticket) {
+            slot.give_back();
+        }
         let retry = now.saturating_add(self.samples(RETRY_AFTER));
         let refresh = now.saturating_add(self.samples(REFRESH_AFTER));
         let mut out = Reports::new();
@@ -708,11 +748,17 @@ impl NetOut {
             let name = host.clone();
             let doc = self.doc;
             self.alive.0.fetch_add(1, Ordering::SeqCst);
-            let alive = Alive(Arc::clone(&self.alive.0));
+            let slot = Arc::new(Slot {
+                count: Arc::clone(&self.alive.0),
+                given_back: AtomicBool::new(false),
+                ended: AtomicBool::new(false),
+                orphaned: AtomicBool::new(false),
+            });
+            let ended = Ended(Arc::clone(&slot));
             let spawned = thread::Builder::new()
                 .name("openlab-net-lookup".into())
                 .spawn(move || {
-                    let _alive = alive;
+                    let _ended = ended;
                     let result = transport.resolve(&name, port);
                     let _ = inbox.send(Inbox::Net(
                         doc,
@@ -723,14 +769,15 @@ impl NetOut {
                         },
                     ));
                 });
-            // A thread that did not start counted itself off as the closure was dropped.
             match spawned {
                 Ok(_) => {
                     l.phase = Phase::InFlight { ticket, since: now };
                     l.last_start = Some(now);
                     self.running.insert(ticket, (host, port));
+                    self.slots.insert(ticket, slot);
                 }
                 Err(_) => {
+                    slot.give_back();
                     l.phase = Phase::Idle {
                         retry_at: Some(retry_at),
                     };
@@ -1509,11 +1556,19 @@ mod tests {
         a.disabled.store(true, Ordering::SeqCst);
         assert!(b.disabled());
         hang.release();
-        // Each answer is tagged with the doc that asked.
+        // Each answer is tagged with the doc that asked; a slot is free once its doc took it,
+        // and B's waiting names take the free slots as answers come in.
         let mut tagged = Vec::new();
-        for _ in 0..MAX_LOOKUPS {
+        while a.running.len() + b.running.len() > 0 {
             match rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap() {
-                Inbox::Net(doc, NetAnswer::Lookup { patch, .. }) => tagged.push((doc, patch)),
+                Inbox::Net(doc, answer) => {
+                    if let NetAnswer::Lookup { patch, .. } = &answer {
+                        tagged.push((doc, *patch));
+                    }
+                    let net = if doc == DocId(0) { &mut a } else { &mut b };
+                    net.answer(answer, 1);
+                    assert!(alive.alive() <= MAX_LOOKUPS);
+                }
                 other => panic!("{other:?}"),
             }
         }
@@ -1523,9 +1578,32 @@ mod tests {
                 .iter()
                 .all(|(d, p)| (*d == DocId(0)) == (p.0.as_u128() < 20))
         );
+        assert_eq!(alive.alive(), 0);
+        // A doc closed with a look-up hung: the slot stays taken until the thread ends.
+        let held = Arc::new(Hang::default());
+        let mut c = NetOut::shared(
+            NetTransport(Arc::clone(&held) as Arc<dyn Transport>),
+            tx.clone(),
+            1000,
+            DocId(2),
+            Arc::clone(&disabled),
+            alive.clone(),
+        );
+        c.sync(&[patch(99, "late.local")], false, 0);
+        assert_eq!(alive.alive(), 1);
+        drop(c);
+        assert_eq!(
+            alive.alive(),
+            1,
+            "a hung thread of a closed doc still counts"
+        );
+        held.release();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while alive.alive() > 0 {
-            assert!(std::time::Instant::now() < deadline, "threads never ended");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thread never ended"
+            );
             std::thread::yield_now();
         }
     }
