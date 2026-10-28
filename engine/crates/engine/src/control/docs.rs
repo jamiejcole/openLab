@@ -10,6 +10,16 @@
 //! Replacing the workspace (new, open, revert) stops every running cue first and keeps
 //! `revision` and `runtime_seq` rising, then sends the new `snapshot` to the requester and,
 //! through the outbound channel, to every other client.
+//!
+//! Several docs (M4.15e; ARCHITECTURE §3.1): [`Control::open_doc`] adds a doc. The document
+//! worker reads the file (or takes the workspace given) and builds everything the doc needs off
+//! the control thread ([`DocParts`]: the workspace, its cue engine with its static problems
+//! worked out, the media catalog's cue index), so installing it on the control thread is an
+//! insert, the probe jobs and the slot commands. [`Control::close_doc`] stops that doc's cues
+//! (Panic twice, a hard stop), frees its mixer slots, clears its autosave when its edits are
+//! discarded, and hands the doc to the worker to be dropped there (its preloaded media can be
+//! hundreds of megabytes). One read runs at a time engine-wide, and at most [`MAX_DOCS`] docs
+//! are open; either limit is `command_refused`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -26,13 +36,18 @@ use openlab_core::protocol::{
     Request, RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
-    CueListId, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES, MediaRef, PatchId, PathStyle,
-    Relink, Workspace, WorkspaceId, audio_media, autosave_due, comparison_key, is_absolute,
-    load_show, portable_ref, relink_command, to_portable,
+    Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
+    MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
+    comparison_key, is_absolute, load_show, portable_ref, relink_command, to_portable,
 };
 
+use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
-use super::{Control, ControlConfig, ControlError, Doc, DocCx, Inbox, ReplyTx, Scope, notice, ok};
+use super::media::{Indexed, MediaCatalog, index_workspace};
+use super::{
+    Control, ControlConfig, ControlError, Doc, DocCx, DocId, Engine, Inbox, MAX_DOCS, ReplyTx,
+    Scope, notice, ok,
+};
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
     check_recovery, media_path, read_text, scan_recovery,
@@ -137,11 +152,71 @@ pub struct Loaded {
     clear_autosave: bool,
 }
 
+/// Everything a doc being opened needs, built on the document worker (ARCHITECTURE §3.1).
+pub struct DocParts {
+    loaded: Loaded,
+    /// A cue engine that has followed the workspace once (its static problems and playheads
+    /// worked out) ...
+    engine: CueEngine,
+    /// ... and what it said doing so, carried out when the doc is installed.
+    actions: Vec<Action>,
+    /// The media catalog's reading of the workspace.
+    indexed: Indexed,
+    /// The slice-plan checks, every audio cue walked once (no file is probed yet).
+    checks: PlanChecks,
+}
+
+impl fmt::Debug for DocParts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DocParts")
+            .field("loaded", &self.loaded)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Builds a doc's parts from a workspace read (on the document worker).
+fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
+    let mut engine = CueEngine::new(config);
+    engine.model_changed();
+    // Sample 0: nothing runs yet, so what this decides (problems, playheads) does not depend
+    // on the time; the control thread hands the engine the real time from its next call on.
+    let actions = engine.handle(&loaded.workspace, Input::Tick, 0);
+    let indexed = index_workspace(&loaded.workspace);
+    let mut checks = PlanChecks::default();
+    checks.check_all(&loaded.workspace, &NoProbes, config.sample_rate());
+    DocParts {
+        loaded,
+        engine,
+        actions,
+        indexed,
+        checks,
+    }
+}
+
+/// What a doc opened with [`Control::open_doc`] starts from.
+#[derive(Debug)]
+pub enum DocSource {
+    /// A new, empty workspace (as `new`).
+    New,
+    /// A show file (as `open`, recovery offer and choice included).
+    Open {
+        path: PathBuf,
+        recovery: Option<RecoveryChoice>,
+    },
+    /// A workspace in memory, never saved (tests; a template later).
+    Workspace(Box<Workspace>),
+}
+
 #[derive(Debug)]
 pub enum DocAnswer {
     Loaded {
         ticket: u64,
         loaded: Box<Loaded>,
+    },
+    /// A doc to add, built off the control thread.
+    Built {
+        ticket: u64,
+        parts: Box<DocParts>,
     },
     /// An autosave newer than the show file exists and the request did not say what to do.
     Offer {
@@ -165,6 +240,7 @@ impl DocAnswer {
     fn ticket(&self) -> u64 {
         match self {
             Self::Loaded { ticket, .. }
+            | Self::Built { ticket, .. }
             | Self::Offer { ticket, .. }
             | Self::Entries { ticket, .. }
             | Self::Failed { ticket, .. } => *ticket,
@@ -177,7 +253,17 @@ enum DocJob {
         ticket: u64,
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
+        /// A doc to add: its parts are built from what is read, with this cue engine config.
+        build: Option<EngineConfig>,
     },
+    /// A doc to add from a workspace already in hand.
+    Build {
+        ticket: u64,
+        loaded: Box<Loaded>,
+        config: EngineConfig,
+    },
+    /// A closed doc, dropped here rather than on the control thread.
+    Discard(Box<dyn Send>),
     Revert {
         ticket: u64,
         path: PathBuf,
@@ -193,8 +279,18 @@ enum DocJob {
     },
 }
 
+/// Which doc a document request is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    /// An open doc (its workspace replaced, or a scan it asked for).
+    Doc(DocId),
+    /// A doc to add ([`Control::open_doc`]).
+    New,
+}
+
 /// What the request being worked on by the document worker is.
 struct PendingDoc {
+    target: Target,
     ticket: u64,
     id: RequestId,
     reply: ReplyTx,
@@ -250,6 +346,8 @@ pub(super) struct Docs {
     pending: Option<PendingDoc>,
     /// Autosave removals in flight: they outlive the workspace they were for.
     clears: Vec<ClearRx>,
+    /// Saves of docs closed while they were being written: answered when they finish.
+    orphans: Vec<PendingSave>,
 }
 
 /// One workspace's file state: its saves and autosave in flight, autosave pacing, load notices.
@@ -317,6 +415,7 @@ impl Docs {
             ticket: 0,
             pending: None,
             clears: Vec::new(),
+            orphans: Vec::new(),
         };
         docs.spawn_worker()?;
         Ok(docs)
@@ -352,9 +451,19 @@ impl Docs {
             .map(|_| ())
     }
 
-    /// The read and the autosave removals in flight (a doc's saves: [`DocFile::busy`]).
+    /// The read, the autosave removals and closed docs' saves in flight (a doc's saves:
+    /// [`DocFile::busy`]).
     pub(super) fn busy(&self) -> usize {
-        usize::from(self.pending.is_some()) + self.clears.len()
+        usize::from(self.pending.is_some()) + self.clears.len() + self.orphans.len()
+    }
+
+    /// Hands a closed doc to the worker to be dropped there; dropped here if it is gone.
+    pub(super) fn discard(&self, doc: Box<dyn Send>) {
+        if let Err(crossbeam_channel::SendError(DocJob::Discard(doc))) =
+            self.jobs.send(DocJob::Discard(doc))
+        {
+            drop(doc);
+        }
     }
 }
 
@@ -370,6 +479,10 @@ fn work(
     answered: &AtomicU64,
 ) {
     while let Ok(job) = jobs.recv() {
+        if let DocJob::Discard(doc) = job {
+            drop(doc);
+            continue;
+        }
         flags.busy.store(true, Ordering::SeqCst);
         if let Some(hook) = hook {
             (hook.0)();
@@ -379,7 +492,23 @@ fn work(
                 ticket,
                 path,
                 recovery,
-            } => open(ticket, &path, recovery, dirs),
+                build,
+            } => match (open(ticket, &path, recovery, dirs), build) {
+                (DocAnswer::Loaded { ticket, loaded }, Some(config)) => DocAnswer::Built {
+                    ticket,
+                    parts: Box::new(build_parts(*loaded, config)),
+                },
+                (answer, _) => answer,
+            },
+            DocJob::Build {
+                ticket,
+                loaded,
+                config,
+            } => DocAnswer::Built {
+                ticket,
+                parts: Box::new(build_parts(*loaded, config)),
+            },
+            DocJob::Discard(_) => continue,
             DocJob::Revert { ticket, path } => revert(ticket, &path),
             DocJob::OpenRecovery {
                 ticket,
@@ -708,21 +837,7 @@ impl DocCx<'_> {
                 if !self.doc_gate(id, to, discard_changes, false) {
                     return;
                 }
-                let seed = os_seed().unwrap_or_else(|| {
-                    self.log(
-                        LogLevel::Warn,
-                        "the system random source failed: the new workspace's OSC passcode comes \
-                         from the clock, so it is guessable; change it in the workspace settings"
-                            .to_owned(),
-                    );
-                    clock_seed()
-                });
-                let workspace = new_workspace(
-                    WorkspaceId(random_id()),
-                    CueListId(random_id()),
-                    PatchId(random_id()),
-                    seed,
-                );
+                let workspace = self.eng.fresh_workspace();
                 let loaded = Loaded {
                     workspace,
                     path: None,
@@ -746,6 +861,7 @@ impl DocCx<'_> {
                     ticket,
                     path: PathBuf::from(path),
                     recovery,
+                    build: None,
                 };
                 self.send_job(job, id, to);
             }
@@ -796,22 +912,7 @@ impl DocCx<'_> {
     /// time, and not over unsaved edits unless the request discards them. `reads`: the request
     /// needs the document worker.
     fn doc_gate(&self, id: RequestId, to: &ReplyTx, discard: bool, reads: bool) -> bool {
-        if self.eng.docs.pending.is_some() {
-            fail(
-                to,
-                id,
-                ErrorCode::CommandRefused,
-                "another document request is still being handled",
-            );
-            return false;
-        }
-        if reads && self.eng.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
-            fail(
-                to,
-                id,
-                ErrorCode::Io,
-                "reading files is stuck: a volume has stopped answering. Try again when it answers, or restart openLab",
-            );
+        if !self.eng.read_gate(id, to, reads) {
             return false;
         }
         if self.doc.is_dirty() && !discard {
@@ -827,39 +928,16 @@ impl DocCx<'_> {
     }
 
     fn next_ticket(&mut self, id: RequestId, to: &ReplyTx, discard: bool) -> u64 {
-        self.eng.docs.ticket += 1;
-        self.eng.docs.pending = Some(PendingDoc {
-            ticket: self.eng.docs.ticket,
-            id,
-            reply: to.clone(),
-            discard,
-            started_ms: self.eng.config.clock.now_ms(),
-        });
-        self.eng.docs.ticket
+        let target = Target::Doc(self.doc.id);
+        self.eng.next_ticket(target, id, to, discard)
     }
 
     fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
-        if self.eng.docs.jobs.send(job).is_err() {
-            self.eng.docs.pending = None;
-            fail(
-                to,
-                id,
-                ErrorCode::Internal,
-                "the document worker has stopped",
-            );
-        }
+        self.eng.send_job(job, id, to);
     }
 
-    /// The document worker's answer.
-    pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
-        let Some(pending) = self
-            .eng
-            .docs
-            .pending
-            .take_if(|p| p.ticket == answer.ticket())
-        else {
-            return;
-        };
+    /// The document worker's answer to a request of this doc.
+    fn doc_answer(&mut self, pending: PendingDoc, answer: DocAnswer) {
         let (id, to) = (pending.id, &pending.reply);
         match answer {
             DocAnswer::Failed { code, message, .. } => fail(to, id, code, message),
@@ -868,7 +946,7 @@ impl DocCx<'_> {
                 workspace_name,
                 modified_ms,
                 ..
-            } => self.reply_data(
+            } => reply_data(
                 to,
                 id,
                 ResultData::RecoveryOffer {
@@ -878,8 +956,15 @@ impl DocCx<'_> {
                 },
             ),
             DocAnswer::Entries { entries, .. } => {
-                self.reply_data(to, id, ResultData::RecoveryEntries { entries });
+                reply_data(to, id, ResultData::RecoveryEntries { entries });
             }
+            // Cannot happen: only an added doc's request builds parts.
+            DocAnswer::Built { .. } => fail(
+                to,
+                id,
+                ErrorCode::Internal,
+                "the document worker answered another request",
+            ),
             DocAnswer::Loaded { loaded, .. } => {
                 // The operator may have edited while the file was being read.
                 if self.doc.is_dirty() && !pending.discard {
@@ -895,19 +980,6 @@ impl DocCx<'_> {
                 self.finish_install(id, to);
             }
         }
-    }
-
-    fn reply_data(&self, to: &ReplyTx, id: RequestId, data: ResultData) {
-        reply(
-            to,
-            ServerMessage::Result {
-                id,
-                outcome: Outcome::Ok(OkBody {
-                    revision: None,
-                    data: Some(data),
-                }),
-            },
-        );
     }
 
     /// Stops everything that is running, as Panic pressed twice does, and lets go of every
@@ -940,6 +1012,7 @@ impl DocCx<'_> {
         self.doc.deferred.clear();
         self.doc.pending_media.clear();
         self.doc.ready_media.clear();
+        self.doc.events.clear();
         self.eng.mixer.pump();
     }
 
@@ -975,12 +1048,12 @@ impl DocCx<'_> {
         self.doc.file.epoch += 1;
         // A new engine: its run ids restart, which cannot meet the old ones (the voices are
         // forgotten and mixer voice ids are never reused).
-        match openlab_core::EngineConfig::new(
-            self.eng.rate.get(),
-            self.eng.block,
-            self.eng.config.seed,
-        ) {
-            Ok(config) => self.doc.engine = openlab_core::CueEngine::new(config),
+        match self.eng.engine_config(self.doc.id) {
+            Ok(config) => {
+                self.doc.engine = openlab_core::CueEngine::new(config);
+                // The new engine counts unsignalled changes from zero.
+                self.doc.seen_unsignalled = 0;
+            }
             // Cannot happen (the same values built the first engine); the old engine, with
             // everything stopped, is the safe thing to keep.
             Err(e) => self.log(LogLevel::Error, format!("cue engine not rebuilt: {e}")),
@@ -989,8 +1062,7 @@ impl DocCx<'_> {
         self.doc.history = History::new();
         self.doc.checks = super::checks::PlanChecks::default();
         self.doc.show_path = path;
-        // M4.15e: forgets every doc's logged cue states, not only this one's (seams note (h)).
-        self.eng.observe.reset();
+        self.eng.observe.reset(self.doc.id);
         self.log_kind(
             LogKind::Document,
             LogLevel::Info,
@@ -1132,11 +1204,8 @@ impl DocCx<'_> {
         if self.doc.file.resend_snapshot && self.eng.out.has_room() {
             self.resend_snapshot();
         }
-        // M4.15e: the read watchdog and autosave removals are engine-wide; with N docs they
-        // would run N times, with none never (seams note (f)).
-        self.check_stalled_read();
+        // The read watchdog and autosave removals are the engine's ([`Control::tick`]).
         self.poll_saves();
-        self.poll_clears();
         self.poll_autosave();
         self.autosave_if_due();
     }
@@ -1280,73 +1349,6 @@ impl DocCx<'_> {
         }
     }
 
-    /// A read that has not answered within the timeout (a volume that stopped answering): the
-    /// request fails with `io`, the worker is abandoned (it ends when its read returns; if it
-    /// never does, it is one leaked thread, bounded by [`MAX_STUCK_WORKERS`]) and a fresh one
-    /// takes over the shared queue.
-    fn check_stalled_read(&mut self) {
-        let Some(pending) = &self.eng.docs.pending else {
-            return;
-        };
-        let elapsed = self
-            .eng
-            .config
-            .clock
-            .now_ms()
-            .saturating_sub(pending.started_ms);
-        if elapsed < self.eng.docs.timeout_ms {
-            return;
-        }
-        // The worker has answered and the answer is in the inbox, not yet applied: it is not
-        // stuck. Leave the request to that answer.
-        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
-        if !self.eng.docs.worker.busy.load(Ordering::SeqCst)
-            && elapsed < self.eng.docs.timeout_ms.saturating_mul(2)
-        {
-            return;
-        }
-        let Some(pending) = self.eng.docs.pending.take() else {
-            return;
-        };
-        fail(
-            &pending.reply,
-            pending.id,
-            ErrorCode::Io,
-            format!(
-                "reading the file did not finish within {} s; its volume may have stopped answering",
-                self.eng.docs.timeout_ms / 1000
-            ),
-        );
-        self.eng.docs.worker.abandoned.store(true, Ordering::SeqCst);
-        self.eng.docs.stuck.fetch_add(1, Ordering::SeqCst);
-        if let Err(e) = self.eng.docs.spawn_worker() {
-            self.log(
-                LogLevel::Error,
-                format!("could not start a replacement document worker: {e}"),
-            );
-        }
-        self.log(
-            LogLevel::Error,
-            "a document read stalled; its worker was abandoned".to_owned(),
-        );
-    }
-
-    fn poll_clears(&mut self) {
-        let mut waiting = Vec::new();
-        for rx in std::mem::take(&mut self.eng.docs.clears) {
-            match rx.try_recv() {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => self.log(
-                    LogLevel::Warn,
-                    format!("could not remove the recovery file of dropped edits: {e}"),
-                ),
-                Err(TryRecvError::Empty) => waiting.push(rx),
-                Err(TryRecvError::Disconnected) => {}
-            }
-        }
-        self.eng.docs.clears = waiting;
-    }
-
     fn poll_autosave(&mut self) {
         let Some(rx) = &self.doc.file.autosave else {
             return;
@@ -1412,6 +1414,520 @@ impl DocCx<'_> {
     }
 }
 
+impl Engine {
+    /// A read that has not answered within the timeout (a volume that stopped answering): the
+    /// request fails with `io`, the worker is abandoned (it ends when its read returns; if it
+    /// never does, it is one leaked thread, bounded by [`MAX_STUCK_WORKERS`]) and a fresh one
+    /// takes over the shared queue.
+    pub(super) fn check_stalled_read(&mut self) {
+        let Some(pending) = &self.docs.pending else {
+            return;
+        };
+        let elapsed = self
+            .config
+            .clock
+            .now_ms()
+            .saturating_sub(pending.started_ms);
+        if elapsed < self.docs.timeout_ms {
+            return;
+        }
+        // The worker has answered and the answer is in the inbox, not yet applied: it is not
+        // stuck. Leave the request to that answer.
+        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
+        if !self.docs.worker.busy.load(Ordering::SeqCst)
+            && elapsed < self.docs.timeout_ms.saturating_mul(2)
+        {
+            return;
+        }
+        let Some(pending) = self.docs.pending.take() else {
+            return;
+        };
+        fail(
+            &pending.reply,
+            pending.id,
+            ErrorCode::Io,
+            format!(
+                "reading the file did not finish within {} s; its volume may have stopped answering",
+                self.docs.timeout_ms / 1000
+            ),
+        );
+        self.docs.worker.abandoned.store(true, Ordering::SeqCst);
+        self.docs.stuck.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = self.docs.spawn_worker() {
+            self.log(
+                LogLevel::Error,
+                format!("could not start a replacement document worker: {e}"),
+            );
+        }
+        self.log(
+            LogLevel::Error,
+            "a document read stalled; its worker was abandoned".to_owned(),
+        );
+    }
+
+    pub(super) fn poll_clears(&mut self) {
+        let mut waiting = Vec::new();
+        for rx in std::mem::take(&mut self.docs.clears) {
+            match rx.try_recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => self.log(
+                    LogLevel::Warn,
+                    format!("could not remove the recovery file of dropped edits: {e}"),
+                ),
+                Err(TryRecvError::Empty) => waiting.push(rx),
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+        self.docs.clears = waiting;
+    }
+
+    /// Whether a document request may start: only one read at a time engine-wide, and not
+    /// while reading is stuck (`reads`: the request needs the document worker).
+    fn read_gate(&self, id: RequestId, to: &ReplyTx, reads: bool) -> bool {
+        if self.docs.pending.is_some() {
+            fail(
+                to,
+                id,
+                ErrorCode::CommandRefused,
+                "another document request is still being handled",
+            );
+            return false;
+        }
+        if reads && self.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
+            fail(
+                to,
+                id,
+                ErrorCode::Io,
+                "reading files is stuck: a volume has stopped answering. Try again when it answers, or restart openLab",
+            );
+            return false;
+        }
+        true
+    }
+
+    fn next_ticket(&mut self, target: Target, id: RequestId, to: &ReplyTx, discard: bool) -> u64 {
+        self.docs.ticket += 1;
+        self.docs.pending = Some(PendingDoc {
+            target,
+            ticket: self.docs.ticket,
+            id,
+            reply: to.clone(),
+            discard,
+            started_ms: self.config.clock.now_ms(),
+        });
+        self.docs.ticket
+    }
+
+    fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
+        if self.docs.jobs.send(job).is_err() {
+            self.docs.pending = None;
+            fail(
+                to,
+                id,
+                ErrorCode::Internal,
+                "the document worker has stopped",
+            );
+        }
+    }
+
+    /// The cue engine settings for doc `doc`: the loop's rate and block, and a seed of its own
+    /// (the first doc's is the configured seed, so a one-doc run is as before).
+    fn engine_config(&self, doc: DocId) -> Result<EngineConfig, openlab_core::EngineConfigError> {
+        EngineConfig::new(
+            self.rate.get(),
+            self.block,
+            self.config.seed.wrapping_add(doc.0),
+        )
+    }
+
+    /// A new workspace (WS-02) with fresh ids and a passcode from the OS (from the clock, with a
+    /// warning, if the OS refused).
+    fn fresh_workspace(&mut self) -> Workspace {
+        let seed = os_seed().unwrap_or_else(|| {
+            self.log(
+                LogLevel::Warn,
+                "the system random source failed: the new workspace's OSC passcode comes \
+                 from the clock, so it is guessable; change it in the workspace settings"
+                    .to_owned(),
+            );
+            clock_seed()
+        });
+        new_workspace(
+            WorkspaceId(random_id()),
+            CueListId(random_id()),
+            PatchId(random_id()),
+            seed,
+        )
+    }
+}
+
+fn reply_data(to: &ReplyTx, id: RequestId, data: ResultData) {
+    reply(
+        to,
+        ServerMessage::Result {
+            id,
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(data),
+            }),
+        },
+    );
+}
+
+impl Control {
+    /// Opens another doc (WS-02; QLab 5 opens a workspace beside the ones open, which keep
+    /// playing). The file is read and the doc built on the document worker; the doc is
+    /// installed when the answer comes (`snapshot`, `warnings` and the result go to `to`;
+    /// [`Self::take_opened`] tells its [`DocId`]). Refused (`command_refused`) while another
+    /// document request is being handled, or when [`MAX_DOCS`] docs are open.
+    pub fn open_doc(&mut self, source: DocSource, id: RequestId, to: &ReplyTx) {
+        let reads = matches!(source, DocSource::Open { .. });
+        if !self.eng.read_gate(id, to, reads) {
+            return;
+        }
+        if self.docs.len() >= MAX_DOCS {
+            fail(
+                to,
+                id,
+                ErrorCode::CommandRefused,
+                format!("at most {MAX_DOCS} workspaces can be open at once"),
+            );
+            return;
+        }
+        let config = match self.eng.engine_config(DocId(self.eng.next_doc)) {
+            Ok(config) => config,
+            Err(e) => {
+                fail(to, id, ErrorCode::Internal, e.to_string());
+                return;
+            }
+        };
+        let job = match source {
+            DocSource::Open { path, recovery } => {
+                let ticket = self.eng.next_ticket(Target::New, id, to, false);
+                DocJob::Open {
+                    ticket,
+                    path,
+                    recovery,
+                    build: Some(config),
+                }
+            }
+            DocSource::New | DocSource::Workspace(_) => {
+                let workspace = match source {
+                    DocSource::Workspace(ws) => *ws,
+                    _ => self.eng.fresh_workspace(),
+                };
+                let ticket = self.eng.next_ticket(Target::New, id, to, false);
+                DocJob::Build {
+                    ticket,
+                    loaded: Box::new(Loaded {
+                        workspace,
+                        path: None,
+                        dirty: false,
+                        notices: Vec::new(),
+                        clear_autosave: false,
+                    }),
+                    config,
+                }
+            }
+        };
+        self.eng.send_job(job, id, to);
+    }
+
+    /// The document worker's answer, for the doc whose request it is (an open doc, or one being
+    /// added). A doc closed since its request answers `no_workspace`.
+    pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
+        let Some(pending) = self
+            .eng
+            .docs
+            .pending
+            .take_if(|p| p.ticket == answer.ticket())
+        else {
+            // A stale answer (its request timed out): a doc built for it is dropped off the
+            // control thread like a closed one.
+            if let DocAnswer::Built { parts, .. } = answer {
+                self.eng.docs.discard(parts);
+            }
+            return;
+        };
+        match pending.target {
+            Target::Doc(doc) => match self.cx_of(doc) {
+                Some(mut cx) => cx.doc_answer(pending, answer),
+                None => fail(
+                    &pending.reply,
+                    pending.id,
+                    ErrorCode::NoWorkspace,
+                    "the workspace was closed",
+                ),
+            },
+            Target::New => {
+                let (id, to) = (pending.id, &pending.reply);
+                match answer {
+                    DocAnswer::Built { parts, .. } => self.install_new(*parts, id, to),
+                    DocAnswer::Failed { code, message, .. } => fail(to, id, code, message),
+                    DocAnswer::Offer {
+                        path,
+                        workspace_name,
+                        modified_ms,
+                        ..
+                    } => reply_data(
+                        to,
+                        id,
+                        ResultData::RecoveryOffer {
+                            path,
+                            workspace_name,
+                            modified_ms,
+                        },
+                    ),
+                    DocAnswer::Loaded { .. } | DocAnswer::Entries { .. } => fail(
+                        to,
+                        id,
+                        ErrorCode::Internal,
+                        "the document worker answered another request",
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Installs a doc built off the control thread: an insert, its probe jobs, its slot
+    /// commands and its first reports, so it costs no audio block (ARCHITECTURE §3.1).
+    fn install_new(&mut self, parts: DocParts, id: RequestId, to: &ReplyTx) {
+        if self.docs.len() >= MAX_DOCS {
+            fail(
+                to,
+                id,
+                ErrorCode::CommandRefused,
+                format!("at most {MAX_DOCS} workspaces can be open at once"),
+            );
+            self.eng.docs.discard(Box::new(parts));
+            return;
+        }
+        let Some(doc_id) = self.eng.take_doc_id() else {
+            fail(
+                to,
+                id,
+                ErrorCode::CommandRefused,
+                "no more workspaces can be opened in this run",
+            );
+            self.eng.docs.discard(Box::new(parts));
+            return;
+        };
+        let DocParts {
+            loaded,
+            mut engine,
+            actions,
+            indexed,
+            checks,
+        } = parts;
+        let Loaded {
+            workspace,
+            path,
+            dirty,
+            notices,
+            ..
+        } = loaded;
+        // The device may have come back with another block size while the doc was built.
+        if engine.config().lookahead() != self.eng.block
+            && let Err(e) = engine.set_lookahead(self.eng.block)
+        {
+            self.eng.log(
+                LogLevel::Error,
+                format!("cue engine lookahead not set: {e}"),
+            );
+        }
+        let show_dir = path.as_deref().and_then(folder_of);
+        let mut media = MediaCatalog::new(
+            self.eng.pool.handle(doc_id),
+            show_dir,
+            self.eng.config.preload_budget,
+        );
+        media.sync_indexed(indexed);
+        // The checks walked the workspace already, and no file has answered since: what the
+        // catalog noted for them is in them.
+        let _ = media.take_plan_changes();
+        let mut doc = Doc::new(&self.eng, doc_id, workspace, engine, path, media);
+        doc.checks = checks;
+        doc.file.notices = notices;
+        doc.revision = 1;
+        doc.saved_revision = if dirty { 0 } else { 1 };
+        self.docs.push(doc);
+        self.docs_changed();
+        let Some(mut cx) = self.cx_of(doc_id) else {
+            return;
+        };
+        cx.log_kind(
+            LogKind::Document,
+            LogLevel::Info,
+            match &cx.doc.show_path {
+                Some(p) => format!("workspace opened: {}", p.display()),
+                None => "workspace opened: untitled".to_owned(),
+            },
+        );
+        let now = cx.now();
+        for input in cx.execute(&actions, now) {
+            cx.feed(input, now);
+        }
+        let mut inputs = vec![Input::Tick];
+        inputs.extend(cx.sync_workspace(true));
+        for input in inputs {
+            cx.feed(input, now);
+        }
+        cx.doc.warnings_dirty = false;
+        cx.refresh_warnings();
+        // To the requester only: the other clients show another workspace (connections bound
+        // to docs, and broadcasts tagged with theirs, are M4.15f).
+        reply(
+            to,
+            ServerMessage::Snapshot {
+                snapshot: Box::new(cx.doc.snapshot()),
+            },
+        );
+        reply(
+            to,
+            ServerMessage::Warnings {
+                warnings: cx.doc.warnings.clone(),
+            },
+        );
+        reply(to, ok(id, Some(cx.doc.revision)));
+        self.eng.opened.push((id, doc_id));
+        self.eng.mixer.pump();
+    }
+
+    /// Closes doc `doc` (WS-02): refused with `unsaved_changes` while it has unsaved edits,
+    /// unless `discard_changes` (then its autosave is removed, after any write of it still in
+    /// flight). Its cues stop at once (Panic twice: a hard stop), its voices' late events are
+    /// ignored from now on, its mixer slots are zeroed and freed, and it is dropped off the
+    /// control thread. The other docs play on untouched.
+    pub fn close_doc(&mut self, doc: DocId, discard_changes: bool) -> Result<(), ErrorBody> {
+        let Some(index) = self.docs.iter().position(|d| d.id == doc) else {
+            return Err(ErrorBody::new(
+                ErrorCode::NoWorkspace,
+                format!("workspace {doc} is not open"),
+            ));
+        };
+        {
+            let Some(mut cx) = self.cx_of(doc) else {
+                return Err(ErrorBody::new(
+                    ErrorCode::NoWorkspace,
+                    format!("workspace {doc} is not open"),
+                ));
+            };
+            if cx.doc.is_dirty() && !discard_changes {
+                return Err(ErrorBody::new(
+                    ErrorCode::UnsavedChanges,
+                    "the workspace has unsaved changes; save them or discard them",
+                ));
+            }
+            if cx.doc.is_dirty() {
+                let (id, path) = (cx.doc.ws.id, cx.doc.show_path.clone());
+                cx.clear_autosave_of(id, path);
+            }
+            cx.stop_everything();
+            cx.log_kind(
+                LogKind::Document,
+                LogLevel::Info,
+                match &cx.doc.show_path {
+                    Some(p) => format!("workspace closed: {}", p.display()),
+                    None => "workspace closed: untitled".to_owned(),
+                },
+            );
+        }
+        let mut closed = self.docs.remove(index);
+        self.docs_changed();
+        // Dated after the stops the panic sent (at `now` too): the slots go silent as the
+        // voices on them end.
+        let now = self.eng.now();
+        let commands = self
+            .eng
+            .patches
+            .release_doc(doc)
+            .into_iter()
+            .map(|c| (now, c))
+            .collect();
+        self.eng.send_commands(commands);
+        // Its delays may have made a conflict in another doc, and its slots may be one's.
+        self.eng.patches.take_conflicts_changed();
+        self.mark_warnings_dirty();
+        self.eng.voice_ids.retain(|_, owner| owner != doc);
+        self.eng.observe.reset(doc);
+        self.eng.watch.leave(doc);
+        self.eng.pool.leave(doc);
+        self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
+        // Saves under way still finish on the writer and are answered then.
+        self.eng
+            .docs
+            .orphans
+            .extend(std::mem::take(&mut closed.file.saves));
+        self.eng.docs.discard(Box::new(closed));
+        self.eng.mixer.pump();
+        Ok(())
+    }
+
+    /// The number of open docs changed.
+    fn docs_changed(&mut self) {
+        self.eng.open_docs = self.docs.len();
+        // A closed doc's primes are back in the pool; a new doc asks for its share at its
+        // first priming pass (`balance_primes` makes the others follow, only if they must).
+        let open: Vec<DocId> = self.docs.iter().map(|d| d.id).collect();
+        self.eng.primes.retain(|d, _| open.contains(d));
+        self.eng.primes_changed = true;
+    }
+
+    /// Saves of closed docs that finished: answered (and a failure logged).
+    pub(super) fn poll_orphan_saves(&mut self) {
+        if self.eng.docs.orphans.is_empty() {
+            return;
+        }
+        let mut finished = Vec::new();
+        for save in std::mem::take(&mut self.eng.docs.orphans) {
+            match save.rx.try_recv() {
+                Ok(result) => finished.push((save, result)),
+                Err(TryRecvError::Empty) => self.eng.docs.orphans.push(save),
+                Err(TryRecvError::Disconnected) => {
+                    finished.push((save, Err(PersistError::WriterGone)));
+                }
+            }
+        }
+        for (mut save, result) in finished {
+            match result {
+                Ok(_) => {
+                    for (id, to) in &save.waiters {
+                        reply(to, ok(*id, None));
+                    }
+                }
+                // As for an open doc's saves: the newer save of the same file answers for it.
+                Err(PersistError::Superseded) => {
+                    let newer = self
+                        .eng
+                        .docs
+                        .orphans
+                        .iter_mut()
+                        .filter(|p| p.revision >= save.revision && p.path == save.path)
+                        .max_by_key(|p| p.revision);
+                    match newer {
+                        Some(newer) => newer.waiters.append(&mut save.waiters),
+                        None => {
+                            for (id, to) in &save.waiters {
+                                fail(to, *id, ErrorCode::Internal, "the save was superseded");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.eng.log_kind(
+                        LogKind::Document,
+                        LogLevel::Error,
+                        format!("save failed: {e}"),
+                    );
+                    for (id, to) in &save.waiters {
+                        fail(to, *id, persist_code(&e), e.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Doc {
     fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
@@ -1429,22 +1945,24 @@ impl Control {
         self.eng.docs.stuck.load(Ordering::SeqCst)
     }
 
-    /// Requests, saves and autosaves still being worked on.
+    /// Requests, saves and autosaves still being worked on, the engine's and every doc's.
     pub fn docs_busy(&self) -> usize {
-        self.eng.docs.busy() + self.doc.file.busy()
+        self.eng.docs.busy() + self.docs.iter().map(|d| d.file.busy()).sum::<usize>()
     }
 
-    /// The show file the workspace is saved to, if it has one.
+    /// The show file the first doc's workspace is saved to, if it has one.
     pub fn show_path(&self) -> Option<&Path> {
-        self.doc.show_path.as_deref()
+        self.docs.first().and_then(|d| d.show_path.as_deref())
     }
 
+    /// Whether the first doc has unsaved edits.
     pub fn is_unsaved(&self) -> bool {
-        self.doc.is_dirty()
+        self.docs.first().is_some_and(Doc::is_dirty)
     }
 
+    /// The first doc's runtime sequence.
     pub fn runtime_seq(&self) -> u64 {
-        self.doc.runtime_seq
+        self.docs.first().map_or(0, |d| d.runtime_seq)
     }
 }
 
