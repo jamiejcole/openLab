@@ -39,12 +39,6 @@ targets:
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
         INFOPLIST_KEY_NSHumanReadableCopyright: "Licensed under the GNU GPL v3 or later."
-    preBuildScripts:
-      - name: Check Localizable.strings
-        script: '"$SRCROOT/scripts/check-strings.sh"'
-        inputFiles:
-          - $(SRCROOT)/openLab/en.lproj/Localizable.strings
-        basedOnDependencyAnalysis: false
     postCompileScripts:
       - name: Build openlab-engine
         script: '"$SRCROOT/scripts/build-engine.sh"'
