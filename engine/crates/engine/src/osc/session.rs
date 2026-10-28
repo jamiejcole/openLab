@@ -138,7 +138,6 @@ pub struct Sessions {
     failures: HashMap<IpAddr, Failures>,
     global_start: Duration,
     global_count: u32,
-    budgets: HashMap<(IpAddr, Budget), Bucket>,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
     /// Whether a peer that has not connected may view (No Passcode has View): then sessions
@@ -403,6 +402,59 @@ impl Sessions {
         self.failures.retain(|_, f| {
             f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
         });
+    }
+
+    /// Makes room for one more session without rights: the cap is on those only.
+    fn evict_rightless_over_cap(&mut self) {
+        if self.strangers_may_view {
+            return;
+        }
+        while self.peers.values().filter(|s| s.rights.is_none()).count() >= MAX_RIGHTLESS_SESSIONS {
+            let oldest = self
+                .peers
+                .iter()
+                .filter(|(_, s)| s.rights.is_none())
+                .min_by_key(|(_, s)| s.last_seen)
+                .map(|(p, _)| *p);
+            match oldest {
+                Some(p) => self.peers.remove(&p),
+                None => break,
+            };
+        }
+    }
+
+    fn ensure(&mut self, peer: Peer, now: Duration) -> bool {
+        if self.peers.contains_key(&peer) {
+            return true;
+        }
+        if self.peers.len() >= MAX_PEERS {
+            return false;
+        }
+        self.evict_rightless_over_cap();
+        self.peers.insert(
+            peer,
+            Session {
+                rights: None,
+                updates: false,
+                reply_port: None,
+                last_seen: now,
+            },
+        );
+        true
+    }
+}
+
+/// The reply byte budget of each UDP source address (docs/osc.md, "Limits"). Per IP, whatever
+/// workspace the replies are about: several open docs must not multiply what a forged source
+/// can be sent.
+#[derive(Debug, Default)]
+pub struct Budgets {
+    budgets: HashMap<(IpAddr, Budget), Bucket>,
+}
+
+impl Budgets {
+    /// Drops the buckets that have refilled.
+    pub fn expire(&mut self, now: Duration) {
         self.budgets.retain(|(_, kind), b| {
             let (burst, rate) = kind.limits();
             refilled(b.tokens, b.updated, now, burst, rate) < burst
@@ -446,45 +498,6 @@ impl Sessions {
             bucket.tokens = available;
             false
         }
-    }
-
-    /// Makes room for one more session without rights: the cap is on those only.
-    fn evict_rightless_over_cap(&mut self) {
-        if self.strangers_may_view {
-            return;
-        }
-        while self.peers.values().filter(|s| s.rights.is_none()).count() >= MAX_RIGHTLESS_SESSIONS {
-            let oldest = self
-                .peers
-                .iter()
-                .filter(|(_, s)| s.rights.is_none())
-                .min_by_key(|(_, s)| s.last_seen)
-                .map(|(p, _)| *p);
-            match oldest {
-                Some(p) => self.peers.remove(&p),
-                None => break,
-            };
-        }
-    }
-
-    fn ensure(&mut self, peer: Peer, now: Duration) -> bool {
-        if self.peers.contains_key(&peer) {
-            return true;
-        }
-        if self.peers.len() >= MAX_PEERS {
-            return false;
-        }
-        self.evict_rightless_over_cap();
-        self.peers.insert(
-            peer,
-            Session {
-                rights: None,
-                updates: false,
-                reply_port: None,
-                last_seen: now,
-            },
-        );
-        true
     }
 }
 

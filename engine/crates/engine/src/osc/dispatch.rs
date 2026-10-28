@@ -7,7 +7,7 @@
 
 use std::ops::ControlFlow;
 
-use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
+use openlab_core::protocol::{ClientMessage, DocId, RequestId, TransportAction};
 use openlab_core::{
     Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscRight, WorkspaceId,
 };
@@ -74,6 +74,24 @@ pub trait OscShow {
     fn cue_lists_object(&self) -> Value {
         json!([])
     }
+}
+
+/// One open workspace as the dispatcher sees it: the engine's doc and its show. A call gets every
+/// open doc, in open order (ARCHITECTURE section 7: an un-prefixed message goes to each).
+#[derive(Clone, Copy)]
+pub struct DocShow<'a> {
+    pub doc: DocId,
+    pub show: &'a dyn OscShow,
+}
+
+/// The doc `/workspace/{id}` names: the one with that id, as replies write it (upper case), else
+/// the first, in open order, whose name is exactly that (QLab 5: "{id} may be either the display
+/// name of the workspace ... or the unique ID").
+pub fn find_doc<'a>(docs: &[DocShow<'a>], id: &str) -> Option<DocShow<'a>> {
+    docs.iter()
+        .find(|d| upper(d.show.workspace_id()) == id)
+        .or_else(|| docs.iter().find(|d| d.show.workspace_name() == id))
+        .copied()
 }
 
 /// What a pattern can match: a cue list (its number is empty) or a cue.
@@ -534,17 +552,24 @@ pub struct ServerInfo {
     pub reply_port: u16,
 }
 
-/// Answers the application-level queries, which need no passcode.
-pub fn app_reply(show: &dyn OscShow, info: &ServerInfo, address: &Address) -> Option<Reply> {
+/// Answers the application-level queries, which need no passcode. `/workspaces` lists every
+/// open doc, in open order.
+pub fn app_reply(docs: &[DocShow<'_>], info: &ServerInfo, address: &Address) -> Option<Reply> {
     let reply = match address {
         Address::Version => Reply::ok(json!(info.version)),
-        Address::Workspaces => Reply::ok(json!([{
-            "version": info.version,
-            "displayName": show.workspace_name(),
-            "udpReplyPort": info.reply_port,
-            "uniqueID": upper(show.workspace_id()),
-            "port": info.port,
-        }])),
+        Address::Workspaces => Reply::ok(Value::Array(
+            docs.iter()
+                .map(|d| {
+                    json!({
+                        "version": info.version,
+                        "displayName": d.show.workspace_name(),
+                        "udpReplyPort": info.reply_port,
+                        "uniqueID": upper(d.show.workspace_id()),
+                        "port": info.port,
+                    })
+                })
+                .collect(),
+        )),
         _ => return None,
     };
     Some(reply.scoped(Scope::App))
