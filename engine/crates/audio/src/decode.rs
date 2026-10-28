@@ -670,15 +670,25 @@ pub(crate) const HEADER_CHUNKS: usize = 64;
 /// (`ProbeOptions::max_probe_depth`, 1 MiB by default).
 const PROBE_SCAN: u64 = 1 << 20;
 
-/// Most `RIFF....WAVE` markers [`check_pcm_header`] examines in the scanned bytes; more is junk.
-const MAX_WAVE_MARKERS: usize = 64;
+/// Most `RIFF....WAVE` / `FORM....AIFF` markers [`check_pcm_header`] examines in the scanned
+/// bytes; more is junk.
+const MAX_CONTAINER_MARKERS: usize = 64;
+
+/// Does this 12-byte window start a container symphonia's WAV or AIFF reader takes? The probe
+/// scores a `RIFF`/`FORM` marker on its form type alone.
+fn is_container_marker(w: &[u8]) -> bool {
+    matches!(
+        (w.get(..4), w.get(8..12)),
+        (Some(b"RIFF"), Some(b"WAVE")) | (Some(b"FORM"), Some(b"AIFF" | b"AIFC"))
+    )
+}
 
 /// Rejects WAV and AIFF headers symphonia 0.6.1 would overflow on, before it sees them (a panic
 /// with overflow checks on, as in cargo-fuzz): a channel count outside what openLab plays or a
 /// sample size above 64 bits (`(bits / 8) * channels` is computed in `u16`), and a
 /// WAVE_FORMAT_EXTENSIBLE channel mask that `fix_wave_channel_mask` shifts out of range. The
-/// probe skips leading junk such as an ID3 tag by scanning for a marker, so a RIFF/WAVE header
-/// anywhere in the scanned bytes is checked. Other data is left to symphonia. Leaves `r` at the
+/// probe skips leading junk such as an ID3 tag by scanning for a marker, so a RIFF/WAVE or
+/// FORM/AIFF/AIFC header anywhere in the scanned bytes is checked. Other data is left to symphonia. Leaves `r` at the
 /// start.
 fn check_pcm_header<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaError> {
     let result = check_pcm_header_at(r);
@@ -719,12 +729,14 @@ fn check_pcm_header_at<R: Read + Seek + ?Sized>(r: &mut R) -> Result<(), MediaEr
     let markers: Vec<usize> = head
         .windows(12)
         .enumerate()
-        .filter(|(_, w)| w.get(..4) == Some(b"RIFF") && w.get(8..) == Some(b"WAVE"))
+        .filter(|(_, w)| is_container_marker(w))
         .map(|(i, _)| i)
-        .take(MAX_WAVE_MARKERS + 1)
+        .take(MAX_CONTAINER_MARKERS + 1)
         .collect();
-    if markers.len() > MAX_WAVE_MARKERS {
-        return Err(MediaError::Corrupt("header: too many RIFF markers".into()));
+    if markers.len() > MAX_CONTAINER_MARKERS {
+        return Err(MediaError::Corrupt(
+            "header: too many RIFF/FORM markers".into(),
+        ));
     }
     for at in markers {
         reject_bad_header(find_chunk_body(r, at as u64))?;
