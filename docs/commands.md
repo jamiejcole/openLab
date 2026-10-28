@@ -21,6 +21,15 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 - **References between cues are not checked.** A missing target, a wrong-kind target, a self-target, a missing patch and trigger cycles are the *broken-cue state* of ARCHITECTURE §10: `validate` warns, the cue shows as broken. Removing a cue legitimately leaves them behind, and undo must be able to put back states that contain them. The exception is removing a patch or cue list that something still uses: see "Settings, patches and cue lists".
 - **A change to what is already there is not an edit.** `SetCueProperty` to the value the cue has, a `MoveCue` in place, `SetCueNumbers` that changes no number, a setting or patch property set to its current value and the like return an empty `Transaction` as their inverse, which `History` does not record: no undo step, no redo cleared, and the engine sends no `model_changed`, makes no revision and leaves the document clean. (Values are validated first: an invalid value is refused even if the field "already has" something equal-looking.)
 
+## Network cue properties (M4.6a)
+
+`destination`, `address` and `args` of `CueProperty` apply to Network cues only (`PropertyNotApplicable` on any other kind); they undo, redo, coalesce (one gesture key, one slot per property) and batch like the other properties. A new value is refused, changing nothing, unless:
+
+- `destination` names an existing network patch (`NetworkPatchNotFound`). Removing a patch a cue uses stays a broken-cue state; undo, redo and rollback skip this check so they can restore one.
+- `address` and `args` pass `network::check_message` together with the cue's other half: the address starts with `/`, is at most 512 bytes of printable ASCII without spaces (pattern characters `* ? [ ] { }` are allowed), at most 32 arguments, strings at most 4096 bytes with no NUL, floats finite, the encoded message at most 8192 bytes (`InvalidMessage(reason)`). Ints and bools cannot be invalid.
+
+QLab 5's Network cue page (qlab.app/docs/v5/networking/network-cues/) describes the address and arguments as typed text and does not say what happens to a malformed one; we refuse it at the edit (open-qlab-questions.md), so a client cannot put a cue into a state the cue engine would break on.
+
 ## Commands
 
 | Command | Notes |
@@ -30,7 +39,7 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 | `RemoveCue { id }` | Removes the subtree. Its inverse re-adds it at the same place. |
 | `MoveCue { id, index }` | Reorder among current siblings. |
 | `ReparentCue { id, to }` | Into another group or cue list, children with it. Not into itself or its descendants. |
-| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group). |
+| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group); for Network cues only (M4.6a, CT-30) `destination`, `address` and `args`, each `value` the whole new setting. |
 | `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. Applied in place with each cue's old value kept; a refusal writes the old values back, so the cost follows the cues named, not the show. |
 | `SetCueNumbers { numbers }` | Set, clear or swap numbers; uniqueness is judged on the result. |
 | `Renumber { ids, start, increment }` | Numbers `ids` in cue-list order (a group before its children), whatever order `ids` is in. |
