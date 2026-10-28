@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         appController.installKeyMonitor()
         _ = alarmController
         // Finds the engine (or starts one) and connects; the engine opens nothing by itself.
-        engine.1.start()
+        if !EngineMode.isUnitTestHost() { engine.1.start() }
         NSApp.activate(ignoringOtherApps: true)
     }
 

@@ -28,6 +28,14 @@ enum EngineMode: Equatable {
         #endif
     }
 
+    /// The app is the host process of the unit tests (XCTest sets this for it). It must start no
+    /// engine: the real engine is detached and relaunches the app when it ends, so on a machine
+    /// with no engine running every test run left an engine behind that relaunched the app over
+    /// the UI tests (they then could not bring their own instance to the front).
+    static func isUnitTestHost(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
+    }
+
     @MainActor
     func make() -> (EngineSession, EngineSupervisor) {
         switch self {
