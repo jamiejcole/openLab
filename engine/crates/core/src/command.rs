@@ -38,7 +38,8 @@ use crate::tree::{
     walk_mut,
 };
 use crate::validate::{
-    IssueKind, MAX_AUTO_NUMBER, MAX_GROUP_DEPTH, ValidationIssue, subtree_issues, visit,
+    IssueKind, MAX_AUTO_NUMBER, MAX_GROUP_DEPTH, MAX_NETWORK_ADDRESS_BYTES, MAX_NETWORK_ARGS,
+    MAX_NETWORK_STRING_BYTES, ValidationIssue, subtree_issues, visit,
 };
 
 /// What undoes a command. Applying it gives the command that redoes the original.
@@ -971,6 +972,8 @@ fn set_property(
     if matches!(
         property,
         CueProperty::Kind { .. }
+            | CueProperty::Name { .. }
+            | CueProperty::Notes { .. }
             | CueProperty::PreWait { .. }
             | CueProperty::PostWait { .. }
             | CueProperty::Triggers { .. }
@@ -1002,29 +1005,20 @@ fn set_property(
     Ok(Command::SetCueProperty { id, property: old })
 }
 
-/// Hard bounds on a Network cue's address and arguments at the edit. QLab 5 accepts a malformed
-/// message and shows the cue broken until it is fixed (manual pp. 371-372), so the send limits
-/// in `network` are NOT enforced here: the cue engine reports `network_message_invalid` and
-/// never sends. These bounds, far above the send limits (512 / 32 / 4096 bytes), only keep a
-/// hostile or broken client from filling the document with megabytes through one command.
-/// A non-finite float is also refused: JSON cannot hold one, so the show would not save and
-/// load back (load repairs it to 0 with a warning).
-const EDIT_MAX_ADDRESS_BYTES: usize = 64 * 1024;
-const EDIT_MAX_ARGS: usize = 1024;
-const EDIT_MAX_STRING_BYTES: usize = 64 * 1024;
-
 /// A new Network address or argument list is accepted whatever it says (a destination that
 /// names no patch, or none, too: the cue shows broken, `network_patch_missing`); only the
-/// memory bounds above are refused.
+/// memory bounds ([`MAX_NETWORK_ADDRESS_BYTES`] and the others) are refused, as for a new or
+/// replaced Network cue (`subtree_issues`). A non-finite float is also refused: JSON cannot hold
+/// one, so the show would not save and load back (load repairs it to 0 with a warning).
 fn check_network_value(cue: &Cue, property: &CueProperty) -> Result<(), CommandError> {
     if !matches!(cue.kind, CueKind::Network { .. }) {
         return Ok(());
     }
     let issue = match property {
-        CueProperty::Address { value } if value.len() > EDIT_MAX_ADDRESS_BYTES => {
+        CueProperty::Address { value } if value.len() > MAX_NETWORK_ADDRESS_BYTES => {
             MessageIssue::AddressTooLong
         }
-        CueProperty::Args { value } if value.len() > EDIT_MAX_ARGS => MessageIssue::TooManyArgs,
+        CueProperty::Args { value } if value.len() > MAX_NETWORK_ARGS => MessageIssue::TooManyArgs,
         CueProperty::Args { value }
             if value
                 .iter()
@@ -1034,7 +1028,7 @@ fn check_network_value(cue: &Cue, property: &CueProperty) -> Result<(), CommandE
         }
         CueProperty::Args { value }
             if value.iter().any(
-                |a| matches!(a, OscArg::String { value } if value.len() > EDIT_MAX_STRING_BYTES),
+                |a| matches!(a, OscArg::String { value } if value.len() > MAX_NETWORK_STRING_BYTES),
             ) =>
         {
             MessageIssue::StringTooLong
