@@ -164,9 +164,10 @@ final class EngineAlarmController {
     }
 
     private func sessionEvent(_ event: SessionEvent) {
-        guard case .reattached(let failures, let restored) = event else { return }
+        guard case .reattached(let failures, let restored, let editsLost) = event else { return }
         var lines = [loc("engine.alarm.back")]
         for name in restored { lines.append(String(format: loc("engine.alarm.restoredOne"), name)) }
+        for name in editsLost { lines.append(String(format: loc("engine.alarm.editsLostOne"), name)) }
         for f in failures { lines.append(String(format: loc("engine.alarm.failedOne"), f.name, f.reason)) }
         if !isShown {
             presenter.show(title: loc("engine.alarm.restarted"), message: loc("engine.alarm.restartedMessage"))

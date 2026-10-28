@@ -238,7 +238,9 @@ final class EngineSessionTests: XCTestCase {
         await assertEventually { s.stores.values.allSatisfy { $0.connectionState == .connected && $0.model != nil } }
 
         XCTAssertEqual(events.first, .newEngineRun)
-        XCTAssertEqual(events.last, .reattached(failures: [], restored: []))
+        // Hamlet had unsaved changes and no autosave newer than its file: they are lost, and said so.
+        XCTAssertEqual(events.last, .reattached(failures: [], restored: [], editsLost: ["Test"]))
+        XCTAssertTrue(before[0].logEntries.contains { $0 == LogEntry(level: .warn, message: loc("engine.reattach.editsLost")) })
         // The same three stores, plus one for the other client's show; none made twice.
         let now = Set(s.orderedStores.map { ObjectIdentifier($0.store) })
         XCTAssertTrue(now.isSuperset(of: before.map(ObjectIdentifier.init)))
@@ -319,7 +321,7 @@ final class EngineSessionTests: XCTestCase {
         engine.restart()
         engine.recoveryEntries = [.object(["workspace_id": .string(dirtyID.raw), "stale": .bool(false)])]
         _ = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
-        guard case .reattached(let failures, let restored)? = events.last else { return XCTFail() }
+        guard case .reattached(let failures, let restored, _)? = events.last else { return XCTFail() }
         XCTAssertEqual(failures.map(\.name), [lostName])
         XCTAssertEqual(restored.count, 1)
         XCTAssertEqual(s.stores.count, 3, "Hamlet, the clean one (new) and the recovered one")

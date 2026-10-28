@@ -345,6 +345,9 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(app.windows.count, 2)
         XCTAssertEqual(Set(app.session.stores.values.compactMap { $0.model?.name }), ["Hamlet", "A"])
         XCTAssertTrue(presenter.detail.contains(loc("engine.alarm.back")))
+        XCTAssertTrue(
+            presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "Test")),
+            "the dirty show had no newer autosave: its lost edits are listed")
         XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 1)))
         XCTAssertTrue(presenter.isVisible)
 
