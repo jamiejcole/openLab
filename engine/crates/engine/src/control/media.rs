@@ -22,8 +22,14 @@
 //! (the rest wait, still pending, no worker taken; files keep any last answer) and the next
 //! trial waits out a backoff after one gets stuck or fails. Any answer from the volume ends the
 //! probe-side stall. Jobs on other volumes always run. See docs/control.md.
+//!
+//! The workers, their watchdog and the volume state are the engine's ([`ProbePool`]: one pool of
+//! [`PROBE_WORKERS`] for every open doc, ARCHITECTURE §3.1). Each doc's [`MediaCatalog`] sends
+//! its jobs through a [`PoolHandle`] that tags them with the doc, and the answers come back
+//! tagged the same way, so the control loop hands each to its doc (an answer for a closed doc
+//! is dropped).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -38,10 +44,11 @@ use openlab_core::{
 
 use crate::persist::media_path;
 
+use super::DocId;
 use super::inbox::{Inbox, ProbeAnswer};
 use super::watch::{RETRY_FIRST, RETRY_MAX, bucket_of};
 
-/// Probe workers started per control loop. Probes of different files run side by side so one
+/// Probe workers started per engine (shared by every doc). Probes of different files run side by side so one
 /// long file does not hold up the rest of a workspace.
 pub const PROBE_WORKERS: usize = 2;
 /// Most workers abandoned (stuck) and replaced over a catalog's life: past it, stuck workers
@@ -80,11 +87,13 @@ pub type ProbeFn = fn(&Path) -> Result<Probed, MediaError>;
 #[derive(Debug)]
 enum Job {
     Probe {
+        doc: DocId,
         key: String,
         ticket: u64,
         path: PathBuf,
     },
     Preload {
+        doc: DocId,
         key: String,
         ticket: u64,
         path: PathBuf,
@@ -96,6 +105,12 @@ impl Job {
     fn key(&self) -> (&str, u64) {
         match self {
             Self::Probe { key, ticket, .. } | Self::Preload { key, ticket, .. } => (key, *ticket),
+        }
+    }
+
+    fn doc(&self) -> DocId {
+        match self {
+            Self::Probe { doc, .. } | Self::Preload { doc, .. } => *doc,
         }
     }
 
@@ -164,9 +179,10 @@ struct Taken {
 /// What the workers and the control thread share about the volumes (never held across I/O).
 #[derive(Debug, Default)]
 struct Gate {
-    /// The highest ticket a worker took per (probe or not, file): a copy of a job already taken
-    /// (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not run again.
-    claimed: HashMap<(bool, String), u64>,
+    /// The highest ticket a worker took per (doc, probe or not, file): a copy of a job already
+    /// taken (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not run
+    /// again. Tickets are each doc's own.
+    claimed: HashMap<(DocId, bool, String), u64>,
     volumes: HashMap<String, Volume>,
     /// Jobs for stalled volumes (and whether they came from the high-priority queue).
     deferred: Vec<(Job, bool)>,
@@ -178,8 +194,10 @@ struct Gate {
     volume: Option<fn(&Path) -> String>,
     /// The system drive on Windows (`C:`); the Unix system volume `/` is always exempt.
     system_drive: Option<String>,
-    /// The folder of the open show file.
-    show_dir: Option<PathBuf>,
+    /// The folder of each open doc's show file.
+    show_dirs: BTreeMap<DocId, PathBuf>,
+    /// The docs whose catalogs send jobs.
+    members: BTreeSet<DocId>,
     epoch: u64,
     next_trial: u64,
 }
@@ -190,8 +208,8 @@ impl Gate {
     }
 
     /// Volumes never held back: the system volume (`/`, or the system drive) mixes the local
-    /// disk with automounts and cloud folders, and the volume holding the open show file is
-    /// the one an operator cannot do without. Only other volumes (removable drives, network
+    /// disk with automounts and cloud folders, and the volume holding an open show file is
+    /// one an operator cannot do without. Only other volumes (removable drives, network
     /// shares, other mounts) can be stalled for probe scheduling.
     fn exempt(&self, bucket: &str) -> bool {
         bucket == SYSTEM_VOLUME
@@ -200,11 +218,11 @@ impl Gate {
                 .as_ref()
                 .is_some_and(|d| d.eq_ignore_ascii_case(bucket))
             || self
-                .show_dir
-                .as_ref()
+                .show_dirs
+                .values()
                 // A file in the folder: `bucket_of` calls a path directly inside a mount
                 // folder (a show at the root of a volume) part of `/`.
-                .is_some_and(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
+                .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
     }
 
     fn stalled(&self, bucket: &str) -> bool {
@@ -225,7 +243,7 @@ impl Gate {
     /// deferred (its volume is stalled and no trial is due).
     fn admit(&mut self, job: Job, high: bool, now: Instant) -> Option<Taken> {
         let (key, ticket) = job.key();
-        let claim = (job.is_probe(), key.to_owned());
+        let claim = (job.doc(), job.is_probe(), key.to_owned());
         if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
             return None;
         }
@@ -254,7 +272,8 @@ impl Gate {
     /// asked for urgently stays urgent.
     fn defer(&mut self, job: Job, high: bool) {
         let (key, ticket) = job.key();
-        let same = |j: &Job| j.is_probe() == job.is_probe() && j.key().0 == key;
+        let same =
+            |j: &Job| j.doc() == job.doc() && j.is_probe() == job.is_probe() && j.key().0 == key;
         if let Some((_, h)) = self
             .deferred
             .iter_mut()
@@ -382,6 +401,40 @@ impl Gate {
         self.deferred.clear();
         self.events.clear();
     }
+
+    /// Doc `doc` replaced its workspace, now in `show_dir`. When it is the only doc, as
+    /// [`Self::reset`]; with other docs open, what is known about the volumes is theirs too
+    /// and stays: only this doc's claims and waiting jobs go (its tickets keep rising, so its
+    /// jobs still running give stale answers).
+    fn reset_doc(&mut self, doc: DocId, show_dir: Option<PathBuf>) {
+        if self.members.iter().all(|&d| d == doc) {
+            self.reset();
+        } else {
+            self.forget(doc);
+        }
+        self.members.insert(doc);
+        match show_dir {
+            Some(dir) => {
+                self.show_dirs.insert(doc, dir);
+            }
+            None => {
+                self.show_dirs.remove(&doc);
+            }
+        }
+    }
+
+    /// Drops a doc's claims and waiting jobs.
+    fn forget(&mut self, doc: DocId) {
+        self.claimed.retain(|(d, _, _), _| *d != doc);
+        self.deferred.retain(|(j, _)| j.doc() != doc);
+    }
+
+    /// A doc closed: it sends no more jobs, and its show folder is no longer exempt.
+    fn leave(&mut self, doc: DocId) {
+        self.forget(doc);
+        self.members.remove(&doc);
+        self.show_dirs.remove(&doc);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -440,6 +493,7 @@ struct Entry {
 
 /// The job a worker is on.
 struct Busy {
+    doc: DocId,
     since: Instant,
     key: String,
     ticket: u64,
@@ -458,8 +512,9 @@ struct WorkerState {
     abandoned: AtomicBool,
 }
 
-/// Probe workers and the catalog of media the workspace uses.
-pub struct MediaCatalog {
+/// The probe workers every doc shares, their watchdog and what they know about the volumes
+/// (ARCHITECTURE §3.1: one pool of [`PROBE_WORKERS`]).
+pub struct ProbePool {
     high: Sender<Job>,
     low: Sender<Job>,
     high_rx: Receiver<Job>,
@@ -474,7 +529,245 @@ pub struct MediaCatalog {
     limit_unread: bool,
     timeout: Duration,
     clock: ProbeClock,
+}
+
+/// How one doc's catalog reaches the pool: its jobs carry the doc.
+#[derive(Clone)]
+pub struct PoolHandle {
+    doc: DocId,
+    high: Sender<Job>,
+    low: Sender<Job>,
+    gate: Arc<Mutex<Gate>>,
+}
+
+/// A probe the watchdog gave up on: the doc and file it was for.
+pub struct Stuck {
+    pub doc: DocId,
+    pub key: String,
+    pub ticket: u64,
+}
+
+/// What [`index_workspace`] reads from a workspace for a catalog: built off the control thread
+/// for a doc being opened (ARCHITECTURE §3.1, `DocParts`), so installing it there costs only
+/// the probe jobs.
+pub struct Indexed {
+    index: CueIndex,
+    uses: HashMap<CueId, Use>,
+    /// Files in workspace order (the order their probes go out).
+    order: Vec<String>,
+    visited: u64,
+}
+
+/// Reads every cue of `ws` once: the cue index and each audio cue's file.
+pub fn index_workspace(ws: &Workspace) -> Indexed {
+    let mut uses: HashMap<CueId, Use> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut visited = 0;
+    let index = CueIndex::build_visiting(ws, |cue| {
+        visited += 1;
+        if let Some((key, preload)) = media_use(cue) {
+            if seen.insert(key.to_owned()) {
+                order.push(key.to_owned());
+            }
+            uses.insert(
+                cue.id,
+                Use {
+                    key: key.to_owned(),
+                    preload,
+                },
+            );
+        }
+    });
+    Indexed {
+        index,
+        uses,
+        order,
+        visited,
+    }
+}
+
+impl ProbePool {
+    /// Starts the probe workers; they answer through `inbox`.
+    pub fn new(
+        inbox: Sender<Inbox>,
+        probe: ProbeFn,
+        timeout: Duration,
+        clock: ProbeClock,
+    ) -> std::io::Result<Self> {
+        let (high, high_rx) = crossbeam_channel::unbounded::<Job>();
+        let (low, low_rx) = crossbeam_channel::unbounded::<Job>();
+        let mut pool = Self {
+            high,
+            low,
+            high_rx,
+            low_rx,
+            inbox,
+            probe,
+            gate: Arc::default(),
+            workers: Vec::new(),
+            abandoned: 0,
+            limit_reported: false,
+            limit_unread: false,
+            timeout,
+            clock,
+        };
+        #[cfg(windows)]
+        {
+            lock(&pool.gate).system_drive = Some(system_drive(|k| std::env::var(k).ok()));
+        }
+        for _ in 0..PROBE_WORKERS {
+            pool.spawn()?;
+        }
+        Ok(pool)
+    }
+
+    /// Where doc `doc`'s catalog sends its jobs.
+    pub fn handle(&self, doc: DocId) -> PoolHandle {
+        PoolHandle {
+            doc,
+            high: self.high.clone(),
+            low: self.low.clone(),
+            gate: Arc::clone(&self.gate),
+        }
+    }
+
+    /// A doc closed: its waiting jobs go, its folder is no longer exempt. Its jobs already
+    /// taken run to their end; their answers find no doc.
+    pub fn leave(&self, doc: DocId) {
+        lock(&self.gate).leave(doc);
+    }
+
+    fn spawn(&mut self) -> std::io::Result<()> {
+        let state = Arc::new(WorkerState {
+            busy: Mutex::new(None),
+            abandoned: AtomicBool::new(false),
+        });
+        let (high, low, inbox, probe) = (
+            self.high_rx.clone(),
+            self.low_rx.clone(),
+            self.inbox.clone(),
+            self.probe,
+        );
+        let st = Arc::clone(&state);
+        let clock = self.clock.clone();
+        let gate = Arc::clone(&self.gate);
+        let n = self.workers.len() + self.abandoned;
+        // Never joined: a worker stuck in a read on a stalled disk must not hang shutdown. It
+        // ends once the pool and every catalog (the job senders) are gone and its current job
+        // is done.
+        thread::Builder::new()
+            .name(format!("openlab-probe-{n}"))
+            .spawn(move || worker(&high, &low, &inbox, probe, &st, &clock, &gate))?;
+        self.workers.push(state);
+        Ok(())
+    }
+
+    /// Replaces workers stuck on one job for longer than the timeout. Returns the probes given
+    /// up on: their docs report the files unplayable until (if ever) the stuck probe answers.
+    pub fn watchdog(&mut self) -> Vec<Stuck> {
+        let mut out = Vec::new();
+        let mut stuck = Vec::new();
+        let now = self.clock.now();
+        for (i, w) in self.workers.iter().enumerate() {
+            let mut busy = lock(&w.busy);
+            if let Some(b) = busy.as_mut()
+                && !b.reported
+                && now.saturating_duration_since(b.since) >= self.timeout
+            {
+                b.reported = true;
+                stuck.push((
+                    i,
+                    b.doc,
+                    b.key.clone(),
+                    b.ticket,
+                    b.bucket.clone(),
+                    b.probe,
+                    b.epoch,
+                    b.trial,
+                ));
+            }
+        }
+        {
+            let mut gate = lock(&self.gate);
+            for (_, _, key, _, bucket, probe, epoch, trial) in &stuck {
+                gate.timed_out(*epoch, bucket, key, *probe, *trial, now);
+            }
+        }
+        for (i, doc, key, ticket, ..) in stuck.into_iter().rev() {
+            if self.abandoned >= MAX_ABANDONED_WORKERS {
+                if !self.limit_reported {
+                    self.limit_reported = true;
+                    self.limit_unread = true;
+                }
+                break;
+            }
+            let w = self.workers.remove(i);
+            w.abandoned.store(true, Ordering::Release);
+            self.abandoned += 1;
+            let _ = self.spawn();
+            out.push(Stuck { doc, key, ticket });
+        }
+        // Jobs that waited for a stalled volume run when it works again, or one at a time as
+        // trials: a trial that answers (or a stalled volume the watch sees healthy again) ends
+        // the wait for all of them.
+        let released = lock(&self.gate).release_due(now);
+        for (job, high) in released {
+            let queue = if high { &self.high } else { &self.low };
+            let _ = queue.send(job);
+        }
+        out
+    }
+
+    /// The volumes the media watch reports stalled: the probes defer to them too.
+    pub fn set_watch_stalled<'a>(&mut self, volumes: impl IntoIterator<Item = &'a str> + Clone) {
+        let mut gate = lock(&self.gate);
+        // Nothing is built on the (usual) tick where nothing changed.
+        let mut count = 0;
+        let same = volumes.clone().into_iter().all(|v| {
+            count += 1;
+            gate.watch_stalled.contains(v)
+        });
+        if !same || count != gate.watch_stalled.len() {
+            gate.watch_stalled = volumes.into_iter().map(str::to_owned).collect();
+        }
+    }
+
+    /// Tests inject which volume a path is on.
+    pub fn set_volume_of(&mut self, volume: fn(&Path) -> String) {
+        lock(&self.gate).volume = Some(volume);
+    }
+
+    /// Volumes that stalled (`true`) or answered again (`false`) since the last call.
+    pub fn take_volume_events(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut lock(&self.gate).events)
+    }
+
+    /// True once, the first time a stuck worker could not be replaced (the limit is reached).
+    pub fn take_limit_reached(&mut self) -> bool {
+        std::mem::take(&mut self.limit_unread)
+    }
+
+    /// Workers replaced because they were stuck.
+    pub fn abandoned_workers(&self) -> usize {
+        self.abandoned
+    }
+
+    /// Workers running (stuck ones excluded): [`PROBE_WORKERS`] whatever the number of docs.
+    pub fn workers(&self) -> usize {
+        self.workers.len()
+    }
+}
+
+/// The catalog of media one doc's workspace uses; its probes run on the engine's
+/// [`ProbePool`].
+pub struct MediaCatalog {
+    pool: PoolHandle,
+    /// Unit tests of one catalog run it on a pool of its own.
+    #[cfg(test)]
+    own_pool: Option<ProbePool>,
     entries: HashMap<String, Entry>,
+
     next_ticket: u64,
     show_dir: Option<PathBuf>,
     budget: u64,
@@ -545,31 +838,19 @@ struct Use {
 }
 
 impl MediaCatalog {
-    /// Starts the probe workers; they answer through `inbox`.
-    pub fn new(
-        inbox: Sender<Inbox>,
-        show_dir: Option<PathBuf>,
-        preload_budget: u64,
-        probe: ProbeFn,
-        timeout: Duration,
-        clock: ProbeClock,
-    ) -> std::io::Result<Self> {
-        let (high, high_rx) = crossbeam_channel::unbounded::<Job>();
-        let (low, low_rx) = crossbeam_channel::unbounded::<Job>();
-        let mut catalog = Self {
-            high,
-            low,
-            high_rx,
-            low_rx,
-            inbox,
-            probe,
-            gate: Arc::default(),
-            workers: Vec::new(),
-            abandoned: 0,
-            limit_reported: false,
-            limit_unread: false,
-            timeout,
-            clock,
+    /// A catalog for doc `pool.doc`, its media resolved against `show_dir`.
+    pub fn new(pool: PoolHandle, show_dir: Option<PathBuf>, preload_budget: u64) -> Self {
+        {
+            let mut gate = lock(&pool.gate);
+            gate.members.insert(pool.doc);
+            if let Some(dir) = &show_dir {
+                gate.show_dirs.insert(pool.doc, dir.clone());
+            }
+        }
+        Self {
+            pool,
+            #[cfg(test)]
+            own_pool: None,
             entries: HashMap::new(),
             next_ticket: 0,
             show_dir,
@@ -582,43 +863,53 @@ impl MediaCatalog {
             key_changes: Vec::new(),
             #[cfg(test)]
             jobs: 0,
-        };
-        {
-            let mut gate = lock(&catalog.gate);
-            gate.show_dir = catalog.show_dir.clone();
-            #[cfg(windows)]
-            {
-                gate.system_drive = Some(system_drive(|k| std::env::var(k).ok()));
-            }
         }
-        for _ in 0..PROBE_WORKERS {
-            catalog.spawn()?;
-        }
+    }
+
+    /// A catalog with a pool of its own (unit tests of one catalog).
+    #[cfg(test)]
+    fn with_own_pool(
+        inbox: Sender<Inbox>,
+        show_dir: Option<PathBuf>,
+        preload_budget: u64,
+        probe: ProbeFn,
+        timeout: Duration,
+        clock: ProbeClock,
+    ) -> std::io::Result<Self> {
+        let pool = ProbePool::new(inbox, probe, timeout, clock)?;
+        let mut catalog = Self::new(pool.handle(DocId(0)), show_dir, preload_budget);
+        catalog.own_pool = Some(pool);
         Ok(catalog)
     }
 
-    fn spawn(&mut self) -> std::io::Result<()> {
-        let state = Arc::new(WorkerState {
-            busy: Mutex::new(None),
-            abandoned: AtomicBool::new(false),
-        });
-        let (high, low, inbox, probe) = (
-            self.high_rx.clone(),
-            self.low_rx.clone(),
-            self.inbox.clone(),
-            self.probe,
-        );
-        let st = Arc::clone(&state);
-        let clock = self.clock.clone();
-        let gate = Arc::clone(&self.gate);
-        let n = self.workers.len() + self.abandoned;
-        // Never joined: a worker stuck in a read on a stalled disk must not hang shutdown. It
-        // ends once the catalog (the job senders) is gone and its current job is done.
-        thread::Builder::new()
-            .name(format!("openlab-probe-{n}"))
-            .spawn(move || worker(&high, &low, &inbox, probe, &st, &clock, &gate))?;
-        self.workers.push(state);
-        Ok(())
+    /// The own pool's watchdog, its give-ups applied here (as the control loop does).
+    #[cfg(all(test, unix))]
+    fn watchdog(&mut self) -> Vec<(MediaRef, MediaStatus)> {
+        let stuck = self
+            .own_pool
+            .as_mut()
+            .map(ProbePool::watchdog)
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for s in stuck {
+            self.give_up(&s.key, s.ticket, &mut out);
+        }
+        out
+    }
+
+    #[cfg(all(test, unix))]
+    fn take_volume_events(&mut self) -> Vec<(String, bool)> {
+        self.own_pool
+            .as_mut()
+            .map(ProbePool::take_volume_events)
+            .unwrap_or_default()
+    }
+
+    #[cfg(all(test, unix))]
+    fn abandoned_workers(&self) -> usize {
+        self.own_pool
+            .as_ref()
+            .map_or(0, ProbePool::abandoned_workers)
     }
 
     /// Another workspace replaces the old one (opened, created, reverted), or the show was saved
@@ -629,11 +920,7 @@ impl MediaCatalog {
     /// find no entry (or a newer ticket) and are ignored.
     pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
         self.entries.clear();
-        {
-            let mut gate = lock(&self.gate);
-            gate.reset();
-            gate.show_dir = show_dir.clone();
-        }
+        lock(&self.pool.gate).reset_doc(self.pool.doc, show_dir.clone());
         self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
         self.reserved = 0;
@@ -647,29 +934,23 @@ impl MediaCatalog {
     /// changed their mind. Probes go out in workspace order; files near a playhead are moved
     /// ahead with [`Self::prioritize`].
     pub fn sync(&mut self, ws: &Workspace) {
+        self.sync_indexed(index_workspace(ws));
+    }
+
+    /// [`Self::sync`] from a workspace already read ([`index_workspace`], off the control
+    /// thread for a doc being opened).
+    pub fn sync_indexed(&mut self, indexed: Indexed) {
         self.plan_changes = PlanChanges {
             all: true,
             ..PlanChanges::default()
         };
-        let mut uses: HashMap<CueId, Use> = HashMap::new();
-        let mut order: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut visited = 0;
-        self.index = CueIndex::build_visiting(ws, |cue| {
-            visited += 1;
-            if let Some((key, preload)) = media_use(cue) {
-                if seen.insert(key.to_owned()) {
-                    order.push(key.to_owned());
-                }
-                uses.insert(
-                    cue.id,
-                    Use {
-                        key: key.to_owned(),
-                        preload,
-                    },
-                );
-            }
-        });
+        let Indexed {
+            index,
+            uses,
+            order,
+            visited,
+        } = indexed;
+        self.index = index;
         self.cues_read += visited;
         let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
         for u in uses.values() {
@@ -872,12 +1153,13 @@ impl MediaCatalog {
         self.reserved += bytes;
         e.reserved = bytes;
         let job = Job::Preload {
+            doc: self.pool.doc,
             key: key.to_owned(),
             ticket: e.preload_ticket,
             path,
             max_bytes: bytes,
         };
-        if self.low.send(job).is_err() {
+        if self.pool.low.send(job).is_err() {
             self.reserved = self.reserved.saturating_sub(bytes);
             e.reserved = 0;
             e.preload_ticket = 0;
@@ -915,16 +1197,17 @@ impl MediaCatalog {
             e.urgent = true;
             // A worker has this job already (or answered it): a second copy would only be
             // dropped, or probe the file twice.
-            if lock(&self.gate)
+            if lock(&self.pool.gate)
                 .claimed
-                .get(&(true, key.to_owned()))
+                .get(&(self.pool.doc, true, key.to_owned()))
                 .is_some_and(|t| *t >= e.ticket)
             {
                 continue;
             }
             if let Some(path) = media_path(&MediaRef::new(key), self.show_dir.as_deref()) {
                 // The same ticket: whichever copy answers first counts, the other is ignored.
-                let _ = self.high.send(Job::Probe {
+                let _ = self.pool.high.send(Job::Probe {
+                    doc: self.pool.doc,
                     key: key.to_owned(),
                     ticket: e.ticket,
                     path,
@@ -952,8 +1235,10 @@ impl MediaCatalog {
         let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
         let asked = match &path {
             Some(path) => self
+                .pool
                 .low
                 .send(Job::Probe {
+                    doc: self.pool.doc,
                     key: key.clone(),
                     ticket,
                     path: path.clone(),
@@ -1012,82 +1297,9 @@ impl MediaCatalog {
         }
     }
 
-    /// Replaces workers stuck on one job for longer than the timeout; their files are reported
-    /// unplayable until (if ever) the stuck probe answers. Returns those statuses.
-    pub fn watchdog(&mut self) -> Vec<(MediaRef, MediaStatus)> {
-        let mut out = Vec::new();
-        let mut stuck = Vec::new();
-        let now = self.clock.now();
-        for (i, w) in self.workers.iter().enumerate() {
-            let mut busy = lock(&w.busy);
-            if let Some(b) = busy.as_mut()
-                && !b.reported
-                && now.saturating_duration_since(b.since) >= self.timeout
-            {
-                b.reported = true;
-                stuck.push((
-                    i,
-                    b.key.clone(),
-                    b.ticket,
-                    b.bucket.clone(),
-                    b.probe,
-                    b.epoch,
-                    b.trial,
-                ));
-            }
-        }
-        {
-            let mut gate = lock(&self.gate);
-            for (_, key, _, bucket, probe, epoch, trial) in &stuck {
-                gate.timed_out(*epoch, bucket, key, *probe, *trial, now);
-            }
-        }
-        for (i, key, ticket, ..) in stuck.into_iter().rev() {
-            if self.abandoned >= MAX_ABANDONED_WORKERS {
-                if !self.limit_reported {
-                    self.limit_reported = true;
-                    self.limit_unread = true;
-                }
-                break;
-            }
-            let w = self.workers.remove(i);
-            w.abandoned.store(true, Ordering::Release);
-            self.abandoned += 1;
-            let _ = self.spawn();
-            self.give_up(&key, ticket, &mut out);
-        }
-        // Jobs that waited for a stalled volume run when it works again, or one at a time as
-        // trials: a trial that answers (or a stalled volume the watch sees healthy again) ends
-        // the wait for all of them.
-        let released = lock(&self.gate).release_due(now);
-        for (job, high) in released {
-            let queue = if high { &self.high } else { &self.low };
-            let _ = queue.send(job);
-        }
-        out
-    }
-
-    /// The volumes the media watch reports stalled: the probes defer to them too.
-    pub fn set_watch_stalled<'a>(&mut self, volumes: impl IntoIterator<Item = &'a str> + Clone) {
-        let mut gate = lock(&self.gate);
-        // Nothing is built on the (usual) tick where nothing changed.
-        let mut count = 0;
-        let same = volumes.clone().into_iter().all(|v| {
-            count += 1;
-            gate.watch_stalled.contains(v)
-        });
-        if !same || count != gate.watch_stalled.len() {
-            gate.watch_stalled = volumes.into_iter().map(str::to_owned).collect();
-        }
-    }
-
-    /// Tests inject which volume a path is on.
-    pub fn set_volume_of(&mut self, volume: fn(&Path) -> String) {
-        lock(&self.gate).volume = Some(volume);
-    }
-
-    /// Reports `key`'s probe `ticket` unplayable, if it is still the one asked and not answered.
-    fn give_up(&mut self, key: &str, ticket: u64, out: &mut Vec<(MediaRef, MediaStatus)>) {
+    /// Reports `key`'s probe `ticket` unplayable, if it is still the one asked and not answered
+    /// (the pool's watchdog gave up on it).
+    pub fn give_up(&mut self, key: &str, ticket: u64, out: &mut Vec<(MediaRef, MediaStatus)>) {
         if let Some(e) = self.entries.get_mut(key)
             && e.ticket == ticket
             && e.asking
@@ -1104,11 +1316,6 @@ impl MediaCatalog {
                 },
             ));
         }
-    }
-
-    /// Volumes that stalled (`true`) or answered again (`false`) since the last call.
-    pub fn take_volume_events(&mut self) -> Vec<(String, bool)> {
-        std::mem::take(&mut lock(&self.gate).events)
     }
 
     /// Takes a worker's answer. Returns the status to report to the cue engine, or `None` for a
@@ -1311,16 +1518,6 @@ impl MediaCatalog {
             _ => None,
         })
     }
-
-    /// True once, the first time a stuck worker could not be replaced (the limit is reached).
-    pub fn take_limit_reached(&mut self) -> bool {
-        std::mem::take(&mut self.limit_unread)
-    }
-
-    /// Workers replaced because they were stuck.
-    pub fn abandoned_workers(&self) -> usize {
-        self.abandoned
-    }
 }
 
 /// The file an audio cue plays and whether it asks for it to be preloaded.
@@ -1383,8 +1580,10 @@ fn worker(
             continue;
         };
         let probe_job = job.is_probe();
+        let doc = job.doc();
         let key = job.key().0.to_owned();
         *lock(&state.busy) = Some(Busy {
+            doc,
             since: clock.now(),
             key: key.clone(),
             ticket: job.key().1,
@@ -1395,7 +1594,9 @@ fn worker(
             reported: false,
         });
         let (answer, answered) = match job {
-            Job::Probe { key, ticket, path } => {
+            Job::Probe {
+                key, ticket, path, ..
+            } => {
                 let result = probe(&path).map(|p| (path, p));
                 let answered = result.as_ref().err().is_none_or(volume_answered);
                 (
@@ -1412,6 +1613,7 @@ fn worker(
                 ticket,
                 path,
                 max_bytes,
+                ..
             } => {
                 let result = preload_within(Media::Path(path), max_bytes);
                 let answered = result.as_ref().err().is_none_or(volume_answered);
@@ -1435,7 +1637,8 @@ fn worker(
             answered,
             clock.now(),
         );
-        if inbox.send(Inbox::Probe(answer)).is_err() || state.abandoned.load(Ordering::Acquire) {
+        if inbox.send(Inbox::Probe(doc, answer)).is_err() || state.abandoned.load(Ordering::Acquire)
+        {
             return;
         }
     }
@@ -1466,7 +1669,7 @@ mod tests {
 
     fn answer(rx: &Receiver<Inbox>) -> ProbeAnswer {
         match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
-            Inbox::Probe(a) => a,
+            Inbox::Probe(_, a) => a,
             other => panic!("{other:?}"),
         }
     }
@@ -1474,7 +1677,7 @@ mod tests {
     #[test]
     fn a_reprobe_keeps_the_last_answer_until_the_new_one() {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let mut cat = MediaCatalog::new(
+        let mut cat = MediaCatalog::with_own_pool(
             tx,
             None,
             0,
@@ -1540,7 +1743,7 @@ mod tests {
     fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let probe: ProbeFn = openlab_audio::probe;
-        let cat = MediaCatalog::new(
+        let cat = MediaCatalog::with_own_pool(
             tx,
             None,
             budget,
@@ -2319,6 +2522,7 @@ mod tests {
 
     fn job(key: &str, ticket: u64) -> Job {
         Job::Probe {
+            doc: DocId(0),
             key: key.to_owned(),
             ticket,
             path: PathBuf::from(key),
@@ -2327,6 +2531,7 @@ mod tests {
 
     fn preload(key: &str, ticket: u64) -> Job {
         Job::Preload {
+            doc: DocId(0),
             key: key.to_owned(),
             ticket,
             path: PathBuf::from(key),
@@ -2478,6 +2683,71 @@ mod tests {
         assert!(gate.volumes[DEAD].stuck.is_empty());
     }
 
+    fn job_of(doc: u64, key: &str, ticket: u64) -> Job {
+        Job::Probe {
+            doc: DocId(doc),
+            key: key.to_owned(),
+            ticket,
+            path: PathBuf::from(key),
+        }
+    }
+
+    /// Two docs' tickets are their own: one doc's job is never taken for a copy of another's.
+    #[test]
+    fn the_same_file_in_two_docs_is_probed_for_each() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        assert!(gate.admit(job_of(0, "/a/k.wav", 5), false, t0).is_some());
+        assert!(gate.admit(job_of(1, "/a/k.wav", 3), false, t0).is_some());
+        // Copies of either are still dropped.
+        assert!(gate.admit(job_of(0, "/a/k.wav", 5), true, t0).is_none());
+        assert!(gate.admit(job_of(1, "/a/k.wav", 3), true, t0).is_none());
+    }
+
+    /// The volumes are the engine's: one doc replacing its workspace forgets only its own
+    /// claims and waiting jobs while another doc is open; alone, it forgets everything.
+    #[test]
+    fn one_docs_reset_keeps_what_the_others_know_about_the_volumes() {
+        let t0 = Instant::now();
+        let mut gate = Gate {
+            members: BTreeSet::from([DocId(0), DocId(1)]),
+            ..Gate::default()
+        };
+        stuck(&mut gate, "/mnt/dead/a.wav", 1, t0);
+        stuck(&mut gate, "/mnt/dead/b.wav", 2, t0);
+        assert!(gate.stalled(DEAD));
+        // Jobs of both docs wait for the stalled volume (a trial took the only turn).
+        assert!(
+            gate.admit(job_of(0, "/mnt/dead/c.wav", 3), false, t0)
+                .is_some()
+        );
+        assert!(
+            gate.admit(job_of(0, "/mnt/dead/d.wav", 4), false, t0)
+                .is_none()
+        );
+        assert!(
+            gate.admit(job_of(1, "/mnt/dead/e.wav", 1), false, t0)
+                .is_none()
+        );
+        assert!(gate.admit(job_of(1, "/ok/f.wav", 2), false, t0).is_some());
+        gate.reset_doc(DocId(0), None);
+        assert!(gate.stalled(DEAD), "doc 1 still needs to know");
+        assert_eq!(gate.deferred.len(), 1);
+        assert_eq!(gate.deferred[0].0.doc(), DocId(1));
+        assert!(gate.claimed.keys().all(|(d, _, _)| *d == DocId(1)));
+        // Doc 1 closes; doc 0, alone, resets: nothing carries over.
+        gate.leave(DocId(1));
+        assert!(gate.deferred.is_empty());
+        gate.reset_doc(DocId(0), Some(PathBuf::from("/Volumes/Show/x")));
+        assert!(!gate.stalled(DEAD));
+        assert!(gate.exempt("/Volumes/Show"));
+        gate.leave(DocId(0));
+        assert!(
+            !gate.exempt("/Volumes/Show"),
+            "a closed show's volume is no longer exempt"
+        );
+    }
+
     #[test]
     fn a_probe_and_a_preload_of_one_file_do_not_shadow_each_other() {
         let t0 = Instant::now();
@@ -2540,7 +2810,7 @@ mod tests {
         let t0 = Instant::now();
         let mut gate = Gate {
             system_drive: Some(system_drive(|_| None)),
-            show_dir: Some(PathBuf::from("/Volumes/Shows/Hamlet")),
+            show_dirs: BTreeMap::from([(DocId(0), PathBuf::from("/Volumes/Shows/Hamlet"))]),
             ..Gate::default()
         };
         // Stuck probes on the system drive (any case), the show file's volume and a
@@ -2568,7 +2838,7 @@ mod tests {
         let taken = gate.admit(job("/Volumes/Shows/Hamlet/media/a.wav", 1), true, t0);
         assert!(taken.is_some_and(|t| t.trial.is_none()));
         // Another show is opened from elsewhere: the old show's volume is open to the verdict.
-        gate.show_dir = Some(PathBuf::from("/Users/me/Show"));
+        gate.show_dirs = BTreeMap::from([(DocId(0), PathBuf::from("/Users/me/Show"))]);
         gate.watch_stalled.clear();
         gate.timed_out(gate.epoch, "/Volumes/Shows", "x.wav", true, None, t0);
         gate.timed_out(gate.epoch, "/Volumes/Shows", "y.wav", true, None, t0);
@@ -2677,14 +2947,15 @@ mod tests {
         let tick = Arc::clone(&ms);
         let clock =
             ProbeClock::new(move || base + Duration::from_millis(tick.load(Ordering::Acquire)));
-        let cat = MediaCatalog::new(tx, None, 0, probe, Duration::from_secs(30), clock).unwrap();
+        let cat = MediaCatalog::with_own_pool(tx, None, 0, probe, Duration::from_secs(30), clock)
+            .unwrap();
         (cat, rx, ms)
     }
 
     #[cfg(unix)]
     fn next_answer(rx: &Receiver<Inbox>) -> ProbeAnswer {
         match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
-            Inbox::Probe(a) => a,
+            Inbox::Probe(_, a) => a,
             other => panic!("{other:?}"),
         }
     }
@@ -2725,7 +2996,7 @@ mod tests {
         // One trial of the dead volume runs; the three others wait (no worker taken).
         DEAD_VOLUME.wait_entered(3);
         let deadline = Instant::now() + Duration::from_secs(30);
-        while lock(&cat.gate).deferred.len() < 3 {
+        while lock(&cat.pool.gate).deferred.len() < 3 {
             assert!(Instant::now() < deadline, "files never deferred");
             std::thread::yield_now();
         }
@@ -2747,7 +3018,7 @@ mod tests {
         assert_eq!(cat.abandoned_workers(), 3);
         advance(&ms, 29);
         cat.watchdog();
-        assert_eq!(lock(&cat.gate).deferred.len(), 3);
+        assert_eq!(lock(&cat.pool.gate).deferred.len(), 3);
         advance(&ms, 2);
         cat.watchdog();
         DEAD_VOLUME.wait_entered(4);
@@ -2785,7 +3056,7 @@ mod tests {
         assert!(cat.take_volume_events().is_empty());
         cat.request("/slow/fine3.wav".to_owned());
         assert!(cat.answer(next_answer(&rx)).is_some());
-        assert!(lock(&cat.gate).deferred.is_empty());
+        assert!(lock(&cat.pool.gate).deferred.is_empty());
         for k in ["/slow/fine1.wav", "/other/fine2.wav", "/slow/fine3.wav"] {
             assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
         }
@@ -2806,19 +3077,19 @@ mod tests {
             cat.take_volume_events(),
             vec![("/mnt/fifo".to_owned(), true)]
         );
-        assert!(lock(&cat.gate).stalled("/mnt/fifo"));
+        assert!(lock(&cat.pool.gate).stalled("/mnt/fifo"));
         // Another workspace is opened: nothing of the stall carries over.
         cat.reset(None, &template().0);
-        assert!(!lock(&cat.gate).stalled("/mnt/fifo"));
+        assert!(!lock(&cat.pool.gate).stalled("/mnt/fifo"));
         cat.request("/mnt/fifo/c.wav".to_owned());
         FIFO_VOLUME.wait_entered(3);
-        assert!(lock(&cat.gate).deferred.is_empty());
+        assert!(lock(&cat.pool.gate).deferred.is_empty());
         // The old jobs' reports never reach the new state.
         FIFO_VOLUME.open();
         for _ in 0..3 {
             next_answer(&rx);
         }
-        assert!(!lock(&cat.gate).stalled("/mnt/fifo"));
+        assert!(!lock(&cat.pool.gate).stalled("/mnt/fifo"));
     }
 
     #[cfg(unix)]
@@ -2859,7 +3130,7 @@ mod tests {
         WEDGED_SHARE.wait_entered(2);
         advance(&ms, 31);
         assert_eq!(cat.watchdog().len(), 2);
-        assert!(lock(&cat.gate).stalled(share));
+        assert!(lock(&cat.pool.gate).stalled(share));
         // Cues keep asking for files on it: one goes out as the trial and hangs, the rest wait.
         let rest: Vec<String> = (0..4).map(|i| format!("{share}/c{i}.wav")).collect();
         for k in &rest {
@@ -2868,7 +3139,7 @@ mod tests {
         cat.prioritize(rest.iter().map(String::as_str));
         WEDGED_SHARE.wait_entered(3);
         let deadline = Instant::now() + Duration::from_secs(30);
-        while lock(&cat.gate).deferred.len() < 3 {
+        while lock(&cat.pool.gate).deferred.len() < 3 {
             assert!(Instant::now() < deadline, "files never deferred");
             std::thread::yield_now();
         }
@@ -2884,7 +3155,10 @@ mod tests {
         for k in &rest {
             assert!(matches!(cat.get(k), Some(Probe::Ready(_))), "{k}");
         }
-        assert!(!lock(&cat.gate).stalled(share), "an answer ends the stall");
+        assert!(
+            !lock(&cat.pool.gate).stalled(share),
+            "an answer ends the stall"
+        );
         assert_eq!(
             cat.take_volume_events(),
             vec![(share.to_owned(), true), (share.to_owned(), false)]
@@ -2898,7 +3172,7 @@ mod tests {
         // is still found.
         for dir in ["/Volumes/SHOW", "/mnt/x", "/media/u/x", "/run/media/u/x"] {
             let gate = Gate {
-                show_dir: Some(PathBuf::from(dir)),
+                show_dirs: BTreeMap::from([(DocId(0), PathBuf::from(dir))]),
                 ..Gate::default()
             };
             assert!(
@@ -2918,7 +3192,7 @@ mod tests {
     fn the_catalog_exempts_the_volume_of_the_show_it_was_made_or_reset_with() {
         let (tx, _rx) = crossbeam_channel::unbounded();
         let mk = |dir: Option<&str>| {
-            MediaCatalog::new(
+            MediaCatalog::with_own_pool(
                 tx.clone(),
                 dir.map(PathBuf::from),
                 0,
@@ -2929,7 +3203,7 @@ mod tests {
             .unwrap()
         };
         let mut cat = mk(Some("/Volumes/ShowDrive"));
-        let exempt = |cat: &MediaCatalog, v: &str| lock(&cat.gate).exempt(v);
+        let exempt = |cat: &MediaCatalog, v: &str| lock(&cat.pool.gate).exempt(v);
         assert!(exempt(&cat, "/Volumes/ShowDrive"));
         assert!(!exempt(&cat, "/Volumes/Other"));
         // Another show, on another volume.

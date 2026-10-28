@@ -13,7 +13,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{CueId, CueListId};
 
-use super::{Control, ControlConfig, DocCx};
+use super::{Control, ControlConfig, DocCx, DocId, Engine};
 use crate::diag::{Counters, Peek, StatusReporter};
 
 /// Entries `log_tail` returns when the request names no limit: the whole ring.
@@ -45,16 +45,17 @@ struct TriggerWindow {
 
 /// State of the observers, kept in [`Control`].
 pub(super) struct Observe {
-    /// The last state logged per cue (idle cues are forgotten), to tell a start from a resume.
-    states: HashMap<CueId, WireCueState>,
+    /// The last state logged per doc and cue (idle cues are forgotten), to tell a start from a
+    /// resume.
+    states: HashMap<(DocId, CueId), WireCueState>,
     status: Option<StatusReporter>,
     /// `log_dropped` already reported to the log.
     seen_log_dropped: u64,
     /// When the "fell behind" notice was last logged.
     last_drop_note_ms: Option<i64>,
     triggers: HashMap<String, TriggerWindow>,
-    /// The workspace path last told to the crash hook.
-    path: Option<PathBuf>,
+    /// The open docs' show files last told to the crash hook.
+    paths: Vec<Option<PathBuf>>,
     /// The `log_entry` budget: (window start, pushes in it).
     push_window: Option<(i64, u32)>,
     /// The newest `log_entry` not delivered (over the budget, or the channel was too full);
@@ -70,15 +71,15 @@ impl Observe {
             seen_log_dropped: 0,
             last_drop_note_ms: None,
             triggers: HashMap::new(),
-            path: None,
+            paths: Vec::new(),
             push_window: None,
             unsent: None,
         }
     }
 
-    /// A new workspace: no cue is running in it.
-    pub(super) fn reset(&mut self) {
-        self.states.clear();
+    /// Doc `doc` has a new workspace, or closed: no cue of it is running.
+    pub(super) fn reset(&mut self, doc: DocId) {
+        self.states.retain(|(d, _), _| *d != doc);
     }
 }
 
@@ -89,10 +90,10 @@ fn elapsed(now: i64, then: i64, gap: i64) -> bool {
     d < 0 || d >= gap
 }
 
-impl DocCx<'_> {
+impl Engine {
     /// Seconds of audio rendered: the show's own time.
     fn show_time(&self) -> f64 {
-        self.eng.mixer.samples_rendered() as f64 / f64::from(self.eng.rate.get())
+        self.mixer.samples_rendered() as f64 / f64::from(self.rate.get())
     }
 
     /// Adds a record to the show log (ring and disk) and, when the host asked for it, offers it
@@ -106,7 +107,7 @@ impl DocCx<'_> {
         source: Option<String>,
     ) {
         let entry = LogEntry {
-            time_ms: self.eng.config.clock.now_ms(),
+            time_ms: self.config.clock.now_ms(),
             show_time: Some(self.show_time()),
             level,
             kind,
@@ -114,12 +115,12 @@ impl DocCx<'_> {
             cue,
             source,
         };
-        if !self.eng.config.push_log {
-            self.eng.config.show_log.record(entry);
+        if !self.config.push_log {
+            self.config.show_log.record(entry);
             return;
         }
-        let (seq, entry) = self.eng.config.show_log.record_copy(entry);
-        let now = self.eng.config.clock.now_ms();
+        let (seq, entry) = self.config.show_log.record_copy(entry);
+        let now = self.config.clock.now_ms();
         self.push(now, ServerMessage::LogEntry { seq, entry });
     }
 
@@ -127,30 +128,238 @@ impl DocCx<'_> {
     /// a client that is not keeping up must not use up the budget of the records after it.
     /// What is not delivered is kept as the newest unsent (an older one is superseded).
     fn push(&mut self, now: i64, message: ServerMessage) {
-        let (start, pushed) = match self.eng.observe.push_window {
+        let (start, pushed) = match self.observe.push_window {
             Some((start, n)) if !elapsed(now, start, LOG_PUSH_WINDOW_MS) => (start, n),
             _ => (now, 0),
         };
-        self.eng.observe.push_window = Some((start, pushed));
+        self.observe.push_window = Some((start, pushed));
         if pushed >= LOG_PUSHES_PER_WINDOW {
-            self.eng.observe.unsent = Some(message);
+            self.observe.unsent = Some(message);
             return;
         }
-        match self.eng.out.try_lossy(message) {
+        match self.out.try_lossy(message) {
             Ok(()) => {
-                self.eng.observe.push_window = Some((start, pushed + 1));
-                self.eng.observe.unsent = None;
+                self.observe.push_window = Some((start, pushed + 1));
+                self.observe.unsent = None;
             }
-            Err(message) => self.eng.observe.unsent = Some(message),
+            Err(message) => self.observe.unsent = Some(message),
         }
     }
 
     /// Once a tick: the newest record not yet delivered, once the budget and the channel allow,
     /// so a client learns of a gap without waiting for the next record.
     fn flush_log_push(&mut self, now: i64) {
-        if let Some(message) = self.eng.observe.unsent.take() {
+        if let Some(message) = self.observe.unsent.take() {
             self.push(now, message);
         }
+    }
+
+    /// An input reached the control thread from a client or OSC peer (sent by the network
+    /// layer just before the input itself, on the same channel, so the order holds).
+    pub(super) fn observe_trigger(&mut self, source: String, detail: String) {
+        let now = self.config.clock.now_ms();
+        let key = if self.observe.triggers.contains_key(&source)
+            || self.observe.triggers.len() < MAX_TRIGGER_SOURCES
+        {
+            source
+        } else {
+            OTHER_SOURCES.to_owned()
+        };
+        let window = self
+            .observe
+            .triggers
+            .entry(key.clone())
+            .or_insert(TriggerWindow {
+                start_ms: now,
+                logged: 0,
+                suppressed: 0,
+            });
+        let mut summary = 0;
+        if elapsed(now, window.start_ms, TRIGGER_WINDOW_MS) {
+            summary = std::mem::take(&mut window.suppressed);
+            window.start_ms = now;
+            window.logged = 0;
+        }
+        let log_it = window.logged < TRIGGERS_LOGGED_PER_WINDOW;
+        if log_it {
+            window.logged += 1;
+        } else {
+            window.suppressed += 1;
+        }
+        self.note_suppressed(&key, summary);
+        if log_it {
+            self.record(LogKind::Trigger, LogLevel::Info, detail, None, Some(key));
+        }
+    }
+
+    fn note_suppressed(&mut self, source: &str, suppressed: u64) {
+        if suppressed > 0 {
+            self.record(
+                LogKind::Trigger,
+                LogLevel::Info,
+                format!("{suppressed} more input(s) not logged (too many too fast)"),
+                None,
+                Some(source.to_owned()),
+            );
+        }
+    }
+
+    /// Summarises and forgets the sources whose window is over.
+    fn flush_trigger_windows(&mut self, now: i64) {
+        let over: Vec<String> = self
+            .observe
+            .triggers
+            .iter()
+            .filter(|(_, w)| elapsed(now, w.start_ms, TRIGGER_WINDOW_MS))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in over {
+            if let Some(w) = self.observe.triggers.remove(&key) {
+                self.note_suppressed(&key, w.suppressed);
+            }
+        }
+    }
+
+    /// Records and broadcasts a message of `kind`: [`Engine::log`] for events with their own
+    /// kind (device, document).
+    pub(super) fn log_kind(&mut self, kind: LogKind, level: LogLevel, message: String) {
+        self.record(kind, level, message.clone(), None, None);
+        self.out.send(ServerMessage::Log { level, message });
+    }
+
+    /// The entries `log_tail` answers with, the records the disk writer lost, and the `seq`
+    /// of the newest record.
+    pub(super) fn log_tail(&self, max: Option<u32>) -> (Vec<LogEntry>, u64, u64) {
+        let max = max.map_or(TAIL_ALL, |m| usize::try_from(m).unwrap_or(TAIL_ALL));
+        let (entries, seq) = self.config.show_log.tail_seq(max);
+        (entries, self.config.show_log.dropped(), seq)
+    }
+
+    /// Once per tick: the crash hook's workspace paths (`paths`: every open doc's show file),
+    /// a note when log records were lost, and the `status` message when one is due.
+    pub(super) fn observe_tick(&mut self, paths: Vec<Option<PathBuf>>) {
+        if self.observe.paths != paths {
+            // The open shows, in open order; untitled ones are left out.
+            let named: Vec<String> = paths
+                .iter()
+                .flatten()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            self.observe.paths = paths;
+            self.config
+                .show_log
+                .set_workspace((!named.is_empty()).then(|| named.join("; ")));
+        }
+        let now = self.config.clock.now_ms();
+        self.flush_trigger_windows(now);
+        self.flush_log_push(now);
+        let lost = self.config.show_log.dropped();
+        if lost > self.observe.seen_log_dropped
+            && self
+                .observe
+                .last_drop_note_ms
+                .is_none_or(|at| elapsed(now, at, DROP_NOTE_GAP_MS))
+        {
+            let more = lost - self.observe.seen_log_dropped;
+            self.observe.last_drop_note_ms = Some(now);
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "the show log fell behind the disk: {more} more record(s) not written \
+                     ({lost} so far; still available to log_tail)"
+                ),
+            );
+            // The notice is a record too, and a full queue refuses it: count it as seen, or
+            // it would be reported again on the next tick, and so on.
+            self.observe.seen_log_dropped = self.config.show_log.dropped();
+        }
+        // Taken out so the counters can borrow `self` while the reporter decides.
+        if let Some(mut reporter) = self.observe.status.take() {
+            // Counters are gathered only when a status is due: the CPU probe is a syscall or a
+            // file read, and the device name a copy.
+            let status = reporter.poll(now, &self.status_peek(), || self.status_counters());
+            self.observe.status = Some(reporter);
+            if let Some(status) = status {
+                let mut message = ServerMessage::Status {
+                    status: Box::new(status),
+                };
+                message.sanitise();
+                self.out.send_lossy(message);
+            }
+        }
+    }
+
+    /// What decides whether a status is due: atomics and borrowed fields, no copies.
+    fn status_peek(&self) -> Peek<'_> {
+        let (device_name, device_state) = match self.backend.device() {
+            Some(d) => (Some(d.info().name.as_str()), wire_device_state(d)),
+            None => (None, DeviceState::Absent),
+        };
+        Peek {
+            xruns: self.mixer.xruns(),
+            underrun_frames: self.mixer.underrun_frames(),
+            device_name,
+            device_state,
+            network_output_disabled: self.network_disabled(),
+        }
+    }
+
+    fn status_counters(&self) -> Counters {
+        let device = match self.backend.device() {
+            Some(d) => {
+                let info = d.info();
+                DeviceStatus {
+                    name: Some(info.name.clone()),
+                    state: wire_device_state(d),
+                    sample_rate: self.rate.get(),
+                    block_frames: info.block_frames,
+                    channels: u32::from(info.channels),
+                    latency_ms: info.monitor.device_latency_seconds().map(|s| s * 1000.0),
+                }
+            }
+            None => DeviceStatus {
+                name: None,
+                state: DeviceState::Absent,
+                sample_rate: self.rate.get(),
+                block_frames: u32::try_from(self.block).ok(),
+                channels: u32::try_from(self.cue_outputs).unwrap_or(u32::MAX),
+                latency_ms: None,
+            },
+        };
+        Counters {
+            xruns: self.mixer.xruns(),
+            underrun_frames: self.mixer.underrun_frames(),
+            streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
+            log_dropped: self.config.show_log.dropped(),
+            log_seq: self.config.show_log.seq(),
+            network_output_disabled: self.network_disabled(),
+            device,
+            cpu_seconds: (self.config.cpu_probe)(),
+            // Worst callback since the previous status (read-and-reset; this is its only
+            // reader). Offline there is no audio callback to time.
+            engine_load: self
+                .backend
+                .device()
+                .and_then(|d| d.info().monitor.take_engine_load())
+                .filter(|l| l.is_finite()),
+        }
+    }
+}
+
+impl DocCx<'_> {
+    pub(super) fn record(
+        &mut self,
+        kind: LogKind,
+        level: LogLevel,
+        message: String,
+        cue: Option<CueId>,
+        source: Option<String>,
+    ) {
+        self.eng.record(kind, level, message, cue, source);
+    }
+
+    pub(super) fn log_kind(&mut self, kind: LogKind, level: LogLevel, message: String) {
+        self.eng.log_kind(kind, level, message);
     }
 
     /// `cue 5 "Storm"`, for log lines.
@@ -196,74 +405,6 @@ impl DocCx<'_> {
         }
     }
 
-    /// An input reached the control thread from a client or OSC peer (sent by the network
-    /// layer just before the input itself, on the same channel, so the order holds).
-    pub(super) fn observe_trigger(&mut self, source: String, detail: String) {
-        let now = self.eng.config.clock.now_ms();
-        let key = if self.eng.observe.triggers.contains_key(&source)
-            || self.eng.observe.triggers.len() < MAX_TRIGGER_SOURCES
-        {
-            source
-        } else {
-            OTHER_SOURCES.to_owned()
-        };
-        let window = self
-            .eng
-            .observe
-            .triggers
-            .entry(key.clone())
-            .or_insert(TriggerWindow {
-                start_ms: now,
-                logged: 0,
-                suppressed: 0,
-            });
-        let mut summary = 0;
-        if elapsed(now, window.start_ms, TRIGGER_WINDOW_MS) {
-            summary = std::mem::take(&mut window.suppressed);
-            window.start_ms = now;
-            window.logged = 0;
-        }
-        let log_it = window.logged < TRIGGERS_LOGGED_PER_WINDOW;
-        if log_it {
-            window.logged += 1;
-        } else {
-            window.suppressed += 1;
-        }
-        self.note_suppressed(&key, summary);
-        if log_it {
-            self.record(LogKind::Trigger, LogLevel::Info, detail, None, Some(key));
-        }
-    }
-
-    fn note_suppressed(&mut self, source: &str, suppressed: u64) {
-        if suppressed > 0 {
-            self.record(
-                LogKind::Trigger,
-                LogLevel::Info,
-                format!("{suppressed} more input(s) not logged (too many too fast)"),
-                None,
-                Some(source.to_owned()),
-            );
-        }
-    }
-
-    /// Summarises and forgets the sources whose window is over.
-    fn flush_trigger_windows(&mut self, now: i64) {
-        let over: Vec<String> = self
-            .eng
-            .observe
-            .triggers
-            .iter()
-            .filter(|(_, w)| elapsed(now, w.start_ms, TRIGGER_WINDOW_MS))
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in over {
-            if let Some(w) = self.eng.observe.triggers.remove(&key) {
-                self.note_suppressed(&key, w.suppressed);
-            }
-        }
-    }
-
     /// Cue state changes and warnings the engine produced: starts, stops and failures.
     pub(super) fn observe_changes(&mut self, changes: &[RuntimeChange]) {
         use WireCueState::{Broken, Fading, Idle, Loaded, Paused, PostWaiting};
@@ -271,11 +412,12 @@ impl DocCx<'_> {
         for change in changes {
             match change {
                 RuntimeChange::CueState { cue, state, reason } => {
-                    let before = self.eng.observe.states.get(cue).copied();
+                    let at = (self.doc.id, *cue);
+                    let before = self.eng.observe.states.get(&at).copied();
                     if *state == Idle {
-                        self.eng.observe.states.remove(cue);
+                        self.eng.observe.states.remove(&at);
                     } else {
-                        self.eng.observe.states.insert(*cue, *state);
+                        self.eng.observe.states.insert(at, *state);
                     }
                     let label = self.cue_label(*cue);
                     match (*state, before) {
@@ -332,130 +474,6 @@ impl DocCx<'_> {
                 }
                 _ => {}
             }
-        }
-    }
-
-    /// Records and broadcasts a message of `kind`: [`Control::log`] for events with their own
-    /// kind (device, document).
-    pub(super) fn log_kind(&mut self, kind: LogKind, level: LogLevel, message: String) {
-        self.record(kind, level, message.clone(), None, None);
-        self.eng.out.send(ServerMessage::Log { level, message });
-    }
-
-    /// The entries `log_tail` answers with, the records the disk writer lost, and the `seq`
-    /// of the newest record.
-    pub(super) fn log_tail(&self, max: Option<u32>) -> (Vec<LogEntry>, u64, u64) {
-        let max = max.map_or(TAIL_ALL, |m| usize::try_from(m).unwrap_or(TAIL_ALL));
-        let (entries, seq) = self.eng.config.show_log.tail_seq(max);
-        (entries, self.eng.config.show_log.dropped(), seq)
-    }
-
-    /// Once per tick: the crash hook's workspace path, a note when log records were lost, and
-    /// the `status` message when one is due.
-    pub(super) fn observe_tick(&mut self) {
-        if self.eng.observe.path.as_deref() != self.doc.show_path.as_deref() {
-            self.eng.observe.path = self.doc.show_path.clone();
-            self.eng.config.show_log.set_workspace(
-                self.doc
-                    .show_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-            );
-        }
-        let now = self.eng.config.clock.now_ms();
-        self.flush_trigger_windows(now);
-        self.flush_log_push(now);
-        let lost = self.eng.config.show_log.dropped();
-        if lost > self.eng.observe.seen_log_dropped
-            && self
-                .eng
-                .observe
-                .last_drop_note_ms
-                .is_none_or(|at| elapsed(now, at, DROP_NOTE_GAP_MS))
-        {
-            let more = lost - self.eng.observe.seen_log_dropped;
-            self.eng.observe.last_drop_note_ms = Some(now);
-            self.log(
-                LogLevel::Warn,
-                format!(
-                    "the show log fell behind the disk: {more} more record(s) not written \
-                     ({lost} so far; still available to log_tail)"
-                ),
-            );
-            // The notice is a record too, and a full queue refuses it: count it as seen, or
-            // it would be reported again on the next tick, and so on.
-            self.eng.observe.seen_log_dropped = self.eng.config.show_log.dropped();
-        }
-        // Taken out so the counters can borrow `self` while the reporter decides.
-        if let Some(mut reporter) = self.eng.observe.status.take() {
-            // Counters are gathered only when a status is due: the CPU probe is a syscall or a
-            // file read, and the device name a copy.
-            let status = reporter.poll(now, &self.status_peek(), || self.status_counters());
-            self.eng.observe.status = Some(reporter);
-            if let Some(status) = status {
-                let mut message = ServerMessage::Status {
-                    status: Box::new(status),
-                };
-                message.sanitise();
-                self.eng.out.send_lossy(message);
-            }
-        }
-    }
-
-    /// What decides whether a status is due: atomics and borrowed fields, no copies.
-    fn status_peek(&self) -> Peek<'_> {
-        let (device_name, device_state) = match self.eng.backend.device() {
-            Some(d) => (Some(d.info().name.as_str()), wire_device_state(d)),
-            None => (None, DeviceState::Absent),
-        };
-        Peek {
-            xruns: self.eng.mixer.xruns(),
-            underrun_frames: self.eng.mixer.underrun_frames(),
-            device_name,
-            device_state,
-            network_output_disabled: self.doc.net.disabled(),
-        }
-    }
-
-    fn status_counters(&self) -> Counters {
-        let device = match self.eng.backend.device() {
-            Some(d) => {
-                let info = d.info();
-                DeviceStatus {
-                    name: Some(info.name.clone()),
-                    state: wire_device_state(d),
-                    sample_rate: self.eng.rate.get(),
-                    block_frames: info.block_frames,
-                    channels: u32::from(info.channels),
-                    latency_ms: info.monitor.device_latency_seconds().map(|s| s * 1000.0),
-                }
-            }
-            None => DeviceStatus {
-                name: None,
-                state: DeviceState::Absent,
-                sample_rate: self.eng.rate.get(),
-                block_frames: u32::try_from(self.eng.block).ok(),
-                channels: u32::try_from(self.eng.cue_outputs).unwrap_or(u32::MAX),
-                latency_ms: None,
-            },
-        };
-        Counters {
-            xruns: self.eng.mixer.xruns(),
-            underrun_frames: self.eng.mixer.underrun_frames(),
-            streams: u32::try_from(self.eng.streamer.open_streams()).unwrap_or(u32::MAX),
-            log_dropped: self.eng.config.show_log.dropped(),
-            log_seq: self.eng.config.show_log.seq(),
-            network_output_disabled: self.doc.net.disabled(),
-            device,
-            cpu_seconds: (self.eng.config.cpu_probe)(),
-            // Worst callback since the previous status (read-and-reset; this is its only
-            // reader). Offline there is no audio callback to time.
-            engine_load: self
-                .eng
-                .backend
-                .device()
-                .and_then(|d| d.info().monitor.take_engine_load())
-                .filter(|l| l.is_finite()),
         }
     }
 }
