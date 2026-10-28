@@ -625,3 +625,78 @@ fn the_matching_budget_is_shared_by_every_doc() {
     // Each doc still answers (no match: an error each).
     assert_eq!(out.replies.len(), 2);
 }
+
+/// Review M1: a console connecting to two locked docs with their two passcodes, un-prefixed,
+/// is not guessing: the passcode one doc accepts must not count as a wrong one in the other,
+/// or after five rounds it is locked out of the running show.
+#[test]
+fn a_passcode_another_doc_accepts_is_no_failed_guess() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let mut osc = quiet();
+    let d = docs(&a, &b);
+    for _ in 0..2 * MAX_BAD_PASSCODES {
+        for code in ["1111", "2222"] {
+            let replies = bodies(&send(&mut osc, &d, udp(), &msg("/connect", vec![s(code)])));
+            assert!(replies.iter().all(|r| r["status"] == "ok"), "{replies:?}");
+        }
+    }
+    let out = send(
+        &mut osc,
+        &d,
+        udp(),
+        &msg(&format!("/workspace/{}/go", ws(&a)), vec![]),
+    );
+    assert_eq!(out.input_docs, vec![A], "{out:?}");
+    // A passcode no doc has is still a guess in each.
+    let other = Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)));
+    for _ in 0..MAX_BAD_PASSCODES {
+        send(&mut osc, &d, other, &msg("/connect", vec![s("0000")]));
+    }
+    let replies = bodies(&send(
+        &mut osc,
+        &d,
+        other,
+        &msg("/connect", vec![s("1111")]),
+    ));
+    assert!(
+        replies.iter().all(|r| r["status"] == "denied"),
+        "{replies:?}"
+    );
+}
+
+/// Review M2: a name two open docs share (a Finder copy keeps it) picks neither: the bare error
+/// of an unknown workspace, and one warning for the show log per peer and name.
+#[test]
+fn a_name_several_docs_share_is_refused_with_one_warning() {
+    let a = hamlet();
+    let mut b = lear();
+    b.name = "Hamlet";
+    let mut osc = quiet();
+    let out = send(
+        &mut osc,
+        &docs(&a, &b),
+        udp(),
+        &msg("/workspace/Hamlet/go", vec![]),
+    );
+    assert!(out.inputs.is_empty());
+    assert_eq!(
+        bodies(&out),
+        vec![json!({"status": "error", "address": "/workspace/Hamlet/go"})]
+    );
+    assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+    let again = send(
+        &mut osc,
+        &docs(&a, &b),
+        udp(),
+        &msg("/workspace/Hamlet/go", vec![]),
+    );
+    assert!(again.inputs.is_empty() && again.warnings.is_empty());
+    // By id each is still reachable.
+    let out = send(
+        &mut osc,
+        &docs(&a, &b),
+        udp(),
+        &msg(&format!("/workspace/{}/go", ws(&b)), vec![]),
+    );
+    assert_eq!(out.input_docs, vec![B]);
+}

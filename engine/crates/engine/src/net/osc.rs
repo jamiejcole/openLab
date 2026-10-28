@@ -1139,8 +1139,15 @@ impl Actor {
         let OscOutcome {
             inputs,
             input_docs,
+            warnings,
             replies,
         } = outcome;
+        for message in warnings {
+            let _ = self.inbox.send(Inbox::Log {
+                level: LogLevel::Warn,
+                message,
+            });
+        }
         for (doc, input) in input_docs.into_iter().zip(inputs) {
             if stale {
                 self.listener.inputs_dropped += 1;
