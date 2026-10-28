@@ -99,7 +99,30 @@ new/open and no `revert`. What the app (M5) must still do:
    goes at once and the client does not try to reconnect.
 7. **Reattach after an engine restart (M5.2)**: doc ids restart from 0 in a new engine run (with a new
    token), so a window must rebind by reopening its file (`open`), never by its old doc id.
-8. **The engine still starts with one untitled doc** (doc 0) until M4.15g; the app then decides what to
-   open (recovery, last workspaces) and closes that untitled doc if it does not want it.
+8. **The engine starts with no doc** (M4.15g): the app decides what to open (recovery check, last
+   workspaces, none) with `new` / `open` / `open_recovery`; it no longer has an untitled doc 0 to close.
 9. **Copies of an open show** open with a fresh workspace id and unsaved (`dirty`); the app's save prompt
    on close covers it.
+
+## Engine lifecycle (M4.9 engine side landed; M5.2)
+
+docs/control.md "Process lifecycle" has the whole contract. What the app must do:
+
+1. **Find or start the engine**: read `<app-support>/openLab/engine.json` (`{pid, port, token, version,
+   protocol_version, started_ms}`, mode 0600; `EngineConnectionInfo` reads `port`, `token`, `pid`). Connect;
+   if that fails and `pid` is not alive (`kill(pid, 0)`), the file is stale: start the engine
+   (`Contents/MacOS/openlab-engine --relaunch-app <the app's bundle id>`, detached, its own process group,
+   stdin `/dev/null`; do **not** pass `--watch-stdin`). If `pid` is alive but does not answer, end it
+   (SIGTERM, then SIGKILL) before starting another: a second engine refuses to start while the first holds
+   its run marker (`another openLab engine is running (pid N, port P)`, exit 1). The engine prints
+   `listening on 127.0.0.1:PORT` on stderr once `engine.json` is written.
+2. **Quit**: confirm while cues run (SM-05), then `goodbye { shutdown: true }`; the engine writes a recovery
+   file for every unsaved workspace (bounded: at most about 15 s on a hung disk) and exits 0, removing
+   `engine.json`. SIGTERM does the same.
+3. **Crash relaunch**: the engine relaunches the app (`open -b`) 1 s after the app connection drops without
+   `goodbye`, at most 3 times a minute, so the app must keep its app connection open while it runs and say
+   `goodbye` before it quits or closes it on purpose. A relaunched app reattaches as in "Several workspaces" 7.
+4. **Engine crash**: `engine.json` is left behind (stale) and the next start reports the unclean exit in the
+   show log; the app shows the alarm, starts a new engine and offers recovery (`scan_recovery` lists every
+   autosave, `open` offers a show's own).
+5. **Show Mode**: see "Show Mode (M5.12)" above; the sleep assertion is the engine's.

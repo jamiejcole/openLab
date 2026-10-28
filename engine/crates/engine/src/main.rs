@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use openlab_engine::host::Options;
+use openlab_engine::platform::relaunch;
 
 /// Debug builds forbid allocation where `assert_no_alloc` guards (the device callback, M3.12):
 /// without this global allocator the guard sees nothing (M3.21). Violations are counted, not
@@ -18,7 +19,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
-[--app-support DIR] [--watch-stdin]";
+[--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID]";
 
 enum Mode {
     Print(String),
@@ -43,6 +44,12 @@ fn mode(args: &[String]) -> Mode {
                 None => return Mode::Print(USAGE.to_owned()),
             },
             "--watch-stdin" => options.watch_stdin = true,
+            "--relaunch-app" => match rest.next() {
+                Some(id) if relaunch::valid_bundle_id(id) => {
+                    options.relaunch_app = Some(id.clone())
+                }
+                _ => return Mode::Print(USAGE.to_owned()),
+            },
             _ => return Mode::Print(USAGE.to_owned()),
         }
     }
@@ -95,6 +102,8 @@ mod tests {
             "--app-support",
             "/tmp/x",
             "--watch-stdin",
+            "--relaunch-app",
+            "dev.openlab.openLab",
         ])) else {
             panic!("not run")
         };

@@ -105,6 +105,11 @@ impl Hub {
         self.lock().retain(|s| s.id != id);
     }
 
+    /// App connections (bound to no doc) registered now.
+    pub fn app_connections(&self) -> usize {
+        self.lock().iter().filter(|s| s.doc.is_none()).count()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Vec<Slot>> {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -379,6 +384,19 @@ mod tests {
                 seq: 4
             }]
         );
+    }
+
+    /// What the relaunch checks after its delay (M4.9): is an app connection back?
+    #[test]
+    fn app_connections_are_counted_apart_from_bound_ones() {
+        let hub = Hub::default();
+        let bound = hub.register(Some(DocId(0)));
+        assert_eq!(hub.app_connections(), 0);
+        let app = hub.register(None);
+        assert_eq!(hub.app_connections(), 1);
+        hub.unregister(app.id);
+        hub.unregister(bound.id);
+        assert_eq!(hub.app_connections(), 0);
     }
 
     #[test]
