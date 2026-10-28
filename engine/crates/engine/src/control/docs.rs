@@ -1063,7 +1063,7 @@ impl DocCx<'_> {
             .send_state(ServerMessage::Snapshot { snapshot });
     }
 
-    fn show_dir(&self) -> Option<PathBuf> {
+    pub(super) fn show_dir(&self) -> Option<PathBuf> {
         self.doc.show_path.as_deref().and_then(folder_of)
     }
 
@@ -1091,6 +1091,11 @@ impl DocCx<'_> {
             if !relinks.is_empty() {
                 let command = relink_command(&copy, &relinks);
                 rebased = copy.apply(command).is_ok();
+                if !rebased {
+                    // A refusal changes nothing, but a failed rollback leaves some relinks in
+                    // the copy: save the workspace as it is.
+                    copy = self.doc.ws.clone();
+                }
             }
         }
         let rx = writer.save(
@@ -1236,7 +1241,15 @@ impl DocCx<'_> {
             let relinks = rebase(&self.doc.ws, old_dir, &new_dir);
             if !relinks.is_empty() {
                 let command = relink_command(&self.doc.ws, &relinks);
-                changed = self.doc.ws.apply(command).is_ok();
+                let result = self.doc.ws.apply(command);
+                // A failed rollback leaves some relinks applied: the model did change.
+                changed = match &result {
+                    Ok(_) => true,
+                    Err(e) => matches!(e, openlab_core::CommandError::RollbackFailed { .. }),
+                };
+                if let Err(e) = result {
+                    self.log(LogLevel::Error, format!("relink after the move: {e}"));
+                }
             }
         }
         self.doc.media.reset(self.show_dir(), &self.doc.ws);
