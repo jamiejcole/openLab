@@ -720,6 +720,7 @@ mod tests {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                show_mode: false,
             },
             workspace,
             cue_states: vec![],
@@ -995,6 +996,7 @@ mod tests {
             dirty,
             can_undo: false,
             can_redo: false,
+            show_mode: false,
         };
         assert_eq!(m.document(&doc(None, true)), Applied::Updates(vec![]));
         assert_eq!(m.document(&doc(Some("/a"), false)), Applied::Resync);

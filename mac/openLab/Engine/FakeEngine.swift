@@ -576,6 +576,11 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .setOutputOverrides: result(c, id)
+        case .setShowMode(let on):
+            guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
+            docs[doc]?["document"]?.set("show_mode", .bool(on))
+            push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
+            result(c, id)
         case .scanRecovery:
             result(c, id, ok: .object(["data": .object(["type": .string("recovery_entries"), "entries": .array([])])]))
         case .relink:

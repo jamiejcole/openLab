@@ -328,6 +328,12 @@ impl CueEngine {
         }
     }
 
+    /// Whether any cue is doing something (pre-waiting through stopping; `CueState::is_active`).
+    /// Cheap: only cues with a runtime are looked at.
+    pub fn has_active_cues(&self) -> bool {
+        self.slots.values().any(|slot| slot.state().is_active())
+    }
+
     /// Every cue that is not idle, in id order.
     pub fn cue_states(&self) -> impl Iterator<Item = (CueId, CueState)> + '_ {
         let mut all: BTreeMap<CueId, CueState> = self

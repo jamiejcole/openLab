@@ -130,6 +130,8 @@ enum Request: Hashable, Sendable, Codable {
     case logTail(max: UInt32? = nil)
     /// PB-10: Network cues still run but send nothing. Engine-wide, in memory only.
     case setOutputOverrides(networkDisabled: Bool)
+    /// SM-01/SM-07: the engine keeps Show Mode per workspace and holds off sleep while one is in it.
+    case setShowMode(on: Bool)
     case snapshot
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -165,6 +167,7 @@ enum Request: Hashable, Sendable, Codable {
             opt(&f, "max", max)
             return ("log_tail", f)
         case .setOutputOverrides(let disabled): return ("set_output_overrides", [("network_disabled", disabled)])
+        case .setShowMode(let on): return ("set_show_mode", [("on", on)])
         case .snapshot: return ("snapshot", [])
         }
     }
@@ -193,6 +196,7 @@ enum Request: Hashable, Sendable, Codable {
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
         case "set_output_overrides":
             self = .setOutputOverrides(networkDisabled: try c.decode(Bool.self, forKey: "network_disabled"))
+        case "set_show_mode": self = .setShowMode(on: try c.decode(Bool.self, forKey: "on"))
         case "snapshot": self = .snapshot
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))

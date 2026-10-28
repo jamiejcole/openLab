@@ -293,6 +293,7 @@ impl Ws {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                show_mode: false,
             },
             states: HashMap::new(),
             playhead: None,
