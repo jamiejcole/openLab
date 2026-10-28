@@ -12,14 +12,16 @@
 //! `media.rs`).
 //!
 //! The same plans give each cue's nominal length, which the cue engine is told when it changes
-//! (`Input::CueLengths`, [`PlanChecks::length_changes`]); only cues whose plan was rebuilt or
-//! dropped are looked at for it.
+//! (`Input::CueLengths`), and its media lengths, which clients are told when they change
+//! (`media_duration`, M5.4d): [`PlanChecks::take_changes`]. Only cues whose plan was rebuilt or
+//! dropped are looked at for them, so a probe answer costs the cues on that file.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::total_frames;
+use openlab_core::protocol::CueMediaDuration;
 use openlab_core::{Cue, CueId, CueKind, SampleTime, SliceMarker, Workspace};
 
 use super::media::{MediaCatalog, PlanChanges, Ready};
@@ -57,6 +59,8 @@ struct Entry {
     error: Option<String>,
     /// The action's length from the top; `None` if it loops forever or has no plan.
     length: Option<u64>,
+    /// One pass of the trimmed range (every slice once); `None` if there is no plan.
+    trimmed: Option<u64>,
 }
 
 impl Entry {
@@ -94,8 +98,10 @@ pub struct PlanChecks {
     builds: u64,
     examined: u64,
     walks: u64,
-    /// The lengths the cue engine was last told (`length_changes`).
+    /// The lengths the cue engine was last told (`take_changes`).
     told: BTreeMap<CueId, SampleTime>,
+    /// The media lengths clients were last told (`take_changes`), for the snapshot.
+    sent: BTreeMap<CueId, CueMediaDuration>,
     /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
     stale: BTreeSet<CueId>,
 }
@@ -236,9 +242,16 @@ impl PlanChecks {
             _ => {
                 self.builds += 1;
                 self.stale.insert(id);
-                let (error, length) = match cue_slices(&spec, &ready.probed.info, rate, 0) {
-                    Ok(table) => (None, total_frames(&table)),
-                    Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None),
+                let (error, length, trimmed) = match cue_slices(&spec, &ready.probed.info, rate, 0)
+                {
+                    // From the top no slice is split, so the entries' frames add up to the
+                    // trimmed range.
+                    Ok(table) => (
+                        None,
+                        total_frames(&table),
+                        Some(table.iter().fold(0u64, |a, s| a.saturating_add(s.frames))),
+                    ),
+                    Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None, None),
                 };
                 tracked.entry = Some(Entry {
                     probe: Arc::clone(ready),
@@ -248,6 +261,7 @@ impl PlanChecks {
                     last: spec.last_slice_play_count,
                     error: error.clone(),
                     length,
+                    trimmed,
                 });
                 error
             }
@@ -276,28 +290,64 @@ impl PlanChecks {
         self.errors.remove(&id);
     }
 
-    /// The nominal lengths that changed since the last call, as of the last `check`: a cue with
-    /// a finite plan now gets its length, one that had a length and has none now (gone, its file
-    /// not probed or not playable, a plan that loops forever or cannot be built) gets `None`.
-    /// In id order. Looks only at the cues whose plan was rebuilt or dropped since the last call.
-    pub fn length_changes(&mut self) -> Vec<(CueId, Option<SampleTime>)> {
-        let mut out = Vec::new();
+    /// What changed since the last call, as of the last `check`, in id order. Looks only at
+    /// the cues whose plan was rebuilt or dropped since then.
+    ///
+    /// `lengths`: the nominal lengths for the cue engine. A cue with a finite plan now gets its
+    /// length; one that had a length and has none now (gone, its file not probed or not
+    /// playable, a plan that loops forever or cannot be built) gets `None`.
+    ///
+    /// `media`: the media lengths for clients. A cue whose file is probed and playable gets
+    /// them; one that had them and has not now (gone, its file missing, not probed again yet,
+    /// another file) gets a change with every field absent, so a client never keeps a stale
+    /// length.
+    pub fn take_changes(&mut self) -> LengthChanges {
+        let mut out = LengthChanges::default();
+        let rate = self.rate;
         for id in std::mem::take(&mut self.stale) {
-            let now = self
-                .cues
-                .get(&id)
-                .and_then(|t| t.entry.as_ref())
-                .and_then(|e| e.length);
-            if self.told.get(&id).copied() == now {
+            let entry = self.cues.get(&id).and_then(|t| t.entry.as_ref());
+            let now = entry.and_then(|e| e.length);
+            if self.told.get(&id).copied() != now {
+                match now {
+                    Some(l) => self.told.insert(id, l),
+                    None => self.told.remove(&id),
+                };
+                out.lengths.push((id, now));
+            }
+            let media = entry.map(|e| {
+                let info = &e.probe.probed.info;
+                CueMediaDuration {
+                    cue: id,
+                    file: seconds(info.frames, info.sample_rate),
+                    trimmed: e.trimmed.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
+                    duration: e.length.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
+                }
+            });
+            if self.sent.get(&id) == media.as_ref() {
                 continue;
             }
-            match now {
-                Some(l) => self.told.insert(id, l),
-                None => self.told.remove(&id),
-            };
-            out.push((id, now));
+            match media {
+                Some(m) => {
+                    self.sent.insert(id, m.clone());
+                    out.media.push(m);
+                }
+                None => {
+                    self.sent.remove(&id);
+                    out.media.push(CueMediaDuration {
+                        cue: id,
+                        file: None,
+                        trimmed: None,
+                        duration: None,
+                    });
+                }
+            }
         }
         out
+    }
+
+    /// The media lengths clients were last told, by cue id (the snapshot's `media_durations`).
+    pub fn media_durations(&self) -> Vec<CueMediaDuration> {
+        self.sent.values().cloned().collect()
     }
 
     /// Plans built so far (a cost measure for tests).
@@ -314,6 +364,24 @@ impl PlanChecks {
     pub fn walks(&self) -> u64 {
         self.walks
     }
+}
+
+/// What [`PlanChecks::take_changes`] found.
+#[derive(Debug, Default)]
+pub struct LengthChanges {
+    pub lengths: Vec<(CueId, Option<SampleTime>)>,
+    pub media: Vec<CueMediaDuration>,
+}
+
+/// `frames` at `rate` in seconds, rounded down to the millisecond so a length is told again only
+/// when it changes by one (a device rate change re-plans every cue); `None` at rate 0.
+fn seconds(frames: u64, rate: u32) -> Option<f64> {
+    if rate == 0 {
+        return None;
+    }
+    let ms = u128::from(frames) * 1000 / u128::from(rate);
+    // Below 2^53 ms (285 000 years) the conversion is exact.
+    Some(u64::try_from(ms).unwrap_or(u64::MAX) as f64 / 1000.0)
 }
 
 /// The file and plan inputs of an audio cue with a file.

@@ -75,6 +75,17 @@ struct Cue: Hashable, Sendable, Decodable {
     }
 }
 
+/// An audio cue's media lengths in seconds (`media_duration`, M5.4d): each nil when not known (not
+/// probed, missing, unplayable; `trimmed` and `duration` also when its slices cannot play).
+/// `duration` counts the slices' play counts and is nil when one loops until devamped. Runtime data
+/// from the engine's probes, not part of the cue.
+struct CueMediaDuration: Hashable, Sendable, Decodable {
+    let cue: ModelID
+    let file: Double?
+    let trimmed: Double?
+    let duration: Double?
+}
+
 struct CueList: Hashable, Sendable, Decodable {
     let id: ModelID
     var name: String

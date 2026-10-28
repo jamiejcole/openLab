@@ -78,6 +78,19 @@ extension FakeEngine {
             ]
         s.set("cue_states", .array(states))
         s.set("previewing", .array([]))  // the demo show starts with nothing previewing
+        // The probed lengths (M5.4d): Door slam plays once; Radio's file is not known.
+        let durations =
+            (s["media_durations"]?.arrayValue ?? []) + [
+                .object([
+                    "cue": .string("00000000-0000-0000-0000-000000000021"), "file": .double(1.25),
+                    "trimmed": .double(1.25), "duration": .double(1.25),
+                ]),
+                .object([
+                    "cue": .string("00000000-0000-0000-0000-000000000022"), "file": .double(95.5),
+                    "trimmed": .double(95.5), "duration": .double(95.5),
+                ]),
+            ]
+        s.set("media_durations", .array(durations))
         return s
     }
 
