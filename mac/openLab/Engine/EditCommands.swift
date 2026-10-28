@@ -20,6 +20,9 @@ enum CueProperty: Hashable, Sendable {
     case secondTriggerOnRelease(Bool)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
+    /// An audio cue's file alone (an absolute path; the engine stores it relative to the show folder
+    /// when inside it); nil clears it. Levels, routing, fades and slices stay.
+    case media(String?)
     /// Network cues only: the network patch id, the OSC address pattern, and the arguments, each
     /// `{type: int|float|string|bool, value}` (core's `OscArg`).
     case destination(ModelID)
@@ -46,6 +49,7 @@ enum CueProperty: Hashable, Sendable {
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
         case .kind(let v): return p("kind", v)
+        case .media(let v): return p("media", v.map { .string($0) } ?? .null)
         case .destination(let v): return p("destination", .string(v.raw))
         case .address(let v): return p("address", .string(v))
         case .args(let v): return p("args", .array(v))
@@ -60,7 +64,39 @@ enum CueProperty: Hashable, Sendable {
     }
 }
 
+/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey` (docs/commands.md).
+enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
+    case go
+    case stopAll = "stop_all"
+    case pauseAll = "pause_all"
+    case resumeAll = "resume_all"
+    case playheadNext = "playhead_next"
+    case playheadPrevious = "playhead_previous"
+    case loadSelected = "load_selected"
+    case pauseResumeSelected = "pause_resume_selected"
+    case startSelected = "start_selected"
+    case stopSelected = "stop_selected"
+    case resetSelected = "reset_selected"
+}
+
 extension Command {
+    /// `SetWorkspaceSetting { hotkey { key, value } }`: one key of the map; nil clears it. The
+    /// engine refuses Esc, bare Up/Down, a key already in the map and a cue's hotkey
+    /// (`command_refused`, the message names the clash).
+    static func setWorkspaceKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) -> Command {
+        let setting = JSONValue.object([
+            "type": .string("hotkey"), "key": .string(key.rawValue), "value": hotkey ?? .null,
+        ])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
+    /// `SetWorkspaceSetting { hotkeys { value } }`: the whole key map in one undo step (a swap,
+    /// or Reset). `hotkeys` is the `settings.hotkeys` object with every key, null for none.
+    static func setKeyMap(_ hotkeys: JSONValue) -> Command {
+        let setting = JSONValue.object(["type": .string("hotkeys"), "value": hotkeys])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
     /// `RenameWorkspace { name }`: the show title, undoable. At most 256 characters, no control
     /// characters (docs/commands.md); the engine refuses anything else.
     static func renameWorkspace(_ name: String) -> Command {

@@ -12,7 +12,8 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
+const V4_EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
 const V3_EXAMPLE: &str = include_str!("../../../fixtures/show/v3-example.openlab");
 const V3_NO_PASSCODE: &str = include_str!("../../../fixtures/show/v3-no-passcode.openlab");
 const V2_EXAMPLE: &str = include_str!("../../../fixtures/show/v2-example.openlab");
@@ -108,6 +109,88 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     let mut current = load_show(EXAMPLE).unwrap().workspace;
     current.settings.osc_access = OscAccess::default();
     assert_eq!(loaded.workspace, current);
+}
+
+/// v4 had no selected-cue keys and Esc / bare arrows as transport keys (M5.11c): the v4
+/// example (v4 defaults: Stop All Esc, playhead Down / Up) loads with those as none and the
+/// app's L / P as model keys, and is otherwise the current example.
+#[test]
+fn v4_fixture_migrates_to_the_selected_cue_keys() {
+    let loaded = load_show(V4_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    let keys = &loaded.workspace.settings.hotkeys;
+    assert_eq!(keys.stop_all, None);
+    assert_eq!(keys.playhead_next, None);
+    assert_eq!(keys.playhead_previous, None);
+    assert_eq!(keys.go.as_ref().unwrap().key, "space");
+    assert_eq!(keys.load_selected.as_ref().unwrap().key, "l");
+    assert_eq!(keys.pause_resume_selected.as_ref().unwrap().key, "p");
+    assert_eq!(
+        keys.load_selected.as_ref().unwrap().modifiers,
+        Modifiers::default()
+    );
+    assert_eq!(
+        (
+            &keys.start_selected,
+            &keys.stop_selected,
+            &keys.reset_selected
+        ),
+        (&None, &None, &None)
+    );
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+}
+
+/// A selected-cue key the app gave up in v4 (a cue hotkey or a transport key on L or P) stays
+/// with its owner; only reserved keys are dropped (Esc with modifiers, Shift-Up), others kept;
+/// hand-added v5 keys are replaced.
+#[test]
+fn v4_migration_keeps_every_key_a_cue_or_transport_key_had() {
+    let key = |k: &str, shift: bool, command: bool| {
+        serde_json::json!({"key": k, "modifiers": {
+            "shift": shift, "control": false, "alt": false, "command": command}})
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(V4_EXAMPLE).unwrap();
+    let keys = &mut doc["workspace"]["settings"]["hotkeys"];
+    keys["go"] = key("p", false, false);
+    keys["stop_all"] = key("escape", true, true);
+    keys["playhead_next"] = key("down", false, true);
+    keys["playhead_previous"] = key("up", true, false);
+    keys["start_selected"] = key("f9", false, false);
+    // Thunder is a cue inside a group: the walk reaches children.
+    let thunder = &mut doc["workspace"]["cue_lists"][0]["cues"][3]["kind"]["children"][0];
+    assert_eq!(thunder["name"], "Thunder");
+    thunder["triggers"]["hotkey"] = key("l", false, false);
+    let ws = load_show(&doc.to_string()).unwrap().workspace;
+    let keys = &ws.settings.hotkeys;
+    assert_eq!(keys.go.as_ref().unwrap().key, "p");
+    assert_eq!(keys.stop_all, None);
+    assert_eq!(keys.playhead_next.as_ref().unwrap().key, "down");
+    assert_eq!(keys.playhead_previous, None);
+    assert_eq!(keys.load_selected, None, "L is Thunder's");
+    assert_eq!(keys.pause_resume_selected, None, "P is GO's");
+    assert_eq!(keys.start_selected, None);
+    // Thunder still fires from L: no workspace key took it.
+    assert_eq!(
+        ws.cues_with_hotkey(&Hotkey {
+            key: "l".into(),
+            modifiers: Modifiers::default()
+        }),
+        vec![cue_named(&ws, "Thunder").id]
+    );
+    // Not shaped like a workspace: left for the model parse.
+    for bad in [
+        serde_json::json!({"format_version": 4, "workspace": 5}),
+        serde_json::json!({"format_version": 4, "workspace": {"settings": {"hotkeys": 1}}}),
+    ] {
+        assert!(matches!(
+            load_show(&bad.to_string()),
+            Err(LoadError::Model(_))
+        ));
+    }
+    assert!(matches!(
+        migrate(serde_json::json!([1]), 4),
+        Err(LoadError::Migration { from: 4, .. })
+    ));
 }
 
 #[test]
@@ -477,7 +560,7 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 4", "\"format_version\": 7", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 5", "\"format_version\": 7", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
@@ -871,7 +954,10 @@ fn hotkey() -> impl Strategy<Value = Hotkey> {
         alt,
         command,
     });
-    (text(), modifiers).prop_map(|(key, modifiers)| Hotkey { key, modifiers })
+    // Some keys the v5 migration treats specially, so its property meets them.
+    let special = proptest::sample::select(vec!["escape", "up", "down", "l", "p"]);
+    let key = prop_oneof![3 => text(), 1 => special.prop_map(String::from)];
+    (key, modifiers).prop_map(|(key, modifiers)| Hotkey { key, modifiers })
 }
 
 fn triggers() -> impl Strategy<Value = Triggers> {
@@ -983,7 +1069,7 @@ fn any_access() -> impl Strategy<Value = OscAccess> {
 }
 
 fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
-    let hotkeys = vec(option::of(hotkey()), 6).prop_map(|keys| {
+    let hotkeys = vec(option::of(hotkey()), 11).prop_map(|keys| {
         let [
             go,
             stop_all,
@@ -991,7 +1077,12 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             resume_all,
             playhead_next,
             playhead_previous,
-        ] = <[Option<Hotkey>; 6]>::try_from(keys).unwrap();
+            load_selected,
+            pause_resume_selected,
+            start_selected,
+            stop_selected,
+            reset_selected,
+        ] = <[Option<Hotkey>; 11]>::try_from(keys).unwrap();
         TransportHotkeys {
             go,
             stop_all,
@@ -999,6 +1090,11 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             resume_all,
             playhead_next,
             playhead_previous,
+            load_selected,
+            pause_resume_selected,
+            start_selected,
+            stop_selected,
+            reset_selected,
         }
     });
     (
@@ -1134,6 +1230,7 @@ proptest! {
         }
         // The v2 -> v3 step gives every Devamp cue the v2 behaviour.
         set_devamp_modes(&mut ws, DevampMode::CurrentSlice);
+        migrate_keys_to_v5(&mut ws);
         prop_assert_eq!(loaded, ws);
     }
 
@@ -1148,9 +1245,57 @@ proptest! {
         let doc = as_v3(&ws, &passcode);
         let loaded = load_show(&doc.to_string()).unwrap().workspace;
         ws.settings.osc_access = migrated_access(&passcode);
+        migrate_keys_to_v5(&mut ws);
         repair(&mut ws);
         prop_assert_eq!(loaded, ws);
     }
+
+    /// Any workspace written as v4 loads with its keys as the v4 -> v5 step makes them,
+    /// everything else as it was.
+    #[test]
+    fn v4_documents_migrate_their_keys(mut ws in any_workspace()) {
+        repair(&mut ws);
+        let mut doc: serde_json::Value = serde_json::from_str(&save_show(&ws).unwrap()).unwrap();
+        doc["format_version"] = 4.into();
+        let loaded = load_show(&doc.to_string()).unwrap().workspace;
+        migrate_keys_to_v5(&mut ws);
+        prop_assert_eq!(loaded, ws);
+    }
+}
+
+/// The oracle of the v4 -> v5 step (M5.11c), written from its rules: reserved transport keys
+/// become none; Load Selected is L and Pause/Resume Selected P unless a cue hotkey or a kept
+/// transport key is that chord; Start, Stop and Reset Selected have none.
+fn migrate_keys_to_v5(ws: &mut Workspace) {
+    let mut taken = Vec::new();
+    for list in &ws.cue_lists {
+        walk(&list.cues, &mut |cue| {
+            taken.extend(cue.triggers.hotkey.clone())
+        });
+    }
+    let keys = &mut ws.settings.hotkeys;
+    for key in [
+        &mut keys.go,
+        &mut keys.stop_all,
+        &mut keys.pause_all,
+        &mut keys.resume_all,
+        &mut keys.playhead_next,
+        &mut keys.playhead_previous,
+    ] {
+        if key.as_ref().is_some_and(is_reserved_key) {
+            *key = None;
+        }
+        taken.extend(key.clone());
+    }
+    let plain = |key: &str| Hotkey {
+        key: key.into(),
+        modifiers: Modifiers::default(),
+    };
+    keys.load_selected = Some(plain("l")).filter(|k| !taken.contains(k));
+    keys.pause_resume_selected = Some(plain("p")).filter(|k| !taken.contains(k));
+    keys.start_selected = None;
+    keys.stop_selected = None;
+    keys.reset_selected = None;
 }
 
 /// What a v3 file's `osc_passcode` becomes (M4.5c): none or empty is No Passcode with all rights

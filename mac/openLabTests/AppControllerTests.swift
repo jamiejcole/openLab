@@ -557,9 +557,10 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(item(.go)?.keyEquivalent, " ")
         XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
         XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
-        XCTAssertEqual(
-            item(.playheadNext)?.keyEquivalent, "", "the model's bare Down: the selection moves the playhead")
-        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "the model's Esc is the app-wide panic")
+        // Format v5 defaults (M5.11c): Next Cue is Shift-Cmd-Down, Stop All has no key.
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+        XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "no Stop All key: Esc is the app-wide panic")
         XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
         XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
         let commands = menus.transport.items.compactMap { $0.representedObject as? String }

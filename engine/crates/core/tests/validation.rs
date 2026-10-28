@@ -386,14 +386,46 @@ fn transport_hotkeys_have_defaults() {
     let keys = TransportHotkeys::default();
     let key = |k: &Option<Hotkey>| k.as_ref().unwrap().key.clone();
     assert_eq!(key(&keys.go), "space");
-    assert_eq!(key(&keys.stop_all), "escape");
-    for k in [
-        &keys.pause_all,
-        &keys.resume_all,
-        &keys.playhead_next,
-        &keys.playhead_previous,
+    assert_eq!(
+        (key(&keys.pause_all), key(&keys.resume_all)),
+        ("[".into(), "]".into())
+    );
+    // Since v5 (M5.11c): Esc is panic, outside the map, so Stop All has no key; Next / Previous
+    // Cue are QLab's menu keys; L and P are QLab's selected-cue keys.
+    assert_eq!(keys.stop_all, None);
+    let shift_command = Modifiers {
+        shift: true,
+        command: true,
+        ..Modifiers::default()
+    };
+    for (k, name) in [
+        (&keys.playhead_next, "down"),
+        (&keys.playhead_previous, "up"),
     ] {
-        assert!(k.is_some());
+        let k = k.as_ref().unwrap();
+        assert_eq!((k.key.as_str(), k.modifiers), (name, shift_command));
+    }
+    assert_eq!(
+        (key(&keys.load_selected), key(&keys.pause_resume_selected)),
+        ("l".into(), "p".into())
+    );
+    assert_eq!(
+        (
+            &keys.start_selected,
+            &keys.stop_selected,
+            &keys.reset_selected
+        ),
+        (&None, &None, &None)
+    );
+    // No default breaks the edit rules: none is reserved and none repeats another.
+    let set: Vec<&Hotkey> = keys
+        .slots()
+        .into_iter()
+        .filter_map(|(_, k)| k.as_ref())
+        .collect();
+    assert!(set.iter().all(|k| !is_reserved_key(k)));
+    for (i, a) in set.iter().enumerate() {
+        assert!(set[i + 1..].iter().all(|b| a != b));
     }
 }
 

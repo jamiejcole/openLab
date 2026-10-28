@@ -57,66 +57,6 @@ extension CueEditor {
         return cues.allSatisfy(valid) ? cues : nil
     }
 
-    /// Core's `prepare_paste` (docs/commands.md; the wire has only `paste`, which wants cues already
-    /// prepared): fresh ids across the whole clipboard, a target kept if it is inside the clipboard
-    /// (follows the copy) or exists in the workspace, else cleared; numbers already used (or empty)
-    /// cleared; a missing audio patch or network destination becomes the workspace's first.
-    static func preparePaste(
-        _ clipboard: [JSONValue], in model: WorkspaceModel,
-        newID: () -> ModelID = { ModelID(UUID().uuidString.lowercased()) }
-    ) -> [JSONValue] {
-        var renamed: [String: String] = [:]
-        func rename(_ v: JSONValue) -> JSONValue {
-            var v = v
-            if let old = v["id"]?.stringValue {
-                let new = newID().raw
-                renamed[old] = new
-                v.set("id", .string(new))
-            }
-            if var kind = v["kind"], let kids = kind["children"]?.arrayValue {
-                kind.set("children", .array(kids.map(rename)))
-                v.set("kind", kind)
-            }
-            return v
-        }
-        var existing = Set<String>()
-        var numbers = Set<String>()
-        func scan(_ cues: [Cue]) {
-            for c in cues {
-                existing.insert(c.id.raw)
-                if let n = c.number { numbers.insert(n) }
-                scan(c.children)
-            }
-        }
-        for list in model.cueLists { scan(list.cues) }
-        let patches = Set(model.patches.map(\.id.raw))
-        let networks = Set(model.networkPatches.map(\.id.raw))
-        func fix(_ v: JSONValue) -> JSONValue {
-            var v = v
-            if let n = v["number"]?.stringValue, n.isEmpty || !numbers.insert(n).inserted {
-                v.set("number", .null)
-            }
-            guard var kind = v["kind"] else { return v }
-            if let t = kind["target"]?.stringValue {
-                if let new = renamed[t] {
-                    kind.set("target", .string(new))
-                } else if !existing.contains(t) {
-                    kind.set("target", .null)
-                }
-            }
-            if let p = kind["patch"]?.stringValue, !patches.contains(p), let first = model.patches.first {
-                kind.set("patch", .string(first.id.raw))
-            }
-            if let d = kind["destination"]?.stringValue, !networks.contains(d), let first = model.networkPatches.first {
-                kind.set("destination", .string(first.id.raw))
-            }
-            if let kids = kind["children"]?.arrayValue { kind.set("children", .array(kids.map(fix))) }
-            v.set("kind", kind)
-            return v
-        }
-        return clipboard.map(rename).map(fix)
-    }
-
     // MARK: Finder drops
 
     /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
@@ -164,12 +104,10 @@ extension CueEditor {
     func replaceFile(of id: ModelID, with url: URL) async {
         guard await begin() else { return }
         guard let files = Self.audioFiles([url]) else { return notify(loc("edit.error.dropNotAudio")) }
-        guard let node = cueList?.node(id), node.cue.kindType == "audio", var kind = node.cue.raw["kind"] else {
-            return
-        }
+        guard let node = cueList?.node(id), node.cue.kindType == "audio" else { return }
         if isBusy(node) { return notify(loc("edit.error.replaceBusy")) }
-        kind.set("media", .string(Self.mediaPath(files[0])))
-        _ = report(await store.send(command: .setProperty(id, .kind(kind))))
+        // The file alone: the cue's other settings are the engine's, not this copy of them.
+        _ = report(await store.send(command: .setProperty(id, .media(Self.mediaPath(files[0])))))
     }
 
     // MARK: Copy, cut, paste
@@ -205,16 +143,16 @@ extension CueEditor {
     /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
     func paste() async {
         guard await begin(), let list = cueList?.listID else { return }
-        guard let text = pasteboard.string(forType: Self.pasteType), let clipboard = Self.decodeClipboard(text),
-            let model = store.model
-        else { return NSSound.beep() }
+        guard let text = pasteboard.string(forType: Self.pasteType), let clipboard = Self.decodeClipboard(text) else {
+            return NSSound.beep()
+        }
         let place = Self.insertion(selected: selectedNodes(), roots: cueList?.roots ?? [])
-        let cues = Self.preparePaste(clipboard, in: model)
-        let ids = cues.compactMap { $0["id"]?.stringValue.map { ModelID($0) } }
-        guard ids.count == cues.count else { return NSSound.beep() }
         let at = Command.position(list: list, parent: place.parent, index: place.index)
-        guard report(await store.send(command: .paste(at: at, cues: cues))) else { return }
-        cueList?.selectAsUser(ids)
+        guard report(await store.send(command: .pasteClipboard(at: at, cues: clipboard))) else { return }
+        // The engine made the ids; the cues it added are the ones now at the place pasted to (its
+        // `model_changed` arrives before the result).
+        let pasted = children(of: place.parent).dropFirst(place.index).prefix(clipboard.count).map(\.id)
+        if !pasted.isEmpty { cueList?.selectAsUser(Array(pasted)) }
     }
 
     // MARK: Delete numbers

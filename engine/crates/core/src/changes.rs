@@ -105,6 +105,8 @@ impl Command {
                 fp.added.insert(cue.id);
             }
             Self::Paste { cues, .. } => fp.added.extend(cues.iter().map(|c| c.id)),
+            // Replaced by a `Paste` before it is applied, so there is nothing to report.
+            Self::PasteClipboard { .. } => {}
             Self::RemoveCue { id } => {
                 fp.removed.insert(*id);
             }
