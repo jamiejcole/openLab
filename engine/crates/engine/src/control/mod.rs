@@ -407,6 +407,8 @@ struct Engine {
     open_docs: usize,
     /// Each doc's use of the prime pool as of its last priming pass.
     primes: std::collections::BTreeMap<DocId, PrimeUse>,
+    /// `primes` changed since the docs' allowances were last looked at.
+    primes_changed: bool,
     /// Docs installed by [`Control::open_doc`] and the request each answered (until taken).
     opened: Vec<(openlab_core::protocol::RequestId, DocId)>,
 }
@@ -556,6 +558,7 @@ impl Control {
             next_doc: 0,
             open_docs: 1,
             primes: std::collections::BTreeMap::new(),
+            primes_changed: false,
             opened: Vec::new(),
         };
         if let Some(e) = writer_error {
@@ -812,6 +815,11 @@ impl Control {
     /// let go takes its share up. A doc's wants change only at its own passes, so an idle
     /// doc opening beside a busy one makes no doc re-prime.
     fn balance_primes(&mut self) {
+        // Nothing to look at on the (usual) wake where no doc primed and none opened or
+        // closed; one doc alone never has another to make room for.
+        if !std::mem::take(&mut self.eng.primes_changed) || self.docs.len() < 2 {
+            return;
+        }
         for doc in &mut self.docs {
             let Some(usage) = self.eng.primes.get(&doc.id).copied() else {
                 continue;
@@ -2095,6 +2103,7 @@ impl DocCx<'_> {
         let want = wanted.len().min(self.eng.config.max_primes);
         let id = self.doc.id;
         let entry = self.eng.primes.entry(id).or_default();
+        let before = (entry.want, entry.held, entry.cap);
         entry.want = want;
         let cap = self.eng.prime_allowance(id);
         // Fills only a few new rings per pass while docs share a short pool.
@@ -2120,6 +2129,9 @@ impl DocCx<'_> {
         let entry = self.eng.primes.entry(id).or_default();
         entry.held = held;
         entry.cap = cap;
+        if before != (want, held, cap) {
+            self.eng.primes_changed = true;
+        }
         if cut {
             // The rest of the burst-limited fill comes on the next passes.
             self.doc.primes_dirty = true;
