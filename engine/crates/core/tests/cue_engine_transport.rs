@@ -1783,3 +1783,155 @@ fn an_end_dated_before_a_pause_with_nothing_to_start_completes_the_cue() {
     assert!(starts(&end).is_empty());
     assert!(rig.at(6000, Input::ResumeAll).is_empty());
 }
+
+// ----- an end on the pause sample (M2.34) -----
+
+/// Pause All on 100; the voice's end report, dated `at`, arrives on 150. The mixer dates an end
+/// on the first sample after the voice's last, so an end on 100 left nothing to play when the
+/// pause applied: it is an end, as one before it (M2.33). One after it is the pause being carried
+/// out. Whatever the tie, a cue left paused either still has its voice (the resume resumes it)
+/// or holds an end the resume carries out: never paused with nothing to resume.
+#[test]
+fn an_end_on_the_pause_sample_ends_the_cue_and_one_after_it_is_the_pause() {
+    for at in [99, 100, 101] {
+        for follow in [false, true] {
+            let mode = if follow {
+                ContinueMode::AutoFollow
+            } else {
+                DNC
+            };
+            let mut rig = Rig::new(vec![timed(sound(2), 0.0, 0.0, mode), sound(3)]);
+            rig.start(0, 2);
+            let paused_run = rig.run(2);
+            rig.at(100, Input::PauseAll);
+            let end = ended(&mut rig, 150, 2, at);
+            let case = format!("end on {at}, follow {follow}: {end:?}");
+            // A paused show starts nothing, whatever the tie.
+            assert!(starts(&end).is_empty(), "{case}");
+            assert!(voice_starts(&end).is_empty(), "{case}");
+            let resumed = rig.at(6000, Input::ResumeAll);
+            let case = format!("{case}; resume {resumed:?}");
+            let resumes_voice = resumed.iter().any(
+                |a| matches!(a, Action::ResumeVoice { cue, paused, .. } if *cue == id(2) && *paused == paused_run),
+            );
+            if at > 100 {
+                // Still paused with its voice: the resume plays it on, and nothing follows yet.
+                assert!(changes(&end, 2).is_empty(), "{case}");
+                assert!(resumes_voice, "{case}");
+                assert!(starts(&resumed).is_empty(), "{case}");
+                assert_eq!(rig.state(2), CueState::Running, "{case}");
+            } else if follow {
+                // Held (M2.33): paused with no voice until the resume, which carries the end out.
+                assert!(changes(&end, 2).is_empty(), "{case}");
+                assert!(!resumes_voice, "{case}");
+                assert_eq!(starts(&resumed), vec![(id(3), 6000)], "{case}");
+                assert_eq!(
+                    changes(&resumed, 2).last(),
+                    Some(&(CueState::Idle, 6000)),
+                    "{case}"
+                );
+            } else {
+                // Completed on its own sample; the resume has nothing to do for it.
+                assert_eq!(changes(&end, 2), vec![(CueState::Idle, at)], "{case}");
+                assert!(resumed.is_empty(), "{case}");
+            }
+            assert_ne!(rig.state(2), CueState::Paused, "{case}");
+        }
+    }
+}
+
+/// The same tie in a playlist with no run (the child started on its own): an end on the pause
+/// sample holds the next child until the resume.
+#[test]
+fn an_end_on_the_pause_sample_holds_a_playlist_step_until_the_resume() {
+    let mut rig = Rig::new(vec![playlist_of(1, false, vec![sound(2), sound(3)])]);
+    rig.start(0, 2);
+    rig.at(100, Input::PauseAll);
+    let end = ended(&mut rig, 150, 2, 100);
+    assert!(voice_starts(&end).is_empty(), "{end:?}");
+    assert_eq!(rig.state(2), CueState::Paused);
+    let resumed = rig.at(6000, Input::ResumeAll);
+    assert_eq!(voice_starts(&resumed), vec![(id(3), 6000)], "{resumed:?}");
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+/// An end the engine knows ahead (`ActionLength`) on the pause sample is carried out before the
+/// pause: the rule a reported end on that sample follows too. Its follow starts on that sample,
+/// before Pause All pauses it, and the late report of the end changes nothing.
+#[test]
+fn a_known_end_on_the_pause_sample_comes_before_the_pause() {
+    let mut rig = Rig::new(vec![
+        timed(sound(2), 0.0, 0.0, ContinueMode::AutoFollow),
+        sound(3),
+    ]);
+    rig.start(0, 2);
+    let run = rig.run(2);
+    rig.at(
+        10,
+        Input::ActionLength {
+            cue: id(2),
+            run,
+            frames: 100,
+        },
+    );
+    let paused = rig.at(100, Input::PauseAll);
+    assert_eq!(
+        changes(&paused, 2),
+        vec![(CueState::Idle, 100)],
+        "{paused:?}"
+    );
+    assert_eq!(voice_starts(&paused), vec![(id(3), 100)], "{paused:?}");
+    assert_eq!(rig.state(3), CueState::Paused);
+    let late = rig.at(
+        150,
+        Input::ActionEnded {
+            cue: id(2),
+            run,
+            at: 100,
+        },
+    );
+    assert!(late.is_empty(), "{late:?}");
+}
+
+/// A preview's voice ending on the Pause All sample (cue_engine_prop seed 886fa41f): the preview
+/// ends, as one ending before it; one ending after it is the pause, and the preview stays paused
+/// with its voice for Resume All. A paused preview always has a voice to resume.
+#[test]
+fn a_preview_ending_on_the_pause_sample_ends_and_one_after_it_is_the_pause() {
+    for at in [99, 100, 101] {
+        let mut rig = Rig::new(vec![sound(1)]);
+        rig.at(0, Input::Preview { cue: id(1) });
+        let run = rig.engine.preview_run(id(1)).unwrap();
+        rig.at(100, Input::PauseAll);
+        let end = rig.at(
+            150,
+            Input::ActionEnded {
+                cue: id(1),
+                run,
+                at,
+            },
+        );
+        let case = format!("end on {at}: {end:?}");
+        let resumed = rig.at(6000, Input::ResumeAll);
+        let resumes_voice = resumed.iter().any(
+            |a| matches!(a, Action::ResumeVoice { cue, paused, .. } if *cue == id(1) && *paused == run),
+        );
+        if at > 100 {
+            assert!(end.is_empty(), "{case}");
+            assert!(resumes_voice, "{case}; {resumed:?}");
+            assert!(rig.engine.is_previewing(id(1)), "{case}");
+        } else {
+            assert_eq!(
+                end,
+                vec![Action::PreviewChanged {
+                    cue: id(1),
+                    active: false,
+                    at
+                }],
+                "{case}"
+            );
+            assert!(!rig.engine.is_previewing(id(1)), "{case}");
+            assert!(resumed.is_empty(), "{case}; {resumed:?}");
+        }
+    }
+}

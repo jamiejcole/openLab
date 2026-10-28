@@ -1270,9 +1270,12 @@ impl CueEngine {
         if run.run != run_id {
             return;
         }
-        // A paused voice cannot end by itself; an end dated at or after the pause is the pause
-        // being carried out (e.g. as a stop), not the action completing.
-        if run.paused_at.is_some_and(|paused| at >= paused) {
+        // A paused voice cannot end by itself; an end dated after the pause is the pause being
+        // carried out (e.g. as a stop), not the action completing. An end dated on the pause
+        // sample is an end (M2.34): the mixer dates it on the first sample after the voice's
+        // last, so the voice had nothing left to play when the pause applied, and a known end
+        // on that sample (`ActionLength`) is carried out before the pause, too.
+        if run.paused_at.is_some_and(|paused| at > paused) {
             return;
         }
         if run.stop_end.is_some() {
@@ -1285,8 +1288,8 @@ impl CueEngine {
             return;
         };
         let at = at.max(start);
-        // Dated before the pause, arriving after it (M2.33): a paused show starts nothing, so
-        // when this end would start a cue (its auto-follow, its Devamp cue's next cue, or the
+        // Dated before or on the pause, arriving after it (M2.33): a paused show starts nothing,
+        // so when this end would start a cue (its auto-follow, its Devamp cue's next cue, or the
         // next child of a playlist it was started in on its own), the end is held as a deadline
         // on the pause sample, which the resume moves to the resume sample, as for a failure
         // while paused. The voice is gone, so the resume sends nothing for it. A stop, reset or
