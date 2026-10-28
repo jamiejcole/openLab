@@ -18,6 +18,7 @@ mod rng;
 mod run;
 mod second;
 mod time;
+mod timers;
 mod transport;
 mod types;
 
@@ -29,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
 pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
+pub use timers::{Timer, TimerProgress};
 pub use transport::PANIC_CURVE;
 pub use types::*;
 
@@ -999,20 +1001,23 @@ impl CueEngine {
             }
             Some(Slot::Loaded(loaded)) => (
                 loaded.run,
-                (loaded.pre_wait_left, loaded.action_offset),
+                (
+                    loaded.pre_wait_left,
+                    loaded.action_offset,
+                    loaded.pre_wait_total,
+                ),
                 if loaded.voice {
                     Voice::Loaded
                 } else {
                     Voice::None
                 },
             ),
-            None => (
-                self.new_run(),
-                (cx.secs(model.pre_wait, &self.config), 0),
-                Voice::None,
-            ),
+            None => {
+                let pre_wait = cx.secs(model.pre_wait, &self.config);
+                (self.new_run(), (pre_wait, 0, pre_wait), Voice::None)
+            }
         };
-        let (pre_wait_left, action_offset) = split;
+        let (pre_wait_left, action_offset, pre_wait_total) = split;
         let until = at.saturating_add(pre_wait_left);
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
@@ -1020,6 +1025,7 @@ impl CueEngine {
         self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
+        new.pre_wait_total = pre_wait_total;
         new.voice = voice;
         new.started = at;
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
@@ -1243,6 +1249,7 @@ impl CueEngine {
                 run,
                 pre_wait_left,
                 action_offset,
+                pre_wait_total: pre_wait,
                 voice,
             }),
         );
@@ -1711,6 +1718,7 @@ impl CueEngine {
         };
         run.post_wait = (continue_mode == ContinueMode::AutoContinue)
             .then(|| at.saturating_add(post_wait.saturating_sub(offset)));
+        run.post_wait_total = post_wait;
         // A cue skipped for static problems follows as a disarmed one does (QLab 5: GO on a
         // broken auto-follow cue starts the next cue); one that broke at run time does not.
         run.follow = !failed && continue_mode == ContinueMode::AutoFollow;
