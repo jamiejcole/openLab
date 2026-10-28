@@ -11,6 +11,7 @@ use openlab_core::{Workspace, save_show};
 
 use super::atomic::remove_stale_tmp;
 use super::backup::{Rotation, backup_existing, rotate};
+use super::files::regular_file_or_absent;
 use super::recovery::clear_recovery;
 use super::{AppDirs, PersistError, Stage, write_atomic_with};
 
@@ -53,6 +54,9 @@ pub fn save_workspace_with(
 ) -> Result<SaveReport, PersistError> {
     // A workspace that would not load back writes nothing at all, not even a backup.
     let text = save_show(workspace)?;
+    // A FIFO, device, socket or directory at the target is refused up front, before anything is
+    // read or written: the operator gets the error and the worker keeps serving other saves.
+    regular_file_or_absent(path)?;
     let mut report = SaveReport::default();
 
     match backup_existing(dirs, workspace.id, path, now_ms, keep) {
