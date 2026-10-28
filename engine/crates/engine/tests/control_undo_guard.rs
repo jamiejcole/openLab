@@ -10,7 +10,8 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, ServerMessage, TransportAction, WireWarning,
 };
 use openlab_core::{
-    Command, ContinueMode, Cue, CueKind, CueState, FadeCurve, FadeLevels, GroupMode, Position, Workspace,
+    Command, ContinueMode, Cue, CueKind, CueState, FadeCurve, FadeLevels, GroupMode, Position,
+    Workspace,
 };
 use openlab_engine::control::offline::OfflineShow;
 use show::*;

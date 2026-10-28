@@ -28,8 +28,9 @@ use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use openlab_audio::{Mixer, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, Delete, DocId, ErrorCode, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
-    ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server, encode_client,
+    ClientMessage, Delete, DocId, ErrorCode, Outcome, PROTOCOL_VERSION, Request, RequestId,
+    RuntimeChange, ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server,
+    encode_client,
 };
 use openlab_core::{Command, CueId, CueKind, CueProperty, Position, Workspace};
 use openlab_engine::control::{
