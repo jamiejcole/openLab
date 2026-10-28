@@ -18,7 +18,7 @@ use crate::cue::{
 };
 use crate::model::{
     CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
-    WorkspaceSettings,
+    WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
@@ -560,19 +560,8 @@ impl Checker {
         );
         self.level(None, "settings.master_db", &mut s.master_db);
         self.osc_access(&mut s.osc_access);
-        let keys = &s.hotkeys;
-        for (field, key) in [
-            ("settings.hotkeys.go", &keys.go),
-            ("settings.hotkeys.stop_all", &keys.stop_all),
-            ("settings.hotkeys.pause_all", &keys.pause_all),
-            ("settings.hotkeys.resume_all", &keys.resume_all),
-            ("settings.hotkeys.playhead_next", &keys.playhead_next),
-            (
-                "settings.hotkeys.playhead_previous",
-                &keys.playhead_previous,
-            ),
-        ] {
-            self.hotkey(None, field, key.as_ref());
+        for (name, key) in s.hotkeys.slots() {
+            self.hotkey(None, hotkey_field(name), key.as_ref());
         }
         if clamp(&mut s.auto_number_start, 0.0, MAX_AUTO_NUMBER) {
             self.warn(
