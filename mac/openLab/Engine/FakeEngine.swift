@@ -321,6 +321,7 @@ final class FakeEngine: EngineTransport {
                         switch type {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
+                        case "media": cue["kind"]?.set("media", value)
                         default: cue.set(type, value)
                         }
                     }
@@ -403,7 +404,7 @@ final class FakeEngine: EngineTransport {
     }
 
     private static let structural: Set<String> = [
-        "add_cue", "paste", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
+        "add_cue", "paste", "paste_clipboard", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
     ]
 
     /// Applies one structural command (or a transaction of them) to `lists`; false when it cannot.
@@ -417,8 +418,10 @@ final class FakeEngine: EngineTransport {
         case "add_cue":
             guard let cue = c["cue"], let at = c["at"] else { return false }
             return insert(cue, at: at, into: &lists)
-        case "paste":
-            guard let cues = c["cues"]?.arrayValue, var at = c["at"] else { return false }
+        case "paste", "paste_clipboard":
+            guard var cues = c["cues"]?.arrayValue, var at = c["at"] else { return false }
+            // The real engine runs `prepare_paste`; the fake only gives the copies fresh ids.
+            if c["type"]?.stringValue == "paste_clipboard" { cues = cues.map(withFreshIDs) }
             guard case .int(let start)? = at["index"] else { return false }
             var copy = lists
             for (n, cue) in cues.enumerated() {
@@ -438,6 +441,16 @@ final class FakeEngine: EngineTransport {
             return insert(cue, at: at, into: &lists)
         default: return false
         }
+    }
+
+    private static func withFreshIDs(_ cue: JSONValue) -> JSONValue {
+        var cue = cue
+        cue.set("id", .string(UUID().uuidString.lowercased()))
+        if var kind = cue["kind"], let kids = kind["children"]?.arrayValue {
+            kind.set("children", .array(kids.map(withFreshIDs)))
+            cue.set("kind", kind)
+        }
+        return cue
     }
 
     private static func children(_ cue: JSONValue) -> [JSONValue] { cue["kind"]?["children"]?.arrayValue ?? [] }

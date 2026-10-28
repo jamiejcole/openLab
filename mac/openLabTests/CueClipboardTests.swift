@@ -85,7 +85,7 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertNil(h.vc.fileDropPlan(wav, item: nil, index: 0), "Show Mode")
     }
 
-    func testReplaceFileSendsTheWholeKindAndSkipsBusyCues() async throws {
+    func testReplaceFileSendsTheMediaAloneAndSkipsBusyCues() async throws {
         let (h, editor, log) = try await harness()
         _ = h  // the window owns the cue list for as long as the editor lives
         let wav = try tempFiles(["new.wav"])[0]
@@ -93,13 +93,31 @@ final class CueClipboardTests: XCTestCase {
         let sent = try XCTUnwrap(log.commands.first)
         XCTAssertEqual(sent["type"]?.stringValue, "set_cue_property")
         XCTAssertEqual(sent["id"]?.stringValue, H.door.raw)
-        XCTAssertEqual(sent["property"]?["type"]?.stringValue, "kind")
-        XCTAssertEqual(sent["property"]?["value"]?["type"]?.stringValue, "audio")
-        XCTAssertEqual(sent["property"]?["value"]?["media"]?.stringValue, wav.standardizedFileURL.path)
+        // The file alone: levels, routing and slices are the engine's, not this copy of them.
+        XCTAssertEqual(sent["property"]?["type"]?.stringValue, "media")
+        XCTAssertEqual(sent["property"]?["value"]?.stringValue, wav.standardizedFileURL.path)
         // Rain is paused in the demo show.
         await editor.replaceFile(of: H.rain, with: wav)
         XCTAssertEqual(log.commands.count, 1)
         XCTAssertEqual(log.notices, [loc("edit.error.replaceBusy")])
+    }
+
+    /// Both encodings are the engine's golden fixtures (engine/fixtures/protocol/client).
+    func testMediaAndPasteClipboardEncodeAsTheGoldenFixtures() throws {
+        let media = try Fixtures.json("client", "command_set_cue_media")["command"]
+        XCTAssertEqual(
+            Command.setProperty("00000000-0000-0000-0000-00000000000c", .media("/Volumes/Show/thunder.wav")).json, media
+        )
+        let paste = try XCTUnwrap(Fixtures.json("client", "command_paste_clipboard")["command"])
+        XCTAssertEqual(
+            Command.pasteClipboard(
+                at: Command.position(
+                    list: "00000000-0000-0000-0000-000000000001", parent: "00000000-0000-0000-0000-00000000000a",
+                    index: 2),
+                cues: try XCTUnwrap(paste["cues"]?.arrayValue)
+            ).json, paste)
+        XCTAssertEqual(
+            CueProperty.media(nil).json, .object(["type": .string("media"), "value": .null]), "null clears the file")
     }
 
     // MARK: Copy, cut, paste
@@ -112,45 +130,11 @@ final class CueClipboardTests: XCTestCase {
     private func pasted(_ log: CueEditingTests.SendLog) throws -> (at: JSONValue, cues: [JSONValue]) {
         XCTAssertEqual(log.commands.count, 1)
         let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(sent["type"]?.stringValue, "paste", "one paste command with the whole clipboard")
+        XCTAssertEqual(sent["type"]?.stringValue, "paste_clipboard", "one command with the raw clipboard")
         return (try XCTUnwrap(sent["at"]), try XCTUnwrap(sent["cues"]?.arrayValue))
     }
 
-    func testPreparePasteFollowsCoreRules() async throws {
-        let h = try await H(collapsed: false)
-        let model = try XCTUnwrap(h.store.model)
-        let first = try XCTUnwrap(model.patches.first).id.raw
-        let clipboard = try XCTUnwrap(
-            JSONValue.parse(
-                """
-                [{"id":"g","number":"1","kind":{"type":"group","children":[
-                  {"id":"a","number":"7","kind":{"type":"audio","patch":"nope"}},
-                  {"id":"f","number":"7","kind":{"type":"fade","target":"a"}},
-                  {"id":"s","number":"","kind":{"type":"stop","target":"gone"}},
-                  {"id":"k","number":null,"kind":{"type":"start","target":"\(H.intro.raw)"}}]}},
-                 {"id":"f2","number":"8","kind":{"type":"fade","target":"g"}}]
-                """)?.arrayValue)
-        var n = 0
-        let out = CueEditor.preparePaste(clipboard, in: model) {
-            n += 1
-            return ModelID("n\(n)")
-        }
-        XCTAssertEqual(out.map { $0["id"]?.stringValue }, ["n1", "n6"])
-        let kids = try XCTUnwrap(out[0]["kind"]?["children"]?.arrayValue)
-        XCTAssertEqual(kids.map { $0["id"]?.stringValue }, ["n2", "n3", "n4", "n5"])
-        XCTAssertEqual(kids[1]["kind"]?["target"]?.stringValue, "n2", "a target inside the clipboard follows the copy")
-        XCTAssertEqual(out[1]["kind"]?["target"]?.stringValue, "n1", "also between top-level cues")
-        XCTAssertEqual(kids[2]["kind"]?["target"], .null, "a missing target is cleared")
-        XCTAssertEqual(kids[3]["kind"]?["target"]?.stringValue, H.intro.raw, "an existing target is kept")
-        XCTAssertEqual(kids[0]["kind"]?["patch"]?.stringValue, first, "a missing patch becomes the first")
-        XCTAssertEqual(out[0]["number"], .null, "number 1 is in use")
-        XCTAssertEqual(kids[0]["number"]?.stringValue, "7")
-        XCTAssertEqual(kids[1]["number"], .null, "number repeated inside the clipboard")
-        XCTAssertEqual(kids[2]["number"], .null, "empty number")
-        XCTAssertEqual(out[1]["number"]?.stringValue, "8")
-    }
-
-    func testCopyThenPasteSendsOnePasteAfterTheSelection() async throws {
+    func testCopyThenPasteSendsOneRawPasteAfterTheSelectionAndSelectsTheCopy() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.door])
         let copied = await editor.copySelection()
@@ -162,56 +146,49 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(at["parent"]?.stringValue, H.group.raw)
         XCTAssertEqual(at["index"], .int(2))
         XCTAssertEqual(at["list"]?.stringValue, H.list)
-        let id = try XCTUnwrap(cues.first?["id"]?.stringValue)
-        XCTAssertNotEqual(id, H.door.raw)
+        // The clipboard goes as copied: the engine makes the ids and fixes numbers and patches.
+        XCTAssertEqual(cues.first?["id"]?.stringValue, H.door.raw)
         XCTAssertEqual(cues.first?["name"]?.stringValue, "Door slam")
         XCTAssertEqual(cues.first?["kind"]?["media"]?.stringValue, "media/d.wav")
-        XCTAssertEqual(cues.first?["number"], .null, "2.1 is in use here")
-        await assertEventually { h.vc.selectedIDs() == [ModelID(id)] }
-        XCTAssertEqual(h.vc.node(H.group)?.children.count, 4)
+        await assertEventually { h.vc.node(H.group)?.children.count == 4 }
+        await assertEventually { h.vc.selectedIDs().count == 1 }
+        let copy = try XCTUnwrap(h.vc.selectedIDs().first)
+        XCTAssertNotEqual(copy, H.door, "the copy the engine made is selected")
+        XCTAssertEqual(h.vc.node(copy)?.cue.name, "Door slam")
+        XCTAssertEqual(h.vc.node(H.group)?.children[2].id, copy)
     }
 
-    func testGroupWithNumberedChildrenPastesWithFreshIDsAndNoDuplicateNumbers() async throws {
+    func testGroupWithChildrenPastesAsOneRawCueAndTheWholeCopyIsThere() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.group, H.door])
         await editor.copySelection()
         await editor.paste()
         let (_, cues) = try pasted(log)
         XCTAssertEqual(cues.count, 1, "the selected child is part of the group")
-        let kids = try XCTUnwrap(cues[0]["kind"]?["children"]?.arrayValue)
-        XCTAssertEqual(kids.count, 3)
-        XCTAssertTrue(([cues[0]] + kids).allSatisfy { $0["number"] == .null })
-        let old = Set([H.group, H.door, H.rain, H.radio].map(\.raw))
-        let all = ([cues[0]] + kids).compactMap { $0["id"]?.stringValue }
-        XCTAssertTrue(old.isDisjoint(with: all))
-        XCTAssertEqual(Set(all).count, 4)
-        await assertEventually { h.vc.node(ModelID(all[0]))?.children.count == 3 }
+        XCTAssertEqual(cues[0]["kind"]?["children"]?.arrayValue?.count, 3)
+        await assertEventually { h.vc.selectedIDs().count == 1 }
+        let copy = try XCTUnwrap(h.vc.selectedIDs().first)
+        XCTAssertNotEqual(copy, H.group)
+        XCTAssertEqual(h.vc.node(copy)?.children.count, 3)
     }
 
-    func testSeveralCopiedCuesPasteInOnePasteCommandWithTargetsBetweenThemFollowing() async throws {
+    func testSeveralCopiedCuesPasteInOnePasteCommandAndAllAreSelected() async throws {
         let (h, editor, log) = try await harness()
-        // The demo fade does not target the intro cue, so point it there: a fade and its target copied together.
         h.vc.select([H.intro, H.fade])
         await editor.copySelection()
-        let text = try XCTUnwrap(editor.pasteboard.string(forType: CueEditor.pasteType))
-        var root = try XCTUnwrap(JSONValue.parse(text))
-        var list = try XCTUnwrap(root["cues"]?.arrayValue)
-        var kind = try XCTUnwrap(list[1]["kind"])
-        kind.set("target", .string(H.intro.raw))
-        list[1].set("kind", kind)
-        root.set("cues", .array(list))
-        put(editor, try root.text())
         h.vc.select([H.intro])
         await editor.paste()
         let (at, cues) = try pasted(log)
         XCTAssertEqual(at["index"], .int(1))
-        XCTAssertEqual(cues.count, 2)
-        let ids = cues.compactMap { $0["id"]?.stringValue }
-        XCTAssertFalse(ids.contains(H.intro.raw))
-        XCTAssertEqual(cues[1]["kind"]?["target"]?.stringValue, ids[0], "the copied fade targets the copied cue")
+        XCTAssertEqual(cues.map { $0["id"]?.stringValue }, [H.intro.raw, H.fade.raw])
+        await assertEventually { h.vc.selectedIDs().count == 2 }
+        XCTAssertFalse(Set(h.vc.selectedIDs()).contains(H.intro))
+        XCTAssertFalse(Set(h.vc.selectedIDs()).contains(H.fade))
     }
 
-    func testPasteIntoASecondWorkspaceRepairsWhatItLacks() async throws {
+    /// The clipboard is what crosses workspaces; what the destination lacks is the engine's to repair
+    /// (engine/crates/core/tests/command_prepare.rs, engine/crates/engine/tests/control_media_paths.rs).
+    func testPasteIntoASecondWorkspaceSendsTheClipboardThere() async throws {
         let (h, editor, log) = try await harness()
         let other = try await H(collapsed: false)
         let editor2 = CueEditor(store: other.store, cueList: other.vc)
@@ -225,7 +202,7 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(at["index"], .int(1))
         XCTAssertEqual(cues.first?["name"]?.stringValue, "Door slam")
         XCTAssertTrue(log.commands.isEmpty)
-        // A clipboard from a workspace with other cues, patches and numbers.
+        // A clipboard from a workspace with other cues, patches and numbers goes as it is.
         put(
             editor2,
             """
@@ -236,11 +213,9 @@ final class CueClipboardTests: XCTestCase {
         let log3 = CueEditingTests.SendLog(other.rig.engine)
         await editor2.paste()
         let (_, two) = try pasted(log3)
-        let first = try XCTUnwrap(other.store.model?.patches.first).id.raw
-        XCTAssertEqual(two[0]["kind"]?["patch"]?.stringValue, first)
-        XCTAssertEqual(two[0]["number"], .null, "1 is taken")
-        XCTAssertEqual(two[1]["number"]?.stringValue, "9")
-        XCTAssertEqual(two[1]["kind"]?["target"], .null)
+        XCTAssertEqual(two.count, 2)
+        XCTAssertEqual(two[0]["kind"]?["patch"]?.stringValue, "other-ws-patch")
+        XCTAssertEqual(two[1]["kind"]?["target"]?.stringValue, "not-here")
     }
 
     func testPasteWithNothingValidOnThePasteboardDoesNothing() async throws {

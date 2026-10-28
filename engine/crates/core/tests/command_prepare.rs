@@ -238,3 +238,79 @@ fn a_prepared_paste_applies_and_an_unprepared_one_is_refused() {
     ws.apply(ready).unwrap();
     assert_eq!(ws.cue_lists[0].cues[0].id, cue_id(77));
 }
+
+/// The old Swift `CueEditor.preparePaste` test, now that the engine owns the rule: a group with
+/// children, targets inside and outside the clipboard, repeated and empty numbers, a patch and a
+/// network destination this workspace lacks.
+#[test]
+fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
+    let ws = workspace(vec![
+        numbered(50, "1", CueKind::Memo),
+        cue(51, CueKind::Memo),
+    ]);
+    let mut a = numbered(11, "7", audio());
+    if let CueKind::Audio { patch, .. } = &mut a.kind {
+        *patch = patch_id(99);
+    }
+    let net = cue(
+        15,
+        CueKind::Network {
+            destination: net_id(98),
+            address: "/x".into(),
+            args: vec![],
+        },
+    );
+    let children = vec![
+        a,
+        numbered(12, "7", fade(11)),
+        numbered(13, "", fade(404)),
+        cue(14, fade(51)),
+        net,
+    ];
+    let clipboard = vec![
+        numbered(10, "1", group(children)),
+        numbered(20, "8", fade(10)),
+    ];
+    let command = Command::PasteClipboard {
+        at: pos(),
+        cues: clipboard,
+    };
+    let mut next = 1000;
+    let Command::Paste { cues, .. } = command
+        .prepare(
+            &ws,
+            &MediaPaths {
+                show_dir: None,
+                style: POSIX,
+            },
+            &mut || {
+                next += 1;
+                cue_id(next)
+            },
+        )
+        .unwrap()
+    else {
+        panic!("paste");
+    };
+    let CueKind::Group { children: kids, .. } = &cues[0].kind else {
+        panic!("group");
+    };
+    assert_eq!(cues[0].id, cue_id(1001));
+    assert_eq!(
+        kids.iter().map(|c| c.id).collect::<Vec<_>>(),
+        [1002, 1003, 1004, 1005, 1006].map(cue_id)
+    );
+    assert_eq!(kids[1].kind.target(), Some(cue_id(1002)), "inside: follows");
+    assert_eq!(cues[1].kind.target(), Some(cue_id(1001)), "between top-level cues");
+    assert_eq!(kids[2].kind.target(), None, "missing: cleared");
+    assert_eq!(kids[3].kind.target(), Some(cue_id(51)), "existing: kept");
+    assert!(matches!(&kids[0].kind, CueKind::Audio { patch, .. } if *patch == patch_id(1)));
+    assert!(
+        matches!(&kids[4].kind, CueKind::Network { destination, .. } if *destination == net_id(1))
+    );
+    assert_eq!(cues[0].number, None, "1 is in use");
+    assert_eq!(kids[0].number.as_deref(), Some("7"));
+    assert_eq!(kids[1].number, None, "repeated inside the clipboard");
+    assert_eq!(kids[2].number, None, "empty");
+    assert_eq!(cues[1].number.as_deref(), Some("8"));
+}
