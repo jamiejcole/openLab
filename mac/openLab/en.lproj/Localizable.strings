@@ -172,6 +172,15 @@
 "inspector.multiple" = "Multiple cues selected";
 "inspector.tab.basics" = "Basics";
 "inspector.tab.triggers" = "Triggers";
+"inspector.tab.mode" = "Mode";
+"inspector.groupMode" = "Group mode";
+"inspector.groupMode.timeline" = "Timeline - start all children at once";
+"inspector.groupMode.playlist" = "Playlist - one child at a time";
+"inspector.groupMode.start_first_and_enter" = "Start first child and enter the group";
+"inspector.groupMode.start_first_and_go_to_next" = "Start first child and go to the next cue";
+"inspector.groupMode.start_random" = "Start a random child";
+"inspector.groupLoop" = "Loop playlist";
+"inspector.groupShuffle" = "Shuffle playlist";
 "inspector.hotkey" = "Hotkey";
 "inspector.hotkey.click" = "Click, then press a key";
 "inspector.hotkey.recording" = "Press a key…";
