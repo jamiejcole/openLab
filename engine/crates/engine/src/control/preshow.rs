@@ -15,27 +15,27 @@ use openlab_core::{
     CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, Workspace,
 };
 
-use super::Control;
+use super::DocCx;
 
 /// The system warning that is information, not a problem: the file is streamed instead of
 /// preloaded and plays fine. Listed in `system`, not counted, never makes the check fail.
 const INFO_CODE: &str = "preload_over_budget";
 
-impl Control {
+impl DocCx<'_> {
     /// The report, from the current state. Brings the warnings up to date first so the two
     /// agree.
     pub(super) fn preshow_report(&mut self) -> PreshowReport {
-        if self.warnings_dirty {
-            self.warnings_dirty = false;
+        if self.doc.warnings_dirty {
+            self.doc.warnings_dirty = false;
             self.refresh_warnings();
         }
-        let ws = &self.ws;
+        let ws = &self.doc.ws;
         let places = places(ws);
         let mut broken_cues = Vec::new();
         let mut media: BTreeMap<String, (PreshowMediaStatus, Option<String>, Vec<CueId>)> =
             BTreeMap::new();
         let mut missing_patches: BTreeSet<PatchId> = BTreeSet::new();
-        for (cue, problems) in self.engine.broken_cues() {
+        for (cue, problems) in self.doc.engine.broken_cues() {
             let Some(&(list, number, name)) = places.get(&cue) else {
                 continue;
             };
@@ -87,7 +87,7 @@ impl Control {
         let mut patches = Vec::new();
         let mut used_patches = 0u64;
         for patch in &ws.patches {
-            let resolution = self.patches.resolution(patch.id);
+            let resolution = self.eng.patches.resolution(patch.id);
             if matches!(resolution, Some(PatchResolution::Mapped { .. })) {
                 continue;
             }
@@ -154,7 +154,7 @@ impl Control {
             }
         }
 
-        let mut system: Vec<WireWarning> = self.warnings.to_vec();
+        let mut system: Vec<WireWarning> = self.doc.warnings.to_vec();
         system.sort_by(|a, b| notice_key(a).cmp(&notice_key(b)));
 
         let unchecked = network

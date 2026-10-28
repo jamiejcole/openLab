@@ -129,7 +129,7 @@ enum WarningRows {
     }
 
     static func cueTitle(_ cue: Cue) -> String {
-        let name = cue.name.isEmpty ? CueKindStyle.kindLabel(cue.kindType) : cue.name
+        let name = cue.listName
         return [cue.number, name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ")
     }
 }

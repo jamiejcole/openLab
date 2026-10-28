@@ -6,7 +6,10 @@
 //!
 //! Same rules as the cue commands (see `command.rs`), plus:
 //! - A new or changed value must pass the checks load applies (`settings_problems`,
-//!   `patch_problems`), so the result saves and loads back unchanged.
+//!   `patch_problems`), so the result saves and loads back unchanged. Not when `restoring`
+//!   (undo, redo, a transaction's rollback) for a value load accepts as it is (a bad hotkey
+//!   name, a legacy passcode, port 0): the state existed, and putting it back must not be
+//!   refused. Values load repairs (patches, rights) cannot be in a workspace, so stay checked.
 //! - Removing a patch that a cue uses is refused (`PatchInUse`), unless `even_if_used` is set,
 //!   which only the inverse of an add does: the patch may have been added to fix a cue that
 //!   already pointed at it, and undo must restore exactly. Removing a cue list that holds cues
@@ -555,12 +558,16 @@ fn add_network_patch(
     ws: &mut Workspace,
     index: usize,
     patch: &NetworkPatch,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     if ws.network_patches.iter().any(|p| p.id == patch.id) {
         return Err(CommandError::DuplicateNetworkPatchId(patch.id));
     }
     check_index(index, ws.network_patches.len(), true)?;
-    check_port(patch.port)?;
+    // Load accepts any port, so an undo or rollback may put back a patch on port 0.
+    if !restoring {
+        check_port(patch.port)?;
+    }
     ws.network_patches.insert(index, patch.clone());
     Ok(Command::RemoveNetworkPatch {
         id: patch.id,
@@ -590,6 +597,7 @@ fn set_network_patch_property(
     ws: &mut Workspace,
     id: NetworkPatchId,
     property: &NetworkPatchProperty,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     let patch = ws
         .network_patches
@@ -597,7 +605,9 @@ fn set_network_patch_property(
         .find(|p| p.id == id)
         .ok_or(CommandError::NetworkPatchNotFound(id))?;
     let old = property.current(patch);
-    if let NetworkPatchProperty::Port { value } = property {
+    if let NetworkPatchProperty::Port { value } = property
+        && !restoring
+    {
         check_port(*value)?;
     }
     if old == *property {
@@ -748,7 +758,9 @@ pub(crate) fn apply_model(
             })
         }),
         Command::SetPatchProperty { id, property } => set_patch_property(ws, *id, property),
-        Command::AddNetworkPatch { index, patch } => add_network_patch(ws, *index, patch),
+        Command::AddNetworkPatch { index, patch } => {
+            add_network_patch(ws, *index, patch, restoring)
+        }
         Command::RemoveNetworkPatch { id, even_if_used } => {
             remove_network_patch(ws, *id, *even_if_used)
         }
@@ -764,7 +776,7 @@ pub(crate) fn apply_model(
             })
         }),
         Command::SetNetworkPatchProperty { id, property } => {
-            set_network_patch_property(ws, *id, property)
+            set_network_patch_property(ws, *id, property, restoring)
         }
         Command::AddCueList { index, id, name } => add_cue_list(ws, *index, *id, name),
         Command::RemoveCueList { id } => remove_cue_list(ws, *id),
