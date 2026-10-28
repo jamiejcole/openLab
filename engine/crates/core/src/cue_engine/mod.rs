@@ -32,7 +32,7 @@ pub use time::*;
 pub use transport::PANIC_CURVE;
 pub use types::*;
 
-use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec};
+use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, GroupMode};
 use crate::cue_index::CueContainer;
 use crate::model::{CueId, CueListId, Workspace};
 use crate::tree;
@@ -1259,6 +1259,11 @@ impl CueEngine {
             return;
         }
         let before = self.state(cue);
+        // Whether the end of a paused run would start a sibling or a runless playlist's next
+        // child (looked up before the run is borrowed).
+        let paused = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.paused_at.is_some());
+        let chains = paused && group::chains_siblings(cx.ws, cue);
+        let runless = paused && in_runless_playlist(self, cue, cx.ws);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
@@ -1280,6 +1285,39 @@ impl CueEngine {
             return;
         };
         let at = at.max(start);
+        // Dated before the pause, arriving after it (M2.33): a paused show starts nothing, so
+        // when this end would start a cue (its auto-follow, its Devamp cue's next cue, or the
+        // next child of a playlist it was started in on its own), the end is held as a deadline
+        // on the pause sample, which the resume moves to the resume sample, as for a failure
+        // while paused. The voice is gone, so the resume sends nothing for it. A stop, reset or
+        // panic cancels it.
+        if let Some(paused) = run.paused_at {
+            let start_next = matches!(
+                run.devamp,
+                Some(DevampWait {
+                    start_next: true,
+                    at: Some(_),
+                    ..
+                })
+            );
+            if (run.follow && chains) || start_next || runless {
+                run.voice = Voice::None;
+                run.length = None;
+                run.phase = Phase::Action {
+                    start,
+                    end: Some(paused.max(start)),
+                };
+                // Its next cue starts there too (`step` carries out the devamp first).
+                run.devamp = run
+                    .devamp
+                    .filter(|d| d.start_next && d.at.is_some())
+                    .map(|d| DevampWait {
+                        at: Some(paused),
+                        ..d
+                    });
+                return self.report(cue, before, cx.now, cx);
+            }
+        }
         run.phase = Phase::Done;
         run.voice = Voice::None;
         let follow = run.follow;
@@ -1347,8 +1385,16 @@ impl CueEngine {
             .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
         let current = match self.slots.get(&cue) {
             // Nor a running fade (it owns no voice either).
+            // Nor a run whose voice already ended while it is paused, its end held for the
+            // resume (`action_ended`): the voice is gone, so a failure report cannot concern it.
             Some(Slot::Active(run)) => {
-                run.run == run_id && !run.is_broken() && run.group.is_none() && run.fade.is_none()
+                run.run == run_id
+                    && !run.is_broken()
+                    && run.group.is_none()
+                    && run.fade.is_none()
+                    && !(run.paused_at.is_some()
+                        && run.voice == Voice::None
+                        && matches!(run.phase, Phase::Action { .. }))
             }
             Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
             Some(Slot::Broken(_)) | None => false,
@@ -1363,56 +1409,59 @@ impl CueEngine {
         };
         release(cue, &old, cx);
         match old {
+            // Being stopped with a fade, or fading out in a panic (a workspace Panic or the
+            // cue's own): it was leaving anyway and the failure only ends that early. It ends as
+            // its stop would have, but broken so the failure shows: its group hears a stop, and
+            // nothing moves on from it (no continue, no playlist step, no halt), so a failure
+            // never starts a cue during a panic or after a stop (M2.31).
+            // A lost device (M4.2g, as QLab) ends the run the same way: the device loss stops
+            // everything a moment later, so nothing may move on in between (its pre-wait and
+            // post-wait are cancelled too, so nothing it scheduled starts after the device
+            // returns). The binary's patch update can have marked every audio cue broken by
+            // then, but a control cue would still act.
+            Slot::Active(run)
+                if run.stop_end.is_some() || run.panicked || reason == BrokenReason::DeviceLost =>
+            {
+                if !(reason == BrokenReason::DeviceLost && self.device_back(cue)) {
+                    self.slots.insert(cue, Slot::Broken(reason));
+                }
+                cx.vacated.push((cue, cx.now, Exit::Stopped));
+                self.report(cue, before, cx.now, cx);
+            }
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
             // schedule. Auto-follow waits for a successful completion, so it never fires.
-            // A lost device (M4.2g, as QLab) ends the run for good: its pre-wait and post-wait
-            // are cancelled too, so nothing it scheduled starts by itself after the device
-            // returns.
             Slot::Active(mut run) => {
                 // A child that broke while playing halts a running playlist around it (QLab
-                // check Q2); one being stopped or panicked was leaving anyway.
-                let halt = (!unplayed
-                    && reason != BrokenReason::DeviceLost
-                    && run.stop_end.is_none()
-                    && !run.panicked)
-                    .then(|| self.nominal_end(cue, &run));
+                // check Q2).
+                let halt = (!unplayed).then(|| self.nominal_end(cue, &run));
                 run.broken = Some(reason);
                 run.unplayed = unplayed;
                 run.voice = Voice::None;
                 // Skipped before it played: it follows as of now (as a cue skipped for static
                 // problems does at its action start); one that broke while playing never does.
-                let follow = run.follow
-                    && unplayed
-                    && run.stop_end.is_none()
-                    && reason != BrokenReason::DeviceLost;
-                run.stop_end = None;
+                let follow = run.follow && unplayed;
                 run.devamp = None;
-                if reason == BrokenReason::DeviceLost {
-                    // First, before the paused hold: a lost device never follows and never
-                    // waits for a resume.
-                    run.follow = false;
-                    run.post_wait = None;
+                // Paused: a paused show starts nothing, so the action's end is held until the
+                // resume (as a deadline on the pause sample, which the resume moves to the
+                // resume sample), and with it what that end starts: a skipped cue's follow, or
+                // the next child of a playlist it was started in on its own (which has no run to
+                // hold it, as a running playlist does: `GroupRun::advance`). A stop or panic
+                // cancels it.
+                if let (Some(paused), Phase::Action { start, .. }) = (run.paused_at, run.phase)
+                    && (follow || in_runless_playlist(self, cue, cx.ws))
+                {
+                    run.follow = follow;
+                    run.phase = Phase::Action {
+                        start,
+                        end: Some(paused),
+                    };
+                    run.length = None;
+                    self.slots.insert(cue, Slot::Active(run));
+                    return self.report(cue, before, cx.now, cx);
+                }
+                run.follow = false;
+                if matches!(run.phase, Phase::Action { .. }) {
                     run.phase = Phase::Done;
-                } else {
-                    // Paused: a paused show starts nothing, so the skipped action's end, and
-                    // with it the follow, is held until the resume (as a deadline on the pause
-                    // sample, which the resume moves to the resume sample); a stop or panic
-                    // cancels it.
-                    if let (true, Some(paused), Phase::Action { start, .. }) =
-                        (follow, run.paused_at, run.phase)
-                    {
-                        run.phase = Phase::Action {
-                            start,
-                            end: Some(paused),
-                        };
-                        run.length = None;
-                        self.slots.insert(cue, Slot::Active(run));
-                        return self.report(cue, before, cx.now, cx);
-                    }
-                    run.follow = false;
-                    if matches!(run.phase, Phase::Action { .. }) {
-                        run.phase = Phase::Done;
-                    }
                 }
                 let seq = run.seq;
                 self.slots.insert(cue, Slot::Active(run));
@@ -1740,6 +1789,21 @@ impl CueEngine {
         self.next_run = self.next_run.saturating_add(1);
         run
     }
+}
+
+/// Whether `cue` is a child of a playlist group with no run of its own, which a child's end
+/// carries on (`follow_through`).
+fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
+    group::ancestors(ws, cue).first().is_some_and(|parent| {
+        !matches!(engine.slots.get(parent), Some(Slot::Active(_)))
+            && matches!(
+                ws.find_cue(*parent).map(|g| &g.kind),
+                Some(CueKind::Group {
+                    mode: GroupMode::Playlist { .. },
+                    ..
+                })
+            )
+    })
 }
 
 /// Sends what is needed to silence and free a slot's voice at once.
