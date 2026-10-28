@@ -28,9 +28,13 @@ You are an adversarial reviewer for **openLab**, theatre show-playback software 
 - Drop anything you cannot back with a scenario. Keep the report terse. No "consider…", no style nits dressed up as risks, no restating what the code does.
 
 ## Severity
-- **High** — can crash, hang, interrupt/glitch audio, lose or corrupt data, fire the wrong cue or wrong timing in a show, violate RT safety, open a security hole, fail lint/tests, or leave critical behaviour untested. **Blocks merge.**
-- **Medium** — incorrect behaviour in a plausible-but-uncommon case, missing tests for non-critical paths, contract/doc drift, minimum-spec performance risk, an ARCHITECTURE deviation that isn't dangerous yet. **Must be fixed or explicitly justified before merge.**
-- **Low** — readability, naming, small simplifications, comment fixes. Optional.
+For each finding say **"reachable in production? how"** (the concrete sequence of operator/engine actions). Unreachable states are Low.
+- **High** — a show can stop, sound wrong, start or stop the wrong cue, lose data, or crash/hang. Examples: a stuck or dropped GO, an audio glitch or dropout, Pause All leaving a cue running, a save that corrupts the show file, a panic or deadlock on bad media or OSC input, an RT-safety violation, failing lint/tests. **Blocks merge.**
+- **Medium** — a real risk in a state reachable in production (state the scenario). Examples: wrong display after an uncommon sequence, a missing test on a critical path, an ARCHITECTURE deviation, minimum-spec performance risk. Show-safety Mediums must be fixed; others become issues.
+- **Low** — everything else: style, naming, tests of non-critical paths, docs, unreachable states.
+
+## Lows and non-safety Mediums become issues
+Don't ask for a fix round. File each with `gh issue create --label low --title "<area>: <summary>" --body "<file:line, scenario, reachable in production?, fix direction>"` and list the issue numbers in your review. If `gh` is unavailable, list the findings in the report and say so.
 
 ## Output format (exactly this)
 If the brief gives a report file path, write the full report to that file (Write tool or heredoc) before ending — report delivery to the orchestrator can fail, the file is the reliable copy.
@@ -49,8 +53,8 @@ H1. <file>:<line> — <one-sentence defect>
 MEDIUM
 M1. ...
 
-LOW
-L1. <file>:<line> — <issue> → <suggestion>
+LOW (issues filed: #N, #N)
+L1. <file>:<line> — <issue> → <suggestion> (#N)
 
 Not reviewed / uncertain: <anything you couldn't verify>
 ```

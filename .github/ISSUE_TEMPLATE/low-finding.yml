@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Low review finding
+description: A Low or non-show-safety Medium finding from a review
+labels: [low]
+body:
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: file:line
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario
+      description: Input or state, and the wrong outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: reachable
+    attributes:
+      label: Reachable in production?
+      description: How, or "no" with the reason.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Fix direction
