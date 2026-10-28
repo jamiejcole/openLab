@@ -175,12 +175,13 @@ fn encode(message: &ServerMessage) -> Option<Arc<str>> {
 }
 
 /// A second consumer of the control thread's broadcasts: the OSC side, which keeps a copy of
-/// the first open doc's workspace from them (it addresses that doc until M4.15h). Only the
-/// messages of that doc that change the copy are forwarded; when the first doc changes (it
-/// closed, or the first opened) the copy is marked lagged and rebuilt from a snapshot.
+/// every open doc's workspace from them (ARCHITECTURE section 7, "the OSC task sees all"). Only
+/// the messages that change a copy are forwarded, with their doc: each doc's `model_changed`,
+/// `runtime`, `document`, `snapshot` and `closed`, and the `workspaces` list (which docs are
+/// open, in open order).
 pub struct Tap {
-    pub tx: mpsc::Sender<ServerMessage>,
-    /// Set when a message did not fit: the copy is behind and must be rebuilt from a snapshot.
+    pub tx: mpsc::Sender<Outgoing>,
+    /// Set when a message did not fit: the copies are behind and must be rebuilt.
     pub lagged: Arc<AtomicBool>,
     /// Wakes the consumer so it notices `lagged` while idle.
     pub wake: Arc<Notify>,
@@ -192,26 +193,24 @@ impl Tap {
         self.wake.notify_one();
     }
 
-    /// `first`: the first open doc, as the last `workspaces` list said.
-    fn offer(&self, out: &Outgoing, first: Option<DocId>) {
-        let message = &out.message;
-        if out.doc.is_none() || out.doc != first {
-            return;
-        }
-        if !matches!(
-            message,
-            ServerMessage::ModelChanged { .. }
+    fn offer(&self, out: &Outgoing) {
+        let wanted = match (out.doc, &out.message) {
+            (None, ServerMessage::Workspaces { .. }) => true,
+            (
+                Some(_),
+                ServerMessage::ModelChanged { .. }
                 | ServerMessage::Runtime { .. }
                 | ServerMessage::Document { .. }
                 // Its media references were re-spelled (a save-as to another folder).
                 | ServerMessage::Snapshot { .. }
-        ) {
+                | ServerMessage::Closed { .. },
+            ) => true,
+            _ => false,
+        };
+        if !wanted || self.lagged.load(Ordering::Acquire) {
             return;
         }
-        if self.lagged.load(Ordering::Acquire) {
-            return;
-        }
-        if self.tx.try_send(message.clone()).is_err() {
+        if self.tx.try_send(out.clone()).is_err() {
             self.mark_lagged();
         }
     }
@@ -219,22 +218,9 @@ impl Tap {
 
 /// The fan-out task: runs until the control side hangs up (or the runtime stops).
 pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: Option<Tap>) {
-    // `None` until the first list: the engine sends one before anything about a doc, so the
-    // first one needs no rebuild of the copy; a change after it does.
-    let mut first: Option<Option<DocId>> = None;
     while let Some(out) = outbound.recv().await {
-        if let ServerMessage::Workspaces { workspaces } = &out.message {
-            let now = workspaces.first().map(|w| w.doc);
-            if first.is_some_and(|f| f != now)
-                && let Some(tap) = &tap
-            {
-                tap.mark_lagged();
-            }
-            first = Some(now);
-        }
-        let first = first.flatten();
         if let Some(tap) = &tap {
-            tap.offer(&out, first);
+            tap.offer(&out);
         }
         hub.deliver(&out);
     }
@@ -447,7 +433,7 @@ mod tap_tests {
 
     use super::*;
 
-    fn tap(capacity: usize) -> (Tap, mpsc::Receiver<ServerMessage>) {
+    fn tap(capacity: usize) -> (Tap, mpsc::Receiver<Outgoing>) {
         let (tx, rx) = mpsc::channel(capacity);
         (
             Tap {
@@ -495,97 +481,101 @@ mod tap_tests {
     #[test]
     fn only_the_messages_that_change_the_workspace_are_forwarded() {
         let (tap, mut rx) = tap(8);
-        tap.offer(&Outgoing::doc(DocId(0), runtime(1)), Some(DocId(0)));
-        tap.offer(
-            &Outgoing::doc(
-                DocId(0),
-                ServerMessage::ModelChanged {
-                    revision: 1,
-                    upserts: vec![],
-                    deletes: vec![],
+        tap.offer(&Outgoing::doc(DocId(0), runtime(1)));
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::ModelChanged {
+                revision: 1,
+                upserts: vec![],
+                deletes: vec![],
+            },
+        ));
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::Document {
+                document: DocumentState {
+                    path: None,
+                    dirty: false,
+                    can_undo: false,
+                    can_redo: false,
+                    show_mode: false,
                 },
-            ),
-            Some(DocId(0)),
-        );
-        tap.offer(
-            &Outgoing::doc(
-                DocId(0),
-                ServerMessage::Document {
-                    document: DocumentState {
-                        path: None,
-                        dirty: false,
-                        can_undo: false,
-                        can_redo: false,
-                        show_mode: false,
-                    },
-                },
-            ),
-            Some(DocId(0)),
-        );
-        tap.offer(
-            &Outgoing::doc(
-                DocId(0),
-                ServerMessage::Log {
-                    level: LogLevel::Info,
-                    message: String::new(),
-                },
-            ),
-            Some(DocId(0)),
-        );
-        tap.offer(
-            &Outgoing::doc(
-                DocId(0),
-                ServerMessage::Meters {
-                    outputs: vec![],
-                    cues: vec![],
-                },
-            ),
-            Some(DocId(0)),
-        );
-        tap.offer(
-            &Outgoing::doc(DocId(0), ServerMessage::Progress { items: vec![] }),
-            Some(DocId(0)),
-        );
+            },
+        ));
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::Log {
+                level: LogLevel::Info,
+                message: String::new(),
+            },
+        ));
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::Meters {
+                outputs: vec![],
+                cues: vec![],
+            },
+        ));
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::Progress { items: vec![] },
+        ));
         // A workspace replacement is announced by its snapshot alone.
-        tap.offer(
-            &Outgoing::doc(
-                DocId(0),
-                ServerMessage::Snapshot {
-                    snapshot: Box::new(replacement_snapshot()),
-                },
-            ),
-            Some(DocId(0)),
-        );
+        tap.offer(&Outgoing::doc(
+            DocId(0),
+            ServerMessage::Snapshot {
+                snapshot: Box::new(replacement_snapshot()),
+            },
+        ));
         assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 4);
         assert!(!tap.lagged.load(Ordering::Acquire));
     }
 
     #[test]
-    fn the_tap_follows_the_first_doc_only() {
+    fn the_tap_forwards_every_doc_and_the_list_with_their_doc() {
+        use openlab_core::protocol::WorkspaceInfo;
         let (tap, mut rx) = tap(8);
-        tap.offer(&Outgoing::doc(DocId(1), runtime(1)), Some(DocId(0)));
-        tap.offer(&Outgoing::doc(DocId(0), runtime(1)), None);
-        assert!(rx.try_recv().is_err());
-        tap.offer(&Outgoing::doc(DocId(0), runtime(2)), Some(DocId(0)));
-        assert!(rx.try_recv().is_ok());
+        tap.offer(&Outgoing::doc(DocId(1), runtime(1)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(1)));
+        tap.offer(&Outgoing::doc(
+            DocId(1),
+            ServerMessage::Closed { doc: DocId(1) },
+        ));
+        tap.offer(&Outgoing::all(ServerMessage::Workspaces {
+            workspaces: vec![WorkspaceInfo {
+                doc: DocId(0),
+                workspace_id: openlab_core::WorkspaceId(uuid::Uuid::from_u128(1)),
+                name: "A".into(),
+                path: None,
+                dirty: false,
+            }],
+        }));
+        // An engine-wide message that is not the list changes no copy.
+        tap.offer(&Outgoing::all(runtime(9)));
+        let docs: Vec<Option<DocId>> =
+            std::iter::from_fn(|| rx.try_recv().ok().map(|o| o.doc)).collect();
+        assert_eq!(
+            docs,
+            vec![Some(DocId(1)), Some(DocId(0)), Some(DocId(1)), None]
+        );
     }
 
     #[test]
     fn a_full_queue_marks_the_tap_lagged_wakes_the_consumer_and_stops_copying() {
         let (tap, mut rx) = tap(2);
-        tap.offer(&Outgoing::doc(DocId(0), runtime(1)), Some(DocId(0)));
-        tap.offer(&Outgoing::doc(DocId(0), runtime(2)), Some(DocId(0)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(1)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(2)));
         assert!(!tap.lagged.load(Ordering::Acquire));
-        tap.offer(&Outgoing::doc(DocId(0), runtime(3)), Some(DocId(0)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(3)));
         assert!(tap.lagged.load(Ordering::Acquire));
         // The wake is stored: a consumer that was idle sees it.
         assert!(tap.wake.notified().now_or_never().is_some());
         // Lagged: nothing more is queued, even with room, until the consumer clears the flag.
         while rx.try_recv().is_ok() {}
-        tap.offer(&Outgoing::doc(DocId(0), runtime(4)), Some(DocId(0)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(4)));
         assert!(rx.try_recv().is_err());
         tap.lagged.store(false, Ordering::Release);
-        tap.offer(&Outgoing::doc(DocId(0), runtime(5)), Some(DocId(0)));
+        tap.offer(&Outgoing::doc(DocId(0), runtime(5)));
         assert!(rx.try_recv().is_ok());
     }
 }
