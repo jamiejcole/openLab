@@ -1064,9 +1064,10 @@ fn a_silent_stream_is_warned_about_at_500_ms_and_lost_as_stalled_at_3_s() {
     assert!(!s.control().device_down(), "lost before the loss limit");
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     s.take_outbound();
-    idle_ms(&mut s, 300);
-    s.settle_devices();
-    assert!(s.control().device_down(), "the hung stream was not lost");
+    assert!(
+        idle_ms_until_down(&mut s, 300, true),
+        "the hung stream was not lost"
+    );
     let msgs = s.take_outbound();
     // As an unplug: the cue stops at once, a log and the device_lost notice go out.
     assert!(broken_device_lost(&msgs, 1));
@@ -1134,9 +1135,7 @@ fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
     let mut s = running_cue_show();
     let opens = s.fake.opens();
     s.fake.stall();
-    idle_ms(&mut s, 3100);
-    s.settle_devices();
-    assert!(s.control().device_down());
+    assert!(idle_ms_until_down(&mut s, 3100, true));
     // Still listed, so no hot-plug shortcut: the reopen waits out the backoff (250 ms).
     s.wait_wall(Duration::from_millis(300), 3);
     assert!(!s.control().device_down(), "the stream was not reopened");
@@ -1176,9 +1175,8 @@ fn a_reopened_stream_gets_one_loss_limit_for_its_first_callback() {
     s.fake.plug(listed(DEV, DEV_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
     s.take_outbound();
-    idle_ms(&mut s, 3500);
-    s.settle_devices();
-    // Lost (and, the host being fine on the next open, already reopened).
+    assert!(idle_ms_until_down(&mut s, 3500, true));
+    // Lost (stopped at the tick that lost it, before any reopen).
     assert!(
         logs(&s.take_outbound(), LogLevel::Error)
             .iter()
@@ -1206,9 +1204,7 @@ fn a_process_freeze_is_no_evidence_of_a_stall() {
         // The window started over at the freeze: a hang is still found, after its own time.
         idle_ms(&mut s, 2900);
         assert!(!s.control().device_down());
-        idle_ms(&mut s, 300);
-        s.settle_devices();
-        assert!(s.control().device_down());
+        assert!(idle_ms_until_down(&mut s, 300, true));
     }
     // A live stream is untouched by it.
     let mut s = running_cue_show();
@@ -1255,9 +1251,7 @@ fn a_sleep_gives_the_stream_one_loss_limit_to_wake_up() {
     let mut s = running_cue_show();
     s.fake.stall();
     s.sleep(Duration::from_secs(60));
-    idle_ms(&mut s, 3200);
-    s.settle_devices();
-    assert!(s.control().device_down());
+    assert!(idle_ms_until_down(&mut s, 3200, true));
 }
 
 #[test]
