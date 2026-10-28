@@ -391,3 +391,24 @@
 "menu.view" = "View";
 "menu.view.editMode" = "Enter Edit Mode";
 "menu.view.showMode" = "Enter Show Mode";
+
+/* Audio levels and routing matrix, Fade cue settings (AUD-06, AUD-08, CT-10, AUD-09) */
+"inspector.tab.levels" = "Levels";
+"inspector.tab.fade" = "Fade";
+"levels.matrix" = "Levels matrix";
+"levels.master" = "Cue master";
+"levels.output" = "Cue output %d";
+"levels.cross" = "File channel %d to output %d";
+"levels.mute" = "Mute";
+"levels.active" = "Fade this level";
+"levels.gang" = "Gang";
+"levels.setSilent" = "Set All Silent";
+"levels.fromTarget" = "Set Levels from Target";
+"fade.duration" = "Duration";
+"fade.curve" = "Curve";
+"fade.stopTarget" = "Stop target when done";
+"fade.curve.s_curve" = "S-curve";
+"fade.curve.linear" = "Linear";
+"fade.curve.equal_power" = "Equal power";
+"fade.curve.logarithmic" = "Logarithmic";
+"fade.curve.exponential" = "Exponential";

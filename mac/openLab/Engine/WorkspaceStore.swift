@@ -103,8 +103,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func hardStopAll() async -> Result<OkBody, EngineError> { await transport(.hardStopAll) }
     func panicCue(_ cue: ModelID) async -> Result<OkBody, EngineError> { await transport(.panicCue(cue: cue)) }
 
-    func send(command: Command) async -> Result<OkBody, EngineError> {
-        await client.send { .command(id: $0, command) }
+    /// `coalesce`: edits sent with the same key join one undo step (a fader drag; docs/commands.md).
+    func send(command: Command, coalesce: String? = nil) async -> Result<OkBody, EngineError> {
+        await client.send { .command(id: $0, command, coalesce: coalesce) }
     }
 
     func setProperty(_ cue: ModelID, _ property: CueProperty) async -> Result<OkBody, EngineError> {
