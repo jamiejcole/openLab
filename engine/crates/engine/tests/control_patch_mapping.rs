@@ -17,6 +17,7 @@ use openlab_core::{CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping,
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::persist::load_machine_settings_checked;
+use show::device::{DeviceShow, listed};
 use show::*;
 
 fn device(name: &str, outputs: u32) -> DeviceInfo {
@@ -312,4 +313,72 @@ fn a_patch_a_too_small_device_left_unmapped_can_be_mapped_by_hand() {
         Err(ErrorCode::BadRequest)
     );
     assert_eq!(stored(&s, &ws), None);
+}
+
+/// Sends `set_patch_mapping` to a show on the stand-in device; the error if it was refused.
+fn set_on_device(
+    s: &mut DeviceShow,
+    mapping: PatchMapping,
+) -> Result<(), openlab_core::protocol::ErrorBody> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::SetPatchMapping {
+            patch: patch_id(),
+            mapping: Some(mapping),
+        },
+    });
+    match replies.iter().find_map(|m| match m {
+        ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(_)) => Ok(()),
+        Some(Outcome::Error(e)) => Err(e),
+        None => panic!("{replies:?}"),
+    }
+}
+
+/// A device the host lists but the mixer does not play on would leave the patch silent
+/// (`device_missing`) with no word why: the request is refused and the mapping stays.
+#[test]
+fn a_mapping_to_a_listed_device_the_mixer_is_not_playing_on_is_refused() {
+    let ws = workspace(vec![]);
+    let mut c = ControlConfig::new(RATE, BLOCK);
+    c.seed = 7;
+    c.mixer_patches = 2;
+    c.machine
+        .set_patch_mapping(ws.id, patch_id(), mapping("Fake 1", &[0, 1]))
+        .unwrap();
+    let mut s = DeviceShow::new(ws.clone(), vec![listed("fake:1", "Fake 1", 2)], c);
+    s.fake.plug(listed("fake:2", "Fake 2", 8));
+    s.wait_wall(std::time::Duration::from_secs(1), 1);
+    let refusal = set_on_device(&mut s, mapping("Fake 2", &[0, 1])).unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::BadRequest);
+    assert!(refusal.message.contains("Fake 1"), "{}", refusal.message);
+    assert_eq!(
+        s.control().machine().patch_mapping(ws.id, patch_id()),
+        Some(&mapping("Fake 1", &[0, 1]))
+    );
+    // The device in use is accepted.
+    assert_eq!(set_on_device(&mut s, mapping("Fake 1", &[1, 0])), Ok(()));
+}
+
+/// With settings that cannot be kept (the file was damaged at start, so the engine leaves it
+/// alone) the change would be gone at the next launch: the operator is told, nothing changes.
+#[test]
+fn a_mapping_that_cannot_be_saved_is_refused_not_kept_in_memory() {
+    let env = env();
+    let ws = workspace(vec![]);
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine
+        .set_patch_mapping(ws.id, patch_id(), mapping("Offline", &[0, 1]))
+        .unwrap();
+    c.machine_writable = false;
+    let mut s = start_show(ws.clone(), c);
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[2, 3]))),
+        Err(ErrorCode::Io)
+    );
+    assert_eq!(set(&mut s, patch_id(), None), Err(ErrorCode::Io));
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[0, 1])));
 }

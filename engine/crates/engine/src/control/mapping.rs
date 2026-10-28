@@ -8,7 +8,7 @@
 use openlab_core::protocol::{
     DeviceEntry, ErrorBody, ErrorCode, LogLevel, Outcome, RequestId, ServerMessage,
 };
-use openlab_core::{PatchId, PatchMapping};
+use openlab_core::{DeviceInfo, PatchId, PatchMapping};
 
 use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, ok};
@@ -61,6 +61,7 @@ fn mapping_refusal(
     mapping: &PatchMapping,
     outputs: usize,
     devices: &[DeviceEntry],
+    playable: &[DeviceInfo],
 ) -> Option<ErrorBody> {
     let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
         return Some(ErrorBody::new(
@@ -68,6 +69,21 @@ fn mapping_refusal(
             format!("no output device named \"{}\"", mapping.device),
         ));
     };
+    // The engine plays on one device: a patch mapped to another listed one would be silent
+    // (`device_missing`) with nothing to say why. With no device playing (an outage) nothing
+    // can be compared; the mapping waits for the device to come back.
+    if let Some(playing) = playable.first()
+        && !playable.iter().any(|p| p.name == mapping.device)
+    {
+        return Some(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!(
+                "the engine plays on \"{}\", not \"{}\": a patch can only be mapped to the \
+                 device in use",
+                playing.name, mapping.device
+            ),
+        ));
+    }
     if mapping.channels.len() != outputs {
         return Some(ErrorBody::new(
             ErrorCode::BadRequest,
@@ -113,9 +129,12 @@ impl DocCx<'_> {
             return Err(ErrorBody::new(ErrorCode::NotFound, "no such patch"));
         };
         let workspace = self.doc.ws.id;
+        self.eng.require_saveable()?;
         let message = match mapping {
             Some(mapping) => {
-                if let Some(refusal) = mapping_refusal(&mapping, outputs, devices) {
+                if let Some(refusal) =
+                    mapping_refusal(&mapping, outputs, devices, &self.eng.playable)
+                {
                     return Err(refusal);
                 }
                 let text = format!(
@@ -244,6 +263,26 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// Refuses an operator's change to the machine settings that could not be kept: they would
+    /// work until the app quits and then be gone, and the reply would have said all was well.
+    /// With no settings folder configured (tests, the offline driver) there is nothing to keep.
+    fn require_saveable(&self) -> Result<(), ErrorBody> {
+        if self.config.app_dirs.is_none() {
+            return Ok(());
+        }
+        let why = if !self.config.machine_writable {
+            "settings.json could not be read at start and is left as it is"
+        } else if self.settings_writer.is_none() {
+            "the settings writer is not running"
+        } else {
+            return Ok(());
+        };
+        Err(ErrorBody::new(
+            ErrorCode::Io,
+            format!("this machine's settings cannot be saved ({why}): nothing was changed"),
+        ))
+    }
+
     /// Hands the machine settings to the writer, unless they are defaults standing in for a file
     /// that could not be read (the operator's mappings would be lost) or there is no writer.
     fn save_machine(&mut self) {
