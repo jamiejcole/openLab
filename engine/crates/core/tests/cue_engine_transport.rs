@@ -942,6 +942,324 @@ fn feedback_during_the_panic_fade_starts_nothing() {
     assert!(rig.engine.next_deadline().is_none());
 }
 
+fn fail(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
+    let run = rig.run(n);
+    rig.at(
+        now,
+        Input::ActionFailed {
+            cue: id(n),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    )
+}
+
+fn playlist(n: u128, children: Vec<Cue>) -> Cue {
+    playlist_of(n, true, children)
+}
+
+fn playlist_of(n: u128, loop_: bool, children: Vec<Cue>) -> Cue {
+    grp(
+        n,
+        GroupMode::Playlist {
+            loop_,
+            shuffle: false,
+        },
+        children,
+    )
+}
+
+/// Fails the cue's run with a stream failure: while it plays (`ActionFailed`), or before it
+/// produced audio (`StartFailed`).
+fn fail_as(rig: &mut Rig, now: SampleTime, n: u128, unplayed: bool) -> Vec<Action> {
+    let (cue, run, reason) = (id(n), rig.run(n), BrokenReason::StreamFailed);
+    rig.at(
+        now,
+        if unplayed {
+            Input::StartFailed { cue, run, reason }
+        } else {
+            Input::ActionFailed { cue, run, reason }
+        },
+    )
+}
+
+/// M2.31 (found by `cue_engine_prop`): a child of a playlist that is not running (started on its
+/// own) fails while it fades out in a panic. It was leaving anyway, so it ends as a stopped cue
+/// does: the playlist does not carry on to its next child, looping or not, whether the voice had
+/// played (`ActionFailed`) or not (`StartFailed`, review M1).
+#[test]
+fn a_stream_failure_during_the_panic_fade_does_not_carry_a_playlist_on() {
+    for (loop_, unplayed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut rig = Rig::new(vec![playlist_of(1, loop_, vec![sound(2), sound(3)])]);
+        rig.start(0, 2);
+        rig.panic(100);
+        let failed = fail_as(&mut rig, 200, 2, unplayed);
+        let case = format!("loop {loop_}, unplayed {unplayed}: {failed:?}");
+        assert!(starts(&failed).is_empty(), "{case}");
+        assert!(voice_starts(&failed).is_empty(), "{case}");
+        // The failure still shows: the cue is broken, as any cue whose stream failed.
+        assert_eq!(rig.state(2), CueState::Broken, "{case}");
+        assert_eq!(rig.state(3), CueState::Idle, "{case}");
+        let end = rig.tick(1100);
+        assert!(starts(&end).is_empty(), "{case}");
+        assert!(voice_starts(&end).is_empty(), "{case}");
+        assert_eq!(rig.engine.panic_end(), None);
+        assert!(rig.engine.next_deadline().is_none());
+    }
+}
+
+/// The same failure inside a group that runs on its own inside a playlist: the group hears a stop
+/// (as from the end of the child's fade), so it stops rather than completes, and the playlist
+/// around it does not move on.
+#[test]
+fn a_stream_failure_during_the_panic_fade_stops_its_group_and_starts_nothing() {
+    let mut rig = Rig::new(vec![playlist(
+        1,
+        vec![grp(2, GroupMode::Timeline, vec![sound(3)]), sound(4)],
+    )]);
+    rig.start(0, 2);
+    rig.panic(100);
+    let failed = fail(&mut rig, 200, 3);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    assert_eq!(changes(&failed, 2), vec![(CueState::Idle, 200)]);
+    assert_eq!(rig.state(3), CueState::Broken);
+    assert_eq!(rig.state(4), CueState::Idle);
+    assert!(starts(&rig.tick(1100)).is_empty());
+}
+
+/// A cue's own panic (M4.1d) is a panic too: a failure while it fades starts nothing, also from the
+/// group around it, which neither panicked nor stops by itself.
+#[test]
+fn a_stream_failure_during_a_cues_own_panic_starts_nothing() {
+    let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+    rig.start(0, 2);
+    rig.at(100, Input::PanicCue { cue: id(2) });
+    let failed = fail(&mut rig, 200, 2);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    assert_eq!(rig.state(2), CueState::Broken);
+    assert_eq!(rig.state(3), CueState::Idle);
+}
+
+/// A cue's own panic on a child: the group around it did not panic, yet it stops when the failed
+/// child leaves.
+#[test]
+fn a_stream_failure_during_a_cues_own_panic_stops_the_group_around_it() {
+    let mut rig = Rig::new(vec![playlist(
+        1,
+        vec![grp(2, GroupMode::Timeline, vec![sound(3)]), sound(4)],
+    )]);
+    rig.start(0, 2);
+    rig.at(100, Input::PanicCue { cue: id(3) });
+    let failed = fail(&mut rig, 200, 3);
+    // Its group stops, as at the end of the child's panic fade, rather than completing (which
+    // would carry the playlist on to cue 4).
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    assert_eq!(changes(&failed, 2), vec![(CueState::Idle, 200)]);
+    assert_eq!(rig.state(3), CueState::Broken);
+    assert_eq!(rig.state(4), CueState::Idle);
+}
+
+/// A stop with a fade is the operator's stop: a failure during the fade ends it early and starts
+/// nothing, as the end of the fade would not.
+#[test]
+fn a_stream_failure_during_a_stop_fade_starts_nothing() {
+    let fade = Some(FadeSpec {
+        duration: 1.0,
+        curve: FadeCurve::Linear,
+    });
+    let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+    rig.start(0, 2);
+    rig.at(
+        100,
+        Input::Stop {
+            cue: id(2),
+            fade_out: fade,
+        },
+    );
+    let failed = fail(&mut rig, 200, 2);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    assert_eq!(rig.state(2), CueState::Broken);
+    assert_eq!(rig.state(3), CueState::Idle);
+}
+
+/// The child alone stopped with a fade: its group, running on its own, stops when the child
+/// leaves, failed or not, and the playlist around it does not move on.
+#[test]
+fn a_stream_failure_during_a_childs_stop_fade_stops_its_group_and_starts_nothing() {
+    let fade = Some(FadeSpec {
+        duration: 1.0,
+        curve: FadeCurve::Linear,
+    });
+    let mut rig = Rig::new(vec![playlist(
+        1,
+        vec![grp(2, GroupMode::Timeline, vec![sound(3)]), sound(4)],
+    )]);
+    rig.start(0, 2);
+    rig.at(
+        100,
+        Input::Stop {
+            cue: id(3),
+            fade_out: fade,
+        },
+    );
+    let failed = fail(&mut rig, 200, 3);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    assert_eq!(changes(&failed, 2), vec![(CueState::Idle, 200)]);
+    assert_eq!(rig.state(4), CueState::Idle);
+}
+
+/// A lost device's failure during the panic fade takes the same way: nothing moves on, and the
+/// cue is idle at once if its patch already shows the device back (as after any device loss).
+#[test]
+fn a_device_lost_failure_during_the_panic_fade_starts_nothing() {
+    for (mapped, unplayed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+        if mapped {
+            rig.at(
+                0,
+                Input::PatchStatus {
+                    patch: patch_id(1),
+                    resolution: PatchResolution::Mapped {
+                        device: "D".into(),
+                        channels: vec![0, 1],
+                    },
+                },
+            );
+        }
+        rig.start(0, 2);
+        rig.panic(100);
+        let (cue, run, reason) = (id(2), rig.run(2), BrokenReason::DeviceLost);
+        let failed = rig.at(
+            200,
+            if unplayed {
+                Input::StartFailed { cue, run, reason }
+            } else {
+                Input::ActionFailed { cue, run, reason }
+            },
+        );
+        assert!(starts(&failed).is_empty(), "{failed:?}");
+        assert!(voice_starts(&failed).is_empty());
+        let state = if mapped {
+            CueState::Idle
+        } else {
+            CueState::Broken
+        };
+        assert_eq!(rig.state(2), state);
+        assert_eq!(rig.state(3), CueState::Idle);
+    }
+}
+
+// ----- a failure while paused (M2.31 review M2) -----
+
+/// Under Pause All, a child that was started on its own in a playlist fails (a read error of its
+/// paused stream). A paused show starts nothing: the playlist has no run to hold its step, so the
+/// failed child holds it, broken and paused, and the next child starts on the resume sample.
+#[test]
+fn a_failure_while_paused_holds_a_playlist_step_until_the_resume() {
+    for (loop_, unplayed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut rig = Rig::new(vec![playlist_of(1, loop_, vec![sound(2), sound(3)])]);
+        rig.start(0, 2);
+        rig.at(100, Input::PauseAll);
+        let failed = fail_as(&mut rig, 200, 2, unplayed);
+        let case = format!("loop {loop_}, unplayed {unplayed}: {failed:?}");
+        assert!(starts(&failed).is_empty(), "{case}");
+        assert!(voice_starts(&failed).is_empty(), "{case}");
+        assert_eq!(rig.state(2), CueState::Broken, "{case}");
+        assert!(rig.engine.is_paused(id(2)), "{case}");
+        assert_eq!(rig.state(3), CueState::Idle, "{case}");
+        let idle = rig.tick(5000);
+        assert!(starts(&idle).is_empty(), "{case}");
+        let resumed = rig.at(6000, Input::ResumeAll);
+        assert_eq!(starts(&resumed), vec![(id(3), 6000)], "{case}");
+        assert_eq!(voice_starts(&resumed), vec![(id(3), 6000)], "{case}");
+        assert_eq!(rig.state(2), CueState::Broken, "{case}");
+        assert!(!rig.engine.is_paused(id(2)), "{case}");
+    }
+}
+
+/// A stop or a panic during that hold cancels the step; resuming the held child alone (not Resume
+/// All) carries the playlist on, as any resume does.
+#[test]
+fn a_held_playlist_step_is_cancelled_by_a_stop_or_panic_and_kept_by_a_resume() {
+    for cancel in [
+        Input::Stop {
+            cue: id(2),
+            fade_out: None,
+        },
+        Input::Stop {
+            cue: id(1),
+            fade_out: None,
+        },
+        Input::Panic,
+        Input::StopAll,
+    ] {
+        let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+        rig.start(0, 2);
+        rig.at(100, Input::PauseAll);
+        fail(&mut rig, 200, 2);
+        let case = format!("{cancel:?}");
+        let cancelled = rig.at(300, cancel);
+        assert!(starts(&cancelled).is_empty(), "{case}");
+        assert_eq!(rig.state(2), CueState::Broken, "{case}");
+        assert!(!rig.engine.is_paused(id(2)), "{case}");
+        let later = rig.at(400, Input::ResumeAll);
+        assert!(starts(&later).is_empty(), "{case}: {later:?}");
+        assert!(starts(&rig.tick(10_000)).is_empty(), "{case}");
+        assert_eq!(rig.state(3), CueState::Idle, "{case}");
+    }
+
+    let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+    rig.start(0, 2);
+    rig.at(100, Input::Pause { cue: id(2) });
+    let failed = fail(&mut rig, 200, 2);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    let resumed = rig.at(300, Input::Resume { cue: id(2) });
+    assert_eq!(voice_starts(&resumed), vec![(id(3), 300)]);
+}
+
+/// A running playlist holds the step itself (`advance`), as before: on the resume it moves on.
+#[test]
+fn a_failure_while_paused_in_a_running_playlist_starts_nothing_until_the_resume() {
+    let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.at(100, Input::PauseAll);
+    let failed = fail_as(&mut rig, 200, 2, true);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert!(voice_starts(&failed).is_empty());
+    let resumed = rig.at(6000, Input::ResumeAll);
+    assert_eq!(voice_starts(&resumed), vec![(id(3), 6000)]);
+}
+
+/// Stop All and a second Panic stop at once: the failed run's report comes for a run that is gone
+/// and is ignored.
+#[test]
+fn a_stream_failure_after_stop_all_or_a_hard_panic_is_ignored() {
+    for hard in [Input::StopAll, Input::Panic] {
+        let mut rig = Rig::new(vec![playlist(1, vec![sound(2), sound(3)])]);
+        rig.start(0, 2);
+        let run = rig.run(2);
+        if matches!(hard, Input::Panic) {
+            rig.panic(50);
+        }
+        rig.at(100, hard);
+        let failed = rig.at(
+            200,
+            Input::ActionFailed {
+                cue: id(2),
+                run,
+                reason: BrokenReason::StreamFailed,
+            },
+        );
+        assert!(failed.is_empty(), "{failed:?}");
+        rig.assert_quiet();
+    }
+}
+
 fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
     actions
         .iter()
