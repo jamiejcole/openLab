@@ -1388,6 +1388,44 @@ fn deleting_a_running_cue_stops_it() {
     assert!(rig.tick(10_000).is_empty());
 }
 
+/// `cue_an_edit_would_stop` names the cues the engine stops when it follows the edit (M5.10d:
+/// the binary refuses an undo or redo that would): a running cue removed or turned into a
+/// group, not one that moved or stayed.
+#[test]
+fn an_edit_would_stop_the_cues_the_engine_then_stops() {
+    let mut rig = Rig::new(vec![
+        timed(sound(1), 0.0, 5.0, DNC),
+        memo(2),
+        timed(sound(3), 0.0, 5.0, DNC),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 3);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+    let first = rig.cues_mut().remove(0);
+    rig.cues_mut().push(first);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+    assert!(warnings(&rig.tick(10)).is_empty());
+    assert_eq!(rig.state(1), CueState::Running);
+
+    let mut as_group = rig.ws.clone();
+    for c in &mut as_group.cue_lists[0].cues {
+        if c.id == id(3) {
+            c.kind = CueKind::Group {
+                mode: GroupMode::Timeline,
+                children: vec![],
+            };
+        }
+    }
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&as_group), Some(id(3)));
+
+    rig.cues_mut().retain(|c| c.id != id(1));
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), Some(id(1)));
+    let tick = rig.tick(100);
+    assert!(warnings(&tick).contains(&EngineWarning::CueRemoved { cue: id(1) }));
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+    assert_eq!(rig.state(3), CueState::Running);
+}
+
 #[test]
 fn deleting_a_loaded_cue_unloads_it() {
     let mut rig = Rig::new(vec![sound(1)]);
