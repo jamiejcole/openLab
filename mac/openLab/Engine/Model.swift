@@ -47,9 +47,11 @@ struct Cue: Hashable, Sendable, Decodable {
         let typed = name
         if !typed.isEmpty { return typed }
         guard kindType == "audio", let media = raw["kind"]?["media"]?.stringValue else { return "" }
-        var parts = Substring(media)
-        while parts.hasSuffix("/") { parts = parts.dropLast() }
-        return String(parts.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
+        // Split on scalars, as core splits on the byte: "/" followed by a combining mark is still a separator.
+        var scalars = Substring(media).unicodeScalars
+        while scalars.last == "/" { scalars = scalars.dropLast() }
+        let name = scalars.split(separator: "/", omittingEmptySubsequences: false).last ?? Substring.UnicodeScalarView()
+        return String(name)
     }
 
     /// `displayName`, or the kind's label when that is empty (a cue with neither name nor file).

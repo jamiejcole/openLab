@@ -29,7 +29,9 @@ enum InspectorEdit {
     static func display(_ field: InspectorField, cue: Cue, model: WorkspaceModel) -> String {
         switch field {
         case .number: return cue.number ?? ""
-        case .name: return cue.name
+        // Real text, as in QLab: an unnamed cue shows the name it follows. Committing the text
+        // unchanged sends nothing (below), so the derived name is never written back.
+        case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
         case .preWait: return InspectorTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
         case .postWait: return InspectorTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
@@ -47,7 +49,10 @@ enum InspectorEdit {
     ) -> Result<Command?, Rejection> {
         if text == display(field, cue: cue, model: model) { return .success(nil) }
         switch field {
-        case .name: return .success(.setProperty(cue.id, .name(text)))
+        case .name:
+            // Clearing an unnamed cue's field changes nothing: it goes on following its file.
+            if text.isEmpty && cue.name.isEmpty { return .success(nil) }
+            return .success(.setProperty(cue.id, .name(text)))
         case .notes: return .success(.setProperty(cue.id, .notes(text)))
         case .number:
             // Whitespace around a number is never meant; empty clears it (core refuses an empty number).
