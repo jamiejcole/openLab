@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use crate::cue::{Cue, CueKind, FadeCurve};
-use crate::model::CueId;
+use crate::model::{CueId, Workspace};
 
 use super::time::{SampleTime, seconds_to_samples};
 use super::transport::PANIC_CURVE;
@@ -96,10 +96,10 @@ impl CueEngine {
             return self.start_preview(cue, cx);
         }
         let mut started = BTreeSet::new();
-        for child in self.previewable_children(model) {
-            // Being previewed on its own already (or met before here): it stays one preview.
-            // A child with the group's own id, which only a workspace with duplicate ids has (a
-            // load error), is skipped too: an id is never both a group's and an audio preview.
+        for child in self.previewable_children(model, cx.ws) {
+            // Being previewed on its own already: it stays one preview. A child with the
+            // group's own id (duplicate ids) is left out above; this holds even if the cue
+            // index has not yet noticed the duplicate (an unsignalled edit).
             if child == cue || self.is_previewing(child) {
                 continue;
             }
@@ -124,7 +124,20 @@ impl CueEngine {
     /// The audio cues a preview of `group` plays: every armed one inside it, at any depth,
     /// leaving out what is inside a disarmed group (the show would not start it either).
     /// Iterative, so nesting depth cannot overflow the stack.
-    fn previewable_children(&self, group: &Cue) -> Vec<CueId> {
+    ///
+    /// A preview is named by its id from here on (`PreviewStart`, the host's media lookup,
+    /// `sync_previews`), and an id names the first cue that has it. With duplicate ids (a load
+    /// error no command can make, M2.32) an audio cue whose id names another cue first (the
+    /// group itself, a Start cue, another audio cue) is left out, so the engine never previews
+    /// an id as audio that the workspace resolves to something else.
+    fn previewable_children(&self, group: &Cue, ws: &Workspace) -> Vec<CueId> {
+        let duplicates = self.problems.tree().has_duplicates();
+        let named = |child: &Cue| {
+            !duplicates
+                || ws
+                    .find_cue(child.id)
+                    .is_some_and(|c| std::ptr::eq(c, child))
+        };
         let mut out = Vec::new();
         let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![group.children().iter()];
         while let Some(level) = stack.last_mut() {
@@ -136,7 +149,7 @@ impl CueEngine {
                 continue;
             }
             match child.kind {
-                CueKind::Audio { .. } => out.push(child.id),
+                CueKind::Audio { .. } if named(child) => out.push(child.id),
                 CueKind::Group { .. } => stack.push(child.children().iter()),
                 _ => {}
             }

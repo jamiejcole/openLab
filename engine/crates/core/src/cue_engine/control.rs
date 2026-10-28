@@ -340,8 +340,11 @@ impl CueEngine {
 
     /// Feedback: the devamp of this run's voice was not carried out.
     pub(super) fn devamp_ignored(&mut self, cue: CueId, run_id: RunId, cx: &mut Ctx) {
+        // Not for a run whose voice ended while it is paused (its end and the devamp's next cue
+        // held for the resume, `action_ended`): the voice left its loop, so the answer is late.
         if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
             && run.run == run_id
+            && !(run.paused_at.is_some() && run.voice == Voice::None)
             && run.devamp.take().is_some()
         {
             cx.warn(EngineWarning::DevampIgnored { cue });

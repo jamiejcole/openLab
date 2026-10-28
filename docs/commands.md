@@ -12,7 +12,7 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 
 ## Guarantees
 
-- **Atomic.** A refused command leaves the workspace exactly as it was.
+- **Atomic.** A refused command leaves the workspace exactly as it was (the one exception, `RollbackFailed`, means an inverse is wrong: see `Transaction`).
 - **Exact.** Undo then redo restores ids, order and parent/child structure.
 - **Valid.** A command never produces something `repair` would have to fix, so `save_show` accepts the result and the saved file loads back identical (NFR-03):
   - cue ids unique across the workspace; numbers unique and not empty;
@@ -20,6 +20,15 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
   - every time and level finite and in range (the same checks as load).
 - **References between cues are not checked.** A missing target, a wrong-kind target, a self-target, a missing patch and trigger cycles are the *broken-cue state* of ARCHITECTURE §10: `validate` warns, the cue shows as broken. Removing a cue legitimately leaves them behind, and undo must be able to put back states that contain them. The exception is removing a patch or cue list that something still uses: see "Settings, patches and cue lists".
 - **A change to what is already there is not an edit.** `SetCueProperty` to the value the cue has, a `MoveCue` in place, `SetCueNumbers` that changes no number, a setting or patch property set to its current value and the like return an empty `Transaction` as their inverse, which `History` does not record: no undo step, no redo cleared, and the engine sends no `model_changed`, makes no revision and leaves the document clean. (Values are validated first: an invalid value is refused even if the field "already has" something equal-looking.)
+
+## Network cue properties (M4.6a)
+
+`destination`, `address` and `args` of `CueProperty` apply to Network cues only (`PropertyNotApplicable` on any other kind); they undo, redo, coalesce (one gesture key, one slot per property) and batch like the other properties. A new value is refused, changing nothing, unless:
+
+- `destination` names an existing network patch (`NetworkPatchNotFound`). Removing a patch a cue uses stays a broken-cue state; undo, redo and rollback skip this check so they can restore one.
+- `address` and `args` each pass `network::check_message` on their own (the other half stands in as empty / `/`), and the pair must not newly exceed the size limit, so a cue loaded with a bad half can be mended one half at a time; the checks are: the address starts with `/`, is at most 512 bytes of printable ASCII without spaces (pattern characters `* ? [ ] { }` are allowed), at most 32 arguments, strings at most 4096 bytes with no NUL, floats finite, the encoded message at most 8192 bytes (`InvalidMessage(reason)`). Ints and bools cannot be invalid.
+
+QLab 5's Network cue page (qlab.app/docs/v5/networking/network-cues/) describes the address and arguments as typed text and does not say what happens to a malformed one; we refuse it at the edit (open-qlab-questions.md), so a client cannot put a cue into a state the cue engine would break on.
 
 ## Commands
 
@@ -30,12 +39,12 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 | `RemoveCue { id }` | Removes the subtree. Its inverse re-adds it at the same place. |
 | `MoveCue { id, index }` | Reorder among current siblings. |
 | `ReparentCue { id, to }` | Into another group or cue list, children with it. Not into itself or its descendants. |
-| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group). |
+| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group); for Network cues only (M4.6a, CT-30) `destination`, `address` and `args`, each `value` the whole new setting. |
 | `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. Applied in place with each cue's old value kept; a refusal writes the old values back, so the cost follows the cues named, not the show. |
 | `SetCueNumbers { numbers }` | Set, clear or swap numbers; uniqueness is judged on the result. |
 | `Renumber { ids, start, increment }` | Numbers `ids` in cue-list order (a group before its children), whatever order `ids` is in. |
-| `Transaction { commands }` | One undo step; if any command is refused, none applies and the error names its index. No nesting; the inverse is flat. Commands that changed nothing add nothing to the inverse. |
-| `SetWorkspaceSetting { setting }` | `WorkspaceSetting`: `min_go_interval`, `panic_duration`, `autosave_interval`, `master_db`, `hotkey { key, value }` (`key`: `go`, `stop_all`, `pause_all`, `resume_all`, `playhead_next`, `playhead_previous`; `value` null = no key), `auto_number_start`, `auto_number_increment`. Each is the whole new value. Only issues the edit itself introduces are refused: a warning the show was loaded with (a bad hotkey name) does not block other settings, and any new invalid hotkey name is refused (judged on the new value alone). An undo or redo (`Workspace::apply_restoring`) puts back a state that existed and is never refused for a value problem, so it cannot get stuck on a load warning; the same holds for cue properties (`triggers.hotkey`). |
+| `Transaction { commands }` | One undo step; if any command is refused, none applies and the error names its index. No nesting; the inverse is flat. Commands that changed nothing add nothing to the inverse. A refusal is rolled back by applying the inverses of the commands already applied, newest first, as an undo would (restoring); the workspace is not copied, so the cost follows the commands, not the show (debug and test builds also copy it and check the rollback against the copy). A rollback step can only be refused if an inverse is wrong; then the error is `RollbackFailed`, the workspace is valid but partly changed, and `History` drops its undo and redo steps, which no longer fit it. |
+| `SetWorkspaceSetting { setting }` | `WorkspaceSetting`: `min_go_interval`, `panic_duration`, `autosave_interval`, `master_db`, `hotkey { key, value }` (`key`: `go`, `stop_all`, `pause_all`, `resume_all`, `playhead_next`, `playhead_previous`; `value` null = no key), `auto_number_start`, `auto_number_increment`. Each is the whole new value. Only issues the edit itself introduces are refused: a warning the show was loaded with (a bad hotkey name) does not block other settings, and any new invalid hotkey name is refused (judged on the new value alone). An undo or redo (`Workspace::apply_restoring`, crate-internal: only `History` calls it, never with client input) puts back a state that existed and is never refused for a value problem, so it cannot get stuck on a load warning; the same holds for cue properties (`triggers.hotkey`) and for a cue an undo adds back (the inverse of `RemoveCue`): its values are not judged, only its id, number, place and nesting. |
 | `AddOscPasscode { index, passcode, rights }` | Adds a row to the OSC passcode table (`settings.osc_access`) at `index` (0 to the row count). `passcode`: 1 to 32 ASCII digits, not already in the table; `rights`: `{view, edit, control}`, Edit and Control need View. At most 16 rows. Undo removes it. |
 | `RemoveOscPasscode { passcode }` | Removes the row. Any row may go, the last too (nobody can then connect with a passcode; undo brings it back at its place, with its rights, even if it is a legacy non-digit passcode). |
 | `SetOscRights { target, rights }` | `target`: `{type:"no_passcode"}` or `{type:"passcode", passcode}`. Replaces that row's rights; the same rights are not an edit. Errors never repeat a passcode. |
@@ -43,7 +52,7 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 | `RemovePatch { id, even_if_used? }` | Refused (the error names a cue) while an Audio cue routes to it. `even_if_used` (default false) is only for the inverse of an add; see below. |
 | `MovePatch { id, index }` | `index` counts the patches after taking this one out. |
 | `SetPatchProperty { id, property }` | `PatchProperty`: `name`, `master_db`, `output_level`, `output_mute`, `output_delay`, `output_polarity` (each `{ output, value }`), `channel_count { value }` (1 to 64; new outputs 0 dB, unmuted, no delay), `outputs { value }` (replaces all). Shrinking keeps cue routing to the dropped outputs (silent, a warning), and its inverse is `outputs`, so undo brings the dropped outputs back with their settings. |
-| `AddNetworkPatch { index, patch }`, `RemoveNetworkPatch { id, even_if_used? }`, `MoveNetworkPatch { id, index }`, `SetNetworkPatchProperty { id, property }` | As for patches. `property`: `name`, `host`, `port`, `protocol`. Ports are 1 to 65535. Removal is refused while a Network cue uses the patch. |
+| `AddNetworkPatch { index, patch }`, `RemoveNetworkPatch { id, even_if_used? }`, `MoveNetworkPatch { id, index }`, `SetNetworkPatchProperty { id, property }` | As for patches. `property`: `name`, `host`, `port`, `protocol`. Ports are 1 to 65535 for a new or changed value; load accepts port 0, so an undo, redo or rollback may put a patch on port 0 back. Removal is refused while a Network cue uses the patch. |
 | `AddCueList { index, id, name }`, `RemoveCueList { id }`, `MoveCueList { id, index }`, `RenameCueList { id, name }` | A new list is empty. Removing is refused for a list that has cues (move or remove them first, in one `Transaction` if it should be one step) and for the only list. |
 
 `Position { list, parent, index }`: `parent` is `None` for the top level of the list. `index` counts the cues already there (after taking out the moved cue, when moving).
