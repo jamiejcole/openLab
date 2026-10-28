@@ -96,6 +96,14 @@ struct WorkspaceModel: Sendable, Decodable {
         case cueLists = "cue_lists"
     }
 
+    /// The hotkey object of `key` in `settings.hotkeys` (docs/file-format.md section 4.2); nil
+    /// when the key has none (null) or the engine's map predates it (format v4 had no
+    /// selected-cue keys).
+    func hotkey(_ key: WorkspaceKey) -> JSONValue? {
+        guard let value = settings["hotkeys"]?[key.rawValue], value != .null else { return nil }
+        return value
+    }
+
     /// The cue with `id` anywhere in any list.
     func cue(_ id: ModelID) -> Cue? {
         func find(_ cues: [Cue]) -> Cue? {
