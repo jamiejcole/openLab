@@ -1363,6 +1363,18 @@ impl CueEngine {
         };
         release(cue, &old, cx);
         match old {
+            // Being stopped with a fade, or fading out in a panic (a workspace Panic or the
+            // cue's own): it was leaving anyway and the failure only ends that early. It ends as
+            // its stop would have, but broken so the failure shows: its group hears a stop, and
+            // nothing moves on from it (no continue, no playlist step, no halt), so a failure
+            // never starts a cue during a panic or after a stop (M2.31).
+            Slot::Active(run) if run.stop_end.is_some() || run.panicked => {
+                if !(reason == BrokenReason::DeviceLost && self.device_back(cue)) {
+                    self.slots.insert(cue, Slot::Broken(reason));
+                }
+                cx.vacated.push((cue, cx.now, Exit::Stopped));
+                self.report(cue, before, cx.now, cx);
+            }
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
             // schedule. Auto-follow waits for a successful completion, so it never fires.
             // A lost device (M4.2g, as QLab) ends the run for good: its pre-wait and post-wait
@@ -1370,22 +1382,15 @@ impl CueEngine {
             // returns.
             Slot::Active(mut run) => {
                 // A child that broke while playing halts a running playlist around it (QLab
-                // check Q2); one being stopped or panicked was leaving anyway.
-                let halt = (!unplayed
-                    && reason != BrokenReason::DeviceLost
-                    && run.stop_end.is_none()
-                    && !run.panicked)
+                // check Q2).
+                let halt = (!unplayed && reason != BrokenReason::DeviceLost)
                     .then(|| self.nominal_end(cue, &run));
                 run.broken = Some(reason);
                 run.unplayed = unplayed;
                 run.voice = Voice::None;
                 // Skipped before it played: it follows as of now (as a cue skipped for static
                 // problems does at its action start); one that broke while playing never does.
-                let follow = run.follow
-                    && unplayed
-                    && run.stop_end.is_none()
-                    && reason != BrokenReason::DeviceLost;
-                run.stop_end = None;
+                let follow = run.follow && unplayed && reason != BrokenReason::DeviceLost;
                 run.devamp = None;
                 if reason == BrokenReason::DeviceLost {
                     // First, before the paused hold: a lost device never follows and never
