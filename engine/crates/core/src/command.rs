@@ -927,6 +927,31 @@ impl CueProperty {
 }
 
 /// A cue with every field valid, to check one new value on its own.
+/// The size [`IssueKind::TooLarge`] bounds for `field` of the one cue in `cue` (bytes; entries
+/// for `args`; the longest string argument for `args.value`).
+fn sized(cue: &[Cue; 1], field: &str) -> usize {
+    let [cue] = cue;
+    let (address, args) = match &cue.kind {
+        CueKind::Network { address, args, .. } => (address.len(), args.as_slice()),
+        _ => (0, &[][..]),
+    };
+    match field {
+        "name" => cue.name.len(),
+        "notes" => cue.notes.len(),
+        "address" => address,
+        "args" => args.len(),
+        "args.value" => args
+            .iter()
+            .map(|a| match a {
+                OscArg::String { value } => value.len(),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
 fn blank_cue(id: CueId) -> Cue {
     Cue {
         id,
@@ -983,10 +1008,18 @@ fn set_property(
             // Only what the new value introduces: the old one may carry a warning from load.
             let mut was = blank_cue(id);
             old.write(&mut was);
-            let existing = subtree_issues(ws, &[was], path.indices.len());
-            let issues = subtree_issues(ws, &[probe], path.indices.len())
+            let was = [was];
+            let probe = [probe];
+            let existing = subtree_issues(ws, &was, path.indices.len());
+            let issues = subtree_issues(ws, &probe, path.indices.len())
                 .into_iter()
-                .filter(|i| !existing.contains(i))
+                .filter(|i| match i.kind {
+                    // A loaded over-limit value may be replaced by one no longer than it.
+                    IssueKind::TooLarge { field, .. } if existing.contains(i) => {
+                        sized(&probe, field) > sized(&was, field)
+                    }
+                    _ => !existing.contains(i),
+                })
                 .collect();
             refuse(issues)?;
         }

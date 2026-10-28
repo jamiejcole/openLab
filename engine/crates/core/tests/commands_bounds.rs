@@ -246,3 +246,42 @@ fn a_show_with_over_limit_values_opens_with_warnings_and_can_be_mended() {
     })
     .unwrap();
 }
+
+/// Regression (#301): an over-limit value from the show file may be replaced by one no longer
+/// than it, never by a longer one.
+#[test]
+fn a_loaded_over_limit_value_cannot_be_replaced_by_a_longer_one() {
+    let mut w = ws();
+    let mut c = cue(2, CueKind::Memo);
+    c.name = "n".repeat(2000);
+    c.notes = "n".repeat(70 * 1024);
+    w.cue_lists[0].cues.push(c);
+    let w = load_show(&save_show(&w).unwrap()).unwrap().workspace;
+    let set = |property| Command::SetCueProperty {
+        id: cue_id(2),
+        property,
+    };
+    assert_refused(
+        &w,
+        set(CueProperty::Name {
+            value: "n".repeat(2001),
+        }),
+    );
+    assert_refused(
+        &w,
+        set(CueProperty::Notes {
+            value: "n".repeat(70 * 1024 + 1),
+        }),
+    );
+    let mut w = w;
+    for property in [
+        CueProperty::Name {
+            value: "m".repeat(2000),
+        },
+        CueProperty::Notes {
+            value: "m".repeat(65 * 1024),
+        },
+    ] {
+        w.apply(set(property)).unwrap();
+    }
+}
