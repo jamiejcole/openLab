@@ -54,7 +54,7 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 **Every source file** starts with `SPDX-License-Identifier: GPL-3.0-or-later` (in a comment).
 
 ## Behaviour decisions
-- Functional behaviour is grounded in QLab 5. When the brief doesn't settle a behaviour question, follow QLab 5 and say so in your report; if QLab's behaviour is unclear to you, report it as an open question instead of guessing.
+- Functional behaviour is grounded in QLab 5. When the brief doesn't settle a behaviour question, follow QLab 5 and say so in your report. If QLab's behaviour is unclear (not settled by its documentation), implement the most likely behaviour and add a row to [`docs/todo/open-qlab-questions.md`](docs/todo/open-qlab-questions.md) with the assumption you implemented. Never block on the user for these; the user answers that file in batches.
 
 ## Style
 - Match surrounding code. Small focused modules. Boring over clever. No speculative abstractions, no scaffolding for future features.
