@@ -273,7 +273,10 @@ final class FakeEngine: EngineTransport {
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
         case .close(let id, let doc, let discard): handleClose(id, doc: doc, discard: discard, from: c)
-        case .panic(let id), .hotkey(let id, _, _, _): result(c, id)
+        case .panic(let id): result(c, id)
+        case .hotkey(let id, let key, let modifiers, let up):
+            result(c, id)
+            if !up { startHotkeyCues(key: key, modifiers: modifiers) }
         }
     }
 
@@ -456,6 +459,30 @@ final class FakeEngine: EngineTransport {
     }
 
     private static func children(_ cue: JSONValue) -> [JSONValue] { cue["kind"]?["children"]?.arrayValue ?? [] }
+
+    /// The engine's app-scope matching, so UI tests see a hotkey land: every doc's cues whose
+    /// `triggers.hotkey` is exactly this key and these modifiers go to running.
+    private func startHotkeyCues(key: String, modifiers: HotkeyModifiers) {
+        let mods: JSONValue = .object([
+            "shift": .bool(modifiers.shift), "control": .bool(modifiers.control), "alt": .bool(modifiers.alt),
+            "command": .bool(modifiers.command),
+        ])
+        func walk(_ cues: [JSONValue], doc: ModelID) {
+            for cue in cues {
+                if let hk = cue["triggers"]?["hotkey"], hk["key"]?.stringValue == key, hk["modifiers"] == mods,
+                    let id = cue["id"]?.stringValue
+                {
+                    fakeState(.running, ModelID(id), doc: doc)
+                }
+                walk(Self.children(cue), doc: doc)
+            }
+        }
+        for doc in docOrder {
+            for list in docs[doc]?["workspace"]?["cue_lists"]?.arrayValue ?? [] {
+                walk(list["cues"]?.arrayValue ?? [], doc: doc)
+            }
+        }
+    }
 
     /// Removes the cue; also where it was, as a position object without an index.
     private static func take(_ id: String, from lists: inout [JSONValue]) -> (JSONValue, JSONValue)? {
