@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 XCODEBUILD := xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build
-SPDX := SPDX-License-Identifier: GPL-3.0-or-later
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
@@ -8,11 +7,10 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush
+.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
-	@missing=$$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' Makefile | xargs grep -L "$(SPDX)"); \
-		if [ -n "$$missing" ]; then echo "Missing SPDX header:"; echo "$$missing"; exit 1; fi
+	scripts/check-repo.sh
 	cd engine && cargo fmt --all --check
 	cd engine && cargo clippy --workspace --all-targets -- -D warnings
 	cd engine && cargo deny check
@@ -20,6 +18,13 @@ lint:
 	swift format lint --strict -r mac/
 
 test: test-rust test-mac
+
+# Installs the pre-push hook (scripts/hooks/pre-push): a push is refused unless scripts/prepush.sh
+# passed for the commit being pushed. core.hooksPath is shared by every worktree of this clone and
+# replaces .git/hooks; bypass once with `--no-verify`.
+hooks:
+	git config core.hooksPath scripts/hooks
+	@echo "pre-push hook installed"
 
 # Pre-push gate; picks checks from the diff against origin/main (see scripts/prepush.sh).
 prepush:

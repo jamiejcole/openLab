@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Known failures of scripts/check-repo.sh that an open branch fixes: `check | item | reason`.
+# Delete the entry in the commit that fixes the finding. Never weaken the check instead.
+headless-claim | PROGRESS.md | planned task title M5.16 (the real-engine UI job); PROGRESS.md is slimmed in the housekeeping PR
+headless-claim | docs/handoff/progress-archive.md | archive deleted in the housekeeping PR (post-mortem step 4)
+strings-key | "problem.device_unavailable" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.media_missing" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.media_unsupported" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.network_host_invalid" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.network_host_unresolved" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.network_message_invalid" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.network_patch_missing" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.no_media" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.no_target" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.nothing_to_fade" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.patch_missing" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.started_broken" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.target_missing" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.target_self" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight
+strings-key | "problem.target_wrong_kind" | H2 (process review 2026-10-28): duplicate key, fixed by the app branch in flight

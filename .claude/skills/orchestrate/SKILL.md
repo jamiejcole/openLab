@@ -50,7 +50,7 @@ Never paste large file contents into briefs — point at paths. Agent hand-back 
 
 ## 3. Verify the report (don't trust it)
 - Check the commits exist, `git diff --stat` matches the claim, and the author is `openlab-dev`.
-- The implementer runs `make prepush` once. Check the report's `PREPUSH PASS` line and that no commit landed after the report; don't re-run it for the same head.
+- The implementer runs `make prepush` once, which saves `PREPUSH PASS <sha>` in the worktree. Verify with `scripts/prepush.sh --check` run in the implementer's worktree (exit 0 only if the stamp is for HEAD and the tree is clean); the report's `PREPUSH PASS` line must name the same sha. Don't re-run prepush for the same head.
 - Spot-check that the tests cited actually test the behaviour (open one or two), and that the ticked checklist boxes match what was built.
 
 ## 4. Adversarial review
