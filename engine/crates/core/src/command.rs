@@ -24,10 +24,13 @@ use serde::{Deserialize, Serialize};
 use crate::command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
 };
-use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
+use crate::cue::{
+    ContinueMode, Cue, CueColor, CueKind, GroupMode, OscArg, SecondTrigger, Triggers,
+};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
 };
+use crate::network::{MessageIssue, check_message};
 use crate::osc_access::OscRights;
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
@@ -104,6 +107,18 @@ pub enum CueProperty {
     /// Neither the old nor the new kind may be a Group: add and remove cues for that.
     Kind {
         value: CueKind,
+    },
+    /// Only for Network cues. A new value must name an existing network patch.
+    Destination {
+        value: NetworkPatchId,
+    },
+    /// Only for Network cues. An OSC address pattern (`network::check_message`).
+    Address {
+        value: String,
+    },
+    /// Only for Network cues. At most `MAX_OSC_ARGS` arguments within the message size limits.
+    Args {
+        value: Vec<OscArg>,
     },
 }
 
@@ -308,6 +323,8 @@ pub enum CommandError {
     PatchOutputOutOfRange { patch: PatchId, output: usize },
     #[error("{0}")]
     InvalidValue(&'static str),
+    #[error("the Network cue's message is invalid: {0}")]
+    InvalidMessage(MessageIssue),
     #[error("values are invalid: {}", join(.0))]
     InvalidModel(Vec<ValidationIssue>),
     #[error("transactions cannot be nested")]
@@ -760,6 +777,24 @@ impl CueProperty {
             Self::Kind { .. } => Self::Kind {
                 value: cue.kind.clone(),
             },
+            Self::Destination { .. } => match &cue.kind {
+                CueKind::Network { destination, .. } => Self::Destination {
+                    value: *destination,
+                },
+                _ => return None,
+            },
+            Self::Address { .. } => match &cue.kind {
+                CueKind::Network { address, .. } => Self::Address {
+                    value: address.clone(),
+                },
+                _ => return None,
+            },
+            Self::Args { .. } => match &cue.kind {
+                CueKind::Network { args, .. } => Self::Args {
+                    value: args.clone(),
+                },
+                _ => return None,
+            },
         })
     }
 
@@ -788,6 +823,18 @@ impl CueProperty {
                 _ => return false,
             },
             Self::Kind { value } => cue.kind = value.clone(),
+            Self::Destination { value } => match &mut cue.kind {
+                CueKind::Network { destination, .. } => *destination = *value,
+                _ => return false,
+            },
+            Self::Address { value } => match &mut cue.kind {
+                CueKind::Network { address, .. } => address.clone_from(value),
+                _ => return false,
+            },
+            Self::Args { value } => match &mut cue.kind {
+                CueKind::Network { args, .. } => args.clone_from(value),
+                _ => return false,
+            },
         }
         true
     }
@@ -857,6 +904,10 @@ fn set_property(
         }
     }
 
+    if !restoring {
+        check_network_value(ws, cue, &property)?;
+    }
+
     if old == property {
         return Ok(no_change());
     }
@@ -865,6 +916,31 @@ fn set_property(
         return Err(CommandError::Internal);
     }
     Ok(Command::SetCueProperty { id, property: old })
+}
+
+/// What a new Network destination, address or argument list has to satisfy. The message is
+/// judged whole, with the cue's other half, so the size limit holds for the pair.
+fn check_network_value(
+    ws: &Workspace,
+    cue: &Cue,
+    property: &CueProperty,
+) -> Result<(), CommandError> {
+    let CueKind::Network { address, args, .. } = &cue.kind else {
+        return Ok(());
+    };
+    let (new_address, new_args) = match property {
+        CueProperty::Destination { value } => {
+            return if ws.network_patches.iter().any(|p| p.id == *value) {
+                Ok(())
+            } else {
+                Err(CommandError::NetworkPatchNotFound(*value))
+            };
+        }
+        CueProperty::Address { value } => (value.as_str(), args.as_slice()),
+        CueProperty::Args { value } => (address.as_str(), value.as_slice()),
+        _ => return Ok(()),
+    };
+    check_message(new_address, new_args).map_err(CommandError::InvalidMessage)
 }
 
 /// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.

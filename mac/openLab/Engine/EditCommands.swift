@@ -20,6 +20,11 @@ enum CueProperty: Hashable, Sendable {
     case secondTriggerOnRelease(Bool)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
+    /// Network cues only: the network patch id, the OSC address pattern, and the arguments, each
+    /// `{type: int|float|string|bool, value}` (core's `OscArg`).
+    case destination(ModelID)
+    case address(String)
+    case args([JSONValue])
 
     var json: JSONValue {
         func p(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
@@ -38,6 +43,9 @@ enum CueProperty: Hashable, Sendable {
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
         case .kind(let v): return p("kind", v)
+        case .destination(let v): return p("destination", .string(v.raw))
+        case .address(let v): return p("address", .string(v))
+        case .args(let v): return p("args", .array(v))
         }
     }
 }

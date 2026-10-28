@@ -185,3 +185,5 @@ The `model_changed` for revision N is always sent before the `result` that repor
 ### Error codes
 
 `protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.
+
+M4.6a additions (`PROTOCOL_VERSION` stays 1): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).

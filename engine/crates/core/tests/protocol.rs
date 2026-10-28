@@ -366,6 +366,33 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A Network cue's destination, address and arguments (M4.6a).
+    for property in [
+        CueProperty::Destination { value: net_id(4) },
+        CueProperty::Address {
+            value: "/cue/1/start".into(),
+        },
+        CueProperty::Args {
+            value: vec![
+                OscArg::Int { value: 3 },
+                OscArg::Float { value: 0.5 },
+                OscArg::String { value: "go".into() },
+                OscArg::Bool { value: true },
+            ],
+        },
+    ] {
+        add(
+            &format!("command_set_network_cue_{}", tag(&property)),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property,
+                }),
+                coalesce: None,
+            }),
+        );
+    }
     for (name, command) in model_commands() {
         add(
             &format!("command_{name}"),
