@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! The OSC listeners over real UDP and TCP sockets on 127.0.0.1 (docs/osc.md, docs/network.md),
 //! against a stand-in control thread, plus one run in front of the real control loop. Waits are

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Voice pause and resume (CUE-05, NFR-21, NFR-22): a voice paused on sample P and resumed on
 //! sample R plays exactly the un-paused render shifted by R − P, outside the two declick

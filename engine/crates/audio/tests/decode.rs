@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Decoding (AUD-04): every supported format decodes to the known signal with an exact length,
 //! and bad files give typed errors, never panics.

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Level edits on a playing audio cue (M5.9b, AUD-06, AUD-08), per docs/cue-engine.md "Level
 //! edits on a playing cue". Virtual sample clock at 1 kHz: the edit ramp is 10 samples.

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Control cues (M2.5, M2.15: CT-11..CT-17, CT-19..CT-21), per docs/cue-engine.md "Control
 //! cues". Virtual sample clock at 1 kHz: one second is 1000 samples.

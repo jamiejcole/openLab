@@ -132,7 +132,8 @@ pub(super) struct Problems {
     flips: Vec<CueId>,
     /// Cues whose problems were computed, since the engine was made (a cost measure).
     checks: u64,
-    /// Debug builds: calls that found the model changed without `model_changed`.
+    /// Calls that found the model changed without `model_changed` (every build; see
+    /// `unsignalled_model_changes`).
     unsignalled: u64,
 }
 
@@ -172,8 +173,8 @@ impl CueEngine {
 
     /// Times the model's problems were found out of date although `model_changed` was not
     /// called, i.e. a binary (or test) that broke the contract; each was corrected. Release
-    /// builds check only a cue about to be refused for its problems; debug builds check every
-    /// call. The binary should log any increase.
+    /// builds check the workspace's outline on every call (`shape.rs`) and a cue about to be
+    /// refused for its problems; debug builds check everything on every call. The binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
     }
@@ -330,9 +331,12 @@ impl CueEngine {
     /// Start of a call: bring the model's part up to date if the model changed.
     pub(super) fn sync_problems(&mut self, cx: &mut Ctx) {
         match std::mem::replace(&mut self.problems.pending, Pending::Clean) {
-            Pending::Clean => {
+            Pending::Clean =>
+            {
                 #[cfg(debug_assertions)]
-                self.check_signalled(cx);
+                if self.full_checks() {
+                    self.check_signalled(cx);
+                }
             }
             Pending::All => self.rebuild_problems(cx),
             Pending::Cues {

@@ -105,7 +105,7 @@ On the audio thread:
 - No allocation or deallocation. All voices, buffers and ramp slots are preallocated at engine start (pool sizes from settings; default 128 concurrent cue voices). Objects that must be freed are sent back to the control thread on a return queue.
 - No locks, no syscalls, no logging, no formatting, no disk access. RT events (xrun, voice ended, loop point) are pushed as small `Copy` structs onto an SPSC queue. One exception: the device callback reads the monotonic clock (`Instant::now`) twice per block to measure the engine load (M4.7a, DX-03); it neither allocates nor locks and is normally served without a kernel entry (macOS commpage, Windows `QueryPerformanceCounter` from the TSC, Linux vDSO; QPC falls back to a kernel-mediated timer on hardware without an invariant TSC and on some VMs). The timing runs inside the callback's `assert_no_alloc` guard and its `catch_unwind`. Results leave through atomics only.
 - `assert_no_alloc` wraps the callback in debug and test builds; any allocation fails the test suite.
-- The callback body runs inside `catch_unwind`. On a panic it outputs silence for that block, sets an engine-fault flag, and the control thread reports it loudly. (Panics must not cross the FFI boundary into the OS audio thread.)
+- The callback body runs inside `catch_unwind`. On a panic it outputs silence for that block, sets an engine-fault flag, and the control thread reports it loudly. A voice that was rendering when the panic hit in 3 blocks within 16 (`VOICE_FAULT_LIMIT`, `VOICE_FAULT_WINDOW`) is dropped (`VoiceFinished { Faulted }`) so a fault that repeats every block or every other one cannot silence the rest of the show; its cue breaks (`stream_failed`) with an `audio_fault` notice. (Panics must not cross the FFI boundary into the OS audio thread.)
 
 ### 3.5 Audio pipeline
 
@@ -195,7 +195,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 ## 10. Error-handling policy
 
-- Engine Rust code returns `Result`. Workspace lints (`[workspace.lints.clippy]`, all `deny`, `-D warnings` in CI) apply to all three crates: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `print_stdout`, `print_stderr`, `undocumented_unsafe_blocks`. `engine/clippy.toml` relaxes unwrap/expect/panic/print in tests only. `openlab-audio` also denies `clippy::indexing_slicing` (crate attribute on the lib target; any new target in that crate must repeat it).
+- Engine Rust code returns `Result`. Workspace lints (`[workspace.lints.clippy]`, all `deny`, `-D warnings` in CI) apply to all three crates: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `print_stdout`, `print_stderr`, `undocumented_unsafe_blocks`, `indexing_slicing`. `engine/clippy.toml` relaxes unwrap/expect/panic/print/indexing in tests only; that covers `#[test]` fns and `#[cfg(test)]` items, so integration-test crates and their support modules allow them at the top of the file.
 - Nothing in the engine writes to stdout/stderr except through the logging path. The one exception is CLI output in `main` (e.g. `--version`), written via `std::io::Write` with write errors handled (a closed pipe must not panic).
 - Failures surface as **broken cue state, warnings, or log entries** — never a crash, never a modal during Show Mode.
 - `unsafe` is forbidden in `openlab-core`; allowed elsewhere only with a `// SAFETY:` comment and a test exercising it.

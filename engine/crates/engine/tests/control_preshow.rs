@@ -5,7 +5,12 @@
 //! computed from state the control thread holds. Broken cues are not in the `warnings` feed:
 //! clients get them from the snapshot's `problems`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 mod show;
 

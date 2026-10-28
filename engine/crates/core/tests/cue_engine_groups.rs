@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Group cues (CT-22) and the playhead inside groups (M2.11), per docs/cue-engine.md "Groups".
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.

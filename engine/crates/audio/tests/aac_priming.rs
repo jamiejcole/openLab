@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! AAC encoder priming in MP4 (M3.14, AUD-04): the edit list (preferred) or the iTunSMPB tag
 //! (fallback) says how many frames of encoder delay the file starts with; probe, preload and

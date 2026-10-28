@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
+#![allow(clippy::indexing_slicing)]
 
 //! Sample-level behaviour of the mixer through the offline renderer: timing, fades, trims,
 //! routing, levels, scheduling and block-size invariance.

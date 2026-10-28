@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Per-cue second-trigger options (M2.14, QLab 5), per docs/cue-engine.md "Second trigger":
 //! every option on a running, paused, pre-waiting and stopping cue; playlist next/previous;

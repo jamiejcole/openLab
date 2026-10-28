@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! M2.24: where the QLab 5 checks (answers of 2026-10-27) showed openLab behaving differently,
 //! openLab now does what QLab does. One regression test per point, named after the check's id.
