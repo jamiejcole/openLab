@@ -577,6 +577,7 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .setOutputOverrides: result(c, id)
+        case .setPatchMapping: result(c, id)
         case .setShowMode(let on):
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             docs[doc]?["document"]?.set("show_mode", .bool(on))

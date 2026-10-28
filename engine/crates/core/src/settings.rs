@@ -31,6 +31,21 @@ pub struct PatchMapping {
     pub channels: Vec<u32>,
 }
 
+impl PatchMapping {
+    /// The explicit "deliberately unmapped" entry (M4.4g): no device, no channels. Stored so
+    /// the default mapping does not map the patch again.
+    pub fn none() -> Self {
+        Self {
+            device: String::new(),
+            channels: Vec::new(),
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.device.is_empty() && self.channels.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMachineSettings {
     /// Keyed by patch id (lower-case hyphenated UUID).
@@ -158,6 +173,9 @@ fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
     if Uuid::parse_str(patch).is_err() {
         return Some("not a patch id".into());
     }
+    if mapping.is_none() {
+        return None;
+    }
     if mapping.device.is_empty() || mapping.device.len() > MAX_DEVICE_NAME_BYTES {
         return Some("invalid device name".into());
     }
@@ -178,7 +196,15 @@ pub fn save_settings(settings: &MachineSettings) -> Result<String, serde_json::E
 }
 
 impl MachineSettings {
+    /// Where `patch` plays; `None` for a patch with no entry and for one the operator cleared.
     pub fn patch_mapping(&self, workspace: WorkspaceId, patch: PatchId) -> Option<&PatchMapping> {
+        self.patch_entry(workspace, patch)
+            .filter(|mapping| !mapping.is_none())
+    }
+
+    /// The stored entry, a cleared one included: the default mapping leaves a patch that has
+    /// any entry alone.
+    pub fn patch_entry(&self, workspace: WorkspaceId, patch: PatchId) -> Option<&PatchMapping> {
         self.workspaces
             .get(&workspace.to_string())?
             .patches
@@ -204,10 +230,13 @@ impl MachineSettings {
         Ok(())
     }
 
+    /// Stores "deliberately unmapped" for `patch` (an empty entry, [`PatchMapping::none`]).
     pub fn clear_patch_mapping(&mut self, workspace: WorkspaceId, patch: PatchId) {
-        if let Some(machine) = self.workspaces.get_mut(&workspace.to_string()) {
-            machine.patches.remove(&patch.to_string());
-        }
+        self.workspaces
+            .entry(workspace.to_string())
+            .or_default()
+            .patches
+            .insert(patch.to_string(), PatchMapping::none());
     }
 }
 
@@ -351,6 +380,27 @@ mod tests {
             save_settings(&loaded.settings).unwrap(),
             text,
             "stable bytes"
+        );
+    }
+
+    #[test]
+    fn a_cleared_mapping_is_stored_and_survives_a_reload() {
+        let mut settings = MachineSettings::default();
+        settings
+            .set_patch_mapping(ws(1), pid(2), mapping("Scarlett 18i20", &[2, 3]))
+            .unwrap();
+        settings.clear_patch_mapping(ws(1), pid(2));
+        assert_eq!(settings.patch_mapping(ws(1), pid(2)), None);
+        assert_eq!(
+            settings.patch_entry(ws(1), pid(2)),
+            Some(&PatchMapping::none())
+        );
+        let loaded = load_settings(&save_settings(&settings).unwrap());
+        assert_eq!(loaded.warnings, Vec::<String>::new());
+        assert_eq!(loaded.settings, settings);
+        assert_eq!(
+            resolve_patch(&loaded.settings, ws(1), &patch(2, 2), &[]),
+            PatchResolution::Unmapped
         );
     }
 

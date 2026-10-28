@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": 64,
+  "request": {
+    "type": "set_patch_mapping",
+    "patch": "00000000-0000-0000-0000-000000000070",
+    "mapping": null
+  }
+}
