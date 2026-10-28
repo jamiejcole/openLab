@@ -448,6 +448,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `non-wave-riff-start-wav-mask-shift.wav`: a RIFF whose form type is not `WAVE` came first, so
 /// the scan for embedded headers was skipped, yet the probe went on to the 64-channel extensible
 /// WAV behind it.
+/// `junk-then-aiff-channel-overflow.aiff`: two junk bytes, then an AIFF with 32769 channels of 24
+/// bits; the scan for embedded headers looked only for WAV markers, and symphonia 0.6.1's AIFF
+/// reader overflowed `u16` computing the frame size.
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -727,4 +730,38 @@ fn a_non_wave_container_start_does_not_hide_an_overflowing_wav_header() {
     no_fmt.extend_from_slice(&bad_start_then_wav(b"RIFF\0\0\0\0WAV\t"));
     let r = probe_media(reader(no_fmt));
     assert!(matches!(r, Err(MediaError::Corrupt(_))), "{r:?}");
+}
+
+fn header_rejected<T: std::fmt::Debug>(r: &Result<T, MediaError>) -> bool {
+    matches!(r, Err(MediaError::Corrupt(m)) if m.starts_with("header:"))
+}
+
+/// `fuzz-findings/junk-then-aiff-channel-overflow.aiff`: the embedded-header scan finds AIFF and
+/// AIFC containers behind leading junk, not only WAV, and rejects a channel count symphonia's
+/// AIFF reader would overflow on (probe, preload and the fuzz pipeline all fail typed).
+#[test]
+fn an_aiff_behind_leading_junk_is_header_checked() {
+    let finding = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fuzz-findings/junk-then-aiff-channel-overflow.aiff");
+    let r = probe(&finding);
+    assert!(header_rejected(&r), "{r:?}");
+    assert!(header_rejected(&preload(Media::Path(finding.clone()))));
+    assert!(openlab_audio::fuzz_decode(&std::fs::read(&finding).unwrap()).is_ok());
+    for form in [b"AIFF", b"AIFC"] {
+        let mut a = aiff(&tone(10, RATE), 2, RATE, Pcm::I24);
+        a[8..12].copy_from_slice(form);
+        a[20..22].copy_from_slice(&0x8001u16.to_be_bytes());
+        for junk in [&[0xFF, 0xF9][..], &id3_tag(40)[..], &[0u8; 1001][..]] {
+            let r = probe_media(reader([junk, &a[..]].concat()));
+            assert!(
+                header_rejected(&r),
+                "{form:?} after {} bytes: {r:?}",
+                junk.len()
+            );
+        }
+    }
+    // A good AIFF behind junk is not refused by the check.
+    let good = [&[0xFF, 0xF9][..], &aiff(&tone(10, RATE), 2, RATE, Pcm::I24)].concat();
+    let r = probe_media(reader(good));
+    assert!(!header_rejected(&r), "{r:?}");
 }
