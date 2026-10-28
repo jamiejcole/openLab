@@ -553,10 +553,14 @@ fn gone(item: &mut WatchItem, key: String, id: u64) -> Option<WatchEvent> {
     })
 }
 
-/// How long a pass over `n` files takes: one file a millisecond at most, so a show of
-/// thousands does not stat its volume flat out.
+/// Time a pass allows per file. A stat costs 1 us on a dev machine and 4-7 us on the Intel CI
+/// runner (a syscall: nothing left to trim), so 2 ms keeps the watch near 0.3% of a core there.
+pub const PER_FILE: Duration = Duration::from_millis(2);
+
+/// How long a pass over `n` files takes: [`PER_FILE`] a file at least, so a show of thousands
+/// does not stat its volume flat out.
 pub fn pass_period(n: usize, min: Duration) -> Duration {
-    min.max(Duration::from_millis(u64::try_from(n).unwrap_or(u64::MAX)))
+    min.max(PER_FILE.saturating_mul(u32::try_from(n).unwrap_or(u32::MAX)))
 }
 
 /// The pause after each chunk of a pass over `n` files.
@@ -1900,8 +1904,9 @@ mod tests {
     fn pacing_spreads_a_pass_over_its_period() {
         let min = MIN_PERIOD;
         assert_eq!(pass_period(10, min), min);
-        assert_eq!(pass_period(3_000, min), Duration::from_secs(3));
-        assert_eq!(pass_period(10_000, min), Duration::from_secs(10));
+        assert_eq!(pass_period(1_500, min), Duration::from_secs(3));
+        assert_eq!(pass_period(3_000, min), Duration::from_secs(6));
+        assert_eq!(pass_period(10_000, min), Duration::from_secs(20));
         for n in [0usize, 1, 64, 65, 2_000, 3_000, 10_000] {
             let chunks = n.div_ceil(CHUNK).max(1) as u32;
             let total = chunk_gap(n, min) * chunks;
@@ -1912,7 +1917,7 @@ mod tests {
             );
             assert!(total <= pass_period(n, min));
         }
-        assert!(chunk_gap(3_000, min) * 47 >= Duration::from_millis(2_999));
+        assert!(chunk_gap(3_000, min) * 47 >= Duration::from_millis(5_999));
     }
 
     #[test]

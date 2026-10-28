@@ -270,9 +270,6 @@ pub enum WireWarning {
     LoadIgnored {
         cue: CueId,
     },
-    Unsupported {
-        cue: CueId,
-    },
     /// `late_ms` milliseconds after its deadline, rounded down.
     LateStart {
         cue: CueId,
@@ -345,7 +342,6 @@ impl WireWarning {
                 state: (*state).into(),
             },
             EngineWarning::LoadIgnored { cue } => Self::LoadIgnored { cue: *cue },
-            EngineWarning::Unsupported { cue } => Self::Unsupported { cue: *cue },
             EngineWarning::LateStart { cue, late_by } => Self::LateStart {
                 cue: *cue,
                 late_ms: millis(*late_by, rate),
