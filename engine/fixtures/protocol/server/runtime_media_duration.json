@@ -1,0 +1,16 @@
+{
+  "type": "runtime",
+  "seq": 44,
+  "changes": [
+    {
+      "type": "media_duration",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "file": 62.5,
+      "trimmed": 60.25
+    },
+    {
+      "type": "media_duration",
+      "cue": "00000000-0000-0000-0000-00000000000b"
+    }
+  ]
+}

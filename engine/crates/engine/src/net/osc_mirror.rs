@@ -732,6 +732,7 @@ mod tests {
             }],
             previewing: vec![],
             warnings: vec![],
+            media_durations: vec![],
         })
     }
 
@@ -1123,6 +1124,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             warnings: vec![],
+            media_durations: vec![],
         });
         let show = MirrorShow(&m);
         assert_eq!(

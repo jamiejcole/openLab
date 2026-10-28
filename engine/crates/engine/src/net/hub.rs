@@ -367,6 +367,7 @@ mod tests {
                 playheads: vec![],
                 previewing: vec![],
                 warnings: vec![],
+                media_durations: vec![],
             }),
         }));
         assert_eq!(
@@ -474,6 +475,7 @@ mod tap_tests {
             playheads: vec![],
             previewing: vec![],
             warnings: vec![],
+            media_durations: vec![],
         }
     }
 
