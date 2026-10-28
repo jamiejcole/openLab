@@ -28,7 +28,7 @@ use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use openlab_audio::{Mixer, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, Delete, DocId, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
+    ClientMessage, Delete, DocId, ErrorCode, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
     ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server, encode_client,
 };
 use openlab_core::{Command, CueId, CueKind, CueProperty, Position, Workspace};
@@ -928,6 +928,63 @@ impl Osc {
     fn playhead_on(&self, n: u128) -> bool {
         self.playhead.as_deref() == Some(&id(n).to_string())
     }
+}
+
+/// M5.10d over the wire: undoing the add of a cue that is playing is answered
+/// `command_refused` with a message naming it, changes nothing, and the cue plays on; once it
+/// is stopped the same undo goes through.
+#[tokio::test]
+async fn an_undo_that_would_stop_a_playing_cue_is_refused_over_the_websocket() {
+    let ws = session_workspace();
+    let show = Show::start(&ws, None);
+    let (mut c, _) = Ws::connect(&show).await;
+    let long = wav(&dc(16000, 0.5));
+    let add = Command::AddCue {
+        at: Position {
+            list: list_id(),
+            parent: None,
+            index: 3,
+        },
+        cue: audio(4, &long, 0),
+        auto_number: false,
+    };
+    assert!(matches!(c.command(add).await, Outcome::Ok(_)));
+    show.advance(0);
+    c.transport(TransportAction::Start { cue: id(4) }).await;
+    assert!(show.advance(1000).peak > 0.2);
+    c.wait("cue 4 running", |c| {
+        c.state(4) == Some(WireCueState::Running)
+    })
+    .await;
+    let revision = c.revision;
+
+    let refused = c.call(|id| ClientMessage::Undo { id }).await;
+    match &refused {
+        Outcome::Error(e) => {
+            assert_eq!(e.code, ErrorCode::CommandRefused);
+            assert!(
+                e.message.contains("cue 4 \"cue 4\" is running"),
+                "{}",
+                e.message
+            );
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+    assert_eq!(c.revision, revision);
+    assert!(show.advance(1000).peak > 0.2, "cue 4 plays on");
+    let engine = show.engine_snapshot().await;
+    assert!(engine.workspace.find_cue(id(4)).is_some());
+    assert!(engine.document.can_undo);
+
+    c.transport(TransportAction::HardStop { cue: id(4) }).await;
+    show.advance(256);
+    c.wait("cue 4 idle", |c| c.state(4).is_none()).await;
+    c.undo().await;
+    assert_eq!(c.revision, revision + 1);
+    let engine = show.engine_snapshot().await;
+    assert!(engine.workspace.find_cue(id(4)).is_none());
+    assert_consistent(&c, &engine);
+    show.finish();
 }
 
 #[tokio::test]
