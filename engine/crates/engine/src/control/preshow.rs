@@ -15,13 +15,13 @@ use openlab_core::{
     CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, Workspace,
 };
 
-use super::Control;
+use super::DocCx;
 
 /// The system warning that is information, not a problem: the file is streamed instead of
 /// preloaded and plays fine. Listed in `system`, not counted, never makes the check fail.
 const INFO_CODE: &str = "preload_over_budget";
 
-impl Control {
+impl DocCx<'_> {
     /// The report, from the current state. Brings the warnings up to date first so the two
     /// agree.
     pub(super) fn preshow_report(&mut self) -> PreshowReport {

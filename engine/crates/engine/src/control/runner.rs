@@ -3,7 +3,9 @@
 //! The control thread's loop against a running device (ARCHITECTURE §3.2): wake on an inbox
 //! message, when the next deadline enters the lookahead window, or after [`MAX_WAIT`]
 //! (5 ms), whichever comes first. Wake jitter never shifts audio: every transition is computed
-//! from sample time, and the lookahead commits each start on its exact sample.
+//! from sample time, and the lookahead commits each start on its exact sample. Each wake ticks
+//! every open doc ([`Control::tick`]) and the next wait is the shortest any doc asks for
+//! ([`Control::wait_hint`]), so a doc with a deadline near is never held up by an idle one.
 //!
 //! [`MAX_WAIT`]: super::MAX_WAIT
 
@@ -16,7 +18,7 @@ use super::{Control, Flow, Inbox};
 /// One wake of the loop, as [`run_observed`] reports it.
 #[derive(Clone, Copy, Debug)]
 pub struct Wake {
-    /// How long the loop asked to sleep ([`Control::wait_hint`]).
+    /// How long the loop asked to sleep ([`Control::wait_hint`]: the minimum over the docs).
     pub wanted: Duration,
     /// Time from asking to wake; meaningful only when `timed_out` (after a message it includes
     /// handling the whole burst).

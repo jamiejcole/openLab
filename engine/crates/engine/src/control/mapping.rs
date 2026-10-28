@@ -8,9 +8,9 @@
 use openlab_core::PatchMapping;
 use openlab_core::protocol::LogLevel;
 
-use super::Control;
+use super::DocCx;
 
-impl Control {
+impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
     /// first outputs of the playable device. Nothing happens while no device is playable (an
     /// outage, or none): the patch stays unmapped and the next sync with a device maps it. A
