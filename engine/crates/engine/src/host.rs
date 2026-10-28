@@ -297,6 +297,7 @@ mod tests {
 
     #[test]
     fn a_panicking_control_thread_is_an_unclean_exit_that_keeps_the_marker() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let dirs = AppDirs::new(root.path());
         let result = supervise(Some(dirs.clone()), CrashHook::Skip, |_| {
