@@ -493,3 +493,108 @@ fn a_rollback_restores_a_removed_cue_with_a_value_load_kept() {
     };
     refused_at(&mut ws, command, 1);
 }
+
+/// A show saved and loaded with a network patch on port 0 (load accepts any port) that a
+/// Network cue uses, next to network patch 1.
+fn with_loaded_port_zero() -> Workspace {
+    let mut ws = sample();
+    ws.network_patches.push(NetworkPatch {
+        id: net_id(2),
+        name: "Zero".into(),
+        host: "10.0.0.9".into(),
+        port: 0,
+        protocol: NetworkProtocol::Udp,
+    });
+    ws.cue_lists[0].cues.push(cue(
+        40,
+        CueKind::Network {
+            destination: net_id(1),
+            address: "/go".into(),
+            args: vec![],
+        },
+    ));
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(loaded.workspace.network_patches[1].port, 0);
+    loaded.workspace
+}
+
+/// Review H1 (a): removing the port-0 patch, then a patch in use, is refused and rolled back
+/// with the port-0 patch put back where it was.
+#[test]
+fn a_rollback_restores_a_loaded_network_patch_on_port_zero() {
+    let mut ws = with_loaded_port_zero();
+    let command = Command::Transaction {
+        commands: vec![
+            Command::RemoveNetworkPatch {
+                id: net_id(2),
+                even_if_used: false,
+            },
+            Command::RemoveNetworkPatch {
+                id: net_id(1),
+                even_if_used: false,
+            },
+        ],
+    };
+    refused_at(&mut ws, command, 1);
+}
+
+/// Review H1 (b): setting that patch's port, then a refused command, rolls the port back to 0.
+#[test]
+fn a_rollback_restores_a_loaded_port_of_zero() {
+    let mut ws = with_loaded_port_zero();
+    let command = Command::Transaction {
+        commands: vec![
+            Command::SetNetworkPatchProperty {
+                id: net_id(2),
+                property: NetworkPatchProperty::Port { value: 9000 },
+            },
+            missing(),
+        ],
+    };
+    refused_at(&mut ws, command, 1);
+}
+
+/// Undo of a port edit puts port 0 back, and undo of removing the patch brings it back; a new
+/// port 0 is still refused.
+#[test]
+fn undo_restores_a_loaded_port_of_zero() {
+    let mut ws = with_loaded_port_zero();
+    let before = ws.clone();
+    let mut history = History::new();
+    history
+        .execute(
+            &mut ws,
+            Command::SetNetworkPatchProperty {
+                id: net_id(2),
+                property: NetworkPatchProperty::Port { value: 9000 },
+            },
+        )
+        .unwrap();
+    history
+        .execute(
+            &mut ws,
+            Command::RemoveNetworkPatch {
+                id: net_id(2),
+                even_if_used: false,
+            },
+        )
+        .unwrap();
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+    assert!(history.redo(&mut ws).unwrap());
+    assert!(history.redo(&mut ws).unwrap());
+    assert!(ws.network_patches.iter().all(|p| p.id != net_id(2)));
+
+    let zero = Command::SetNetworkPatchProperty {
+        id: net_id(1),
+        property: NetworkPatchProperty::Port { value: 0 },
+    };
+    assert!(matches!(ws.apply(zero), Err(CommandError::InvalidValue(_))));
+    let mut patch = before.network_patches[1].clone();
+    patch.id = net_id(5);
+    assert!(matches!(
+        ws.apply(Command::AddNetworkPatch { index: 0, patch }),
+        Err(CommandError::InvalidValue(_))
+    ));
+}
