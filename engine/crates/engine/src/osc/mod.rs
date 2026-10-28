@@ -13,8 +13,10 @@ pub mod fuzz;
 mod pattern;
 mod session;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
+use openlab_core::protocol::DocId;
 use openlab_core::{OscAccess, OscRight, OscRights};
 use rosc::OscMessage;
 use serde_json::json;
@@ -26,17 +28,17 @@ pub use codec::{
 };
 pub use dedupe::{DUPLICATE_WINDOW, Dedupe, MAX_PEERS as MAX_DEDUPE_PEERS};
 pub use dispatch::{
-    Address, CueField, CueRef, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, MAX_MATCHES,
-    MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, OscInput, OscShow, Parsed, PlayheadTarget, Query,
-    Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target, Verb,
-    parse_address, reply_message, required_right, resolve, upper,
+    Address, CueField, CueRef, DocShow, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, MAX_MATCHES,
+    MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, Named, OscInput, OscShow, Parsed, PlayheadTarget,
+    Query, Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target,
+    Verb, find_doc, parse_address, reply_message, required_right, resolve, upper,
 };
 pub use pattern::{
     BudgetSpent, CuePattern, MATCH_BUDGET, MAX_ALTERNATIVES, MAX_MATCH_CHARS, PatternError,
     has_pattern_chars,
 };
 pub use session::{
-    Budget, ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES,
+    Budget, Budgets, ConnectResult, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MAX_BAD_PASSCODES,
     MAX_KNOWN_IPS, MAX_PEERS, OPEN_REPLY_BURST_BYTES, OPEN_REPLY_BYTES_PER_SEC, Peer,
     REPLY_BURST_BYTES, REPLY_BYTES_PER_SEC, Sessions, UDP_IDLE,
 };
@@ -109,23 +111,48 @@ pub const MAX_REPLY_BYTES_PER_CALL: usize = 2 * 1024 * 1024;
 pub struct Outcome {
     /// To carry out, in order.
     pub inputs: Vec<OscInput>,
+    /// The doc each of `inputs` is for (the same length): an un-prefixed `/go` is one input per
+    /// open doc.
+    pub input_docs: Vec<DocId>,
+    /// Warnings for the show log (a workspace name that several docs share).
+    pub warnings: Vec<String>,
     /// To send back to the peer that sent the bytes: UDP to its address on [`OSC_REPLY_PORT`]
     /// (or the port it set with `/udpReplyPort`, see [`Osc::reply_port`]),
     /// TCP SLIP-framed on the same connection.
     pub replies: Vec<OscMessage>,
 }
 
-/// The OSC endpoint's state: per-peer sessions and counters.
+impl Outcome {
+    /// Each input with the doc it is for.
+    pub fn routed(self) -> impl Iterator<Item = (DocId, OscInput)> {
+        self.input_docs.into_iter().zip(self.inputs)
+    }
+}
+
+/// Most (peer, name) pairs remembered as warned about an ambiguous name.
+const MAX_AMBIGUOUS_WARNED: usize = 64;
+
+/// The doc the single-show calls ([`Osc::handle_datagram`] and friends) stand for.
+pub const SINGLE_DOC: DocId = DocId(0);
+
+/// The OSC endpoint's state: per-(peer, doc) sessions, per-IP reply budgets and counters.
 #[derive(Debug)]
 pub struct Osc {
-    sessions: Sessions,
+    /// One table per open doc (ARCHITECTURE section 7: `/connect`, its passcode, sessions and
+    /// lockouts are per peer and doc). Doc ids rise in open order, so this is open order too.
+    docs: BTreeMap<DocId, Sessions>,
+    /// Per source IP, whatever doc a reply is about.
+    budgets: Budgets,
+    /// (peer, name) pairs already warned about an ambiguous workspace name.
+    ambiguous_warned: Vec<(Peer, String)>,
     dedupe: Dedupe,
     stats: OscStats,
     last_expire: Duration,
     info: ServerInfo,
     /// Reply bytes produced so far by the call being handled.
     call_reply_bytes: usize,
-    /// Pattern-matching steps left for the call being handled (all its messages share them).
+    /// Pattern-matching steps left for the call being handled (all its messages, for every doc,
+    /// share them: fanning a message out to several docs does not multiply the work).
     call_match_budget: u64,
 }
 
@@ -143,16 +170,15 @@ impl Default for Osc {
 struct Asked<'a> {
     peer: Peer,
     now: Duration,
+    /// The doc's workspace (unused by application and bare replies).
     workspace: openlab_core::WorkspaceId,
     asked: &'a str,
     path: &'a str,
     /// The peer may ask: its rights include View.
     authed: bool,
-    /// The peer completed `/connect` with a passcode of the table. A UDP peer that has not is
-    /// held to a byte budget.
-    connected: bool,
-    /// A peer without a passcode has no rights at all, not even View.
-    passcode_set: bool,
+    /// The UDP byte budget the reply is held to; `None`: none (the peer connected with a real
+    /// passcode, which a forged source cannot).
+    budget: Option<Budget>,
 }
 
 impl Osc {
@@ -163,7 +189,9 @@ impl Osc {
     /// An endpoint that tells `/version` and `/workspaces` what `info` says.
     pub fn with_info(info: ServerInfo) -> Self {
         Self {
-            sessions: Sessions::default(),
+            docs: BTreeMap::new(),
+            budgets: Budgets::default(),
+            ambiguous_warned: Vec::new(),
             dedupe: Dedupe::default(),
             stats: OscStats::default(),
             last_expire: Duration::ZERO,
@@ -183,40 +211,99 @@ impl Osc {
         &self.stats
     }
 
-    /// Peers that asked for updates (`/updates 1`), for the fan-out. A UDP peer silent for
-    /// [`UDP_IDLE`] is not one (`now` as for the handlers).
+    fn sessions(&mut self, doc: DocId) -> &mut Sessions {
+        self.docs.entry(doc).or_default()
+    }
+
+    /// Peers that asked any doc for updates (`/updates 1`). A UDP peer silent for [`UDP_IDLE`]
+    /// is not one (`now` as for the handlers).
     pub fn update_subscribers(&self, now: Duration) -> Vec<Peer> {
-        self.sessions.update_subscribers(now)
+        let mut all: Vec<Peer> = Vec::new();
+        for sessions in self.docs.values() {
+            for peer in sessions.update_subscribers(now) {
+                if !all.contains(&peer) {
+                    all.push(peer);
+                }
+            }
+        }
+        all
     }
 
-    /// How many addresses are remembered as having connected (at most [`MAX_KNOWN_IPS`]).
+    /// Peers subscribed to `doc`'s updates: the fan-out of that doc's changes.
+    pub fn update_subscribers_in(&self, doc: DocId, now: Duration) -> Vec<Peer> {
+        self.docs
+            .get(&doc)
+            .map(|s| s.update_subscribers(now))
+            .unwrap_or_default()
+    }
+
+    /// How many addresses are remembered as having connected to `doc` (at most
+    /// [`MAX_KNOWN_IPS`]).
+    pub fn known_ips_in(&self, doc: DocId) -> usize {
+        self.docs.get(&doc).map_or(0, Sessions::known_len)
+    }
+
+    /// The same, for the single-show calls.
     pub fn known_ips(&self) -> usize {
-        self.sessions.known_len()
+        self.known_ips_in(SINGLE_DOC)
     }
 
-    /// Whether `peer` completed `/connect` with a passcode of the table.
+    /// Whether `peer` completed `/connect` with a passcode of some doc's table.
     pub fn is_connected(&self, peer: Peer) -> bool {
-        self.sessions.is_connected(peer)
+        self.docs.values().any(|s| s.is_connected(peer))
     }
 
-    /// A TCP connection closed.
+    /// Whether `peer` completed `/connect` with a passcode of `doc`'s table.
+    pub fn is_connected_in(&self, doc: DocId, peer: Peer) -> bool {
+        self.docs.get(&doc).is_some_and(|s| s.is_connected(peer))
+    }
+
+    /// A TCP connection closed: its sessions with every doc end.
     pub fn disconnect(&mut self, peer: Peer) {
-        self.sessions.remove(peer);
+        for sessions in self.docs.values_mut() {
+            sessions.remove(peer);
+        }
         self.dedupe.forget(peer);
     }
 
-    /// Drops every `/connect`, subscription and known address (another workspace opened).
+    /// Drops every `/connect`, subscription and known address of every doc.
     pub fn reset_sessions(&mut self) {
-        self.sessions.clear();
+        for sessions in self.docs.values_mut() {
+            sessions.clear();
+        }
     }
 
-    /// Drops every `/connect` and subscription but keeps the known addresses (the passcode
-    /// table changed within the same workspace).
+    /// Drops `doc`'s `/connect`s, subscriptions and known addresses (its copy now holds another
+    /// workspace).
+    pub fn reset_doc(&mut self, doc: DocId) {
+        if let Some(sessions) = self.docs.get_mut(&doc) {
+            sessions.clear();
+        }
+    }
+
+    /// Drops every doc's `/connect`s and subscriptions but keeps the known addresses.
     pub fn end_sessions(&mut self) {
-        self.sessions.end_all();
+        for sessions in self.docs.values_mut() {
+            sessions.end_all();
+        }
     }
 
-    /// Handles one UDP datagram from `peer` (`now` is monotonic time since the engine started).
+    /// Drops `doc`'s `/connect`s and subscriptions but keeps its known addresses (its passcode
+    /// table changed).
+    pub fn end_doc_sessions(&mut self, doc: DocId) {
+        if let Some(sessions) = self.docs.get_mut(&doc) {
+            sessions.end_all();
+        }
+    }
+
+    /// `doc` closed: everything about it is forgotten, its sessions, lockouts and known
+    /// addresses (a doc that opens later starts afresh, as QLab's do).
+    pub fn close_doc(&mut self, doc: DocId) {
+        self.docs.remove(&doc);
+    }
+
+    /// Handles one UDP datagram from `peer` (`now` is monotonic time since the engine started),
+    /// for one open show.
     pub fn handle_datagram(
         &mut self,
         peer: Peer,
@@ -238,18 +325,36 @@ impl Osc {
         bytes: &[u8],
         show: &dyn OscShow,
     ) -> Outcome {
+        let docs = [DocShow {
+            doc: SINGLE_DOC,
+            show,
+        }];
+        self.handle_datagram_docs(peer, now, arrived, bytes, &docs)
+    }
+
+    /// One UDP datagram, for the docs open now (every one, in open order; none is fine). Sessions
+    /// of docs not among them are forgotten (they closed).
+    pub fn handle_datagram_docs(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        arrived: Duration,
+        bytes: &[u8],
+        docs: &[DocShow<'_>],
+    ) -> Outcome {
         let mut out = Outcome::default();
-        self.start_call();
+        self.start_call(docs);
         if bytes.len() > MAX_PACKET_BYTES {
             self.stats.packets += 1;
             self.stats.malformed += 1;
             return out;
         }
-        self.handle_packet(peer, now, arrived, bytes, show, &mut out);
+        self.handle_packet(peer, now, arrived, bytes, docs, &mut out);
         out
     }
 
-    /// Handles bytes read from a TCP connection. `decoder` is that connection's own decoder.
+    /// Handles bytes read from a TCP connection, for one open show. `decoder` is that
+    /// connection's own decoder.
     pub fn handle_stream(
         &mut self,
         peer: Peer,
@@ -271,10 +376,28 @@ impl Osc {
         bytes: &[u8],
         show: &dyn OscShow,
     ) -> Outcome {
+        let docs = [DocShow {
+            doc: SINGLE_DOC,
+            show,
+        }];
+        self.handle_stream_docs(peer, now, arrived, decoder, bytes, &docs)
+    }
+
+    /// Bytes read from a TCP connection, for the docs open now (as
+    /// [`Osc::handle_datagram_docs`]).
+    pub fn handle_stream_docs(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        arrived: Duration,
+        decoder: &mut SlipDecoder,
+        bytes: &[u8],
+        docs: &[DocShow<'_>],
+    ) -> Outcome {
         let mut out = Outcome::default();
-        self.start_call();
+        self.start_call(docs);
         // A peer that may not ask yet gets small frames only (it can still send `/connect`).
-        let may_ask = self.may_ask(peer, show);
+        let may_ask = docs.iter().any(|d| self.may_ask(d.doc, peer, d.show));
         decoder.set_max_frame(if may_ask {
             MAX_FRAME_BYTES
         } else {
@@ -285,7 +408,7 @@ impl Osc {
         for event in events {
             match event {
                 SlipEvent::Frame(frame) => {
-                    self.handle_packet(peer, now, arrived, &frame, show, &mut out);
+                    self.handle_packet(peer, now, arrived, &frame, docs, &mut out);
                 }
                 SlipEvent::Oversize => self.stats.oversize_frames += 1,
                 SlipEvent::BadEscape => self.stats.malformed += 1,
@@ -294,30 +417,37 @@ impl Osc {
         out
     }
 
-    /// The limits that are per datagram or per read start afresh.
-    fn start_call(&mut self) {
+    /// The limits that are per datagram or per read start afresh; a doc no longer open is
+    /// forgotten.
+    fn start_call(&mut self, docs: &[DocShow<'_>]) {
         self.call_reply_bytes = 0;
         self.call_match_budget = MATCH_BUDGET;
+        self.docs
+            .retain(|doc, _| docs.iter().any(|d| d.doc == *doc));
     }
 
-    /// What `peer` may do: the rights `/connect` gave it, else the No Passcode rights.
-    fn rights_of(&self, peer: Peer, show: &dyn OscShow) -> OscRights {
-        self.sessions
-            .rights(peer)
+    /// What `peer` may do in `doc`: the rights `/connect` gave it there, else the No Passcode
+    /// rights.
+    fn rights_of(&self, doc: DocId, peer: Peer, show: &dyn OscShow) -> OscRights {
+        self.docs
+            .get(&doc)
+            .and_then(|s| s.rights(peer))
             .unwrap_or(show.access().no_passcode)
     }
 
-    /// Whether updates (which carry cue data) may be sent to `peer` now: it needs View, judged
-    /// when each update goes out, so a table edit takes effect on subscribers at once.
-    pub fn may_receive_updates(&self, peer: Peer, access: &OscAccess) -> bool {
-        self.sessions
-            .rights(peer)
+    /// Whether `doc`'s updates (which carry cue data) may be sent to `peer` now: it needs View
+    /// there, judged when each update goes out, so a table edit takes effect on subscribers at
+    /// once.
+    pub fn may_receive_updates(&self, doc: DocId, peer: Peer, access: &OscAccess) -> bool {
+        self.docs
+            .get(&doc)
+            .and_then(|s| s.rights(peer))
             .unwrap_or(access.no_passcode)
             .allows(OscRight::View)
     }
 
-    fn may_ask(&self, peer: Peer, show: &dyn OscShow) -> bool {
-        self.rights_of(peer, show).allows(OscRight::View)
+    fn may_ask(&self, doc: DocId, peer: Peer, show: &dyn OscShow) -> bool {
+        self.rights_of(doc, peer, show).allows(OscRight::View)
     }
 
     fn handle_packet(
@@ -326,23 +456,62 @@ impl Osc {
         now: Duration,
         arrived: Duration,
         bytes: &[u8],
-        show: &dyn OscShow,
+        docs: &[DocShow<'_>],
         out: &mut Outcome,
     ) {
         self.stats.packets += 1;
         if now.saturating_sub(self.last_expire) >= EXPIRE_EVERY {
-            self.sessions.expire(now);
+            for sessions in self.docs.values_mut() {
+                sessions.expire(now);
+            }
+            self.budgets.expire(now);
             self.dedupe.expire(now);
             self.last_expire = now;
         }
-        self.sessions.touch(peer, now);
+        // A UDP session lives while the peer sends anything, to whichever doc.
+        for sessions in self.docs.values_mut() {
+            sessions.touch(peer, now);
+        }
         match decode_packet(bytes) {
             Ok(messages) => {
                 for message in &messages {
-                    self.handle_message(peer, now, arrived, message, show, out);
+                    self.handle_message(peer, now, arrived, message, docs, out);
                 }
             }
             Err(_) => self.stats.malformed += 1,
+        }
+    }
+
+    /// What a reply about no doc in particular (an application message, or one for a workspace
+    /// that is not open) needs: View in any doc lets it be large, and it is held to a byte
+    /// budget unless the peer connected to a doc with a real passcode; the strict one when no
+    /// open doc lets a stranger ask (or none is open).
+    fn app_asked<'a>(
+        &self,
+        peer: Peer,
+        now: Duration,
+        asked: &'a str,
+        path: &'a str,
+        docs: &[DocShow<'_>],
+    ) -> Asked<'a> {
+        let proved = docs
+            .iter()
+            .any(|d| d.show.access().requires_passcode() && self.is_connected_in(d.doc, peer));
+        let open = docs.iter().any(|d| !d.show.access().requires_passcode());
+        Asked {
+            peer,
+            now,
+            workspace: openlab_core::WorkspaceId(uuid::Uuid::nil()),
+            asked,
+            path,
+            authed: docs.iter().any(|d| self.may_ask(d.doc, peer, d.show)),
+            budget: if proved {
+                None
+            } else if open {
+                Some(Budget::Open)
+            } else {
+                Some(Budget::Strict)
+            },
         }
     }
 
@@ -352,7 +521,7 @@ impl Osc {
         now: Duration,
         arrived: Duration,
         message: &OscMessage,
-        show: &dyn OscShow,
+        docs: &[DocShow<'_>],
         out: &mut Outcome,
     ) {
         self.stats.messages += 1;
@@ -367,68 +536,148 @@ impl Osc {
             self.stats.bad_address += 1;
             return;
         };
-        let workspace = show.workspace_id();
-        let rights = self.rights_of(peer, show);
-        self.sessions
-            .set_strangers_may_view(show.access().no_passcode.allows(OscRight::View));
-        let authed = rights.allows(OscRight::View);
-        let ask = Asked {
-            connected: self.sessions.is_connected(peer),
-            passcode_set: show.access().requires_passcode(),
-            peer,
-            now,
-            workspace,
-            asked: &message.addr,
-            path: &parsed.path,
-            authed,
-        };
-
-        // Application-level questions need no passcode.
-        if let Some(reply) = dispatch::app_reply(show, &self.info, &parsed.address) {
+        // Application-level questions need no passcode, and are answered once.
+        if let Some(reply) = dispatch::app_reply(docs, &self.info, &parsed.address) {
+            let ask = self.app_asked(peer, now, &message.addr, &parsed.path, docs);
             self.push_reply(&ask, &reply, out);
             return;
         }
-        // The id is compared as QLab writes it: upper case. Another id, or the right one in
-        // lower case, is an error that says nothing else.
-        if let Some(id) = &parsed.workspace
-            && *id != upper(workspace)
+        // `/workspace/{id}` picks one doc: the id as QLab writes it (upper case), or the name.
+        // Another id, the right one in lower case, or any workspace message while no doc is open,
+        // is an error that says nothing else.
+        let target = match &parsed.workspace {
+            Some(id) => match dispatch::find_doc(docs, id) {
+                Named::Doc(doc) => Some(doc),
+                Named::None => {
+                    self.wrong_workspace(peer, now, &message.addr, &parsed.path, docs, out);
+                    return;
+                }
+                Named::Ambiguous => {
+                    self.warn_ambiguous(peer, id, out);
+                    self.wrong_workspace(peer, now, &message.addr, &parsed.path, docs, out);
+                    return;
+                }
+            },
+            None => None,
+        };
+        if target.is_none() {
+            match parsed.address {
+                Address::Updates => return self.updates(peer, now, message, &parsed, docs, out),
+                Address::UdpReplyPort => {
+                    return self.udp_reply_port(peer, now, message, &parsed, docs, out);
+                }
+                _ if docs.is_empty() => {
+                    self.wrong_workspace(peer, now, &message.addr, &parsed.path, docs, out);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        match target {
+            Some(doc) => self.doc_message(peer, now, (message, &parsed), doc, false, out),
+            // QLab 5: a message without the prefix goes to every open workspace on the port,
+            // and each answers for itself.
+            None => {
+                // A passcode that some doc's table accepts is a console connecting to that doc,
+                // not a guess at the others: it must not lock itself out of them (two docs with
+                // two passcodes, each sent un-prefixed).
+                let accepted_somewhere = parsed.address == Address::Connect
+                    && dispatch::passcode_arg(&message.args).is_some_and(|given| {
+                        docs.iter()
+                            .any(|d| session::passcode_matches(d.show.access(), &given))
+                    });
+                for doc in docs {
+                    self.doc_message(peer, now, (message, &parsed), *doc, accepted_somewhere, out);
+                }
+            }
+        }
+    }
+
+    /// Says once per peer and name that a name matched several docs (the operator must rename
+    /// one or address it by id). Remembers at most [`MAX_AMBIGUOUS_WARNED`] pairs; past that it
+    /// starts afresh, so a flood of names costs a bounded table and an occasional repeat.
+    fn warn_ambiguous(&mut self, peer: Peer, name: &str, out: &mut Outcome) {
+        if self
+            .ambiguous_warned
+            .iter()
+            .any(|(p, n)| *p == peer && n == name)
         {
-            self.stats.wrong_workspace += 1;
-            self.push_reply(&ask, &Reply::error().scoped(Scope::Bare), out);
             return;
         }
+        if self.ambiguous_warned.len() >= MAX_AMBIGUOUS_WARNED {
+            self.ambiguous_warned.clear();
+        }
+        self.ambiguous_warned.push((peer, name.to_owned()));
+        out.warnings.push(format!(
+            "OSC from {} named workspace \"{name}\", which several open workspaces are called: \
+             refused; rename one or address it by its id",
+            peer.ip()
+        ));
+    }
+
+    fn wrong_workspace(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        asked: &str,
+        path: &str,
+        docs: &[DocShow<'_>],
+        out: &mut Outcome,
+    ) {
+        self.stats.wrong_workspace += 1;
+        let ask = self.app_asked(peer, now, asked, path, docs);
+        self.push_reply(&ask, &Reply::error().scoped(Scope::Bare), out);
+    }
+
+    /// A workspace message for one doc: its rights, its passcode, its cues; its replies carry
+    /// its `workspace_id`.
+    fn doc_message(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        (message, parsed): (&OscMessage, &Parsed),
+        target: DocShow<'_>,
+        accepted_elsewhere: bool,
+        out: &mut Outcome,
+    ) {
+        let DocShow { doc, show } = target;
+        let access = show.access();
+        self.sessions(doc)
+            .set_strangers_may_view(access.no_passcode.allows(OscRight::View));
+        let rights = self.rights_of(doc, peer, show);
+        let connected = self.is_connected_in(doc, peer);
+        let ask = Asked {
+            peer,
+            now,
+            workspace: show.workspace_id(),
+            asked: &message.addr,
+            path: &parsed.path,
+            authed: rights.allows(OscRight::View),
+            budget: match (connected, access.requires_passcode()) {
+                (true, true) => None,
+                (false, true) => Some(Budget::Strict),
+                (_, false) => Some(Budget::Open),
+            },
+        };
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
-            let result = self
-                .sessions
-                .connect(peer, now, show.access(), given.as_deref());
+            let result = self.sessions(doc).connect_counting(
+                peer,
+                now,
+                access,
+                given.as_deref(),
+                !accepted_elsewhere,
+            );
             let reply = reply_for_connect(result);
             self.push_reply(&ask, &reply, out);
             return;
         }
-        // Replies on a TCP connection go back on it: there is no port to set.
-        if parsed.address == Address::UdpReplyPort && matches!(peer, Peer::Tcp { .. }) {
-            return;
-        }
         if required_right(&parsed.address, &message.args).is_some_and(|r| !rights.allows(r)) {
             self.stats.denied += 1;
-            let scope = if matches!(parsed.address, Address::UdpReplyPort) {
-                Scope::App
-            } else {
-                Scope::Workspace
-            };
-            self.push_reply(&ask, &Reply::denied().scoped(scope), out);
+            self.push_reply(&ask, &Reply::denied(), out);
             return;
         }
-        if parsed.address == Address::Updates {
-            self.updates(&ask, &message.args, out);
-            return;
-        }
-        if parsed.address == Address::UdpReplyPort {
-            self.udp_reply_port(&ask, &message.args, out);
-            return;
-        }
-        let resolved = resolve(show, &parsed, &message.args, &mut self.call_match_budget);
+        let resolved = resolve(show, parsed, &message.args, &mut self.call_match_budget);
         if resolved.unknown {
             self.stats.unknown_address += 1;
         }
@@ -447,6 +696,7 @@ impl Osc {
                 self.stats.inputs_capped += 1;
             } else {
                 out.inputs.push(input);
+                out.input_docs.push(doc);
             }
         }
         for reply in &resolved.replies {
@@ -457,35 +707,89 @@ impl Osc {
         }
     }
 
-    /// `/updates 1` and `/updates 0`: QLab sends no reply when it is allowed.
-    fn updates(&mut self, ask: &Asked<'_>, args: &[rosc::OscType], out: &mut Outcome) {
-        // A bad argument, or no room for another peer.
-        let failed = match dispatch::updates_arg(args) {
+    /// `/updates 1` and `/updates 0`, for every open doc (an application message: it cannot be
+    /// sent to one). QLab sends no reply when it is allowed; a bad argument, no doc open, or a
+    /// doc with no room for another peer is one `error`.
+    fn updates(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        message: &OscMessage,
+        parsed: &Parsed,
+        docs: &[DocShow<'_>],
+        out: &mut Outcome,
+    ) {
+        let failed = match dispatch::updates_arg(&message.args) {
             None => true,
-            Some(on) => !self.sessions.set_updates(ask.peer, ask.now, on),
+            Some(_) if docs.is_empty() => true,
+            Some(on) => {
+                let mut refused = false;
+                for d in docs {
+                    let sessions = self.sessions(d.doc);
+                    sessions
+                        .set_strangers_may_view(d.show.access().no_passcode.allows(OscRight::View));
+                    refused |= !sessions.set_updates(peer, now, on);
+                }
+                refused
+            }
         };
         if failed {
             self.stats.rejected += 1;
-            self.push_reply(ask, &Reply::error().scoped(Scope::App), out);
+            let ask = self.app_asked(peer, now, &message.addr, &parsed.path, docs);
+            self.push_reply(&ask, &Reply::error().scoped(Scope::App), out);
         }
     }
 
-    /// `/udpReplyPort {port}`: QLab sends no reply when it is allowed, like `/updates`.
-    fn udp_reply_port(&mut self, ask: &Asked<'_>, args: &[rosc::OscType], out: &mut Outcome) {
-        let failed = match dispatch::reply_port_arg(args) {
+    /// `/udpReplyPort {port}`: QLab sends no reply when it is allowed, like `/updates`. It needs
+    /// View in some doc, and is kept in the session of each doc where the peer has it. Ignored
+    /// over TCP (replies go back on the connection).
+    fn udp_reply_port(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        message: &OscMessage,
+        parsed: &Parsed,
+        docs: &[DocShow<'_>],
+        out: &mut Outcome,
+    ) {
+        if matches!(peer, Peer::Tcp { .. }) {
+            return;
+        }
+        let ask = self.app_asked(peer, now, &message.addr, &parsed.path, docs);
+        let viewing: Vec<DocShow<'_>> = docs
+            .iter()
+            .copied()
+            .filter(|d| self.may_ask(d.doc, peer, d.show))
+            .collect();
+        if viewing.is_empty() {
+            self.stats.denied += 1;
+            self.push_reply(&ask, &Reply::denied().scoped(Scope::App), out);
+            return;
+        }
+        let failed = match dispatch::reply_port_arg(&message.args) {
             None => true,
-            Some(port) => !self.sessions.set_reply_port(ask.peer, ask.now, port),
+            Some(port) => {
+                let mut refused = false;
+                for d in &viewing {
+                    let sessions = self.sessions(d.doc);
+                    sessions
+                        .set_strangers_may_view(d.show.access().no_passcode.allows(OscRight::View));
+                    refused |= !sessions.set_reply_port(peer, now, port);
+                }
+                refused
+            }
         };
         if failed {
             self.stats.rejected += 1;
-            self.push_reply(ask, &Reply::error().scoped(Scope::App), out);
+            self.push_reply(&ask, &Reply::error().scoped(Scope::App), out);
         }
     }
 
     /// The port to send `peer` (a UDP peer) its replies and updates on: the one it set with
-    /// `/udpReplyPort` while its session lives, else `None` (use the server default).
+    /// `/udpReplyPort` while a session of it lives (the first doc's, in open order; it is set in
+    /// all of them at once), else `None` (use the server default).
     pub fn reply_port(&self, peer: Peer, now: Duration) -> Option<u16> {
-        self.sessions.reply_port(peer, now)
+        self.docs.values().find_map(|s| s.reply_port(peer, now))
     }
 
     /// Encodes an update message for the fan-out (NET-05), or `None` if it is not encodable.
@@ -497,25 +801,27 @@ impl Osc {
         bytes
     }
 
-    /// Whether an encoded update of `len` bytes may be sent to `peer` now. A TCP peer is paced by
-    /// its connection, and a UDP peer that completed `/connect` is not held to a budget; a UDP
-    /// peer that has not (a subscription needs no passcode when none is set) shares the byte
-    /// budget of its replies, so a forged `/updates 1` cannot aim more than that at a victim.
+    /// Whether an encoded update of `doc`'s, `len` bytes, may be sent to `peer` now. A TCP peer
+    /// is paced by its connection, and a UDP peer that completed `/connect` to that doc with a
+    /// passcode is not held to a budget; any other UDP peer shares the byte budget of its
+    /// replies (per IP, whatever the doc), so a forged `/updates 1` cannot aim more than that at
+    /// a victim.
     pub fn update_allowed(
         &mut self,
+        doc: DocId,
         peer: Peer,
         now: Duration,
         len: usize,
         passcode_set: bool,
     ) -> bool {
-        if matches!(peer, Peer::Tcp { .. }) || (passcode_set && self.sessions.is_connected(peer)) {
+        if matches!(peer, Peer::Tcp { .. }) || (passcode_set && self.is_connected_in(doc, peer)) {
             return true;
         }
         let cost = u64::try_from(len)
             .unwrap_or(u64::MAX)
             .saturating_add(UDP_HEADER_BYTES);
         let allowed = self
-            .sessions
+            .budgets
             .spend_reply_bytes(peer.ip(), Budget::Open, now, cost);
         if !allowed {
             self.stats.updates_dropped += 1;
@@ -524,10 +830,11 @@ impl Osc {
     }
 
     /// Queues a reply unless a cap says no: at most [`MAX_REPLIES_PER_CALL`] per datagram or
-    /// stream read, a body no larger than the peer may be sent (a datagram's worth to a UDP peer
-    /// that may ask, 1 MiB over TCP, [`MAX_REPLY_JSON_BYTES`] to one that may not), and for a UDP
-    /// peer that may not ask a per-source-IP byte budget (a forged source address must not turn
-    /// us into an amplifier). Dropped replies are counted.
+    /// stream read (for every doc together), a body no larger than the peer may be sent (a
+    /// datagram's worth to a UDP peer that may ask, 1 MiB over TCP, [`MAX_REPLY_JSON_BYTES`] to
+    /// one that may not), and for a UDP peer that has not connected with a passcode a
+    /// per-source-IP byte budget (a forged source address must not turn us into an amplifier).
+    /// Dropped replies are counted.
     fn push_reply(&mut self, ask: &Asked<'_>, reply: &Reply, out: &mut Outcome) {
         // Checked before the reply is built: once a call is at a cap the rest of a flood costs
         // nothing.
@@ -559,14 +866,7 @@ impl Osc {
             return;
         }
         self.call_reply_bytes += size;
-        // With no passcode a `/connect` proves nothing about a datagram's source address, so only a
-        // peer that connected with a real passcode is let off the budget.
-        if matches!(ask.peer, Peer::Udp(_)) && !(ask.connected && ask.passcode_set) {
-            let kind = if ask.passcode_set {
-                Budget::Strict
-            } else {
-                Budget::Open
-            };
+        if let (Peer::Udp(ip), Some(kind)) = (ask.peer, ask.budget) {
             let Ok(bytes) = encode_message(&message) else {
                 self.stats.replies_dropped += 1;
                 return;
@@ -574,10 +874,7 @@ impl Osc {
             let cost = u64::try_from(bytes.len())
                 .unwrap_or(u64::MAX)
                 .saturating_add(UDP_HEADER_BYTES);
-            if !self
-                .sessions
-                .spend_reply_bytes(ask.peer.ip(), kind, ask.now, cost)
-            {
+            if !self.budgets.spend_reply_bytes(ip, kind, ask.now, cost) {
                 self.stats.replies_throttled += 1;
                 return;
             }
