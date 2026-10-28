@@ -20,9 +20,43 @@ use crate::model::{
     CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
     WorkspaceSettings,
 };
+use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
     MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
 };
+
+/// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
+/// bytes: a name in any script gets the same room, and a UI text field counts characters).
+/// QLab 5 documents no limit (docs/todo/open-qlab-questions.md, row 13).
+pub const MAX_NAME_SCALARS: usize = 256;
+
+/// Why `name` is refused as a new name (workspace, cue list, patch, network patch): too long, or
+/// holding a control character (NUL, a newline, a tab, escape codes), which no single-line name
+/// field can show. Load keeps such a name and warns ([`IssueKind::InvalidName`]).
+pub fn name_problem(name: &str) -> Option<&'static str> {
+    // Bounded scan: stops at the first control character or just past the limit.
+    if name.chars().take(MAX_NAME_SCALARS + 1).count() > MAX_NAME_SCALARS {
+        Some("a name is at most 256 characters")
+    } else if name.chars().any(char::is_control) {
+        Some("a name cannot contain control characters")
+    } else {
+        None
+    }
+}
+
+/// Why `host` is refused as a new network patch host: longer than a DNS name
+/// ([`MAX_HOST_BYTES`]) or holding a control character. Whether it can be addressed at all is
+/// [`check_endpoint`](crate::check_endpoint)'s question and makes a Network cue broken, not the
+/// edit refused.
+pub fn host_problem(host: &str) -> Option<&'static str> {
+    if host.len() > MAX_HOST_BYTES {
+        Some("a host is at most 253 bytes")
+    } else if host.chars().any(char::is_control) {
+        Some("a host cannot contain control characters")
+    } else {
+        None
+    }
+}
 
 /// Deepest allowed cue nesting (a top-level cue is depth 1). Keeps every valid workspace within
 /// the JSON parser's recursion limit, so whatever saves also loads.
@@ -146,6 +180,10 @@ pub enum IssueKind {
     /// The OSC passcode in row `row` is not made of digits only (QLab's are numeric): kept, since
     /// removing it would change who can connect, but the user should replace it.
     OscPasscodeNotDigits { row: usize },
+    /// The name or host in `field` (`name`, `cue_lists.name`, `patches.name`,
+    /// `network_patches.name`, `network_patches.host`) is over-long or has a control character:
+    /// kept as it is, since load never refuses a show; editing it needs a valid value.
+    InvalidName { field: &'static str },
 }
 
 impl fmt::Display for ValidationIssue {
@@ -245,6 +283,10 @@ impl fmt::Display for ValidationIssue {
                 f,
                 "OSC passcode row {row} is not made of digits only; replace it"
             ),
+            IssueKind::InvalidName { field } => write!(
+                f,
+                "{field} is too long or has a control character; kept as it is"
+            ),
             IssueKind::SecondTriggerNeedsPlaylist => write!(
                 f,
                 "second trigger plays the next or previous child, which only a playlist group \
@@ -277,6 +319,7 @@ pub fn repair(workspace: &mut Workspace) -> Vec<ValidationIssue> {
     for id in duplicates(workspace.network_patches.iter().map(|p| p.id)) {
         checker.error(None, IssueKind::DuplicateNetworkPatchId { id });
     }
+    checker.names(workspace);
     checker.settings(&mut workspace.settings);
     for patch in &mut workspace.patches {
         checker.patch(patch);
@@ -860,6 +903,41 @@ impl Checker {
         self.duplicates(id, "levels.crosspoints", duplicates);
         for crosspoint in &mut levels.crosspoints {
             self.level(id, "levels.crosspoints.db", &mut crosspoint.db);
+        }
+    }
+
+    /// Warns about each odd name or host kind; one warning per field kind, not per item, so a
+    /// hostile file cannot flood the list. Nothing is changed.
+    fn names(&mut self, workspace: &Workspace) {
+        fn bad<'a>(mut names: impl Iterator<Item = &'a str>) -> bool {
+            names.any(|n| name_problem(n).is_some())
+        }
+        let fields = [
+            ("name", bad(std::iter::once(workspace.name.as_str()))),
+            (
+                "cue_lists.name",
+                bad(workspace.cue_lists.iter().map(|l| l.name.as_str())),
+            ),
+            (
+                "patches.name",
+                bad(workspace.patches.iter().map(|p| p.name.as_str())),
+            ),
+            (
+                "network_patches.name",
+                bad(workspace.network_patches.iter().map(|p| p.name.as_str())),
+            ),
+            (
+                "network_patches.host",
+                workspace
+                    .network_patches
+                    .iter()
+                    .any(|p| host_problem(&p.host).is_some()),
+            ),
+        ];
+        for (field, odd) in fields {
+            if odd {
+                self.warn(None, IssueKind::InvalidName { field });
+            }
         }
     }
 

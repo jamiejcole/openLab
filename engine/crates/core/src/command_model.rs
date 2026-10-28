@@ -26,7 +26,7 @@ use crate::model::{
     PatchOutput, Workspace, WorkspaceSettings,
 };
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
-use crate::validate::{patch_problems, settings_problems, visit};
+use crate::validate::{host_problem, name_problem, patch_problems, settings_problems, visit};
 
 /// The inverse of a change that changed nothing. `History` ignores it.
 pub(crate) fn no_change() -> Inverse {
@@ -450,11 +450,16 @@ fn add_patch(
     ws: &mut Workspace,
     index: usize,
     patch: &OutputPatch,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     if ws.patches.iter().any(|p| p.id == patch.id) {
         return Err(CommandError::DuplicatePatchId(patch.id));
     }
     check_index(index, ws.patches.len(), true)?;
+    // Load keeps an odd name, so an undo may put one back.
+    if !restoring {
+        check_name(&patch.name)?;
+    }
     let issues = patch_problems(patch);
     if !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
@@ -488,6 +493,7 @@ fn set_patch_property(
     ws: &mut Workspace,
     id: PatchId,
     property: &PatchProperty,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     let patch = ws
         .patches
@@ -495,6 +501,12 @@ fn set_patch_property(
         .find(|p| p.id == id)
         .ok_or(CommandError::PatchNotFound(id))?;
     let old = property.current(patch)?;
+    if let PatchProperty::Name { value } = property
+        && !restoring
+        && *value != patch.name
+    {
+        check_name(value)?;
+    }
     let mut candidate = patch.clone();
     property.write(&mut candidate)?;
     let issues = patch_problems(&candidate);
@@ -567,6 +579,8 @@ fn add_network_patch(
     // Load accepts any port, so an undo or rollback may put back a patch on port 0.
     if !restoring {
         check_port(patch.port)?;
+        check_name(&patch.name)?;
+        host_problem(&patch.host).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
     }
     ws.network_patches.insert(index, patch.clone());
     Ok(Command::RemoveNetworkPatch {
@@ -605,16 +619,27 @@ fn set_network_patch_property(
         .find(|p| p.id == id)
         .ok_or(CommandError::NetworkPatchNotFound(id))?;
     let old = property.current(patch);
-    if let NetworkPatchProperty::Port { value } = property
-        && !restoring
-    {
-        check_port(*value)?;
-    }
+    // Unchanged is not an edit: nothing to refuse (a loaded port 0 or odd name committed again).
     if old == *property {
         return Ok(no_change());
     }
+    if !restoring {
+        match property {
+            NetworkPatchProperty::Port { value } => check_port(*value)?,
+            NetworkPatchProperty::Name { value } => check_name(value)?,
+            NetworkPatchProperty::Host { value } => {
+                host_problem(value).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
+            }
+            NetworkPatchProperty::Protocol { .. } => {}
+        }
+    }
     property.write(patch);
     Ok(Command::SetNetworkPatchProperty { id, property: old })
+}
+
+/// Refuses a new name that load would warn about (length, control characters).
+fn check_name(name: &str) -> Result<(), CommandError> {
+    name_problem(name).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))
 }
 
 fn check_port(port: u16) -> Result<(), CommandError> {
@@ -632,6 +657,26 @@ fn network_index(ws: &Workspace, id: NetworkPatchId) -> Result<usize, CommandErr
 }
 
 // ---------------------------------------------------------------------------------------------
+// Workspace name
+
+/// Renames the workspace (the `name` of `Upsert::Settings`). Not the file: Save As names that.
+fn rename_workspace(
+    ws: &mut Workspace,
+    name: &str,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    // An unchanged name is not an edit, so a loaded odd one is not refused when committed again.
+    if ws.name == name {
+        return Ok(no_change());
+    }
+    if !restoring {
+        check_name(name)?;
+    }
+    let old = std::mem::replace(&mut ws.name, name.to_owned());
+    Ok(Command::RenameWorkspace { name: old })
+}
+
+// ---------------------------------------------------------------------------------------------
 // Cue lists
 
 fn add_cue_list(
@@ -639,11 +684,15 @@ fn add_cue_list(
     index: usize,
     id: CueListId,
     name: &str,
+    restoring: bool,
 ) -> Result<Inverse, CommandError> {
     if ws.cue_lists.iter().any(|l| l.id == id) {
         return Err(CommandError::DuplicateCueListId(id));
     }
     check_index(index, ws.cue_lists.len(), true)?;
+    if !restoring {
+        check_name(name)?;
+    }
     ws.cue_lists.insert(
         index,
         crate::model::CueList {
@@ -671,7 +720,12 @@ fn remove_cue_list(ws: &mut Workspace, id: CueListId) -> Result<Inverse, Command
     })
 }
 
-fn rename_cue_list(ws: &mut Workspace, id: CueListId, name: &str) -> Result<Inverse, CommandError> {
+fn rename_cue_list(
+    ws: &mut Workspace,
+    id: CueListId,
+    name: &str,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
     let list = ws
         .cue_lists
         .iter_mut()
@@ -679,6 +733,9 @@ fn rename_cue_list(ws: &mut Workspace, id: CueListId, name: &str) -> Result<Inve
         .ok_or(CommandError::CueListNotFound(id))?;
     if list.name == name {
         return Ok(no_change());
+    }
+    if !restoring {
+        check_name(name)?;
     }
     let old = std::mem::replace(&mut list.name, name.to_owned());
     Ok(Command::RenameCueList { id, name: old })
@@ -744,7 +801,7 @@ pub(crate) fn apply_model(
         } => add_osc_passcode(ws, *index, passcode, *rights, restoring),
         Command::RemoveOscPasscode { passcode } => remove_osc_passcode(ws, passcode),
         Command::SetOscRights { target, rights } => set_osc_rights(ws, target, *rights),
-        Command::AddPatch { index, patch } => add_patch(ws, *index, patch),
+        Command::AddPatch { index, patch } => add_patch(ws, *index, patch, restoring),
         Command::RemovePatch { id, even_if_used } => remove_patch(ws, *id, *even_if_used),
         Command::MovePatch { id, index } => patch_index(ws, *id).and_then(|from| {
             let moved = reposition(&mut ws.patches, from, *index)?;
@@ -757,7 +814,9 @@ pub(crate) fn apply_model(
                 no_change()
             })
         }),
-        Command::SetPatchProperty { id, property } => set_patch_property(ws, *id, property),
+        Command::SetPatchProperty { id, property } => {
+            set_patch_property(ws, *id, property, restoring)
+        }
         Command::AddNetworkPatch { index, patch } => {
             add_network_patch(ws, *index, patch, restoring)
         }
@@ -778,7 +837,7 @@ pub(crate) fn apply_model(
         Command::SetNetworkPatchProperty { id, property } => {
             set_network_patch_property(ws, *id, property, restoring)
         }
-        Command::AddCueList { index, id, name } => add_cue_list(ws, *index, *id, name),
+        Command::AddCueList { index, id, name } => add_cue_list(ws, *index, *id, name, restoring),
         Command::RemoveCueList { id } => remove_cue_list(ws, *id),
         Command::MoveCueList { id, index } => list_index(ws, *id).and_then(|from| {
             let moved = reposition(&mut ws.cue_lists, from, *index)?;
@@ -791,7 +850,8 @@ pub(crate) fn apply_model(
                 no_change()
             })
         }),
-        Command::RenameCueList { id, name } => rename_cue_list(ws, *id, name),
+        Command::RenameCueList { id, name } => rename_cue_list(ws, *id, name, restoring),
+        Command::RenameWorkspace { name } => rename_workspace(ws, name, restoring),
         _ => return None,
     })
 }
@@ -848,6 +908,7 @@ impl Command {
                 (3, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
             }
             Self::RenameCueList { id, .. } => (4, id.0, 0),
+            Self::RenameWorkspace { .. } => (5, uuid::Uuid::nil(), 0),
             _ => return None,
         })
     }
@@ -873,6 +934,7 @@ impl Command {
                 Self::SetNetworkPatchProperty { id: b, property: q },
             ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
             (Self::RenameCueList { id: a, .. }, Self::RenameCueList { id: b, .. }) => a == b,
+            (Self::RenameWorkspace { .. }, Self::RenameWorkspace { .. }) => true,
             (Self::MoveCue { id: a, .. }, Self::MoveCue { id: b, .. }) => a == b,
             (Self::MovePatch { id: a, .. }, Self::MovePatch { id: b, .. }) => a == b,
             (Self::MoveNetworkPatch { id: a, .. }, Self::MoveNetworkPatch { id: b, .. }) => a == b,
