@@ -113,6 +113,13 @@ enum TransportAction: Hashable, Sendable, Codable {
     }
 }
 
+/// Where one patch plays on this machine (WS-07): the device's name as `list_devices` gives it and
+/// a 0-based device channel for each output of the patch, in order.
+struct PatchMapping: Hashable, Sendable, Codable {
+    var device: String
+    var channels: [UInt32]
+}
+
 enum RecoveryChoice: String, Hashable, Sendable, Codable { case restore, ignore }
 
 /// `new`, `open` and `open_recovery` open another workspace beside the ones open (protocol 2): the
@@ -132,6 +139,9 @@ enum Request: Hashable, Sendable, Codable {
     case setOutputOverrides(networkDisabled: Bool)
     /// SM-01/SM-07: the engine keeps Show Mode per workspace and holds off sleep while one is in it.
     case setShowMode(on: Bool)
+    /// WS-07: sets, or with nil clears, where the workspace's patch plays on this machine. Kept in
+    /// the engine's machine settings, not the show file. A clear travels as an explicit `null`.
+    case setPatchMapping(patch: ModelID, mapping: PatchMapping?)
     case snapshot
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -168,6 +178,8 @@ enum Request: Hashable, Sendable, Codable {
             return ("log_tail", f)
         case .setOutputOverrides(let disabled): return ("set_output_overrides", [("network_disabled", disabled)])
         case .setShowMode(let on): return ("set_show_mode", [("on", on)])
+        case .setPatchMapping(let patch, let mapping):
+            return ("set_patch_mapping", [("patch", patch), ("mapping", mapping as PatchMapping?)])
         case .snapshot: return ("snapshot", [])
         }
     }
@@ -197,6 +209,10 @@ enum Request: Hashable, Sendable, Codable {
         case "set_output_overrides":
             self = .setOutputOverrides(networkDisabled: try c.decode(Bool.self, forKey: "network_disabled"))
         case "set_show_mode": self = .setShowMode(on: try c.decode(Bool.self, forKey: "on"))
+        case "set_patch_mapping":
+            self = .setPatchMapping(
+                patch: try c.decode(ModelID.self, forKey: "patch"),
+                mapping: try c.decodeIfPresent(PatchMapping.self, forKey: "mapping"))
         case "snapshot": self = .snapshot
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
