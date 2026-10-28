@@ -1,6 +1,6 @@
 # openLab show file format
 
-Status: format version **2** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
+Status: format version **5** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
 
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Refuses a push unless scripts/prepush.sh passed for each commit being pushed (installed by `make hooks`).
+# Bypass once, knowingly, with `git push --no-verify`.
+set -u
+
+root="$(git rev-parse --show-toplevel)" || exit 1
+zero="0000000000000000000000000000000000000000"
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  # Deleting a remote ref pushes no commit.
+  [ "$local_sha" = "$zero" ] && continue
+  if ! "$root/scripts/prepush.sh" --check "$local_sha"; then
+    echo "push refused: run 'make prepush' on this commit first (or push with --no-verify)."
+    exit 1
+  fi
+done
+exit 0
