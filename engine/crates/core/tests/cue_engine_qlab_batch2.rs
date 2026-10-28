@@ -963,6 +963,57 @@ fn v1_a_group_preview_skips_children_with_the_groups_or_a_repeated_id() {
     assert_eq!(rig.engine.previewing().count(), 0);
 }
 
+/// Duplicate ids again (M2.32, cue_engine_prop seeds 3aa595d4, 6773ea6c, ccfa3e81): an audio
+/// child whose id names a cue of another kind first (a Memo before the group, a group beside it)
+/// is not previewed. A preview is named by its id, so it would play a cue the workspace says is
+/// not audio, and the next pass over the edits would stop it as gone (an unsignalled change).
+#[test]
+fn v1_a_group_preview_skips_children_whose_id_names_another_cue_first() {
+    let mut rig = Rig::new(vec![
+        memo(2),
+        grp(
+            3,
+            GroupMode::Timeline,
+            vec![
+                sound(2),
+                grp(4, GroupMode::Timeline, vec![]),
+                sound(4),
+                sound(5),
+            ],
+        ),
+    ]);
+    let out = rig.preview(0, 3);
+    let started: Vec<CueId> = preview_starts(&out).iter().map(|p| p.0).collect();
+    assert_eq!(started, vec![id(5)]);
+    for n in [2, 4, 5] {
+        let audio = matches!(
+            rig.ws.find_cue(id(n)).map(|c| &c.kind),
+            Some(CueKind::Audio { .. })
+        );
+        assert_eq!(rig.engine.preview_run(id(n)).is_some(), audio, "cue {n}");
+    }
+    // A later call has nothing to undo (`handle_as_binary` checks no change was unsignalled).
+    let out = rig.at(100, Input::Tick);
+    assert!(preview_stops(&out).is_empty(), "{out:?}");
+    assert!(rig.engine.is_previewing(id(5)));
+}
+
+/// With every audio child shadowed that way there is nothing to preview.
+#[test]
+fn v1_a_group_preview_of_only_shadowed_children_has_nothing_to_preview() {
+    let mut rig = Rig::new(vec![memo(2), grp(3, GroupMode::Timeline, vec![sound(2)])]);
+    let out = rig.preview(0, 3);
+    assert!(preview_starts(&out).is_empty(), "{out:?}");
+    assert_eq!(
+        warnings(&out),
+        vec![EngineWarning::PreviewIgnored {
+            cue: id(3),
+            reason: PreviewIgnoredReason::NothingToPreview
+        }]
+    );
+    assert!(!rig.engine.is_previewing(id(3)));
+}
+
 /// "Devamp looping cue" aimed at a sliced cue that is not running says the target is not
 /// running, as the other mode does, before it looks at the slices.
 #[test]
