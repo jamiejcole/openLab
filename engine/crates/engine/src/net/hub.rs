@@ -361,6 +361,7 @@ mod tests {
                     dirty: false,
                     can_undo: false,
                     can_redo: false,
+                    show_mode: false,
                 },
                 workspace,
                 cue_states: vec![],
@@ -450,6 +451,7 @@ mod tap_tests {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                show_mode: false,
             },
             workspace: Workspace::new_empty(
                 WorkspaceId(uuid::Uuid::from_u128(1)),
@@ -496,6 +498,7 @@ mod tap_tests {
                         dirty: false,
                         can_undo: false,
                         can_redo: false,
+                        show_mode: false,
                     },
                 },
             ),

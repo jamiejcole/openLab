@@ -1484,6 +1484,11 @@ impl Run {
         }
         self.sim.apply(&actions);
         prop_assert!(self.sim.errors.is_empty(), "{:?}", self.sim.errors);
+        // M4.9: the sleep-prevention query agrees with the reported states.
+        prop_assert_eq!(
+            self.engine.has_active_cues(),
+            self.engine.cue_states().any(|(_, s)| s.is_active())
+        );
         // Only audio cues have levels to fade.
         for (id, state) in self.engine.cue_states() {
             if state == CueState::Fading {

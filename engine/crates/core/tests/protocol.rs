@@ -80,6 +80,7 @@ fn snapshot() -> Snapshot {
             dirty: true,
             can_undo: true,
             can_redo: false,
+            show_mode: false,
         },
         workspace: workspace(vec![sample_cue(), cue(11, fade(10))]),
         cue_states: vec![CueStateEntry {
@@ -215,6 +216,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             },
         ),
         ("preshow_check", Request::PreshowCheck),
+        ("set_show_mode", Request::SetShowMode { on: true }),
     ]
 }
 
@@ -538,6 +540,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                show_mode: false,
+            },
+        }),
+    );
+    add(
+        "document_show_mode",
+        server(ServerMessage::Document {
+            document: DocumentState {
+                path: Some("/Users/sam/Shows/Hamlet.openlab".into()),
+                dirty: false,
+                can_undo: true,
+                can_redo: false,
+                show_mode: true,
             },
         }),
     );
@@ -1157,7 +1172,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 22);
-    assert_eq!(all_requests().len(), 12);
+    assert_eq!(all_requests().len(), 13);
 }
 
 #[test]
@@ -3100,6 +3115,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        any::<bool>().prop_map(|on| Request::SetShowMode { on }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
     ]

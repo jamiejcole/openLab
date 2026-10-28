@@ -247,6 +247,8 @@ All must be GPLv3-compatible; `cargo deny` enforces it. Adding a dependency requ
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | libfuzzer-sys (fuzz crate only) | cargo-fuzz harness; not in shipped binaries | MIT/Apache-2.0 (libFuzzer: Apache-2.0 WITH LLVM-exception) |
 
+System calls std lacks are declared by hand next to their one use instead of through a crate: `getrusage` / `GetProcessTimes` (`diag::cpu`), `pthread_sigmask` / `sigwait` (`platform::signals`) and IOKit's `IOPMAssertionCreateWithName` / `IOPMAssertionRelease` with CoreFoundation's `CFStringCreateWithBytes` / `CFRelease` (`platform::power`, macOS frameworks linked by name), each with a `// SAFETY:` comment and a test.
+
 The show log (DX-02) does not use `tracing`: its records are structured protocol values (`LogEntry`) that clients read back with `log_tail`, so a small writer thread in `diag/` (bounded channel, size rotation, drop-and-count) replaces the crate and its dependency tree. Details: `docs/logging.md`.
 
 ## 13. Windows readiness (NFR-31)

@@ -97,6 +97,7 @@ fn snapshot(revision: u64) -> Snapshot {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            show_mode: false,
         },
         workspace: workspace(vec![]),
         cue_states: vec![],
