@@ -788,6 +788,7 @@ impl CueEngine {
         // post-waiting), so Stop, Pause, Reset and Panic act on it as on any post-wait.
         if let Some(rest) = follow.filter(|r| *r > 0) {
             run.post_wait = Some(at.saturating_add(rest));
+            run.post_wait_total = rest;
         }
         let follow = follow == Some(0);
         let seq = run.seq;

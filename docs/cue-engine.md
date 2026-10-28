@@ -24,7 +24,7 @@ let wake: Option<SampleTime> = engine.next_deadline();
 - **Randomness** (random groups, shuffled playlists) comes from a SplitMix64 generator in core, seeded with `EngineConfig::seed`. Tests pass a fixed seed and are reproducible; the engine binary seeds it from OS entropy at startup (M4.2), so shows differ between runs.
 - `handle` gets the **current** workspace every call. It first applies edits made since the last call (see [Model edits](#model-edits)), then carries out due deadlines, then the input, then deadlines again. The whole-workspace work of following edits (stopping deleted cues, moving playheads, recounting the chain limit, rebuilding the static problems) happens only on the first call after `model_changed()`; see [Model edits](#model-edits) for what a missed signal does.
 - `Action`s are core types; the engine binary turns voice actions into mixer and disk-stream commands (M4.2). Core does not depend on `openlab-audio`.
-- Queries: `state(cue)`, `cue_states()` (every non-idle cue, statically broken ones included), `broken_reason(cue)` (a break at run time), `problems(cue)` and `broken_cues()` (static problems, see [Broken cues](#broken-cues-cue-06-nfr-07)), `panic_end()` (see [Panic](#panic-pb-03)), `is_paused(cue)` (paused, including a cue that broke while paused), `is_halted(cue)` and `nominal_length(cue)` (see "Halted playlist" under [Modes](#modes)), `run_of(cue)` (`None` for a cue that owns no voice: idle, or broken at run time or started broken), `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`, `fade_level(cue, param, at)`, `fade_ramps(cue, at)` (see [Fade cues](#fade-cues-ct-10)).
+- Queries: `state(cue)`, `cue_states()` (every non-idle cue, statically broken ones included), `broken_reason(cue)` (a break at run time), `problems(cue)` and `broken_cues()` (static problems, see [Broken cues](#broken-cues-cue-06-nfr-07)), `panic_end()` (see [Panic](#panic-pb-03)), `is_paused(cue)` (paused, including a cue that broke while paused), `is_halted(cue)` and `nominal_length(cue)` (see "Halted playlist" under [Modes](#modes)), `run_of(cue)` (`None` for a cue that owns no voice: idle, or broken at run time or started broken), `timers(at)` (see [Timer progress](#timer-progress-m42e)), `playhead(list)`, `standing_by(ws, list)` (CL-06), `playhead_positions(ws, list)`, `chain_limit(ws)`, `fade_level(cue, param, at)`, `fade_ramps(cue, at)` (see [Fade cues](#fade-cues-ct-10)).
 - One engine per open workspace. A newly opened workspace gets a new engine; call `handle(ws, Tick, now)` once so the playheads are reported.
 
 ## Time
@@ -64,6 +64,16 @@ Internally a started cue is a **run**: `{pre-wait deadline, action progress (sta
 A start always reports `pre-waiting` first, even for a zero pre-wait (followed by `running` in the same call).
 
 Each voice segment has a `RunId`, unique for the engine's lifetime (the binary can use it as the mixer `VoiceId`). Loading or starting creates it; starting a loaded cue keeps it; **every resume gives the run a fresh id** (`ResumeVoice { run: fresh, paused: previous }`), so feedback still on its way for the paused segment is stale whenever it arrives. `run_of(cue)` is the current id.
+
+### Timer progress (M4.2e)
+
+`timers(at)` lists every timer counting at rendered sample `at`, for the binary's `progress` message (docs/protocol.md): `TimerProgress { cue, timer, elapsed, remaining }` in samples, by cue and then pre-wait, action, post-wait. It is pure (time passed in) and allocates nothing (an iterator over the runs).
+
+- **Pre-wait** (`pre-waiting`): `remaining` to the action start, `elapsed` = the whole pre-wait − `remaining`. The whole pre-wait is the cue's at the start (at the load for a loaded cue), so a load to time `t` inside the pre-wait shows `t` elapsed.
+- **Action** of a cue **without a voice** (Wait, Fade, Group, memo and control cues; an audio cue's comes from its voice): `elapsed` = the action offset (load to time) + samples since the action start; `remaining` to its end, `None` while the end is not known (a group with a busy child). A broken run (at run time or by static problems) skips its action, so shows none.
+- **Post-wait** (an auto-continue's, counted from the action start; also a halted playlist's wait for its auto-follow): `remaining` to the continue, `elapsed` = the whole post-wait − `remaining`. Shown while the action runs too, so one cue can have two timers.
+- A **paused** run's timers stand on the pause sample; a pause committed ahead of `at` (lookahead) freezes them once `at` reaches it. A timer whose start is ahead of `at` (a start committed in the lookahead window) shows its whole length, never more, and `elapsed` 0. A deadline that is due but not yet ticked shows `remaining` 0.
+- Idle, loaded and settled-broken cues have no timers; Stop, Reset and Panic clear them with the run.
 
 ## Timing and continue modes (CUE-02, CUE-03)
 
