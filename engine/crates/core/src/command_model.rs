@@ -495,17 +495,18 @@ fn set_patch_property(
     property: &PatchProperty,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    if let PatchProperty::Name { value } = property
-        && !restoring
-    {
-        check_name(value)?;
-    }
     let patch = ws
         .patches
         .iter_mut()
         .find(|p| p.id == id)
         .ok_or(CommandError::PatchNotFound(id))?;
     let old = property.current(patch)?;
+    if let PatchProperty::Name { value } = property
+        && !restoring
+        && *value != patch.name
+    {
+        check_name(value)?;
+    }
     let mut candidate = patch.clone();
     property.write(&mut candidate)?;
     let issues = patch_problems(&candidate);
@@ -618,6 +619,10 @@ fn set_network_patch_property(
         .find(|p| p.id == id)
         .ok_or(CommandError::NetworkPatchNotFound(id))?;
     let old = property.current(patch);
+    // Unchanged is not an edit: nothing to refuse (a loaded port 0 or odd name committed again).
+    if old == *property {
+        return Ok(no_change());
+    }
     if !restoring {
         match property {
             NetworkPatchProperty::Port { value } => check_port(*value)?,
@@ -627,9 +632,6 @@ fn set_network_patch_property(
             }
             NetworkPatchProperty::Protocol { .. } => {}
         }
-    }
-    if old == *property {
-        return Ok(no_change());
     }
     property.write(patch);
     Ok(Command::SetNetworkPatchProperty { id, property: old })
@@ -663,11 +665,12 @@ fn rename_workspace(
     name: &str,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    if !restoring {
-        check_name(name)?;
-    }
+    // An unchanged name is not an edit, so a loaded odd one is not refused when committed again.
     if ws.name == name {
         return Ok(no_change());
+    }
+    if !restoring {
+        check_name(name)?;
     }
     let old = std::mem::replace(&mut ws.name, name.to_owned());
     Ok(Command::RenameWorkspace { name: old })
@@ -723,9 +726,6 @@ fn rename_cue_list(
     name: &str,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
-    if !restoring {
-        check_name(name)?;
-    }
     let list = ws
         .cue_lists
         .iter_mut()
@@ -733,6 +733,9 @@ fn rename_cue_list(
         .ok_or(CommandError::CueListNotFound(id))?;
     if list.name == name {
         return Ok(no_change());
+    }
+    if !restoring {
+        check_name(name)?;
     }
     let old = std::mem::replace(&mut list.name, name.to_owned());
     Ok(Command::RenameCueList { id, name: old })

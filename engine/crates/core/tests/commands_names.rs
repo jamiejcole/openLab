@@ -365,13 +365,81 @@ fn removing_and_restoring_items_with_odd_names_works() {
 }
 
 #[test]
-fn a_client_cannot_use_an_odd_name_by_repeating_it() {
-    // The value being set is judged, not the one already there: setting the odd name again is
-    // refused as a command, though History may restore it.
+fn an_unchanged_odd_name_is_a_no_op_and_a_missing_id_wins_over_a_bad_name() {
     let ws = load_show(&show_text(&odd_workspace())).unwrap().workspace;
-    let same = ws.name.clone();
-    assert!(matches!(
-        refused(&ws, rename(&same)),
-        CommandError::InvalidValue(_)
-    ));
+    let unchanged = [
+        rename(&ws.name.clone()),
+        Command::RenameCueList {
+            id: list_id(1),
+            name: ws.cue_lists[0].name.clone(),
+        },
+        Command::SetPatchProperty {
+            id: patch_id(1),
+            property: PatchProperty::Name {
+                value: ws.patches[0].name.clone(),
+            },
+        },
+        Command::SetNetworkPatchProperty {
+            id: net_id(1),
+            property: NetworkPatchProperty::Name {
+                value: ws.network_patches[0].name.clone(),
+            },
+        },
+        Command::SetNetworkPatchProperty {
+            id: net_id(1),
+            property: NetworkPatchProperty::Host {
+                value: ws.network_patches[0].host.clone(),
+            },
+        },
+    ];
+    for command in unchanged {
+        let mut work = ws.clone();
+        let mut history = History::new();
+        assert!(
+            !history.execute(&mut work, command.clone()).unwrap(),
+            "{command:?}"
+        );
+        assert!(!history.can_undo());
+        assert_eq!(work, ws);
+    }
+    // A loaded port 0 committed again is a no-op too.
+    let mut zero = ws.clone();
+    zero.network_patches[0].port = 0;
+    let mut history = History::new();
+    let same = Command::SetNetworkPatchProperty {
+        id: net_id(1),
+        property: NetworkPatchProperty::Port { value: 0 },
+    };
+    assert!(!history.execute(&mut zero, same).unwrap());
+    let bad = long(300);
+    assert_eq!(
+        refused(
+            &ws,
+            Command::RenameCueList {
+                id: list_id(404),
+                name: bad.clone()
+            }
+        ),
+        CommandError::CueListNotFound(list_id(404))
+    );
+    assert_eq!(
+        refused(
+            &ws,
+            Command::SetPatchProperty {
+                id: patch_id(404),
+                property: PatchProperty::Name { value: bad.clone() }
+            }
+        ),
+        CommandError::PatchNotFound(patch_id(404))
+    );
+    assert_eq!(
+        refused(
+            &ws,
+            Command::SetNetworkPatchProperty {
+                id: net_id(404),
+                property: NetworkPatchProperty::Name { value: bad }
+            }
+        ),
+        CommandError::NetworkPatchNotFound(net_id(404))
+    );
 }
