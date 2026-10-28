@@ -61,13 +61,14 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - Comments explain *why*, not *what*.
 
 ## Progress tracking
+- Open tasks are GitHub issues (`gh issue list --milestone "…" --label task`); the ID-to-issue table is `docs/handoff/issue-map.md`. Work only on the issue(s) you were assigned. Your PR/commits reference the issue; the orchestrator writes `Closes #N` in the PR body.
+- Do not edit `PROGRESS.md`: the orchestrator ticks it in batches when issues close. Tick a requirement in `REQUIREMENTS.md` only when every part of it within the current release scope (§21) is implemented and tested.
 - Work only on the `PROGRESS.md` task(s) you were assigned.
-- When a task is complete **and tested**, tick it in `PROGRESS.md`. Tick a requirement in `REQUIREMENTS.md` only when every part of it within the current release scope (§21) is implemented and tested.
-- If you discover missing work, add an unticked task under the right milestone with a note — don't silently expand scope.
+- If you discover missing work, report it (the orchestrator files an issue) — don't silently expand scope.
 - Review findings rated Low or low-Medium are not fixed in the batch: file each as a GitHub issue labelled `low` (title, file:line, scenario) and move on. Only Highs and show-safety Mediums get a fix round. One regression test per bug, not a matrix of variants.
 - Do not fix states that only a property generator, fuzzer or contrived input can reach (e.g. invalid workspaces load refuses): fix the test oracle or file an issue.
-- Niche QLab-parity features not needed for v0.0.1 go to the "Deferred to v0.0.2" section of `PROGRESS.md`, not into the current batch.
-- Keep `PROGRESS.md` lines short: tick boxes and add new one-line tasks only. Never append notes to an existing line (every open PR edits this file; long lines cause merge conflicts) — notes go in the PR, the docs, or `docs/handoff/`.
+- Niche QLab-parity features not needed for v0.0.1 go to the `v0.0.2` milestone (label `v0.0.2`), not into the current batch.
+- Notes and decisions go in the issue, the PR, the docs, or `docs/handoff/`, never appended to `PROGRESS.md` lines.
 
 ## Git
 - Commit with plain terminal commands: `git add …` then `git commit -m "…"`.
@@ -84,6 +85,9 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - XCUITest needs macOS Automation Mode; on a dev machine the first run may prompt the user for authorisation.
 - The engine build phase (`mac/scripts/build-engine.sh`) ad-hoc signs the engine; Xcode doesn't sign nested binaries in `Contents/MacOS`.
 - CI's mac job runs on the `xcode-27` runner image (preview) with Xcode 27.1 pinned; fallback is `macos-26` + Xcode 26.x.
+
+- Agents share this machine and sccache (`~/.cargo/config.toml` wraps rustc; incremental compilation is off). Never wait on machine-wide process checks (`pgrep cargo`, "is anything building?"): wait on your own command only.
+- `make prepush` is the pre-push gate: it picks the checks the diff needs and prints `PREPUSH PASS` or `PREPUSH FAIL: <step>`.
 
 ## Reporting back (subagents)
 End with: what was done, files touched, tests added and their result (paste the summary line), any deviations from ARCHITECTURE.md, and open questions.
