@@ -36,11 +36,12 @@ Only memory bounds are refused (`InvalidMessage(reason)`, nothing changes): an a
 | Command | Notes |
 |---|---|
 | `AddCue { at, cue, auto_number }` | A Group brings its children. `auto_number` replaces the cue's number with `next_auto_number`. |
-| `Paste { at, cues }` | One undo step. Ids must be fresh: build `cues` with `prepare_paste`. |
+| `Paste { at, cues }` | One undo step. Ids must be fresh: build `cues` with `prepare_paste`. What the engine applies for a client's paste; a client sends `PasteClipboard`. |
+| `PasteClipboard { at, cues }` | The raw clipboard (cues copied in any workspace). The engine runs `prepare_paste` (fresh ids it makes itself) and applies the result as a `Paste`, one undo step. Core's `apply` refuses it (`NotPrepared`): it needs `Command::prepare`. A clipboard nested deeper than the limit is refused. |
 | `RemoveCue { id }` | Removes the subtree. Its inverse re-adds it at the same place. |
 | `MoveCue { id, index }` | Reorder among current siblings. |
 | `ReparentCue { id, to }` | Into another group or cue list, children with it. Not into itself or its descendants. |
-| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group); for Network cues only (M4.6a, CT-30) `destination`, `address` and `args`, each `value` the whole new setting. |
+| `SetCueProperty { id, property }` | `CueProperty`: name, notes, colour, flagged, armed, pre/post wait, continue mode, triggers, second trigger, second trigger on release, target, group mode, or the whole kind (never to or from Group); for Audio cues only `media`, the file alone (`value` a path or `null`; levels, routing, fades and slices untouched); for Network cues only (M4.6a, CT-30) `destination`, `address` and `args`, each `value` the whole new setting. |
 | `BatchSet { ids, property }` | One property on several cues, all or none. Not `Kind`. Applied in place with each cue's old value kept; a refusal writes the old values back, so the cost follows the cues named, not the show. |
 | `SetCueNumbers { numbers }` | Set, clear or swap numbers; uniqueness is judged on the result. |
 | `Renumber { ids, start, increment }` | Numbers `ids` in cue-list order (a group before its children), whatever order `ids` is in. |
@@ -71,6 +72,15 @@ Only memory bounds are refused (`InvalidMessage(reason)`, nothing changes): an a
 `History::execute_coalescing(workspace, command, key)`; on the wire, `coalesce` on the `command` message ([protocol.md](protocol.md)). An edit with a key joins the previous edit's undo step if that edit had the same key and nothing but such edits happened since: no other command without or with another key, no undo or redo, no `History::clear`. A client sends a fresh key for each gesture (for example `fader:<cue>:<n>`) and none for a one-off edit. A no-op edit and a refused one leave the gesture open.
 
 Every edit is still applied and sent to clients at once; only the undo step is shared. Undoing a gesture restores the state before its first edit, redo the state after its last. When the new step and the gesture's step each set the same single value (the same cue property, setting, patch property, name, or the same item's position), the merged step is the older one alone, so a thousand-event drag is one small command. A step of the newer edit is left out only where that is provably safe: both steps are one command setting the same value (or moving the same item), or the newer step only sets values (cue properties, settings, patch and list names), no two of them the same value, with no add, remove or move and not both a `Kind` and a `Target` / `group_mode` of one cue, and the older step holds a command for that exact value (a multi-cue level drag stays one command per cue; a `Kind` is kept when the older chain sets that cue's target or group mode). Anything else is chained flat, newest undone first. Core has no clock, so a gesture ends only by the events above; a client that sends the same key forever merges forever.
+
+## Preparing a command (M5.10e, WS-03, ED-05)
+
+Before applying a client's command the engine calls `Command::prepare(&Workspace, &MediaPaths, new_id)`. Core stays pure: the engine passes the show file's folder (`None` for a show never saved) and makes the ids.
+
+- **Media paths** in `AddCue`, `Paste`, `PasteClipboard`, `SetCueProperty` and `BatchSet` (a `Kind` that is Audio, or `Media`) are stored as docs/file-format.md section 4.3 says: forward slashes (a Windows path with backslashes is converted), NFC, relative to the show folder when the file is inside it and absolute otherwise (comparison ignores case and NFC/NFD). A client sends the absolute path it was given. An empty path is left alone. A show never saved has no folder, so paths stay absolute; saving it into a folder does not relativize them yet (`rebase` on save as only re-spells paths that are already relative).
+- A relative path in a pasted clipboard is read against this show's folder, so pasting from a show in another folder keeps the text, not the file (known gap).
+- **`PasteClipboard`** becomes a `Paste` of `prepare_paste(workspace, clipboard, ids)`. Inside a `Transaction` every command is prepared against the workspace as it is before the transaction.
+- `Paste` still arrives on the wire (cues must carry fresh ids; its media is converted too), so a client that prepares its own cues keeps working; the macOS app now sends `PasteClipboard`.
 
 ## Helpers
 
