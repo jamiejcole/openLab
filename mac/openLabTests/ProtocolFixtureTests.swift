@@ -145,6 +145,19 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(skipped, 2)
     }
 
+    /// SM-07: the engine's Show Mode reaches the app from its own fixture; absent reads as false.
+    func testDocumentShowModeDecodesFromTheEngineFixture() throws {
+        guard case .document(let on) = try ServerMessage.decode(try Fixtures.text("server", "document_show_mode"))
+        else {
+            return XCTFail("document_show_mode")
+        }
+        XCTAssertTrue(on.showMode)
+        guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
+            return XCTFail("welcome")
+        }
+        XCTAssertFalse(snapshot.document.showMode)
+    }
+
     func testProgressWaitsDecodeAndDefaultToNone() throws {
         let text = try Fixtures.text("server", "progress_waits")
         guard case .progress(let items, let waits) = try ServerMessage.decode(text) else {
