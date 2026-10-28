@@ -9,6 +9,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Test seam (never in a release build): makes a transaction fail and its rollback fail too, so
+# the engine's handling of `CommandError::RollbackFailed` can be tested. See `fault`.
+fault-injection = []
+
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
