@@ -101,6 +101,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .transport(id: $0, action) }
     }
 
+    /// Several actions sent together (Start Selected and the like); one result each, in order.
+    func transport(_ actions: [TransportAction]) async -> [Result<OkBody, EngineError>] {
+        await client.sendAll(actions.map { action in { .transport(id: $0, action) } })
+    }
+
     func go(list: ModelID) async -> Result<OkBody, EngineError> { await transport(.go(list: list)) }
     func panic() async -> Result<OkBody, EngineError> { await transport(.panic) }
     func goFrom(list: ModelID, cue: ModelID) async -> Result<OkBody, EngineError> {

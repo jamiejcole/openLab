@@ -150,6 +150,36 @@ final class EngineClient: ObservableObject {
         }
     }
 
+    /// Sends every message, in order, before waiting for any `result` (cues the operator acts on
+    /// together must not start a round trip apart). One result per message, in the same order.
+    func sendAll(_ makes: [(UInt64) -> ClientMessage]) async -> [Result<OkBody, EngineError>] {
+        guard !makes.isEmpty else { return [] }
+        let batch = Batch(count: makes.count)
+        return await withCheckedContinuation { cont in
+            batch.cont = cont
+            for (i, make) in makes.enumerated() { submit(make, completion: { batch.set(i, $0) }) }
+        }
+    }
+
+    @MainActor private final class Batch {
+        var cont: CheckedContinuation<[Result<OkBody, EngineError>], Never>?
+        private var results: [Result<OkBody, EngineError>?]
+        private var left: Int
+        init(count: Int) {
+            results = Array(repeating: nil, count: count)
+            left = count
+        }
+        func set(_ i: Int, _ r: Result<OkBody, EngineError>) {
+            guard results.indices.contains(i), results[i] == nil else { return }
+            results[i] = r
+            left -= 1
+            if left == 0 {
+                cont?.resume(returning: results.map { $0 ?? .failure(.disconnected) })
+                cont = nil
+            }
+        }
+    }
+
     /// `goodbye`, flushed to the socket. No reply exists; a no-op when not connected.
     func goodbye(shutdown: Bool) async {
         guard state == .connected, let connection, let text = try? ClientMessage.goodbye(shutdown: shutdown).text()

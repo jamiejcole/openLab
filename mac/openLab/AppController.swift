@@ -366,23 +366,35 @@ final class AppController {
         case .playheadNext: if let list { await run(.playheadNext(list: list), on: store) }
         case .playheadPrevious: if let list { await run(.playheadPrevious(list: list), on: store) }
         case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
-        case .startSelected: for id in selected { await run(.start(cue: id), on: store) }
-        case .stopSelected: for id in selected { await run(.hardStop(cue: id), on: store) }
-        case .resetSelected: for id in selected { await run(.reset(cue: id), on: store) }
+        case .startSelected: await runAll(selected.map { .start(cue: $0) }, on: store)
+        case .stopSelected: await runAll(selected.map { .hardStop(cue: $0) }, on: store)
+        case .resetSelected: await runAll(selected.map { .reset(cue: $0) }, on: store)
         case .previewSelected:
             // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
-            for id in selected where store.model?.cue(id)?.kindType == "audio" {
-                await run(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id), on: store)
-            }
+            let audio = selected.filter { store.model?.cue($0)?.kindType == "audio" }
+            await runAll(
+                audio.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) }, on: store)
         case .pauseResumeSelected:
-            for id in selected {
+            let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {
-                case .paused?: await run(.resume(cue: id), on: store)
-                case .running?, .fading?, .preWaiting?, .postWaiting?: await run(.pause(cue: id), on: store)
-                default: break
+                case .paused?: return .resume(cue: id)
+                case .running?, .fading?, .preWaiting?, .postWaiting?: return .pause(cue: id)
+                default: return nil
                 }
             }
+            await runAll(actions, on: store)
         }
+    }
+
+    /// The selected cues act together: every action goes out before any result is awaited (one
+    /// round trip apart, cues meant to start as one would not). Each failure is logged; one beep.
+    private func runAll(_ actions: [TransportAction], on store: WorkspaceStore) async {
+        let failures = await store.transport(actions).compactMap { r -> EngineError? in
+            if case .failure(let e) = r { return e } else { return nil }
+        }
+        guard !failures.isEmpty else { return }
+        beep()
+        for e in failures { log(e, on: store) }
     }
 
     /// Esc: every workspace, by the engine's app-scope panic.

@@ -421,6 +421,30 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.start(cue: running)).count, 1)
     }
 
+    /// Start Selected on N cues sends all N before any result is back (not one round trip apart),
+    /// in selection order; a refused one is still reported on its own.
+    func testSelectedCuesAreSentTogetherNotOneRoundTripApart() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.cueList.select(wc.cueList.roots.map(\.id))
+        let selected = wc.cueList.selectedIDs()
+        XCTAssertGreaterThanOrEqual(selected.count, 2)
+        engine.holdResults = true
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let task = Task { await app.perform(.startSelected) }
+        await assertEventually { self.startedInOrder().count == selected.count }
+        XCTAssertEqual(startedInOrder(), selected, "every start out while no result has come back")
+        engine.holdResults = false
+        engine.releaseResults()
+        await task.value
+        XCTAssertEqual(beeps, 0)
+    }
+
+    private func startedInOrder() -> [ModelID] {
+        engine.received.compactMap { if case .transport(_, .start(let cue)) = $0 { return cue } else { return nil } }
+    }
+
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
         let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
         let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
