@@ -84,6 +84,12 @@ pub struct OscConfig {
     /// may ask: with a passcode that needs one that connected. More are closed at accept, with a
     /// (rate-limited) log entry.
     pub max_tcp_connections: usize,
+    /// Open TCP connections from one remote host (IP address). Past it the host's next
+    /// connection is closed at accept (logged, counted in `tcp_refused`) without asking the
+    /// actor to evict anyone, so one host, even one whose connections keep alive with
+    /// `/updates` or a message every minute, cannot hold every slot and lock out the other
+    /// consoles.
+    pub max_tcp_connections_per_host: usize,
     /// Requests to the control loop that have not been answered. Past it new inputs are dropped
     /// and counted: the actor never blocks, so this is what keeps a UDP flood from piling up in
     /// the control inbox. The default is above the 1024 inputs one datagram can make (a wildcard
@@ -120,6 +126,7 @@ impl Default for OscConfig {
             port: OSC_PORT,
             reply_port: OSC_REPLY_PORT,
             max_tcp_connections: 256,
+            max_tcp_connections_per_host: 16,
             max_inflight: 2048,
             write_timeout: Duration::from_secs(10),
             fail_udp_sends: 0,
@@ -414,6 +421,7 @@ async fn accept_loop(
     let slots = Arc::new(Semaphore::new(
         config.max_tcp_connections.min(Semaphore::MAX_PERMITS),
     ));
+    let hosts = Arc::new(HostSlots::default());
     let mut refusals = Refusals::new("OSC server", config.refusal_log_interval);
     let mut next_conn = 0u64;
     loop {
@@ -429,6 +437,20 @@ async fn accept_loop(
         let Ok((stream, from)) = accepted else {
             // A transient accept failure (descriptor exhaustion): do not spin.
             tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        // The host's own cap first: a host at it must not make the actor evict another's idle
+        // connection to make room for its next one.
+        let ip = from.ip().to_canonical();
+        let Some(host_slot) = hosts.try_take(ip, config.max_tcp_connections_per_host) else {
+            shared.tcp_refused.fetch_add(1, Ordering::Relaxed);
+            refusals.refused(
+                &inbox,
+                format!(
+                    "per-host connection limit ({}) reached by {ip}",
+                    config.max_tcp_connections_per_host
+                ),
+            );
             continue;
         };
         let slot = match slots.clone().try_acquire_owned() {
@@ -467,7 +489,55 @@ async fn accept_loop(
             )
             .await;
             drop(slot);
+            drop(host_slot);
         });
+    }
+}
+
+/// Open TCP connections per remote host, for `max_tcp_connections_per_host`.
+#[derive(Default)]
+struct HostSlots {
+    open: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl HostSlots {
+    /// One of `ip`'s `max` slots, or `None` if it holds them all. The slot is given back when
+    /// the returned guard is dropped.
+    fn try_take(self: &Arc<Self>, ip: IpAddr, max: usize) -> Option<HostSlot> {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = open.entry(ip).or_insert(0);
+        if *n >= max {
+            if *n == 0 {
+                open.remove(&ip);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(HostSlot {
+            hosts: self.clone(),
+            ip,
+        })
+    }
+}
+
+struct HostSlot {
+    hosts: Arc<HostSlots>,
+    ip: IpAddr,
+}
+
+impl Drop for HostSlot {
+    fn drop(&mut self) {
+        let mut open = self
+            .hosts
+            .open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = open.get_mut(&self.ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                open.remove(&self.ip);
+            }
+        }
     }
 }
 
@@ -1380,4 +1450,29 @@ fn update_message(workspace: &str, update: &Update) -> OscMessage {
 fn access_changed(old: &OscAccess, new: &OscAccess) -> bool {
     old.no_passcode != new.no_passcode
         || old.passcodes.iter().any(|row| !new.passcodes.contains(row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_host_at_its_connection_cap_does_not_take_another_hosts_slot() {
+        let hosts = Arc::new(HostSlots::default());
+        let a: IpAddr = Ipv4Addr::new(10, 0, 0, 1).into();
+        let b: IpAddr = Ipv4Addr::new(10, 0, 0, 2).into();
+        let held: Vec<_> = (0..2).filter_map(|_| hosts.try_take(a, 2)).collect();
+        assert_eq!(held.len(), 2);
+        assert!(
+            hosts.try_take(a, 2).is_none(),
+            "a third connection from one host"
+        );
+        let other = hosts.try_take(b, 2);
+        assert!(other.is_some(), "another host was refused");
+        // A closed connection gives its host's slot back, and an idle host leaves no entry.
+        drop(held);
+        assert!(hosts.try_take(a, 2).is_some());
+        drop(other);
+        assert_eq!(hosts.open.lock().unwrap().len(), 0);
+    }
 }
