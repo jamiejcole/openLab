@@ -320,10 +320,11 @@ fn a_removed_cues_lengths_are_withdrawn() {
     msgs.extend(s.take_outbound());
     assert_eq!(durations(&msgs), vec![unknown(1)]);
     assert_eq!(s.control().snapshot().media_durations.len(), 1);
-    // Undone, it is told again.
+    // Undone, it is told again, once the re-added cue's file is probed: the probe answers from
+    // a worker thread, so a block's tick may come before it.
     let request = s.request_id();
     let mut msgs = s.send(ClientMessage::Undo { id: request });
-    s.run(BLOCK);
+    s.settle_media();
     msgs.extend(s.take_outbound());
     assert_eq!(durations(&msgs), vec![lengths(1, 1.0, 1.0, Some(1.0))]);
 }
