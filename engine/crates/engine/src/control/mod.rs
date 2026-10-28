@@ -62,7 +62,9 @@ use openlab_core::{
     model_changes_indexed, seconds_to_samples,
 };
 
-pub use docs::{DocAnswer, DocHook, DocSource, EpochClock, Loaded, ManualClock, SaveHook};
+pub use docs::{
+    DocAnswer, DocHook, DocSource, EpochClock, FinalWrites, Loaded, ManualClock, SaveHook,
+};
 pub use inbox::{
     Inbox, OUTBOUND_CAPACITY, OutboundRx, OutboundTx, Outgoing, ProbeAnswer, ReplyRx, ReplyTx,
     outbound_channel, reply_channel,
@@ -104,6 +106,10 @@ pub const MAX_PRIMES: usize = 64;
 pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
 /// A document read stuck this long fails with `io` and its worker is replaced.
 pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long shutdown waits for the final recovery writes of the docs with unsaved changes
+/// (M4.15g): a whole-show serialisation on a slow machine plus a write to a slow disk, and
+/// short enough that a hung volume does not keep a quitting engine alive.
+pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 /// A probe worker stuck on one file this long is replaced.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Feedback rounds one input may cause before the loop stops following them (a safety net; the
@@ -184,6 +190,8 @@ pub struct ControlConfig {
     /// A document read that has not answered after this long fails with `io` and its worker is
     /// replaced (a stalled network volume), like [`Self::probe_timeout`].
     pub doc_timeout: Duration,
+    /// How long [`Control::shutdown`] waits for the final recovery writes ([`SHUTDOWN_WAIT`]).
+    pub shutdown_wait: Duration,
     /// How files are probed (tests inject a stand-in).
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
@@ -228,6 +236,7 @@ impl ControlConfig {
             save_hook: None,
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
+            shutdown_wait: SHUTDOWN_WAIT,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
@@ -499,9 +508,9 @@ struct Seen {
 
 impl Control {
     /// Builds the control state for `ws` around a mixer controller whose mixer is driven by
-    /// `backend`. Starts the disk workers and the probe workers (which answer on `inbox`), sends
-    /// the patches to the mixer and the cue engine, and probes every media file of the show.
-    /// `ws` is the first doc ([`DocId`] 0).
+    /// `backend`: [`Self::empty`] with `ws` installed as the first doc ([`DocId`] 0), its
+    /// patches sent to the mixer and the cue engine, and every media file of the show probed.
+    /// The engine itself starts empty (M4.15g); this is for tests and the offline driver.
     pub fn new(
         ws: Workspace,
         mixer: MixerController,
@@ -510,13 +519,63 @@ impl Control {
         inbox: Sender<Inbox>,
         outbound: OutboundTx,
     ) -> Result<Self, ControlError> {
-        let block = config.block_frames.max(1);
-        let engine_config = EngineConfig::new(config.sample_rate, block, config.seed)?;
-        let engine = CueEngine::new(engine_config);
-        let rate = engine.config().sample_rate();
-        let streamer = DiskStreamer::new(config.streamer).map_err(ControlError::Streamer)?;
         // The doc's from here on (a save-as moves it); the config keeps only engine settings.
         let show_path = config.show_path.take();
+        let mut control = Self::empty(mixer, backend, config, inbox, outbound)?;
+        let id = control.eng.take_doc_id().unwrap_or(DocId(0));
+        let show_dir = show_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from);
+        let media = MediaCatalog::new(
+            control.eng.pool.handle(id),
+            show_dir,
+            control.eng.config.preload_budget,
+        );
+        let engine = CueEngine::new(control.eng.engine_config(id)?);
+        let doc = Doc::new(&control.eng, id, ws, engine, show_path, media);
+        control.docs.push(doc);
+        control.eng.open_docs = control.docs.len();
+        // Before the doc's first reports: the app connections (and the OSC side, which follows
+        // the first doc) learn of the doc before anything about it.
+        control.publish_workspaces();
+        if let Some(doc) = control.docs.first_mut() {
+            let mut cx = DocCx {
+                eng: &mut control.eng,
+                doc,
+            };
+            let now = cx.now();
+            // A newly opened workspace: tell the engine, report the playheads
+            // (docs/cue-engine.md).
+            cx.doc.engine.model_changed();
+            cx.doc.media.sync(&cx.doc.ws);
+            let mut inputs = vec![Input::Tick];
+            inputs.extend(cx.sync_workspace(true));
+            for input in inputs {
+                cx.feed(input, now);
+            }
+        }
+        control.eng.mixer.pump();
+        Ok(control)
+    }
+
+    /// The control state with no doc open, as the engine starts (M4.15g; ARCHITECTURE §8): the
+    /// client opens what it wants (`new`, `open`, which offers recovery, `open_recovery`).
+    /// Starts the disk workers, the probe workers and the document worker (which answer on
+    /// `inbox`).
+    pub fn empty(
+        mixer: MixerController,
+        backend: Backend,
+        mut config: ControlConfig,
+        inbox: Sender<Inbox>,
+        outbound: OutboundTx,
+    ) -> Result<Self, ControlError> {
+        let block = config.block_frames.max(1);
+        let engine_config = EngineConfig::new(config.sample_rate, block, config.seed)?;
+        let rate = engine_config.sample_rate();
+        let streamer = DiskStreamer::new(config.streamer).map_err(ControlError::Streamer)?;
+        // Only a doc has a show path ([`Self::new`]).
+        config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;
         let watch = WatchShare::new(MediaWatch::new(&config.watch, inbox.clone())?);
         let mut pool = ProbePool::new(
@@ -585,7 +644,7 @@ impl Control {
             lookups: LookupThreads::default(),
             inbox,
             next_doc: 0,
-            open_docs: 1,
+            open_docs: 0,
             primes: std::collections::BTreeMap::new(),
             primes_changed: false,
             opened: Vec::new(),
@@ -619,37 +678,11 @@ impl Control {
         let cap = eng.mixer.voice_meter_capacity();
         eng.meter_ids = vec![VoiceId(0); cap];
         eng.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
-        let id = eng.take_doc_id().unwrap_or(DocId(0));
-        let show_dir = show_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(PathBuf::from);
-        let media = MediaCatalog::new(eng.pool.handle(id), show_dir, eng.config.preload_budget);
-        let doc = Doc::new(&eng, id, ws, engine, show_path, media);
         let mut control = Self {
             eng,
-            docs: vec![doc],
+            docs: Vec::new(),
             none,
         };
-        // Before the doc's first reports: the app connections (and the OSC side, which follows
-        // the first doc) learn of the doc before anything about it.
-        control.publish_workspaces();
-        if let Some(doc) = control.docs.first_mut() {
-            let mut cx = DocCx {
-                eng: &mut control.eng,
-                doc,
-            };
-            let now = cx.now();
-            // A newly opened workspace: tell the engine, report the playheads
-            // (docs/cue-engine.md).
-            cx.doc.engine.model_changed();
-            cx.doc.media.sync(&cx.doc.ws);
-            let mut inputs = vec![Input::Tick];
-            inputs.extend(cx.sync_workspace(true));
-            for input in inputs {
-                cx.feed(input, now);
-            }
-        }
         control.eng.mixer.pump();
         Ok(control)
     }
@@ -2906,8 +2939,10 @@ impl Control {
     }
 
     /// Stops the show for shutdown: a hard stop of everything in every doc, carried out by the
-    /// mixer. With no doc open, only the mixer's queue is pumped.
-    pub fn shutdown(&mut self) {
+    /// mixer; then a final recovery write of every doc with unsaved changes, waited for at most
+    /// [`ControlConfig::shutdown_wait`] (M4.15g, ARCHITECTURE §8). With no doc open, only the
+    /// mixer's queue is pumped.
+    pub fn shutdown(&mut self) -> FinalWrites {
         self.each_doc(|cx| {
             let now = cx.now();
             // A second panic within the fade is a hard stop (docs/cue-engine.md, Panic).
@@ -2916,6 +2951,8 @@ impl Control {
             cx.doc.voices.clear_primes();
         });
         self.eng.mixer.pump();
+        let wait = self.eng.config.shutdown_wait;
+        self.final_recovery_writes(wait)
     }
 
     /// App-scope Panic (Esc; ARCHITECTURE §6): every open doc panics, as a `panic` transport in

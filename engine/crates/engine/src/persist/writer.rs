@@ -22,7 +22,10 @@
 //!   already-saved state).
 //!
 //! Dropping the writer finishes the running job and any pending manual saves and discards
-//! pending autosaves, so shutdown never waits behind a backlog.
+//! pending autosaves, so shutdown never waits behind a backlog. It waits for that at most
+//! [`DROP_WAIT`]: a save stuck on a hung volume must not keep the engine process alive, so the
+//! thread is then left to end by itself (M4.15g). A final recovery write is queued and waited
+//! for before the drop (`Control::shutdown`).
 
 use std::collections::VecDeque;
 use std::io;
@@ -30,6 +33,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use openlab_core::{Workspace, WorkspaceId};
 
@@ -62,6 +66,9 @@ struct SaveJob {
 pub const MAX_PENDING_TARGETS: usize = 16;
 /// Hard cap on the write-through queue; see the module docs.
 pub const MAX_FORCED_TARGETS: usize = 32;
+/// How long dropping the writer waits for its thread to finish the running job and the pending
+/// manual saves.
+pub const DROP_WAIT: Duration = Duration::from_secs(5);
 
 struct AutosaveJob {
     workspace: Box<Workspace>,
@@ -118,6 +125,10 @@ type Hook = Box<dyn Fn(JobKind) + Send>;
 pub struct SaveWriter {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    /// Disconnected when the thread ends (its sender is dropped there), so the drop can wait
+    /// for it with a timeout.
+    ended: Receiver<()>,
+    drop_wait: Duration,
 }
 
 impl SaveWriter {
@@ -145,13 +156,24 @@ impl SaveWriter {
             wake: Condvar::new(),
         });
         let worker = Arc::clone(&shared);
+        let (ending, ended) = mpsc::channel::<()>();
         let thread = thread::Builder::new()
             .name("openlab-writer".into())
-            .spawn(move || run(&worker, &dirs, hook.as_deref()))?;
+            .spawn(move || {
+                let _ending = ending;
+                run(&worker, &dirs, hook.as_deref());
+            })?;
         Ok(Self {
             shared,
             thread: Some(thread),
+            ended,
+            drop_wait: DROP_WAIT,
         })
+    }
+
+    /// How long dropping the writer waits for its thread ([`DROP_WAIT`] by default).
+    pub fn set_drop_wait(&mut self, wait: Duration) {
+        self.drop_wait = wait;
     }
 
     /// Queues a manual save of `workspace` (a clone taken by the caller, so edits can go on),
@@ -388,7 +410,15 @@ impl Drop for SaveWriter {
     fn drop(&mut self) {
         self.shared.lock().closing = true;
         self.shared.wake.notify_one();
-        if let Some(thread) = self.thread.take() {
+        // `Disconnected` is the thread's end; a timeout leaves it running (detached), still
+        // writing what it has, and the process may exit under it.
+        let ended = matches!(
+            self.ended.recv_timeout(self.drop_wait),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        if let Some(thread) = self.thread.take()
+            && ended
+        {
             let _ = thread.join();
         }
     }

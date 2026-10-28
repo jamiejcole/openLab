@@ -104,6 +104,9 @@ off and leaves existing ones alone.
 
 - `autosave_due(dirty_since, last_autosave, now, interval)` says when to autosave; `interval` is the
   workspace's `autosave_interval`.
+- At shutdown (M4.15g) every workspace with unsaved changes gets a final recovery write, waited for
+  (bounded: docs/control.md "Documents"), so a quit or `SIGTERM` loses nothing an autosave interval
+  would have; the next launch's `open` offers it, and `scan_recovery` lists it.
 - `write_recovery` writes the bound recovery file atomically and never touches the show file.
   `clear_recovery` removes it (after a save or clean close).
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with

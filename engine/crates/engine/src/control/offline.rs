@@ -22,7 +22,7 @@ use openlab_core::{Hotkey, SampleTime, Workspace};
 
 use super::watch::{WatchAnswer, WatchBatch};
 use super::{
-    Backend, Control, ControlConfig, ControlError, DocId, DocSource, Flow, Inbox,
+    Backend, Control, ControlConfig, ControlError, DocId, DocSource, FinalWrites, Flow, Inbox,
     OUTBOUND_CAPACITY, OutboundRx, Outgoing, outbound_channel, reply_channel,
 };
 
@@ -71,12 +71,29 @@ impl OfflineShow {
         config: ControlConfig,
         capacity: usize,
     ) -> Result<Self, OfflineError> {
+        Self::build(Some(ws), mixer, config, capacity)
+    }
+
+    /// A show with no doc open, as the engine starts (M4.15g; [`Control::empty`]).
+    pub fn empty(mixer: MixerConfig, config: ControlConfig) -> Result<Self, OfflineError> {
+        Self::build(None, mixer, config, OUTBOUND_CAPACITY)
+    }
+
+    fn build(
+        ws: Option<Workspace>,
+        mixer: MixerConfig,
+        config: ControlConfig,
+        capacity: usize,
+    ) -> Result<Self, OfflineError> {
         let (ctl, mixer_rt) = Mixer::new(mixer).map_err(OfflineError::Mixer)?;
         let channels = mixer_rt.output_channels();
         let block = usize::try_from(config.block_frames.max(1)).unwrap_or(1);
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
         let (out_tx, outbound) = outbound_channel(capacity);
-        let control = Control::new(ws, ctl, Backend::Offline, config, inbox_tx.clone(), out_tx)?;
+        let control = match ws {
+            Some(ws) => Control::new(ws, ctl, Backend::Offline, config, inbox_tx.clone(), out_tx)?,
+            None => Control::empty(ctl, Backend::Offline, config, inbox_tx.clone(), out_tx)?,
+        };
         Ok(Self {
             control,
             renderer: OfflineRenderer::new(mixer_rt),
@@ -94,6 +111,13 @@ impl OfflineShow {
 
     pub fn control(&self) -> &Control {
         &self.control
+    }
+
+    /// Ends the show as the control thread does at shutdown ([`Control::shutdown`]: a hard stop
+    /// and the final recovery writes, waited for).
+    pub fn shutdown(&mut self) -> FinalWrites {
+        self.pump_inbox();
+        self.control.shutdown()
     }
 
     /// The scheduling time a message handled now gets (`rendered + one block`).
