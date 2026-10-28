@@ -175,6 +175,14 @@
 "inspector.hotkey.otherCue" = "Another cue already has that hotkey.";
 "inspector.hotkey.menu" = "That key belongs to a menu command.";
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
+"hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
+"hotkeys.warn.yields" = "%1$@ key: %2$@ is a cue hotkey in this show, so the cue keeps it and no key is bound.";
+"hotkeys.warn.shadowed" = "Cue hotkey %@ is a transport key in this workspace, so the cue does not fire from it.";
+"hotkeys.reason.reserved" = "the key is reserved";
+"hotkeys.reason.duplicate" = "it is the same key as %@";
+"hotkeys.reason.cueHotkey" = "it is the same key as a cue hotkey";
+"hotkeys.reason.menuKey" = "it is the same key as a menu command";
+"hotkeys.reason.unsupported" = "the key is not supported";
 "inspector.osc" = "OSC address";
 "inspector.osc.placeholder" = "/my/trigger";
 "inspector.invalid.osc" = "Enter an OSC address starting with /, with no spaces or wildcards.";

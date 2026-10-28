@@ -326,7 +326,7 @@ final class AppController {
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {
             _ = store.receive(
-                .log(.warn, "cue hotkey \(chord.display) is a transport key here: the cue will not fire from it"))
+                .log(.warn, String(format: loc("hotkeys.warn.shadowed"), chord.display)))
         }
         return keys
     }

@@ -476,11 +476,11 @@ final class CueHotkeyFiringTests: XCTestCase {
             await assertEventually { self.hotkeys().contains { $0.key == key && !$0.up } }
             XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .loadSelected))
             XCTAssertTrue(
-                first.logEntries.contains { $0.level == .warn && $0.message.contains("yields to a cue hotkey") })
+                first.logEntries.contains { $0.level == .warn && $0.message.contains("the cue keeps it") })
         }
-        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2, "once each")
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("the cue keeps it") }.count, 2, "once each")
         _ = app.frontKeys
-        XCTAssertEqual(first.logEntries.filter { $0.message.contains("yields to a cue hotkey") }.count, 2)
+        XCTAssertEqual(first.logEntries.filter { $0.message.contains("the cue keeps it") }.count, 2)
     }
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {
