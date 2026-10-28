@@ -51,7 +51,9 @@ step "clippy-windows" clippy_windows
 step "test-rust" make test-rust
 step "mac-build" make mac
 if [ "$want_ui" = 1 ]; then
-  step "test-mac-ui" make test-mac
+  # XCUITests drive the real screen: two at once (parallel agents) find each other's windows and fail.
+  # lockf waits for the other run to finish.
+  step "test-mac-ui" lockf -k /tmp/openlab-xcuitest.lock make test-mac
 elif [ "$want_mac_unit" = 1 ]; then
   step "test-mac-unit" mac_unit
 fi
