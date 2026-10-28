@@ -3,6 +3,12 @@
 //! The control thread (ARCHITECTURE §3.1, §3.2; docs/control.md): owns the workspace, its undo
 //! history, the cue engine and the mixer controller, and wires them to the disk streams.
 //!
+//! The state is split as ARCHITECTURE §3.1 assigns it: an `Engine` every workspace shares (mixer,
+//! device, disk streamer, voice-id and patch-slot allocators, machine settings, document worker,
+//! outbound channel, show log) and a `Doc` per open workspace (model, history, cue engine,
+//! voices, media catalog, file state). Per-doc work runs on a `DocCx` (one doc and the engine).
+//! One doc is open for now (M4.15d); several arrive with M4.15e.
+//!
 //! [`Control`] is the loop's state and logic, with no thread or clock of its own: time is the
 //! mixer's sample counter (`samples_rendered`), whether a device callback ([`runner::run`]) or
 //! the offline render driver ([`offline::OfflineShow`], tests) advances it. Both call the same
@@ -60,7 +66,7 @@ pub use netout::{Destination, LINK_QUEUE, NetAnswer, NetTransport, SystemTranspo
 use crate::persist::AppDirs;
 use checks::PlanChecks;
 use devices::{Device, DeviceAnswer, DeviceEvent};
-use docs::Docs;
+use docs::{DocFile, Docs};
 use inbox::{Outbound, reply};
 use media::MediaCatalog;
 use netout::{NetOut, SendOutcome};
@@ -133,7 +139,9 @@ pub struct ControlConfig {
     pub block_frames: u64,
     /// Seeds random groups and shuffled playlists ([`entropy_seed`] for a show).
     pub seed: u64,
-    /// The show file, if saved: relative media references resolve against its folder.
+    /// The first doc's show file, if saved: relative media references resolve against its
+    /// folder. Only the initial path: `Control::new` takes it into the doc, so it is `None`
+    /// in the engine's config afterwards.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
     /// False when `machine` is defaults standing in for a settings file that could not be read:
@@ -247,23 +255,22 @@ pub enum Flow {
     Shutdown,
 }
 
-/// The control loop's state. See the module docs and docs/control.md.
+/// The control loop's state: the [`Engine`] every workspace shares and the open [`Doc`]s
+/// (ARCHITECTURE §1, §3.1). Exactly one doc for now; several arrive with M4.15e. See the module
+/// docs and docs/control.md.
 pub struct Control {
-    ws: Workspace,
-    history: History,
-    engine: CueEngine,
+    eng: Engine,
+    doc: Doc,
+}
+
+/// What every open workspace shares (ARCHITECTURE §3.1, §3.5): the mixer and its clock, the
+/// device, the disk streamer, the voice-id and patch-slot allocators, the machine settings,
+/// the document worker and the save writer, the outbound channel, the show log and status.
+struct Engine {
     mixer: MixerController,
     streamer: DiskStreamer,
-    media: MediaCatalog,
-    /// Network cues' output and the look-ups of their hosts (CT-30, PB-10, NFR-07).
-    net: NetOut,
-    watch: MediaWatch,
-    /// Watch batches taken from the inbox, handled at the next tick.
-    watch_batches: Vec<WatchBatch>,
-    voices: Voices,
     /// Mixer voice ids: engine-wide, never reused (shared by every workspace with M4.15).
     voice_ids: VoiceIds,
-    checks: PlanChecks,
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
     playable: Vec<DeviceInfo>,
@@ -275,6 +282,7 @@ pub struct Control {
     /// The unwritable-settings warning went out.
     unwritable_warned: bool,
     out: Outbound,
+    /// The document worker (one read at a time, engine-wide) and the save writer.
     docs: Docs,
     backend: Backend,
     config: ControlConfig,
@@ -289,6 +297,36 @@ pub struct Control {
     last_tick_rendered: SampleTime,
     last_tick_stalled: bool,
     cue_outputs: usize,
+    seen: Seen,
+    last_meters: Option<SampleTime>,
+    /// Rendered sample of the previous voice-meter read (reconciliation).
+    last_meter_read: Option<SampleTime>,
+    out_peaks: Vec<f32>,
+    meter_ids: Vec<VoiceId>,
+    meter_peaks: Vec<f32>,
+    /// Show-log and status bookkeeping (`observe.rs`).
+    observe: Observe,
+}
+
+/// One open workspace (ARCHITECTURE §3.1): its model, undo history, cue engine, voices, media
+/// catalog, plan checks, network output, media watch, file state (path, saves, autosave) and
+/// what its clients have been told (revision, runtime sequence, warnings).
+struct Doc {
+    ws: Workspace,
+    history: History,
+    engine: CueEngine,
+    media: MediaCatalog,
+    /// Network cues' output and the look-ups of their hosts (CT-30, PB-10, NFR-07).
+    net: NetOut,
+    watch: MediaWatch,
+    /// Watch batches taken from the inbox, handled at the next tick.
+    watch_batches: Vec<WatchBatch>,
+    voices: Voices,
+    checks: PlanChecks,
+    /// The show file, if saved: relative media references resolve against its folder.
+    show_path: Option<PathBuf>,
+    /// Saves, autosave and load notices of this workspace.
+    file: DocFile,
     revision: u64,
     saved_revision: u64,
     runtime_seq: u64,
@@ -307,17 +345,8 @@ pub struct Control {
     /// again once there is room.
     resend_document: bool,
     resend_warnings: bool,
-    seen: Seen,
     last_progress: Option<SampleTime>,
-    last_meters: Option<SampleTime>,
     meters_live: bool,
-    /// Rendered sample of the previous voice-meter read (reconciliation).
-    last_meter_read: Option<SampleTime>,
-    out_peaks: Vec<f32>,
-    meter_ids: Vec<VoiceId>,
-    meter_peaks: Vec<f32>,
-    /// Show-log and status bookkeeping (`observe.rs`).
-    observe: Observe,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -339,7 +368,7 @@ impl Control {
         ws: Workspace,
         mixer: MixerController,
         backend: Backend,
-        config: ControlConfig,
+        mut config: ControlConfig,
         inbox: Sender<Inbox>,
         outbound: OutboundTx,
     ) -> Result<Self, ControlError> {
@@ -352,6 +381,8 @@ impl Control {
             .as_ref()
             .and_then(|p| p.parent())
             .map(PathBuf::from);
+        // The doc's from here on (a save-as moves it); the config keeps only engine settings.
+        let show_path = config.show_path.take();
         let net = NetOut::new(config.net.clone(), inbox.clone(), config.sample_rate);
         let docs = Docs::new(&config, inbox.clone())?;
         let watch = MediaWatch::new(&config.watch, inbox.clone())?;
@@ -382,19 +413,37 @@ impl Control {
             None => (None, None),
         };
         let observe = Observe::new(&config);
-        let mut control = Self {
+        let doc = Doc {
             ws,
             history: History::new(),
             engine,
-            mixer,
-            streamer,
             media,
             net,
             watch,
             watch_batches: Vec::new(),
             voices: Voices::new(),
-            voice_ids: VoiceIds::new(),
             checks: PlanChecks::default(),
+            show_path,
+            file: DocFile::new(),
+            revision: 0,
+            saved_revision: 0,
+            runtime_seq: 0,
+            deferred: Vec::new(),
+            pending_media: Vec::new(),
+            ready_media: Vec::new(),
+            primes_dirty: true,
+            warnings_dirty: true,
+            warnings: Vec::new(),
+            model_change_walks: 0,
+            resend_document: false,
+            resend_warnings: false,
+            last_progress: None,
+            meters_live: false,
+        };
+        let eng = Engine {
+            mixer,
+            streamer,
+            voice_ids: VoiceIds::new(),
             patches,
             playable,
             settings_writer,
@@ -410,30 +459,18 @@ impl Control {
             last_tick_rendered: 0,
             last_tick_stalled: false,
             cue_outputs,
-            revision: 0,
-            saved_revision: 0,
-            runtime_seq: 0,
-            deferred: Vec::new(),
-            pending_media: Vec::new(),
-            ready_media: Vec::new(),
-            primes_dirty: true,
-            warnings_dirty: true,
-            warnings: Vec::new(),
-            model_change_walks: 0,
-            resend_document: false,
-            resend_warnings: false,
             seen: Seen::default(),
-            last_progress: None,
             last_meters: None,
-            meters_live: false,
             last_meter_read: None,
             out_peaks: vec![0.0; cue_outputs],
             meter_ids: Vec::new(),
             meter_peaks: Vec::new(),
             observe,
         };
+        let mut control = Self { eng, doc };
+        let mut cx = control.cx();
         if let Some(e) = writer_error {
-            control.record(
+            cx.record(
                 LogKind::Engine,
                 LogLevel::Warn,
                 format!(
@@ -443,7 +480,7 @@ impl Control {
                 None,
             );
         }
-        control.record(
+        cx.record(
             LogKind::Engine,
             LogLevel::Info,
             format!(
@@ -455,22 +492,109 @@ impl Control {
             None,
             None,
         );
-        let cap = control.mixer.voice_meter_capacity();
-        control.meter_ids = vec![VoiceId(0); cap];
-        control.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
-        let now = control.now();
+        let cap = cx.eng.mixer.voice_meter_capacity();
+        cx.eng.meter_ids = vec![VoiceId(0); cap];
+        cx.eng.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
+        let now = cx.now();
         // A newly opened workspace: tell the engine, report the playheads (docs/cue-engine.md).
-        control.engine.model_changed();
-        control.media.sync(&control.ws);
+        cx.doc.engine.model_changed();
+        cx.doc.media.sync(&cx.doc.ws);
         let mut inputs = vec![Input::Tick];
-        inputs.extend(control.sync_workspace(true));
+        inputs.extend(cx.sync_workspace(true));
         for input in inputs {
-            control.feed(input, now);
+            cx.feed(input, now);
         }
-        control.mixer.pump();
+        control.eng.mixer.pump();
         Ok(control)
     }
 
+    /// The one open doc with the engine it plays on. Engine-wide work that acts on the docs
+    /// (device loss and return, health, status, shutdown) runs through it too until there are
+    /// several docs (M4.15e).
+    fn cx(&mut self) -> DocCx<'_> {
+        DocCx {
+            eng: &mut self.eng,
+            doc: &mut self.doc,
+        }
+    }
+
+    /// The open docs, in open order.
+    fn open_docs(&self) -> impl Iterator<Item = &Doc> {
+        std::iter::once(&self.doc)
+    }
+
+    /// Handles one inbox message.
+    pub fn handle(&mut self, msg: Inbox) -> Flow {
+        let mut cx = self.cx();
+        match msg {
+            Inbox::Client { message, reply } => return cx.client(message, &reply),
+            Inbox::Probe(answer) => cx.probe_answer(answer),
+            Inbox::Device(answer) => cx.device_answer(answer),
+            Inbox::Net(answer) => cx.net_answer(answer),
+            Inbox::Doc(answer) => cx.doc_answer(answer),
+            Inbox::Watch(WatchAnswer::Batch(batch)) => cx.doc.watch_batches.push(batch),
+            Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
+                cx.doc.watch.answered(&bucket, healthy);
+            }
+            Inbox::Log { level, message } => cx.log(level, message),
+            Inbox::Trigger { source, detail } => cx.observe_trigger(source, detail),
+            Inbox::Shutdown => return Flow::Shutdown,
+        }
+        Flow::Continue
+    }
+
+    /// One wake of the loop: the device, then each doc ([`DocCx::tick`]: feedback from the
+    /// mixer, the streams and the probes, due deadlines, priming, reports, saves), then the
+    /// engine's own reports and `pump` (ARCHITECTURE §3.1, §3.2; docs/audio.md: every tick).
+    pub fn tick(&mut self) {
+        let rendered = self.eng.mixer.samples_rendered();
+        self.eng.last_tick_stalled = rendered == self.eng.last_tick_rendered;
+        self.eng.last_tick_rendered = rendered;
+        // M4.15e: device loss and return act on every doc (seams note (f)).
+        self.cx().poll_device();
+        let eng = &mut self.eng;
+        for doc in std::iter::once(&mut self.doc) {
+            DocCx {
+                eng: &mut *eng,
+                doc,
+            }
+            .tick();
+        }
+        // M4.15e: engine-wide steps run through the one doc (seams note (f)).
+        let mut cx = self.cx();
+        cx.settings_tick();
+        cx.health();
+        cx.observe_tick();
+        self.eng.mixer.pump();
+    }
+
+    /// How long the loop may wait for the inbox before it must tick again: the shortest wait
+    /// any doc asks for ([`Doc::wait`]), at most [`MAX_WAIT`].
+    pub fn wait_hint(&self) -> Duration {
+        // Nothing becomes due by waiting while sample time stands still.
+        if self.eng.backend.is_down() {
+            return MAX_WAIT;
+        }
+        let wait = self
+            .open_docs()
+            .map(|doc| doc.wait(&self.eng))
+            .min()
+            .unwrap_or(MAX_WAIT);
+        // A deadline enters the window only when sample time moves, and it moves in whole
+        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
+        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
+        // would spin. The floor is a quarter block at most, so a small device block cannot
+        // slip past the window. The first wake after a tick that saw progress is not floored,
+        // and a message ends any wait at once.
+        if self.eng.last_tick_stalled {
+            wait.max(stall_floor(self.eng.block, self.eng.rate.get()))
+        } else {
+            wait
+        }
+    }
+}
+
+impl Engine {
     /// The scheduling time: the earliest sample a command can still hit.
     fn now(&self) -> SampleTime {
         self.mixer
@@ -478,1070 +602,25 @@ impl Control {
             .saturating_add(self.block)
             .max(self.now_floor)
     }
+}
 
-    /// Handles one inbox message.
-    pub fn handle(&mut self, msg: Inbox) -> Flow {
-        match msg {
-            Inbox::Client { message, reply } => return self.client(message, &reply),
-            Inbox::Probe(answer) => self.probe_answer(answer),
-            Inbox::Device(answer) => self.device_answer(answer),
-            Inbox::Net(answer) => self.net_answer(answer),
-            Inbox::Doc(answer) => self.doc_answer(answer),
-            Inbox::Watch(WatchAnswer::Batch(batch)) => self.watch_batches.push(batch),
-            Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
-                self.watch.answered(&bucket, healthy);
-            }
-            Inbox::Log { level, message } => self.log(level, message),
-            Inbox::Trigger { source, detail } => self.observe_trigger(source, detail),
-            Inbox::Shutdown => return Flow::Shutdown,
-        }
-        Flow::Continue
-    }
-
-    /// One wake of the loop: feedback from the mixer, the streams and the probes, due
-    /// deadlines, priming, reports, then `pump` (ARCHITECTURE §3.2; docs/audio.md: every tick).
-    pub fn tick(&mut self) {
-        let rendered = self.mixer.samples_rendered();
-        self.last_tick_stalled = rendered == self.last_tick_rendered;
-        self.last_tick_rendered = rendered;
-        self.poll_device();
-        let now = self.now();
-        self.watch_events();
-        self.flush_media(now);
-        let mut fx = Effects::default();
-        while let Some(e) = self.mixer.poll_event() {
-            self.voices.event(e, &mut fx);
-        }
-        self.voices.poll_streams(&mut fx, &self.ws);
-        let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.rate);
-        self.voices.expire_held(now, hold, &mut fx);
-        self.follow(fx, now);
-        self.reclaim_slots(now);
-        let stuck = self.media.watchdog();
-        if !stuck.is_empty() {
-            self.log(
-                LogLevel::Error,
-                format!(
-                    "{} media probe(s) stuck; workers replaced ({} so far)",
-                    stuck.len(),
-                    self.media.abandoned_workers()
-                ),
-            );
-            self.pending_media.extend(stuck);
-        }
-        for (volume, stalled) in self.media.take_volume_events() {
-            // Not a "does not answer" warning: that notice is the media watch's alone.
-            let message = if stalled {
-                format!(
-                    "probes of volume \"{volume}\" are held back: two files did not answer in \
-                     time; one is tried at a time"
-                )
-            } else {
-                format!("probes of volume \"{volume}\" run again: it answered")
-            };
-            self.log(LogLevel::Info, message);
-        }
-        if self.media.take_limit_reached() {
-            self.log(
-                LogLevel::Error,
-                format!(
-                    "{} probe workers were stuck and replaced; no more are replaced, so further \
-                     stuck probes wait (their starts fail after the hold limit)",
-                    media::MAX_ABANDONED_WORKERS
-                ),
-            );
-        }
-        let reports = self.net.tick(now);
-        self.network_reports(reports, now);
-        self.note_lookup_limit();
-        self.supervise_watch();
-        self.deliver_deferred(now);
-        if self.engine.is_due(now) {
-            self.feed(Input::Tick, now);
-        }
-        if self.primes_dirty {
-            self.primes_dirty = false;
-            self.prime(now);
-        }
-        self.reports();
-        if self.warnings_dirty {
-            self.warnings_dirty = false;
-            self.refresh_warnings();
-        }
-        self.docs_tick();
-        self.settings_tick();
-        self.health();
-        self.observe_tick();
-        self.mixer.pump();
-    }
-
-    /// A retired patch slot whose last voice has left is freed (zeroed), and a patch waiting
-    /// for a slot gets it (docs/control.md "Patch slots").
-    fn reclaim_slots(&mut self, now: SampleTime) {
-        if !self.patches.has_retired() || !self.patches.reclaimable(&self.voices.slots_in_use()) {
-            return;
-        }
-        for input in self.sync_patches(false) {
-            self.feed(input, now);
-        }
-    }
-
-    /// How long the loop may wait for the inbox before it must tick again: until the next
-    /// deadline enters the lookahead window, a deferred report becomes due, or [`MAX_WAIT`].
-    pub fn wait_hint(&self) -> Duration {
-        // Nothing becomes due by waiting while sample time stands still.
-        if self.backend.is_down() {
-            return MAX_WAIT;
-        }
+impl Doc {
+    /// How long this doc lets the loop wait: until its next deadline enters the lookahead
+    /// window or a deferred report of it becomes due, at most [`MAX_WAIT`].
+    fn wait(&self, eng: &Engine) -> Duration {
         let frames = wake_frames(
             self.engine.next_deadline(),
             self.deferred.iter().map(|(at, _)| *at),
-            self.mixer.samples_rendered(),
-            self.block,
+            eng.mixer.samples_rendered(),
+            eng.block,
         );
-        let secs = frames as f64 / f64::from(self.rate.get());
-        let wait = Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()));
-        // A deadline enters the window only when sample time moves, and it moves in whole
-        // blocks. Whenever the last tick saw it standing still (a stalled device, up to the
-        // watchdog limit, but also the wake between two ordinary callbacks), waking sooner
-        // would spin. The floor is a quarter block at most, so a small device block cannot
-        // slip past the window. The first wake after a tick that saw progress is not floored,
-        // and a message ends any wait at once.
-        if self.last_tick_stalled {
-            wait.max(stall_floor(self.block, self.rate.get()))
-        } else {
-            wait
-        }
-    }
-
-    fn client(&mut self, message: ClientMessage, to: &ReplyTx) -> Flow {
-        let now = self.now();
-        match message {
-            ClientMessage::Transport { id, action } => {
-                let scope = orphan_scope(&action);
-                let panic = matches!(action, TransportAction::Panic);
-                self.observe_transport(&action);
-                self.feed(transport_input(action), now);
-                // During an outage a panic fade could only play once the device is back, so
-                // it stops everything at once: a second Panic within the fade is a hard stop
-                // (unless this one already was).
-                if panic && self.backend.is_down() && self.engine.panic_end().is_some() {
-                    self.feed(Input::Panic, now);
-                }
-                if let Some(scope) = scope {
-                    self.silence_orphans(scope, now);
-                }
-                reply(to, ok(id, None));
-            }
-            ClientMessage::Command {
-                id,
-                command,
-                coalesce,
-            } => {
-                if coalesce
-                    .as_ref()
-                    .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
-                {
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(ErrorBody::new(
-                                ErrorCode::BadRequest,
-                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
-                            )),
-                        },
-                    );
-                    return Flow::Continue;
-                }
-                let footprint = command.footprint();
-                match self
-                    .history
-                    .execute_coalescing(&mut self.ws, *command, coalesce.as_deref())
-                {
-                    Ok(changed) => {
-                        // An empty transaction, or an edit that sets what is already there,
-                        // changed nothing and is no undo step: no revision, no
-                        // `model_changed`, not dirty.
-                        if changed {
-                            self.edited(now, &footprint);
-                        }
-                        reply(to, ok(id, Some(self.revision)));
-                    }
-                    Err(e) => reply(to, refused(id, &e)),
-                }
-            }
-            ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
-                let undo = matches!(message, ClientMessage::Undo { .. });
-                // The step about to be applied says what it changes.
-                let footprint = if undo {
-                    self.history.peek_undo()
-                } else {
-                    self.history.peek_redo()
-                }
-                .map(Command::footprint)
-                .unwrap_or_default();
-                let result = if undo {
-                    self.history.undo(&mut self.ws)
-                } else {
-                    self.history.redo(&mut self.ws)
-                };
-                match result {
-                    Ok(true) => {
-                        self.edited(now, &footprint);
-                        reply(to, ok(id, Some(self.revision)));
-                    }
-                    Ok(false) => reply(to, ok(id, None)),
-                    Err(e) => reply(to, refused(id, &e)),
-                }
-            }
-            ClientMessage::Request { id, request } => match request {
-                Request::Snapshot => {
-                    reply(
-                        to,
-                        ServerMessage::Snapshot {
-                            snapshot: Box::new(self.snapshot()),
-                        },
-                    );
-                    reply(to, ok(id, None));
-                }
-                Request::ListDevices => reply(
-                    to,
-                    ServerMessage::Result {
-                        id,
-                        outcome: Outcome::Ok(OkBody {
-                            revision: None,
-                            data: Some(ResultData::Devices {
-                                devices: self.device_list(),
-                            }),
-                        }),
-                    },
-                ),
-                Request::PreshowCheck => {
-                    let report = self.preshow_report();
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Ok(OkBody {
-                                revision: None,
-                                data: Some(ResultData::PreshowCheck(Box::new(report))),
-                            }),
-                        },
-                    );
-                }
-                Request::LogTail { max } => {
-                    let (entries, dropped, seq) = self.log_tail(max);
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Ok(OkBody {
-                                revision: None,
-                                data: Some(ResultData::LogTail {
-                                    entries,
-                                    dropped,
-                                    seq,
-                                }),
-                            }),
-                        },
-                    );
-                }
-                Request::SetOutputOverrides { network_disabled } => {
-                    if self.net.disabled() != network_disabled {
-                        self.net.set_disabled(network_disabled);
-                        let text = if network_disabled {
-                            "network output disabled: Network cues send nothing"
-                        } else {
-                            "network output enabled"
-                        };
-                        self.log(LogLevel::Warn, text.to_owned());
-                    }
-                    reply(to, ok(id, None));
-                }
-                Request::Relink { .. } => reply(
-                    to,
-                    ServerMessage::Result {
-                        id,
-                        outcome: Outcome::Error(ErrorBody::new(
-                            ErrorCode::Unsupported,
-                            format!("{} is not available yet", request_name(&request)),
-                        )),
-                    },
-                ),
-                request => self.doc_request(id, request, to),
-            },
-            ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
-            // The network layer handles the handshake and closing (M4.3).
-            ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
-        }
-        Flow::Continue
-    }
-
-    /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
-    /// longer than the action's known length, after the engine completed the action on its
-    /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
-    /// Panic, a hard stop or a reset would leave it sounding.
-    fn silence_orphans(&mut self, scope: Scope, now: SampleTime) {
-        let engine = &self.engine;
-        let owned = |cue: CueId, run: openlab_core::RunId| {
-            engine.run_of(cue) == Some(run)
-                && matches!(
-                    engine.state(cue),
-                    CueState::Running | CueState::Paused | CueState::Fading | CueState::Stopping
-                )
-        };
-        let in_scope = |cue: CueId| match scope {
-            Scope::All => true,
-            Scope::Cue(root) => {
-                root == cue
-                    || self
-                        .ws
-                        .find_cue(root)
-                        .is_some_and(|r| visit_any(r.children(), cue))
-            }
-        };
-        let orphans = self
-            .voices
-            .orphans(|cue, run| in_scope(cue) && !owned(cue, run));
-        if orphans.is_empty() {
-            return;
-        }
-        // A Panic fades them out with everything else, ending on the panic's end; otherwise
-        // (or past it) they are cut at once.
-        let fade = match (scope, self.engine.panic_end()) {
-            (Scope::All, Some(end)) if end > now => {
-                openlab_audio::Fade::new(end - now, voices::to_curve(openlab_core::PANIC_CURVE))
-            }
-            _ => openlab_audio::Fade::NONE,
-        };
-        let floor = self.stop_floor();
-        let commands = orphans
-            .into_iter()
-            .map(|voice| {
-                let at = self.voices.stop_date(voice, now, floor);
-                (at, CommandKind::StopVoice { voice, fade })
-            })
-            .collect();
-        self.send_commands(commands);
-    }
-
-    /// A command, undo or redo changed the workspace.
-    fn edited(&mut self, now: SampleTime, footprint: &Footprint) {
-        let inputs = self.model_changed(footprint);
-        self.document();
-        for input in inputs {
-            self.feed(input, now);
-        }
-        // Follow the edit at once: a deleted running cue stops now, not at the next deadline.
-        self.feed(Input::Tick, now);
-    }
-
-    /// Signals a workspace change to the engine (before its next `handle`, M4.2 contract) and
-    /// the clients (one `model_changed` for `footprint`'s cues, M4.1a), and follows it on the
-    /// audio side. Returns the inputs that must follow (patch resolutions).
-    /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
-    /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
-    fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        // Lists, patches and settings decide which cues are broken and where the playheads are:
-        // the cue-scoped shortcut is only for edits that touched cues alone.
-        if footprint.is_model_wide() {
-            self.engine.model_changed();
-        } else {
-            self.engine.model_changed_cues(footprint);
-        }
-        self.revision += 1;
-        // The catalog's cue index follows the edit first; the changes are read through it, at
-        // the cost of the edit's cues (M4.12c). The walk is the fallback.
-        self.media.sync_cues(&self.ws, footprint);
-        let (upserts, deletes) = model_changes_indexed(&self.ws, footprint, self.media.index())
-            .unwrap_or_else(|| {
-                self.model_change_walks += 1;
-                model_changes(&self.ws, footprint)
-            });
-        self.out.send(ServerMessage::ModelChanged {
-            revision: self.revision,
-            upserts,
-            deletes,
-        });
-        self.sync_workspace(false)
-    }
-
-    /// Brings patches and primes in line with the workspace (the media catalog is followed by
-    /// the caller: whole for a newly opened workspace, from the footprint for an edit). `all`
-    /// reports every patch resolution (a newly opened workspace), else only changes.
-    fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
-        self.primes_dirty = true;
-        let mut inputs = self.sync_patches(all);
-        let now = self.now();
-        let reports = self.net.sync(&self.ws.network_patches, all, now);
-        if !reports.is_empty() {
-            inputs.push(Input::NetworkAvailability { patches: reports });
-        }
-        inputs
-    }
-
-    /// Resolves the patches against the playable devices and brings the mixer's matrices (with
-    /// the workspace master folded in) and output delays up to date. Returns the
-    /// `Availability` for the patches whose resolution changed (`all`: every patch).
-    fn sync_patches(&mut self, all: bool) -> Vec<Input> {
-        self.map_unmapped_patches();
-        let busy = self.voices.slots_in_use();
-        let (cmds, changed) =
-            self.patches
-                .sync(&self.ws, &self.config.machine, &self.playable, &busy);
-        let now = self.now();
-        // One batch (split only past the queue's size), so a master move changes every patch
-        // on the same sample.
-        self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
-        self.warnings_dirty = true;
-        let patches = if all {
-            self.patches.resolutions()
-        } else {
-            changed
-        };
-        if patches.is_empty() {
-            Vec::new()
-        } else {
-            vec![Input::Availability {
-                media: Vec::new(),
-                patches,
-            }]
-        }
-    }
-
-    /// While the device is down, voice stops are dated on the first sample the mixer renders
-    /// when it is back (sample time stands still meanwhile, and `now` is one block past it):
-    /// a stopped voice must not play one more block after the outage.
-    fn stop_floor(&self) -> Option<SampleTime> {
-        self.backend
-            .is_down()
-            .then(|| self.mixer.samples_rendered())
-    }
-
-    fn poll_device(&mut self) {
-        let events = match &mut self.backend {
-            Backend::Device(d) => d.poll(),
-            Backend::Offline => return,
-        };
-        self.device_events(events);
-    }
-
-    fn device_answer(&mut self, answer: DeviceAnswer) {
-        let events = match &mut self.backend {
-            Backend::Device(d) => d.answer(answer),
-            Backend::Offline => return,
-        };
-        self.device_events(events);
-    }
-
-    /// The device policy (docs/control.md "Devices", PROGRESS M4.2g).
-    fn device_events(&mut self, events: Vec<DeviceEvent>) {
-        let name = self
-            .backend
-            .device()
-            .map(|d| d.info().name.clone())
-            .unwrap_or_default();
-        for event in events {
-            match event {
-                DeviceEvent::Lost { why } => self.device_lost(&name, &why),
-                DeviceEvent::Restored => self.device_restored(&name),
-                // Patches resolve against the device the mixer plays on, so a change in the
-                // list changes them only through a loss or a reopen; resolving again is cheap.
-                DeviceEvent::ListChanged => {
-                    let now = self.now();
-                    for input in self.sync_patches(false) {
-                        self.feed(input, now);
-                    }
-                }
-                DeviceEvent::OpenFailed {
-                    attempt,
-                    error,
-                    retry_in,
-                } => self.log_device(
-                    LogLevel::Warn,
-                    format!(
-                        "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
-                         next in {:.2} s",
-                        retry_in.as_secs_f64()
-                    ),
-                ),
-                DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
-                DeviceEvent::Stalled { ms, log } => {
-                    if let Some(earlier) = log {
-                        let more = if earlier > 0 {
-                            format!(" ({earlier} more stall(s) since the last notice)")
-                        } else {
-                            String::new()
-                        };
-                        self.log_device(
-                            LogLevel::Warn,
-                            format!(
-                                "audio device \"{name}\": no audio callback for {ms} ms; the \
-                                 device is treated as lost if it stays silent{more}"
-                            ),
-                        );
-                    }
-                    self.warnings_dirty = true;
-                }
-                DeviceEvent::StallCleared { log } => {
-                    if log {
-                        self.log_device(
-                            LogLevel::Info,
-                            format!("audio device \"{name}\": audio callbacks resumed"),
-                        );
-                    }
-                    self.warnings_dirty = true;
-                }
-                DeviceEvent::Unrecoverable { why } => {
-                    self.log_device(
-                        LogLevel::Error,
-                        format!("audio device \"{name}\": {why}: restart openLab to play sound"),
-                    );
-                    self.warnings_dirty = true;
-                }
-                DeviceEvent::Unstuck => {
-                    self.log_device(
-                        LogLevel::Info,
-                        format!("audio device \"{name}\": the device thread answers again"),
-                    );
-                    self.warnings_dirty = true;
-                }
-                DeviceEvent::ListStuck => {
-                    self.log_device(
-                        LogLevel::Error,
-                        "reading the output device list does not finish: hot-plug is not \
-                         followed until it does"
-                            .to_owned(),
-                    );
-                    self.warnings_dirty = true;
-                }
-            }
-        }
-    }
-
-    /// The device went away (M4.2g, as QLab 5): the patches on it are reported missing (loaded
-    /// cues on them unload, starts are refused as broken, idle cues show broken), every run
-    /// with a voice on it ends at once with `ActionFailed { device_lost }` (hard stop, no
-    /// fade; the voice and its stream are released, auto-follow never fires), and every voice
-    /// the mixer holds is stopped, so nothing sounds, or resumes, when the device returns.
-    fn device_lost(&mut self, name: &str, why: &str) {
-        let now = self.now();
-        self.playable.clear();
-        for input in self.sync_patches(false) {
-            self.feed(input, now);
-        }
-        let mut runs = self.voices.on_device();
-        // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
-        // the device too: nothing scheduled before the outage may start by itself after it.
-        // They end as device_lost breaks; `Input::DeviceLost` below stops all the others.
-        for (cue, state) in self.engine.cue_states() {
-            if matches!(
-                state,
-                CueState::PreWaiting
-                    | CueState::Running
-                    | CueState::Paused
-                    | CueState::PostWaiting
-                    | CueState::Fading
-                    | CueState::Stopping
-            ) && let Some(run) = self.engine.run_of(cue)
-                && matches!(
-                    self.ws.find_cue(cue).map(|c| &c.kind),
-                    Some(CueKind::Audio { .. })
-                )
-                && !runs.contains(&(cue, run))
-            {
-                runs.push((cue, run));
-            }
-        }
-        runs.sort();
-        let failed = runs.len();
-        for (cue, run) in runs {
-            self.feed(
-                Input::ActionFailed {
-                    cue,
-                    run,
-                    reason: BrokenReason::DeviceLost,
-                },
-                now,
-            );
-        }
-        // Nothing else scheduled before the loss may fire after the return: every other active
-        // run (memo, Wait, control, Fade, group; broken runs with a pending continue) stops.
-        self.feed(Input::DeviceLost, now);
-        // Orphaned tails and anything the engine no longer owns. Dated on the first sample the
-        // mixer renders after the outage (`stop_floor`), so a voice plays nothing more.
-        let floor = self.stop_floor();
-        let commands = self
-            .voices
-            .playing_ids()
-            .into_iter()
-            .map(|voice| {
-                let at = self.voices.stop_date(voice, now, floor);
-                let fade = openlab_audio::Fade::NONE;
-                (at, CommandKind::StopVoice { voice, fade })
-            })
-            .collect();
-        self.send_commands(commands);
-        let message = format!(
-            "audio device \"{name}\" lost ({why}): {failed} cue(s) playing on it stopped; \
-             they start again from the beginning with GO once the device is back"
-        );
-        self.log_device(LogLevel::Error, message.clone());
-        self.runtime(vec![RuntimeChange::Warning {
-            warning: notice("device_lost", message, None),
-        }]);
-        self.warnings_dirty = true;
-    }
-
-    /// The stream was reopened: patches resolve against the device again (cues that
-    /// failed with `device_lost`, and idle cues on it, become playable).
-    fn device_restored(&mut self, name: &str) {
-        let Some(device) = self.backend.device() else {
-            return;
-        };
-        let block = device.info().block_frames;
-        self.playable = vec![playable_device(device)];
-        // Another buffer size: the lookahead and `now` follow it, so every deadline is still
-        // committed before the callback that renders it (commands already sent keep their
-        // samples).
-        if let Some(b) = block.map(u64::from).filter(|&b| b > 0 && b != self.block) {
-            match self.engine.set_lookahead(b) {
-                Ok(()) => {
-                    self.now_floor = self.now();
-                    self.log_device(
-                        LogLevel::Info,
-                        format!(
-                            "audio device \"{name}\" reopened with {b}-frame buffers (was {})",
-                            self.block
-                        ),
-                    );
-                    self.block = b;
-                }
-                Err(e) => self.log_device(
-                    LogLevel::Warn,
-                    format!("audio device \"{name}\": {e}; commands may land late"),
-                ),
-            }
-        }
-        let now = self.now();
-        for input in self.sync_patches(false) {
-            self.feed(input, now);
-        }
-        self.log_device(LogLevel::Info, format!("audio device \"{name}\" is back"));
-        self.warnings_dirty = true;
-    }
-
-    /// The output devices for a `list_devices` request.
-    fn device_list(&self) -> Vec<DeviceEntry> {
-        match self.backend.device() {
-            Some(d) => d
-                .listed()
-                .iter()
-                .map(|l| DeviceEntry {
-                    name: l.name.clone(),
-                    output_channels: u32::from(l.max_channels()),
-                })
-                .collect(),
-            None => self
-                .config
-                .devices
-                .iter()
-                .map(|d| DeviceEntry {
-                    name: d.name.clone(),
-                    output_channels: d.output_channels,
-                })
-                .collect(),
-        }
-    }
-
-    fn probe_answer(&mut self, answer: ProbeAnswer) {
-        let key = match &answer {
-            ProbeAnswer::Probed { key, .. } => Some(key.clone()),
-            ProbeAnswer::Preloaded { .. } => None,
-        };
-        if let ProbeAnswer::Preloaded { key, .. } = &answer {
-            // A preload that lands changes what a stream of the file reads: primes built from
-            // the file before it are rebuilt from memory, before the operator's GO needs them.
-            let was = self.media.is_preloaded(key);
-            let key = key.clone();
-            self.media.answer(answer);
-            if self.media.is_preloaded(&key) != was {
-                self.primes_dirty = true;
-            }
-            return;
-        }
-        if let Some(status) = self.media.answer(answer) {
-            self.pending_media.push(status);
-            if let Some(key) = key {
-                self.ready_media.push(key);
-            }
-            self.warnings_dirty = true;
-            self.primes_dirty = true;
-        }
-    }
-
-    /// The media watch's findings since the last tick, before the probe answers go to the
-    /// engine: a file gone is `Missing` in this tick's `Availability` (its cues are broken
-    /// within the tick); a file back, changed or unreadable is probed again. Batches of an
-    /// older generation (the catalog was reset since) are dropped. Key changes go out first,
-    /// so a reset's new generation is in force.
-    fn watch_events(&mut self) {
-        self.watch.apply(self.media.take_key_changes());
-        if self.watch_batches.is_empty() {
-            return;
-        }
-        for batch in std::mem::take(&mut self.watch_batches) {
-            let Some(events) = self.watch.accept(batch) else {
-                continue;
-            };
-            for event in events {
-                match event {
-                    WatchEvent::Gone { key, id, .. } => {
-                        if let Some(status) = self.media.mark_missing(&key, id) {
-                            self.pending_media.push(status);
-                        }
-                    }
-                    WatchEvent::Back { key, id, .. }
-                    | WatchEvent::Changed { key, id, .. }
-                    | WatchEvent::Unreadable { key, id, .. } => {
-                        self.media.recheck(&key, id);
-                    }
-                }
-            }
-            // Primes of a file gone are dropped; a file probed again near a playhead is
-            // probed first.
-            self.primes_dirty = true;
-            self.warnings_dirty = true;
-        }
-    }
-
-    /// The watch's key changes, watchdog, log entries and notices.
-    fn supervise_watch(&mut self) {
-        self.watch.apply(self.media.take_key_changes());
-        self.watch.supervise();
-        self.media.set_watch_stalled(self.watch.stalled_volumes());
-        for (level, message) in self.watch.take_logs() {
-            self.log(level, message);
-        }
-        if self.watch.take_notices_changed() {
-            self.warnings_dirty = true;
-        }
-    }
-
-    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
-    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
-    /// found nothing.
-    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
-        self.watch.apply(self.media.take_key_changes());
-        self.watch.manual_pass()
-    }
-
-    /// Watch batches of the current generation taken so far (a cost measure).
-    pub fn watch_batches(&self) -> u64 {
-        self.watch.batches()
-    }
-
-    /// Media watchers abandoned in a stalled stat.
-    pub fn abandoned_watchers(&self) -> usize {
-        self.watch.abandoned()
-    }
-
-    /// Hands the probe answers gathered since the last tick to the engine in one
-    /// `Availability`, then starts the voices that waited for them.
-    fn flush_media(&mut self, now: SampleTime) {
-        if !self.pending_media.is_empty() {
-            let media = std::mem::take(&mut self.pending_media);
-            self.feed(
-                Input::Availability {
-                    media,
-                    patches: Vec::new(),
-                },
-                now,
-            );
-        }
-        for key in std::mem::take(&mut self.ready_media) {
-            let mut fx = Effects::default();
-            let floor = self.stop_floor();
-            let mut env = Env {
-                ws: &self.ws,
-                media: &self.media,
-                streamer: &mut self.streamer,
-                patches: &self.patches,
-                ids: &mut self.voice_ids,
-                rate: self.rate,
-                cue_outputs: self.cue_outputs,
-                now,
-                floor,
-            };
-            self.voices.media_ready(&key, &mut env, &mut fx);
-            self.follow(fx, now);
-        }
-    }
-
-    fn deliver_deferred(&mut self, now: SampleTime) {
-        if self.deferred.is_empty() {
-            return;
-        }
-        let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred)
-            .into_iter()
-            .partition(|(at, _)| *at < now);
-        self.deferred = wait;
-        for (_, input) in due {
-            self.feed(input, now);
-        }
-    }
-
-    /// Hands `input` to the engine and carries out what it says, then the feedback that causes.
-    fn feed(&mut self, input: Input, now: SampleTime) {
-        let mut queue = VecDeque::from([input]);
-        let mut rounds = 0;
-        while let Some(input) = queue.pop_front() {
-            rounds += 1;
-            if rounds > FEEDBACK_LIMIT {
-                self.seen.feedback_overflow += 1;
-                self.log(
-                    LogLevel::Error,
-                    format!("feedback loop cut after {FEEDBACK_LIMIT} rounds"),
-                );
-                break;
-            }
-            let actions = self.engine.handle(&self.ws, input, now);
-            let unsignalled = self.engine.unsignalled_model_changes();
-            if unsignalled > self.seen.unsignalled {
-                self.seen.unsignalled = unsignalled;
-                self.log(
-                    LogLevel::Error,
-                    format!("cue engine saw {unsignalled} model change(s) nobody signalled"),
-                );
-            }
-            queue.extend(self.execute(&actions, now));
-        }
-    }
-
-    /// Carries out one `handle` call's actions: runtime changes to the clients, `SetArmed` to the
-    /// model, voice actions to the mixer and streams. Returns feedback to hand back at once.
-    fn execute(&mut self, actions: &[Action], now: SampleTime) -> Vec<Input> {
-        let mut changes = Vec::new();
-        let mut armed = Vec::new();
-        let mut fx = Effects::default();
-        {
-            let floor = self.stop_floor();
-            let mut env = Env {
-                ws: &self.ws,
-                media: &self.media,
-                streamer: &mut self.streamer,
-                patches: &self.patches,
-                ids: &mut self.voice_ids,
-                rate: self.rate,
-                cue_outputs: self.cue_outputs,
-                now,
-                floor,
-            };
-            for action in actions {
-                if let Some(change) = RuntimeChange::from_action(action, &self.engine) {
-                    changes.push(change);
-                }
-                if matches!(action, Action::PlayheadChanged { .. }) {
-                    self.primes_dirty = true;
-                }
-                self.voices.apply(action, &mut env, &mut fx);
-            }
-        }
-        for action in actions {
-            match action {
-                Action::SetArmed { cue, armed: value } if set_armed(&mut self.ws, *cue, *value) => {
-                    armed.push(*cue);
-                }
-                Action::SendOsc {
-                    cue,
-                    destination,
-                    address,
-                    args,
-                    ..
-                } => self.send_osc(*cue, *destination, address, args),
-                _ => {}
-            }
-        }
-        if !changes.is_empty() {
-            self.observe_changes(&changes);
-            self.runtime(changes);
-        }
-        let mut feedback = self.after(fx);
-        if !armed.is_empty() {
-            feedback.extend(self.model_changed(&Footprint::edited(armed)));
-            self.document();
-        }
-        feedback
-    }
-
-    /// A Network cue's turn (CT-30): encodes the message and hands it to its destination's
-    /// worker. Whatever goes wrong is a warning; the cue completes regardless (QLab: a Network
-    /// cue does not wait for, or learn of, delivery).
-    fn send_osc(
-        &mut self,
-        cue: CueId,
-        destination: NetworkPatchId,
-        address: &str,
-        args: &[OscArg],
-    ) {
-        let Some(patch) = self
-            .ws
-            .network_patches
-            .iter()
-            .find(|p| p.id == destination)
-            .cloned()
-        else {
-            // Cannot happen: a cue without its patch has a problem and does not send.
-            self.net_warning(cue, "network patch missing".to_owned());
-            return;
-        };
-        if self.net.disabled() {
-            let label = self.cue_label(cue);
-            self.record(
-                LogKind::Engine,
-                LogLevel::Info,
-                format!(
-                    "{label}: network output is disabled, {address} to {} not sent",
-                    patch.name
-                ),
-                Some(cue),
-                None,
-            );
-            return;
-        }
-        let packet = match netout::packet(address, args, patch.protocol) {
-            Ok(p) => p,
-            Err(e) => return self.net_warning(cue, format!("message not sent: {e}")),
-        };
-        match self.net.send(&patch, cue, packet) {
-            SendOutcome::Queued | SendOutcome::Suppressed => {}
-            SendOutcome::Refused(why) => {
-                self.net_warning(cue, format!("message to {} not sent: {why}", patch.name));
-            }
-        }
-    }
-
-    /// A worker's answer: a failed send is a warning; a look-up goes to the cue engine.
-    fn net_answer(&mut self, answer: NetAnswer) {
-        let now = self.now();
-        match answer {
-            NetAnswer::SendFailed {
-                cue,
-                ref destination,
-                ref reason,
-                ..
-            } => {
-                let message = format!("message to {destination} not sent: {reason}");
-                // A TCP failure also asks for a fresh look-up of the host.
-                let reports = self.net.answer(answer, now);
-                self.network_reports(reports, now);
-                self.net_warning(cue, message);
-            }
-            lookup @ NetAnswer::Lookup { .. } => {
-                let reports = self.net.answer(lookup, now);
-                self.network_reports(reports, now);
-            }
-        }
-        self.note_lookup_limit();
-    }
-
-    fn note_lookup_limit(&mut self) {
-        for note in self.net.take_notes() {
-            self.log(LogLevel::Warn, note);
-        }
-        if self.net.take_limit_note() {
-            self.log(
-                LogLevel::Warn,
-                "host look-ups are stuck; names waiting for one are taken to be reachable until one answers"
-                    .to_owned(),
-            );
-        }
-    }
-
-    fn network_reports(&mut self, patches: netout::Reports, now: SampleTime) {
-        if !patches.is_empty() {
-            self.feed(Input::NetworkAvailability { patches }, now);
-        }
-    }
-
-    /// A show-time notice (`network_send_failed`) for a Network cue, logged and sent to clients.
-    fn net_warning(&mut self, cue: CueId, message: String) {
-        let changes = vec![RuntimeChange::Warning {
-            warning: notice("network_send_failed", message, Some(cue)),
-        }];
-        self.observe_changes(&changes);
-        self.runtime(changes);
-    }
-
-    /// Sends the mixer commands and notices of `fx`; queues its deferred feedback; returns its
-    /// immediate feedback (which `feed` hands to the engine).
-    fn after(&mut self, fx: Effects) -> Vec<Input> {
-        let Effects {
-            commands,
-            feedback,
-            deferred,
-            notices,
-            reprobe,
-        } = fx;
-        self.send_commands(commands);
-        self.deferred.extend(deferred);
-        for key in reprobe {
-            self.media.reprobe(&key);
-        }
-        if !notices.is_empty() {
-            let changes = notices
-                .into_iter()
-                .map(|(code, message, cue)| RuntimeChange::Warning {
-                    warning: WireWarning::Notice {
-                        code: code.to_owned(),
-                        message,
-                        cue,
-                    },
-                })
-                .collect::<Vec<_>>();
-            self.observe_changes(&changes);
-            self.runtime(changes);
-        }
-        feedback
-    }
-
-    /// [`Self::after`], then hands the feedback to the engine (outside a `feed`).
-    fn follow(&mut self, fx: Effects, now: SampleTime) {
-        for input in self.after(fx) {
-            self.feed(input, now);
-        }
-    }
-
-    /// Sends commands as batches the mixer applies whole (docs/audio.md, Scheduling horizon).
-    fn send_commands(&mut self, mut commands: Vec<(SampleTime, CommandKind)>) {
-        while !commands.is_empty() {
-            let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
-            if self.mixer.send_batch(commands).is_err() {
-                // Cannot happen: the batch is at most the queue's size.
-                self.log(LogLevel::Error, "mixer batch refused".to_owned());
-            }
-            commands = rest;
-        }
-    }
-
-    fn runtime(&mut self, changes: Vec<RuntimeChange>) {
-        self.runtime_seq += 1;
-        self.out.send(ServerMessage::Runtime {
-            seq: self.runtime_seq,
-            changes,
-        });
-    }
-
-    fn document(&mut self) {
-        let document = self.document_state();
-        self.resend_document = !self.out.send_state(ServerMessage::Document { document });
+        let secs = frames as f64 / f64::from(eng.rate.get());
+        Duration::from_secs_f64(secs.min(MAX_WAIT.as_secs_f64()))
     }
 
     fn document_state(&self) -> DocumentState {
         DocumentState {
             path: self
-                .config
                 .show_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
@@ -1551,384 +630,8 @@ impl Control {
         }
     }
 
-    fn log_device(&mut self, level: LogLevel, message: String) {
-        self.log_kind(LogKind::Device, level, message);
-    }
-
-    /// A message for the show log and every client's `log`.
-    fn log(&mut self, level: LogLevel, message: String) {
-        self.log_kind(LogKind::Engine, level, message);
-    }
-
-    /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
-    fn prime(&mut self, now: SampleTime) {
-        let wanted = prime_set(&self.ws, &self.engine, self.config.prime_cues);
-        // Their files are probed first (H2: a restart mid-show must not leave the cue at the
-        // playhead behind a hundred others).
-        let keys: Vec<String> = wanted
-            .iter()
-            .filter_map(|c| match &self.ws.find_cue(*c)?.kind {
-                CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
-                _ => None,
-            })
-            .collect();
-        self.media.prioritize(keys.iter().map(String::as_str));
-        let floor = self.stop_floor();
-        let mut env = Env {
-            ws: &self.ws,
-            media: &self.media,
-            streamer: &mut self.streamer,
-            patches: &self.patches,
-            ids: &mut self.voice_ids,
-            rate: self.rate,
-            cue_outputs: self.cue_outputs,
-            now,
-            floor,
-        };
-        self.voices.prime(&wanted, self.config.max_primes, &mut env);
-    }
-
-    /// Progress and meters, each at most [`REPORT_HZ`] in sample time; reconciliation of lost
-    /// voice ends rides on the voice-meter read.
-    fn reports(&mut self) {
-        let rendered = self.mixer.samples_rendered();
-        let period = (u64::from(self.rate.get()) / REPORT_HZ).max(1);
-        let due = |last: Option<SampleTime>| last.is_none_or(|l| rendered >= l + period);
-        if due(self.last_progress) {
-            let items: Vec<ProgressItem> = self
-                .voices
-                .progress(rendered)
-                .into_iter()
-                .map(|(cue, pos, left)| ProgressItem {
-                    cue,
-                    elapsed: self.seconds(pos),
-                    remaining: left.map(|l| self.seconds(l)),
-                })
-                .collect();
-            if !items.is_empty() {
-                self.last_progress = Some(rendered);
-                let mut m = ServerMessage::Progress { items };
-                m.sanitise();
-                self.out.send_lossy(m);
-            }
-        }
-        if due(self.last_meters) {
-            self.last_meters = Some(rendered);
-            self.meters(rendered);
-        }
-    }
-
-    fn seconds(&self, frames: u64) -> f64 {
-        frames as f64 / f64::from(self.rate.get())
-    }
-
-    fn meters(&mut self, rendered: SampleTime) {
-        self.mixer.read_output_meters_into(&mut self.out_peaks);
-        let n = self
-            .mixer
-            .read_voice_meters_into(&mut self.meter_ids, &mut self.meter_peaks);
-        let gone = self.voices.take_gone();
-        let outs = self.cue_outputs.max(1);
-        let mut cues: Vec<CueMeter> = Vec::new();
-        let mut listed = Vec::with_capacity(n);
-        for (k, id) in self.meter_ids.iter().take(n).enumerate() {
-            listed.push(*id);
-            let cue = self
-                .voices
-                .cue_of(*id)
-                .or_else(|| gone.iter().find(|(g, _)| g == id).map(|(_, c)| *c));
-            let Some(cue) = cue else { continue };
-            let peaks = self
-                .meter_peaks
-                .get(k * outs..(k + 1) * outs)
-                .unwrap_or(&[]);
-            match cues.iter_mut().find(|m| m.cue == cue) {
-                Some(m) => {
-                    for (a, b) in m.peaks.iter_mut().zip(peaks) {
-                        *a = a.max(*b);
-                    }
-                }
-                None => cues.push(CueMeter {
-                    cue,
-                    peaks: peaks.to_vec(),
-                }),
-            }
-        }
-        self.reconcile(&listed, rendered);
-        let outputs: Vec<OutputMeter> = self
-            .ws
-            .patches
-            .iter()
-            .filter_map(|p| {
-                let channels = self.patches.channels(p.id)?;
-                let peaks = channels
-                    .iter()
-                    .map(|&c| {
-                        usize::try_from(c)
-                            .ok()
-                            .and_then(|c| self.out_peaks.get(c))
-                            .copied()
-                            .unwrap_or(0.0)
-                    })
-                    .collect();
-                Some(OutputMeter { patch: p.id, peaks })
-            })
-            .collect();
-        let live = self.voices.has_playing() || !cues.is_empty();
-        // Only while audio plays, plus one message after, so meters fall back to silence.
-        if live || self.meters_live {
-            self.meters_live = live;
-            let mut m = ServerMessage::Meters { outputs, cues };
-            m.sanitise();
-            self.out.send_lossy(m);
-        }
-    }
-
-    /// A started voice the mixer has not listed in two meter reads in a row, while mixer
-    /// events have been lost, has ended without its report reaching us: report it ended so its
-    /// cue does not run forever (docs/control.md, Reconciliation).
-    fn reconcile(&mut self, listed: &[VoiceId], rendered: SampleTime) {
-        let Some(prev) = self.last_meter_read.replace(rendered) else {
-            return;
-        };
-        let lost_events = self.mixer.dropped_events() > 0;
-        let started: Vec<(VoiceId, SampleTime)> = self.voices.started().collect();
-        let mut fx = Effects::default();
-        for (id, start) in started {
-            if start >= prev {
-                continue;
-            }
-            let absent = self.voices.mark_absent(id, !listed.contains(&id));
-            if absent >= 2 && lost_events {
-                self.voices.lost(id, rendered, &mut fx);
-            }
-        }
-        let now = self.now();
-        self.follow(fx, now);
-    }
-
-    /// Reports counters that must never rise: lost events, mixer faults, allocations on the
-    /// audio thread (M3.21), dropped outbound messages.
-    fn health(&mut self) {
-        let dropped = self.mixer.dropped_events();
-        if dropped > self.seen.dropped_events {
-            self.seen.dropped_events = dropped;
-            self.log(
-                LogLevel::Warn,
-                format!("{dropped} mixer event(s) lost; voice ends are reconciled from meters"),
-            );
-        }
-        let faults = self.mixer.faults();
-        if faults > self.seen.faults {
-            self.seen.faults = faults;
-            self.log(
-                LogLevel::Error,
-                format!("audio engine fault: {faults} block(s) replaced with silence"),
-            );
-        }
-        let allocs = self.backend.alloc_violations();
-        if allocs > self.seen.alloc_violations {
-            self.seen.alloc_violations = allocs;
-            self.log(
-                LogLevel::Error,
-                format!("real-time violation: {allocs} allocation(s) on the audio thread"),
-            );
-            self.warnings_dirty = true;
-        }
-        // State the clients missed goes again, newest, once there is room.
-        if self.resend_document && self.out.has_room() {
-            self.document();
-        }
-        if self.resend_warnings && self.out.has_room() {
-            self.resend_warnings = !self.out.send_state(ServerMessage::Warnings {
-                warnings: self.warnings.clone(),
-            });
-        }
-        let out = self.out.dropped() + self.out.lossy_dropped();
-        if out > self.seen.outbound_dropped && self.out.has_room() {
-            let (seq, lossy) = (self.out.dropped(), self.out.lossy_dropped());
-            self.seen.outbound_dropped = out;
-            self.log(
-                LogLevel::Warn,
-                format!(
-                    "clients were not keeping up: {seq} message(s) and {lossy} meter/progress \
-                     update(s) dropped so far"
-                ),
-            );
-        }
-    }
-
-    /// The workspace-level notices in force: damaged media, preloads over budget, cues whose
-    /// slices cannot play, audio-thread allocations. Sent when the list changes.
-    fn refresh_warnings(&mut self) {
-        let mut list = self.docs.notices.clone();
-        let mut damaged: Vec<(&str, usize)> = self.media.damaged().collect();
-        damaged.sort_unstable();
-        for (path, n) in damaged {
-            list.push(notice(
-                "damaged_media",
-                format!("{path}: {n} damaged part(s); they play as silence"),
-                None,
-            ));
-        }
-        let mut over: Vec<&str> = self.media.over_budget().collect();
-        over.sort_unstable();
-        for path in over {
-            list.push(notice(
-                "preload_over_budget",
-                format!("{path} does not fit the preload memory budget and is streamed"),
-                None,
-            ));
-        }
-        let mut failed: Vec<&str> = self.media.preload_failed().collect();
-        failed.sort_unstable();
-        for path in failed {
-            list.push(notice(
-                "preload_failed",
-                format!("{path} could not be loaded into memory and is streamed"),
-                None,
-            ));
-        }
-        for (cue, e) in self.checks.check(&self.ws, &mut self.media, self.rate) {
-            list.push(notice(
-                "bad_plan",
-                format!("the cue's slices cannot be played: {e}"),
-                Some(cue),
-            ));
-        }
-        self.device_warnings(&mut list);
-        self.watch.notices(&mut list);
-        if self.seen.alloc_violations > 0 {
-            list.push(notice(
-                "realtime_allocation",
-                format!(
-                    "the audio thread allocated memory {} time(s): report this bug",
-                    self.seen.alloc_violations
-                ),
-                None,
-            ));
-        }
-        if list != self.warnings {
-            self.warnings = list.clone();
-            self.resend_warnings = !self
-                .out
-                .send_state(ServerMessage::Warnings { warnings: list });
-        }
-        // The plans just checked also give the cues' nominal lengths, which a playlist halted by
-        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist").
-        let lengths = self.checks.length_changes();
-        if !lengths.is_empty() {
-            let now = self.now();
-            self.feed(Input::CueLengths { lengths }, now);
-        }
-    }
-
-    /// The device's notices: an outage, a mixer that could not be recovered, patches that map
-    /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
-    /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
-    fn device_warnings(&self, list: &mut Vec<WireWarning>) {
-        if let Some(d) = self.backend.device() {
-            let name = &d.info().name;
-            if let Some(why) = d.unrecoverable() {
-                list.push(notice(
-                    "device_unrecoverable",
-                    format!(
-                        "audio device \"{name}\": {why}; sound cannot come back: restart \
-                         openLab"
-                    ),
-                    None,
-                ));
-            } else if d.is_down() {
-                list.push(notice(
-                    "device_lost",
-                    format!(
-                        "audio device \"{name}\" is lost: the cues that played on it were \
-                         stopped, and cues on it cannot start; reconnecting"
-                    ),
-                    None,
-                ));
-            }
-            if d.is_stalled() && !d.is_down() {
-                list.push(notice(
-                    "device_stalled",
-                    format!(
-                        "audio device \"{name}\" has stopped calling back: it is treated as \
-                         lost if it stays silent"
-                    ),
-                    None,
-                ));
-            }
-            if d.list_stuck() {
-                list.push(notice(
-                    "device_list_stuck",
-                    "reading the output device list does not finish: devices plugged in or out \
-                     are not seen"
-                        .to_owned(),
-                    None,
-                ));
-            }
-            if d.info().outputs_dropped && !d.is_down() {
-                list.push(notice(
-                    "outputs_dropped",
-                    format!(
-                        "audio device \"{name}\" has {} output channel(s), fewer than the {} \
-                         the show was opened with: the others are not heard",
-                        d.info().channels,
-                        self.cue_outputs
-                    ),
-                    None,
-                ));
-            }
-        }
-        for patch in &self.ws.patches {
-            if let Some(PatchResolution::ChannelsMissing {
-                device,
-                needed,
-                available,
-            }) = self.patches.resolution(patch.id)
-            {
-                list.push(notice(
-                    "outputs_dropped",
-                    format!(
-                        "patch \"{}\" maps {needed} channel(s) of \"{device}\", which has \
-                         {available}: its cues cannot play",
-                        patch.name
-                    ),
-                    None,
-                ));
-            }
-        }
-        for &id in self.patches.exhausted() {
-            let name = self
-                .ws
-                .patches
-                .iter()
-                .find(|p| p.id == id)
-                .map_or("", |p| p.name.as_str());
-            list.push(notice(
-                "mixer_patches_exhausted",
-                format!(
-                    "patch \"{name}\" cannot play: all {} mixer patches are in use",
-                    self.patches.capacity()
-                ),
-                None,
-            ));
-        }
-        for output in self.patches.delay_conflicts() {
-            list.push(notice(
-                "output_delay_conflict",
-                format!(
-                    "device output {} has different delays in different patches; the longest \
-                     is used",
-                    u32::from(output) + 1
-                ),
-                None,
-            ));
-        }
-    }
-
     /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
-    pub fn snapshot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot {
         let cue_states = self
             .engine
             .cue_states()
@@ -1979,176 +682,1632 @@ impl Control {
             warnings: self.warnings.clone(),
         }
     }
+}
+
+/// One doc and the engine it plays on: the control loop's work for one workspace.
+struct DocCx<'a> {
+    eng: &'a mut Engine,
+    doc: &'a mut Doc,
+}
+
+impl DocCx<'_> {
+    /// The scheduling time ([`Engine::now`]).
+    fn now(&self) -> SampleTime {
+        self.eng.now()
+    }
+
+    /// This doc's part of a wake ([`Control::tick`]).
+    fn tick(&mut self) {
+        let now = self.now();
+        self.watch_events();
+        self.flush_media(now);
+        let mut fx = Effects::default();
+        // M4.15e: the mixer's events are the engine's; drain them once and route by voice
+        // owner. With one doc every event is this doc's (seams note (f)).
+        while let Some(e) = self.eng.mixer.poll_event() {
+            self.doc.voices.event(e, &mut fx);
+        }
+        self.doc.voices.poll_streams(&mut fx, &self.doc.ws);
+        let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
+        self.doc.voices.expire_held(now, hold, &mut fx);
+        self.follow(fx, now);
+        self.reclaim_slots(now);
+        let stuck = self.doc.media.watchdog();
+        if !stuck.is_empty() {
+            self.log(
+                LogLevel::Error,
+                format!(
+                    "{} media probe(s) stuck; workers replaced ({} so far)",
+                    stuck.len(),
+                    self.doc.media.abandoned_workers()
+                ),
+            );
+            self.doc.pending_media.extend(stuck);
+        }
+        for (volume, stalled) in self.doc.media.take_volume_events() {
+            // Not a "does not answer" warning: that notice is the media watch's alone.
+            let message = if stalled {
+                format!(
+                    "probes of volume \"{volume}\" are held back: two files did not answer in \
+                     time; one is tried at a time"
+                )
+            } else {
+                format!("probes of volume \"{volume}\" run again: it answered")
+            };
+            self.log(LogLevel::Info, message);
+        }
+        if self.doc.media.take_limit_reached() {
+            self.log(
+                LogLevel::Error,
+                format!(
+                    "{} probe workers were stuck and replaced; no more are replaced, so further \
+                     stuck probes wait (their starts fail after the hold limit)",
+                    media::MAX_ABANDONED_WORKERS
+                ),
+            );
+        }
+        let reports = self.doc.net.tick(now);
+        self.network_reports(reports, now);
+        self.note_lookup_limit();
+        self.supervise_watch();
+        self.deliver_deferred(now);
+        if self.doc.engine.is_due(now) {
+            self.feed(Input::Tick, now);
+        }
+        if self.doc.primes_dirty {
+            self.doc.primes_dirty = false;
+            self.prime(now);
+        }
+        self.reports();
+        if self.doc.warnings_dirty {
+            self.doc.warnings_dirty = false;
+            self.refresh_warnings();
+        }
+        self.docs_tick();
+    }
+
+    /// A retired patch slot whose last voice has left is freed (zeroed), and a patch waiting
+    /// for a slot gets it (docs/control.md "Patch slots").
+    fn reclaim_slots(&mut self, now: SampleTime) {
+        if !self.eng.patches.has_retired()
+            || !self
+                .eng
+                .patches
+                .reclaimable(&self.doc.voices.slots_in_use())
+        {
+            return;
+        }
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
+    }
+
+    fn client(&mut self, message: ClientMessage, to: &ReplyTx) -> Flow {
+        let now = self.now();
+        match message {
+            ClientMessage::Transport { id, action } => {
+                let scope = orphan_scope(&action);
+                let panic = matches!(action, TransportAction::Panic);
+                self.observe_transport(&action);
+                self.feed(transport_input(action), now);
+                // During an outage a panic fade could only play once the device is back, so
+                // it stops everything at once: a second Panic within the fade is a hard stop
+                // (unless this one already was).
+                if panic && self.eng.backend.is_down() && self.doc.engine.panic_end().is_some() {
+                    self.feed(Input::Panic, now);
+                }
+                if let Some(scope) = scope {
+                    self.silence_orphans(scope, now);
+                }
+                reply(to, ok(id, None));
+            }
+            ClientMessage::Command {
+                id,
+                command,
+                coalesce,
+            } => {
+                if coalesce
+                    .as_ref()
+                    .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
+                {
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Error(ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
+                            )),
+                        },
+                    );
+                    return Flow::Continue;
+                }
+                let footprint = command.footprint();
+                match self.doc.history.execute_coalescing(
+                    &mut self.doc.ws,
+                    *command,
+                    coalesce.as_deref(),
+                ) {
+                    Ok(changed) => {
+                        // An empty transaction, or an edit that sets what is already there,
+                        // changed nothing and is no undo step: no revision, no
+                        // `model_changed`, not dirty.
+                        if changed {
+                            self.edited(now, &footprint);
+                        }
+                        reply(to, ok(id, Some(self.doc.revision)));
+                    }
+                    Err(e) => reply(to, refused(id, &e)),
+                }
+            }
+            ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
+                let undo = matches!(message, ClientMessage::Undo { .. });
+                // The step about to be applied says what it changes.
+                let footprint = if undo {
+                    self.doc.history.peek_undo()
+                } else {
+                    self.doc.history.peek_redo()
+                }
+                .map(Command::footprint)
+                .unwrap_or_default();
+                let result = if undo {
+                    self.doc.history.undo(&mut self.doc.ws)
+                } else {
+                    self.doc.history.redo(&mut self.doc.ws)
+                };
+                match result {
+                    Ok(true) => {
+                        self.edited(now, &footprint);
+                        reply(to, ok(id, Some(self.doc.revision)));
+                    }
+                    Ok(false) => reply(to, ok(id, None)),
+                    Err(e) => reply(to, refused(id, &e)),
+                }
+            }
+            ClientMessage::Request { id, request } => match request {
+                Request::Snapshot => {
+                    reply(
+                        to,
+                        ServerMessage::Snapshot {
+                            snapshot: Box::new(self.doc.snapshot()),
+                        },
+                    );
+                    reply(to, ok(id, None));
+                }
+                Request::ListDevices => reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Ok(OkBody {
+                            revision: None,
+                            data: Some(ResultData::Devices {
+                                devices: self.device_list(),
+                            }),
+                        }),
+                    },
+                ),
+                Request::PreshowCheck => {
+                    let report = self.preshow_report();
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::PreshowCheck(Box::new(report))),
+                            }),
+                        },
+                    );
+                }
+                Request::LogTail { max } => {
+                    let (entries, dropped, seq) = self.log_tail(max);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::LogTail {
+                                    entries,
+                                    dropped,
+                                    seq,
+                                }),
+                            }),
+                        },
+                    );
+                }
+                Request::SetOutputOverrides { network_disabled } => {
+                    if self.doc.net.disabled() != network_disabled {
+                        self.doc.net.set_disabled(network_disabled);
+                        let text = if network_disabled {
+                            "network output disabled: Network cues send nothing"
+                        } else {
+                            "network output enabled"
+                        };
+                        self.log(LogLevel::Warn, text.to_owned());
+                    }
+                    reply(to, ok(id, None));
+                }
+                Request::Relink { .. } => reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Error(ErrorBody::new(
+                            ErrorCode::Unsupported,
+                            format!("{} is not available yet", request_name(&request)),
+                        )),
+                    },
+                ),
+                request => self.doc_request(id, request, to),
+            },
+            ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
+            // The network layer handles the handshake and closing (M4.3).
+            ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
+        }
+        Flow::Continue
+    }
+
+    /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
+    /// longer than the action's known length, after the engine completed the action on its
+    /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
+    /// Panic, a hard stop or a reset would leave it sounding.
+    fn silence_orphans(&mut self, scope: Scope, now: SampleTime) {
+        let engine = &self.doc.engine;
+        let owned = |cue: CueId, run: openlab_core::RunId| {
+            engine.run_of(cue) == Some(run)
+                && matches!(
+                    engine.state(cue),
+                    CueState::Running | CueState::Paused | CueState::Fading | CueState::Stopping
+                )
+        };
+        let in_scope = |cue: CueId| match scope {
+            Scope::All => true,
+            Scope::Cue(root) => {
+                root == cue
+                    || self
+                        .doc
+                        .ws
+                        .find_cue(root)
+                        .is_some_and(|r| visit_any(r.children(), cue))
+            }
+        };
+        let orphans = self
+            .doc
+            .voices
+            .orphans(|cue, run| in_scope(cue) && !owned(cue, run));
+        if orphans.is_empty() {
+            return;
+        }
+        // A Panic fades them out with everything else, ending on the panic's end; otherwise
+        // (or past it) they are cut at once.
+        let fade = match (scope, self.doc.engine.panic_end()) {
+            (Scope::All, Some(end)) if end > now => {
+                openlab_audio::Fade::new(end - now, voices::to_curve(openlab_core::PANIC_CURVE))
+            }
+            _ => openlab_audio::Fade::NONE,
+        };
+        let floor = self.stop_floor();
+        let commands = orphans
+            .into_iter()
+            .map(|voice| {
+                let at = self.doc.voices.stop_date(voice, now, floor);
+                (at, CommandKind::StopVoice { voice, fade })
+            })
+            .collect();
+        self.send_commands(commands);
+    }
+
+    /// A command, undo or redo changed the workspace.
+    fn edited(&mut self, now: SampleTime, footprint: &Footprint) {
+        let inputs = self.model_changed(footprint);
+        self.document();
+        for input in inputs {
+            self.feed(input, now);
+        }
+        // Follow the edit at once: a deleted running cue stops now, not at the next deadline.
+        self.feed(Input::Tick, now);
+    }
+
+    /// Signals a workspace change to the engine (before its next `handle`, M4.2 contract) and
+    /// the clients (one `model_changed` for `footprint`'s cues, M4.1a), and follows it on the
+    /// audio side. Returns the inputs that must follow (patch resolutions).
+    /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
+    /// makes the document dirty, but it is not an undo step (QLab confirmation: PROGRESS M2.17).
+    fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
+        // Lists, patches and settings decide which cues are broken and where the playheads are:
+        // the cue-scoped shortcut is only for edits that touched cues alone.
+        if footprint.is_model_wide() {
+            self.doc.engine.model_changed();
+        } else {
+            self.doc.engine.model_changed_cues(footprint);
+        }
+        self.doc.revision += 1;
+        // The catalog's cue index follows the edit first; the changes are read through it, at
+        // the cost of the edit's cues (M4.12c). The walk is the fallback.
+        self.doc.media.sync_cues(&self.doc.ws, footprint);
+        let (upserts, deletes) =
+            model_changes_indexed(&self.doc.ws, footprint, self.doc.media.index()).unwrap_or_else(
+                || {
+                    self.doc.model_change_walks += 1;
+                    model_changes(&self.doc.ws, footprint)
+                },
+            );
+        self.eng.out.send(ServerMessage::ModelChanged {
+            revision: self.doc.revision,
+            upserts,
+            deletes,
+        });
+        self.sync_workspace(false)
+    }
+
+    /// Brings patches and primes in line with the workspace (the media catalog is followed by
+    /// the caller: whole for a newly opened workspace, from the footprint for an edit). `all`
+    /// reports every patch resolution (a newly opened workspace), else only changes.
+    fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
+        self.doc.primes_dirty = true;
+        let mut inputs = self.sync_patches(all);
+        let now = self.now();
+        let reports = self.doc.net.sync(&self.doc.ws.network_patches, all, now);
+        if !reports.is_empty() {
+            inputs.push(Input::NetworkAvailability { patches: reports });
+        }
+        inputs
+    }
+
+    /// Resolves the patches against the playable devices and brings the mixer's matrices (with
+    /// the workspace master folded in) and output delays up to date. Returns the
+    /// `Availability` for the patches whose resolution changed (`all`: every patch).
+    fn sync_patches(&mut self, all: bool) -> Vec<Input> {
+        self.map_unmapped_patches();
+        let busy = self.doc.voices.slots_in_use();
+        // M4.15e: slots are keyed by PatchId only; §3.5 keys them (DocId, PatchId), and the
+        // slots in use must span every doc (seams note (e)).
+        let (cmds, changed) = self.eng.patches.sync(
+            &self.doc.ws,
+            &self.eng.config.machine,
+            &self.eng.playable,
+            &busy,
+        );
+        let now = self.now();
+        // One batch (split only past the queue's size), so a master move changes every patch
+        // on the same sample.
+        self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
+        self.doc.warnings_dirty = true;
+        let patches = if all {
+            self.eng.patches.resolutions()
+        } else {
+            changed
+        };
+        if patches.is_empty() {
+            Vec::new()
+        } else {
+            vec![Input::Availability {
+                media: Vec::new(),
+                patches,
+            }]
+        }
+    }
+
+    /// While the device is down, voice stops are dated on the first sample the mixer renders
+    /// when it is back (sample time stands still meanwhile, and `now` is one block past it):
+    /// a stopped voice must not play one more block after the outage.
+    fn stop_floor(&self) -> Option<SampleTime> {
+        self.eng
+            .backend
+            .is_down()
+            .then(|| self.eng.mixer.samples_rendered())
+    }
+
+    fn poll_device(&mut self) {
+        let events = match &mut self.eng.backend {
+            Backend::Device(d) => d.poll(),
+            Backend::Offline => return,
+        };
+        self.device_events(events);
+    }
+
+    fn device_answer(&mut self, answer: DeviceAnswer) {
+        let events = match &mut self.eng.backend {
+            Backend::Device(d) => d.answer(answer),
+            Backend::Offline => return,
+        };
+        self.device_events(events);
+    }
+
+    /// The device policy (docs/control.md "Devices", PROGRESS M4.2g).
+    fn device_events(&mut self, events: Vec<DeviceEvent>) {
+        let name = self
+            .eng
+            .backend
+            .device()
+            .map(|d| d.info().name.clone())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                DeviceEvent::Lost { why } => self.device_lost(&name, &why),
+                DeviceEvent::Restored => self.device_restored(&name),
+                // Patches resolve against the device the mixer plays on, so a change in the
+                // list changes them only through a loss or a reopen; resolving again is cheap.
+                DeviceEvent::ListChanged => {
+                    let now = self.now();
+                    for input in self.sync_patches(false) {
+                        self.feed(input, now);
+                    }
+                }
+                DeviceEvent::OpenFailed {
+                    attempt,
+                    error,
+                    retry_in,
+                } => self.log_device(
+                    LogLevel::Warn,
+                    format!(
+                        "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
+                         next in {:.2} s",
+                        retry_in.as_secs_f64()
+                    ),
+                ),
+                DeviceEvent::Warn(message) => self.log_device(LogLevel::Warn, message),
+                DeviceEvent::Stalled { ms, log } => {
+                    if let Some(earlier) = log {
+                        let more = if earlier > 0 {
+                            format!(" ({earlier} more stall(s) since the last notice)")
+                        } else {
+                            String::new()
+                        };
+                        self.log_device(
+                            LogLevel::Warn,
+                            format!(
+                                "audio device \"{name}\": no audio callback for {ms} ms; the \
+                                 device is treated as lost if it stays silent{more}"
+                            ),
+                        );
+                    }
+                    self.doc.warnings_dirty = true;
+                }
+                DeviceEvent::StallCleared { log } => {
+                    if log {
+                        self.log_device(
+                            LogLevel::Info,
+                            format!("audio device \"{name}\": audio callbacks resumed"),
+                        );
+                    }
+                    self.doc.warnings_dirty = true;
+                }
+                DeviceEvent::Unrecoverable { why } => {
+                    self.log_device(
+                        LogLevel::Error,
+                        format!("audio device \"{name}\": {why}: restart openLab to play sound"),
+                    );
+                    self.doc.warnings_dirty = true;
+                }
+                DeviceEvent::Unstuck => {
+                    self.log_device(
+                        LogLevel::Info,
+                        format!("audio device \"{name}\": the device thread answers again"),
+                    );
+                    self.doc.warnings_dirty = true;
+                }
+                DeviceEvent::ListStuck => {
+                    self.log_device(
+                        LogLevel::Error,
+                        "reading the output device list does not finish: hot-plug is not \
+                         followed until it does"
+                            .to_owned(),
+                    );
+                    self.doc.warnings_dirty = true;
+                }
+            }
+        }
+    }
+
+    /// The device went away (M4.2g, as QLab 5): the patches on it are reported missing (loaded
+    /// cues on them unload, starts are refused as broken, idle cues show broken), every run
+    /// with a voice on it ends at once with `ActionFailed { device_lost }` (hard stop, no
+    /// fade; the voice and its stream are released, auto-follow never fires), and every voice
+    /// the mixer holds is stopped, so nothing sounds, or resumes, when the device returns.
+    fn device_lost(&mut self, name: &str, why: &str) {
+        let now = self.now();
+        self.eng.playable.clear();
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
+        let mut runs = self.doc.voices.on_device();
+        // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
+        // the device too: nothing scheduled before the outage may start by itself after it.
+        // They end as device_lost breaks; `Input::DeviceLost` below stops all the others.
+        for (cue, state) in self.doc.engine.cue_states() {
+            if matches!(
+                state,
+                CueState::PreWaiting
+                    | CueState::Running
+                    | CueState::Paused
+                    | CueState::PostWaiting
+                    | CueState::Fading
+                    | CueState::Stopping
+            ) && let Some(run) = self.doc.engine.run_of(cue)
+                && matches!(
+                    self.doc.ws.find_cue(cue).map(|c| &c.kind),
+                    Some(CueKind::Audio { .. })
+                )
+                && !runs.contains(&(cue, run))
+            {
+                runs.push((cue, run));
+            }
+        }
+        runs.sort();
+        let failed = runs.len();
+        for (cue, run) in runs {
+            self.feed(
+                Input::ActionFailed {
+                    cue,
+                    run,
+                    reason: BrokenReason::DeviceLost,
+                },
+                now,
+            );
+        }
+        // Nothing else scheduled before the loss may fire after the return: every other active
+        // run (memo, Wait, control, Fade, group; broken runs with a pending continue) stops.
+        self.feed(Input::DeviceLost, now);
+        // Orphaned tails and anything the engine no longer owns. Dated on the first sample the
+        // mixer renders after the outage (`stop_floor`), so a voice plays nothing more.
+        let floor = self.stop_floor();
+        let commands = self
+            .doc
+            .voices
+            .playing_ids()
+            .into_iter()
+            .map(|voice| {
+                let at = self.doc.voices.stop_date(voice, now, floor);
+                let fade = openlab_audio::Fade::NONE;
+                (at, CommandKind::StopVoice { voice, fade })
+            })
+            .collect();
+        self.send_commands(commands);
+        let message = format!(
+            "audio device \"{name}\" lost ({why}): {failed} cue(s) playing on it stopped; \
+             they start again from the beginning with GO once the device is back"
+        );
+        self.log_device(LogLevel::Error, message.clone());
+        self.runtime(vec![RuntimeChange::Warning {
+            warning: notice("device_lost", message, None),
+        }]);
+        self.doc.warnings_dirty = true;
+    }
+
+    /// The stream was reopened: patches resolve against the device again (cues that
+    /// failed with `device_lost`, and idle cues on it, become playable).
+    fn device_restored(&mut self, name: &str) {
+        let Some(device) = self.eng.backend.device() else {
+            return;
+        };
+        let block = device.info().block_frames;
+        self.eng.playable = vec![playable_device(device)];
+        // Another buffer size: the lookahead and `now` follow it, so every deadline is still
+        // committed before the callback that renders it (commands already sent keep their
+        // samples).
+        if let Some(b) = block
+            .map(u64::from)
+            .filter(|&b| b > 0 && b != self.eng.block)
+        {
+            // M4.15e: every doc's cue engine needs the new lookahead before `eng.block`
+            // changes; only this doc's gets it (seams note (b)).
+            match self.doc.engine.set_lookahead(b) {
+                Ok(()) => {
+                    self.eng.now_floor = self.now();
+                    self.log_device(
+                        LogLevel::Info,
+                        format!(
+                            "audio device \"{name}\" reopened with {b}-frame buffers (was {})",
+                            self.eng.block
+                        ),
+                    );
+                    self.eng.block = b;
+                }
+                Err(e) => self.log_device(
+                    LogLevel::Warn,
+                    format!("audio device \"{name}\": {e}; commands may land late"),
+                ),
+            }
+        }
+        let now = self.now();
+        for input in self.sync_patches(false) {
+            self.feed(input, now);
+        }
+        self.log_device(LogLevel::Info, format!("audio device \"{name}\" is back"));
+        self.doc.warnings_dirty = true;
+    }
+
+    /// The output devices for a `list_devices` request.
+    fn device_list(&self) -> Vec<DeviceEntry> {
+        match self.eng.backend.device() {
+            Some(d) => d
+                .listed()
+                .iter()
+                .map(|l| DeviceEntry {
+                    name: l.name.clone(),
+                    output_channels: u32::from(l.max_channels()),
+                })
+                .collect(),
+            None => self
+                .eng
+                .config
+                .devices
+                .iter()
+                .map(|d| DeviceEntry {
+                    name: d.name.clone(),
+                    output_channels: d.output_channels,
+                })
+                .collect(),
+        }
+    }
+
+    fn probe_answer(&mut self, answer: ProbeAnswer) {
+        let key = match &answer {
+            ProbeAnswer::Probed { key, .. } => Some(key.clone()),
+            ProbeAnswer::Preloaded { .. } => None,
+        };
+        if let ProbeAnswer::Preloaded { key, .. } = &answer {
+            // A preload that lands changes what a stream of the file reads: primes built from
+            // the file before it are rebuilt from memory, before the operator's GO needs them.
+            let was = self.doc.media.is_preloaded(key);
+            let key = key.clone();
+            self.doc.media.answer(answer);
+            if self.doc.media.is_preloaded(&key) != was {
+                self.doc.primes_dirty = true;
+            }
+            return;
+        }
+        if let Some(status) = self.doc.media.answer(answer) {
+            self.doc.pending_media.push(status);
+            if let Some(key) = key {
+                self.doc.ready_media.push(key);
+            }
+            self.doc.warnings_dirty = true;
+            self.doc.primes_dirty = true;
+        }
+    }
+
+    /// The media watch's findings since the last tick, before the probe answers go to the
+    /// engine: a file gone is `Missing` in this tick's `Availability` (its cues are broken
+    /// within the tick); a file back, changed or unreadable is probed again. Batches of an
+    /// older generation (the catalog was reset since) are dropped. Key changes go out first,
+    /// so a reset's new generation is in force.
+    fn watch_events(&mut self) {
+        self.doc.watch.apply(self.doc.media.take_key_changes());
+        if self.doc.watch_batches.is_empty() {
+            return;
+        }
+        for batch in std::mem::take(&mut self.doc.watch_batches) {
+            let Some(events) = self.doc.watch.accept(batch) else {
+                continue;
+            };
+            for event in events {
+                match event {
+                    WatchEvent::Gone { key, id, .. } => {
+                        if let Some(status) = self.doc.media.mark_missing(&key, id) {
+                            self.doc.pending_media.push(status);
+                        }
+                    }
+                    WatchEvent::Back { key, id, .. }
+                    | WatchEvent::Changed { key, id, .. }
+                    | WatchEvent::Unreadable { key, id, .. } => {
+                        self.doc.media.recheck(&key, id);
+                    }
+                }
+            }
+            // Primes of a file gone are dropped; a file probed again near a playhead is
+            // probed first.
+            self.doc.primes_dirty = true;
+            self.doc.warnings_dirty = true;
+        }
+    }
+
+    /// The watch's key changes, watchdog, log entries and notices.
+    fn supervise_watch(&mut self) {
+        self.doc.watch.apply(self.doc.media.take_key_changes());
+        self.doc.watch.supervise();
+        self.doc
+            .media
+            .set_watch_stalled(self.doc.watch.stalled_volumes());
+        for (level, message) in self.doc.watch.take_logs() {
+            self.log(level, message);
+        }
+        if self.doc.watch.take_notices_changed() {
+            self.doc.warnings_dirty = true;
+        }
+    }
+
+    /// Hands the probe answers gathered since the last tick to the engine in one
+    /// `Availability`, then starts the voices that waited for them.
+    fn flush_media(&mut self, now: SampleTime) {
+        if !self.doc.pending_media.is_empty() {
+            let media = std::mem::take(&mut self.doc.pending_media);
+            self.feed(
+                Input::Availability {
+                    media,
+                    patches: Vec::new(),
+                },
+                now,
+            );
+        }
+        for key in std::mem::take(&mut self.doc.ready_media) {
+            let mut fx = Effects::default();
+            let floor = self.stop_floor();
+            let mut env = Env {
+                ws: &self.doc.ws,
+                media: &self.doc.media,
+                streamer: &mut self.eng.streamer,
+                patches: &self.eng.patches,
+                ids: &mut self.eng.voice_ids,
+                rate: self.eng.rate,
+                cue_outputs: self.eng.cue_outputs,
+                now,
+                floor,
+            };
+            self.doc.voices.media_ready(&key, &mut env, &mut fx);
+            self.follow(fx, now);
+        }
+    }
+
+    fn deliver_deferred(&mut self, now: SampleTime) {
+        if self.doc.deferred.is_empty() {
+            return;
+        }
+        let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.doc.deferred)
+            .into_iter()
+            .partition(|(at, _)| *at < now);
+        self.doc.deferred = wait;
+        for (_, input) in due {
+            self.feed(input, now);
+        }
+    }
+
+    /// Hands `input` to the engine and carries out what it says, then the feedback that causes.
+    fn feed(&mut self, input: Input, now: SampleTime) {
+        let mut queue = VecDeque::from([input]);
+        let mut rounds = 0;
+        while let Some(input) = queue.pop_front() {
+            rounds += 1;
+            if rounds > FEEDBACK_LIMIT {
+                self.eng.seen.feedback_overflow += 1;
+                self.log(
+                    LogLevel::Error,
+                    format!("feedback loop cut after {FEEDBACK_LIMIT} rounds"),
+                );
+                break;
+            }
+            let actions = self.doc.engine.handle(&self.doc.ws, input, now);
+            let unsignalled = self.doc.engine.unsignalled_model_changes();
+            // M4.15e: an engine-wide high-water mark compared with one doc's counter; keep it
+            // per doc (seams note (c)).
+            if unsignalled > self.eng.seen.unsignalled {
+                self.eng.seen.unsignalled = unsignalled;
+                self.log(
+                    LogLevel::Error,
+                    format!("cue engine saw {unsignalled} model change(s) nobody signalled"),
+                );
+            }
+            queue.extend(self.execute(&actions, now));
+        }
+    }
+
+    /// Carries out one `handle` call's actions: runtime changes to the clients, `SetArmed` to the
+    /// model, voice actions to the mixer and streams. Returns feedback to hand back at once.
+    fn execute(&mut self, actions: &[Action], now: SampleTime) -> Vec<Input> {
+        let mut changes = Vec::new();
+        let mut armed = Vec::new();
+        let mut fx = Effects::default();
+        {
+            let floor = self.stop_floor();
+            let mut env = Env {
+                ws: &self.doc.ws,
+                media: &self.doc.media,
+                streamer: &mut self.eng.streamer,
+                patches: &self.eng.patches,
+                ids: &mut self.eng.voice_ids,
+                rate: self.eng.rate,
+                cue_outputs: self.eng.cue_outputs,
+                now,
+                floor,
+            };
+            for action in actions {
+                if let Some(change) = RuntimeChange::from_action(action, &self.doc.engine) {
+                    changes.push(change);
+                }
+                if matches!(action, Action::PlayheadChanged { .. }) {
+                    self.doc.primes_dirty = true;
+                }
+                self.doc.voices.apply(action, &mut env, &mut fx);
+            }
+        }
+        for action in actions {
+            match action {
+                Action::SetArmed { cue, armed: value }
+                    if set_armed(&mut self.doc.ws, *cue, *value) =>
+                {
+                    armed.push(*cue);
+                }
+                Action::SendOsc {
+                    cue,
+                    destination,
+                    address,
+                    args,
+                    ..
+                } => self.send_osc(*cue, *destination, address, args),
+                _ => {}
+            }
+        }
+        if !changes.is_empty() {
+            self.observe_changes(&changes);
+            self.runtime(changes);
+        }
+        let mut feedback = self.after(fx);
+        if !armed.is_empty() {
+            feedback.extend(self.model_changed(&Footprint::edited(armed)));
+            self.document();
+        }
+        feedback
+    }
+
+    /// A Network cue's turn (CT-30): encodes the message and hands it to its destination's
+    /// worker. Whatever goes wrong is a warning; the cue completes regardless (QLab: a Network
+    /// cue does not wait for, or learn of, delivery).
+    fn send_osc(
+        &mut self,
+        cue: CueId,
+        destination: NetworkPatchId,
+        address: &str,
+        args: &[OscArg],
+    ) {
+        let Some(patch) = self
+            .doc
+            .ws
+            .network_patches
+            .iter()
+            .find(|p| p.id == destination)
+            .cloned()
+        else {
+            // Cannot happen: a cue without its patch has a problem and does not send.
+            self.net_warning(cue, "network patch missing".to_owned());
+            return;
+        };
+        if self.doc.net.disabled() {
+            let label = self.cue_label(cue);
+            self.record(
+                LogKind::Engine,
+                LogLevel::Info,
+                format!(
+                    "{label}: network output is disabled, {address} to {} not sent",
+                    patch.name
+                ),
+                Some(cue),
+                None,
+            );
+            return;
+        }
+        let packet = match netout::packet(address, args, patch.protocol) {
+            Ok(p) => p,
+            Err(e) => return self.net_warning(cue, format!("message not sent: {e}")),
+        };
+        match self.doc.net.send(&patch, cue, packet) {
+            SendOutcome::Queued | SendOutcome::Suppressed => {}
+            SendOutcome::Refused(why) => {
+                self.net_warning(cue, format!("message to {} not sent: {why}", patch.name));
+            }
+        }
+    }
+
+    /// A worker's answer: a failed send is a warning; a look-up goes to the cue engine.
+    fn net_answer(&mut self, answer: NetAnswer) {
+        let now = self.now();
+        match answer {
+            NetAnswer::SendFailed {
+                cue,
+                ref destination,
+                ref reason,
+                ..
+            } => {
+                let message = format!("message to {destination} not sent: {reason}");
+                // A TCP failure also asks for a fresh look-up of the host.
+                let reports = self.doc.net.answer(answer, now);
+                self.network_reports(reports, now);
+                self.net_warning(cue, message);
+            }
+            lookup @ NetAnswer::Lookup { .. } => {
+                let reports = self.doc.net.answer(lookup, now);
+                self.network_reports(reports, now);
+            }
+        }
+        self.note_lookup_limit();
+    }
+
+    fn note_lookup_limit(&mut self) {
+        for note in self.doc.net.take_notes() {
+            self.log(LogLevel::Warn, note);
+        }
+        if self.doc.net.take_limit_note() {
+            self.log(
+                LogLevel::Warn,
+                "host look-ups are stuck; names waiting for one are taken to be reachable until one answers"
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn network_reports(&mut self, patches: netout::Reports, now: SampleTime) {
+        if !patches.is_empty() {
+            self.feed(Input::NetworkAvailability { patches }, now);
+        }
+    }
+
+    /// A show-time notice (`network_send_failed`) for a Network cue, logged and sent to clients.
+    fn net_warning(&mut self, cue: CueId, message: String) {
+        let changes = vec![RuntimeChange::Warning {
+            warning: notice("network_send_failed", message, Some(cue)),
+        }];
+        self.observe_changes(&changes);
+        self.runtime(changes);
+    }
+
+    /// Sends the mixer commands and notices of `fx`; queues its deferred feedback; returns its
+    /// immediate feedback (which `feed` hands to the engine).
+    fn after(&mut self, fx: Effects) -> Vec<Input> {
+        let Effects {
+            commands,
+            feedback,
+            deferred,
+            notices,
+            reprobe,
+        } = fx;
+        self.send_commands(commands);
+        self.doc.deferred.extend(deferred);
+        for key in reprobe {
+            self.doc.media.reprobe(&key);
+        }
+        if !notices.is_empty() {
+            let changes = notices
+                .into_iter()
+                .map(|(code, message, cue)| RuntimeChange::Warning {
+                    warning: WireWarning::Notice {
+                        code: code.to_owned(),
+                        message,
+                        cue,
+                    },
+                })
+                .collect::<Vec<_>>();
+            self.observe_changes(&changes);
+            self.runtime(changes);
+        }
+        feedback
+    }
+
+    /// [`Self::after`], then hands the feedback to the engine (outside a `feed`).
+    fn follow(&mut self, fx: Effects, now: SampleTime) {
+        for input in self.after(fx) {
+            self.feed(input, now);
+        }
+    }
+
+    /// Sends commands as batches the mixer applies whole (docs/audio.md, Scheduling horizon).
+    fn send_commands(&mut self, mut commands: Vec<(SampleTime, CommandKind)>) {
+        while !commands.is_empty() {
+            let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
+            if self.eng.mixer.send_batch(commands).is_err() {
+                // Cannot happen: the batch is at most the queue's size.
+                self.log(LogLevel::Error, "mixer batch refused".to_owned());
+            }
+            commands = rest;
+        }
+    }
+
+    fn runtime(&mut self, changes: Vec<RuntimeChange>) {
+        self.doc.runtime_seq += 1;
+        self.eng.out.send(ServerMessage::Runtime {
+            seq: self.doc.runtime_seq,
+            changes,
+        });
+    }
+
+    fn document(&mut self) {
+        let document = self.doc.document_state();
+        self.doc.resend_document = !self
+            .eng
+            .out
+            .send_state(ServerMessage::Document { document });
+    }
+
+    fn log_device(&mut self, level: LogLevel, message: String) {
+        self.log_kind(LogKind::Device, level, message);
+    }
+
+    /// A message for the show log and every client's `log`.
+    fn log(&mut self, level: LogLevel, message: String) {
+        self.log_kind(LogKind::Engine, level, message);
+    }
+
+    /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
+    fn prime(&mut self, now: SampleTime) {
+        let wanted = prime_set(&self.doc.ws, &self.doc.engine, self.eng.config.prime_cues);
+        // Their files are probed first (H2: a restart mid-show must not leave the cue at the
+        // playhead behind a hundred others).
+        let keys: Vec<String> = wanted
+            .iter()
+            .filter_map(|c| match &self.doc.ws.find_cue(*c)?.kind {
+                CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+                _ => None,
+            })
+            .collect();
+        self.doc.media.prioritize(keys.iter().map(String::as_str));
+        let floor = self.stop_floor();
+        let mut env = Env {
+            ws: &self.doc.ws,
+            media: &self.doc.media,
+            streamer: &mut self.eng.streamer,
+            patches: &self.eng.patches,
+            ids: &mut self.eng.voice_ids,
+            rate: self.eng.rate,
+            cue_outputs: self.eng.cue_outputs,
+            now,
+            floor,
+        };
+        self.doc
+            .voices
+            .prime(&wanted, self.eng.config.max_primes, &mut env);
+    }
+
+    /// Progress and meters, each at most [`REPORT_HZ`] in sample time; reconciliation of lost
+    /// voice ends rides on the voice-meter read.
+    fn reports(&mut self) {
+        let rendered = self.eng.mixer.samples_rendered();
+        let period = (u64::from(self.eng.rate.get()) / REPORT_HZ).max(1);
+        let due = |last: Option<SampleTime>| last.is_none_or(|l| rendered >= l + period);
+        if due(self.doc.last_progress) {
+            let items: Vec<ProgressItem> = self
+                .doc
+                .voices
+                .progress(rendered)
+                .into_iter()
+                .map(|(cue, pos, left)| ProgressItem {
+                    cue,
+                    elapsed: self.seconds(pos),
+                    remaining: left.map(|l| self.seconds(l)),
+                })
+                .collect();
+            if !items.is_empty() {
+                self.doc.last_progress = Some(rendered);
+                let mut m = ServerMessage::Progress { items };
+                m.sanitise();
+                self.eng.out.send_lossy(m);
+            }
+        }
+        // M4.15e: `last_meters` and `last_meter_read` are engine fields used by a per-doc
+        // report: the first doc's read would starve the others of meters and reconciliation
+        // (seams note (d)).
+        if due(self.eng.last_meters) {
+            self.eng.last_meters = Some(rendered);
+            self.meters(rendered);
+        }
+    }
+
+    fn seconds(&self, frames: u64) -> f64 {
+        frames as f64 / f64::from(self.eng.rate.get())
+    }
+
+    fn meters(&mut self, rendered: SampleTime) {
+        self.eng
+            .mixer
+            .read_output_meters_into(&mut self.eng.out_peaks);
+        let n = self
+            .eng
+            .mixer
+            .read_voice_meters_into(&mut self.eng.meter_ids, &mut self.eng.meter_peaks);
+        let gone = self.doc.voices.take_gone();
+        let outs = self.eng.cue_outputs.max(1);
+        let mut cues: Vec<CueMeter> = Vec::new();
+        let mut listed = Vec::with_capacity(n);
+        for (k, id) in self.eng.meter_ids.iter().take(n).enumerate() {
+            listed.push(*id);
+            let cue = self
+                .doc
+                .voices
+                .cue_of(*id)
+                .or_else(|| gone.iter().find(|(g, _)| g == id).map(|(_, c)| *c));
+            let Some(cue) = cue else { continue };
+            let peaks = self
+                .eng
+                .meter_peaks
+                .get(k * outs..(k + 1) * outs)
+                .unwrap_or(&[]);
+            match cues.iter_mut().find(|m| m.cue == cue) {
+                Some(m) => {
+                    for (a, b) in m.peaks.iter_mut().zip(peaks) {
+                        *a = a.max(*b);
+                    }
+                }
+                None => cues.push(CueMeter {
+                    cue,
+                    peaks: peaks.to_vec(),
+                }),
+            }
+        }
+        self.reconcile(&listed, rendered);
+        let outputs: Vec<OutputMeter> = self
+            .doc
+            .ws
+            .patches
+            .iter()
+            .filter_map(|p| {
+                let channels = self.eng.patches.channels(p.id)?;
+                let peaks = channels
+                    .iter()
+                    .map(|&c| {
+                        usize::try_from(c)
+                            .ok()
+                            .and_then(|c| self.eng.out_peaks.get(c))
+                            .copied()
+                            .unwrap_or(0.0)
+                    })
+                    .collect();
+                Some(OutputMeter { patch: p.id, peaks })
+            })
+            .collect();
+        let live = self.doc.voices.has_playing() || !cues.is_empty();
+        // Only while audio plays, plus one message after, so meters fall back to silence.
+        if live || self.doc.meters_live {
+            self.doc.meters_live = live;
+            let mut m = ServerMessage::Meters { outputs, cues };
+            m.sanitise();
+            self.eng.out.send_lossy(m);
+        }
+    }
+
+    /// A started voice the mixer has not listed in two meter reads in a row, while mixer
+    /// events have been lost, has ended without its report reaching us: report it ended so its
+    /// cue does not run forever (docs/control.md, Reconciliation).
+    fn reconcile(&mut self, listed: &[VoiceId], rendered: SampleTime) {
+        let Some(prev) = self.eng.last_meter_read.replace(rendered) else {
+            return;
+        };
+        let lost_events = self.eng.mixer.dropped_events() > 0;
+        let started: Vec<(VoiceId, SampleTime)> = self.doc.voices.started().collect();
+        let mut fx = Effects::default();
+        for (id, start) in started {
+            if start >= prev {
+                continue;
+            }
+            let absent = self.doc.voices.mark_absent(id, !listed.contains(&id));
+            if absent >= 2 && lost_events {
+                self.doc.voices.lost(id, rendered, &mut fx);
+            }
+        }
+        let now = self.now();
+        self.follow(fx, now);
+    }
+
+    /// Reports counters that must never rise: lost events, mixer faults, allocations on the
+    /// audio thread (M3.21), dropped outbound messages.
+    fn health(&mut self) {
+        let dropped = self.eng.mixer.dropped_events();
+        if dropped > self.eng.seen.dropped_events {
+            self.eng.seen.dropped_events = dropped;
+            self.log(
+                LogLevel::Warn,
+                format!("{dropped} mixer event(s) lost; voice ends are reconciled from meters"),
+            );
+        }
+        let faults = self.eng.mixer.faults();
+        if faults > self.eng.seen.faults {
+            self.eng.seen.faults = faults;
+            self.log(
+                LogLevel::Error,
+                format!("audio engine fault: {faults} block(s) replaced with silence"),
+            );
+        }
+        let allocs = self.eng.backend.alloc_violations();
+        if allocs > self.eng.seen.alloc_violations {
+            self.eng.seen.alloc_violations = allocs;
+            self.log(
+                LogLevel::Error,
+                format!("real-time violation: {allocs} allocation(s) on the audio thread"),
+            );
+            self.doc.warnings_dirty = true;
+        }
+        // State the clients missed goes again, newest, once there is room.
+        if self.doc.resend_document && self.eng.out.has_room() {
+            self.document();
+        }
+        if self.doc.resend_warnings && self.eng.out.has_room() {
+            self.doc.resend_warnings = !self.eng.out.send_state(ServerMessage::Warnings {
+                warnings: self.doc.warnings.clone(),
+            });
+        }
+        let out = self.eng.out.dropped() + self.eng.out.lossy_dropped();
+        if out > self.eng.seen.outbound_dropped && self.eng.out.has_room() {
+            let (seq, lossy) = (self.eng.out.dropped(), self.eng.out.lossy_dropped());
+            self.eng.seen.outbound_dropped = out;
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "clients were not keeping up: {seq} message(s) and {lossy} meter/progress \
+                     update(s) dropped so far"
+                ),
+            );
+        }
+    }
+
+    /// The workspace-level notices in force: damaged media, preloads over budget, cues whose
+    /// slices cannot play, audio-thread allocations. Sent when the list changes.
+    fn refresh_warnings(&mut self) {
+        let mut list = self.doc.file.notices.clone();
+        let mut damaged: Vec<(&str, usize)> = self.doc.media.damaged().collect();
+        damaged.sort_unstable();
+        for (path, n) in damaged {
+            list.push(notice(
+                "damaged_media",
+                format!("{path}: {n} damaged part(s); they play as silence"),
+                None,
+            ));
+        }
+        let mut over: Vec<&str> = self.doc.media.over_budget().collect();
+        over.sort_unstable();
+        for path in over {
+            list.push(notice(
+                "preload_over_budget",
+                format!("{path} does not fit the preload memory budget and is streamed"),
+                None,
+            ));
+        }
+        let mut failed: Vec<&str> = self.doc.media.preload_failed().collect();
+        failed.sort_unstable();
+        for path in failed {
+            list.push(notice(
+                "preload_failed",
+                format!("{path} could not be loaded into memory and is streamed"),
+                None,
+            ));
+        }
+        for (cue, e) in self
+            .doc
+            .checks
+            .check(&self.doc.ws, &mut self.doc.media, self.eng.rate)
+        {
+            list.push(notice(
+                "bad_plan",
+                format!("the cue's slices cannot be played: {e}"),
+                Some(cue),
+            ));
+        }
+        self.device_warnings(&mut list);
+        self.doc.watch.notices(&mut list);
+        if self.eng.seen.alloc_violations > 0 {
+            list.push(notice(
+                "realtime_allocation",
+                format!(
+                    "the audio thread allocated memory {} time(s): report this bug",
+                    self.eng.seen.alloc_violations
+                ),
+                None,
+            ));
+        }
+        if list != self.doc.warnings {
+            self.doc.warnings = list.clone();
+            self.doc.resend_warnings = !self
+                .eng
+                .out
+                .send_state(ServerMessage::Warnings { warnings: list });
+        }
+        // The plans just checked also give the cues' nominal lengths, which a playlist halted by
+        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist").
+        let lengths = self.doc.checks.length_changes();
+        if !lengths.is_empty() {
+            let now = self.now();
+            self.feed(Input::CueLengths { lengths }, now);
+        }
+    }
+
+    /// The device's notices: an outage, a mixer that could not be recovered, patches that map
+    /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
+    /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
+    fn device_warnings(&self, list: &mut Vec<WireWarning>) {
+        if let Some(d) = self.eng.backend.device() {
+            let name = &d.info().name;
+            if let Some(why) = d.unrecoverable() {
+                list.push(notice(
+                    "device_unrecoverable",
+                    format!(
+                        "audio device \"{name}\": {why}; sound cannot come back: restart \
+                         openLab"
+                    ),
+                    None,
+                ));
+            } else if d.is_down() {
+                list.push(notice(
+                    "device_lost",
+                    format!(
+                        "audio device \"{name}\" is lost: the cues that played on it were \
+                         stopped, and cues on it cannot start; reconnecting"
+                    ),
+                    None,
+                ));
+            }
+            if d.is_stalled() && !d.is_down() {
+                list.push(notice(
+                    "device_stalled",
+                    format!(
+                        "audio device \"{name}\" has stopped calling back: it is treated as \
+                         lost if it stays silent"
+                    ),
+                    None,
+                ));
+            }
+            if d.list_stuck() {
+                list.push(notice(
+                    "device_list_stuck",
+                    "reading the output device list does not finish: devices plugged in or out \
+                     are not seen"
+                        .to_owned(),
+                    None,
+                ));
+            }
+            if d.info().outputs_dropped && !d.is_down() {
+                list.push(notice(
+                    "outputs_dropped",
+                    format!(
+                        "audio device \"{name}\" has {} output channel(s), fewer than the {} \
+                         the show was opened with: the others are not heard",
+                        d.info().channels,
+                        self.eng.cue_outputs
+                    ),
+                    None,
+                ));
+            }
+        }
+        for patch in &self.doc.ws.patches {
+            if let Some(PatchResolution::ChannelsMissing {
+                device,
+                needed,
+                available,
+            }) = self.eng.patches.resolution(patch.id)
+            {
+                list.push(notice(
+                    "outputs_dropped",
+                    format!(
+                        "patch \"{}\" maps {needed} channel(s) of \"{device}\", which has \
+                         {available}: its cues cannot play",
+                        patch.name
+                    ),
+                    None,
+                ));
+            }
+        }
+        for &id in self.eng.patches.exhausted() {
+            let name = self
+                .doc
+                .ws
+                .patches
+                .iter()
+                .find(|p| p.id == id)
+                .map_or("", |p| p.name.as_str());
+            list.push(notice(
+                "mixer_patches_exhausted",
+                format!(
+                    "patch \"{name}\" cannot play: all {} mixer patches are in use",
+                    self.eng.patches.capacity()
+                ),
+                None,
+            ));
+        }
+        for output in self.eng.patches.delay_conflicts() {
+            list.push(notice(
+                "output_delay_conflict",
+                format!(
+                    "device output {} has different delays in different patches; the longest \
+                     is used",
+                    u32::from(output) + 1
+                ),
+                None,
+            ));
+        }
+    }
+}
+
+impl Control {
+    /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
+    pub fn snapshot(&self) -> Snapshot {
+        self.doc.snapshot()
+    }
+
+    /// One media-watch pass on this thread, in manual mode (tests): its batch, if any,
+    /// to hand to [`Self::handle`] as `Inbox::Watch`. `None` in thread mode or when the pass
+    /// found nothing.
+    pub fn watch_pass(&mut self) -> Option<WatchBatch> {
+        self.doc.watch.apply(self.doc.media.take_key_changes());
+        self.doc.watch.manual_pass()
+    }
+
+    /// Watch batches of the current generation taken so far (a cost measure).
+    pub fn watch_batches(&self) -> u64 {
+        self.doc.watch.batches()
+    }
+
+    /// Media watchers abandoned in a stalled stat.
+    pub fn abandoned_watchers(&self) -> usize {
+        self.doc.watch.abandoned()
+    }
 
     /// Stops the show for shutdown: a hard stop of everything, carried out by the mixer.
     pub fn shutdown(&mut self) {
-        let now = self.now();
+        // M4.15e/g: panic every doc; with no doc only `pump` (seams note (f)).
+        let mut cx = self.cx();
+        let now = cx.now();
         // A second panic within the fade is a hard stop (docs/cue-engine.md, Panic).
-        self.feed(Input::Panic, now);
-        self.feed(Input::Panic, now);
-        self.voices.clear_primes();
-        self.mixer.pump();
+        cx.feed(Input::Panic, now);
+        cx.feed(Input::Panic, now);
+        cx.doc.voices.clear_primes();
+        self.eng.mixer.pump();
     }
 
     /// Slice plans built for the `bad_plan` warnings so far (a cost measure: an edit rebuilds
     /// only the cues it changed).
     pub fn plan_builds(&self) -> u64 {
-        self.checks.builds()
+        self.doc.checks.builds()
     }
 
     /// Cues the `bad_plan` checks have looked at so far (a cost measure: an edit looks at the
     /// cues it touched, M4.12c).
     pub fn plan_cues_examined(&self) -> u64 {
-        self.checks.examined()
+        self.doc.checks.examined()
     }
 
     /// Walks of every audio cue the `bad_plan` checks made so far (a newly followed workspace;
     /// an edit or a probe answer makes none, M4.12c).
     pub fn plan_walks(&self) -> u64 {
-        self.checks.walks()
+        self.doc.checks.walks()
     }
 
     /// Edits whose `model_changed` walked the workspace instead of reading the cue index (a
     /// cost measure; none for a valid workspace, M4.12c).
     pub fn model_change_walks(&self) -> u64 {
-        self.model_change_walks
+        self.doc.model_change_walks
     }
 
     /// Network look-ups under way plus messages queued or being sent (the offline driver waits
     /// for zero).
     pub fn net_busy(&self) -> usize {
-        self.net.busy()
+        self.doc.net.busy()
     }
 
     /// PB-10: whether the network output override is on.
     pub fn network_output_disabled(&self) -> bool {
-        self.net.disabled()
+        self.doc.net.disabled()
     }
 
     pub fn workspace(&self) -> &Workspace {
-        &self.ws
+        &self.doc.ws
     }
 
     pub fn engine(&self) -> &CueEngine {
-        &self.engine
+        &self.doc.engine
     }
 
     /// The machine settings in force, including mappings the engine added (M4.4c).
     pub fn machine(&self) -> &MachineSettings {
-        &self.config.machine
+        &self.eng.config.machine
     }
 
     pub fn mixer(&self) -> &MixerController {
-        &self.mixer
+        &self.eng.mixer
     }
 
     pub fn revision(&self) -> u64 {
-        self.revision
+        self.doc.revision
     }
 
     /// Voice records alive (none once a show has stopped and every voice has ended).
     pub fn live_voices(&self) -> usize {
-        self.voices.live()
+        self.doc.voices.live()
     }
 
     /// Stream handles the loop holds (voices, loads and primes).
     pub fn held_streams(&self) -> usize {
-        self.voices.streams()
+        self.doc.voices.streams()
     }
 
     /// Streams the disk workers have open.
     pub fn open_streams(&self) -> usize {
-        self.streamer.open_streams()
+        self.eng.streamer.open_streams()
     }
 
     /// Starts that used a primed stream (not a cold start).
     pub fn prime_hits(&self) -> u64 {
-        self.voices.prime_hits()
+        self.doc.voices.prime_hits()
     }
 
     /// Whether the cue's primed stream reads preloaded samples.
     pub fn primed_from_memory(&self, cue: CueId) -> bool {
-        self.voices.primed_from_memory(cue)
+        self.doc.voices.primed_from_memory(cue)
     }
 
     /// Cues with a primed stream.
     pub fn primed(&self) -> Vec<CueId> {
-        let mut v: Vec<CueId> = self.voices.primed().collect();
+        let mut v: Vec<CueId> = self.doc.voices.primed().collect();
         v.sort();
         v
     }
 
     /// Probes still running.
     pub fn probes_pending(&self) -> usize {
-        self.media.pending()
+        self.doc.media.pending()
     }
 
     /// Preload jobs started and not answered yet.
     pub fn preloads_pending(&self) -> usize {
-        self.media.preloads_pending()
+        self.doc.media.preloads_pending()
     }
 
     /// Probe workers replaced because they were stuck.
     pub fn abandoned_probe_workers(&self) -> usize {
-        self.media.abandoned_workers()
+        self.doc.media.abandoned_workers()
     }
 
     /// Cues the media catalog has read from the workspace (see `MediaCatalog::cues_read`).
     pub fn media_cues_read(&self) -> u64 {
-        self.media.cues_read()
+        self.doc.media.cues_read()
     }
 
     /// Memory taken from the preload budget.
     pub fn preload_reserved(&self) -> u64 {
-        self.media.preload_reserved()
+        self.doc.media.preload_reserved()
     }
 
     /// Device-thread jobs not answered yet (a test driver waits for them; none offline).
     pub fn device_jobs_pending(&self) -> usize {
-        self.backend.device().map_or(0, Device::jobs_in_flight)
+        self.eng.backend.device().map_or(0, Device::jobs_in_flight)
     }
 
     /// The device is down: an outage, sample time standing still.
     pub fn device_down(&self) -> bool {
-        self.backend.is_down()
+        self.eng.backend.is_down()
     }
 
     /// A device list read is under way (a test driver waits for it).
     pub fn device_listing(&self) -> bool {
-        self.backend.device().is_some_and(Device::is_listing)
+        self.eng.backend.device().is_some_and(Device::is_listing)
     }
 
     /// Frames per block the loop schedules with (follows the open stream).
     pub fn block_frames(&self) -> u64 {
-        self.block
+        self.eng.block
     }
 
     /// Feedback waiting for its sample.
     pub fn deferred(&self) -> usize {
-        self.deferred.len()
+        self.doc.deferred.len()
     }
 
     /// Voices the mixer is playing or holding paused, from a voice-meter read (diagnostics and
     /// leak tests; the read takes the peaks the next meters message would have had).
     pub fn mixer_voice_count(&mut self) -> usize {
-        self.mixer
-            .read_voice_meters_into(&mut self.meter_ids, &mut self.meter_peaks)
+        self.eng
+            .mixer
+            .read_voice_meters_into(&mut self.eng.meter_ids, &mut self.eng.meter_peaks)
     }
 
     /// Playing streams and the frames each must have written before rendered sample `t` can
     /// be rendered without an underrun (offline driver).
     pub fn stream_needs(&self, t: SampleTime) -> Vec<(&openlab_audio::StreamHandle, u64)> {
-        self.voices.stream_needs(t).collect()
+        self.doc.voices.stream_needs(t).collect()
     }
 
     /// Streams prepared and not playing yet: loads and primes (offline driver).
     pub fn prepared_streams(&self) -> Vec<&openlab_audio::StreamHandle> {
-        self.voices.waiting_streams().collect()
+        self.doc.voices.waiting_streams().collect()
     }
 
     /// No voice, alias or deferred report is left.
     pub fn is_idle(&self) -> bool {
-        self.voices.is_idle() && self.deferred.is_empty()
+        self.doc.voices.is_idle() && self.doc.deferred.is_empty()
     }
 }
 

@@ -25,6 +25,8 @@ pub enum Inbox {
         message: ClientMessage,
         reply: ReplyTx,
     },
+    // M4.15e: Probe, Net, Watch and Doc answers carry no DocId; route them by doc (seams
+    // note (g)).
     /// A probe worker's answer (internal feedback).
     Probe(ProbeAnswer),
     /// The device thread's answer (internal feedback, docs/control.md "Devices").
