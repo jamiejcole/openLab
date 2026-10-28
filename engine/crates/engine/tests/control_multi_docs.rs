@@ -230,6 +230,37 @@ fn a_hotkey_fires_in_every_doc() {
     assert!(s.channel(0)[later..].iter().all(|&v| v == 0.0));
 }
 
+/// The hotkey's release (the `hotkey` message with `phase: up`) reaches every doc too: a cue
+/// whose second trigger is on release stops in each.
+#[test]
+fn a_hotkey_release_reaches_every_doc() {
+    let key = Hotkey {
+        key: "q".into(),
+        modifiers: Modifiers::default(),
+    };
+    let f = wav(&dc(20_000, 0.25));
+    let held = |patch| {
+        let mut c = audio(1, &f, patch);
+        c.triggers.hotkey = Some(key.clone());
+        c.second_trigger = openlab_core::SecondTrigger::HardStop;
+        c.second_trigger_on_release = true;
+        c
+    };
+    let (mut s, ids) = docs_show(workspace(vec![held(0)]), vec![ws_n(1, vec![held(1)])]);
+    s.settle_media();
+    s.run(BLOCK);
+    s.hotkey(&key);
+    s.run(BLOCK * 4);
+    for doc in &ids {
+        assert_eq!(state(&s, *doc, 1), CueState::Running, "doc {doc}");
+    }
+    s.hotkey_up(&key);
+    s.run(BLOCK * 4);
+    for doc in &ids {
+        assert_eq!(state(&s, *doc, 1), CueState::Idle, "doc {doc}");
+    }
+}
+
 #[test]
 fn voice_ids_are_unique_across_docs_and_their_owners_are_forgotten() {
     let f = wav(&dc(800, 0.25));

@@ -28,31 +28,31 @@ final class EngineSessionTests: XCTestCase {
     func testMultiListsWorkspacesAndGivesEachItsOwnStore() async throws {
         let (s, engine) = try await started(.multi)
         XCTAssertEqual(s.mode, .multi)
-        XCTAssertEqual(s.workspaces.map(\.doc), ["doc-1"])
+        XCTAssertEqual(s.workspaces.map(\.doc), ["1"])
         XCTAssertEqual(s.workspaces.first?.name, "Test")
-        XCTAssertEqual(s.stores["doc-1"]?.model?.name, "Test")
+        XCTAssertEqual(s.stores["1"]?.model?.name, "Test")
         // The app connection is unbound; the store's is bound to its doc.
         guard case .hello(let appHello)? = engine.received.first else { return XCTFail() }
         XCTAssertNil(appHello.workspace)
-        XCTAssertEqual(engine.connections(of: "doc-1").count, 1)
+        XCTAssertEqual(engine.connections(of: "1").count, 1)
     }
 
     func testNewAndOpenProduceSeparateStoresThatDoNotLeakIntoEachOther() async throws {
         let (s, engine) = try await started(.multi)
         guard case .success(let second) = await s.newWorkspace() else { return XCTFail("new") }
         guard case .success(let third) = await s.open(path: "/Shows/Hamlet.openlab") else { return XCTFail("open") }
-        XCTAssertEqual([second, third], ["doc-2", "doc-3"])
+        XCTAssertEqual([second, third], ["2", "3"])
         await assertEventually { s.stores.count == 3 && s.stores.values.allSatisfy { $0.model != nil } }
         XCTAssertEqual(s.workspaces.count, 3)
         XCTAssertEqual(s.stores[third]?.model?.name, "Hamlet")
         XCTAssertEqual(s.workspaces.last?.path, "/Shows/Hamlet.openlab")
-        XCTAssertTrue(s.stores["doc-1"] !== s.stores[second])
-        XCTAssertNotEqual(s.stores["doc-1"]?.model?.id, s.stores[second]?.model?.id)
+        XCTAssertTrue(s.stores["1"] !== s.stores[second])
+        XCTAssertNotEqual(s.stores["1"]?.model?.id, s.stores[second]?.model?.id)
 
         // A frame pushed to one doc changes only that doc's store.
         engine.push(try Fixtures.text("server", "document"), doc: second)
         await assertEventually { s.stores[second]?.document?.path == nil && s.stores[second]?.document?.dirty == false }
-        XCTAssertEqual(s.stores["doc-1"]?.document?.dirty, true)
+        XCTAssertEqual(s.stores["1"]?.document?.dirty, true)
 
         // Intents go through the right connection.
         let before = engine.received.count
@@ -77,22 +77,22 @@ final class EngineSessionTests: XCTestCase {
         guard case .success = closed else { return XCTFail("\(closed)") }
         await assertEventually { s.stores[doc] == nil && s.workspaces.count == 1 }
         XCTAssertTrue(engine.connections(of: doc).isEmpty)
-        XCTAssertNotNil(s.stores["doc-1"])
+        XCTAssertNotNil(s.stores["1"])
     }
 
     func testCloseOfADirtyWorkspaceIsRefusedUnlessDiscarded() async throws {
-        let (s, _) = try await started(.multi)  // doc-1 is dirty in the fixture
-        let refused = await s.close(doc: "doc-1")
+        let (s, _) = try await started(.multi)  // doc 1 is dirty in the fixture
+        let refused = await s.close(doc: "1")
         guard case .failure(.engine(let code, _)) = refused else { return XCTFail("\(refused)") }
         XCTAssertEqual(code, .unsavedChanges)
-        XCTAssertNotNil(s.stores["doc-1"])
-        guard case .success = await s.close(doc: "doc-1", discardChanges: true) else { return XCTFail() }
+        XCTAssertNotNil(s.stores["1"])
+        guard case .success = await s.close(doc: "1", discardChanges: true) else { return XCTFail() }
         await assertEventually { s.stores.isEmpty && s.workspaces.isEmpty }
     }
 
     func testAppConnectionSeesDirtyFlagChanges() async throws {
         let (s, engine) = try await started(.multi)
-        engine.setDocument("doc-1", dirty: false)
+        engine.setDocument("1", dirty: false)
         await assertEventually { s.workspaces.first?.dirty == false }
     }
 
@@ -112,9 +112,9 @@ final class EngineSessionTests: XCTestCase {
         let (s, engine) = try await started(.multi)
         engine.dropConnections()
         await assertEventually { s.connectionState != .connected }
-        // Each connection (app + doc-1) retries through its own scheduler; the session's is manual,
+        // Each connection (app + doc 1) retries through its own scheduler; the session's is manual,
         // so the bound store reconnects only when its scheduler fires. The store stays mirrored.
-        XCTAssertNotNil(s.stores["doc-1"]?.model)
+        XCTAssertNotNil(s.stores["1"]?.model)
     }
 
     // MARK: One-workspace engine (today's)
@@ -131,13 +131,7 @@ final class EngineSessionTests: XCTestCase {
 
     func testSingleEngineOpenReplacesInPlace() async throws {
         let (s, engine) = try await started(.single)
-        let refused = await s.open(path: "/Shows/B.openlab")  // the fixture workspace is dirty
-        guard case .failure(.engine(let code, _)) = refused else { return XCTFail("\(refused)") }
-        XCTAssertEqual(code, .unsavedChanges)
-
-        guard case .success(let doc) = await s.open(path: "/Shows/B.openlab", discardChanges: true) else {
-            return XCTFail()
-        }
+        guard case .success(let doc) = await s.open(path: "/Shows/B.openlab") else { return XCTFail() }
         XCTAssertEqual(doc, EngineSession.singleDoc)
         await assertEventually { s.stores[doc]?.model?.name == "B" }
         XCTAssertEqual(s.workspaces.first?.path, "/Shows/B.openlab")

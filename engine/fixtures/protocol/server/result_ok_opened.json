@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 41,
+  "ok": {
+    "data": {
+      "type": "opened",
+      "doc": 4
+    }
+  }
+}

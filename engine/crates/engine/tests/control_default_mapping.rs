@@ -38,21 +38,39 @@ fn bare(env: &Env, devices: Vec<DeviceInfo>) -> ControlConfig {
     c
 }
 
+/// `new`: another workspace opens (M4.15f); its snapshot.
 fn new_workspace(s: &mut OfflineShow) -> Snapshot {
     let id = s.request_id();
     let replies = s.send(ClientMessage::Request {
         id,
-        request: Request::New {
-            discard_changes: false,
-        },
+        request: Request::New {},
     });
-    replies
+    let doc = replies
         .iter()
         .find_map(|m| match m {
-            ServerMessage::Snapshot { snapshot } => Some((**snapshot).clone()),
+            ServerMessage::Result {
+                outcome:
+                    openlab_core::protocol::Outcome::Ok(openlab_core::protocol::OkBody {
+                        data: Some(openlab_core::protocol::ResultData::Opened { doc }),
+                        ..
+                    }),
+                ..
+            } => Some(*doc),
             _ => None,
         })
-        .expect("no snapshot")
+        .expect("not opened");
+    // The tests follow the new workspace: the first is closed, so `control()` shows the new one.
+    let first = s.control().doc_ids()[0];
+    s.close_doc(first, true).unwrap();
+    s.control().doc(doc).unwrap().snapshot()
+}
+
+/// A log line without the `[workspace] ` its doc is named by while several are open.
+fn untagged(message: &str) -> &str {
+    match message.strip_prefix('[').and_then(|m| m.split_once("] ")) {
+        Some((_, rest)) => rest,
+        None => message,
+    }
 }
 
 fn infos(msgs: &[ServerMessage]) -> Vec<String> {
@@ -61,7 +79,9 @@ fn infos(msgs: &[ServerMessage]) -> Vec<String> {
             ServerMessage::Log {
                 level: LogLevel::Info,
                 message,
-            } if message.starts_with("mapped patch") => Some(message.clone()),
+            } if untagged(message).starts_with("mapped patch") => {
+                Some(untagged(message).to_owned())
+            }
             _ => None,
         })
         .collect()

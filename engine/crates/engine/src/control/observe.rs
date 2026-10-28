@@ -137,7 +137,7 @@ impl Engine {
             self.observe.unsent = Some(message);
             return;
         }
-        match self.out.try_lossy(message) {
+        match self.out.try_lossy(None, message) {
             Ok(()) => {
                 self.observe.push_window = Some((start, pushed + 1));
                 self.observe.unsent = None;
@@ -224,7 +224,7 @@ impl Engine {
     /// kind (device, document).
     pub(super) fn log_kind(&mut self, kind: LogKind, level: LogLevel, message: String) {
         self.record(kind, level, message.clone(), None, None);
-        self.out.send(ServerMessage::Log { level, message });
+        self.out.send(None, ServerMessage::Log { level, message });
     }
 
     /// The entries `log_tail` answers with, the records the disk writer lost, and the `seq`
@@ -300,7 +300,7 @@ impl Engine {
                     status: Box::new(status),
                 };
                 message.sanitise();
-                self.out.send_lossy(message);
+                self.out.send_lossy(None, message);
             }
         }
     }
