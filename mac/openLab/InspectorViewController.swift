@@ -363,8 +363,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             }
         }
         let kind = cue.kindType
-        // The field holds the typed name; an unnamed cue shows what it follows as the placeholder.
-        nameField.placeholderString = cue.displayName.isEmpty ? CueKindStyle.kindLabel(kind) : cue.displayName
+        // An unnamed cue with no file shows its kind as a hint; otherwise the field holds the shown name.
+        nameField.placeholderString = CueKindStyle.kindLabel(kind)
         let style = CueKindStyle.kinds[kind]
         kindIcon.image = style.flatMap { symbolImage($0.symbol, CueKindStyle.kindLabel(kind)) }
         let isTarget = InspectorEdit.targetKinds.contains(kind)
