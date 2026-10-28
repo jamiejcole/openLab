@@ -120,8 +120,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         Task { await logWindow.refresh() }
     }
 
-    /// Show Mode (SM-01) belongs to this window only and is not saved: the protocol has no field for
-    /// it (docs/handoff/m5-protocol-requests.md). Locks the inspector and cue-type row; transport,
+    /// Show Mode (SM-01) belongs to this window only and is not saved; the app does not send the
+    /// engine's `set_show_mode` yet (#124). Locks the inspector and cue-type row; transport,
     /// hotkeys, the sidebar and the layout toggles keep working, as in QLab.
     private(set) var isShowMode = false
 

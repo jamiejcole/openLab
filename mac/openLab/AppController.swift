@@ -192,7 +192,7 @@ final class AppController {
     }
 
     /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6). The
-    /// wire has no app-scope hotkey message yet (m5-protocol-requests.md), so each workspace gets a
+    /// app does not send the engine's app-scope `hotkey` message yet (#233), so each workspace gets a
     /// `start` for its matching cues; `start` applies the cue's second-trigger rule. Typing keys
     /// stay with a text field being edited; a held key fires once; a menu key is never taken.
     private func fireCueHotkeys(_ chord: KeyChord, event: NSEvent) -> Bool {

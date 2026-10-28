@@ -1635,10 +1635,19 @@ impl DocCx<'_> {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
+                // A step that would stop a playing cue (an undo of its add, a redo of its
+                // delete) is refused and stays on its stack (M5.10d): whoever presses undo
+                // cannot predict that, and it must not cut a cue during a show.
+                let engine = &self.doc.engine;
+                let refuse = |ws: &Workspace| {
+                    engine
+                        .cue_an_edit_would_stop(ws)
+                        .map(CommandError::CueIsActive)
+                };
                 let result = if undo {
-                    self.doc.history.undo(&mut self.doc.ws)
+                    self.doc.history.undo_unless(&mut self.doc.ws, refuse)
                 } else {
-                    self.doc.history.redo(&mut self.doc.ws)
+                    self.doc.history.redo_unless(&mut self.doc.ws, refuse)
                 };
                 match result {
                     Ok(true) => {
@@ -1646,6 +1655,26 @@ impl DocCx<'_> {
                         reply(to, ok(id, Some(self.doc.revision)));
                     }
                     Ok(false) => reply(to, ok(id, None)),
+                    Err(CommandError::CueIsActive(cue)) => {
+                        let message = self.active_cue_refusal(cue, undo);
+                        self.record(
+                            LogKind::Engine,
+                            LogLevel::Info,
+                            message.clone(),
+                            Some(cue),
+                            None,
+                        );
+                        reply(
+                            to,
+                            ServerMessage::Result {
+                                id,
+                                outcome: Outcome::Error(ErrorBody::new(
+                                    ErrorCode::CommandRefused,
+                                    message,
+                                )),
+                            },
+                        );
+                    }
                     Err(e) => {
                         self.partly_changed(now, &e);
                         reply(to, refused(id, &e));

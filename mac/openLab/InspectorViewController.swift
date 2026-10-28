@@ -30,6 +30,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     static let secondTriggers = [
         "nothing", "panic", "stop", "hard_stop", "hard_stop_and_restart", "devamp", "play_next", "play_previous",
     ]
+    let groupModePopup = NSPopUpButton()
+    let groupLoopCheck = NSButton(checkboxWithTitle: loc("inspector.groupLoop"), target: nil, action: nil)
+    let groupShuffleCheck = NSButton(checkboxWithTitle: loc("inspector.groupShuffle"), target: nil, action: nil)
+    /// The Mode tab, in the tab view only while a Group cue is selected.
+    private var modeItem: NSTabViewItem?
+    static let groupModes = [
+        "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
+    ]
     let durationLabel = NSTextField(labelWithString: "")
     let kindIcon = NSImageView()
     let notesView = NSTextView()
@@ -207,6 +215,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         item.view = columns
         tabView.addTabViewItem(item)
         tabView.addTabViewItem(triggersTab(row: row, column: column))
+        modeItem = modeTab(row: row, column: column)
         tabView.setAX(AX.inspectorTabs)
 
         for v in [tabView, emptyLabel, messageLabel] {
@@ -283,6 +292,53 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         item.label = loc("inspector.tab.triggers")
         item.view = columns
         return item
+    }
+
+    /// The Mode tab of a Group cue (CT-22): how starting the group starts its children. Loop and
+    /// shuffle belong to a playlist only (QLab keeps them on its Playlist tab).
+    private func modeTab(
+        row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
+    ) -> NSTabViewItem {
+        groupModePopup.setAX(AX.inspectorGroupMode)
+        groupLoopCheck.setAX(AX.inspectorGroupLoop)
+        groupShuffleCheck.setAX(AX.inspectorGroupShuffle)
+        for key in Self.groupModes {
+            groupModePopup.menu?.addItem(
+                NSMenuItem(title: loc("inspector.groupMode.\(key)"), action: nil, keyEquivalent: ""))
+        }
+        for c in [groupModePopup as NSControl, groupLoopCheck, groupShuffleCheck] {
+            c.target = self
+        }
+        groupModePopup.action = #selector(popupChanged(_:))
+        groupLoopCheck.action = #selector(checkChanged(_:))
+        groupShuffleCheck.action = #selector(checkChanged(_:))
+        let columns = column(
+            [row(loc("inspector.groupMode"), groupModePopup), groupLoopCheck, groupShuffleCheck], nil)
+        columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let item = NSTabViewItem(identifier: "mode")
+        item.label = loc("inspector.tab.mode")
+        item.view = columns
+        return item
+    }
+
+    /// Shows the Mode tab for a Group cue and hides it otherwise; the controls follow the model.
+    private func renderMode(_ cue: Cue) {
+        guard let modeItem else { return }
+        let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
+        let present = tabView.tabViewItems.contains { $0 === modeItem }
+        if mode == nil, present {
+            tabView.removeTabViewItem(modeItem)
+        } else if mode != nil, !present {
+            tabView.insertTabViewItem(modeItem, at: 1)
+        }
+        guard let mode else { return }
+        let type = mode["type"]?.stringValue ?? "timeline"
+        groupModePopup.selectItem(at: Self.groupModes.firstIndex(of: type) ?? 0)
+        let playlist = type == "playlist"
+        groupLoopCheck.state = playlist && mode["loop"] == .bool(true) ? .on : .off
+        groupShuffleCheck.state = playlist && mode["shuffle"] == .bool(true) ? .on : .off
+        groupLoopCheck.isEnabled = playlist
+        groupShuffleCheck.isEnabled = playlist
     }
 
     /// A recorded chord: refused with a message, or sent as the cue's new hotkey. Returns whether
@@ -394,6 +450,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: second) ?? 0)
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
+        renderMode(cue)
         updatePreviewButton()
         if isLocked { applyLock() }
     }
@@ -414,7 +471,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var lockedControls: [NSControl] {
         [
             numberField, nameField, preWaitField, postWaitField, targetField, oscField, hotkeyField, hotkeyClear,
-            secondTriggerPopup, onReleaseCheck, colourPopup, continuePopup, flaggedCheck, armedCheck,
+            secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
+            continuePopup, flaggedCheck, armedCheck,
         ]
     }
 
@@ -564,14 +622,28 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         } else if sender === secondTriggerPopup, Self.secondTriggers.indices.contains(i) {
             send(
                 .setProperty(cue.id, .secondTrigger(Self.secondTriggers[i])), cue: cue.id, key: "second", revert: [])
+        } else if sender === groupModePopup, Self.groupModes.indices.contains(i) {
+            sendGroupMode(cue, type: Self.groupModes[i], loop: false, shuffle: false)
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
             send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, key: "continue", revert: [])
         }
     }
 
+    private func sendGroupMode(_ cue: Cue, type: String, loop: Bool, shuffle: Bool) {
+        send(
+            .setProperty(cue.id, .groupMode(type: type, loop: loop, shuffle: shuffle)), cue: cue.id, key: "groupMode",
+            revert: [])
+    }
+
     @objc private func checkChanged(_ sender: NSButton) {
         guard !isLocked, let cue else { return }
         let on = sender.state == .on
+        if sender === groupLoopCheck || sender === groupShuffleCheck {
+            sendGroupMode(
+                cue, type: "playlist", loop: sender === groupLoopCheck ? on : groupLoopCheck.state == .on,
+                shuffle: sender === groupShuffleCheck ? on : groupShuffleCheck.state == .on)
+            return
+        }
         if sender === onReleaseCheck {
             send(.setProperty(cue.id, .secondTriggerOnRelease(on)), cue: cue.id, key: "release", revert: [])
             return

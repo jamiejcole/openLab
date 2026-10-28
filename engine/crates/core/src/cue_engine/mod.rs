@@ -336,6 +336,78 @@ impl CueEngine {
         self.slots.values().any(|slot| slot.state().is_active())
     }
 
+    /// The first cue, in id order, that the engine would stop if the workspace became `ws`: an
+    /// active cue (`CueState::is_active`, a group's run included) that `ws` no longer has or has
+    /// as the other sort (group or not), or a previewed cue `ws` no longer has as an Audio cue
+    /// (as a Group, for a group's preview). These are the cues the engine stops when it follows
+    /// such an edit. The binary refuses an undo or redo that would stop one (M5.10d): whoever
+    /// presses undo cannot predict that, so it must not cut a cue the audience hears.
+    ///
+    /// Free while nothing plays; otherwise one walk of `ws`, ending once every candidate is
+    /// found.
+    pub fn cue_an_edit_would_stop(&self, ws: &Workspace) -> Option<CueId> {
+        #[derive(Clone, Copy)]
+        enum Wants {
+            Group,
+            NotGroup,
+            Audio,
+        }
+        let mut wanted: Vec<(CueId, Wants)> = Vec::new();
+        for (id, slot) in &self.slots {
+            if let Slot::Active(run) = slot
+                && run.state().is_active()
+            {
+                let wants = match run.group {
+                    Some(_) => Wants::Group,
+                    None => Wants::NotGroup,
+                };
+                wanted.push((*id, wants));
+            }
+        }
+        wanted.extend(self.previews.keys().map(|id| (*id, Wants::Audio)));
+        wanted.extend(self.group_previews.keys().map(|id| (*id, Wants::Group)));
+        if wanted.is_empty() {
+            return None;
+        }
+        let ids: HashSet<CueId> = wanted.iter().map(|(id, _)| *id).collect();
+        // The first cue with each id in `Workspace::find_cue`'s order (lists in order, cues
+        // depth-first), as the engine reads it. Iterative: nesting depth cannot overflow.
+        let mut found: BTreeMap<CueId, &Cue> = BTreeMap::new();
+        'lists: for list in &ws.cue_lists {
+            let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
+            while let Some(level) = stack.last_mut() {
+                let Some(cue) = level.next() else {
+                    stack.pop();
+                    continue;
+                };
+                if ids.contains(&cue.id) {
+                    found.entry(cue.id).or_insert(cue);
+                    if found.len() == ids.len() {
+                        break 'lists;
+                    }
+                }
+                if matches!(cue.kind, CueKind::Group { .. }) {
+                    stack.push(cue.children().iter());
+                }
+            }
+        }
+        wanted
+            .into_iter()
+            .filter(|(id, wants)| {
+                let Some(cue) = found.get(id) else {
+                    return true;
+                };
+                let group = matches!(cue.kind, CueKind::Group { .. });
+                match wants {
+                    Wants::Group => !group,
+                    Wants::NotGroup => group,
+                    Wants::Audio => !matches!(cue.kind, CueKind::Audio { .. }),
+                }
+            })
+            .map(|(id, _)| id)
+            .min()
+    }
+
     /// Every cue that is not idle, in id order.
     pub fn cue_states(&self) -> impl Iterator<Item = (CueId, CueState)> + '_ {
         let mut all: BTreeMap<CueId, CueState> = self
