@@ -190,6 +190,8 @@ pub struct ControlConfig {
     /// A document read that has not answered after this long fails with `io` and its worker is
     /// replaced (a stalled network volume), like [`Self::probe_timeout`].
     pub doc_timeout: Duration,
+    /// Bounds on a `relink` folder walk (WS-03); tests shrink them.
+    pub relink_limits: crate::persist::ScanLimits,
     /// How long [`Control::shutdown`] waits for the final recovery writes ([`SHUTDOWN_WAIT`]).
     pub shutdown_wait: Duration,
     /// How files are probed (tests inject a stand-in).
@@ -239,6 +241,7 @@ impl ControlConfig {
             save_hook: None,
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
+            relink_limits: crate::persist::ScanLimits::default(),
             shutdown_wait: SHUTDOWN_WAIT,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,
@@ -793,6 +796,14 @@ impl Control {
                     id,
                     request: request @ (Request::Save | Request::SaveAs { .. }),
                 } if self.cx_of(doc).is_some() => self.save(doc, id, request, to),
+                // The folder walk is the document worker's, not the doc's.
+                ClientMessage::Request {
+                    id,
+                    request: Request::Relink { folder },
+                } if self.cx_of(doc).is_some() => {
+                    self.relink(doc, id, folder, to);
+                    Flow::Continue
+                }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),
                     None => no_doc(message, to),
@@ -1664,16 +1675,6 @@ impl DocCx<'_> {
                         },
                     );
                 }
-                Request::Relink { .. } => reply(
-                    to,
-                    ServerMessage::Result {
-                        id,
-                        outcome: Outcome::Error(ErrorBody::new(
-                            ErrorCode::Unsupported,
-                            format!("{} is not available yet", request_name(&request)),
-                        )),
-                    },
-                ),
                 // Saves come through [`Control::save`], which knows the other docs.
                 request => self.doc_request(id, request, to, Vec::new()),
             },
