@@ -731,8 +731,8 @@ impl Control {
     }
 
     /// Handles one inbox message. A connection's message goes to the doc it is bound to, or is
-    /// one of the app-scope messages ([`Self::app_scope`]); `Inbox::Client` (OSC until M4.15h)
-    /// addresses the first open doc. A worker's answer goes to the doc it was for, and one for
+    /// one of the app-scope messages ([`Self::app_scope`]); `Inbox::Client` (tests, the offline
+    /// driver) addresses the first open doc. A worker's answer goes to the doc it was for, and one for
     /// a doc closed since is dropped.
     pub fn handle(&mut self, msg: Inbox) -> Flow {
         match msg {
