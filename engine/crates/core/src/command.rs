@@ -357,8 +357,11 @@ impl Workspace {
 
     /// Applies an undo or redo step. It puts back a state the workspace had, so it is not
     /// refused for a value problem that state already had when the show was loaded (a hotkey
-    /// name load only warns about): an undo must never get stuck on one.
-    pub fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
+    /// name load only warns about): an undo must never get stuck on one. For [`History`] only:
+    /// it skips value checks, so it must never be given a command from a client.
+    ///
+    /// [`History`]: crate::History
+    pub(crate) fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
         match command {
             Command::Transaction { commands } => transaction(self, commands, true),
             other => single(self, other, true),
