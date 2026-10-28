@@ -962,7 +962,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases(128)))]
 
     /// `BatchSet` is applied in place with rollback. The oracle is the plain `Transaction` of the
-    /// same sets, which snapshots the whole workspace: result, inverse and workspace bytes must
+    /// same sets, which rolls back with the inverses of the sets it applied: result, inverse and workspace bytes must
     /// match whether the batch applies or one cue (a missing id, a cue without the property, an
     /// invalid value halfway) refuses it, and undo and redo must restore exactly.
     #[test]
@@ -1088,6 +1088,96 @@ proptest! {
         };
         history.execute(&mut ws, fresh).unwrap();
         prop_assert!(!history.can_redo(), "redo survived an edit (had redo: {redoable})");
+    }
+}
+
+/// A command that is refused whatever the workspace holds.
+fn always_refused(kind: u8) -> Command {
+    match kind % 6 {
+        0 => Command::RemoveCue {
+            id: cue_id(987_654),
+        },
+        1 => Command::SetCueProperty {
+            id: cue_id(987_654),
+            property: CueProperty::Flagged { value: true },
+        },
+        2 => Command::Transaction { commands: vec![] },
+        3 => Command::RemoveCueList {
+            id: list_id(987_654),
+        },
+        4 => Command::AddPatch {
+            index: usize::MAX,
+            patch: patch(987_654, 2),
+        },
+        _ => Command::SetPatchProperty {
+            id: patch_id(987_654),
+            property: PatchProperty::MasterDb { value: 0.0 },
+        },
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases(256)))]
+
+    /// A transaction refused at a random command is rolled back with the inverses of the
+    /// commands before it (M1.19): the workspace is exactly as before, the error names the
+    /// first refused command, and the history records nothing. The commands are random edits
+    /// of every kind built against the state the earlier ones leave (so most apply), with a
+    /// command that is always refused put in at a random place; a random edit may be refused
+    /// earlier. Half are applied as undo steps are (restoring).
+    #[test]
+    fn a_refused_transaction_rolls_back_exactly(
+        prefix in picks(30),
+        inner in picks(14),
+        fail_at in any::<proptest::sample::Index>(),
+        failure in any::<u8>(),
+        restoring in any::<bool>(),
+    ) {
+        let (ws, mut g) = after_prefix(&prefix);
+        let mut evolving = ws.clone();
+        let mut commands: Vec<Command> = Vec::new();
+        let mut first_refused = None;
+        for p in &inner {
+            let Some(built) = build(&evolving, &mut g, p.op, p) else { continue };
+            // A built transaction is mostly spliced in (its commands were built in order);
+            // kept whole, it is a nested transaction and refused.
+            let parts = match built {
+                Command::Transaction { commands } if p.b % 4 != 0 => commands,
+                other => vec![other],
+            };
+            for command in parts {
+                let refused = matches!(command, Command::Transaction { .. })
+                    || if restoring {
+                        evolving.apply_restoring(command.clone()).is_err()
+                    } else {
+                        evolving.apply(command.clone()).is_err()
+                    };
+                if refused && first_refused.is_none() {
+                    first_refused = Some(commands.len());
+                }
+                commands.push(command);
+            }
+        }
+        let at = fail_at.index(commands.len() + 1);
+        commands.insert(at, always_refused(failure));
+        let expected = first_refused.filter(|&first| first < at).unwrap_or(at);
+
+        let mut work = ws.clone();
+        let mut history = History::new();
+        let transaction = Command::Transaction { commands };
+        let result = if restoring {
+            work.apply_restoring(transaction)
+        } else {
+            history.execute(&mut work, transaction).map(|_| Command::Transaction { commands: vec![] })
+        };
+        match result {
+            Err(CommandError::InTransaction { index, .. }) => prop_assert_eq!(index, expected),
+            other => prop_assert!(false, "expected a refusal at {}, got {:?}", expected, other),
+        }
+        prop_assert_eq!(&work, &ws);
+        prop_assert_eq!(format!("{work:?}"), format!("{ws:?}"));
+        prop_assert_eq!(bytes(&work), bytes(&ws));
+        prop_assert!(!history.can_undo() && !history.can_redo());
     }
 }
 

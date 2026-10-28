@@ -25,7 +25,8 @@ impl History {
     }
 
     /// Applies `command` as one undo step and clears redo. A refused command changes nothing,
-    /// neither workspace nor history. Returns whether the command changed anything: a change
+    /// neither workspace nor history (except [`CommandError::RollbackFailed`], which clears
+    /// the history). Returns whether the command changed anything: a change
     /// to the value a field already has (and an empty transaction) is not an edit and is not
     /// recorded.
     pub fn execute(
@@ -47,7 +48,9 @@ impl History {
         command: Command,
         key: Option<&str>,
     ) -> Result<bool, CommandError> {
-        let inverse = workspace.apply(command)?;
+        let inverse = workspace
+            .apply(command)
+            .inspect_err(|e| self.drop_if_stale(e))?;
         if is_empty_transaction(&inverse) {
             // Not an edit: an open gesture stays open.
             return Ok(false);
@@ -70,13 +73,13 @@ impl History {
     /// it stays on the stack and the workspace is unchanged.
     pub fn undo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
         self.open = None;
-        step(&mut self.undo, &mut self.redo, workspace)
+        step(&mut self.undo, &mut self.redo, workspace).inspect_err(|e| self.drop_if_stale(e))
     }
 
     /// Redoes the latest undone step. `Ok(false)` if there is nothing to redo.
     pub fn redo(&mut self, workspace: &mut Workspace) -> Result<bool, CommandError> {
         self.open = None;
-        step(&mut self.redo, &mut self.undo, workspace)
+        step(&mut self.redo, &mut self.undo, workspace).inspect_err(|e| self.drop_if_stale(e))
     }
 
     /// The command the next [`undo`](Self::undo) applies: its [`footprint`](Command::footprint)
@@ -110,6 +113,14 @@ impl History {
         self.undo.clear();
         self.redo.clear();
         self.open = None;
+    }
+
+    /// A transaction that could not be rolled back left the workspace partly changed: the
+    /// steps were made for the state before it and could misapply, so they go.
+    fn drop_if_stale(&mut self, error: &CommandError) {
+        if matches!(error, CommandError::RollbackFailed { .. }) {
+            self.clear();
+        }
     }
 }
 
@@ -223,5 +234,58 @@ fn step(
             from.push(command);
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{CueListId, PatchId, WorkspaceId};
+    use uuid::Uuid;
+
+    /// After a rollback that failed, the workspace is no longer the state the steps were made
+    /// for: undo and redo are emptied and an open gesture is closed. Other refusals keep them.
+    #[test]
+    fn a_failed_rollback_drops_the_steps() {
+        let mut ws = Workspace::new_empty(
+            WorkspaceId(Uuid::from_u128(1)),
+            CueListId(Uuid::from_u128(1)),
+            PatchId(Uuid::from_u128(1)),
+        );
+        let rename = |name: &str| Command::RenameCueList {
+            id: CueListId(Uuid::from_u128(1)),
+            name: name.into(),
+        };
+        let mut history = History::new();
+        history.execute(&mut ws, rename("a")).unwrap();
+        history.execute(&mut ws, rename("b")).unwrap();
+        history.undo(&mut ws).unwrap();
+        assert!(history.can_undo() && history.can_redo());
+
+        history.drop_if_stale(&CommandError::InTransaction {
+            index: 0,
+            source: Box::new(CommandError::Internal),
+        });
+        assert!(history.can_undo() && history.can_redo());
+
+        history.drop_if_stale(&CommandError::RollbackFailed {
+            index: 1,
+            source: Box::new(CommandError::Internal),
+            rollback: Box::new(CommandError::Internal),
+        });
+        assert!(!history.can_undo() && !history.can_redo());
+
+        // An open gesture is closed: the next edit with its key is a step of its own.
+        history
+            .execute_coalescing(&mut ws, rename("c"), Some("k"))
+            .unwrap();
+        assert_eq!(history.open.as_deref(), Some("k"));
+        history.drop_if_stale(&CommandError::RollbackFailed {
+            index: 0,
+            source: Box::new(CommandError::Internal),
+            rollback: Box::new(CommandError::Internal),
+        });
+        assert_eq!(history.open, None);
+        assert!(!history.can_undo());
     }
 }
