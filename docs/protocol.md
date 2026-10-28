@@ -107,7 +107,7 @@ Paths are never empty, and the paths of `open` and `save_as` must be absolute (`
 
 Saving: `save` and `save_as` write on a separate thread. The `result` comes when the file is durably written; the new `document` (path, `dirty` false when no edit happened meanwhile) is broadcast before it. A failed write is `io`, the workspace stays dirty and the autosave keeps running. The engine autosaves a dirty workspace every `settings.autosave_interval` seconds to the recovery folder (docs/persistence.md); that is not visible on the protocol.
 
-`recovery` is absent unless chosen and not written then; `new` is a bare object (`{"type":"new"}`; a `discard_changes` an older client sends is an unknown field, ignored). The Swift client (M5) must implement the `close` / `unsaved_changes` and recovery flows (docs/handoff/m5-protocol-requests.md).
+`recovery` is absent unless chosen and not written then; `new` is a bare object (`{"type":"new"}`; a `discard_changes` an older client sends is an unknown field, ignored). The Swift client (M5) must implement the `close` / `unsaved_changes` and recovery flows (issue #110).
 
 ## 4. Engine -> client
 
