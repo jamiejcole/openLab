@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # Open QLab 5 behaviour questions
 
-Behaviour questions that the official QLab 5 documentation (https://qlab.app/docs/v5/) does not settle. The documentation is always searched first; a row exists only when it gave no answer. For each one, openLab has
+Behaviour questions that QLab's documentation does not settle: the QLab 5.6 reference manual (searched locally with `~/qlab-ref/qlab-ref`, cited by page) and the online docs (https://qlab.app/docs/v5/). The documentation is always searched first; a row exists only when it gave no answer. For each one, openLab has
 implemented the assumption shown, so work is not blocked; the user answers here when they can,
 and the orchestrator changes the code if an answer differs.
 
