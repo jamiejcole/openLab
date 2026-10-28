@@ -81,6 +81,11 @@ impl AppDirs {
         dirs
     }
 
+    /// `engine.json`: how a client finds the running engine (M4.9, ARCHITECTURE §6, §8).
+    pub fn engine_file_path(&self) -> PathBuf {
+        self.root.join("engine.json")
+    }
+
     pub fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
     }

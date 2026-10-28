@@ -534,6 +534,11 @@ pub struct DocumentState {
     pub dirty: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// The workspace is in Show Mode (SM-01, SM-07; set with `set_show_mode`): kept by the
+    /// engine while it runs, not saved in the show file, so a relaunched UI gets it back.
+    /// Absent: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_mode: bool,
 }
 
 /// An entity that was added, changed or moved. A group's upsert carries its whole subtree and

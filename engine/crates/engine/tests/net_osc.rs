@@ -135,6 +135,7 @@ fn snapshot(ws: &Workspace, revision: u64) -> Snapshot {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            show_mode: false,
         },
         workspace: ws.clone(),
         cue_states: vec![],
@@ -1308,6 +1309,7 @@ async fn a_document_with_another_path_asks_for_a_new_snapshot() {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            show_mode: false,
         },
     };
     // Same path: nothing to do. Another path: the workspace may be another one.
@@ -1987,6 +1989,7 @@ async fn the_active_list_survives_a_resync_and_a_snapshot_so_go_fires_the_same_l
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                show_mode: false,
             },
         })
         .await

@@ -3,8 +3,11 @@
 //! openlab-engine: the headless openLab show-playback engine.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
+
+use openlab_engine::host::Options;
+use openlab_engine::platform::relaunch;
 
 /// Debug builds forbid allocation where `assert_no_alloc` guards (the device callback, M3.12):
 /// without this global allocator the guard sees nothing (M3.21). Violations are counted, not
@@ -15,20 +18,42 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-enum Mode<'a> {
+const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
+[--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID]";
+
+enum Mode {
     Print(String),
-    /// Play a show on the default output device until stdin closes.
-    Play(&'a Path),
+    /// Run the engine (starts with no workspace open; `--open` opens shows through `open`).
+    Run(Options),
 }
 
-fn mode(args: &[String]) -> Mode<'_> {
+fn mode(args: &[String]) -> Mode {
     if args.iter().any(|a| a == "--version") {
         return Mode::Print(format!("openlab-engine {VERSION}"));
     }
-    match args {
-        [path] if !path.starts_with('-') => Mode::Play(Path::new(path)),
-        _ => Mode::Print("usage: openlab-engine [--version] [SHOW_FILE]".to_owned()),
+    let mut options = Options::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--open" => match rest.next() {
+                Some(path) => options.open.push(PathBuf::from(path)),
+                None => return Mode::Print(USAGE.to_owned()),
+            },
+            "--app-support" => match rest.next() {
+                Some(dir) => options.app_support = Some(PathBuf::from(dir)),
+                None => return Mode::Print(USAGE.to_owned()),
+            },
+            "--watch-stdin" => options.watch_stdin = true,
+            "--relaunch-app" => match rest.next() {
+                Some(id) if relaunch::valid_bundle_id(id) => {
+                    options.relaunch_app = Some(id.clone())
+                }
+                _ => return Mode::Print(USAGE.to_owned()),
+            },
+            _ => return Mode::Print(USAGE.to_owned()),
+        }
     }
+    Mode::Run(options)
 }
 
 fn main() -> ExitCode {
@@ -40,7 +65,7 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         },
-        Mode::Play(path) => match openlab_engine::host::run_show(path) {
+        Mode::Run(options) => match openlab_engine::host::run(options) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 let _ = writeln!(std::io::stderr().lock(), "openlab-engine: {e}");
@@ -59,8 +84,46 @@ mod tests {
         assert!(
             matches!(mode(&["--version".to_owned()]), Mode::Print(t) if t == format!("openlab-engine {VERSION}"))
         );
-        assert!(matches!(mode(&[]), Mode::Print(t) if t.starts_with("usage")));
-        assert!(matches!(mode(&["show.openlab".to_owned()]), Mode::Play(_)));
+        assert!(matches!(mode(&[]), Mode::Run(o) if o.open.is_empty() && !o.watch_stdin));
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// M4.15g: no positional show file any more; `--open` (repeatable) is the dev/test path.
+    #[test]
+    fn options_parse_and_anything_else_prints_the_usage() {
+        let Mode::Run(o) = mode(&args(&[
+            "--open",
+            "a.openlab",
+            "--open",
+            "b.openlab",
+            "--app-support",
+            "/tmp/x",
+            "--watch-stdin",
+            "--relaunch-app",
+            "dev.openlab.openLab",
+        ])) else {
+            panic!("not run")
+        };
+        assert_eq!(
+            o.open,
+            [PathBuf::from("a.openlab"), PathBuf::from("b.openlab")]
+        );
+        assert_eq!(o.app_support, Some(PathBuf::from("/tmp/x")));
+        assert!(o.watch_stdin);
+        for bad in [
+            &["show.openlab"][..],
+            &["--open"],
+            &["--app-support"],
+            &["--nope"],
+        ] {
+            assert!(
+                matches!(mode(&args(bad)), Mode::Print(t) if t.starts_with("usage")),
+                "{bad:?}"
+            );
+        }
     }
 
     /// M3.21: the debug binary's global allocator is `assert_no_alloc`'s, so an allocation

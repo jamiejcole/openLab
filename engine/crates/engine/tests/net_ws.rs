@@ -97,6 +97,7 @@ fn snapshot(revision: u64) -> Snapshot {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            show_mode: false,
         },
         workspace: workspace(vec![]),
         cue_states: vec![],
@@ -1329,4 +1330,87 @@ async fn refusals_after_the_first_log_are_logged_once_the_interval_has_passed() 
         );
         tokio::task::yield_now().await;
     }
+}
+
+impl Fix {
+    /// An app connection (`hello` without a workspace), welcomed.
+    async fn app_client(&self) -> Client {
+        let mut c = self.raw().await;
+        let hello = ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            token: self.server.token().to_owned(),
+            client_name: "app".into(),
+            workspace: None,
+        };
+        send(&mut c, &hello).await;
+        match next(&mut c).await {
+            Some(ServerMessage::Welcome { .. }) => c,
+            other => panic!("no welcome: {other:?}"),
+        }
+    }
+
+    /// Round-trips a request, so every inbox message sent before it has been handled.
+    async fn sync(&self) {
+        let mut c = self.client().await;
+        let id = 77;
+        send(
+            &mut c,
+            &ClientMessage::Request {
+                id: RequestId(id),
+                request: Request::ListDevices,
+            },
+        )
+        .await;
+        wait_result(&mut c, id).await;
+    }
+
+    fn logs_with(&self, text: &str) -> usize {
+        self.control
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains(text))
+            .count()
+    }
+}
+
+/// M4.9 (NFR-01, ARCHITECTURE §8): an app connection that ends without `goodbye` is logged and
+/// the app is relaunched, unless an app connection is back by then; one that says goodbye is not
+/// a crash. Bound connections (windows) never relaunch anything.
+#[tokio::test]
+async fn an_app_connection_lost_without_goodbye_relaunches_the_app() {
+    let (launched_tx, launched) = std::sync::mpsc::channel::<()>();
+    let launched_tx = Mutex::new(launched_tx);
+    let action: openlab_engine::net::RelaunchFn = Arc::new(move || {
+        launched_tx.lock().unwrap().send(()).unwrap();
+        Ok(())
+    });
+    let mut relaunch = openlab_engine::net::Relaunch::new(action);
+    relaunch.delay = Duration::ZERO;
+    let fix = fixture_with(ServerConfig {
+        relaunch: Some(relaunch),
+        ..ServerConfig::default()
+    });
+    const LOST: &str = "closed without goodbye";
+
+    // A goodbye, and a window's connection dropped: no crash.
+    let mut c = fix.app_client().await;
+    send(&mut c, &ClientMessage::Goodbye { shutdown: false }).await;
+    expect_closed(&mut c).await;
+    drop(fix.client().await);
+    fix.sync().await;
+    assert_eq!(fix.logs_with(LOST), 0);
+
+    // The app crashes: its connection just drops.
+    drop(fix.app_client().await);
+    tokio::task::spawn_blocking(move || {
+        launched.recv_timeout(GUARD).expect("relaunched");
+        launched
+    })
+    .await
+    .unwrap();
+    fix.sync().await;
+    assert_eq!(fix.logs_with(LOST), 1);
+    assert_eq!(fix.logs_with("relaunching the app"), 1);
 }

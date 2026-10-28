@@ -245,6 +245,13 @@ pub enum Request {
         /// Network cues still run, complete and continue, but send nothing.
         network_disabled: bool,
     },
+    /// Puts the connection's workspace in Show Mode or back in Edit Mode (SM-01). The engine
+    /// keeps it (not in the show file) so it survives a UI restart, reports it in `document`,
+    /// and prevents system and display sleep while any open workspace is in Show Mode (SM-07).
+    /// Answers `ok` with no data. Workspace-bound.
+    SetShowMode {
+        on: bool,
+    },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,
