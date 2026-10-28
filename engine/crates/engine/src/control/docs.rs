@@ -41,6 +41,7 @@ use openlab_core::{
     comparison_key, is_absolute, load_show, portable_ref, relink_command, to_portable,
 };
 
+use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
 use super::media::{Indexed, MediaCatalog, index_workspace};
 use super::{
@@ -161,6 +162,8 @@ pub struct DocParts {
     actions: Vec<Action>,
     /// The media catalog's reading of the workspace.
     indexed: Indexed,
+    /// The slice-plan checks, every audio cue walked once (no file is probed yet).
+    checks: PlanChecks,
 }
 
 impl fmt::Debug for DocParts {
@@ -179,11 +182,14 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
     // on the time; the control thread hands the engine the real time from its next call on.
     let actions = engine.handle(&loaded.workspace, Input::Tick, 0);
     let indexed = index_workspace(&loaded.workspace);
+    let mut checks = PlanChecks::default();
+    checks.check_all(&loaded.workspace, &NoProbes, config.sample_rate());
     DocParts {
         loaded,
         engine,
         actions,
         indexed,
+        checks,
     }
 }
 
@@ -1611,6 +1617,11 @@ impl Control {
             .pending
             .take_if(|p| p.ticket == answer.ticket())
         else {
+            // A stale answer (its request timed out): a doc built for it is dropped off the
+            // control thread like a closed one.
+            if let DocAnswer::Built { parts, .. } = answer {
+                self.eng.docs.discard(parts);
+            }
             return;
         };
         match pending.target {
@@ -1681,6 +1692,7 @@ impl Control {
             mut engine,
             actions,
             indexed,
+            checks,
         } = parts;
         let Loaded {
             workspace,
@@ -1705,7 +1717,11 @@ impl Control {
             self.eng.config.preload_budget,
         );
         media.sync_indexed(indexed);
+        // The checks walked the workspace already, and no file has answered since: what the
+        // catalog noted for them is in them.
+        let _ = media.take_plan_changes();
         let mut doc = Doc::new(&self.eng, doc_id, workspace, engine, path, media);
+        doc.checks = checks;
         doc.file.notices = notices;
         doc.revision = 1;
         doc.saved_revision = if dirty { 0 } else { 1 };
@@ -1825,21 +1841,39 @@ impl Control {
         if self.eng.docs.orphans.is_empty() {
             return;
         }
+        let mut finished = Vec::new();
         for save in std::mem::take(&mut self.eng.docs.orphans) {
-            let result = match save.rx.try_recv() {
-                Ok(result) => result,
-                Err(TryRecvError::Empty) => {
-                    self.eng.docs.orphans.push(save);
-                    continue;
+            match save.rx.try_recv() {
+                Ok(result) => finished.push((save, result)),
+                Err(TryRecvError::Empty) => self.eng.docs.orphans.push(save),
+                Err(TryRecvError::Disconnected) => {
+                    finished.push((save, Err(PersistError::WriterGone)));
                 }
-                Err(TryRecvError::Disconnected) => Err(PersistError::WriterGone),
-            };
+            }
+        }
+        for (mut save, result) in finished {
             match result {
-                // A superseded save's file was written by the newer one, also in this list or
-                // already answered.
-                Ok(_) | Err(PersistError::Superseded) => {
+                Ok(_) => {
                     for (id, to) in &save.waiters {
                         reply(to, ok(*id, None));
+                    }
+                }
+                // As for an open doc's saves: the newer save of the same file answers for it.
+                Err(PersistError::Superseded) => {
+                    let newer = self
+                        .eng
+                        .docs
+                        .orphans
+                        .iter_mut()
+                        .filter(|p| p.revision >= save.revision && p.path == save.path)
+                        .max_by_key(|p| p.revision);
+                    match newer {
+                        Some(newer) => newer.waiters.append(&mut save.waiters),
+                        None => {
+                            for (id, to) in &save.waiters {
+                                fail(to, *id, ErrorCode::Internal, "the save was superseded");
+                            }
+                        }
                     }
                 }
                 Err(e) => {

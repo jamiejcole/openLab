@@ -800,3 +800,67 @@ fn primed(s: &OfflineShow, ids: &[DocId]) -> usize {
         .map(|d| s.control().doc(*d).unwrap().primed().len())
         .sum()
 }
+
+/// A doc built off the control thread walked its slice-plan checks there, before any file was
+/// probed: the checks follow its files' answers as the first doc's do.
+#[test]
+fn a_doc_built_off_the_control_thread_checks_its_slices_as_its_files_answer() {
+    let path = wav(&dc(300, 0.5));
+    let mut bad = audio(2, &path, 0);
+    if let openlab_core::CueKind::Audio { start_time, .. } = &mut bad.kind {
+        // Past the 300-frame file's end: a plan that cannot play.
+        *start_time = 1.0;
+    }
+    let (mut s, ids) = docs_show(
+        workspace(vec![]),
+        vec![ws_n(1, vec![audio(1, &path, 0), bad])],
+    );
+    s.run(BLOCK);
+    let flagged: Vec<_> = s
+        .control()
+        .doc(ids[1])
+        .unwrap()
+        .warnings()
+        .iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, cue, .. } if code == "bad_plan" => *cue,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flagged, vec![id(2)]);
+}
+
+/// Answers of the shared workers for a doc closed since (its probes, here) are dropped: they
+/// never reach another doc, whose own answers still come.
+#[test]
+fn a_closed_docs_late_probe_answers_are_dropped() {
+    let a = wav(&dc(400, 0.25));
+    let (mut s, ids) = docs_show(workspace(vec![audio(1, &a, 0)]), vec![]);
+    let files: Vec<_> = (0..20).map(|_| wav(&dc(100, 0.5))).collect();
+    let cues = files
+        .iter()
+        .enumerate()
+        .map(|(n, f)| audio(n as u128 + 1, f, 0))
+        .collect();
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(1, cues))))
+        .unwrap();
+    // Closed while its twenty probes are still on the workers.
+    s.close_doc(b, false).unwrap();
+    let late = wav(&dc(100, 0.5));
+    let c = s
+        .open_doc(DocSource::Workspace(Box::new(ws_n(
+            2,
+            vec![audio(1, &late, 1)],
+        ))))
+        .unwrap();
+    s.settle_media();
+    s.run(BLOCK * 2);
+    assert_eq!(s.control().doc_ids(), vec![ids[0], c]);
+    assert_eq!(s.control().probes_pending(), 0);
+    assert_ne!(state(&s, c, 1), CueState::Broken);
+    let at = s.now() as usize;
+    start_in(&mut s, c, 1);
+    s.run(BLOCK * 4);
+    assert_eq!(first_nonzero(&s.channel(1)[at..]), Some(0));
+}
