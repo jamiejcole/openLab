@@ -368,6 +368,7 @@
 
 "window.main.title.showMode" = "%@ (Show Mode)";
 "footer.showMode.indicator" = "SHOW MODE";
+"showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";
 "alert.closeShowMode.message" = "The workspace is in Show Mode.";
 "alert.quitShowMode.title" = "Quit openLab?";

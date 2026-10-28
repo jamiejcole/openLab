@@ -637,6 +637,63 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(first.footer.showModeLabel.isHidden)
     }
 
+    /// The `set_show_mode` requests the engine received, in order.
+    private func showModeRequests(_ doc: ModelID = "1") -> [Bool] {
+        engine.receivedFrom.compactMap {
+            if $0.doc == doc, case .request(_, .setShowMode(let on)) = $0.message { return on }
+            return nil
+        }
+    }
+
+    private func engineShowMode(_ doc: ModelID = "1") -> Bool {
+        engine.docs[doc]?["document"]?["show_mode"] == .bool(true)
+    }
+
+    /// SM-07: the engine holds off sleep only for a workspace it knows is in Show Mode.
+    func testShowModeIsSentToTheEngineAndReadBack() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        await assertEventually { self.showModeRequests() == [true] && wc.store.document?.showMode == true }
+        XCTAssertTrue(wc.isShowMode)
+        wc.setShowMode(false)
+        await assertEventually { self.showModeRequests() == [true, false] && wc.store.document?.showMode == false }
+        XCTAssertFalse(wc.isShowMode)
+    }
+
+    /// The engine's word wins when it changes (another client, or an app restarted while the
+    /// engine kept the workspace in Show Mode).
+    func testTheEnginesShowModeIsTheWindowsMode() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let doc = #"{"path":null,"dirty":false,"can_undo":false,"can_redo":false"#
+        engine.push(#"{"type":"document","document":\#(doc),"show_mode":true}}"#, doc: "1")
+        await assertEventually { wc.isShowMode }
+        XCTAssertTrue(wc.inspector.isLocked)
+        // A document update that does not change the engine's mode leaves the window alone.
+        wc.setShowMode(false)
+        await assertEventually { wc.store.document?.showMode == false }
+        engine.push(#"{"type":"document","document":\#(doc),"show_mode":false}}"#, doc: "1")
+        await settle()
+        XCTAssertFalse(wc.isShowMode)
+        engine.push(#"{"type":"document","document":\#(doc)}}"#, doc: "1")
+        await settle()
+        XCTAssertFalse(wc.isShowMode, "absent show_mode is false")
+    }
+
+    /// A choice the engine could not be told (connection down) is logged and sent on reconnect.
+    func testShowModeChosenWhileDisconnectedIsSentOnReconnect() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        await disconnect()
+        await wc.store.setShowMode(true).value
+        XCTAssertTrue(wc.isShowMode, "the window locks at once")
+        XCTAssertTrue(wc.store.logEntries.contains { $0.level == .warn && $0.message.contains("Show Mode") })
+        XCTAssertFalse(engineShowMode())
+        await assertEventually {
+            await self.sessionScheduler.fire()
+            return self.engineShowMode()
+        }
+        XCTAssertTrue(wc.isShowMode, "the engine's stale false did not unlock the window")
+    }
+
     func testFooterSwitchDrivesShowModeAndKeepsTheWorkspaceNameInTheTitle() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
         let switcher = wc.footer.modeSwitch

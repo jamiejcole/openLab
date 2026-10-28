@@ -360,6 +360,22 @@ final class EngineCrashFlowTests: XCTestCase {
             }, 1)
     }
 
+    /// SM-07 after a crash: the new engine run opened the show afresh (not in Show Mode); the
+    /// window still is, so the engine is told again and keeps the Mac awake.
+    func testShowModeIsRestoredAfterTheEngineRestarts() async throws {
+        let wc = try XCTUnwrap(app.windows[ModelID(doc: 1)])
+        wc.setShowMode(true)
+        await assertEventually { wc.store.document?.showMode == true }
+        processes.crash()
+        let back = await pump {
+            self.app.windows.values.contains { $0 === wc } && wc.store.document?.showMode == true
+        }
+        XCTAssertTrue(back, "reattached and Show Mode sent again")
+        XCTAssertTrue(wc.isShowMode)
+        let doc = try XCTUnwrap(app.session.doc(of: wc.store))
+        XCTAssertEqual(engine.docs[doc]?["document"]?["show_mode"], .bool(true))
+    }
+
     func testTransportStillWorksWhileTheAlarmIsUp() async throws {
         processes.crash()
         let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }

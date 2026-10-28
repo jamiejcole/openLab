@@ -52,6 +52,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// not): entry `i` of `logEntries` is number `logCount - logEntries.count + i`.
     private(set) var logCount = 0
     @Published private(set) var connectionState: ConnectionState = .idle
+    /// This workspace's Show Mode (SM-01), as its window shows it. The engine is told so it can
+    /// hold off sleep (SM-07); its `document.show_mode` is read back and wins when it changes.
+    @Published private(set) var showMode = false
+    /// `showMode` is not known to have reached the engine (a send failed or is under way): the
+    /// next snapshot is told it rather than taken from it.
+    private var showModeUnsent = false
 
     let changes = PassthroughSubject<StoreChange, Never>()
 
@@ -146,6 +152,49 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// Enters or leaves Show Mode at once (the UI locks before the engine answers) and tells the
+    /// engine. A failure is logged and stays owed: the next snapshot (a reconnect) sends it again.
+    /// The task's value is the engine's answer (tests wait on it).
+    @discardableResult
+    func setShowMode(_ on: Bool) -> Task<Result<OkBody, EngineError>, Never> {
+        showMode = on
+        showModeUnsent = true
+        return Task { await sendShowMode() }
+    }
+
+    private func sendShowMode() async -> Result<OkBody, EngineError> {
+        let on = showMode
+        showModeUnsent = true
+        let result = await client.send { .request(id: $0, .setShowMode(on: on)) }
+        // A newer choice made meanwhile owns the flag.
+        guard showMode == on else { return result }
+        switch result {
+        case .success: showModeUnsent = false
+        case .failure(let e):
+            _ = receive(.log(.warn, String(format: loc("showMode.error.engine"), Self.describe(e))))
+        }
+        return result
+    }
+
+    private static func describe(_ e: EngineError) -> String {
+        switch e {
+        case .engine(_, let message) where !message.isEmpty: return message
+        case .notConnected, .disconnected: return loc("error.detail.notConnected")
+        default: return loc("error.detail.generic")
+        }
+    }
+
+    /// After a snapshot (connect, reconnect, reattach): a mode the engine has not got (it restarted,
+    /// or a send failed) is sent again; otherwise the engine's mode is taken (the app restarted
+    /// while the engine kept the workspace in Show Mode).
+    private func reconcileShowMode(engine: Bool) {
+        if showModeUnsent || (showMode && !engine) {
+            if showMode != engine { Task { _ = await sendShowMode() } } else { showModeUnsent = false }
+        } else if showMode != engine {
+            showMode = engine
+        }
+    }
+
     func listDevices() async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .listDevices) }
     }
@@ -167,7 +216,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .runtime(let seq, let changes):
             return applyRuntime(seq: seq, changes: changes)
         case .document(let d):
+            let engineChanged = d.showMode != (document?.showMode ?? false)
             document = d
+            // Another client (or the engine) changed it: the engine's word is the mode now.
+            if engineChanged, d.showMode != showMode, !showModeUnsent { showMode = d.showMode }
         case .progress(let items, _):
             let old = progress
             progress = Dictionary(items.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
@@ -208,6 +260,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         runtimeWarnings = []
         // A new connection's health is unknown until its first `status`.
         status = nil
+        reconcileShowMode(engine: s.document.showMode)
         changes.send(.reset)
     }
 
