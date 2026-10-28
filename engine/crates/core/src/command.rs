@@ -24,10 +24,13 @@ use serde::{Deserialize, Serialize};
 use crate::command_model::{
     NetworkPatchProperty, OscRightsTarget, PatchProperty, WorkspaceSetting, apply_model, no_change,
 };
-use crate::cue::{ContinueMode, Cue, CueColor, CueKind, GroupMode, SecondTrigger, Triggers};
+use crate::cue::{
+    ContinueMode, Cue, CueColor, CueKind, GroupMode, OscArg, SecondTrigger, Triggers,
+};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
 };
+use crate::network::{MessageIssue, check_message};
 use crate::osc_access::OscRights;
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
@@ -104,6 +107,18 @@ pub enum CueProperty {
     /// Neither the old nor the new kind may be a Group: add and remove cues for that.
     Kind {
         value: CueKind,
+    },
+    /// Only for Network cues. A new value must name an existing network patch.
+    Destination {
+        value: NetworkPatchId,
+    },
+    /// Only for Network cues. An OSC address pattern (`network::check_message`).
+    Address {
+        value: String,
+    },
+    /// Only for Network cues. At most `MAX_OSC_ARGS` arguments within the message size limits.
+    Args {
+        value: Vec<OscArg>,
     },
 }
 
@@ -308,6 +323,8 @@ pub enum CommandError {
     PatchOutputOutOfRange { patch: PatchId, output: usize },
     #[error("{0}")]
     InvalidValue(&'static str),
+    #[error("the Network cue's message is invalid: {0}")]
+    InvalidMessage(MessageIssue),
     #[error("values are invalid: {}", join(.0))]
     InvalidModel(Vec<ValidationIssue>),
     #[error("transactions cannot be nested")]
@@ -316,6 +333,21 @@ pub enum CommandError {
     InTransaction {
         index: usize,
         source: Box<CommandError>,
+    },
+    /// Command `index` of a transaction was refused and undoing the commands before it failed
+    /// too (`rollback`), which only a wrong inverse can cause. Unlike every other error the
+    /// workspace is partly changed (still valid: each command is atomic); [`History`] drops its
+    /// steps, which no longer fit it.
+    ///
+    /// [`History`]: crate::History
+    #[error(
+        "command {index} of the transaction was refused ({source}) and undoing the commands \
+         before it failed ({rollback}); the workspace is partly changed"
+    )]
+    RollbackFailed {
+        index: usize,
+        source: Box<CommandError>,
+        rollback: Box<CommandError>,
     },
     /// The cue tree was not as expected. Nothing was changed.
     #[error("internal inconsistency in the cue tree; command refused")]
@@ -342,8 +374,11 @@ impl Workspace {
 
     /// Applies an undo or redo step. It puts back a state the workspace had, so it is not
     /// refused for a value problem that state already had when the show was loaded (a hotkey
-    /// name load only warns about): an undo must never get stuck on one.
-    pub fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
+    /// name load only warns about): an undo must never get stuck on one. For [`History`] only:
+    /// it skips value checks, so it must never be given a command from a client.
+    ///
+    /// [`History`]: crate::History
+    pub(crate) fn apply_restoring(&mut self, command: Command) -> Result<Inverse, CommandError> {
         match command {
             Command::Transaction { commands } => transaction(self, commands, true),
             other => single(self, other, true),
@@ -351,22 +386,91 @@ impl Workspace {
     }
 }
 
+/// Applies `commands` in order as one step. If one is refused, the steps already applied are
+/// undone with their own inverses, newest first: every inverse restores exactly what its command
+/// changed, so this costs what the transaction touched, not the size of the show. Debug and
+/// test builds also clone the workspace up front and check the rollback against it.
 fn transaction(
     ws: &mut Workspace,
     commands: Vec<Command>,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
+    #[cfg(feature = "fault-injection")]
+    let (commands, rollback_fails) = fault::apply(commands);
+    transaction_with(ws, commands, restoring, |ws, step| {
+        #[cfg(feature = "fault-injection")]
+        if rollback_fails {
+            return Err(CommandError::Internal);
+        }
+        single(ws, step, true)
+    })
+}
+
+/// Test seam (feature `fault-injection`, per thread): the next transaction after `skip` others
+/// has command `at` replaced by one that is refused and, if `rollback_fails`, every rollback
+/// step refused too, which is what a wrong inverse does. One shot.
+#[cfg(feature = "fault-injection")]
+pub mod fault {
+    use std::cell::Cell;
+
+    use super::{Command, CueId};
+
+    thread_local! {
+        static NEXT: Cell<Option<(usize, usize, bool)>> = const { Cell::new(None) };
+    }
+
+    pub fn inject(skip: usize, at: usize, rollback_fails: bool) {
+        NEXT.with(|n| n.set(Some((skip, at, rollback_fails))));
+    }
+
+    pub(super) fn apply(mut commands: Vec<Command>) -> (Vec<Command>, bool) {
+        let Some((skip, at, rollback_fails)) = NEXT.with(Cell::take) else {
+            return (commands, false);
+        };
+        if skip > 0 {
+            NEXT.with(|n| n.set(Some((skip - 1, at, rollback_fails))));
+            return (commands, false);
+        }
+        if let Some(command) = commands.get_mut(at) {
+            *command = Command::RemoveCue {
+                id: CueId(uuid::Uuid::from_u128(u128::MAX)),
+            };
+        }
+        (commands, rollback_fails)
+    }
+}
+
+/// [`transaction`] with the rollback's `apply` as a parameter, so a test can make it fail.
+fn transaction_with(
+    ws: &mut Workspace,
+    commands: Vec<Command>,
+    restoring: bool,
+    undo: impl FnMut(&mut Workspace, Command) -> Result<Inverse, CommandError>,
+) -> Result<Inverse, CommandError> {
+    #[cfg(debug_assertions)]
     let snapshot = ws.clone();
     let mut undo_steps = Vec::with_capacity(commands.len());
     for (index, command) in commands.into_iter().enumerate() {
         match single(ws, command, restoring) {
             Ok(inverse) => undo_steps.push(inverse),
             Err(error) => {
-                *ws = snapshot;
-                return Err(CommandError::InTransaction {
-                    index,
-                    source: Box::new(error),
-                });
+                let source = Box::new(error);
+                roll_back(ws, undo_steps, undo).map_err(|rollback| {
+                    CommandError::RollbackFailed {
+                        index,
+                        source: source.clone(),
+                        rollback: Box::new(rollback),
+                    }
+                })?;
+                // Debug text rather than `==`, so a NaN a hostile workspace may hold compares
+                // equal to itself and -0.0 differs from 0.0.
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(
+                    format!("{ws:?}"),
+                    format!("{snapshot:?}"),
+                    "transaction rollback did not restore the workspace exactly"
+                );
+                return Err(CommandError::InTransaction { index, source });
             }
         }
     }
@@ -383,6 +487,28 @@ fn transaction(
     Ok(Command::Transaction { commands })
 }
 
+/// Applies `undo_steps` newest first; a step that is a transaction (the inverse of a paste or
+/// batch edit) is applied in its own order. Each step runs on exactly the state its command
+/// left, so it is never refused unless a command's inverse is wrong. If one is, rolling back
+/// stops there: the workspace is valid (every command is atomic) but partly changed, and the
+/// error says so.
+fn roll_back(
+    ws: &mut Workspace,
+    undo_steps: Vec<Inverse>,
+    mut apply: impl FnMut(&mut Workspace, Command) -> Result<Inverse, CommandError>,
+) -> Result<(), CommandError> {
+    for step in undo_steps.into_iter().rev() {
+        let commands = match step {
+            Command::Transaction { commands } => commands,
+            other => vec![other],
+        };
+        for command in commands {
+            apply(ws, command)?;
+        }
+    }
+    Ok(())
+}
+
 /// Everything except a plain transaction. Each arm is atomic.
 fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inverse, CommandError> {
     match command {
@@ -395,12 +521,12 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
                 cue.number = Some(next_auto_number(ws)?);
             }
             let id = cue.id;
-            insert(ws, &at, vec![cue])?;
+            insert(ws, &at, vec![cue], restoring)?;
             Ok(Command::RemoveCue { id })
         }
         Command::Paste { at, cues } => {
             let ids: Vec<CueId> = cues.iter().map(|c| c.id).collect();
-            insert(ws, &at, cues)?;
+            insert(ws, &at, cues, restoring)?;
             Ok(Command::Transaction {
                 commands: ids
                     .into_iter()
@@ -508,7 +634,15 @@ fn position_of(ws: &Workspace, path: &CuePath) -> Option<Position> {
 // ---------------------------------------------------------------------------------------------
 // Add, paste, remove, move
 
-fn insert(ws: &mut Workspace, at: &Position, cues: Vec<Cue>) -> Result<(), CommandError> {
+/// With `restoring` (undo, redo, rollback: the cues are ones the workspace held), values are
+/// not judged, as for a property set: a cue load kept with a warning must be able to come back.
+/// Ids, numbers, positions and nesting still are.
+fn insert(
+    ws: &mut Workspace,
+    at: &Position,
+    cues: Vec<Cue>,
+    restoring: bool,
+) -> Result<(), CommandError> {
     let dest = resolve(ws, at)?;
     let len = container(ws, dest.list, &dest.parents)
         .ok_or(CommandError::Internal)?
@@ -524,13 +658,18 @@ fn insert(ws: &mut Workspace, at: &Position, cues: Vec<Cue>) -> Result<(), Comma
     if depth - 1 + height(&cues, MAX_GROUP_DEPTH) > MAX_GROUP_DEPTH {
         return Err(CommandError::NestingTooDeep);
     }
-    check_new_cues(ws, &cues, depth)?;
+    check_new_cues(ws, &cues, depth, restoring)?;
     let list = container_mut(ws, dest.list, &dest.parents).ok_or(CommandError::Internal)?;
     insert_all(list, at.index, cues).map_err(|_| CommandError::Internal)
 }
 
-/// Ids and numbers must be unique across the workspace and values valid.
-fn check_new_cues(ws: &Workspace, cues: &[Cue], depth: usize) -> Result<(), CommandError> {
+/// Ids and numbers must be unique across the workspace and, unless `restoring`, values valid.
+fn check_new_cues(
+    ws: &Workspace,
+    cues: &[Cue],
+    depth: usize,
+    restoring: bool,
+) -> Result<(), CommandError> {
     let mut ids = HashSet::new();
     let mut numbers = HashMap::new();
     for list in &ws.cue_lists {
@@ -563,6 +702,9 @@ fn check_new_cues(ws: &Workspace, cues: &[Cue], depth: usize) -> Result<(), Comm
     });
     if let Some(error) = problem {
         return Err(error);
+    }
+    if restoring {
+        return Ok(());
     }
     refuse(subtree_issues(ws, cues, depth))
 }
@@ -677,6 +819,24 @@ impl CueProperty {
             Self::Kind { .. } => Self::Kind {
                 value: cue.kind.clone(),
             },
+            Self::Destination { .. } => match &cue.kind {
+                CueKind::Network { destination, .. } => Self::Destination {
+                    value: *destination,
+                },
+                _ => return None,
+            },
+            Self::Address { .. } => match &cue.kind {
+                CueKind::Network { address, .. } => Self::Address {
+                    value: address.clone(),
+                },
+                _ => return None,
+            },
+            Self::Args { .. } => match &cue.kind {
+                CueKind::Network { args, .. } => Self::Args {
+                    value: args.clone(),
+                },
+                _ => return None,
+            },
         })
     }
 
@@ -705,6 +865,18 @@ impl CueProperty {
                 _ => return false,
             },
             Self::Kind { value } => cue.kind = value.clone(),
+            Self::Destination { value } => match &mut cue.kind {
+                CueKind::Network { destination, .. } => *destination = *value,
+                _ => return false,
+            },
+            Self::Address { value } => match &mut cue.kind {
+                CueKind::Network { address, .. } => address.clone_from(value),
+                _ => return false,
+            },
+            Self::Args { value } => match &mut cue.kind {
+                CueKind::Network { args, .. } => args.clone_from(value),
+                _ => return false,
+            },
         }
         true
     }
@@ -777,11 +949,47 @@ fn set_property(
     if old == property {
         return Ok(no_change());
     }
+    if !restoring {
+        check_network_value(ws, cue, &property)?;
+    }
     let cue = cue_at_mut(ws, &path).ok_or(CommandError::Internal)?;
     if !property.write(cue) {
         return Err(CommandError::Internal);
     }
     Ok(Command::SetCueProperty { id, property: old })
+}
+
+/// What a new Network destination, address or argument list has to satisfy. The new value is
+/// judged on its own, so a cue loaded with a bad address or argument list can be mended one half
+/// at a time; the pair is only refused for a size the new value introduces (the same rule as
+/// `Kind` and `Triggers`: the edit answers for what it adds, not for what the cue already had).
+fn check_network_value(
+    ws: &Workspace,
+    cue: &Cue,
+    property: &CueProperty,
+) -> Result<(), CommandError> {
+    let CueKind::Network { address, args, .. } = &cue.kind else {
+        return Ok(());
+    };
+    let (alone, pair) = match property {
+        CueProperty::Destination { value } => {
+            return if ws.network_patches.iter().any(|p| p.id == *value) {
+                Ok(())
+            } else {
+                Err(CommandError::NetworkPatchNotFound(*value))
+            };
+        }
+        CueProperty::Address { value } => (check_message(value, &[]), check_message(value, args)),
+        CueProperty::Args { value } => (check_message("/", value), check_message(address, value)),
+        _ => return Ok(()),
+    };
+    alone.map_err(CommandError::InvalidMessage)?;
+    if pair == Err(MessageIssue::TooLarge)
+        && check_message(address, args) != Err(MessageIssue::TooLarge)
+    {
+        return Err(CommandError::InvalidMessage(MessageIssue::TooLarge));
+    }
+    Ok(())
 }
 
 /// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.
@@ -1071,4 +1279,88 @@ pub fn prepare_paste(
         }
     });
     Ok(cues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::WorkspaceId;
+    use uuid::Uuid;
+
+    fn list(n: u128) -> CueListId {
+        CueListId(Uuid::from_u128(n))
+    }
+
+    fn sample() -> Workspace {
+        Workspace::new_empty(
+            WorkspaceId(Uuid::from_u128(1)),
+            list(1),
+            PatchId(Uuid::from_u128(1)),
+        )
+    }
+
+    /// A rollback step that is refused (only a wrong inverse could be) stops the rollback and
+    /// says so, with both errors; it does not panic, even in a debug build, and the workspace
+    /// is left as far as the rollback got: valid, partly changed.
+    #[test]
+    fn a_refused_rollback_step_is_reported_not_hidden() {
+        let mut ws = sample();
+        let commands = vec![
+            Command::RenameCueList {
+                id: list(1),
+                name: "Renamed".into(),
+            },
+            Command::AddCueList {
+                index: 1,
+                id: list(2),
+                name: "Second".into(),
+            },
+            Command::RemoveCueList { id: list(99) },
+        ];
+        let mut calls = Vec::new();
+        let error = transaction_with(&mut ws, commands, false, |_, step| {
+            calls.push(step);
+            Err(CommandError::Internal)
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            CommandError::RollbackFailed {
+                index: 2,
+                source: Box::new(CommandError::CueListNotFound(list(99))),
+                rollback: Box::new(CommandError::Internal),
+            }
+        );
+        // Newest first, and nothing after the refused step.
+        assert_eq!(calls, vec![Command::RemoveCueList { id: list(2) }]);
+        assert_eq!(ws.cue_lists.len(), 2);
+        assert_eq!(ws.cue_lists.first().unwrap().name, "Renamed");
+        assert!(error.to_string().contains("partly changed"));
+    }
+
+    /// Steps are undone newest first; a step that is a transaction (the inverse of a paste or a
+    /// batch edit) is applied in its own order, not reversed.
+    #[test]
+    fn rollback_applies_steps_newest_first_and_a_transaction_step_in_its_own_order() {
+        let mut ws = sample();
+        let name = |n: &str| Command::RenameCueList {
+            id: list(1),
+            name: n.into(),
+        };
+        let steps = vec![
+            name("a"),
+            Command::Transaction {
+                commands: vec![name("b"), name("c")],
+            },
+            name("d"),
+        ];
+        let mut seen = Vec::new();
+        roll_back(&mut ws, steps, |ws, step| {
+            seen.push(step.clone());
+            single(ws, step, true)
+        })
+        .unwrap();
+        assert_eq!(seen, vec![name("d"), name("b"), name("c"), name("a")]);
+        assert_eq!(ws.cue_lists.first().unwrap().name, "a");
+    }
 }

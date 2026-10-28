@@ -1277,6 +1277,115 @@ fn save_as_in_another_folder_keeps_relative_media_pointing_at_the_same_files() {
     assert_eq!(media_of(&original), "sfx/hit.wav");
 }
 
+/// Two cues with relative media in folder A, shown as a saved show; Save As into folder B
+/// must re-spell both references.
+fn two_relative_cues() -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    fs::create_dir_all(a.path().join("sfx")).unwrap();
+    let sound = a.path().join("sfx").join("hit.wav");
+    fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
+    let mut ws = workspace(vec![audio(1, &sound, 0), audio(2, &sound, 0)]);
+    for c in &mut ws.cue_lists[0].cues {
+        if let CueKind::Audio { media, .. } = &mut c.kind {
+            *media = Some(MediaRef::new("sfx/hit.wav"));
+        }
+    }
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    r.s.settle_media();
+    r.s.take_outbound();
+    let b_show = b.path().join("copy.openlab");
+    (a, b, r, b_show)
+}
+
+fn media_of(ws: &Workspace, n: u128) -> String {
+    match &ws.find_cue(id(n)).unwrap().kind {
+        CueKind::Audio { media, .. } => media.clone().unwrap().as_str().to_owned(),
+        other => panic!("not an audio cue: {other:?}"),
+    }
+}
+
+fn error_logs(out: &[ServerMessage]) -> Vec<&str> {
+    out.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Log {
+                level: openlab_core::protocol::LogLevel::Error,
+                message,
+            } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is() {
+    let (_a, _b, mut r, b_show) = two_relative_cues();
+    // The copy's relink fails at its second cue and cannot be undone; the live relink after the
+    // save is fine.
+    openlab_core::fault::inject(0, 1, true);
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: b_show.to_string_lossy().into_owned(),
+        },
+    ));
+    let out = r.s.take_outbound();
+    assert!(
+        error_logs(&out)
+            .iter()
+            .any(|m| m.contains("partly changed")),
+        "{out:?}"
+    );
+    // The file holds neither half-relinked reference: it is the workspace as it was.
+    let saved = load_show(&fs::read_to_string(&b_show).unwrap())
+        .unwrap()
+        .workspace;
+    assert_eq!(media_of(&saved, 1), "sfx/hit.wav");
+    assert_eq!(media_of(&saved, 2), "sfx/hit.wav");
+    // Not rebased, as for any refused relink: the live workspace matches the file.
+    assert_eq!(r.s.control().workspace(), &saved);
+}
+
+#[test]
+fn a_relink_after_a_folder_change_that_cannot_roll_back_is_an_unundoable_edit() {
+    let (_a, _b, mut r, b_show) = two_relative_cues();
+    // The save copy's relink is fine; the live workspace's fails at its second cue.
+    openlab_core::fault::inject(1, 1, true);
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: b_show.to_string_lossy().into_owned(),
+        },
+    ));
+    let out = r.s.take_outbound();
+    assert!(
+        error_logs(&out)
+            .iter()
+            .any(|m| m.contains("partly changed")),
+        "{out:?}"
+    );
+    // The saved copy is fully rebased; the live one has only the first cue re-spelled, and
+    // every client is sent that whole model.
+    let saved = load_show(&fs::read_to_string(&b_show).unwrap())
+        .unwrap()
+        .workspace;
+    assert_ne!(media_of(&saved, 2), "sfx/hit.wav");
+    let live = r.s.control().workspace();
+    assert_eq!(media_of(live, 1), media_of(&saved, 1));
+    assert_eq!(media_of(live, 2), "sfx/hit.wav");
+    let snap = out
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Snapshot { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .expect("snapshot");
+    assert_eq!(&snap.workspace, live);
+    assert!(!snap.document.can_undo);
+}
+
 #[test]
 fn without_an_application_folder_saving_is_an_io_error_not_a_crash() {
     let ws = memo_ws("one", &[1]);
