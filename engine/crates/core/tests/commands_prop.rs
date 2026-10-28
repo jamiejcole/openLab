@@ -231,7 +231,7 @@ fn make_cue(ws: &Workspace, g: &mut Gen, p: &Pick) -> Cue {
 }
 
 fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
-    match variant % 14 {
+    match variant % 17 {
         0 => CueProperty::Name {
             value: format!("name {}", p.b),
         },
@@ -301,6 +301,23 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
         },
         13 => CueProperty::SecondTriggerOnRelease {
             value: p.b.is_multiple_of(2),
+        },
+        // Valid and hostile network values alike: a refusal must leave nothing behind.
+        14 => CueProperty::Destination {
+            value: net_id(1 + u128::from(p.b % 4)),
+        },
+        15 => CueProperty::Address {
+            value: ["/a", "/cue/*/go", "no slash", "", "/a b", "/ok/{x,y}"][p.b as usize % 6]
+                .into(),
+        },
+        16 => CueProperty::Args {
+            value: match p.b % 5 {
+                0 => vec![],
+                1 => vec![OscArg::Int { value: p.c as i32 }],
+                2 => vec![OscArg::Float { value: f32::NAN }],
+                3 => vec![OscArg::String { value: "s".into() }; 1 + (p.c % 40) as usize],
+                _ => vec![OscArg::Bool { value: true }, OscArg::Float { value: 0.25 }],
+            },
         },
         _ => CueProperty::Kind { value: kind(ws, p) },
     }
@@ -684,7 +701,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
         },
         6 => Command::SetCueProperty {
             id: id?,
-            property: property(ws, (p.d % 14) as u8, p),
+            property: property(ws, (p.d % 17) as u8, p),
         },
         7 => {
             let selected = (0..1 + p.c % 3).filter_map(|n| choose(&ids, p.a.wrapping_add(n * 7)));
@@ -693,7 +710,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                 // Every variant but `Kind` (11).
                 property: property(
                     ws,
-                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13][p.d as usize % 13],
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16][p.d as usize % 16],
                     p,
                 ),
             }
@@ -753,7 +770,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             }
             Command::Transaction { commands }
         }
-        100..=113 => Command::SetCueProperty {
+        100..=116 => Command::SetCueProperty {
             id: id?,
             property: property(ws, op - 100, p),
         },
@@ -890,19 +907,32 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
 /// original and redo the result, and the invariants hold. Returns whether it applied.
 fn check_command(ws: &Workspace, command: Command) -> Result<bool, TestCaseError> {
     let mut work = ws.clone();
-    let Ok(inverse) = work.apply(command) else {
+    let mut history = History::new();
+    // Undo and redo go through `History`, which restores values that load tolerates (a Network
+    // cue whose patch was removed on purpose) without the checks a client's command gets.
+    let Ok(changed) = history.execute(&mut work, command.clone()) else {
         prop_assert_eq!(&work, ws);
         prop_assert_eq!(bytes(&work), bytes(ws));
         return Ok(false);
     };
+    // An empty-inverse command is not recorded; the plain apply decides what it did.
+    if !changed {
+        let mut plain = ws.clone();
+        plain
+            .apply(command)
+            .map_err(|e| TestCaseError::fail(format!("{e}")))?;
+        prop_assert_eq!(&work, &plain);
+        return Ok(true);
+    }
     let after = work.clone();
     check_invariants(&after)?;
-    let redo = work
-        .apply(inverse)
+    history
+        .undo(&mut work)
         .map_err(|e| TestCaseError::fail(format!("undo: {e}")))?;
     prop_assert_eq!(&work, ws);
     prop_assert_eq!(bytes(&work), bytes(ws));
-    work.apply(redo)
+    history
+        .redo(&mut work)
         .map_err(|e| TestCaseError::fail(format!("redo: {e}")))?;
     prop_assert_eq!(&work, &after);
     Ok(true)
@@ -956,6 +986,9 @@ round_trip_tests! {
     set_kind_round_trips: 111,
     set_second_trigger_round_trips: 112,
     set_second_trigger_on_release_round_trips: 113,
+    set_destination_round_trips: 114,
+    set_address_round_trips: 115,
+    set_args_round_trips: 116,
 }
 
 proptest! {
@@ -980,7 +1013,7 @@ proptest! {
         if let Some(at) = missing_at {
             selected.insert(at.min(selected.len()), cue_id(987_654));
         }
-        let prop = property(&ws, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13][p.d as usize % 13], &p);
+        let prop = property(&ws, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16][p.d as usize % 16], &p);
         let oracle = Command::Transaction {
             commands: selected
                 .iter()
