@@ -51,6 +51,12 @@ enum CueProperty: Hashable, Sendable {
 }
 
 extension Command {
+    /// `RenameWorkspace { name }`: the show title, undoable. At most 256 characters, no control
+    /// characters (docs/commands.md); the engine refuses anything else.
+    static func renameWorkspace(_ name: String) -> Command {
+        Command(.object(["type": .string("rename_workspace"), "name": .string(name)]))
+    }
+
     /// `SetCueProperty { id, property }`.
     static func setProperty(_ id: ModelID, _ property: CueProperty) -> Command {
         Command(.object(["type": .string("set_cue_property"), "id": .string(id.raw), "property": property.json]))

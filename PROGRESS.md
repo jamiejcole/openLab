@@ -40,7 +40,7 @@ Notes and decisions go in the PR, the task's docs or `docs/handoff/`.
 - [x] M1.16 M1-C review Lows: preserve metadata/symlinks on atomic replace, etc.
 - [ ] M1.17 Run `relink` find-in-folder on the document worker; surface `truncated` (PR #27) [WS-03, NFR-04]
 - [x] M1.19 `Workspace::apply` Transaction rollback snapshot without cloning the workspace
-- [ ] M1.20 Rename the workspace (`SetWorkspaceName`) and name length/character rules
+- [x] M1.20 Rename the workspace (`SetWorkspaceName`) and name length/character rules
 - [x] M1.21 Engine: on `RollbackFailed` log, mark dirty and resend the whole model
 
 ## M2 — Cue engine (pure logic, virtual clock)

@@ -48,7 +48,34 @@ fn cases(default: u32) -> u32 {
 
 /// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists and the OSC
 /// passcode table.
-const OPS: u8 = 28;
+const OPS: u8 = 29;
+
+/// Names and hosts a command takes or refuses: plain, empty, at and over the limits (256 scalars,
+/// 253 bytes; multi-byte text is counted in scalars, so 256 emoji pass), with a newline, a NUL.
+fn name_pool(n: u32) -> String {
+    match n % 9 {
+        0 => "Act 1".into(),
+        1 => String::new(),
+        2 => "n".repeat(256),
+        3 => "n".repeat(257),
+        4 => "\u{1F3AD}".repeat(256),
+        5 => "\u{1F3AD}".repeat(257),
+        6 => "two\nlines".into(),
+        7 => "nul\0".into(),
+        _ => format!("name {}", n % 5),
+    }
+}
+
+fn host_pool(n: u32) -> String {
+    match n % 6 {
+        0 => format!("10.0.0.{}", n % 255),
+        1 => "h".repeat(253),
+        2 => "h".repeat(254),
+        3 => "\u{e9}".repeat(126),
+        4 => "host\tname".into(),
+        _ => "localhost".into(),
+    }
+}
 
 struct Gen {
     next: u128,
@@ -485,7 +512,7 @@ fn patch_property(p: &Pick) -> PatchProperty {
     let output = p.c as usize % 4;
     match p.b % 8 {
         0 => PatchProperty::Name {
-            value: format!("patch {}", p.d),
+            value: name_pool(p.d),
         },
         1 => PatchProperty::MasterDb { value: level(p.d) },
         2 => PatchProperty::OutputLevel {
@@ -516,10 +543,10 @@ fn patch_property(p: &Pick) -> PatchProperty {
 fn network_property(p: &Pick) -> NetworkPatchProperty {
     match p.b % 4 {
         0 => NetworkPatchProperty::Name {
-            value: format!("net {}", p.d),
+            value: name_pool(p.d),
         },
         1 => NetworkPatchProperty::Host {
-            value: format!("10.0.0.{}", p.d % 255),
+            value: host_pool(p.d),
         },
         2 => NetworkPatchProperty::Port {
             value: (p.d % 65536) as u16,
@@ -567,6 +594,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                 [1, 2, 4, 8, 0, 65][p.d as usize % 6],
             );
             new.master_db = level(p.a / 16);
+            new.name = name_pool(p.a);
             Command::AddPatch {
                 index: p.b as usize % (ws.patches.len() + 2),
                 patch: new,
@@ -588,8 +616,8 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
             index: p.b as usize % (ws.network_patches.len() + 2),
             patch: NetworkPatch {
                 id: net_id(1 + u128::from(p.c % 4)),
-                name: format!("n{}", p.d),
-                host: "h".into(),
+                name: name_pool(p.d),
+                host: host_pool(p.a),
                 port: 1,
                 protocol: NetworkProtocol::Udp,
             },
@@ -609,7 +637,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
         20 => Command::AddCueList {
             index: p.b as usize % (ws.cue_lists.len() + 2),
             id: list_id(1 + u128::from(p.c % 4)),
-            name: format!("list {}", p.d),
+            name: name_pool(p.d),
         },
         21 => Command::RemoveCueList { id: some_list() },
         22 => Command::MoveCueList {
@@ -618,7 +646,10 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
         },
         23 => Command::RenameCueList {
             id: some_list(),
-            name: format!("list {}", p.d % 4),
+            name: name_pool(p.d),
+        },
+        28 => Command::RenameWorkspace {
+            name: name_pool(p.d),
         },
         // The OSC passcode table. The pool is small, so passcodes repeat (refused), go missing
         // (refused) and come back; some are not digits and some rights break the View rule.
@@ -893,6 +924,8 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     | IssueKind::NetworkPatchMissing { .. }
                     // A transport key name is kept as given, like load does (it only warns).
                     | IssueKind::InvalidHotkey { .. }
+                    // A loaded odd name or host is kept (hostile_base); commands refuse new ones.
+                    | IssueKind::InvalidName { .. }
             ) && issue.severity == Severity::Warning,
             "command introduced {issue}"
         );
@@ -1175,6 +1208,12 @@ fn hostile_base() -> Workspace {
         modifiers: Modifiers::default(),
     });
     ws.settings.master_db = -0.0;
+    // Names load keeps with a warning, and an edit away from them is undone back to them.
+    ws.name = "w".repeat(300);
+    ws.cue_lists[1].name = "two\nlines".into();
+    ws.patches[1].name = "\u{1F3AD}".repeat(300);
+    ws.network_patches[0].name = "nul\0".into();
+    ws.network_patches[0].host = "h".repeat(300);
     let mut hot = common::cue(901, CueKind::Memo);
     hot.triggers.hotkey = Some(Hotkey {
         key: "A".into(),
@@ -1796,7 +1835,7 @@ fn the_generator_exercises_every_command() {
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
     let mut readded = 0;
-    for _ in 0..90 {
+    for _ in 0..120 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
             let p = Pick {
@@ -1858,7 +1897,7 @@ fn the_generator_exercises_every_command() {
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)
     for op in [
-        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 25, 26, 27,
+        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 23, 25, 26, 27, 28,
     ] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,
