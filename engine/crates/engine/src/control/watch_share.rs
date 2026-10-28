@@ -62,13 +62,21 @@ impl WatchShare {
         if changes.is_empty() {
             return;
         }
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(changes.len());
+        // A doc opening asks for thousands at once: room for them is made once.
+        let watches = changes
+            .iter()
+            .filter(|c| matches!(c, KeyChange::Watch { .. }))
+            .count();
+        self.keys.reserve(watches);
+        self.files.reserve(watches);
         for change in changes {
             match change {
                 KeyChange::Reset => self.reset_doc(doc, &mut out),
                 KeyChange::Watch { key, path, id } => {
-                    self.unsubscribe(&(doc, key.clone()), &mut out);
-                    self.subscribe((doc, key), path, id, &mut out);
+                    let sub = (doc, key);
+                    self.unsubscribe(&sub, &mut out);
+                    self.subscribe(sub, path, id, &mut out);
                 }
                 KeyChange::Unwatch { key } => self.unsubscribe(&(doc, key), &mut out),
                 KeyChange::ProbeFailed { key, id, missing } => {
@@ -105,14 +113,10 @@ impl WatchShare {
             out.push(KeyChange::Reset);
             return;
         }
-        let mine: Vec<Sub> = self
-            .keys
-            .keys()
-            .filter(|(d, _)| *d == doc)
-            .cloned()
-            .collect();
-        for sub in mine {
-            self.unsubscribe(&sub, out);
+        // Taken out in one pass, with no copy of its thousands of keys: closing a 2,000-file
+        // doc beside another must fit in an audio block (M4.15i).
+        for (sub, key) in self.keys.extract_if(|(d, _), _| *d == doc) {
+            release(&mut self.files, &sub, key, out);
         }
     }
 
@@ -147,14 +151,7 @@ impl WatchShare {
         let Some(key) = self.keys.remove(sub) else {
             return;
         };
-        let Some(file) = self.files.get_mut(&key) else {
-            return;
-        };
-        file.subs.remove(sub);
-        if file.subs.is_empty() {
-            self.files.remove(&key);
-            out.push(KeyChange::Unwatch { key });
-        }
+        release(&mut self.files, sub, key, out);
     }
 
     /// A batch from the watch thread: its events (of the current generation) for each doc that
@@ -180,6 +177,19 @@ impl WatchShare {
     /// once).
     pub fn watched_files(&self) -> usize {
         self.files.len()
+    }
+}
+
+/// `sub`, no longer in the share's keys, lets go of its file `key`; the last one to do so
+/// stops the file's watch.
+fn release(files: &mut HashMap<String, Watched>, sub: &Sub, key: String, out: &mut Vec<KeyChange>) {
+    let Some(file) = files.get_mut(&key) else {
+        return;
+    };
+    file.subs.remove(sub);
+    if file.subs.is_empty() {
+        files.remove(&key);
+        out.push(KeyChange::Unwatch { key });
     }
 }
 
@@ -305,6 +315,41 @@ mod tests {
         assert_eq!(s.watched_files(), 0);
         fs.put("/show/a.wav", 2);
         assert!(pass(&mut s).is_empty());
+    }
+
+    #[test]
+    fn a_doc_closing_beside_another_lets_go_of_only_its_own_files() {
+        let (mut s, fs) = share();
+        for n in 0..100 {
+            fs.put(format!("/show/{n}.wav"), 1);
+        }
+        // A watches 0..60, B watches 40..100: 40..60 are shared.
+        let a: Vec<_> = (0..60)
+            .map(|n| watch(&format!("{n}.wav"), &format!("/show/{n}.wav"), n + 1))
+            .collect();
+        let b: Vec<_> = (40..100)
+            .map(|n| watch(&format!("{n}.wav"), &format!("/show/{n}.wav"), n + 1))
+            .collect();
+        s.apply(A, a);
+        s.apply(B, b);
+        assert_eq!(s.watched_files(), 100);
+        assert!(pass(&mut s).is_empty());
+        s.leave(B);
+        assert_eq!(s.watched_files(), 60);
+        // No reset: A's watches go on, B's own files are no longer watched.
+        for n in [10, 50, 80] {
+            fs.remove(format!("/show/{n}.wav"));
+        }
+        let mut events = pass(&mut s);
+        events.sort_by_key(|(_, e)| e.id());
+        let keys: Vec<_> = events
+            .iter()
+            .map(|(d, e)| (*d, e.key().to_owned()))
+            .collect();
+        assert_eq!(keys, vec![(A, "10.wav".into()), (A, "50.wav".into())]);
+        // And A can close too.
+        s.leave(A);
+        assert_eq!(s.watched_files(), 0);
     }
 
     #[test]
