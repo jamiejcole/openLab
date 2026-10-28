@@ -61,9 +61,11 @@ sanitize-address:
 sanitize-thread:
 	cd engine && RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST)
 
-# Subset: core unit tests, a short proptest budget (Miri is ~100x slower), no file-system isolation break needed.
+# Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
+#   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
+MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
 miri:
-	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked
+	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
 test-mac: project
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test
