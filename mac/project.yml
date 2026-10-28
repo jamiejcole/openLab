@@ -52,6 +52,9 @@ targets:
       - path: ../engine/fixtures/protocol
         type: folder
         buildPhase: resources
+      # Shared with the Rust test of core's `display_name` (M2.29c).
+      - path: ../engine/fixtures/display_name.json
+        buildPhase: resources
     dependencies:
       - target: openLab
     settings:
