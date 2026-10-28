@@ -882,50 +882,6 @@ fn same_path(a: &Path, b: &Path) -> bool {
     lexical_key(a) == lexical_key(b)
 }
 
-/// What a path names, for [`same_file`]: the identity of its nearest existing ancestor (the path
-/// itself when it exists) and the names below it that do not exist. `None` when that cannot be
-/// told: a `..` or an unreadable component below the existing part.
-fn path_identity(path: &str) -> Option<(String, Vec<std::ffi::OsString>)> {
-    let mut current = PathBuf::from(path);
-    let mut missing = Vec::new();
-    loop {
-        match std::fs::metadata(&current) {
-            Ok(meta) => {
-                missing.reverse();
-                return Some((file_id(&current, &meta)?, missing));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(current.file_name()?.to_owned());
-                current = current.parent()?.to_path_buf();
-            }
-            Err(_) => return None,
-        }
-    }
-}
-
-#[cfg(unix)]
-fn file_id(_path: &Path, meta: &std::fs::Metadata) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    Some(format!("{}:{}", meta.dev(), meta.ino()))
-}
-
-/// Windows has no cheap stable file id in std; the final path (real case, links resolved) says
-/// the same thing.
-#[cfg(not(unix))]
-fn file_id(path: &Path, _meta: &std::fs::Metadata) -> Option<String> {
-    std::fs::canonicalize(path)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-/// True when both paths provably name the same file as the OS resolves them (symlinks, `..`
-/// through a link, the volume's case rules). Names that do not exist yet compare exactly. This
-/// is the engine's half of storing a media path relative to the show folder
-/// ([`MediaPaths::same_file`]); core cannot touch the file system.
-fn same_file(a: &str, b: &str) -> bool {
-    matches!((path_identity(a), path_identity(b)), (Some(x), Some(y)) if x == y)
-}
-
 fn folder_of(path: &Path) -> Option<PathBuf> {
     path.parent().map(Path::to_path_buf)
 }
@@ -1105,7 +1061,6 @@ impl DocCx<'_> {
             // A folder that is not UTF-8 cannot be compared with media paths: they stay as given.
             show_dir: dir.as_deref().and_then(Path::to_str),
             style: PathStyle::host(),
-            same_file: &same_file,
         };
         command.prepare(&self.doc.ws, &paths, &mut || CueId(random_id()))
     }
@@ -2242,35 +2197,5 @@ mod tests {
         assert_eq!(access.passcodes[0].passcode, "4821");
         assert_eq!(make(4821), make(4821));
         assert_ne!(make(1), make(2));
-    }
-
-    #[test]
-    fn same_file_sees_through_links_and_refuses_what_it_cannot_tell() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("show/media")).unwrap();
-        std::fs::create_dir_all(root.join("elsewhere/sub")).unwrap();
-        std::fs::write(root.join("show/media/x.wav"), b"x").unwrap();
-        let p = |rel: &str| root.join(rel).to_string_lossy().into_owned();
-        assert!(same_file(&p("show/media/x.wav"), &p("show/media/./x.wav")));
-        // Neither exists yet: the same names are the same file.
-        assert!(same_file(
-            &p("show/media/new.wav"),
-            &p("show/media/new.wav")
-        ));
-        assert!(!same_file(&p("show/media/a.wav"), &p("show/media/b.wav")));
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(root.join("elsewhere/sub"), root.join("show/media/link"))
-                .unwrap();
-            // `link/..` is `elsewhere`, not `show/media`, though a lexical reading says so.
-            std::fs::write(root.join("elsewhere/x.wav"), b"y").unwrap();
-            assert!(!same_file(
-                &p("show/media/link/../x.wav"),
-                &p("show/media/x.wav")
-            ));
-        }
-        // A `..` below the part that exists cannot be placed.
-        assert!(!same_file(&p("show/nope/../x.wav"), &p("show/x.wav")));
     }
 }

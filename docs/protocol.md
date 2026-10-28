@@ -218,3 +218,5 @@ The `model_changed` for revision N is always sent before the `result` that repor
 `protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace` (no doc to act on: none open, a closed doc, an app connection; or a save with no path yet), `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`, `already_open` (M4.15f: `open` of a show that is open).
 
 M4.6a additions (`PROTOCOL_VERSION` stayed 1 (it was 1 until M4.15f)): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).
+
+The `set_workspace_setting` `hotkeys` value must list all 11 keys (`null` = no key) and no other field; a partial or misspelt map is `bad_request` (docs/commands.md).

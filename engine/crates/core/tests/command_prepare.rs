@@ -44,7 +44,6 @@ fn prepared(command: Command, dir: Option<&str>, style: PathStyle) -> Command {
             &MediaPaths {
                 show_dir: dir,
                 style,
-                same_file: &|_, _| true,
             },
             &mut || {
                 next += 1;
@@ -227,7 +226,6 @@ fn a_prepared_paste_applies_and_an_unprepared_one_is_refused() {
             &MediaPaths {
                 show_dir: None,
                 style: POSIX,
-                same_file: &|_, _| true,
             },
             &mut || cue_id(77),
         )
@@ -279,7 +277,6 @@ fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
             &MediaPaths {
                 show_dir: None,
                 style: POSIX,
-                same_file: &|_, _| true,
             },
             &mut || {
                 next += 1;
@@ -348,36 +345,15 @@ fn a_relative_path_leaving_the_show_folder_is_kept_when_pasted_or_edited() {
     assert_eq!(m.as_str(), "../Audio/x.wav");
 }
 
-/// A case-sensitive volume can hold `/Vol/Show` and `/Vol/show`; core's case-insensitive match
-/// must not store a relative path the file system says names another file.
+/// A case-sensitive volume can hold `/Vol/Show` and `/Vol/show`, and `..` can pass through a
+/// symlink: only a path literally under the show folder is made relative.
 #[test]
-fn a_path_the_file_system_does_not_confirm_is_not_made_relative() {
-    let command = Command::AddCue {
-        at: pos(),
-        cue: audio_at(1, "/Vol/show/x.wav"),
-        auto_number: true,
-    };
-    let seen = std::cell::RefCell::new(Vec::new());
-    let Command::AddCue { cue, .. } = command
-        .prepare(
-            &workspace(vec![]),
-            &MediaPaths {
-                show_dir: Some("/Vol/Show"),
-                style: POSIX,
-                same_file: &|a, b| {
-                    seen.borrow_mut().push((a.to_owned(), b.to_owned()));
-                    false
-                },
-            },
-            &mut || cue_id(1),
-        )
-        .unwrap()
-    else {
-        panic!("add");
-    };
-    assert_eq!(media(&cue), "/Vol/show/x.wav");
+fn a_path_not_literally_under_the_show_folder_stays_absolute_as_sent() {
+    for sent in ["/Vol/show/x.wav", "/Vol/Show/link/../x.wav"] {
+        assert_eq!(added_media(add(sent), Some("/Vol/Show"), POSIX), sent);
+    }
     assert_eq!(
-        seen.into_inner(),
-        [("/Vol/show/x.wav".to_owned(), "/Vol/Show/x.wav".to_owned())]
+        added_media(add("/Vol/Show/a/x.wav"), Some("/Vol/Show"), POSIX),
+        "a/x.wav"
     );
 }
