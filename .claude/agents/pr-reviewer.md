@@ -34,7 +34,7 @@ For each finding say **"reachable in production? how"** (the concrete sequence o
 - **Low** — everything else: style, naming, tests of non-critical paths, docs, unreachable states.
 
 ## Lows and non-safety Mediums become issues
-Don't ask for a fix round. File each (as `openlab-dev`: check `gh auth status`) with `gh issue create --label low --title "<area>: <summary>" --body "<file:line, scenario, reachable in production?, fix direction>"` and list the issue numbers in your review. If `gh` is unavailable, list the findings in the report and say so.
+Don't ask for a fix round. File each with `gh issue create --label low --title "<area>: <summary>" --body "<file:line, scenario, reachable in production?, fix direction>"` and list the issue numbers in your review. If `gh` is unavailable, list the findings in the report and say so.
 
 ## Output format (exactly this)
 If the brief gives a report file path, write the full report to that file (Write tool or heredoc) before ending — report delivery to the orchestrator can fail, the file is the reliable copy.

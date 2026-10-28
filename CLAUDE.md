@@ -85,7 +85,7 @@ make prepush     # pre-push gate: runs the checks the diff needs, prints PREPUSH
 - XCUITest needs macOS Automation Mode; on a dev machine the first run may prompt the user for authorisation.
 - The engine build phase (`mac/scripts/build-engine.sh`) ad-hoc signs the engine; Xcode doesn't sign nested binaries in `Contents/MacOS`.
 - CI's mac job runs on the `xcode-27` runner image (preview) with Xcode 27.1 pinned; fallback is `macos-26` + Xcode 26.x.
-- Agents act on GitHub as `openlab-dev`, never the owner's account: commits use `openlab-dev <349245076+openlab-dev@users.noreply.github.com>` (repo-local git config; set it in any fresh clone), and `gh` must be logged in as `openlab-dev` before pushing, opening PRs/issues or merging.
+- Agent commits are authored `openlab-dev <349245076+openlab-dev@users.noreply.github.com>` (repo-local git config; set it in any fresh clone). GitHub actions (push, PRs, issues, merges) run as whatever `gh` is logged in as: the owner's `jamiejcole` for now, because GitHub has flagged the new `openlab-dev` account and hides everything it creates (appeal sent 2026-10-28). Switch to `openlab-dev` only once `curl -s -o /dev/null -w '%{http_code}' https://api.github.com/users/openlab-dev` returns 200, and never create GitHub content while it returns 404.
 - Agents share this machine and sccache (`~/.cargo/config.toml` wraps rustc; incremental compilation is off). Never wait on machine-wide process checks (`pgrep cargo`, "is anything building?"): wait on your own command only.
 
 ## Reporting back (subagents)

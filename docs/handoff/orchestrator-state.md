@@ -8,10 +8,10 @@ issue. Every task issue carries a Checklist of its requirement IDs, ticked by th
 
 ## Start of a session
 1. `git fetch origin`; check open PRs and the last CI run on `main`.
-2. Confirm `gh auth status` shows `openlab-dev` and `git config user.email` is its noreply address
-   (CLAUDE.md, "Known environment facts"). Agent work never runs under the owner's account.
-3. The app's engine-side needs are issues now: #216 (protocol 2 switch), #110 (lifecycle contract),
-   #219 (media duration), #220 (durations), #221 (undo guard), #222 (media paths, paste), #121 (hotkeys),
+2. Confirm `git config user.email` is the `openlab-dev` noreply address and `gh` is logged in as the
+   account CLAUDE.md "Known environment facts" names (see "Flagged account" below).
+3. The app's engine-side needs are issues now: #233 (protocol 2 switch), #110 (lifecycle contract),
+   #236 (media duration), #237 (durations), #238 (undo guard), #239 (media paths, paste), #121 (hotkeys),
    #124 (Show Mode).
 
 ## CI (changed 2026-10-28)
@@ -23,6 +23,13 @@ to `main` (QA-07).
 ## History rewrite (2026-10-28)
 All commits except the first three were re-authored to `openlab-dev` and `main` was force-pushed.
 Branches merged by then were deleted. Clones or worktrees made before that date are stale: re-clone.
+
+## Flagged account (2026-10-28)
+GitHub flagged the new `openlab-dev` account within an hour of use: its profile, PR #232 and issues
+#216–#231 are hidden (404) from everyone else, and Actions do not run for it. The user appealed. Until it
+is lifted, `gh` runs as `jamiejcole`; #233–#248 re-create #216–#231 (same order, number + 17). When
+`https://api.github.com/users/openlab-dev` returns 200 again: close #216–#231 and #232 as duplicates, then
+switch `gh` back (`gh auth switch`).
 
 ## Rules learned the hard way
 - At most 3 agents at once, at most 2 on Opus (orchestrate skill).

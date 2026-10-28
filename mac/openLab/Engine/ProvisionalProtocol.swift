@@ -10,7 +10,7 @@ import Foundation
 // its decimal digits (`ModelID(doc:)`, `docNumber`).
 //
 // The app does not send `hotkey` yet: AppController fans a key press out as per-workspace
-// `start` / `trigger_released` (#216). Esc goes out as
+// `start` / `trigger_released` (#233). Esc goes out as
 // `transport: panic` on the app connection, which the engine treats as the app-scope `panic`.
 
 extension ModelID {

@@ -186,18 +186,18 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [x] M5.1 `EngineClient` (connect, reconnect, codec) + `WorkspaceStore`; fixture contract tests [NFR-01]
   - [x] M5.1a `EngineClient` constraints from the server (docs/network.md)
 - [ ] M5.2 #110 Engine lifecycle in app: spawn/attach, reconnect, crash alarm + restore
-  - [ ] M5.2b #217 Reopen the last workspaces on launch (preference)
+  - [ ] M5.2b #234 Reopen the last workspaces on launch (preference)
 - [x] M5.3 Main window shell [UI-07, UI-08, SM-04, CL-06]
 - [x] M5.4 Cue list `NSOutlineView` [CL-02, CL-03, ED-13, UI-04, NFR-24]
   - [x] Measure `WorkspaceStore` apply cost with 2,000 cues
   - [ ] M5.4a #111 Decode snapshots off the main actor (EngineClient)
   - [ ] M5.4b #112 Cue list follow-ups: columns, filter/highlight, duration column
-  - [ ] M5.4c #218 Remember window frames and split positions per machine
-  - [ ] M5.4d #219 Engine: media duration per audio cue in snapshot and upserts
+  - [ ] M5.4c #235 Remember window frames and split positions per machine
+  - [ ] M5.4d #236 Engine: media duration per audio cue in snapshot and upserts
 - [x] M5.5 Sidebar [CL-01, CL-05, PB-07, PB-12]
   - [ ] M5.5a #113 Sidebar New List / New Cart buttons
 - [x] M5.6 Inspector: basics (number, name, notes, colour, timings, continue mode, target) [ED-01, CUE-01..CUE-03]
-  - [ ] M5.6b #220 Edit Wait/Fade durations and a Load cue's time
+  - [ ] M5.6b #237 Edit Wait/Fade durations and a Load cue's time
 - [x] M5.7 Inspector: triggers (hotkey, OSC); hotkey conflict precedence [CUE-09, TRG-01, TRG-03]
   - [ ] M5.7a #114 Hotkey used by workspace warning
 - [ ] M5.8 #115 Inspector: time & loops with waveform editor
@@ -205,8 +205,8 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [ ] M5.10 #117 Editing: drag-drop, reorder, batch edit, copy/paste, undo/redo, find
   - [x] M5.10b Editing part 2: Finder drops, copy/cut/paste across workspaces
   - [ ] M5.10c #118 Editing part 3: batch edit, find, fade-this-out, drag to list, Network cue
-  - [ ] M5.10d #221 Engine: refuse undo/redo that removes an active cue
-  - [ ] M5.10e #222 Engine: relative media paths, media-only property, raw paste
+  - [ ] M5.10d #238 Engine: refuse undo/redo that removes an active cue
+  - [ ] M5.10e #239 Engine: relative media paths, media-only property, raw paste
 - [ ] M5.11 #119 Transport: GO/Stop/Panic/Pause/Resume, remappable hotkeys
   - [ ] M5.11a #120 Key-map editor UI
   - [x] M5.11b Stop All sends the engine `stop_all` for the key window workspace
@@ -215,7 +215,7 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
   - [ ] M5.11d #123 Panic Selected / Panic All double-tap; Reset All
 - [ ] M5.12 #124 Show Mode, quit confirmation
 - [ ] M5.12b #125 Show Mode enlarged GO/standby display, high contrast
-- [ ] M5.12c #223 Show Mode: no non-essential modal dialogs
+- [ ] M5.12c #240 Show Mode: no non-essential modal dialogs
 - [ ] M5.13a #127 OSC passcode table UI
 - [ ] M5.13 #128 Preferences: audio device, rate/buffer, autosave, backups, panic time; patch editor
 - [x] M5.14 Warnings panel, log view, status display, relink missing media [DX-01, DX-02, DX-03, WS-03]
@@ -224,15 +224,15 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [ ] M5.15 #131 UI scaling, Localizable.strings, VoiceOver basics
 - [ ] M5.16 #132 XCUITest end-to-end flows against a real headless engine
 - [ ] M5.19 #133 Windows for several workspaces
-  - [ ] M5.19a #216 Finish the app's switch to protocol 2
+  - [ ] M5.19a #233 Finish the app's switch to protocol 2
 - [ ] M5.20 #134 Launcher Connect and Templates tabs
 - [x] M5.18 Preview/audition button and key (inspector, Time & Loops tab and cue menu) [CUE-05]
 - [x] M5.17 Reopen main window after close (Dock click / Window menu)
 - [ ] M5.21 #135 Output override indicator and switch
-- [ ] M5.22 #224 Pre-show check menu item and report view
-- [ ] M5.23 #225 Per-cue and per-output peak meters
-- [ ] M5.24 #226 Group cue mode, loop and shuffle controls
-- [ ] M5.25 #227 Master level per output and global master
+- [ ] M5.22 #241 Pre-show check menu item and report view
+- [ ] M5.23 #242 Per-cue and per-output peak meters
+- [ ] M5.24 #243 Group cue mode, loop and shuffle controls
+- [ ] M5.25 #244 Master level per output and global master
 
 ## M6 — Release v0.0.1
 - [ ] M6.1 #136 Universal .app, embedded engine, signing, .dmg script, icon
@@ -241,7 +241,7 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [ ] M6.4 #139 Tick v0.0.1 requirements; tag v0.0.1
 - [ ] M6.5 #140 Manual hardware check of device loss
 - [ ] M6.6 #141 Opt-in crash report sending
-- [ ] M6.7 #228 CI: nightly sanitizer job
+- [ ] M6.7 #245 CI: nightly sanitizer job
 
 ## Deferred to v0.0.2 (niche QLab parity; user decision 2026-10-28)
 - [ ] M2.21 #142 Audition output: workspace setting for the audition patch/device
@@ -257,5 +257,5 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
   - [ ] M2.29f #149 Windows file-ID follow (later)
   - [ ] M2.29g #150 Follow the show file itself when moved or renamed (later)
 - [ ] M4.15j #151 Per-workspace OSC listen port (show-file change)
-- [ ] M5.26 #229 Opt-in update check (DST-02)
-- [ ] M5.6c #230 Inspector basics extras: auto-load, skip if disarmed, second colour, default name
+- [ ] M5.26 #246 Opt-in update check (DST-02)
+- [ ] M5.6c #247 Inspector basics extras: auto-load, skip if disarmed, second colour, default name

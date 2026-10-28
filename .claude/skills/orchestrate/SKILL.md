@@ -22,7 +22,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 
 ## 0. Re-orient (every session start or after a reset)
 - Read `docs/handoff/orchestrator-state.md`, then `PROGRESS.md` (history and order) and `gh issue list --milestone "<current milestone>" --label task --state open` (what's next). Skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, `git log --oneline -15`, `git status`.
-- `gh auth status` must show `openlab-dev`, and `git config user.email` its noreply address (CLAUDE.md, "Known environment facts"). If not, stop and ask the user: agent work never goes out under their account.
+- `git config user.email` must be the `openlab-dev` noreply address. For `gh`, follow CLAUDE.md "Known environment facts": `jamiejcole` while `openlab-dev` is flagged (its profile returns 404 signed out), `openlab-dev` once it is not. When it comes back, close the duplicates of its hidden issues (#216–#231 duplicate #233–#248) and its PR #232.
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
