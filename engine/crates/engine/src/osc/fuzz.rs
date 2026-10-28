@@ -11,17 +11,24 @@ use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, Workspac
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use openlab_core::protocol::DocId;
+
 use super::{
-    CueField, Osc, OscShow, Outcome, Peer, SlipDecoder, Target, decode_packet, encode_message,
+    CueField, DocShow, Osc, OscShow, Outcome, Peer, SlipDecoder, Target, decode_packet,
+    encode_message,
 };
 
 struct FuzzShow {
+    id: u128,
     access: OscAccess,
 }
 
 impl OscShow for FuzzShow {
     fn workspace_id(&self) -> WorkspaceId {
-        WorkspaceId(Uuid::from_u128(1))
+        WorkspaceId(Uuid::from_u128(self.id))
+    }
+    fn workspace_name(&self) -> &str {
+        if self.id == 1 { "one" } else { "two" }
     }
     fn access(&self) -> &OscAccess {
         &self.access
@@ -84,6 +91,7 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
         return Ok(());
     };
     let show = FuzzShow {
+        id: 1,
         // Bit 1: a table with passcodes (all rights; view only), No Passcode with no rights,
         // or view only when bit 2 is also set; else open.
         access: if mode & 2 != 0 {
@@ -116,6 +124,21 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
             OscAccess::default()
         },
     };
+    // A second doc, open to everyone: every un-prefixed message goes to both (M4.15h).
+    let other = FuzzShow {
+        id: 9,
+        access: OscAccess::default(),
+    };
+    let docs = [
+        DocShow {
+            doc: DocId(0),
+            show: &show,
+        },
+        DocShow {
+            doc: DocId(1),
+            show: &other,
+        },
+    ];
     let mut osc = Osc::new();
     let udp = Peer::Udp(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let tcp = Peer::Tcp {
@@ -125,13 +148,20 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
     let mut now = Duration::ZERO;
     let mut outcomes: Vec<Outcome> = Vec::new();
     if mode & 1 == 0 {
-        outcomes.push(osc.handle_datagram(udp, now, rest, &show));
+        outcomes.push(osc.handle_datagram_docs(udp, now, now, rest, &docs));
     } else {
         let mut decoder = SlipDecoder::new(4096);
         let chunk = usize::from(mode >> 2) % 31 + 1;
         for part in rest.chunks(chunk) {
             now += Duration::from_millis(1);
-            outcomes.push(osc.handle_stream(tcp, now, &mut decoder, part, &show));
+            outcomes.push(osc.handle_stream_docs(tcp, now, now, &mut decoder, part, &docs));
+        }
+    }
+    for outcome in &outcomes {
+        if outcome.input_docs.len() != outcome.inputs.len()
+            || outcome.replies.len() > super::MAX_REPLIES_PER_CALL
+        {
+            return Err("inputs without their doc, or too many replies".into());
         }
     }
     for reply in outcomes.iter().flat_map(|o| &o.replies) {
