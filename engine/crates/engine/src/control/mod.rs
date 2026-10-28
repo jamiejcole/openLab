@@ -745,9 +745,16 @@ impl Control {
             Err(message) => message,
         };
         match from {
-            Addr::Doc(Some(doc)) => match self.cx_of(doc) {
-                Some(mut cx) => cx.client(message, to),
-                None => no_doc(message, to),
+            Addr::Doc(Some(doc)) => match message {
+                // Saves look at the other docs' show files: the engine's, not the doc's.
+                ClientMessage::Request {
+                    id,
+                    request: request @ (Request::Save | Request::SaveAs { .. }),
+                } if self.cx_of(doc).is_some() => self.save(doc, id, request, to),
+                message => match self.cx_of(doc) {
+                    Some(mut cx) => cx.client(message, to),
+                    None => no_doc(message, to),
+                },
             },
             Addr::Doc(None) => no_doc(message, to),
             Addr::App => match message {
@@ -1600,7 +1607,8 @@ impl DocCx<'_> {
                         )),
                     },
                 ),
-                request => self.doc_request(id, request, to),
+                // Saves come through [`Control::save`], which knows the other docs.
+                request => self.doc_request(id, request, to, Vec::new()),
             },
             ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
             // The network layer handles the handshake and closing (M4.3).

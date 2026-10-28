@@ -36,7 +36,7 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
     MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
-    comparison_key, is_absolute, load_show, portable_ref, relink_command, to_portable,
+    is_absolute, load_show, portable_ref, relink_command,
 };
 
 use super::checks::{NoProbes, PlanChecks};
@@ -48,7 +48,7 @@ use super::{
 };
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
-    check_recovery, media_path, read_text, scan_recovery,
+    check_recovery, file_key, lexical_key, media_path, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -257,6 +257,9 @@ enum DocJob {
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
         config: EngineConfig,
+        /// The show files open (or being saved) in other docs: `already_open` if `path` is one
+        /// of them under another spelling (a symlink, `/var` for `/private/var`).
+        others: Vec<PathBuf>,
     },
     /// A doc to add from a workspace already in hand.
     Build {
@@ -293,6 +296,8 @@ struct PendingDoc {
     ticket: u64,
     id: RequestId,
     reply: ReplyTx,
+    /// The show file an `open` reads: claimed while it is read, so a save-as cannot take it.
+    path: Option<PathBuf>,
     /// When the request was handed to the worker ([`ControlConfig::clock`], milliseconds).
     started_ms: i64,
 }
@@ -493,7 +498,19 @@ fn work(
                 path,
                 recovery,
                 config,
-            } => built(open(ticket, &path, recovery, dirs), config),
+                others,
+            } => {
+                let key = file_key(&path);
+                if others.iter().any(|o| file_key(o) == key) {
+                    failed(
+                        ticket,
+                        ErrorCode::AlreadyOpen,
+                        format!("{} is open already", path.display()),
+                    )
+                } else {
+                    built(open(ticket, &path, recovery, dirs), config)
+                }
+            }
             DocJob::Build {
                 ticket,
                 loaded,
@@ -713,6 +730,7 @@ fn fail(to: &ReplyTx, id: RequestId, code: ErrorCode, message: impl Into<String>
 fn persist_code(e: &PersistError) -> ErrorCode {
     match e {
         PersistError::Io { .. } | PersistError::WriterGone => ErrorCode::Io,
+        PersistError::OpenElsewhere(_) => ErrorCode::AlreadyOpen,
         _ => ErrorCode::Internal,
     }
 }
@@ -780,8 +798,7 @@ fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> Vec<Relink>
 /// Whether two paths name the same file, compared like media paths (case, NFC and `..`
 /// ignored): the same show reopened under another spelling is still the same file.
 fn same_path(a: &Path, b: &Path) -> bool {
-    let key = |p: &Path| comparison_key(&to_portable(&p.to_string_lossy(), PathStyle::host()));
-    key(a) == key(b)
+    lexical_key(a) == lexical_key(b)
 }
 
 fn folder_of(path: &Path) -> Option<PathBuf> {
@@ -791,10 +808,18 @@ fn folder_of(path: &Path) -> Option<PathBuf> {
 impl DocCx<'_> {
     /// A save of this doc (`save`, `save_as`); the other document requests are app-scope
     /// ([`Control::app_scope`]).
-    pub(super) fn doc_request(&mut self, id: RequestId, request: Request, to: &ReplyTx) {
+    /// `others`: the show files of the other docs and their saves and the open in flight,
+    /// which this save must not write ([`Control::save`]).
+    pub(super) fn doc_request(
+        &mut self,
+        id: RequestId,
+        request: Request,
+        to: &ReplyTx,
+        others: Vec<PathBuf>,
+    ) {
         match request {
             Request::Save => match self.doc.show_path.clone() {
-                Some(path) => self.start_save(id, to, path),
+                Some(path) => self.start_save(id, to, path, others),
                 None => fail(
                     to,
                     id,
@@ -802,7 +827,7 @@ impl DocCx<'_> {
                     "the workspace has never been saved; use save_as",
                 ),
             },
-            Request::SaveAs { path } => self.start_save(id, to, PathBuf::from(path)),
+            Request::SaveAs { path } => self.start_save(id, to, PathBuf::from(path), others),
             other => fail(
                 to,
                 id,
@@ -875,7 +900,7 @@ impl DocCx<'_> {
 
     // ---- Saving -----------------------------------------------------------------------------
 
-    fn start_save(&mut self, id: RequestId, to: &ReplyTx, path: PathBuf) {
+    fn start_save(&mut self, id: RequestId, to: &ReplyTx, path: PathBuf, others: Vec<PathBuf>) {
         let Some(writer) = &self.eng.docs.writer else {
             fail(
                 to,
@@ -909,12 +934,13 @@ impl DocCx<'_> {
                 }
             }
         }
-        let rx = writer.save(
+        let rx = writer.save_unless(
             copy,
             path.clone(),
             self.config_clock_ms(),
             self.eng.config.machine.backup_keep,
             self.doc.revision,
+            others,
         );
         if let Some(message) = relink_failure {
             self.log(LogLevel::Error, message);
@@ -1243,6 +1269,7 @@ impl Engine {
             ticket: self.docs.ticket,
             id,
             reply: to.clone(),
+            path: None,
             started_ms: self.config.clock.now_ms(),
         });
         self.docs.ticket
@@ -1326,16 +1353,17 @@ impl Control {
             return;
         }
         if let DocSource::Open { path, .. } = &source
-            && let Some(open) = self.doc_at(path)
+            && self.claimed(path, None)
         {
             fail(
                 to,
                 id,
                 ErrorCode::AlreadyOpen,
-                format!("{} is open already (workspace {open})", path.display()),
+                format!("{} is open already", path.display()),
             );
             return;
         }
+        let others = self.claimed_paths(None);
         let config = match self.eng.engine_config(DocId(self.eng.next_doc)) {
             Ok(config) => config,
             Err(e) => {
@@ -1346,11 +1374,15 @@ impl Control {
         let job = match source {
             DocSource::Open { path, recovery } => {
                 let ticket = self.eng.next_ticket(Target::New, id, to);
+                if let Some(pending) = &mut self.eng.docs.pending {
+                    pending.path = Some(path.clone());
+                }
                 DocJob::Open {
                     ticket,
                     path,
                     recovery,
                     config,
+                    others,
                 }
             }
             DocSource::Recovery {
@@ -1388,12 +1420,60 @@ impl Control {
         self.eng.send_job(job, id, to);
     }
 
-    /// The open doc whose show file is `path` (spelled as media paths are compared).
-    fn doc_at(&self, path: &Path) -> Option<DocId> {
-        self.docs
+    /// The show files docs other than `except` hold or are writing (saves in flight), and the
+    /// one an `open` in flight reads: no other doc may open or save over them (M4.15f).
+    fn claimed_paths(&self, except: Option<DocId>) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .docs
             .iter()
-            .find(|d| d.show_path.as_deref().is_some_and(|p| same_path(p, path)))
-            .map(|d| d.id)
+            .filter(|d| Some(d.id) != except)
+            .flat_map(|d| {
+                d.show_path
+                    .iter()
+                    .chain(d.file.saves.iter().map(|s| &s.path))
+                    .cloned()
+            })
+            .collect();
+        paths.extend(self.eng.docs.pending.as_ref().and_then(|p| p.path.clone()));
+        paths.extend(self.eng.docs.orphans.iter().map(|s| s.path.clone()));
+        paths
+    }
+
+    /// Whether `path` is claimed ([`Self::claimed_paths`]) as spelled (compared as media paths
+    /// are; another spelling of the same file is caught off this thread, by `file_key`).
+    fn claimed(&self, path: &Path, except: Option<DocId>) -> bool {
+        self.claimed_paths(except)
+            .iter()
+            .any(|p| same_path(p, path))
+    }
+
+    /// `save` and `save_as` of doc `doc`: refused with `already_open` when the target is a show
+    /// file another doc holds or is writing, or one an `open` is reading; the writer checks again
+    /// by the file's identity before it writes (a symlink or other spelling of the same file).
+    pub(super) fn save(
+        &mut self,
+        doc: DocId,
+        id: RequestId,
+        request: Request,
+        to: &ReplyTx,
+    ) -> super::Flow {
+        if let Request::SaveAs { path } = &request
+            && self.claimed(Path::new(path), Some(doc))
+        {
+            fail(
+                to,
+                id,
+                ErrorCode::AlreadyOpen,
+                format!("{path} is open in another workspace"),
+            );
+            return super::Flow::Continue;
+        }
+        let others = self.claimed_paths(Some(doc));
+        match self.cx_of(doc) {
+            Some(mut cx) => cx.doc_request(id, request, to, others),
+            None => fail(to, id, ErrorCode::NoWorkspace, "no workspace is open"),
+        }
+        super::Flow::Continue
     }
 
     /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
@@ -1475,13 +1555,13 @@ impl Control {
         }
         // Another doc may have been saved to this path while it was read.
         if let Some(path) = &parts.loaded.path
-            && let Some(open) = self.doc_at(path)
+            && self.claimed(path, None)
         {
             fail(
                 to,
                 id,
                 ErrorCode::AlreadyOpen,
-                format!("{} is open already (workspace {open})", path.display()),
+                format!("{} is open already", path.display()),
             );
             self.eng.docs.discard(Box::new(parts));
             return;

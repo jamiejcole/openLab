@@ -153,6 +153,32 @@ pub enum PersistError {
     },
     #[error("the save thread has stopped")]
     WriterGone,
+    /// A save would write a show file another open workspace has (M4.15f): refused, nothing
+    /// written.
+    #[error("{} is open in another workspace", .0.display())]
+    OpenElsewhere(PathBuf),
+}
+
+/// What names one file however it is spelled: the canonical path (symlinks, `/var` and
+/// `/private/var`, `.` and `..` resolved) when the file, or else its folder, exists; the path
+/// as given otherwise; then compared as media paths are. Touches the disk (it can block on a
+/// stalled volume): call it on a worker or the writer, never on the control thread.
+pub fn file_key(path: &Path) -> String {
+    let real = std::fs::canonicalize(path)
+        .ok()
+        .or_else(|| {
+            let folder = std::fs::canonicalize(path.parent()?).ok()?;
+            Some(folder.join(path.file_name()?))
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    lexical_key(&real)
+}
+
+/// [`file_key`] without the disk: the path as spelled, compared as media paths are (case,
+/// Unicode form and `.`/`..` ignored).
+pub fn lexical_key(path: &Path) -> String {
+    use openlab_core::{PathStyle, comparison_key, to_portable};
+    comparison_key(&to_portable(&path.to_string_lossy(), PathStyle::host()))
 }
 
 impl PersistError {

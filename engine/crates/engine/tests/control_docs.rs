@@ -1620,3 +1620,139 @@ fn an_autosave_in_flight_cannot_bring_back_edits_the_operator_discarded() {
         "no offer"
     );
 }
+
+/// Another doc opened beside the first (not closing it, unlike `request`).
+fn open_beside(s: &mut OfflineShow, request: Request) -> Vec<ServerMessage> {
+    let id = s.request_id();
+    s.send(ClientMessage::Request { id, request })
+}
+
+fn opened_doc(msgs: &[ServerMessage]) -> openlab_engine::control::DocId {
+    match data(msgs) {
+        ResultData::Opened { doc } => doc,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Review H1 (M4.15f): a Save As onto the show file another open doc has is refused with
+/// `already_open` and writes nothing, also when the path reaches it through a symlinked folder
+/// (the writer compares the files themselves); else the later save of either doc would silently
+/// overwrite the other's.
+#[test]
+fn save_as_onto_another_open_docs_show_is_already_open() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    let path = r.env.show_path();
+    let before = fs::read_to_string(&path).unwrap();
+    let doc = opened_doc(&open_beside(&mut r.s, Request::New {}));
+    let save_as = |s: &mut OfflineShow, p: &Path| {
+        let id = s.request_id();
+        let replies = s.send_doc(
+            doc,
+            ClientMessage::Request {
+                id,
+                request: Request::SaveAs {
+                    path: p.to_string_lossy().into_owned(),
+                },
+            },
+        );
+        assert_eq!(s.stalls(), 0);
+        replies
+    };
+    assert_eq!(
+        error_code(&save_as(&mut r.s, &path)),
+        ErrorCode::AlreadyOpen
+    );
+    #[cfg(unix)]
+    {
+        let link = r.env.show_dir().with_file_name("linked");
+        std::os::unix::fs::symlink(r.env.show_dir(), &link).unwrap();
+        let via_link = link.join(path.file_name().unwrap());
+        assert_eq!(
+            error_code(&save_as(&mut r.s, &via_link)),
+            ErrorCode::AlreadyOpen
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        before,
+        "nothing written"
+    );
+    let view = r.s.control().doc(doc).unwrap();
+    assert_eq!(view.show_path(), None, "the new doc is still untitled");
+}
+
+/// Review H1: an open through a symlinked folder of a show that is open is `already_open`
+/// (the document worker compares the files), not a second doc on the same file.
+#[cfg(unix)]
+#[test]
+fn opening_an_open_show_through_a_symlink_is_already_open() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    let path = r.env.show_path();
+    let link = r.env.show_dir().with_file_name("linked");
+    std::os::unix::fs::symlink(r.env.show_dir(), &link).unwrap();
+    let replies = open_beside(
+        &mut r.s,
+        Request::Open {
+            path: link
+                .join(path.file_name().unwrap())
+                .to_string_lossy()
+                .into_owned(),
+            recovery: None,
+        },
+    );
+    assert_eq!(error_code(&replies), ErrorCode::AlreadyOpen);
+    assert_eq!(r.s.control().doc_ids().len(), 1);
+}
+
+/// Review H1: a show file a Save As is still writing is claimed: opening it meanwhile is
+/// `already_open` (its doc only takes the path when the write is done).
+#[test]
+fn opening_a_show_a_save_as_is_writing_is_already_open() {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release));
+    let entered_tx = Mutex::new(entered_tx);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let mut r = rig_with(memo_ws("one", &[1]), None, Some(hook));
+    let _unblock = Unblock(release_tx.clone());
+    let path = r.env.show_path();
+    // An older file at the path, so `open` would find one.
+    write_show(&path, &memo_ws("older", &[2]));
+    let (tx, mut rx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(1),
+            request: Request::SaveAs {
+                path: path.to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    entered.recv().unwrap(); // the save is mid-write
+    // Answered at once, on the control thread (the writer is still held).
+    let (otx, mut orx) = reply_channel();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: RequestId(2),
+            request: open(&path),
+        },
+        reply: otx,
+    });
+    let replies: Vec<_> = std::iter::from_fn(|| orx.try_recv().ok()).collect();
+    assert_eq!(error_code(&replies), ErrorCode::AlreadyOpen);
+    release_tx.send(()).unwrap();
+    r.s.settle_docs();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    ));
+    assert_eq!(r.s.control().doc_ids().len(), 1);
+}
