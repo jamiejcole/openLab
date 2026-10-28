@@ -27,21 +27,24 @@ const T0: i64 = 1_700_000_000_000;
 struct Rig {
     s: OfflineShow,
     lib: std::path::PathBuf,
+    /// A folder that does not exist: the cues' files are missing from it.
+    gone: std::path::PathBuf,
     clock: ManualClock,
     _env: common::Env,
 }
 
-/// Cues 1..=n each point at `/gone/<name>`; the library folder starts empty.
+/// Cues 1..=n each point at `<gone>/<name>`, under the temp folder (absolute on every platform); the library folder starts empty.
 fn rig_with(
     names: &[&str],
     tweak: impl FnOnce(&mut openlab_engine::control::ControlConfig),
 ) -> Rig {
     let env = env();
+    let gone = env.root.path().join("gone");
     let ws = workspace(
         names
             .iter()
             .enumerate()
-            .map(|(i, n)| audio(i as u128 + 1, &Path::new("/gone").join(n), 0))
+            .map(|(i, n)| audio(i as u128 + 1, &gone.join(n), 0))
             .collect(),
     );
     let clock = ManualClock::new(T0);
@@ -54,6 +57,7 @@ fn rig_with(
     Rig {
         s: show_with(ws, c),
         lib,
+        gone,
         clock,
         _env: env,
     }
@@ -120,11 +124,17 @@ fn counts(msgs: &[ServerMessage]) -> (u64, usize, usize, bool, u64) {
     }
 }
 
+/// A path as the show file spells it: forward slashes on every platform.
+fn portable(path: &Path) -> String {
+    openlab_core::to_portable(path.to_str().unwrap(), openlab_core::PathStyle::host())
+}
+
+/// The cue's media, in portable spelling.
 fn media(s: &OfflineShow, n: u128) -> String {
     openlab_core::audio_media(s.control().workspace())
         .into_iter()
         .find(|(c, _)| *c == id(n))
-        .map(|(_, m)| m.as_str().to_owned())
+        .map(|(_, m)| openlab_core::to_portable(m.as_str(), openlab_core::PathStyle::host()))
         .unwrap()
 }
 
@@ -138,9 +148,10 @@ fn relink_finds_moved_files_in_one_undo_step_and_undo_restores() {
     let replies = relink(&mut r);
     assert_eq!(counts(&replies), (2, 0, 1, false, 0));
     assert_eq!(ok_body(&replies).revision, Some(rev + 1));
-    assert!(media(&r.s, 1).ends_with("a.wav") && !media(&r.s, 1).starts_with("/gone"));
+    let gone = portable(&r.gone);
+    assert!(media(&r.s, 1).ends_with("a.wav") && !media(&r.s, 1).starts_with(&gone));
     assert!(media(&r.s, 2).to_lowercase().ends_with("sub/deep/b.wav"));
-    assert_eq!(media(&r.s, 3), "/gone/c.wav");
+    assert_eq!(media(&r.s, 3), format!("{gone}/c.wav"));
     assert!(
         r.s.take_outbound()
             .iter()
@@ -149,8 +160,8 @@ fn relink_finds_moved_files_in_one_undo_step_and_undo_restores() {
     // One undo step puts both back.
     let id = r.s.request_id();
     r.s.send(ClientMessage::Undo { id });
-    assert_eq!(media(&r.s, 1), "/gone/a.wav");
-    assert_eq!(media(&r.s, 2), "/gone/b.wav");
+    assert_eq!(media(&r.s, 1), format!("{}/a.wav", portable(&r.gone)));
+    assert_eq!(media(&r.s, 2), format!("{}/b.wav", portable(&r.gone)));
 }
 
 #[test]
@@ -161,7 +172,7 @@ fn duplicates_are_reported_ambiguous_and_not_guessed() {
     let rev = r.s.control().snapshot().revision;
     let replies = relink(&mut r);
     assert_eq!(counts(&replies), (0, 1, 0, false, 0));
-    assert_eq!(media(&r.s, 1), "/gone/a.wav");
+    assert_eq!(media(&r.s, 1), format!("{}/a.wav", portable(&r.gone)));
     // Nothing changed: no new revision, no undo step.
     assert_eq!(ok_body(&replies).revision, Some(rev));
     assert!(!r.s.control().snapshot().document.can_undo);
@@ -221,7 +232,7 @@ fn a_missing_folder_or_a_file_is_refused_without_changes() {
         },
     });
     assert_eq!(error_code(&replies), ErrorCode::BadRequest);
-    assert_eq!(media(&r.s, 1), "/gone/a.wav");
+    assert_eq!(media(&r.s, 1), format!("{}/a.wav", portable(&r.gone)));
     // The worker is free again.
     touch(&r.lib.join("a.wav"));
     assert_eq!(counts(&relink(&mut r)).0, 1);
@@ -321,7 +332,7 @@ fn a_walk_that_returns_applies_even_when_slow() {
         r.s.tick();
         std::thread::yield_now();
     }
-    assert!(!media(&r.s, 1).starts_with("/gone"));
+    assert!(!media(&r.s, 1).starts_with(&portable(&r.gone)));
 }
 
 #[test]
@@ -334,6 +345,7 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
     entered.recv().unwrap();
     // The operator points cue 1 elsewhere while the folder is walked.
+    let chosen = portable(&r.lib.join("elsewhere/chose.wav"));
     let cid = r.s.request_id();
     let mut kind =
         r.s.control()
@@ -343,7 +355,7 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
             .kind
             .clone();
     if let openlab_core::CueKind::Audio { media, .. } = &mut kind {
-        *media = Some(openlab_core::MediaRef::new("/operator/chose.wav"));
+        *media = Some(openlab_core::MediaRef::new(chosen.clone()));
     }
     let (tx, mut edit) = reply_channel();
     r.s.deliver(Inbox::Client {
@@ -365,8 +377,8 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
         got = rx.try_recv().ok();
         std::thread::yield_now();
     }
-    assert_eq!(media(&r.s, 1), "/operator/chose.wav");
-    assert!(!media(&r.s, 2).starts_with("/gone"));
+    assert_eq!(media(&r.s, 1), chosen);
+    assert!(!media(&r.s, 2).starts_with(&portable(&r.gone)));
     assert_eq!(counts(&[got.unwrap()]).0, 1);
 }
 
