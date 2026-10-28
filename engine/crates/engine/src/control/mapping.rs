@@ -21,6 +21,8 @@ impl DocCx<'_> {
             return;
         };
         // Warnings for patches that are gone (or in another workspace) are forgotten.
+        // M4.15e: this retain also drops every other open doc's entries; keep only this doc's
+        // stale ones (seams note (a)).
         let (ws_id, patches) = (self.doc.ws.id, &self.doc.ws.patches);
         self.eng
             .mapping_warned

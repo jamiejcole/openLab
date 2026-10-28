@@ -139,7 +139,9 @@ pub struct ControlConfig {
     pub block_frames: u64,
     /// Seeds random groups and shuffled playlists ([`entropy_seed`] for a show).
     pub seed: u64,
-    /// The show file, if saved: relative media references resolve against its folder.
+    /// The first doc's show file, if saved: relative media references resolve against its
+    /// folder. Only the initial path: `Control::new` takes it into the doc, so it is `None`
+    /// in the engine's config afterwards.
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
     /// False when `machine` is defaults standing in for a settings file that could not be read:
@@ -517,7 +519,7 @@ impl Control {
     }
 
     /// The open docs, in open order.
-    fn docs(&self) -> impl Iterator<Item = &Doc> {
+    fn open_docs(&self) -> impl Iterator<Item = &Doc> {
         std::iter::once(&self.doc)
     }
 
@@ -548,6 +550,7 @@ impl Control {
         let rendered = self.eng.mixer.samples_rendered();
         self.eng.last_tick_stalled = rendered == self.eng.last_tick_rendered;
         self.eng.last_tick_rendered = rendered;
+        // M4.15e: device loss and return act on every doc (seams note (f)).
         self.cx().poll_device();
         let eng = &mut self.eng;
         for doc in std::iter::once(&mut self.doc) {
@@ -557,6 +560,7 @@ impl Control {
             }
             .tick();
         }
+        // M4.15e: engine-wide steps run through the one doc (seams note (f)).
         let mut cx = self.cx();
         cx.settings_tick();
         cx.health();
@@ -572,7 +576,7 @@ impl Control {
             return MAX_WAIT;
         }
         let wait = self
-            .docs()
+            .open_docs()
             .map(|doc| doc.wait(&self.eng))
             .min()
             .unwrap_or(MAX_WAIT);
@@ -698,8 +702,8 @@ impl DocCx<'_> {
         self.watch_events();
         self.flush_media(now);
         let mut fx = Effects::default();
-        // The mixer's events are the engine's: with several docs they are routed by voice
-        // owner (M4.15e). With one, every event is this doc's.
+        // M4.15e: the mixer's events are the engine's; drain them once and route by voice
+        // owner. With one doc every event is this doc's (seams note (f)).
         while let Some(e) = self.eng.mixer.poll_event() {
             self.doc.voices.event(e, &mut fx);
         }
@@ -1056,6 +1060,8 @@ impl DocCx<'_> {
     fn sync_patches(&mut self, all: bool) -> Vec<Input> {
         self.map_unmapped_patches();
         let busy = self.doc.voices.slots_in_use();
+        // M4.15e: slots are keyed by PatchId only; §3.5 keys them (DocId, PatchId), and the
+        // slots in use must span every doc (seams note (e)).
         let (cmds, changed) = self.eng.patches.sync(
             &self.doc.ws,
             &self.eng.config.machine,
@@ -1284,6 +1290,8 @@ impl DocCx<'_> {
             .map(u64::from)
             .filter(|&b| b > 0 && b != self.eng.block)
         {
+            // M4.15e: every doc's cue engine needs the new lookahead before `eng.block`
+            // changes; only this doc's gets it (seams note (b)).
             match self.doc.engine.set_lookahead(b) {
                 Ok(()) => {
                     self.eng.now_floor = self.now();
@@ -1471,6 +1479,8 @@ impl DocCx<'_> {
             }
             let actions = self.doc.engine.handle(&self.doc.ws, input, now);
             let unsignalled = self.doc.engine.unsignalled_model_changes();
+            // M4.15e: an engine-wide high-water mark compared with one doc's counter; keep it
+            // per doc (seams note (c)).
             if unsignalled > self.eng.seen.unsignalled {
                 self.eng.seen.unsignalled = unsignalled;
                 self.log(
@@ -1771,6 +1781,9 @@ impl DocCx<'_> {
                 self.eng.out.send_lossy(m);
             }
         }
+        // M4.15e: `last_meters` and `last_meter_read` are engine fields used by a per-doc
+        // report: the first doc's read would starve the others of meters and reconciliation
+        // (seams note (d)).
         if due(self.eng.last_meters) {
             self.eng.last_meters = Some(rendered);
             self.meters(rendered);
@@ -2125,6 +2138,7 @@ impl Control {
 
     /// Stops the show for shutdown: a hard stop of everything, carried out by the mixer.
     pub fn shutdown(&mut self) {
+        // M4.15e/g: panic every doc; with no doc only `pump` (seams note (f)).
         let mut cx = self.cx();
         let now = cx.now();
         // A second panic within the fade is a hard stop (docs/cue-engine.md, Panic).

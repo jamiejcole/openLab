@@ -989,6 +989,7 @@ impl DocCx<'_> {
         self.doc.history = History::new();
         self.doc.checks = super::checks::PlanChecks::default();
         self.doc.show_path = path;
+        // M4.15e: forgets every doc's logged cue states, not only this one's (seams note (h)).
         self.eng.observe.reset();
         self.log_kind(
             LogKind::Document,
@@ -1118,6 +1119,8 @@ impl DocCx<'_> {
         if self.doc.file.resend_snapshot && self.eng.out.has_room() {
             self.resend_snapshot();
         }
+        // M4.15e: the read watchdog and autosave removals are engine-wide; with N docs they
+        // would run N times, with none never (seams note (f)).
         self.check_stalled_read();
         self.poll_saves();
         self.poll_clears();
