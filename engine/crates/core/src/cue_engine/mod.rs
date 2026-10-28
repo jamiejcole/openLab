@@ -12,6 +12,7 @@ mod control;
 mod fade;
 mod group;
 mod level;
+mod live_levels;
 mod playhead;
 mod preview;
 mod rng;
@@ -27,7 +28,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub use level::{LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
+pub use level::{EDIT_RAMP_SECONDS, LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
 pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
 pub use timers::{Timer, TimerProgress};
@@ -277,6 +278,7 @@ impl CueEngine {
             if changed && !signalled && self.unsignalled_model_changes() == counted {
                 self.note_unsignalled();
             }
+            self.follow_level_edits(&mut cx);
         }
         self.advance(&mut cx);
         self.apply(input, &mut cx);
@@ -1752,6 +1754,10 @@ impl CueEngine {
                     from: offset,
                     first: voice_at,
                 };
+                // The binary starts the voice with the model's levels as they are now.
+                if let CueKind::Audio { levels, .. } = &model.kind {
+                    run.given = Some(levels.clone());
+                }
             }
             Act::Send => {
                 if let CueKind::Network {

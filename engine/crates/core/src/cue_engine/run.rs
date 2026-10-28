@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cue::FadeCurve;
+use crate::cue::{CueLevels, FadeCurve};
 use crate::model::CueId;
 
 use super::level::{Level, LevelParam};
@@ -133,6 +133,10 @@ pub(super) struct Run {
     pub levels: BTreeMap<LevelParam, Level>,
     /// Audio cues: the Fade cues whose ramps are moving its levels now (it reports `fading`).
     pub faders: BTreeSet<CueId>,
+    /// Audio cues with a started voice: the model's levels as the voice was last given them (at
+    /// its start, and by every level edit since), so an edit sends the voice only what changed
+    /// (`live_levels.rs`).
+    pub given: Option<CueLevels>,
     /// Audio cues: a devamp sent for its voice and not yet carried out.
     pub devamp: Option<DevampWait>,
     /// Fade cues, from their action start: what the fade is doing.
@@ -258,6 +262,7 @@ impl Run {
             group,
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),
+            given: None,
             devamp: None,
             fade: None,
         }
