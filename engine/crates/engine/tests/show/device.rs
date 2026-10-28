@@ -20,7 +20,8 @@ use openlab_engine::control::devices::{
     self, DeviceLayer, DeviceLister, ListedDevice, MixerBack, OpenFailure, OpenStream, StreamInfo,
 };
 use openlab_engine::control::{
-    Backend, Control, ControlConfig, Flow, Inbox, OutboundRx, outbound_channel, reply_channel,
+    Backend, Control, ControlConfig, DocId, DocSource, Flow, Inbox, OutboundRx, outbound_channel,
+    reply_channel,
 };
 
 use super::{BLOCK, RATE, mixer_config};
@@ -542,6 +543,40 @@ impl DeviceShow {
     pub fn request_id(&mut self) -> RequestId {
         self.next_id += 1;
         RequestId(self.next_id)
+    }
+
+    /// Opens `ws` as another doc and waits until it is installed and its files probed.
+    pub fn open_doc(&mut self, ws: Workspace) -> DocId {
+        let (tx, _rx) = reply_channel();
+        let id = self.request_id();
+        self.control
+            .open_doc(DocSource::Workspace(Box::new(ws)), id, &tx);
+        let deadline = Instant::now() + WAIT;
+        let doc = loop {
+            if let Some((_, doc)) = self.control.take_opened().pop() {
+                break doc;
+            }
+            assert!(Instant::now() < deadline, "the doc was never installed");
+            match self.inbox.recv_timeout(Duration::from_millis(20)) {
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) => self.control.tick(),
+            }
+        };
+        self.settle_media();
+        doc
+    }
+
+    /// A transport action for doc `doc`.
+    pub fn transport_doc(&mut self, doc: DocId, action: TransportAction) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        let id = self.request_id();
+        self.pump_inbox();
+        let _ = self
+            .control
+            .handle_doc(doc, ClientMessage::Transport { id, action }, &tx);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     pub fn take_outbound(&mut self) -> Vec<ServerMessage> {
