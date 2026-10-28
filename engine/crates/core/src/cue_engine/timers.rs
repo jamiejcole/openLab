@@ -67,7 +67,9 @@ fn run_timers(cue: CueId, run: &Run, at: SampleTime) -> [Option<TimerProgress>; 
     };
     let action = match (run.phase, run.voice) {
         (Phase::Action { start, end }, Voice::None) if !run.is_broken() => {
-            let at = at.max(start);
+            // Not before the start (lookahead), not past a known end that is due but not yet
+            // ticked.
+            let at = end.map_or(at, |end| at.min(end)).max(start);
             Some(TimerProgress {
                 cue,
                 timer: Timer::Action,
