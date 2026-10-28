@@ -274,12 +274,40 @@ pub fn fresh_path(ext: &str) -> PathBuf {
 fn process_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        tempfile::Builder::new()
+        let dir = tempfile::Builder::new()
             .prefix(&format!("control-{}-", std::process::id()))
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
             .unwrap()
-            .keep()
+            .keep();
+        prune_old_process_dirs(&dir);
+        dir
     })
+}
+
+/// Removes earlier runs' `control-*` folders (each run keeps its own, and they add up). Only
+/// folders untouched for an hour go: a test process running alongside this one is younger.
+/// Best effort; nothing here fails a test.
+fn prune_old_process_dirs(own: &Path) {
+    let Ok(entries) = std::fs::read_dir(env!("CARGO_TARGET_TMPDIR")) else {
+        return;
+    };
+    let hour = std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with("control-"));
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > hour);
+        if named && old && path != own && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
 }
 
 /// Opens the named pipe `path` for writing, which returns once a reader has it open; fails the
