@@ -85,6 +85,10 @@ const STALL_AT_BLOCK: u32 = 375;
 const MAX_INBOX: usize = 1024;
 /// How long to wait for the control loop to answer before declaring it hung.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+/// A wake overshoot, tick gap or late block this long is listed when a run fails.
+const NOTABLE: Duration = Duration::from_millis(20);
+/// How far back from the failure the report lists notable events.
+const REPORT_WINDOW_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------------------------
 // Numbers
@@ -159,6 +163,12 @@ struct Stats {
     slow_wakes: u64,
     /// How late each block of the stand-in device began after it was due, in microseconds.
     device_late_us: Vec<u32>,
+    /// Wake overshoots and tick gaps past [`NOTABLE`], with the frame rendered when they ended,
+    /// for the failure report.
+    notable_wakes: Vec<(SampleTime, u32)>,
+    notable_gaps: Vec<(SampleTime, u32)>,
+    /// The frame rendered when the control loop first saw an underrun counted.
+    first_underrun: Option<SampleTime>,
 }
 
 /// What the threads share. Locks are held for a push or a copy, never across work.
@@ -248,17 +258,29 @@ fn observer(sh: Arc<Shared>) -> impl FnMut(&mut Control, Wake) {
             k.held = k.held.max(c.held_streams());
             k.deferred = k.deferred.max(c.deferred());
         }
+        let underrun = c.mixer().underrun_frames() > 0;
+        let at = sh.rendered.load(Ordering::Acquire);
         let mut s = lock(&sh.stats);
         s.ticks += 1;
+        if underrun && s.first_underrun.is_none() {
+            s.first_underrun = Some(at);
+        }
         if wake.timed_out {
             let over = wake.waited.saturating_sub(wake.wanted);
             s.wake_over_us.push(micros(over));
             if over > period() {
                 s.slow_wakes += 1;
             }
+            if over >= NOTABLE {
+                s.notable_wakes.push((at, micros(over)));
+            }
         }
         if let Some(prev) = last {
-            s.tick_gap_max = s.tick_gap_max.max(now - prev);
+            let gap = now - prev;
+            s.tick_gap_max = s.tick_gap_max.max(gap);
+            if gap >= NOTABLE {
+                s.notable_gaps.push((at, micros(gap)));
+            }
         }
         last = Some(now);
     }
@@ -523,9 +545,97 @@ fn soak_rt(secs: u64, seed: u64, stall_ms: u64) -> (Soak<Realtime>, Summary) {
     s.late_starts_allowed = true;
     // A few minutes cannot visit every cue at the pace of a 24 h run: the operator is busier.
     s.action_gap = soak_common::blocks(1.0);
-    s.run(secs, (secs / 4).clamp(20, 120), |_| {});
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.run(secs, (secs / 4).clamp(20, 120), |_| {});
+    }));
+    if let Err(e) = ran {
+        explain_failure(&s.d.sh);
+        std::panic::resume_unwind(e);
+    }
     let summary = s.d.finish();
     (s, summary)
+}
+
+/// Seconds of sample time, for the failure report.
+fn at_secs(frames: SampleTime) -> f64 {
+    frames as f64 / f64::from(RATE)
+}
+
+/// What the threads measured up to a failure, and the stalls just before it: whether the run
+/// failed on the engine or on a host that stopped running its threads on time.
+fn explain_failure(sh: &Shared) {
+    let rendered = sh.rendered.load(Ordering::Acquire);
+    let from = rendered.saturating_sub(REPORT_WINDOW_SECS * u64::from(RATE));
+    let s = lock(&sh.stats);
+    eprintln!("--- real-time soak failed at {:.3} s of sample time", at_secs(rendered));
+    Spread::of(&s.wake_over_us).show("control wake overshoot");
+    Spread::of(&s.device_late_us).show("device block lateness");
+    eprintln!(
+        "{} control ticks, longest gap between ticks {:.2} ms, {} slow wakes",
+        s.ticks,
+        s.tick_gap_max.as_secs_f64() * 1e3,
+        s.slow_wakes
+    );
+    if let Some(at) = s.first_underrun {
+        eprintln!("first underrun seen by the control loop at {:.3} s", at_secs(at));
+    }
+    let list = |what: &str, events: &mut dyn Iterator<Item = (SampleTime, u32)>| {
+        let events: Vec<_> = events.filter(|&(at, _)| at >= from).collect();
+        eprintln!(
+            "{what} of {} ms or more in the last {REPORT_WINDOW_SECS} s: {}",
+            NOTABLE.as_millis(),
+            events.len()
+        );
+        for (at, us) in events.iter().rev().take(40).rev() {
+            eprintln!("  at {:.3} s: {:.1} ms", at_secs(*at), f64::from(*us) / 1e3);
+        }
+    };
+    let notable = micros(NOTABLE);
+    list(
+        "late device blocks",
+        &mut s
+            .device_late_us
+            .iter()
+            .enumerate()
+            .filter(|&(_, &us)| us >= notable)
+            .map(|(k, &us)| (k as u64 * BLOCK, us)),
+    );
+    list("control wake overshoots", &mut s.notable_wakes.iter().copied());
+    list("gaps between control ticks", &mut s.notable_gaps.iter().copied());
+}
+
+/// How well this host runs a thread on time, before the soak asks it to: sleeps of one block
+/// (their overshoot), and a spinning thread's longest time off the CPU (preemption or, on a
+/// virtual machine, time the host took the CPU away).
+fn host_timing() {
+    let mut over = Vec::new();
+    for _ in 0..250 {
+        let t = Instant::now();
+        thread::sleep(period());
+        over.push(micros(t.elapsed().saturating_sub(period())));
+    }
+    Spread::of(&over).show("host: one-block sleep overshoot");
+    let (mut off, mut long, mut worst) = (0u32, 0u32, Duration::ZERO);
+    let end = Instant::now() + Duration::from_secs(1);
+    let mut last = Instant::now();
+    while last < end {
+        let now = Instant::now();
+        let gap = now - last;
+        if gap >= Duration::from_millis(1) {
+            off += 1;
+        }
+        if gap >= NOTABLE {
+            long += 1;
+        }
+        worst = worst.max(gap);
+        last = now;
+    }
+    println!(
+        "host: a spinning thread was off the CPU {off} times for 1 ms or more in 1 s, \
+         {long} for {} ms or more, longest {:.2} ms",
+        NOTABLE.as_millis(),
+        worst.as_secs_f64() * 1e3
+    );
 }
 
 #[test]
@@ -533,6 +643,7 @@ fn soak_rt(secs: u64, seed: u64, stall_ms: u64) -> (Soak<Realtime>, Summary) {
 fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
     let secs = env_u64("OPENLAB_SOAK_RT_SECS").unwrap_or(120);
     let seed = env_u64("OPENLAB_SOAK_SEED").unwrap_or(0x0e11_0000_0001);
+    host_timing();
     let started = Instant::now();
     let (s, m) = soak_rt(secs, seed, 0);
     let wall = started.elapsed();
