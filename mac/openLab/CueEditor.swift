@@ -12,7 +12,7 @@ import AppKit
 /// waiting, fading, stopping or previewing, or a group holding one; deleting a group deletes its
 /// children; a drop on a group appends to it, on a cue goes after it, never into the cue's own
 /// descendants; the audio cue needs a patch. Undo and redo are the engine's and are not guarded: an
-/// undo can remove an active cue (docs/handoff/m5-protocol-requests.md).
+/// undo can remove an active cue (#221).
 ///
 /// Part 2 (CueEditor+Clipboard.swift; QLab's pages are silent on drops): a Finder drop makes one audio
 /// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;

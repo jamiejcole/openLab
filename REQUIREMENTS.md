@@ -282,7 +282,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 18. Distribution & Updates
 - [ ] **DST-01** `v0.0.1` macOS: `.dmg` (ad-hoc signed until an Apple Developer account exists; signed + notarised later); Windows: signed installer and a portable zip.
-- [ ] **DST-02** `v0.0.1` Update check is opt-in, manual or on launch only, never during Show Mode; no silent auto-install.
+- [ ] **DST-02** `v0.0.2` Update check is opt-in, manual or on launch only, never during Show Mode; no silent auto-install.
 - [ ] **DST-03** `v0.0.1` Versioned releases with changelog; side-by-side install of multiple versions possible (so a show can stay pinned to a known-good version).
 
 ---
@@ -331,6 +331,7 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **UI-02** fixed QLab-like layout; docking later.
 - **DST-01** macOS `.dmg` only.
 - **DOC-01** getting-started guide only.
+- **DST-02** moved to v0.0.2 (user decision 2026-10-28): no update check in v0.0.1.
 
 ### v0.0.2 — basic video
 Video cues, surfaces, geometry, opacity/geometry fades (CT-10 video part), video audio through the audio engine, black-when-idle.

@@ -19,8 +19,8 @@ make test        # all Rust tests + mac unit/UI tests
 make test-rust   # Rust only
 make mac         # generate project + build app (includes universal engine)
 make verify-bundle  # check the Release app is universal, minos 12.0, validly signed
+make prepush     # pre-push gate: runs the checks the diff needs, prints PREPUSH PASS or PREPUSH FAIL: <step>
 ```
-(Until the Makefile exists, use the underlying `cargo` / `xcodegen` / `xcodebuild` commands.)
 
 ## Non-negotiable rules
 **Real-time audio thread** (anything called from the audio callback):
@@ -61,9 +61,9 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - Comments explain *why*, not *what*.
 
 ## Progress tracking
-- Open tasks are GitHub issues (`gh issue list --milestone "…" --label task`); the ID-to-issue table is `docs/handoff/issue-map.md`. Work only on the issue(s) you were assigned. Your PR/commits reference the issue; the orchestrator writes `Closes #N` in the PR body.
-- Do not edit `PROGRESS.md`: the orchestrator ticks it in batches when issues close. Tick a requirement in `REQUIREMENTS.md` only when every part of it within the current release scope (§21) is implemented and tested.
-- Work only on the `PROGRESS.md` task(s) you were assigned.
+- Open tasks are GitHub issues (`gh issue view N`). Work only on the issue(s) you were assigned.
+- Each issue has a **Checklist** of its requirement IDs (plus tests and docs). Tick each box as soon as that part is implemented **and tested** (`gh issue edit N --body-file …`, or the issue page), so the issue always shows what is left. Don't tick a box for a part that is only partly done; say what is missing in your report.
+- Do not edit `PROGRESS.md` or tick `REQUIREMENTS.md` in a task branch (every open PR would conflict). After merge the orchestrator ticks the `PROGRESS.md` line, and a requirement once no open issue lists it and every part of it within the current release scope (§21) is implemented and tested.
 - If you discover missing work, report it (the orchestrator files an issue) — don't silently expand scope.
 - Review findings rated Low or low-Medium are not fixed in the batch: file each as a GitHub issue labelled `low` (title, file:line, scenario) and move on. Only Highs and show-safety Mediums get a fix round. One regression test per bug, not a matrix of variants.
 - Do not fix states that only a property generator, fuzzer or contrived input can reach (e.g. invalid workspaces load refuses): fix the test oracle or file an issue.
@@ -86,9 +86,7 @@ make verify-bundle  # check the Release app is universal, minos 12.0, validly si
 - The engine build phase (`mac/scripts/build-engine.sh`) ad-hoc signs the engine; Xcode doesn't sign nested binaries in `Contents/MacOS`.
 - CI's mac job runs on the `xcode-27` runner image (preview) with Xcode 27.1 pinned; fallback is `macos-26` + Xcode 26.x.
 - Agents act on GitHub as `openlab-dev`, never the owner's account: commits use `openlab-dev <349245076+openlab-dev@users.noreply.github.com>` (repo-local git config; set it in any fresh clone), and `gh` must be logged in as `openlab-dev` before pushing, opening PRs/issues or merging.
-
 - Agents share this machine and sccache (`~/.cargo/config.toml` wraps rustc; incremental compilation is off). Never wait on machine-wide process checks (`pgrep cargo`, "is anything building?"): wait on your own command only.
-- `make prepush` is the pre-push gate: it picks the checks the diff needs and prints `PREPUSH PASS` or `PREPUSH FAIL: <step>`.
 
 ## Reporting back (subagents)
 End with: what was done, files touched, tests added and their result (paste the summary line), any deviations from ARCHITECTURE.md, and open questions.

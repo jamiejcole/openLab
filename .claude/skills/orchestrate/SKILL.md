@@ -1,69 +1,76 @@
 ---
 name: orchestrate
-description: The openLab orchestrator loop — pick PROGRESS.md tasks, brief implementer subagents, run adversarial review, land each batch through a PR into main, track CI, and report to the user. Use whenever continuing openLab development, after a context reset, or when the user says "continue", "next task", "status", or "orchestrate".
+description: The openLab orchestrator loop — pick task issues, brief implementer subagents, run adversarial review, land each batch through a PR into main, track CI and progress, and report to the user. Use whenever continuing openLab development, after a context reset, or when the user says "continue", "next task", "status", or "orchestrate".
 ---
 
 # openLab orchestrator
 
 You lead openLab development. **You design, delegate, verify and report; you do not write large code yourself.** Keep your own context small: delegate reading-heavy and writing-heavy work to subagents, and keep only decisions and results.
 
-## Token budget (the user's usage limit is the binding constraint)
-- Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work: the mixer/audio-thread code, lock-free queues, the cue-engine state machine, and reviews of those. Everything else (persistence, protocol plumbing, UI views, docs, fixes from a review) stays on Sonnet.
-- At most 3 subagents in parallel, of which at most 2 on Opus (allowed mixes: 2 Opus; 1 Opus + 2 Sonnet; 3 Sonnet). Parallel implementers must touch disjoint files and use worktrees.
-- Review once per batch. Re-review only when there was a High, and then only the fix commits. Lows don't get a fix round — batch them into a cleanup task.
-- Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
-- Orchestrator: read report files with `head`/`grep`, not in full; don't re-run checks the agent already proved unless merging.
+## Budgets
+**Tokens** (the user's usage limit is the binding constraint):
+- Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work (the issue's `model:opus` label): the mixer/audio-thread code, lock-free queues, the cue-engine state machine, engine process lifecycle, and reviews of those. Everything else stays on Sonnet.
+- At most 3 subagents in parallel, of which at most 2 on Opus. Parallel implementers must touch disjoint files.
+- Review once per batch. Re-review only when there was a High, and then only the fix commits.
+- Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs. Read report files with `head`/`grep`, not in full.
+
+**CI** (macOS runners are scarce; CI waits cost more than anything else):
+- Push a branch **once**, after the local review and fixes. Every push is a full CI run.
+- Do not merge `main` into a PR just because `main` moved: CI already tested the PR merged with `main` as it was, and `main`'s own run after each merge (plus the `ci-red` alert) catches two PRs that clash. Merge `main` in only when GitHub reports a conflict, or when `main` changed the same files in a way you judge risky.
+- When several PRs are green, merge them back to back: pending runs on `main` collapse into one.
+- The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A `.github/` or `Makefile` change runs everything.
 
 ## 0. Re-orient (every session start or after a reset)
-- Read `PROGRESS.md` (history) and `gh issue list --label task` (what's next), skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, run `git log --oneline -15` and `git status`.
-- Check open PRs and the last CI on `main` with the GitHub MCP tools (`list_pull_requests`, `actions_list`); `gh` may not exist in cloud sessions.
+- Read `docs/handoff/orchestrator-state.md`, then `PROGRESS.md` (history and order) and `gh issue list --milestone "<current milestone>" --label task --state open` (what's next). Skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, `git log --oneline -15`, `git status`.
+- `gh auth status` must show `openlab-dev`, and `git config user.email` its noreply address (CLAUDE.md, "Known environment facts"). If not, stop and ask the user: agent work never goes out under their account.
+- `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
-- Pick from `gh issue list --milestone "<current milestone>" --label task --state open`, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`); follow the dependency order at the top of `PROGRESS.md`. Prefer finishing a milestone over starting several. Choose the model from the issue's `model:*` label and size from `size:*`. Briefs name issue numbers.
-- Batch 1–4 closely related tasks per implementer (same files, same concepts). Split unrelated areas into separate implementers.
-- Parallel implementers only when they touch disjoint files (e.g. `crates/core` vs `crates/audio` vs `mac/`). Run each parallel implementer with `isolation: "worktree"`; a single implementer can work on `main` directly.
+- Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
+- Batch 1–4 closely related issues per implementer (same files, same concepts). Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
+- Every implementer works in its own worktree (`isolation: "worktree"`) on a task branch, never on `main`. Parallel implementers only when they touch disjoint files (e.g. `engine/` vs `mac/`; two `mac/` tasks rarely qualify: `AppController`, `WorkspaceStore` and the window controllers are shared).
 
 ## 2. Brief an implementer
 Use `subagent_type: "implementer"`. The brief must be self-contained (it starts cold):
 
 ```
-Tasks: <PROGRESS IDs and titles>
+Issues: #N (<ID>: title), …
 Requirements: <IDs> (+ any §21 scope limits that apply)
 Goal: <what done looks like, in behaviour terms>
-Design decisions: <anything decided that isn't in ARCHITECTURE.md; specific types/APIs where consistency matters>
+Design decisions: <anything decided that isn't in ARCHITECTURE.md or the issue; specific types/APIs where consistency matters>
 Boundaries: <files/crates it may touch; what NOT to do>
 Must-have tests: <the behaviours that must be proven, esp. edge cases and failure paths>
-Verification: <commands + expected evidence>
+Verification: make prepush → PREPUSH PASS; issue checklist ticked as parts land
+Report: <scratchpad>/reports/<batch>.md
 ```
 
-Never paste large file contents into briefs — point at paths.
-
-Always give a report path: `<scratchpad>/reports/<task-batch>.md`. Agent hand-back delivery can fail; read the file if no report arrives.
+Never paste large file contents into briefs — point at paths. Agent hand-back delivery can fail; read the report file if no report arrives. Briefs tell implementers and reviewers to log QLab questions in `docs/todo/open-qlab-questions.md` rather than ask.
 
 ## 3. Verify the report (don't trust it)
-- Check the commits exist and `git diff --stat` matches the claim.
-- Check the report's `PREPUSH PASS` line; run `make prepush` yourself on the branch before opening the PR.
-- Spot-check that the tests cited actually test the behaviour (open one or two).
+- Check the commits exist, `git diff --stat` matches the claim, and the author is `openlab-dev`.
+- Check the report's `PREPUSH PASS` line; run `make prepush` yourself on the branch before pushing.
+- Spot-check that the tests cited actually test the behaviour (open one or two), and that the ticked checklist boxes match what was built.
 
 ## 4. Adversarial review
-- Spawn `subagent_type: "pr-reviewer"` with: task IDs, base and branch/commit range, and any area you're suspicious of.
-- **High** → must fix. **Medium** that affects show safety → fix. Other Mediums (low-medium) and all **Lows** → a GitHub issue labelled `low` each (user decision 2026-10-28), not a fix round. Don't fix states only a generator/fuzzer/contrived input can reach. Niche QLab-parity features → an issue in the `v0.0.2` milestone. Prioritise work that blocks M5.
+- Spawn `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of.
+- **High** → must fix. **Medium** that affects show safety → fix. Other Mediums and all **Lows** → the reviewer files each as a `low` issue; no fix round. Don't fix states only a generator/fuzzer/contrived input can reach. Niche QLab-parity features → an issue in the `v0.0.2` milestone.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context). After fixes, re-run the reviewer if there were any Highs. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
 ## 5. Land it (PR into `main`)
-Review traffic stays local (report files + `SendMessage`); GitHub is only the merge gate. Keep it to a few calls per batch.
-- Each batch has its own branch named after the tasks (e.g. `m4-5-osc`). Merge current `main` into it first (merge commit, never rebase a pushed branch), run `make prepush`, then `git push origin <worktree-branch>:<task-branch>`.
-- Open one PR into `main` (`create_pull_request`). Body: `Closes #N` for each issue (see `.github/pull_request_template.md`), task IDs + one line each, requirement IDs, test summary line, and a review digest (e.g. "R1: 0H/3M fixed; R2: 1M fixed; Lows → #101, #102"). No full review text.
-- Check CI on the PR head **once** when you would otherwise merge (`pull_request_read` status / `actions_list`); fetch job logs only if red. Don't subscribe to PR events for routine batches.
-- Merge only when: CI green on the head, no open High/Medium, Lows filed as `low` issues. Merge with `merge_pull_request` using merge method `merge` and title `Merge <task IDs>: <summary>`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
-- Delete the task branch after merge; `git fetch origin main` and fast-forward the local `main`.
-- Small orchestrator-only commits (handoff notes, PROGRESS ticks) ride along in the next batch's PR rather than getting their own.
-- A red CI on `main` is the top priority: fix it (via a PR) before new work.
+Review traffic stays local (report files + `SendMessage`); GitHub is only the merge gate.
+- Branch named after the tasks (e.g. `m5-2-engine-lifecycle`). Push once: `git push origin <worktree-branch>:<task-branch>`.
+- `gh pr create --base main` with the body from `.github/pull_request_template.md`: `Closes #N` for each issue, task IDs + one line each, requirement IDs, the `PREPUSH PASS` line, a review digest (e.g. "R1: 0H/3M fixed; Lows → #101, #102"), QLab rows added. No full review text.
+- Check CI on the PR **once** when you would otherwise merge (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
+- Merge only when: CI green, no open High or show-safety Medium, Lows filed. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
+- Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
+- Small orchestrator-only commits (handoff notes, PROGRESS ticks) ride along in the next batch's PR.
 - Commits are plain terminal `git` commands. **Never add Co-authored-by or AI-attribution trailers.**
 
 ## 6. Track
-- After merge the PR's `Closes #N` closes the issues. Tick the matching `PROGRESS.md` lines in batches (the only place `PROGRESS.md` is edited; PRs never touch it), implemented **and** tested. Tick requirements in `REQUIREMENTS.md` only when fully satisfied within the release scope.
-- Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. Lessons that every agent needs go into `CLAUDE.md`.
+- The PR's `Closes #N` closes the issues. In batches, tick the matching `PROGRESS.md` lines (only the orchestrator edits it; PRs never do).
+- Tick a requirement in `REQUIREMENTS.md` when no open issue lists it and every part within the release scope (§21) is implemented and tested. Check with an exact match, not GitHub search (it splits IDs at the hyphen): `gh issue list --state open --limit 500 --json number,body --jq '.[] | select(.body | test("\\bAUD-19\\b")) | .number'` prints nothing. The full v0.0.1 sweep is M6.4.
+- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone, a Checklist of its requirement IDs) and a one-line `PROGRESS.md` task.
+- Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. Lessons that every agent needs go into `CLAUDE.md`. Keep `docs/handoff/orchestrator-state.md` current at the end of a session.
 
 ## 7. Talk to the user
 - After each landed batch, a short status update:
@@ -79,6 +86,6 @@ Review traffic stays local (report files + `SendMessage`); GitHub is only the me
 ## Standing decisions (quick reference)
 - Rust engine (headless, separate process) + Swift/AppKit macOS UI, JSON show file `.openlab`, GPLv3-or-later.
 - v0.0.1 = audio-only rehearsal on macOS; video is v0.0.2; lighting deferred; Windows UI tech decided later (engine CI on Windows from day one).
-- macOS 12 minimum, 2014 Mac mini is the performance target; no hardware testing until much later — perf budgets in CI stand in.
-- Everything reaches `main` through a PR merged by the orchestrator after green CI (user decision); push task branches freely, never push directly to `main`.
-- Functional/behaviour questions (what a cue does on a second trigger, after a failure, etc.): decide by how QLab 5 behaves (the project replicates QLab). **Research QLab's documentation first**: search the local QLab 5 manual index first: `~/qlab-ref/qlab-ref search "<words>"` (then `show <page>` / `section "<title>"`; QLab 5.6 reference manual, local to this Mac, never copied into the repo: paraphrase and cite pages), then the online docs (https://qlab.app/docs/v5/), and follow and cite it. Only when it does not settle the question, as a last resort, implement the most likely behaviour and log it in `docs/todo/open-qlab-questions.md` (question, assumption implemented, where, status `assumed`). **Never wait for the user on these** (user decision, 2026-10-28): they answer the file in batches and say so; then update the row and change the code if the answer differs. Briefs tell implementers and reviewers to add rows there rather than ask. Still escalate architecture/scope/dependency questions, and behaviour that conflicts with ARCHITECTURE.md or show safety.
+- macOS 12 minimum, 2014 Mac mini is the performance target; CI perf budgets stand in until the M6 hardware check.
+- Everything reaches `main` through a PR merged by the orchestrator after green CI; never push directly to `main`. No self-hosted CI runner (user decision 2026-10-28).
+- QLab behaviour questions: CLAUDE.md "Behaviour decisions" (local manual, then the online docs, then an `assumed` row in `docs/todo/open-qlab-questions.md`). **Never wait for the user on these**: they answer the file in batches; then update the row and change the code if the answer differs. Still escalate architecture/scope/dependency questions, and behaviour that conflicts with ARCHITECTURE.md or show safety.
