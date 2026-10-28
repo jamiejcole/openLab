@@ -2,8 +2,8 @@
 
 import XCTest
 
-/// Record a hotkey on a cue in the inspector, then press it: the fake engine receives the `start`
-/// for that cue and moves it from Loaded to Running.
+/// Record a hotkey on a cue in the inspector, then press it: the fake engine receives the `hotkey`,
+/// matches it to that cue and moves it from Loaded to Running.
 @MainActor
 final class TriggersUITests: XCTestCase {
     private func wait(_ format: String, _ object: Any) -> Bool {

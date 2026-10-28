@@ -209,22 +209,30 @@ pub struct WorkspaceSettings {
     pub auto_number_increment: f64,
 }
 
-/// Remappable transport keys (TRG-01). `None` = no key.
+/// Remappable workspace keys (TRG-01): the transport keys and the selected-cue keys of QLab 5's
+/// keyboard map (Workspace Settings, Controls, Keyboard). `None` = no key. Esc is not among them:
+/// it is the fixed panic key, as in QLab.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransportHotkeys {
     pub go: Option<Hotkey>,
-    /// Stop All / Panic.
+    /// Stop All. Since format v5 no key by default: Esc is panic, outside this map.
     pub stop_all: Option<Hotkey>,
     pub pause_all: Option<Hotkey>,
     pub resume_all: Option<Hotkey>,
     pub playhead_next: Option<Hotkey>,
     pub playhead_previous: Option<Hotkey>,
+    /// Load the selected cue (QLab: Load Last Selected, `L`).
+    pub load_selected: Option<Hotkey>,
+    /// Pause or resume the selected cues (QLab: `P`).
+    pub pause_resume_selected: Option<Hotkey>,
+    pub start_selected: Option<Hotkey>,
+    pub stop_selected: Option<Hotkey>,
+    pub reset_selected: Option<Hotkey>,
 }
 
 impl TransportHotkeys {
-    /// The transport action whose key is `hotkey` (same key and modifiers), by its field name
-    /// (`"go"`, `"stop_all"`, ...), or `None`.
-    pub fn action_of(&self, hotkey: &Hotkey) -> Option<&'static str> {
+    /// Every key with its field name (`"go"`, `"stop_all"`, ...), in declaration order.
+    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 11] {
         [
             ("go", &self.go),
             ("stop_all", &self.stop_all),
@@ -232,13 +240,55 @@ impl TransportHotkeys {
             ("resume_all", &self.resume_all),
             ("playhead_next", &self.playhead_next),
             ("playhead_previous", &self.playhead_previous),
+            ("load_selected", &self.load_selected),
+            ("pause_resume_selected", &self.pause_resume_selected),
+            ("start_selected", &self.start_selected),
+            ("stop_selected", &self.stop_selected),
+            ("reset_selected", &self.reset_selected),
         ]
-        .into_iter()
-        .find_map(|(name, key)| (key.as_ref() == Some(hotkey)).then_some(name))
+    }
+
+    /// The workspace action whose key is `hotkey` (same key and modifiers), by its field name
+    /// (`"go"`, `"stop_all"`, `"load_selected"`, ...), or `None`.
+    pub fn action_of(&self, hotkey: &Hotkey) -> Option<&'static str> {
+        self.slots()
+            .into_iter()
+            .find_map(|(name, key)| (key.as_ref() == Some(hotkey)).then_some(name))
     }
 }
 
+/// The show-file path of the key named `name` by [`TransportHotkeys::slots`], for warnings and
+/// refusals.
+pub(crate) fn hotkey_field(name: &str) -> &'static str {
+    match name {
+        "go" => "settings.hotkeys.go",
+        "stop_all" => "settings.hotkeys.stop_all",
+        "pause_all" => "settings.hotkeys.pause_all",
+        "resume_all" => "settings.hotkeys.resume_all",
+        "playhead_next" => "settings.hotkeys.playhead_next",
+        "playhead_previous" => "settings.hotkeys.playhead_previous",
+        "load_selected" => "settings.hotkeys.load_selected",
+        "pause_resume_selected" => "settings.hotkeys.pause_resume_selected",
+        "start_selected" => "settings.hotkeys.start_selected",
+        "stop_selected" => "settings.hotkeys.stop_selected",
+        "reset_selected" => "settings.hotkeys.reset_selected",
+        _ => "settings.hotkeys",
+    }
+}
+
+/// Keys no workspace key may be: Esc with any modifiers (the fixed panic key; QLab 5: a single
+/// Esc is always panic) and Up / Down without Command, Control or Option (they move the
+/// selection, and with it the playhead; QLab 5 does not allow the up and down arrows). Shift
+/// alone extends the selection, so Shift-Up counts as bare too, as in the app's recorder.
+pub fn is_reserved_key(hotkey: &Hotkey) -> bool {
+    let m = hotkey.modifiers;
+    hotkey.key == "escape"
+        || (matches!(hotkey.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
+}
+
 impl Default for TransportHotkeys {
+    /// A new workspace's keys (format v5), QLab 5's defaults: Next / Previous Cue are QLab's
+    /// menu keys Shift-Command-Down / Up; Stop All has no key (Esc is panic).
     fn default() -> Self {
         let key = |key: &str| {
             Some(Hotkey {
@@ -246,13 +296,28 @@ impl Default for TransportHotkeys {
                 modifiers: Modifiers::default(),
             })
         };
+        let shift_command = |key: &str| {
+            Some(Hotkey {
+                key: key.into(),
+                modifiers: Modifiers {
+                    shift: true,
+                    command: true,
+                    ..Modifiers::default()
+                },
+            })
+        };
         Self {
             go: key("space"),
-            stop_all: key("escape"),
+            stop_all: None,
             pause_all: key("["),
             resume_all: key("]"),
-            playhead_next: key("down"),
-            playhead_previous: key("up"),
+            playhead_next: shift_command("down"),
+            playhead_previous: shift_command("up"),
+            load_selected: key("l"),
+            pause_resume_selected: key("p"),
+            start_selected: None,
+            stop_selected: None,
+            reset_selected: None,
         }
     }
 }

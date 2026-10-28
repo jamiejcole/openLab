@@ -125,15 +125,7 @@
               "command": false
             }
           },
-          "stop_all": {
-            "key": "escape",
-            "modifiers": {
-              "shift": false,
-              "control": false,
-              "alt": false,
-              "command": false
-            }
-          },
+          "stop_all": null,
           "pause_all": {
             "key": "[",
             "modifiers": {
@@ -155,21 +147,42 @@
           "playhead_next": {
             "key": "down",
             "modifiers": {
-              "shift": false,
+              "shift": true,
               "control": false,
               "alt": false,
-              "command": false
+              "command": true
             }
           },
           "playhead_previous": {
             "key": "up",
+            "modifiers": {
+              "shift": true,
+              "control": false,
+              "alt": false,
+              "command": true
+            }
+          },
+          "load_selected": {
+            "key": "l",
             "modifiers": {
               "shift": false,
               "control": false,
               "alt": false,
               "command": false
             }
-          }
+          },
+          "pause_resume_selected": {
+            "key": "p",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "start_selected": null,
+          "stop_selected": null,
+          "reset_selected": null
         },
         "auto_number_start": 1.0,
         "auto_number_increment": 1.0

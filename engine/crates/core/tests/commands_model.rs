@@ -146,6 +146,275 @@ fn a_setting_lands_in_its_field_and_nowhere_else() {
     assert_eq!(changed, expected);
 }
 
+// ---- Key map (M5.11c, TRG-01) ----
+
+fn plain(key: &str) -> Hotkey {
+    Hotkey {
+        key: key.into(),
+        modifiers: Modifiers::default(),
+    }
+}
+
+fn with_mods(key: &str, shift: bool, control: bool, alt: bool, command: bool) -> Hotkey {
+    Hotkey {
+        key: key.into(),
+        modifiers: Modifiers {
+            shift,
+            control,
+            alt,
+            command,
+        },
+    }
+}
+
+fn set_key(key: TransportKey, value: Option<Hotkey>) -> Command {
+    setting(WorkspaceSetting::Hotkey { key, value })
+}
+
+fn refusal(ws: &Workspace, command: Command) -> (&'static str, HotkeyClash, String) {
+    let error = refused(ws, command);
+    let message = error.to_string();
+    match error {
+        CommandError::HotkeyRefused { field, reason } => (field, reason, message),
+        other => panic!("expected a key-map refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn every_selected_cue_key_can_be_set_and_undone() {
+    let ws = workspace(vec![]);
+    for (key, f, action) in [
+        (TransportKey::LoadSelected, "f1", "load_selected"),
+        (
+            TransportKey::PauseResumeSelected,
+            "f2",
+            "pause_resume_selected",
+        ),
+        (TransportKey::StartSelected, "f3", "start_selected"),
+        (TransportKey::StopSelected, "f4", "stop_selected"),
+        (TransportKey::ResetSelected, "f5", "reset_selected"),
+    ] {
+        let after = round_trip(&ws, set_key(key, Some(plain(f))));
+        assert_eq!(after.settings.hotkeys.action_of(&plain(f)), Some(action));
+    }
+    let after = round_trip(&ws, set_key(TransportKey::LoadSelected, None));
+    assert_eq!(after.settings.hotkeys.load_selected, None);
+}
+
+#[test]
+fn esc_and_bare_up_down_are_refused_as_workspace_keys() {
+    let ws = workspace(vec![]);
+    for (key, value) in [
+        (TransportKey::StopAll, plain("escape")),
+        (
+            TransportKey::Go,
+            with_mods("escape", true, true, true, true),
+        ),
+        (TransportKey::PlayheadNext, plain("down")),
+        (TransportKey::PlayheadPrevious, plain("up")),
+        // Shift alone extends the selection: still bare.
+        (
+            TransportKey::LoadSelected,
+            with_mods("up", true, false, false, false),
+        ),
+    ] {
+        let (field, reason, message) = refusal(&ws, set_key(key, Some(value)));
+        assert_eq!(reason, HotkeyClash::Reserved);
+        assert!(message.starts_with(field), "{message}");
+        assert!(message.contains("Esc is panic"), "{message}");
+    }
+    // Arrows with Command, Control or Option, and Left / Right, are keys like any other.
+    let ws = round_trip(
+        &ws,
+        set_key(
+            TransportKey::PlayheadNext,
+            Some(with_mods("down", false, false, true, false)),
+        ),
+    );
+    let ws = round_trip(
+        &ws,
+        set_key(TransportKey::StartSelected, Some(plain("right"))),
+    );
+    round_trip(
+        &ws,
+        set_key(
+            TransportKey::PlayheadPrevious,
+            Some(with_mods("up", false, true, false, false)),
+        ),
+    );
+}
+
+#[test]
+fn a_key_already_in_the_map_is_refused_naming_its_action() {
+    let ws = workspace(vec![]);
+    let (field, reason, message) =
+        refusal(&ws, set_key(TransportKey::PauseAll, Some(plain("space"))));
+    assert_eq!(field, "settings.hotkeys.pause_all");
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.go"
+        }
+    );
+    assert!(message.contains("settings.hotkeys.go"), "{message}");
+    // A selected-cue key against a transport key, and the other way round.
+    let (_, reason, _) = refusal(&ws, set_key(TransportKey::StopSelected, Some(plain("["))));
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.pause_all"
+        }
+    );
+    let (_, reason, _) = refusal(&ws, set_key(TransportKey::Go, Some(plain("l"))));
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.load_selected"
+        }
+    );
+    // The same key with other modifiers is another key.
+    round_trip(
+        &ws,
+        set_key(
+            TransportKey::PauseAll,
+            Some(with_mods("space", true, false, false, false)),
+        ),
+    );
+}
+
+#[test]
+fn a_cue_hotkey_is_refused_as_a_workspace_key_naming_the_cue() {
+    let mut numbered_cue = numbered(1, "12.5", audio());
+    numbered_cue.triggers.hotkey = Some(plain("f6"));
+    let mut child = cue(3, audio());
+    child.triggers.hotkey = Some(plain("f7"));
+    let ws = workspace(vec![numbered_cue, cue(2, group(vec![child]))]);
+    let (field, reason, message) =
+        refusal(&ws, set_key(TransportKey::StartSelected, Some(plain("f6"))));
+    assert_eq!(field, "settings.hotkeys.start_selected");
+    assert_eq!(
+        reason,
+        HotkeyClash::Cue {
+            cue: cue_id(1),
+            number: Some("12.5".into())
+        }
+    );
+    assert!(message.contains("cue 12.5"), "{message}");
+    // A cue without a number is named by its id; a child in a group is found.
+    let (_, reason, message) = refusal(&ws, set_key(TransportKey::Go, Some(plain("f7"))));
+    assert_eq!(
+        reason,
+        HotkeyClash::Cue {
+            cue: cue_id(3),
+            number: None
+        }
+    );
+    assert!(message.contains(&cue_id(3).to_string()), "{message}");
+}
+
+#[test]
+fn a_clash_the_show_was_loaded_with_does_not_block_other_key_edits() {
+    // A hand-edited file: GO and Pause All share a key, Stop All is Esc.
+    let mut ws = workspace(vec![]);
+    ws.settings.hotkeys.pause_all = Some(plain("space"));
+    ws.settings.hotkeys.stop_all = Some(plain("escape"));
+    let ws = round_trip(&ws, set_key(TransportKey::ResumeAll, Some(plain("f8"))));
+    // Fixing one side of the clash is accepted, and so is undoing the fix.
+    round_trip(&ws, set_key(TransportKey::PauseAll, Some(plain("f9"))));
+    // But the edit may not make a new one with the old key.
+    let (_, reason, _) = refusal(
+        &ws,
+        set_key(TransportKey::StartSelected, Some(plain("space"))),
+    );
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.go"
+        }
+    );
+}
+
+#[test]
+fn the_whole_map_swaps_and_resets_in_one_undo_step() {
+    let ws = workspace(vec![]);
+    let defaults = ws.settings.hotkeys.clone();
+    let mut swapped = defaults.clone();
+    swapped.go = defaults.pause_all.clone();
+    swapped.pause_all = defaults.go.clone();
+    let after = round_trip(
+        &ws,
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(swapped.clone()),
+        }),
+    );
+    assert_eq!(after.settings.hotkeys, swapped);
+    // Reset from the swapped map: one step, which one key at a time could not do.
+    let reset = round_trip(
+        &after,
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(defaults),
+        }),
+    );
+    assert_eq!(reset, ws);
+    // The map is judged by the same rules.
+    let mut bad = swapped.clone();
+    bad.reset_selected = Some(plain("escape"));
+    let (field, reason, _) = refusal(
+        &ws,
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(bad),
+        }),
+    );
+    assert_eq!(
+        (field, reason),
+        ("settings.hotkeys.reset_selected", HotkeyClash::Reserved)
+    );
+    let mut dup = swapped;
+    dup.stop_selected = Some(plain("]"));
+    let (field, reason, _) = refusal(
+        &ws,
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(dup),
+        }),
+    );
+    // The changed key is the one refused, naming the key it clashes with.
+    assert_eq!(field, "settings.hotkeys.stop_selected");
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.resume_all"
+        }
+    );
+    // A bad key name in the map is refused like a single key's.
+    let mut named = ws.settings.hotkeys.clone();
+    named.load_selected = Some(plain("L"));
+    assert!(matches!(
+        refused(
+            &ws,
+            setting(WorkspaceSetting::Hotkeys {
+                value: Box::new(named)
+            })
+        ),
+        CommandError::InvalidModel(_)
+    ));
+}
+
+#[test]
+fn undo_puts_back_a_key_the_rules_would_refuse_now() {
+    // Stop All = Esc, as a v4 hand edit could leave it; clearing it and undoing restores Esc.
+    let mut ws = workspace(vec![]);
+    ws.settings.hotkeys.stop_all = Some(plain("escape"));
+    round_trip(&ws, set_key(TransportKey::StopAll, None));
+    // A cue hotkey that became a key of the map later: clearing the key and undoing works.
+    let mut c = cue(1, audio());
+    c.triggers.hotkey = Some(plain("l"));
+    let ws = workspace(vec![c]);
+    let after = round_trip(&ws, set_key(TransportKey::LoadSelected, None));
+    // With L free, the cue fires from it; undone, the workspace key wins again (K1b).
+    assert_eq!(after.cues_with_hotkey(&plain("l")), vec![cue_id(1)]);
+    assert!(ws.cues_with_hotkey(&plain("l")).is_empty());
+}
+
 fn osc_ws() -> Workspace {
     let mut ws = workspace(vec![]);
     ws.settings.osc_access = OscAccess::new_workspace(1234);

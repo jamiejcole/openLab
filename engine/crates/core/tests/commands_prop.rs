@@ -475,7 +475,12 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::ResumeAll,
         TransportKey::PlayheadNext,
         TransportKey::PlayheadPrevious,
-    ][p.c as usize % 6];
+        TransportKey::LoadSelected,
+        TransportKey::PauseResumeSelected,
+        TransportKey::StartSelected,
+        TransportKey::StopSelected,
+        TransportKey::ResetSelected,
+    ][p.c as usize % 11];
     match p.b % 8 {
         0 => WorkspaceSetting::MinGoInterval {
             value: time(p.c) / 10.0,
@@ -487,8 +492,9 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         3 => WorkspaceSetting::MasterDb { value: level(p.c) },
         4 | 5 => WorkspaceSetting::Hotkey {
             key,
-            value: ["a", "f5", "Bad Key", ""]
-                .get(p.d as usize % 5)
+            // "escape" is reserved and "l" / "space" are default keys: refusals (M5.11c).
+            value: ["a", "f5", "Bad Key", "", "escape", "l", "space"]
+                .get(p.d as usize % 8)
                 .map(|k| Hotkey {
                     key: (*k).into(),
                     modifiers: Modifiers::default(),

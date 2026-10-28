@@ -4,6 +4,8 @@
 //! the mixer's (`openlab-audio::gain`, docs/audio.md "Fades and curves"), duplicated here because
 //! core does not depend on the audio crate; a test compares the two sample by sample.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::cue::{CueKind, CueLevels, FadeCurve, FadeLevels, MAX_CHANNELS, SILENCE_DB};
 use crate::model::CueId;
 
@@ -47,6 +49,93 @@ pub(super) fn heard(
     } else {
         (frames, curve)
     }
+}
+
+/// How long an edit of a playing cue's levels (the operator riding a fader, a mute) takes to
+/// be heard: a linear ramp of 10 ms, at least one frame. Twice the mixer's 5 ms de-zipper,
+/// because an edit can be a full-scale step (a mute, a typed level) that a 5 ms ramp still
+/// makes tick; still short enough to feel immediate (docs/cue-engine.md, "Level edits on a
+/// playing cue").
+pub(super) fn edit_frames(sample_rate: u32) -> SampleTime {
+    let frames = (f64::from(sample_rate) * EDIT_RAMP_SECONDS).round();
+    if frames.is_nan() || frames < 1.0 {
+        1
+    } else {
+        frames as SampleTime
+    }
+}
+
+/// See [`edit_frames`].
+pub const EDIT_RAMP_SECONDS: f64 = 0.010;
+
+/// One gain an edit of an audio cue's levels changes on its voice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct LevelEdit {
+    pub param: LevelParam,
+    /// What the voice plays it at under the new levels (linear gain, muted).
+    pub to: Played,
+    /// The edit muted it (a mute always takes effect, also on a level a fade is moving).
+    pub muted: bool,
+}
+
+/// What a voice plays one parameter at: its gain and whether it is muted (a mute is gain 0).
+pub(super) type Played = (f32, bool);
+
+/// A parameter a voice was given nothing for: silent, not muted.
+const SILENT: Played = (0.0, false);
+
+/// What a voice is given under `levels`, as the binary starts one: the master, each listed
+/// output (below [`MAX_CHANNELS`]) and each listed crosspoint (both indices below it; the first
+/// listed wins, as for [`model_gain`], and the model has no duplicates once validated). Any
+/// other parameter is silent. Bounded by the levels' size (at most 1 + 64 + 64 × 64 entries).
+pub(super) fn played(levels: &CueLevels) -> BTreeMap<LevelParam, Played> {
+    let gain = |db: f64, mute: bool| {
+        if mute {
+            (0.0, true)
+        } else {
+            (db_to_gain(db), false)
+        }
+    };
+    let mut out = BTreeMap::new();
+    out.insert(LevelParam::Master, gain(levels.master_db, false));
+    for (o, output) in levels.outputs.iter().enumerate() {
+        if let Ok(o) = u32::try_from(o)
+            && o < MAX_CHANNELS
+        {
+            out.insert(LevelParam::Output(o), gain(output.db, output.mute));
+        }
+    }
+    for c in &levels.crosspoints {
+        if c.input < MAX_CHANNELS && c.output < MAX_CHANNELS {
+            let param = LevelParam::Crosspoint {
+                input: c.input,
+                output: c.output,
+            };
+            out.entry(param).or_insert(gain(c.db, c.mute));
+        }
+    }
+    out
+}
+
+/// Every parameter whose gain or mute under `now` (from [`played`]) differs from what the
+/// voice was `given`, in parameter order. Ganging alone changes nothing.
+pub(super) fn level_edits(
+    given: &BTreeMap<LevelParam, Played>,
+    now: &BTreeMap<LevelParam, Played>,
+) -> Vec<LevelEdit> {
+    let params: BTreeSet<LevelParam> = given.keys().chain(now.keys()).copied().collect();
+    params
+        .into_iter()
+        .filter_map(|param| {
+            let was = given.get(&param).copied().unwrap_or(SILENT);
+            let is = now.get(&param).copied().unwrap_or(SILENT);
+            (was != is).then_some(LevelEdit {
+                param,
+                to: is,
+                muted: is.1 && !was.1,
+            })
+        })
+        .collect()
 }
 
 /// dB to linear amplitude, exactly as the mixer converts it: at or below [`SILENCE_DB`] (and
@@ -240,6 +329,65 @@ mod tests {
         assert_eq!(db_to_gain(SILENCE_DB), 0.0);
         assert_eq!(db_to_gain(f64::NAN), 0.0);
         assert_eq!(db_to_gain(0.0), 1.0);
+    }
+
+    #[test]
+    fn level_edits_list_each_changed_gain_once() {
+        use crate::cue::{Crosspoint, CueOutput};
+        let out = |db, mute| CueOutput { db, mute };
+        let old = CueLevels {
+            master_db: 0.0,
+            outputs: vec![out(0.0, false), out(-6.0, false)],
+            crosspoints: vec![Crosspoint {
+                input: 0,
+                output: 0,
+                db: 0.0,
+                mute: false,
+            }],
+            gangs: vec![],
+        };
+        let edits = |a: &CueLevels, b: &CueLevels| level_edits(&played(a), &played(b));
+        assert!(edits(&old, &old).is_empty());
+        // An output removed is silent; one added comes up; a muted one at -inf is still a mute.
+        let mut new = old.clone();
+        new.outputs = vec![out(SILENCE_DB, true)];
+        let mut grown = old.clone();
+        grown.outputs.push(out(-3.0, false));
+        assert_eq!(
+            edits(&old, &new),
+            vec![
+                LevelEdit {
+                    param: LevelParam::Output(0),
+                    to: (0.0, true),
+                    muted: true
+                },
+                LevelEdit {
+                    param: LevelParam::Output(1),
+                    to: (0.0, false),
+                    muted: false
+                },
+            ]
+        );
+        assert_eq!(
+            edits(&old, &grown),
+            vec![LevelEdit {
+                param: LevelParam::Output(2),
+                to: (db_to_gain(-3.0), false),
+                muted: false
+            }]
+        );
+        // Crosspoints out of any voice's range are never sent.
+        let mut wide = old.clone();
+        wide.crosspoints.push(Crosspoint {
+            input: MAX_CHANNELS,
+            output: 0,
+            db: 0.0,
+            mute: false,
+        });
+        assert!(edits(&old, &wide).is_empty());
+        assert_eq!(edit_frames(1000), 10);
+        assert_eq!(edit_frames(48_000), 480);
+        assert_eq!(edit_frames(1), 1);
     }
 
     #[test]

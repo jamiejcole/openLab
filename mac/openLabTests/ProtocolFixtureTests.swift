@@ -22,9 +22,9 @@ final class ProtocolFixtureTests: XCTestCase {
         case .warnings: return "warnings"
         case .result: return "result"
         case .error: return "error"
-        case .provisional(.appWelcome): return "welcome"
-        case .provisional(.workspaces): return "workspaces"
-        case .provisional(.closed): return "closed"
+        case .appWelcome: return "welcome"
+        case .workspaces: return "workspaces"
+        case .closed: return "closed"
         case .unknown(_): return "?"
         }
     }
@@ -207,21 +207,21 @@ final class ProtocolFixtureTests: XCTestCase {
         )
     }
 
-    func testProvisionalMessagesDecode() throws {
+    func testWorkspaceMessagesDecode() throws {
         let app = try ServerMessage.decode(
             #"{"type":"welcome","protocol_version":2,"workspaces":[{"doc":4,"workspace_id":"w","name":"A","path":null,"dirty":false}]}"#
         )
-        guard case .provisional(.appWelcome(_, let list)) = app else { return XCTFail() }
+        guard case .appWelcome(_, let list) = app else { return XCTFail() }
         XCTAssertEqual(list.first?.doc, "4")
         let closed = try ServerMessage.decode(#"{"type":"closed","doc":4}"#)
-        guard case .provisional(.closed(let d)) = closed else { return XCTFail() }
+        guard case .closed(let d) = closed else { return XCTFail() }
         XCTAssertEqual(d, "4")
         // A doc id is a number: a string one is not a protocol 2 message.
         XCTAssertThrowsError(try ServerMessage.decode(#"{"type":"closed","doc":"4"}"#))
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_ok_opened"))
         else { return XCTFail("opened") }
         XCTAssertEqual(ok.data?.openedDoc, "4")
-        let close = ClientMessage.provisional(.close(id: 5, doc: "4", discardChanges: true))
+        let close = ClientMessage.close(id: 5, doc: "4", discardChanges: true)
         let again = try JSONDecoder().decode(ClientMessage.self, from: Data(try close.text().utf8))
         XCTAssertEqual(again, close)
     }

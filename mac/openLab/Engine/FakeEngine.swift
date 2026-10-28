@@ -6,17 +6,16 @@ import Foundation
 /// JSON as the real one, so the whole stack above the socket runs unchanged. It answers `ok` to
 /// commands and transport (it does not execute them) and can be scripted to push any frame, drop
 /// connections, refuse auth or hold results.
-///
-/// `.multi` follows the M4.15 design (several workspaces, unbound app connection, `close`);
-/// `.single` behaves like today's engine (`new` / `open` replace the one workspace in place).
+/// Protocol 2: several workspaces, the unbound app connection, `close`. `restart()` plays a new
+/// engine run (new token and pid, no doc open, doc ids from the start again).
 @MainActor
 final class FakeEngine: EngineTransport {
-    enum Mode { case single, multi }
-
-    let mode: Mode
     /// The token the fake accepts in `hello`; the info provider must hand the same one out.
     var token = "fake-token"
-    var info: EngineConnectionInfo { EngineConnectionInfo(port: 1, token: token, pid: 0) }
+    /// The fake's process id as `engine.json` would name it (changes with each `restart`).
+    private(set) var pid: Int32 = 100
+    private(set) var runs = 1
+    var info: EngineConnectionInfo { EngineConnectionInfo(port: 1, token: token, pid: pid) }
 
     // Scripting.
     var connectFailure = false
@@ -79,6 +78,12 @@ final class FakeEngine: EngineTransport {
     /// `preshow_check` answers a sample report with problems (a broken cue, its missing file, a lost
     /// device) instead of the all-clear.
     var preshowProblems = false
+    /// `scan_recovery` lists these (`recovery_entries` entry objects).
+    var recoveryEntries: [JSONValue] = []
+    /// `open` of one of these paths without a `recovery` choice answers `recovery_offer`.
+    var autosaveNewer: Set<String> = []
+    /// `open` of one of these paths fails with this code.
+    var openFailures: [String: ErrorCode] = [:]
     enum WelcomeFault { case none, silent, garbled }
     /// `silent`: the `welcome` is never sent; `garbled`: it is sent but does not decode.
     var welcomeFault = WelcomeFault.none
@@ -97,8 +102,7 @@ final class FakeEngine: EngineTransport {
 
     /// A one-cue-list workspace; `snapshot` (the object under `welcome.snapshot` in the fixtures)
     /// replaces it for the first document.
-    init(mode: Mode = .multi, snapshot: JSONValue? = nil) {
-        self.mode = mode
+    init(snapshot: JSONValue? = nil) {
         _ = addDoc(snapshot ?? Self.bundledSnapshot() ?? Self.emptySnapshot(name: "Untitled"), path: nil)
     }
 
@@ -129,6 +133,21 @@ final class FakeEngine: EngineTransport {
     }
 
     func dropConnections() { for c in connections { c.close() } }
+
+    /// A new engine run (after a crash or a restart): every connection drops, nothing is open, a
+    /// new token and pid, and doc ids start again (so an old id may name another show).
+    func restart() {
+        dropConnections()
+        runs += 1
+        token = "fake-token-\(runs)"
+        pid += 1
+        docs = [:]
+        docOrder = []
+        nextDoc = 1
+        undoStacks = [:]
+        redoStacks = [:]
+        held = []
+    }
 
     /// Sends a `media_duration` runtime change for `cue` (M5.4d; all nil: not known now) and keeps
     /// it in the doc's snapshot, as the engine does when a probe answers or a file goes missing.
@@ -212,7 +231,7 @@ final class FakeEngine: EngineTransport {
 
     private func broadcastWorkspaces() {
         let msg = text(.object(["type": .string("workspaces"), "workspaces": workspacesList()]))
-        for c in connections where c.welcomed && c.doc == nil && mode == .multi { c.deliver(msg) }
+        for c in connections where c.welcomed && c.doc == nil { c.deliver(msg) }
     }
 
     private func result(
@@ -280,8 +299,11 @@ final class FakeEngine: EngineTransport {
             result(c, id)
         case .request(let id, let r): handleRequest(id, r, from: c)
         case .goodbye: c.close()
-        case .provisional(.close(let id, let doc, let discard)): handleClose(id, doc: doc, discard: discard, from: c)
-        case .provisional(.panic(let id)), .provisional(.hotkey(let id, _, _, _)): result(c, id)
+        case .close(let id, let doc, let discard): handleClose(id, doc: doc, discard: discard, from: c)
+        case .panic(let id): result(c, id)
+        case .hotkey(let id, let key, let modifiers, let up):
+            result(c, id)
+            if !up { startHotkeyCues(key: key, modifiers: modifiers) }
         }
     }
 
@@ -348,6 +370,7 @@ final class FakeEngine: EngineTransport {
                         switch type {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
+                        case "media": cue["kind"]?.set("media", value)
                         default: cue.set(type, value)
                         }
                     }
@@ -436,7 +459,7 @@ final class FakeEngine: EngineTransport {
     }
 
     private static let structural: Set<String> = [
-        "add_cue", "paste", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
+        "add_cue", "paste", "paste_clipboard", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
     ]
 
     /// Applies one structural command (or a transaction of them) to `lists`; false when it cannot.
@@ -450,8 +473,10 @@ final class FakeEngine: EngineTransport {
         case "add_cue":
             guard let cue = c["cue"], let at = c["at"] else { return false }
             return insert(cue, at: at, into: &lists)
-        case "paste":
-            guard let cues = c["cues"]?.arrayValue, var at = c["at"] else { return false }
+        case "paste", "paste_clipboard":
+            guard var cues = c["cues"]?.arrayValue, var at = c["at"] else { return false }
+            // The real engine runs `prepare_paste`; the fake only gives the copies fresh ids.
+            if c["type"]?.stringValue == "paste_clipboard" { cues = cues.map(withFreshIDs) }
             guard case .int(let start)? = at["index"] else { return false }
             var copy = lists
             for (n, cue) in cues.enumerated() {
@@ -473,7 +498,41 @@ final class FakeEngine: EngineTransport {
         }
     }
 
+    private static func withFreshIDs(_ cue: JSONValue) -> JSONValue {
+        var cue = cue
+        cue.set("id", .string(UUID().uuidString.lowercased()))
+        if var kind = cue["kind"], let kids = kind["children"]?.arrayValue {
+            kind.set("children", .array(kids.map(withFreshIDs)))
+            cue.set("kind", kind)
+        }
+        return cue
+    }
+
     private static func children(_ cue: JSONValue) -> [JSONValue] { cue["kind"]?["children"]?.arrayValue ?? [] }
+
+    /// The engine's app-scope matching, so UI tests see a hotkey land: every doc's cues whose
+    /// `triggers.hotkey` is exactly this key and these modifiers go to running.
+    private func startHotkeyCues(key: String, modifiers: HotkeyModifiers) {
+        let mods: JSONValue = .object([
+            "shift": .bool(modifiers.shift), "control": .bool(modifiers.control), "alt": .bool(modifiers.alt),
+            "command": .bool(modifiers.command),
+        ])
+        func walk(_ cues: [JSONValue], doc: ModelID) {
+            for cue in cues {
+                if let hk = cue["triggers"]?["hotkey"], hk["key"]?.stringValue == key, hk["modifiers"] == mods,
+                    let id = cue["id"]?.stringValue
+                {
+                    fakeState(.running, ModelID(id), doc: doc)
+                }
+                walk(Self.children(cue), doc: doc)
+            }
+        }
+        for doc in docOrder {
+            for list in docs[doc]?["workspace"]?["cue_lists"]?.arrayValue ?? [] {
+                walk(list["cues"]?.arrayValue ?? [], doc: doc)
+            }
+        }
+    }
 
     /// Removes the cue; also where it was, as a position object without an index.
     private static func take(_ id: String, from lists: inout [JSONValue]) -> (JSONValue, JSONValue)? {
@@ -565,7 +624,7 @@ final class FakeEngine: EngineTransport {
         case .silent: return
         case .garbled: return c.deliver(#"{"type":"welcome","protocol_version":"x","snapshot":7}"#)
         }
-        if mode == .multi, h.workspace == nil {
+        if h.workspace == nil {
             c.deliver(
                 text(
                     .object([
@@ -574,7 +633,7 @@ final class FakeEngine: EngineTransport {
                     ])))
             return
         }
-        let doc = (mode == .single ? docOrder.first : h.workspace).flatMap { docs[$0] != nil ? $0 : nil }
+        let doc = h.workspace.flatMap { docs[$0] != nil ? $0 : nil }
         guard let doc else { return fail(c, .noWorkspace, "no such workspace", close: true) }
         c.doc = doc
         c.deliver(
@@ -595,18 +654,26 @@ final class FakeEngine: EngineTransport {
             open(
                 id, snapshot: Self.emptySnapshot(name: "Untitled \(nextDoc)", workspaceID: workspaceID(nextDoc)),
                 path: nil, from: c)
-        case .open(let path, _):
-            if mode == .multi,
-                let existing = docOrder.first(where: { docs[$0]?["document"]?["path"]?.stringValue == path })
-            {
+        case .open(let path, let recovery):
+            if let existing = docOrder.first(where: { docs[$0]?["document"]?["path"]?.stringValue == path }) {
                 return result(c, id, error: (.alreadyOpen, "already open as \(existing)"))
             }
+            if let code = openFailures[path] { return result(c, id, error: (code, "cannot open \(path)")) }
             let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            open(id, snapshot: Self.emptySnapshot(name: name, workspaceID: workspaceID(nextDoc)), path: path, from: c)
-        case .openRecovery:
-            open(
-                id, snapshot: Self.emptySnapshot(name: "Recovered", workspaceID: workspaceID(nextDoc)), path: nil,
-                from: c)
+            if autosaveNewer.contains(path), recovery == nil {
+                let offer: JSONValue = .object([
+                    "type": .string("recovery_offer"), "path": .string(path), "workspace_name": .string(name),
+                    "modified_ms": .int(1_700_000_000_000),
+                ])
+                return result(c, id, ok: .object(["data": offer]))
+            }
+            var snapshot = Self.emptySnapshot(name: name, workspaceID: workspaceID(nextDoc))
+            if recovery == .restore { snapshot["document"]?.set("dirty", .bool(true)) }
+            open(id, snapshot: snapshot, path: path, from: c)
+        case .openRecovery(let workspaceId, _, _):
+            var snapshot = Self.emptySnapshot(name: "Recovered", workspaceID: workspaceId.raw)
+            snapshot["document"]?.set("dirty", .bool(true))
+            open(id, snapshot: snapshot, path: nil, from: c)
         case .save, .saveAs:
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             if case .saveAs(let path) = r { docs[doc]?["document"]?.set("path", .string(path)) }
@@ -621,7 +688,11 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .scanRecovery:
-            result(c, id, ok: .object(["data": .object(["type": .string("recovery_entries"), "entries": .array([])])]))
+            result(
+                c, id,
+                ok: .object([
+                    "data": .object(["type": .string("recovery_entries"), "entries": .array(recoveryEntries)])
+                ]))
         case .relink:
             result(
                 c, id,
@@ -644,29 +715,14 @@ final class FakeEngine: EngineTransport {
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }
 
-    /// `new` / `open` / `open_recovery`: a new document (multi) or an in-place replacement (single,
-    /// the one-workspace engine before protocol 2).
+    /// `new` / `open` / `open_recovery`: another document; the list goes out before the result.
     private func open(_ id: UInt64, snapshot: JSONValue, path: String?, from c: FakeConnection) {
-        if mode == .multi {
-            let doc = addDoc(snapshot, path: path)
-            broadcastWorkspaces()
-            result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": Self.docJSON(doc)])]))
-            return
-        }
-        guard let doc = docOrder.first else { return result(c, id, error: (.internal, "no document")) }
-        // Numbering never restarts: the replacement is a later revision.
-        var s = snapshot
-        if case .int(let r)? = docs[doc]?["revision"] { s.set("revision", .int(r + 1)) }
-        if case .int(let q)? = docs[doc]?["runtime_seq"] { s.set("runtime_seq", .int(q)) }
-        if let path { s["document"]?.set("path", .string(path)) }
-        docs[doc] = s
-        let msg = snapshotMessage(doc)
-        for conn in connections where conn.welcomed { conn.deliver(msg) }
-        result(c, id)
+        let doc = addDoc(snapshot, path: path)
+        broadcastWorkspaces()
+        result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": Self.docJSON(doc)])]))
     }
 
     private func handleClose(_ id: UInt64, doc: ModelID?, discard: Bool, from c: FakeConnection) {
-        guard mode == .multi else { return fail(c, .unknownMessage, "close", close: false) }
         guard let target = doc ?? c.doc, docs[target] != nil else {
             return result(c, id, error: (.noWorkspace, "no such workspace"))
         }
@@ -685,6 +741,12 @@ final class FakeEngine: EngineTransport {
     }
 
     /// Marks a document dirty or renames it, as an edit would, and tells the app connections.
+    /// Before any connection: no workspace open (an engine just started).
+    func closeAll() {
+        docs = [:]
+        docOrder = []
+    }
+
     func setDocument(_ doc: ModelID, dirty: Bool) {
         docs[doc]?["document"]?.set("dirty", .bool(dirty))
         broadcastWorkspaces()

@@ -1605,10 +1605,18 @@ impl DocCx<'_> {
                     );
                     return Flow::Continue;
                 }
+                // Before the footprint: a raw paste becomes cues with ids only here.
+                let command = match self.prepare_command(*command) {
+                    Ok(command) => command,
+                    Err(e) => {
+                        reply(to, refused(id, &e));
+                        return Flow::Continue;
+                    }
+                };
                 let footprint = command.footprint();
                 match self.doc.history.execute_coalescing(
                     &mut self.doc.ws,
-                    *command,
+                    command,
                     coalesce.as_deref(),
                 ) {
                     Ok(changed) => {

@@ -83,9 +83,10 @@ extension Command {
             ]))
     }
 
-    /// `Paste`: several prepared cues (fresh ids; `CueEditor.preparePaste`) in order, one undo step.
-    static func paste(at: JSONValue, cues: [JSONValue]) -> Command {
-        Command(.object(["type": .string("paste"), "at": at, "cues": .array(cues)]))
+    /// `PasteClipboard`: the raw copied cues, in order, one undo step. The engine makes the fresh ids
+    /// and repairs targets, numbers and patches for this workspace (core's `prepare_paste`).
+    static func pasteClipboard(at: JSONValue, cues: [JSONValue]) -> Command {
+        Command(.object(["type": .string("paste_clipboard"), "at": at, "cues": .array(cues)]))
     }
 
     static func removeCue(_ id: ModelID) -> Command {
