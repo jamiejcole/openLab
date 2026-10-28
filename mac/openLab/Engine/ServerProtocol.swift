@@ -31,6 +31,15 @@ enum WireCueState: String, Hashable, Sendable, Codable, CaseIterable {
     case idle, loaded, running, paused, fading, stopping, broken
     case preWaiting = "pre_waiting"
     case postWaiting = "post_waiting"
+
+    /// A live cue: the Active Cues panel lists it and closing or quitting asks first. QLab shows a
+    /// cue as active while it plays or is paused; waiting and stopping cues are live too.
+    var isActive: Bool {
+        switch self {
+        case .running, .paused, .fading, .preWaiting, .postWaiting, .stopping: return true
+        case .idle, .loaded, .broken: return false
+        }
+    }
 }
 
 enum WireBrokenReason: String, Hashable, Sendable, Codable, CaseIterable {

@@ -129,14 +129,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     static var symbolNames: [String] { transport.map(\.symbol) + ["pause.fill", "play.fill"] }
 
-    /// QLab shows a cue here while it is playing or paused; waiting and stopping cues are live too.
-    static func isActive(_ state: WireCueState?) -> Bool {
-        switch state {
-        case .running?, .paused?, .fading?, .preWaiting?, .postWaiting?, .stopping?: return true
-        default: return false
-        }
-    }
-
     let store: WorkspaceStore
     let tabs = NSSegmentedControl(
         labels: [loc("sidebar.tab.cueLists"), loc("sidebar.tab.activeCues"), loc("sidebar.tab.warnings")],
@@ -378,7 +370,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         var result: [ModelID] = []
         func walk(_ cues: [Cue]) {
             for c in cues {
-                if isActive(store.cueStates[c.id]?.state) { result.append(c.id) }
+                if store.cueStates[c.id]?.state.isActive == true { result.append(c.id) }
                 walk(c.children)
             }
         }
@@ -392,7 +384,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         let removed = IndexSet(
             activeCues.indices.filter { i in
                 let id = activeCues[i]
-                return !Self.isActive(store.cueStates[id]?.state) || store.model?.cue(id) == nil
+                return store.cueStates[id]?.state.isActive != true || store.model?.cue(id) == nil
             })
         if !removed.isEmpty {
             for i in removed.reversed() { activeCues.remove(at: i) }
@@ -400,7 +392,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         let known = Set(activeCues)
         let added = changed.filter {
-            !known.contains($0) && Self.isActive(store.cueStates[$0]?.state) && store.model?.cue($0) != nil
+            !known.contains($0) && store.cueStates[$0]?.state.isActive == true && store.model?.cue($0) != nil
         }
         if !added.isEmpty {
             // Cues that start together go in list order, so the order is the same every time.

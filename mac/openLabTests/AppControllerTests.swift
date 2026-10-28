@@ -609,14 +609,33 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Show Mode (SM-01, SM-05)
 
-    /// Stops the fixture's running cue so only Show Mode can raise a prompt.
+    /// Stops the fixture's live cues (running, paused) so only Show Mode can raise a prompt.
     private func quiet(_ doc: ModelID) async throws {
         let store = try XCTUnwrap(app.session.stores[doc])
+        for (cue, run) in store.cueStates where run.state.isActive { try await setState(.idle, of: cue, doc) }
+    }
+
+    private func setState(_ state: WireCueState, of cue: ModelID, _ doc: ModelID) async throws {
+        let store = try XCTUnwrap(app.session.stores[doc])
+        let change = #"{"type":"cue_state","cue":"\#(cue)","state":"\#(state.rawValue)"}"#
+        engine.push(#"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[\#(change)]}"#, doc: doc)
+        await assertEventually { store.cueStates[cue]?.state == state }
+    }
+
+    /// SM-05: a paused, waiting or stopping cue is live; closing or quitting would lose it unasked.
+    func testQuitAndCloseAskWhenOnlyAPausedOrWaitingCueIsLive() async throws {
         let cue: ModelID = "00000000-0000-0000-0000-00000000000a"
-        engine.push(
-            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"idle"}]}"#,
-            doc: doc)
-        await assertEventually { store.cueStates[cue]?.state == .idle }
+        for state in [WireCueState.paused, .preWaiting, .postWaiting, .stopping] {
+            try await quiet("1")
+            try await setState(state, of: cue, "1")
+            alerts.quitPlaying = false
+            alerts.closePlaying = false
+            let quit = await app.prepareToQuit()
+            XCTAssertFalse(quit, "\(state)")
+            let closed = await app.closeWorkspace("1")
+            XCTAssertFalse(closed, "\(state)")
+        }
+        XCTAssertEqual(alerts.log, Array(repeating: ["quitPlaying", "closePlaying"], count: 4).flatMap { $0 })
     }
 
     func testShowModeIsPerWindow() async throws {

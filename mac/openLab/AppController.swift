@@ -621,8 +621,9 @@ final class AppController {
         }
     }
 
+    /// Any live cue: paused and waiting ones would lose their place on a close or quit too.
     private func isPlaying(_ store: WorkspaceStore) -> Bool {
-        store.cueStates.values.contains { $0.state == .running || $0.state == .fading }
+        store.cueStates.values.contains { $0.state.isActive }
     }
 
     private func name(of doc: ModelID) -> String {
