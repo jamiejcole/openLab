@@ -21,7 +21,8 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 use openlab_core::OscAccess;
 use openlab_core::protocol::{
-    ClientMessage, LogLevel, Outcome, Request, RequestId, ServerMessage, TransportAction,
+    ClientMessage, DocId, LogLevel, Outcome, Request, RequestId, ServerMessage, TransportAction,
+    WorkspaceInfo,
 };
 use rosc::{OscMessage, OscType};
 use socket2::{Domain, Socket, Type};
@@ -32,10 +33,10 @@ use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout
 use super::hub::Tap;
 use super::osc_mirror::{Applied, Mirror, MirrorShow, Update, UpdateId};
 use super::refusals::Refusals;
-use crate::control::{Inbox, ReplyRx, ReplyTx, reply_channel};
+use crate::control::{Inbox, Outgoing, ReplyRx, ReplyTx, reply_channel};
 use crate::osc::{
-    MAX_PACKET_BYTES, OSC_PORT, OSC_REPLY_PORT, Osc, OscInput, OscStats, Outcome as OscOutcome,
-    Peer, ServerInfo, SlipDecoder, encode_message, slip_encode, upper,
+    DocShow, MAX_PACKET_BYTES, OSC_PORT, OSC_REPLY_PORT, Osc, OscInput, OscShow, OscStats,
+    Outcome as OscOutcome, Peer, ServerInfo, SlipDecoder, encode_message, slip_encode, upper,
 };
 
 /// OSC request ids start here, well away from the small numbers clients count up from, and
@@ -273,7 +274,8 @@ pub fn start(
     osc.set_duplicate_window(config.duplicate_window);
     let actor = Actor {
         osc,
-        mirror: None,
+        docs: Vec::new(),
+        listed: false,
         pending_total: pending_total.clone(),
         shared: shared.clone(),
         config: config.clone(),
@@ -282,7 +284,8 @@ pub fn start(
         tcp: HashMap::new(),
         reply_tx,
         counter: 0,
-        snapshot_waits: HashSet::new(),
+        waits: HashMap::new(),
+        held: None,
         inflight: HashSet::new(),
         fail_udp_sends: config.fail_udp_sends,
         start: Instant::now(),
@@ -649,14 +652,34 @@ struct Queues {
     events: mpsc::Receiver<Event>,
     udp: mpsc::Receiver<Event>,
     evict: mpsc::Receiver<()>,
-    tap: mpsc::Receiver<ServerMessage>,
+    tap: mpsc::Receiver<Outgoing>,
     replies: ReplyRx,
+}
+
+/// One open doc as the actor knows it.
+struct DocCopy {
+    doc: DocId,
+    /// `None` until its first snapshot: input waits in the queues until then.
+    mirror: Option<Mirror>,
+}
+
+/// A request of the actor's own whose answer it waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wait {
+    /// The list of open docs (an app connection's `snapshot`).
+    List,
+    /// A doc's snapshot.
+    Snapshot(DocId),
 }
 
 struct Actor {
     osc: Osc,
-    /// `None` until the first snapshot: input waits in the queues until then.
-    mirror: Option<Mirror>,
+    /// The open docs in open order (doc ids rise in open order). Empty before the first list
+    /// and while no doc is open: an un-prefixed message then errors, nothing answers from a
+    /// closed doc's copy.
+    docs: Vec<DocCopy>,
+    /// The first list of open docs has been heard.
+    listed: bool,
     shared: Arc<Shared>,
     config: Arc<OscConfig>,
     inbox: Sender<Inbox>,
@@ -666,10 +689,13 @@ struct Actor {
     pending_total: Arc<AtomicUsize>,
     reply_tx: ReplyTx,
     counter: u64,
-    /// Snapshot requests not answered yet. While any is out, broadcasts wait in their queue (as
-    /// in the WebSocket connections): one made after the snapshot was taken must not be applied
+    /// Requests of ours not answered yet. While any is out, broadcasts wait in their queue (as
+    /// in the WebSocket connections): one made after the answer was taken must not be applied
     /// before it, and one made before is dropped as stale once it is in.
-    snapshot_waits: HashSet<RequestId>,
+    waits: HashMap<RequestId, Wait>,
+    /// The answer that came ahead of its `result` (a `snapshot` or `workspaces` message names no
+    /// request; the `result` right after it on the channel does).
+    held: Option<ServerMessage>,
     inflight: HashSet<RequestId>,
     /// UDP sends still to be failed on purpose (see [`OscConfig::fail_udp_sends`]).
     fail_udp_sends: u32,
@@ -692,18 +718,19 @@ impl Actor {
         let mut ticker = interval_at(Instant::now() + period, period);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut streak = 0u32;
-        if !self.ask_snapshot() {
+        if !self.ask(Wait::List) {
             return;
         }
         loop {
-            let ready = self.mirror.is_some();
-            let waiting = !self.snapshot_waits.is_empty();
+            let ready = self.listed && self.docs.iter().all(|d| d.mirror.is_some());
+            let waiting = !self.waits.is_empty();
             if !waiting && lagged.load(Ordering::Acquire) {
-                // The copy missed broadcasts. Cleared before asking, so a broadcast made after
-                // the snapshot is taken is queued again and filtered against it.
+                // The copies missed broadcasts: the list, then every doc's snapshot. Cleared
+                // before asking, so a broadcast made after the answers are taken is queued again
+                // and filtered against them.
                 while tap.try_recv().is_ok() {}
                 lagged.store(false, Ordering::Release);
-                if !self.ask_snapshot() {
+                if !self.ask(Wait::List) {
                     return;
                 }
                 continue;
@@ -711,12 +738,16 @@ impl Actor {
             tokio::select! {
                 biased;
                 reply = replies.recv() => match reply {
-                    Some(message) => self.reply(message),
+                    Some(message) => {
+                        if !self.reply(message) {
+                            return;
+                        }
+                    }
                     None => return,
                 },
                 // Only wakes the loop; the lag is handled at the top of the next turn.
                 () = wake.notified() => {}
-                // Needs neither the copy nor the event queues.
+                // Needs neither the copies nor the event queues.
                 Some(()) = evict.recv() => {
                     self.evict();
                     self.publish();
@@ -729,9 +760,10 @@ impl Actor {
                     }
                     None => return,
                 },
-                // Not while a snapshot is out: a `/cue/5` or a trigger address must not be
+                // Not while an answer is out: a `/cue/5` or a trigger address must not be
                 // resolved against a copy just found to be wrong (it could start the cue that
-                // used to be 5). Input waits, within the age limit.
+                // used to be 5), and an un-prefixed message must reach every doc. Input waits,
+                // within the age limit.
                 event = next_input(&mut udp, &mut events, &mut streak), if ready && !waiting => match event {
                     Some(event) => self.event(event),
                     None => return,
@@ -752,12 +784,18 @@ impl Actor {
         id
     }
 
-    /// `false`: the control loop is gone.
-    fn ask_snapshot(&mut self) -> bool {
+    /// Asks for the list of open docs (as an app connection does) or a doc's snapshot. `false`:
+    /// the control loop is gone.
+    fn ask(&mut self, wait: Wait) -> bool {
         let id = self.next_id();
-        self.snapshot_waits.insert(id);
+        self.waits.insert(id, wait);
+        let doc = match wait {
+            Wait::List => None,
+            Wait::Snapshot(doc) => Some(doc),
+        };
         self.inbox
-            .send(Inbox::Client {
+            .send(Inbox::Conn {
+                doc,
                 message: ClientMessage::Request {
                     id,
                     request: Request::Snapshot,
@@ -791,61 +829,161 @@ impl Actor {
         self.reported = problems;
     }
 
-    fn reply(&mut self, message: ServerMessage) {
+    /// An answer on our reply channel. `false`: the control loop is gone.
+    fn reply(&mut self, message: ServerMessage) -> bool {
         match message {
-            ServerMessage::Snapshot { snapshot } => self.install(Mirror::from_snapshot(*snapshot)),
+            ServerMessage::Snapshot { .. } | ServerMessage::Workspaces { .. } => {
+                self.held = Some(message);
+            }
             ServerMessage::Result { id, outcome } => {
-                self.snapshot_waits.remove(&id);
                 self.inflight.remove(&id);
-                if matches!(outcome, Outcome::Error(_)) {
-                    self.listener.control_refused += 1;
-                    self.publish();
+                let held = self.held.take();
+                let ok = matches!(outcome, Outcome::Ok(_));
+                match self.waits.remove(&id) {
+                    Some(Wait::List) => {
+                        if let (true, Some(ServerMessage::Workspaces { workspaces })) = (ok, held) {
+                            return self.listed(&workspaces);
+                        }
+                        // Cannot happen (an app snapshot always answers); the tap's lists
+                        // still tell which docs open.
+                        self.listed = true;
+                    }
+                    Some(Wait::Snapshot(doc)) => match (ok, held) {
+                        (true, Some(ServerMessage::Snapshot { snapshot })) => {
+                            self.install(doc, Mirror::from_snapshot(*snapshot));
+                        }
+                        // `no_workspace`: it closed meanwhile.
+                        _ => self.drop_doc(doc),
+                    },
+                    None => {
+                        if !ok {
+                            self.listener.control_refused += 1;
+                            self.publish();
+                        }
+                    }
                 }
             }
             _ => {}
         }
+        true
     }
 
-    /// Replaces the copy. Sessions end when the workspace is not the same as before, or the
-    /// passcode table lost or changed something (`access_changed`): a console that connected with
-    /// a passcode that is gone, or rights that are now smaller, must not keep control.
-    fn install(&mut self, mut new: Mirror) {
+    /// The answer to our own list request: exactly the docs open when it was taken. Docs not in
+    /// it closed; every doc in it gets a fresh snapshot (the copies are rebuilt). `false`: the
+    /// control loop is gone.
+    fn listed(&mut self, workspaces: &[WorkspaceInfo]) -> bool {
+        self.listed = true;
+        let gone: Vec<DocId> = self
+            .docs
+            .iter()
+            .map(|d| d.doc)
+            .filter(|doc| !workspaces.iter().any(|w| w.doc == *doc))
+            .collect();
+        for doc in gone {
+            self.drop_doc(doc);
+        }
+        for info in workspaces {
+            self.add_doc(info.doc);
+            if !self.ask(Wait::Snapshot(info.doc)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Knows `doc` from now on (no copy yet), in open order.
+    fn add_doc(&mut self, doc: DocId) {
+        if self.docs.iter().any(|d| d.doc == doc) {
+            return;
+        }
+        let at = self.docs.partition_point(|d| d.doc < doc);
+        self.docs.insert(at, DocCopy { doc, mirror: None });
+    }
+
+    /// `doc` closed: its copy goes and its sessions end (ARCHITECTURE section 7).
+    fn drop_doc(&mut self, doc: DocId) {
+        self.docs.retain(|d| d.doc != doc);
+        self.osc.close_doc(doc);
+    }
+
+    fn copy_mut(&mut self, doc: DocId) -> Option<&mut DocCopy> {
+        self.docs.iter_mut().find(|d| d.doc == doc)
+    }
+
+    /// Replaces `doc`'s copy. Its sessions end when the workspace is not the same as before, or
+    /// the passcode table lost or changed something (`access_changed`): a console that connected
+    /// with a passcode that is gone, or rights that are now smaller, must not keep control.
+    fn install(&mut self, doc: DocId, mut new: Mirror) {
+        let Some(copy) = self.docs.iter_mut().find(|d| d.doc == doc) else {
+            // Closed since we asked.
+            return;
+        };
         // The active list is the operator's place, not part of the workspace: a replacement of
         // the copy (save as, a resync, a snapshot broadcast) keeps it while its list exists.
-        if let Some(old) = &self.mirror {
+        if let Some(old) = &copy.mirror {
             new.inherit_active(old);
         }
-        let updates = match &self.mirror {
-            Some(old) => {
-                if old.workspace_id() != new.workspace_id() {
-                    self.osc.reset_sessions();
-                } else if access_changed(old.access(), new.access()) {
-                    self.osc.end_sessions();
-                }
-                old.updates_to(&new)
-            }
-            None => Vec::new(),
+        let (updates, reset, end) = match &copy.mirror {
+            Some(old) => (
+                old.updates_to(&new),
+                old.workspace_id() != new.workspace_id(),
+                access_changed(old.access(), new.access()),
+            ),
+            None => (Vec::new(), false, false),
         };
-        self.mirror = Some(new);
-        self.fan_out(&updates);
+        copy.mirror = Some(new);
+        if reset {
+            self.osc.reset_doc(doc);
+        } else if end {
+            self.osc.end_doc_sessions(doc);
+        }
+        self.fan_out(doc, &updates);
     }
 
     /// `false`: the control loop is gone.
-    fn broadcast(&mut self, message: ServerMessage) -> bool {
-        // The doc sent its whole state again (a save-as moved it): the copy is replaced (sessions end if the
-        // workspace or its passcode changed). The stale rule of the WebSocket connections: a
-        // snapshot at or below what the copy holds is the one it already has. This only runs
-        // while no snapshot request of ours is out, so it cannot be a stale answer to one.
+    fn broadcast(&mut self, out: Outgoing) -> bool {
+        let Outgoing { doc, message } = out;
+        let Some(doc) = doc else {
+            // The list: a doc we do not know has opened. A list read here may be older than
+            // what we know (our own list request's answer can overtake it), so it never removes
+            // a doc: `closed` and our own list do. A closed doc it names again answers our
+            // snapshot request with `no_workspace` and is dropped.
+            if let ServerMessage::Workspaces { workspaces } = message {
+                for info in workspaces {
+                    if !self.docs.iter().any(|d| d.doc == info.doc) {
+                        self.add_doc(info.doc);
+                        if !self.ask(Wait::Snapshot(info.doc)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+        if let ServerMessage::Closed { .. } = message {
+            self.drop_doc(doc);
+            return true;
+        }
+        // The doc sent its whole state again (a save-as moved it): the copy is replaced (sessions
+        // end if the workspace or its passcode changed). The stale rule of the WebSocket
+        // connections: a snapshot at or below what the copy holds is the one it already has.
+        // This only runs while no request of ours is out, so it cannot be a stale answer to one.
         if let ServerMessage::Snapshot { snapshot } = message {
-            let stale = self.mirror.as_ref().is_some_and(|m| {
-                snapshot.revision <= m.revision() && snapshot.runtime_seq <= m.runtime_seq()
-            });
+            let stale = self
+                .docs
+                .iter()
+                .find(|d| d.doc == doc)
+                .and_then(|d| d.mirror.as_ref())
+                .is_some_and(|m| {
+                    snapshot.revision <= m.revision() && snapshot.runtime_seq <= m.runtime_seq()
+                });
             if !stale {
-                self.install(Mirror::from_snapshot(*snapshot));
+                self.install(doc, Mirror::from_snapshot(*snapshot));
             }
             return true;
         }
-        let Some(mirror) = &mut self.mirror else {
+        // A doc we do not know yet: its snapshot, when its list arrives, holds this.
+        let Some(mirror) = self.copy_mut(doc).and_then(|d| d.mirror.as_mut()) else {
             return true;
         };
         let access = mirror.access().clone();
@@ -859,19 +997,19 @@ impl Actor {
             ServerMessage::Document { document } => mirror.document(document),
             _ => return true,
         };
-        // A settings edit that changed the passcode table ends every session, as a snapshot with
-        // another table does. Checked whatever the outcome: an edit that failed part-way may
-        // have applied its settings first.
+        // A settings edit that changed the passcode table ends the doc's sessions, as a snapshot
+        // with another table does. Checked whatever the outcome: an edit that failed part-way
+        // may have applied its settings first.
         if access_changed(&access, mirror.access()) {
-            self.osc.end_sessions();
+            self.osc.end_doc_sessions(doc);
         }
         match applied {
             Applied::Stale => true,
             Applied::Updates(updates) => {
-                self.fan_out(&updates);
+                self.fan_out(doc, &updates);
                 true
             }
-            Applied::Resync => self.ask_snapshot(),
+            Applied::Resync => self.ask(Wait::Snapshot(doc)),
         }
     }
 
@@ -882,14 +1020,11 @@ impl Actor {
                 let peer = Peer::Udp(ip);
                 let now = self.now();
                 let arrived = at.saturating_duration_since(self.start);
-                let Some(mirror) = &self.mirror else { return };
-                let outcome = self.osc.handle_datagram_arrived(
-                    peer,
-                    now,
-                    arrived,
-                    &bytes,
-                    &MirrorShow(mirror),
-                );
+                let shows = shows(&self.docs);
+                let docs = doc_shows(&shows);
+                let outcome = self
+                    .osc
+                    .handle_datagram_docs(peer, now, arrived, &bytes, &docs);
                 self.carry_out(peer, outcome, stale);
             }
             Event::TcpOpen {
@@ -915,7 +1050,6 @@ impl Actor {
                 let stale = at.elapsed() >= self.config.max_input_age;
                 let now = self.now();
                 let arrived = at.saturating_duration_since(self.start);
-                let Some(mirror) = &self.mirror else { return };
                 let Some(connection) = self.tcp.get_mut(&conn) else {
                     return;
                 };
@@ -924,13 +1058,15 @@ impl Actor {
                     conn,
                     ip: connection.ip,
                 };
-                let outcome = self.osc.handle_stream_arrived(
+                let shows = shows(&self.docs);
+                let docs = doc_shows(&shows);
+                let outcome = self.osc.handle_stream_docs(
                     peer,
                     now,
                     arrived,
                     &mut connection.decoder,
                     &bytes,
-                    &MirrorShow(mirror),
+                    &docs,
                 );
                 self.carry_out(peer, outcome, stale);
             }
@@ -947,17 +1083,13 @@ impl Actor {
     }
 
     /// Closes the connection that has been silent longest, if it has been silent for
-    /// `tcp_idle_evict` and is not subscribed to updates, to make room for a new one. With a
-    /// passcode set a connection that completed `/connect` is never closed this way: it is a
-    /// console that was let in, and a stranger's connections must not be able to push it out
-    /// (the cost: a console that vanished without closing holds its slot until a write to it
-    /// fails).
+    /// `tcp_idle_evict` and is not subscribed to updates, to make room for a new one. A
+    /// connection that completed `/connect` to a doc with a passcode is never closed this way:
+    /// it is a console that was let in, and a stranger's connections must not be able to push
+    /// it out (the cost: a console that vanished without closing holds its slot until a write
+    /// to it fails).
     fn evict(&mut self) {
         let idle = self.config.tcp_idle_evict;
-        let locked = self
-            .mirror
-            .as_ref()
-            .is_some_and(|m| m.access().requires_passcode());
         let subscribed: HashSet<u64> = self
             .osc
             .update_subscribers(self.now())
@@ -967,6 +1099,14 @@ impl Actor {
                 Peer::Udp(_) => None,
             })
             .collect();
+        let let_in = |peer: Peer| {
+            self.docs.iter().any(|d| {
+                d.mirror
+                    .as_ref()
+                    .is_some_and(|m| m.access().requires_passcode())
+                    && self.osc.is_connected_in(d.doc, peer)
+            })
+        };
         let victim = self
             .tcp
             .iter()
@@ -975,9 +1115,7 @@ impl Actor {
                     conn: **conn,
                     ip: c.ip,
                 };
-                !subscribed.contains(conn)
-                    && c.last_rx.elapsed() >= idle
-                    && !(locked && self.osc.is_connected(peer))
+                !subscribed.contains(conn) && c.last_rx.elapsed() >= idle && !let_in(peer)
             })
             .min_by_key(|(_, c)| c.last_rx)
             .map(|(conn, _)| *conn);
@@ -995,19 +1133,32 @@ impl Actor {
         }
     }
 
-    /// Sends what an input produced: the inputs to the control loop, the replies to the peer.
+    /// Sends what an input produced: the inputs to the control loop (each to its doc), the
+    /// replies to the peer.
     fn carry_out(&mut self, peer: Peer, outcome: OscOutcome, stale: bool) {
-        for input in outcome.inputs {
+        let OscOutcome {
+            inputs,
+            input_docs,
+            warnings,
+            replies,
+        } = outcome;
+        for message in warnings {
+            let _ = self.inbox.send(Inbox::Log {
+                level: LogLevel::Warn,
+                message,
+            });
+        }
+        for (doc, input) in input_docs.into_iter().zip(inputs) {
             if stale {
                 self.listener.inputs_dropped += 1;
             } else {
-                self.note_active_list(&input);
-                self.forward(peer, input);
+                self.note_active_list(doc, &input);
+                self.forward(peer, doc, input);
             }
         }
         match peer {
             Peer::Udp(_) => {
-                for reply in &outcome.replies {
+                for reply in &replies {
                     if let Ok(bytes) = encode_message(reply) {
                         self.send(peer, bytes);
                     }
@@ -1016,7 +1167,7 @@ impl Actor {
             // One queue entry for all of a read's replies: a wildcard can make a thousand.
             Peer::Tcp { conn, .. } => {
                 let mut framed = Vec::new();
-                for reply in &outcome.replies {
+                for reply in &replies {
                     if let Ok(bytes) = encode_message(reply) {
                         framed.extend_from_slice(&slip_encode(&bytes));
                     }
@@ -1030,7 +1181,7 @@ impl Actor {
 
     /// A message that moves a list's playhead makes that list the active one right away, ahead
     /// of the broadcast that will say so: a `/go` that follows in the same breath must act on it.
-    fn note_active_list(&mut self, input: &OscInput) {
+    fn note_active_list(&mut self, doc: DocId, input: &OscInput) {
         let OscInput::Transport(
             TransportAction::Go { list }
             | TransportAction::GoFrom { list, .. }
@@ -1042,12 +1193,12 @@ impl Actor {
         else {
             return;
         };
-        if let Some(mirror) = &mut self.mirror {
+        if let Some(mirror) = self.copy_mut(doc).and_then(|d| d.mirror.as_mut()) {
             mirror.set_active(*list);
         }
     }
 
-    fn forward(&mut self, peer: Peer, input: OscInput) {
+    fn forward(&mut self, peer: Peer, doc: DocId, input: OscInput) {
         if self.inflight.len() >= self.config.max_inflight {
             self.listener.inputs_dropped += 1;
             return;
@@ -1067,7 +1218,9 @@ impl Actor {
                 detail: super::describe(&message),
             });
         }
-        let sent = self.inbox.send(Inbox::Client {
+        // To the doc it is for, as a connection bound to it would send it.
+        let sent = self.inbox.send(Inbox::Conn {
+            doc: Some(doc),
             message,
             reply: self.reply_tx.clone(),
         });
@@ -1131,20 +1284,27 @@ impl Actor {
         }
     }
 
-    /// Tells every subscribed peer (NET-05, docs/osc.md "Updates").
-    fn fan_out(&mut self, updates: &[Update]) {
+    /// Tells every peer subscribed to `doc` what changed in it (NET-05, docs/osc.md "Updates").
+    fn fan_out(&mut self, doc: DocId, updates: &[Update]) {
         if updates.is_empty() {
             return;
         }
         let now = self.now();
-        let Some(mirror) = &self.mirror else { return };
-        // Updates carry cue data, so only subscribers that may view get them (judged now, so a
-        // table edit takes effect at once).
+        let Some(mirror) = self
+            .docs
+            .iter()
+            .find(|d| d.doc == doc)
+            .and_then(|d| d.mirror.as_ref())
+        else {
+            return;
+        };
+        // Updates carry cue data, so only subscribers that may view this doc get them (judged
+        // now, so a table edit takes effect at once).
         let subscribers: Vec<_> = self
             .osc
-            .update_subscribers(now)
+            .update_subscribers_in(doc, now)
             .into_iter()
-            .filter(|&p| self.osc.may_receive_updates(p, mirror.access()))
+            .filter(|&p| self.osc.may_receive_updates(doc, p, mirror.access()))
             .collect();
         if subscribers.is_empty() {
             return;
@@ -1159,7 +1319,7 @@ impl Actor {
             for &peer in &subscribers {
                 if self
                     .osc
-                    .update_allowed(peer, now, bytes.len(), passcode_set)
+                    .update_allowed(doc, peer, now, bytes.len(), passcode_set)
                 {
                     self.send(peer, bytes.clone());
                 }
@@ -1167,6 +1327,24 @@ impl Actor {
         }
         self.publish();
     }
+}
+
+/// The copies as the dispatcher reads them, in open order. Only called while every copy is
+/// ready (input waits until then).
+fn shows(docs: &[DocCopy]) -> Vec<(DocId, MirrorShow<'_>)> {
+    docs.iter()
+        .filter_map(|d| d.mirror.as_ref().map(|m| (d.doc, MirrorShow(m))))
+        .collect()
+}
+
+fn doc_shows<'a>(shows: &'a [(DocId, MirrorShow<'a>)]) -> Vec<DocShow<'a>> {
+    shows
+        .iter()
+        .map(|(doc, show)| DocShow {
+            doc: *doc,
+            show: show as &dyn OscShow,
+        })
+        .collect()
 }
 
 /// The OSC message for an update, as QLab 5 sends them (docs/osc.md, "Updates"): ids in upper
