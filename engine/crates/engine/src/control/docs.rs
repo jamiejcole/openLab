@@ -23,9 +23,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::Sender;
 use openlab_audio::{CommandKind, Fade};
@@ -1289,7 +1289,7 @@ impl Engine {
 
     /// The cue engine settings for doc `doc`: the loop's rate and block, and a seed of its own
     /// (the first doc's is the configured seed, so a one-doc run is as before).
-    fn engine_config(&self, doc: DocId) -> Result<EngineConfig, openlab_core::EngineConfigError> {
+    pub(super) fn engine_config(&self, doc: DocId) -> Result<EngineConfig, openlab_core::EngineConfigError> {
         EngineConfig::new(
             self.rate.get(),
             self.block,
@@ -1816,6 +1816,104 @@ impl Control {
 impl Doc {
     pub(super) fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+}
+
+/// What the final recovery writes at shutdown came to ([`Control::shutdown`]), counted in docs
+/// with unsaved changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalWrites {
+    /// Their recovery file holds their last edit (written now, or by an earlier autosave).
+    pub written: usize,
+    /// The write failed, or there is nowhere to write (no app-support folder).
+    pub failed: usize,
+    /// Still being written when the wait ran out (a slow or hung disk). The writer thread goes
+    /// on with it; the previous autosave, if any, is the newest copy on disk until it lands.
+    pub unfinished: usize,
+}
+
+impl Control {
+    /// Writes the recovery file of every doc with unsaved changes whose last edit no autosave
+    /// holds yet, and waits for them (and for an autosave of the last edit already under way),
+    /// in all at most `wait`. The writer discards autosaves still queued when it is dropped,
+    /// so this must run before the docs go. Each failure is logged; a doc whose file was not
+    /// written in time is logged too, so the next start's recovery offer is not a surprise.
+    pub(super) fn final_recovery_writes(&mut self, wait: Duration) -> FinalWrites {
+        let mut counts = FinalWrites::default();
+        let mut waiting: Vec<(String, AutosaveRx)> = Vec::new();
+        for doc in &mut self.docs {
+            if !doc.is_dirty() {
+                continue;
+            }
+            let name = doc.ws.name.clone();
+            let file = &mut doc.file;
+            let current = file.autosaved_revision == Some(doc.revision);
+            match (file.autosave.take(), current) {
+                (Some(rx), true) => waiting.push((name, rx)),
+                (None, true) => counts.written += 1,
+                (_, false) => match &self.eng.docs.writer {
+                    Some(writer) => {
+                        let rx = writer.autosave(
+                            doc.ws.clone(),
+                            doc.show_path.clone(),
+                            doc.revision,
+                        );
+                        file.autosaved_revision = Some(doc.revision);
+                        waiting.push((name, rx));
+                    }
+                    None => counts.failed += 1,
+                },
+            }
+        }
+        let deadline = Instant::now() + wait;
+        let mut logs = Vec::new();
+        for (name, rx) in waiting {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                // `None`: a manual save of that revision or a later one made it durable.
+                Ok(Ok(_)) => counts.written += 1,
+                Ok(Err(e)) => {
+                    counts.failed += 1;
+                    logs.push((
+                        LogLevel::Error,
+                        format!("could not write the recovery file of \"{name}\" at shutdown: {e}"),
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    counts.failed += 1;
+                    logs.push((
+                        LogLevel::Error,
+                        format!(
+                            "could not write the recovery file of \"{name}\" at shutdown: {}",
+                            PersistError::WriterGone
+                        ),
+                    ));
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    counts.unfinished += 1;
+                    logs.push((
+                        LogLevel::Error,
+                        format!(
+                            "the recovery file of \"{name}\" was still being written when the \
+                             engine stopped (slow or hung disk); its latest edits may be lost"
+                        ),
+                    ));
+                }
+            }
+        }
+        if counts.failed == 0 && counts.unfinished == 0 && counts.written > 0 {
+            logs.push((
+                LogLevel::Info,
+                format!(
+                    "shutdown: recovery files hold the unsaved changes of {} workspace(s)",
+                    counts.written
+                ),
+            ));
+        }
+        for (level, message) in logs {
+            self.eng.log(level, message);
+        }
+        counts
     }
 }
 

@@ -178,6 +178,24 @@ fn drop_finishes_manual_saves_and_discards_pending_autosaves() {
     );
 }
 
+/// M4.15g: a save stuck on a hung volume does not keep the drop (and so the engine's exit)
+/// waiting past its bound; the detached thread still finishes the save when the disk answers.
+#[test]
+fn drop_of_a_writer_stuck_on_a_hung_disk_returns_after_its_bound() {
+    let env = env();
+    let mut gate = gated(&env);
+    gate.writer.set_drop_wait(std::time::Duration::ZERO);
+    let first = occupy(&gate, &env);
+    let Gate {
+        writer, release, ..
+    } = gate;
+    // On this thread: with an unbounded wait this would never return (nothing releases it).
+    drop(writer);
+    assert!(first.try_recv().is_err(), "still stuck in the save");
+    release.send(()).unwrap();
+    first.recv().unwrap().unwrap();
+}
+
 #[test]
 fn queue_stays_bounded_under_a_stuck_disk() {
     let env = env();
