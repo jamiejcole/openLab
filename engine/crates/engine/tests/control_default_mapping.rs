@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Default patch mapping (M4.4c, WS-07): a workspace with no mapping on this machine plays on
 //! the device's first outputs without a mapping step, as in QLab; an existing mapping is never

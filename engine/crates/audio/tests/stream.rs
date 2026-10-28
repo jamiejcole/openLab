@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Disk streaming end to end through the offline renderer (AUD-04, AUD-05, AUD-11, AUD-12,
 //! CT-16): decode → resample → ring → mixer voice. Tests wait on stream signals (primed, frames

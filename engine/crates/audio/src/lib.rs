@@ -3,10 +3,6 @@
 //! openLab audio: device layer, decoding, disk streaming, real-time mixer and offline render driver.
 //! See `docs/audio.md`.
 
-// Unchecked indexing can panic on the audio thread; use `get` and handle the miss.
-// This attribute covers the lib target only: any new target in this crate (bin, bench, example) must repeat it.
-#![deny(clippy::indexing_slicing)]
-
 mod controller;
 mod decode;
 #[cfg(feature = "device")]

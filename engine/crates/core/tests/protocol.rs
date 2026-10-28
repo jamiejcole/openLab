@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! The UI protocol (ARCHITECTURE section 6, docs/protocol.md): golden fixtures, codec and
 //! hostile input. Regenerate the fixtures after an intended change with

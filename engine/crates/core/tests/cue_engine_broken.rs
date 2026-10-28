@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Static broken-cue detection (M2.8: CUE-06, NFR-07), per docs/cue-engine.md "Broken cues".
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.

@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    dead_code
+)]
 
 //! Many-channel PCM writers (M3.23): WAV (plain and WAVE_FORMAT_EXTENSIBLE) and AIFF/AIFF-C in
 //! every sample format the reader supports. Samples are generated as exact `f64` values (whole

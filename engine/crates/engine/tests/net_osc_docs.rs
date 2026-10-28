@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! OSC over several open docs, in front of the real control loop (M4.15h, ARCHITECTURE section
 //! 7): one listener, a copy per doc, an un-prefixed message to every doc with one reply each,

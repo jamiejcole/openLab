@@ -195,7 +195,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 ## 10. Error-handling policy
 
-- Engine Rust code returns `Result`. Workspace lints (`[workspace.lints.clippy]`, all `deny`, `-D warnings` in CI) apply to all three crates: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `print_stdout`, `print_stderr`, `undocumented_unsafe_blocks`. `engine/clippy.toml` relaxes unwrap/expect/panic/print in tests only. `openlab-audio` also denies `clippy::indexing_slicing` (crate attribute on the lib target; any new target in that crate must repeat it).
+- Engine Rust code returns `Result`. Workspace lints (`[workspace.lints.clippy]`, all `deny`, `-D warnings` in CI) apply to all three crates: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `print_stdout`, `print_stderr`, `undocumented_unsafe_blocks`, `indexing_slicing`. `engine/clippy.toml` relaxes unwrap/expect/panic/print/indexing in tests only; that covers `#[test]` fns and `#[cfg(test)]` items, so integration-test crates and their support modules allow them at the top of the file.
 - Nothing in the engine writes to stdout/stderr except through the logging path. The one exception is CLI output in `main` (e.g. `--version`), written via `std::io::Write` with write errors handled (a closed pipe must not panic).
 - Failures surface as **broken cue state, warnings, or log entries** — never a crash, never a modal during Show Mode.
 - `unsafe` is forbidden in `openlab-core`; allowed elsewhere only with a `// SAFETY:` comment and a test exercising it.

@@ -7,16 +7,14 @@ use super::NetError;
 /// Bytes of entropy in a token (256 bits).
 const TOKEN_BYTES: usize = 32;
 
-const HEX: [u8; 16] = *b"0123456789abcdef";
-
 /// A fresh token as lower-case hex (64 characters), from the operating system's CSPRNG.
 pub fn generate_token() -> Result<String, NetError> {
     let mut bytes = [0u8; TOKEN_BYTES];
     getrandom::fill(&mut bytes).map_err(|e| NetError::Entropy(e.to_string()))?;
     let mut text = String::with_capacity(TOKEN_BYTES * 2);
-    for b in bytes {
-        text.push(char::from(HEX[usize::from(b >> 4)]));
-        text.push(char::from(HEX[usize::from(b & 15)]));
+    // Both nibbles are below 16, so `from_digit` always gives a (lower-case) digit.
+    for nibble in bytes.iter().flat_map(|b| [b >> 4, b & 15]) {
+        text.extend(char::from_digit(u32::from(nibble), 16));
     }
     Ok(text)
 }

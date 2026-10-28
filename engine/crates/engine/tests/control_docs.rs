@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 //! Documents through the control loop on the offline driver (M4.4, M4.15f; NFR-04, NFR-05, NFR-06,
 //! WS-02, WS-03, WS-06, WS-07, WS-08): new, open, open-recovery, close, save, save-as, autosave

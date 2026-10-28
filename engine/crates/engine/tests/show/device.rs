@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
+#![allow(clippy::indexing_slicing)]
 
 //! A stand-in device layer and a test driver for the control loop on a "device" (M4.2b): the
 //! mixer sits in an `OutputHost` the test renders block by block, as a device callback would;

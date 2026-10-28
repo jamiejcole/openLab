@@ -20,6 +20,7 @@ unreachable = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
 undocumented_unsafe_blocks = "deny"
+indexing_slicing = "deny"
 
 [profile.release]
 # Symbolicated backtraces in crash reports without full debug info. Keep panic = "unwind" (the default):
