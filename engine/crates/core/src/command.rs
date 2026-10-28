@@ -30,7 +30,7 @@ use crate::cue::{
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
 };
-use crate::network::{MessageIssue, check_message};
+use crate::network::MessageIssue;
 use crate::osc_access::OscRights;
 use crate::tree::{
     CuePath, container, container_mut, cue_at, cue_at_mut, find_path, height, insert_all, take,
@@ -954,7 +954,7 @@ fn set_property(
         return Ok(no_change());
     }
     if !restoring {
-        check_network_value(ws, cue, &property)?;
+        check_network_value(cue, &property)?;
     }
     let cue = cue_at_mut(ws, &path).ok_or(CommandError::Internal)?;
     if !property.write(cue) {
@@ -963,37 +963,46 @@ fn set_property(
     Ok(Command::SetCueProperty { id, property: old })
 }
 
-/// What a new Network destination, address or argument list has to satisfy. The new value is
-/// judged on its own, so a cue loaded with a bad address or argument list can be mended one half
-/// at a time; the pair is only refused for a size the new value introduces (the same rule as
-/// `Kind` and `Triggers`: the edit answers for what it adds, not for what the cue already had).
-fn check_network_value(
-    ws: &Workspace,
-    cue: &Cue,
-    property: &CueProperty,
-) -> Result<(), CommandError> {
-    let CueKind::Network { address, args, .. } = &cue.kind else {
+/// Hard bounds on a Network cue's address and arguments at the edit. QLab 5 accepts a malformed
+/// message and shows the cue broken until it is fixed (manual pp. 371-372), so the send limits
+/// in `network` are NOT enforced here: the cue engine reports `network_message_invalid` and
+/// never sends. These bounds, far above the send limits (512 / 32 / 4096 bytes), only keep a
+/// hostile or broken client from filling the document with megabytes through one command.
+/// A non-finite float is also refused: JSON cannot hold one, so the show would not save and
+/// load back (load repairs it to 0 with a warning).
+const EDIT_MAX_ADDRESS_BYTES: usize = 64 * 1024;
+const EDIT_MAX_ARGS: usize = 1024;
+const EDIT_MAX_STRING_BYTES: usize = 64 * 1024;
+
+/// A new Network address or argument list is accepted whatever it says (a destination that
+/// names no patch, or none, too: the cue shows broken, `network_patch_missing`); only the
+/// memory bounds above are refused.
+fn check_network_value(cue: &Cue, property: &CueProperty) -> Result<(), CommandError> {
+    if !matches!(cue.kind, CueKind::Network { .. }) {
         return Ok(());
-    };
-    let (alone, pair) = match property {
-        CueProperty::Destination { value } => {
-            return if ws.network_patches.iter().any(|p| p.id == *value) {
-                Ok(())
-            } else {
-                Err(CommandError::NetworkPatchNotFound(*value))
-            };
+    }
+    let issue = match property {
+        CueProperty::Address { value } if value.len() > EDIT_MAX_ADDRESS_BYTES => {
+            MessageIssue::AddressTooLong
         }
-        CueProperty::Address { value } => (check_message(value, &[]), check_message(value, args)),
-        CueProperty::Args { value } => (check_message("/", value), check_message(address, value)),
+        CueProperty::Args { value } if value.len() > EDIT_MAX_ARGS => MessageIssue::TooManyArgs,
+        CueProperty::Args { value }
+            if value
+                .iter()
+                .any(|a| matches!(a, OscArg::Float { value } if !value.is_finite())) =>
+        {
+            MessageIssue::FloatNotFinite
+        }
+        CueProperty::Args { value }
+            if value.iter().any(
+                |a| matches!(a, OscArg::String { value } if value.len() > EDIT_MAX_STRING_BYTES),
+            ) =>
+        {
+            MessageIssue::StringTooLong
+        }
         _ => return Ok(()),
     };
-    alone.map_err(CommandError::InvalidMessage)?;
-    if pair == Err(MessageIssue::TooLarge)
-        && check_message(address, args) != Err(MessageIssue::TooLarge)
-    {
-        return Err(CommandError::InvalidMessage(MessageIssue::TooLarge));
-    }
-    Ok(())
+    Err(CommandError::InvalidMessage(issue))
 }
 
 /// `BatchSet`: applies the property in place, one cue at a time, keeping each cue's old value.
