@@ -4,7 +4,7 @@
 //! to no workspace) ends without `goodbye`, the engine keeps playing, logs it and, if it was
 //! started with a relaunch action, runs it after [`Relaunch::delay`] (1 s) unless an app
 //! connection is back by then, at most [`MAX_PER_WINDOW`] times per [`WINDOW`]. The action
-//! itself (`open -b <bundle id>` on macOS) is the host's (`platform::relaunch`).
+//! itself (`open -g -b <bundle id>` on macOS) is the host's (`platform::relaunch`).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
