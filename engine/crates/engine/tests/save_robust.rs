@@ -195,3 +195,76 @@ mod unix {
         assert!(names(&dir).is_empty());
     }
 }
+
+// A non-regular target must be refused, not read: opening a FIFO blocks the document worker.
+
+#[cfg(unix)]
+fn make_fifo(path: &std::path::Path) {
+    let made = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+}
+
+/// Saves through the real worker thread, with a bounded wait so a hang fails rather than stalls.
+fn worker_save(
+    writer: &openlab_engine::persist::SaveWriter,
+    ws: &openlab_core::Workspace,
+    path: &std::path::Path,
+) -> Result<openlab_engine::persist::SaveReport, openlab_engine::persist::PersistError> {
+    writer
+        .save(ws.clone(), path.to_path_buf(), 1000, 3, 1)
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the worker hung on the target")
+}
+
+#[cfg(unix)]
+#[test]
+fn save_onto_a_fifo_or_a_symlink_to_one_is_refused_and_the_worker_keeps_serving() {
+    let env = env();
+    let writer = openlab_engine::persist::SaveWriter::spawn(env.dirs.clone()).unwrap();
+    let fifo = env.show_dir().join("pipe.openlab");
+    make_fifo(&fifo);
+    let link = env.show_dir().join("link.openlab");
+    std::os::unix::fs::symlink(&fifo, &link).unwrap();
+    for target in [&fifo, &link] {
+        assert!(worker_save(&writer, &example(), target).is_err());
+    }
+    // Still a FIFO: nothing replaced it, and no backup was made.
+    assert!(!fs::metadata(&fifo).unwrap().is_file());
+    let dir = env.dirs.backups_dir(example().id, &fifo);
+    assert!(!dir.exists() || names(&dir).is_empty());
+    worker_save(&writer, &example(), &env.show_path()).unwrap();
+    assert!(env.show_path().is_file());
+}
+
+#[test]
+fn save_onto_a_directory_is_refused_and_the_worker_keeps_serving() {
+    let env = env();
+    let writer = openlab_engine::persist::SaveWriter::spawn(env.dirs.clone()).unwrap();
+    let dir = env.show_dir().join("folder.openlab");
+    fs::create_dir(&dir).unwrap();
+    assert!(worker_save(&writer, &example(), &dir).is_err());
+    assert!(dir.is_dir());
+    worker_save(&writer, &example(), &env.show_path()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn backing_up_a_fifo_is_an_error_not_a_hang() {
+    let env = env();
+    let fifo = env.show_dir().join("pipe.openlab");
+    make_fifo(&fifo);
+    let err = openlab_engine::persist::backup_existing(&env.dirs, example().id, &fifo, 1, 3);
+    assert!(err.is_err());
+}
+
+#[test]
+fn a_regular_show_file_is_still_backed_up_before_it_is_replaced() {
+    let env = env();
+    save_workspace(&env.dirs, &env.show_path(), &renamed("a"), 1000, 3).unwrap();
+    let report = save_workspace(&env.dirs, &env.show_path(), &renamed("b"), 2000, 3).unwrap();
+    let backup = report.backup.expect("backup of the first save");
+    assert!(fs::read_to_string(backup).unwrap().contains("\"a\""));
+}
