@@ -20,7 +20,9 @@ pub fn read_text(path: &Path, limit: usize) -> Result<String, PersistError> {
 pub(crate) fn read_bytes(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
     // Opening a FIFO (or a device) for reading can block for ever: only regular files are read.
     // `metadata` does not open the file, so it cannot hang on a pipe. The opened file is checked
-    // again; a swap to a FIFO between the two calls is not caught (no portable O_NONBLOCK).
+    // again, which only guards a directory or device swapped in between: `File::open` on a FIFO
+    // blocks before that check can run, so a swap to a FIFO in that window is not caught (no
+    // portable O_NONBLOCK without libc).
     let meta = fs::metadata(path).map_err(PersistError::io("open", path))?;
     if !meta.is_file() {
         return Err(PersistError::io("open", path)(std::io::Error::new(

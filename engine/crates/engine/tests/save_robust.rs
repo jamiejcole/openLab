@@ -268,3 +268,55 @@ fn a_regular_show_file_is_still_backed_up_before_it_is_replaced() {
     let backup = report.backup.expect("backup of the first save");
     assert!(fs::read_to_string(backup).unwrap().contains("\"a\""));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_as_the_settings_file_loads_defaults_without_hanging_or_copying() {
+    let env = env();
+    let path = env.dirs.settings_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    make_fifo(&path);
+    let dirs = env.dirs.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(openlab_engine::persist::load_machine_settings_checked(
+            &dirs,
+        ));
+    });
+    let (loaded, writable) = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("loading settings hung on a FIFO");
+    assert!(!writable);
+    assert!(!loaded.warnings.is_empty());
+    assert!(!path.with_file_name("settings.json.corrupt").exists());
+}
+
+#[test]
+fn an_oversized_show_file_is_replaced_with_a_backup_warning() {
+    let env = env();
+    let target = env.show_path();
+    let big = fs::File::create(&target).unwrap();
+    big.set_len(openlab_core::MAX_SHOW_FILE_BYTES as u64 + 1)
+        .unwrap();
+    drop(big);
+    let report = save_workspace(&env.dirs, &target, &renamed("new"), 1000, 3).unwrap();
+    assert!(report.backup.is_none());
+    assert!(
+        report.warnings.iter().any(|w| w.contains("backup failed")),
+        "{:?}",
+        report.warnings
+    );
+    assert!(fs::metadata(&target).unwrap().len() < 1_000_000);
+}
+
+#[test]
+fn read_text_refuses_an_oversized_file() {
+    let env = env();
+    let target = env.show_path();
+    fs::File::create(&target).unwrap().set_len(10_000).unwrap();
+    let err = openlab_engine::persist::read_text(&target, 100).unwrap_err();
+    assert!(matches!(
+        err,
+        openlab_engine::persist::PersistError::TooLarge { limit: 100, .. }
+    ));
+}
