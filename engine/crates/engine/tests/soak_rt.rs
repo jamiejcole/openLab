@@ -24,6 +24,12 @@
 //! `OPENLAB_SOAK_RT_SECS=<n>` sets the duration (default 120; CI's nightly run uses 180;
 //! add the final checkpoint's ten seconds or so), `OPENLAB_SOAK_SEED=<n>` the operator.
 //!
+//! Each run first measures the host: a host whose one-block sleeps overshoot by more than a
+//! block at p50 (or past the device lateness bound at p99) cannot run the stand-in device on a
+//! block cadence, and the run is skipped with the reason, or fails when
+//! `OPENLAB_SOAK_RT_REQUIRE` is set. GitHub's hosted macOS VMs are such hosts (issue #213).
+//! When a run fails, it prints what the threads measured and the stalls just before.
+//!
 //! The stand-in device is a thread that renders one block every block-length of wall time,
 //! scheduled from a fixed start so a late block is followed by catch-up blocks. Like a host
 //! with a small buffer it reports an xrun when a block is rendered more than
@@ -567,7 +573,10 @@ fn explain_failure(sh: &Shared) {
     let rendered = sh.rendered.load(Ordering::Acquire);
     let from = rendered.saturating_sub(REPORT_WINDOW_SECS * u64::from(RATE));
     let s = lock(&sh.stats);
-    eprintln!("--- real-time soak failed at {:.3} s of sample time", at_secs(rendered));
+    eprintln!(
+        "--- real-time soak failed at {:.3} s of sample time",
+        at_secs(rendered)
+    );
     Spread::of(&s.wake_over_us).show("control wake overshoot");
     Spread::of(&s.device_late_us).show("device block lateness");
     eprintln!(
@@ -577,7 +586,10 @@ fn explain_failure(sh: &Shared) {
         s.slow_wakes
     );
     if let Some(at) = s.first_underrun {
-        eprintln!("first underrun seen by the control loop at {:.3} s", at_secs(at));
+        eprintln!(
+            "first underrun seen by the control loop at {:.3} s",
+            at_secs(at)
+        );
     }
     let list = |what: &str, events: &mut dyn Iterator<Item = (SampleTime, u32)>| {
         let events: Vec<_> = events.filter(|&(at, _)| at >= from).collect();
@@ -600,21 +612,63 @@ fn explain_failure(sh: &Shared) {
             .filter(|&(_, &us)| us >= notable)
             .map(|(k, &us)| (k as u64 * BLOCK, us)),
     );
-    list("control wake overshoots", &mut s.notable_wakes.iter().copied());
-    list("gaps between control ticks", &mut s.notable_gaps.iter().copied());
+    list(
+        "control wake overshoots",
+        &mut s.notable_wakes.iter().copied(),
+    );
+    list(
+        "gaps between control ticks",
+        &mut s.notable_gaps.iter().copied(),
+    );
+}
+
+/// Whether a host whose one-block sleeps overshoot by `sleep` can run the stand-in device on a
+/// block cadence, as a real device's clock-driven callback runs. Past one block at the median,
+/// almost every block is rendered late and then in a catch-up burst, so a start committed a
+/// block ahead races the disk worker that fills its ring: the run would measure the host's
+/// timer, not the engine (issue #213: GitHub's Intel macOS VM oversleeps 8 ms by 26-36 ms with
+/// its CPU idle). Past [`DEVICE_LATE_P99_MAX`] at p99 the run's own lateness bound cannot hold.
+fn host_keeps_real_time(sleep: Spread) -> Result<(), String> {
+    let p50 = Duration::from_micros(sleep.p50.into());
+    let p99 = Duration::from_micros(sleep.p99.into());
+    if p50 > period() || p99 > DEVICE_LATE_P99_MAX {
+        return Err(format!(
+            "this host cannot keep real time for the stand-in device: a {:?} sleep overshoots \
+             by {p50:?} at p50 (limit one block) and {p99:?} at p99 (limit \
+             {DEVICE_LATE_P99_MAX:?})",
+            period()
+        ));
+    }
+    Ok(())
+}
+
+/// Set (non-empty) on a machine that is meant to keep real time, so a host that cannot fails
+/// the run instead of skipping it.
+const REQUIRE_ENV: &str = "OPENLAB_SOAK_RT_REQUIRE";
+
+/// Measures the host first (see [`host_keeps_real_time`]); `false` when the run is skipped.
+fn host_ready() -> bool {
+    let Err(why) = host_keeps_real_time(host_timing()) else {
+        return true;
+    };
+    let required = std::env::var_os(REQUIRE_ENV).is_some_and(|v| !v.is_empty());
+    assert!(!required, "{why} ({REQUIRE_ENV} is set)");
+    eprintln!("skipped: {why}");
+    false
 }
 
 /// How well this host runs a thread on time, before the soak asks it to: sleeps of one block
-/// (their overshoot), and a spinning thread's longest time off the CPU (preemption or, on a
-/// virtual machine, time the host took the CPU away).
-fn host_timing() {
+/// (their overshoot, returned), and a spinning thread's longest time off the CPU (preemption
+/// or, on a virtual machine, time the host took the CPU away).
+fn host_timing() -> Spread {
     let mut over = Vec::new();
     for _ in 0..250 {
         let t = Instant::now();
         thread::sleep(period());
         over.push(micros(t.elapsed().saturating_sub(period())));
     }
-    Spread::of(&over).show("host: one-block sleep overshoot");
+    let sleep = Spread::of(&over);
+    sleep.show("host: one-block sleep overshoot");
     let (mut off, mut long, mut worst) = (0u32, 0u32, Duration::ZERO);
     let end = Instant::now() + Duration::from_secs(1);
     let mut last = Instant::now();
@@ -636,6 +690,7 @@ fn host_timing() {
         NOTABLE.as_millis(),
         worst.as_secs_f64() * 1e3
     );
+    sleep
 }
 
 #[test]
@@ -643,7 +698,9 @@ fn host_timing() {
 fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
     let secs = env_u64("OPENLAB_SOAK_RT_SECS").unwrap_or(120);
     let seed = env_u64("OPENLAB_SOAK_SEED").unwrap_or(0x0e11_0000_0001);
-    host_timing();
+    if !host_ready() {
+        return;
+    }
     let started = Instant::now();
     let (s, m) = soak_rt(secs, seed, 0);
     let wall = started.elapsed();
@@ -713,14 +770,52 @@ fn minutes_of_a_show_on_the_wall_clock_keep_every_invariant() {
 /// dropout the backend counts, and the run fails on it.
 #[test]
 #[ignore = "real-time soak: 20 s of wall clock; run in release (see the module comment)"]
-#[should_panic(expected = "xruns")]
 fn a_stalled_device_fails_the_run() {
-    let _ = soak_rt(20, 3, 500);
+    if !host_ready() {
+        return;
+    }
+    let Err(e) = std::panic::catch_unwind(|| soak_rt(20, 3, 500)) else {
+        panic!("a run with a stalled device passed");
+    };
+    let what = e
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| e.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(what.contains("xruns"), "failed, but not on xruns: {what}");
 }
 
 // ---------------------------------------------------------------------------------------------
 // The harness itself. These are in the normal suite: they test `run_observed` and the numbers
 // without waiting on anything but the loop's own 5 ms timeout.
+
+/// Issue #213: GitHub's hosted macOS VMs (idle CPUs; 8 ms sleeps overshooting by 26-36 ms at
+/// p50 and 63 ms at p99 on Intel, 13-18 ms and 34 ms on arm64) are refused; an M4 Mac (1.9 ms /
+/// 2.1 ms, and 2.8 ms / 4.5 ms with twice as many busy processes as cores) is not.
+#[test]
+fn a_host_that_oversleeps_a_block_cannot_run_the_soak() {
+    let ms = |p50: u32, p99: u32| Spread {
+        n: 250,
+        p50: p50 * 1000,
+        p99: p99 * 1000,
+        max: p99 * 1000,
+    };
+    assert!(host_keeps_real_time(ms(36, 63)).is_err());
+    assert!(host_keeps_real_time(ms(29, 45)).is_err());
+    assert!(host_keeps_real_time(ms(13, 34)).is_err());
+    // Within a block at the median, but the p99 is past the run's own lateness bound.
+    assert!(host_keeps_real_time(ms(3, 60)).is_err());
+    assert!(host_keeps_real_time(ms(2, 2)).is_ok());
+    assert!(host_keeps_real_time(ms(3, 5)).is_ok());
+    // The limits themselves pass: one block at p50, the lateness bound at p99.
+    let edge = Spread {
+        n: 250,
+        p50: micros(period()),
+        p99: micros(DEVICE_LATE_P99_MAX),
+        max: micros(DEVICE_LATE_P99_MAX),
+    };
+    assert!(host_keeps_real_time(edge).is_ok());
+}
 
 #[test]
 fn percentiles_use_the_nearest_rank() {
