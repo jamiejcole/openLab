@@ -2474,6 +2474,12 @@ fn model_commands() -> Vec<(String, Command)> {
             },
         ),
         (
+            "rename_workspace",
+            Command::RenameWorkspace {
+                name: "Hamlet".into(),
+            },
+        ),
+        (
             "add_osc_passcode",
             Command::AddOscPasscode {
                 index: 1,
@@ -2597,7 +2603,7 @@ fn property_commands() -> Vec<(String, Command)> {
     out
 }
 
-const MODEL_COMMAND_COUNT: usize = 16;
+const MODEL_COMMAND_COUNT: usize = 17;
 /// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
 /// stops compiling here until it has an index and a sample in [`model_commands`].
 fn model_command_idx(c: &Command) -> Option<usize> {
@@ -2628,6 +2634,7 @@ fn model_command_idx(c: &Command) -> Option<usize> {
         Command::AddOscPasscode { .. } => 13,
         Command::RemoveOscPasscode { .. } => 14,
         Command::SetOscRights { .. } => 15,
+        Command::RenameWorkspace { .. } => 16,
     })
 }
 
