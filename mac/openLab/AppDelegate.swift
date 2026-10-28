@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
     @MainActor private(set) lazy var engine = EngineMode.fromLaunchArguments().make()
     @MainActor var engineSession: EngineSession { engine.0 }
-    @MainActor private(set) lazy var appController = AppController(session: engineSession)
+    @MainActor private(set) lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in appController.alerts })

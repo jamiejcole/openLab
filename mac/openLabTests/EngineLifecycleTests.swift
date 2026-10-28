@@ -260,6 +260,44 @@ final class EngineSupervisorTests: XCTestCase {
         await assertEventually { self.session.stores.count == 2 }
     }
 
+    /// A quit while the engine this app just started is still coming up ends it: no app would
+    /// ever connect, so it would run on in the background holding the audio device.
+    func testQuitBeforeAStartedEngineIsReachedEndsIt() async throws {
+        processes.onSpawn = { [unowned self] in
+            processes.alive.insert(engine.pid)
+            return engine.pid  // up, but engine.json not written yet
+        }
+        engine.connectFailure = true
+        supervisor.start()
+        _ = await pump { self.supervisor.engineNotReached != nil }
+        let app = AppController(session: session, supervisor: supervisor, scheduler: ManualScheduler())
+        let alerts = ScriptedAlerts()
+        app.alerts = alerts
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertTrue(alerts.log.isEmpty, "nothing plays on it: no prompt")
+        XCTAssertEqual(processes.signals.map(\.pid), [engine.pid])
+        XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
+        for _ in 0..<5 { await scheduler.fire() }
+        await settle()
+        XCTAssertEqual(processes.spawns, 1, "no engine is started after the quit")
+    }
+
+    /// The quit's other side: an engine this run reached gets `goodbye`, never a signal.
+    func testQuitNeverSignalsAnEngineThisRunReached() async throws {
+        spawnsTheFake()
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        let app = AppController(session: session, supervisor: supervisor, scheduler: ManualScheduler())
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]  // the fixture's show has unsaved changes
+        app.alerts = alerts
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertTrue(engine.received.contains { $0 == .goodbye(shutdown: true) })
+        XCTAssertTrue(processes.signals.isEmpty)
+    }
+
     func testAShutdownIsNotACrash() async throws {
         processes.info = .success(engine.info)
         processes.alive = [engine.pid]
