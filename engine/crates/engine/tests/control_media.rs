@@ -1269,3 +1269,71 @@ fn a_held_start_loaded_past_the_end_starts_its_successor_on_release() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     run_until_idle(&mut s, id(2), 2000);
 }
+
+/// M2.34: a preview whose voice ends on the Pause All sample has ended (the mixer dates the end
+/// on the first sample after its last, so nothing was left to pause). The engine ends the
+/// preview, and no record of the voice is left waiting for a resume that never comes.
+#[test]
+fn a_preview_ending_on_the_pause_all_sample_leaves_no_voice() {
+    // On, just before and just after a block boundary (where the Pause All lands).
+    for len in [
+        BLOCK * 10,
+        BLOCK * 11,
+        BLOCK * 12,
+        BLOCK * 11 - 4,
+        BLOCK * 11 + 1,
+    ] {
+        let path = wav(&dc(len as usize, 0.5));
+        let mut s = show(workspace(vec![audio(1, &path, 0)]));
+        s.take_outbound();
+        let at = s.now();
+        assert_eq!(at % BLOCK, 0);
+        s.transport(TransportAction::Preview { cue: id(1) });
+        s.run(len);
+        assert_eq!(s.now(), at + len.next_multiple_of(BLOCK), "len {len}");
+        s.transport(TransportAction::PauseAll);
+        s.run(BLOCK * 4);
+        s.transport(TransportAction::ResumeAll);
+        s.run(BLOCK * 8);
+        assert!(!s.control().engine().is_previewing(id(1)), "len {len}");
+        assert_eq!(s.control().live_voices(), 0, "len {len}");
+        assert!(s.control().is_idle(), "len {len}");
+    }
+}
+
+/// M2.34, show cue: a voice ending on the Pause All sample ends before the pause (the engine
+/// carries out its known end first, and the mixer's end report on that sample is an end), and
+/// leaves no record behind that would keep the cue from being primed for its next GO. (The
+/// mixer-report path itself is pinned by `voices.rs`'s unit test: offline, a show voice's
+/// known length always ends it on its deadline first.)
+#[test]
+fn a_show_voice_ending_on_the_pause_all_sample_is_primed_again() {
+    let full = std::fs::read(wav(&dc(4096, 0.5))).unwrap();
+    let cut = file("wav", &full[..44 + 1024 * 4]);
+    let mut s = show(workspace(vec![audio(1, &cut, 0)]));
+    s.take_outbound();
+    let at = go(&mut s);
+    assert_eq!(at % BLOCK, 0);
+    s.run(1024);
+    assert_eq!(s.now(), at + 1024);
+    s.transport(TransportAction::PauseAll);
+    s.run(BLOCK * 4);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(at as usize + 1023));
+    s.transport(TransportAction::ResumeAll);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+    assert!(s.control().is_idle());
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(1)),
+    });
+    s.run(BLOCK * 4);
+    s.settle_media();
+    s.run(BLOCK * 4);
+    assert!(
+        s.control().primed().contains(&id(1)),
+        "{:?}",
+        s.control().primed()
+    );
+}
