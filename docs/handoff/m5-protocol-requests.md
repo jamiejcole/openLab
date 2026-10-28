@@ -117,7 +117,7 @@ docs/control.md "Process lifecycle" has the whole contract. What the app must do
    its run marker (`another openLab engine is running (pid N, port P)`, exit 1). The engine prints
    `listening on 127.0.0.1:PORT` on stderr once `engine.json` is written.
 2. **Quit**: confirm while cues run (SM-05), then `goodbye { shutdown: true }`; the engine writes a recovery
-   file for every unsaved workspace (bounded: at most about 15 s on a hung disk) and exits 0, removing
+   file for every unsaved workspace (bounded: the recovery writes 10 s, the writer 5 s, the log 3 s, so under 20 s on a hung disk) and exits 0, removing
    `engine.json`. SIGTERM does the same.
 3. **Crash relaunch**: the engine relaunches the app (`open -b`) 1 s after the app connection drops without
    `goodbye`, at most 3 times a minute, so the app must keep its app connection open while it runs and say
