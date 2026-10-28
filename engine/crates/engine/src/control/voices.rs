@@ -975,7 +975,10 @@ impl Voices {
             return;
         };
         let (cue, run) = (r.cue, r.run);
-        if !current {
+        // The mixer dropped the voice because its render kept panicking: the cue breaks, also
+        // when a resume that re-keyed it is still on its way.
+        let faulted = reason == FinishReason::Faulted;
+        if !current && !faulted {
             // The voice ended before the resume that re-keyed it applied, so the mixer ignored
             // the resume: report the end with the fresh run (M2-E (a)), after the resume.
             if let Some(r) = self.remove(id) {
@@ -984,8 +987,6 @@ impl Voices {
             }
             return;
         }
-        // The mixer dropped the voice because its render kept panicking: the cue breaks.
-        let faulted = reason == FinishReason::Faulted;
         let failed = faulted
             || r.stream_failed
             || (reason == FinishReason::EndOfStream
@@ -1588,5 +1589,34 @@ mod tests {
             assert_eq!(fx.notices[0].2, Some(cue));
             assert!(v.is_idle());
         }
+    }
+
+    /// Regression (#302): a voice dropped under its old id while the resume that re-keyed it
+    /// is on its way breaks its cue too, rather than ending it.
+    #[test]
+    fn a_faulted_voice_under_its_old_id_breaks_its_cue() {
+        let cue = CueId(uuid::Uuid::from_u128(1));
+        let mut v = Voices::new();
+        v.insert(VoiceId(2), rec(cue, RunId(8), false));
+        v.aliases.insert(VoiceId(1), (VoiceId(2), RunId(7)));
+        let mut fx = Effects::default();
+        v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+        assert!(fx.deferred.is_empty(), "{:?}", fx.deferred);
+        assert!(
+            matches!(
+                fx.feedback.as_slice(),
+                [Input::ActionFailed {
+                    reason: BrokenReason::StreamFailed,
+                    ..
+                } | Input::StartFailed {
+                    reason: BrokenReason::StreamFailed,
+                    ..
+                }]
+            ),
+            "{:?}",
+            fx.feedback
+        );
+        assert_eq!(fx.notices.len(), 1);
+        assert_eq!(fx.notices[0].0, "audio_fault");
     }
 }
