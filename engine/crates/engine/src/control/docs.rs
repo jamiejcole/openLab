@@ -1870,6 +1870,7 @@ impl Control {
         // first priming pass (`balance_primes` makes the others follow, only if they must).
         let open: Vec<DocId> = self.docs.iter().map(|d| d.id).collect();
         self.eng.primes.retain(|d, _| open.contains(d));
+        self.eng.primes_changed = true;
     }
 
     /// Saves of closed docs that finished: answered (and a failure logged).
