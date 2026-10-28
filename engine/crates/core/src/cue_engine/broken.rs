@@ -330,9 +330,12 @@ impl CueEngine {
     /// Start of a call: bring the model's part up to date if the model changed.
     pub(super) fn sync_problems(&mut self, cx: &mut Ctx) {
         match std::mem::replace(&mut self.problems.pending, Pending::Clean) {
-            Pending::Clean => {
+            Pending::Clean =>
+            {
                 #[cfg(debug_assertions)]
-                self.check_signalled(cx);
+                if self.full_checks() {
+                    self.check_signalled(cx);
+                }
             }
             Pending::All => self.rebuild_problems(cx),
             Pending::Cues {

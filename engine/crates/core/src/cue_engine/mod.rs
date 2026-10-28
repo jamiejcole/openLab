@@ -17,6 +17,7 @@ mod preview;
 mod rng;
 mod run;
 mod second;
+mod shape;
 mod time;
 mod timers;
 mod transport;
@@ -106,6 +107,11 @@ pub struct CueEngine {
     /// into call after call at one `now`, each with a fresh budget (see "Chains and the chain
     /// bound").
     spent: (SampleTime, usize),
+    /// The outline release builds check for a missed `model_changed` (see `shape.rs`).
+    shape: shape::Shape,
+    /// Tests: behave as a release build (no full check on every call).
+    #[cfg(test)]
+    release_checks: bool,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -160,7 +166,20 @@ impl CueEngine {
             model_syncs: 0,
             whole_show_passes: 0,
             spent: (0, 0),
+            shape: shape::Shape::default(),
+            #[cfg(test)]
+            release_checks: false,
         }
+    }
+
+    /// Whether every call checks the model against a full rebuild (debug builds). Release
+    /// builds check the cheap outline instead (`shape.rs`).
+    fn full_checks(&self) -> bool {
+        #[cfg(test)]
+        if self.release_checks {
+            return false;
+        }
+        cfg!(debug_assertions)
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -183,8 +202,9 @@ impl CueEngine {
     /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
     /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
-    /// M4.2 contract. Release builds skip those whole-workspace passes on every other call, so a
-    /// missed signal leaves them out of date; what could then refuse or drop a cue is guarded
+    /// M4.2 contract. Release builds skip those whole-workspace passes on every other call
+    /// unless the workspace's outline changed (`shape.rs`: then the miss is counted and the
+    /// passes run), so a missed signal inside a cue or group leaves them out of date; what could then refuse or drop a cue is guarded
     /// where it happens (a cue about to be refused for its problems is rechecked, a spent chain
     /// budget is recounted, a GO whose playhead cue is gone resyncs that list) and counted in
     /// [`Self::unsignalled_model_changes`]. Debug builds run the passes on every call and count.
@@ -226,9 +246,18 @@ impl CueEngine {
     pub fn handle(&mut self, ws: &Workspace, input: Input, now: SampleTime) -> Vec<Action> {
         // Whole-tree passes (the chain limit, following edits) only after `model_changed`, so a
         // Tick on a big show costs nothing extra. Debug builds run them every call and count a
-        // change nobody signalled, as for the static problems.
+        // change nobody signalled, as for the static problems; release builds compare the
+        // workspace's outline and, if it changed, count it and follow as if signalled.
         let signalled = std::mem::take(&mut self.model_dirty);
-        let follow_edits = signalled || cfg!(debug_assertions);
+        let full = self.full_checks();
+        let outline_changed = !signalled && !full && !self.shape.matches(ws);
+        if outline_changed {
+            if self.unsignalled_model_changes() == self.shape.unsignalled() {
+                self.note_unsignalled();
+            }
+            self.mark_problems_dirty();
+        }
+        let follow_edits = signalled || full || outline_changed;
         if signalled {
             self.model_syncs = self.model_syncs.saturating_add(1);
         }
@@ -274,9 +303,14 @@ impl CueEngine {
         if follow_edits {
             let changed = self.sync_model(&mut cx) | self.sync_playheads(&mut cx);
             // Once per call: the problems may have noticed the same edit.
-            if changed && !signalled && self.unsignalled_model_changes() == counted {
+            if changed
+                && !signalled
+                && !outline_changed
+                && self.unsignalled_model_changes() == counted
+            {
                 self.note_unsignalled();
             }
+            self.shape.record(ws, self.unsignalled_model_changes());
         }
         self.advance(&mut cx);
         self.apply(input, &mut cx);
