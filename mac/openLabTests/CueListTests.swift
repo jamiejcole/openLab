@@ -614,6 +614,24 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    /// M18: a pre-wait or post-wait in progress counts down in its own column (QLab: "counting
+    /// down its pre-wait"), touching only those cells; it ends with the run.
+    func testWaitsCountDownInTheirColumns() async throws {
+        let h = try await H()
+        h.spy.resetCounts()
+        let waits = #"[{"cue":"\#(H.intro)","wait":"pre_wait","elapsed":0.5,"remaining":1.5}]"#
+        try h.receive(#"{"type":"progress","items":[],"waits":\#(waits)}"#)
+        let reload = try XCTUnwrap(h.spy.rowReloads.first)
+        XCTAssertEqual(
+            reload.columns.map { h.spy.tableColumns[$0].identifier.rawValue }, ["preWait", "postWait"])
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
+        XCTAssertNil(h.vc.store.waits[H.intro])
+        XCTAssertEqual(
+            h.cell("preWait", H.intro)?.label.stringValue,
+            CueTimeFormat.clock(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
+    }
+
     // MARK: Playhead marker across model changes
 
     func testGroupLosesItsPlayheadMarkerWhenThePlayheadCueMovesOut() async throws {

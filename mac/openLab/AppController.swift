@@ -113,7 +113,7 @@ final class AppController {
             keySubs[ObjectIdentifier(store)] = store.changes.sink { [weak self] change in
                 switch change {
                 case .reset, .model: MainActor.assumeIsolated { _ = self?.keys(for: store) }
-                case .runtime, .progress, .notices: break
+                case .runtime, .progress, .waits, .notices: break
                 }
             }
             if let doc = session.doc(of: store), let n = session.workspaces.first(where: { $0.doc == doc }) {

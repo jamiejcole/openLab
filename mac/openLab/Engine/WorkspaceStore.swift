@@ -24,6 +24,8 @@ enum StoreChange: Sendable {
     case runtime(cues: Set<ModelID>, playheads: Set<ModelID>)
     /// Cues whose progress changed (running cues, and cues that stopped running).
     case progress(Set<ModelID>)
+    /// Cues whose pre-wait or post-wait countdown changed, began or ended.
+    case waits(Set<ModelID>)
     /// The workspace warnings were replaced, or a runtime warning arrived.
     case notices
 }
@@ -41,6 +43,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
+    /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
+    @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Warnings that arrived as runtime changes, newest last.
@@ -51,6 +55,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// How many `log` messages and notes have been added in all (the entries are bounded, this is
     /// not): entry `i` of `logEntries` is number `logCount - logEntries.count + i`.
     private(set) var logCount = 0
+    /// The newest show-log record number heard (`log_entry`, `log_tail`); 0: none on this connection.
+    private(set) var logSeq: UInt64 = 0
+    /// A `log_entry` arrived more than one past the last: records were not pushed, so a live view
+    /// reads `log_tail` again (docs/protocol.md "Show log entries and status").
+    let logGaps = PassthroughSubject<Void, Never>()
     @Published private(set) var connectionState: ConnectionState = .idle
     /// This workspace's Show Mode (SM-01), as its window shows it. The engine is told so it can
     /// hold off sleep (SM-07); its `document.show_mode` is read back and wins when it changes.
@@ -141,7 +150,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func logTail(max: UInt32? = nil) async -> Result<(entries: [ShowLogEntry], dropped: UInt64), EngineError> {
         switch await client.send({ .request(id: $0, .logTail(max: max)) }) {
         case .success(let ok):
-            if case .logTail(let entries, let dropped)? = ok.data { return .success((entries, dropped)) }
+            if case .logTail(let entries, let dropped, let seq)? = ok.data {
+                logSeq = Swift.max(logSeq, seq)
+                return .success((entries, dropped))
+            }
             return .failure(.encoding("log_tail result has no log_tail data"))
         case .failure(let e): return .failure(e)
         }
@@ -217,11 +229,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             document = d
             // Another client (or the engine) changed it: the engine's word is the mode now.
             if engineChanged, d.showMode != showMode, !showModeUnsent { showMode = d.showMode }
-        case .progress(let items, _):
+        case .progress(let items, let w):
             let old = progress
+            let oldWaits = waits
             progress = Dictionary(items.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
+            var next: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
+            for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
+            waits = next
             let touched = Set(old.keys).union(progress.keys)
             if !touched.isEmpty { changes.send(.progress(touched)) }
+            let waited = Set(oldWaits.keys).union(next.keys)
+            if !waited.isEmpty { changes.send(.waits(waited)) }
         case .warnings(let w):
             warnings = w
             changes.send(.notices)
@@ -233,9 +251,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             status = s
         case .closed(let doc):
             if doc == client.workspace { onClosed?() }
-        case .meters, .logEntry, .result, .error, .appWelcome, .workspaces, .unknown:
-            // Meters and live log records have no consumer yet (the log window reads
-            // `log_tail`); the rest belong to the client or session.
+        case .logEntry(let seq, _):
+            // The record itself is shown from `log_tail`; its number tells whether any were lost.
+            if logSeq > 0, seq > logSeq + 1 { logGaps.send() }
+            logSeq = Swift.max(logSeq, seq)
+        case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
+            // Meters have no consumer yet; the rest belong to the client or session.
             break
         }
         return .applied
@@ -254,6 +275,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         previewing = Set(s.previewing)
         warnings = s.warnings
         progress = [:]
+        waits = [:]
+        // A new connection may be a new engine run, whose records count from 1 again.
+        logSeq = 0
         runtimeWarnings = []
         // A new connection's health is unknown until its first `status`.
         status = nil
@@ -368,6 +392,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         var cues = Set<ModelID>()
         var heads = Set<ModelID>()
         var progressEnded = Set<ModelID>()
+        var waitsEnded = Set<ModelID>()
         var noticed = false
         for change in changes {
             switch change {
@@ -377,6 +402,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if state != .running && state != .fading, progress[cue] != nil {
                     progress[cue] = nil
                     progressEnded.insert(cue)
+                }
+                // Stop, Reset and Panic end the countdowns with the run (no last `progress` comes).
+                if !state.isActive, waits[cue] != nil {
+                    waits[cue] = nil
+                    waitsEnded.insert(cue)
                 }
             case .problems(let cue, let list):
                 problems[cue] = list.isEmpty ? nil : list
@@ -406,6 +436,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
         if !cues.isEmpty || !heads.isEmpty { self.changes.send(.runtime(cues: cues, playheads: heads)) }
         if !progressEnded.isEmpty { self.changes.send(.progress(progressEnded)) }
+        if !waitsEnded.isEmpty { self.changes.send(.waits(waitsEnded)) }
         if noticed { self.changes.send(.notices) }
         return .applied
     }

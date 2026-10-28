@@ -286,6 +286,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
         case .progress(let ids): refresh(ids, columns: ["duration"])
+        case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
         }
     }
@@ -718,6 +719,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":
+            // A wait in progress counts down what is left, as QLab's columns do.
+            if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
+                text(CueTimeFormat.clock(wait.remaining))
+                break
+            }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
             text(CueTimeFormat.clock(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab

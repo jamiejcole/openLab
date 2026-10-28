@@ -361,6 +361,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 syncWarnings()
             }
         case .progress(let ids): redraw(ids)
+        case .waits: break
         case .notices: syncWarnings()
         }
     }

@@ -51,6 +51,7 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private var tailFailed = false
     private var tailMark = 0
     private var sub: AnyCancellable?
+    private var gapSub: AnyCancellable?
     private var storeEntries: [LogEntry]
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -80,6 +81,13 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
             MainActor.assumeIsolated {
                 self?.storeEntries = entries
                 self?.rebuild()
+            }
+        }
+        // Records the engine made but did not push: an open window reads the tail again.
+        gapSub = store.logGaps.sink { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.window?.isVisible == true else { return }
+                Task { await self.refresh() }
             }
         }
     }

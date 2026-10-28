@@ -407,7 +407,8 @@ enum ResultData: Sendable, Equatable, Decodable {
         relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
-    case logTail(entries: [ShowLogEntry], dropped: UInt64)
+    /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
+    case logTail(entries: [ShowLogEntry], dropped: UInt64, seq: UInt64)
     case preshowCheck(PreshowReport)
     /// The doc a `new` / `open` / `open_recovery` opened.
     case opened(doc: ModelID)
@@ -435,7 +436,8 @@ enum ResultData: Sendable, Equatable, Decodable {
         case "log_tail":
             self = .logTail(
                 entries: try c.decode([ShowLogEntry].self, forKey: "entries"),
-                dropped: try c.decode(UInt64.self, forKey: "dropped"))
+                dropped: try c.decode(UInt64.self, forKey: "dropped"),
+                seq: try c.decodeIfPresent(UInt64.self, forKey: "seq") ?? 0)
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
         case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
         default: self = .other(type: type, json: try JSONValue(from: decoder))

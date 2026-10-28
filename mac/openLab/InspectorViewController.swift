@@ -239,7 +239,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             switch change {
             case .reset, .model: MainActor.assumeIsolated { self?.render() }
             case .runtime: MainActor.assumeIsolated { self?.updatePreviewButton() }
-            case .progress, .notices: break
+            case .progress, .waits, .notices: break
             }
         }
         connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
