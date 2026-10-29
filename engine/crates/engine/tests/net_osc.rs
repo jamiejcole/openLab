@@ -28,7 +28,7 @@ use openlab_engine::control::{
     Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, Outgoing, ReplyTx, outbound_channel,
     runner,
 };
-use openlab_engine::net::{OscConfig, OscListenerStats, ServerConfig, WsServer};
+use openlab_engine::net::{OscConfig, OscListenerStats, ServerConfig, TAP_QUEUE, WsServer};
 use openlab_engine::osc::{SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode};
 use rosc::{OscMessage, OscType};
 use serde_json::Value;
@@ -1759,8 +1759,11 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
             tokio::task::yield_now().await;
         }
     };
+    // Sized from the tap so it always overflows, with a margin for what the actor took
+    // before the hold.
+    let overflow = u64::try_from(TAP_QUEUE).unwrap() + 76;
     guard("the broadcasts to be fanned out", async {
-        flood(1100).await;
+        flood(overflow).await;
         flood(1).await;
     })
     .await;
@@ -1786,6 +1789,13 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
         }
     })
     .await;
+    // The copies were rebuilt because the tap overflowed (the list asked again after the held
+    // resync), not because the `closed` got through.
+    assert!(
+        f.control.snapshot_requests() >= before + 2,
+        "no rebuild: {} snapshot requests after {before}",
+        f.control.snapshot_requests()
+    );
     let listed = f.udp_ask(&msg("/workspaces", vec![])).await;
     let names: Vec<&str> = listed[0]["data"]
         .as_array()
