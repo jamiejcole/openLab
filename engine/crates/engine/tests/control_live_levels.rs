@@ -464,24 +464,62 @@ fn a_preview_keeps_its_patch_when_the_cue_changes_patch() {
     assert!(side_out.iter().all(|&v| v == 0.0), "heard on the new patch");
 }
 
+/// The third patch of [`with_third`].
+fn third() -> PatchId {
+    PatchId(uuid::Uuid::from_u128(903))
+}
+
+/// [`two_patch_show_with`] (cue 1 on Main) with a one-output patch "Third" listed between Main
+/// and Side and left to the default mapping (device output 1, as Main's first output). The
+/// mixer has two slots: Main and Third take them, so Side has none.
+fn with_third(extra: Vec<openlab_core::Cue>) -> OfflineShow {
+    two_patch_show_with(patch_id(), 0, extra, |ws, _| {
+        let mut p = ws.patches[1].clone();
+        p.id = third();
+        p.name = "Third".into();
+        ws.patches.insert(1, p);
+    })
+}
+
+/// A slot freed by one patch and handed to another takes the new patch's routing at once: a
+/// cue started on it on the same sample is heard on its own patch's outputs only, from its
+/// first sample, never for a moment on the outputs of the patch that had the slot before.
+#[test]
+fn a_slot_handed_to_another_patch_takes_its_routing_at_once() {
+    let b = wav(&dc(RATE as usize, LEVEL));
+    let mut on_side = audio(2, &b, 0);
+    if let CueKind::Audio { patch, .. } = &mut on_side.kind {
+        *patch = side();
+    }
+    let mut s = with_third(vec![on_side]);
+    s.run(800);
+    let at = send_edit(
+        &mut s,
+        Command::RemovePatch {
+            id: third(),
+            even_if_used: false,
+        },
+    );
+    start(&mut s, 2);
+    s.run(400);
+    assert!(
+        s.channel(0).iter().all(|&v| v == 0.0),
+        "heard on Third's output"
+    );
+    let x = s.channel(1);
+    assert!(x[..at].iter().all(|&v| v == 0.0));
+    assert!(
+        x[at..at + 300].iter().all(|&v| near(v, LEVEL)),
+        "ramped in: {:?}",
+        &x[at..at + 4]
+    );
+}
+
 /// #347: a cue changed to a patch with no free slot keeps playing where it is; once a slot
 /// frees, the next sync gives the patch that slot and moves the voice onto it.
 #[test]
 fn a_cue_whose_new_patch_has_no_slot_moves_once_one_frees() {
-    let third = PatchId(uuid::Uuid::from_u128(903));
-    // Two mixer slots: Main and Third take them, so Side has none. Third is routed as Side is,
-    // so the slot Side gets later already has Side's routing.
-    let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
-        let mut p = ws.patches[1].clone();
-        p.id = third;
-        p.name = "Third".into();
-        ws.patches.insert(1, p);
-        let mapping = PatchMapping {
-            device: "Offline".into(),
-            channels: vec![1],
-        };
-        c.machine.set_patch_mapping(ws.id, third, mapping).unwrap();
-    });
+    let mut s = with_third(vec![]);
     go(&mut s);
     s.run(800);
     let at = set_audio(&mut s, 1, |p, _| *p = side());
@@ -494,7 +532,7 @@ fn a_cue_whose_new_patch_has_no_slot_moves_once_one_frees() {
     let at = send_edit(
         &mut s,
         Command::RemovePatch {
-            id: third,
+            id: third(),
             even_if_used: false,
         },
     );

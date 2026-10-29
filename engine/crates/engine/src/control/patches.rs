@@ -130,13 +130,10 @@ impl Patches {
         devices: &[DeviceInfo],
         busy: &BTreeSet<u16>,
     ) -> (Vec<CommandKind>, Vec<(PatchId, PatchResolution)>) {
-        // A doc's first sync (it was just opened): its slots, which nothing plays through, take
-        // their gains at once instead of ramping in (M4.15e review L1).
-        let first = !self.docs.contains_key(&doc);
         let mut d = self.docs.remove(&doc).unwrap_or_default();
         let mut commands = Vec::new();
         let mut changed = Vec::new();
-        self.allocate(&mut d, ws, busy, &mut commands);
+        let mut given = self.allocate(&mut d, ws, busy, &mut commands);
         let ws_master = db_to_gain(ws.settings.master_db);
         d.outputs.clear();
         let mut seen = HashMap::new();
@@ -168,15 +165,16 @@ impl Patches {
                 self.apply(slot, base, ws_master, &mut commands);
             }
         }
-        if first {
-            let mut slots: Vec<u16> = d.slots.values().map(|&(slot, _)| slot).collect();
-            slots.sort_unstable();
-            commands.extend(
-                slots
-                    .into_iter()
-                    .map(|patch| CommandKind::SnapPatch { patch }),
-            );
-        }
+        // Slots just handed out (every slot of a doc's first sync, or one freed by another
+        // patch), which nothing plays through yet, take their gains at once instead of ramping
+        // from what they held before: a voice started or moved onto one on this sample is heard
+        // on its own patch's outputs only (M4.15e review L1).
+        given.sort_unstable();
+        commands.extend(
+            given
+                .into_iter()
+                .map(|patch| CommandKind::SnapPatch { patch }),
+        );
         self.doc_delays(&mut d, ws);
         self.docs.insert(doc, d);
         self.sync_delays(&mut commands);
@@ -260,14 +258,15 @@ impl Patches {
     }
 
     /// Gives every patch of the doc a slot, keeping the one it has; retires and frees the
-    /// others.
+    /// others. Returns the slots just handed out (from the free list): no voice plays through
+    /// them yet.
     fn allocate(
         &mut self,
         d: &mut DocSlots,
         ws: &Workspace,
         busy: &BTreeSet<u16>,
         commands: &mut Vec<CommandKind>,
-    ) {
+    ) -> Vec<u16> {
         let live: HashMap<PatchId, usize> =
             ws.patches.iter().map(|p| (p.id, p.outputs.len())).collect();
         // A slot leaves its patch when the patch is gone, or resized while a voice plays
@@ -318,6 +317,7 @@ impl Patches {
         }
         // New patches, in list order, take the least recently freed slots.
         d.exhausted.clear();
+        let mut given = Vec::new();
         for patch in &ws.patches {
             if d.slots.contains_key(&patch.id) {
                 continue;
@@ -325,6 +325,7 @@ impl Patches {
             match self.free.pop_front() {
                 Some(slot) => {
                     d.slots.insert(patch.id, (slot, patch.outputs.len()));
+                    given.push(slot);
                 }
                 None => d.exhausted.push(patch.id),
             }
@@ -334,6 +335,7 @@ impl Patches {
         for slot in free {
             self.diff(slot, &zero, 1.0, commands);
         }
+        given
     }
 
     /// Whether a retired slot of `doc` could be freed now that only `busy` slots are in use
