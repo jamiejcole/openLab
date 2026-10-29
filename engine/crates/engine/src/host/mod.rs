@@ -461,8 +461,10 @@ fn shutdown_at_eof(
 
 /// Waits for the shutdown to begin, then marks this run's `engine.json` stopping, unless the
 /// run has already taken it out of `slot` (removed, or about to be) or the flag went without
-/// being set. On a thread of its own: a hung disk must not hold up the shutdown itself, whose
-/// exit deadline only starts once the loop has ended.
+/// being set. On a thread of its own, so the control loop and its final recovery writes never
+/// wait for it (the exit deadline only starts once the loop has ended). It holds `slot` while
+/// it writes: on a hung disk the final removal waits behind it until the forced exit at the
+/// deadline, and a file left then names a dead pid, which the next start treats as stale.
 fn mark_on_stop(stopping: &crossbeam_channel::Receiver<()>, slot: &EngineSlot) {
     if stopping.recv().is_err() {
         return;
