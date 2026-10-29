@@ -134,7 +134,7 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .welcome(let v, let snap) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")
         }
-        XCTAssertEqual(v, 2)
+        XCTAssertEqual(v, protocolVersion)
         XCTAssertEqual(snap.revision, 7)
         XCTAssertEqual(snap.runtimeSeq, 42)
         XCTAssertEqual(snap.workspace.name, "Test")
