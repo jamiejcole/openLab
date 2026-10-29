@@ -150,8 +150,9 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
-    /// The "not responding" alarm is up: it tells the operator the engine may still be playing, so
-    /// it goes away when that engine answers (no other alarm is taken down by a connection).
+    /// The "not responding" or "still stopping" alarm is up: it tells the operator about an engine
+    /// that may still be running, so it goes away when an engine answers (no other alarm is taken
+    /// down by a connection).
     private var notRespondingShown = false
 
     private func alarm(_ alarm: EngineSupervisor.Alarm) {
@@ -166,6 +167,9 @@ final class EngineAlarmController {
         case .notResponding:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
+        case .stillStopping:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.stillStopping"), message: loc("engine.alarm.stillStoppingMessage"))
         }
         presenter.setRestoreAction(nil)
         summary = ""
@@ -249,13 +253,28 @@ final class EngineAlarmController {
 
     /// The entries no window holds: see `AutosaveOffer.offerable`.
     private func unheld(_ entries: [RecoveryEntryInfo]) -> [RecoveryEntryInfo] {
+        let listed = Dictionary(session.workspaces.map { ($0.doc, $0) }, uniquingKeysWith: { a, _ in a })
+        // Untitled only when the path is known to be none: the store's own document, or the list.
+        let shown = session.stores.compactMap { doc, store -> AutosaveOffer.Holder? in
+            guard store.model?.id != nil || listed[doc] != nil else { return nil }
+            let info = session.info(of: store, doc: doc)
+            let known = store.document != nil || listed[doc] != nil
+            return AutosaveOffer.Holder(
+                workspace: info.workspaceId, pathHash: info.pathHash, untitled: known && info.path == nil)
+        }
         let held = Set(
-            session.stores.values.compactMap { $0.model?.id } + session.workspaces.map(\.workspaceId)
-                + session.detached.map(\.info.workspaceId))
-        let listed = Dictionary(session.workspaces.map { ($0.doc, $0.workspaceId) }, uniquingKeysWith: { a, _ in a })
+            shown
+                + session.workspaces.map {
+                    AutosaveOffer.Holder(workspace: $0.workspaceId, pathHash: $0.pathHash, untitled: $0.path == nil)
+                }
+                + session.detached.map {
+                    AutosaveOffer.Holder(
+                        workspace: $0.info.workspaceId, pathHash: $0.info.pathHash,
+                        untitled: $0.info.path == nil && $0.store.document != nil)
+                })
         let windows =
             session.stores.map { doc, store in
-                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc], cover: store.autosaveCover)
+                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc]?.workspaceId, cover: store.autosaveCover)
             }
             + session.detached.map {
                 AutosaveOffer.Window(workspace: $0.info.workspaceId, cover: $0.store.autosaveCover)

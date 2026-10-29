@@ -21,6 +21,9 @@ final class EngineSupervisor {
         /// A live engine accepts connections but sends no `welcome`, `probeAttempts` times in a
         /// row at launch. It is not signalled (its audio may be playing): the operator is told.
         case notResponding
+        /// An engine whose `engine.json` says it is stopping has not exited within `stoppingWait`.
+        /// It is not signalled; a new engine starts once it has gone.
+        case stillStopping
     }
 
     let alarms = PassthroughSubject<Alarm, Never>()
@@ -36,6 +39,9 @@ final class EngineSupervisor {
     /// hung disk), and after SIGKILL.
     var terminateWait = 25.0
     var killWait = 5.0
+    /// How long an engine that says it is stopping gets to exit before the operator is told (the
+    /// engine forces its own exit 24 s after its shutdown began).
+    var stoppingWait = 25.0
     var pollInterval = 0.5
     /// At most this many engine starts in `spawnWindow` seconds (a crash loop is an alarm).
     var maxSpawns = 3
@@ -60,6 +66,8 @@ final class EngineSupervisor {
     private var spawnLimitReported = false
     /// The app is quitting: no engine is started any more.
     private var quitting = false
+    /// The pid of a stopping engine being waited for before another is started.
+    private var awaitingStop: Int32?
 
     init(
         processes: EngineProcesses, session: EngineSession, scheduler: Scheduler = SystemScheduler(),
@@ -85,7 +93,9 @@ final class EngineSupervisor {
             engineLog.error("engine.json unreadable (\(why, privacy: .public)): starting an engine")
             spawnIfAllowed()
         case .success(let info):
-            if processes.isEngine(info.pid) {
+            if processes.isEngine(info.pid), info.stopping {
+                awaitStop(info.pid)
+            } else if processes.isEngine(info.pid) {
                 engineLog.notice("attaching to the engine with pid \(info.pid, privacy: .public)")
             } else {
                 // The last engine did not exit cleanly (its file is left): offer its autosaves.
@@ -130,6 +140,7 @@ final class EngineSupervisor {
         guard everConnected, let run = lastRun else {
             // Launch: nothing is bound yet.
             if let live = filed {
+                if live.stopping { return awaitStop(live.pid) }
                 if live.pid == spawned { return }  // still starting
                 // Only silence counts (refused or reset connections): an engine that answers with
                 // an error is talking, and one that accepts the socket but is slow to send its
@@ -161,7 +172,8 @@ final class EngineSupervisor {
         if processes.isEngine(run.pid) { return }
         if !handled.contains(run.pid) {
             handled.insert(run.pid)
-            let crashed = info?.pid == run.pid
+            // A file left behind is a crash, unless it says the shutdown had begun.
+            let crashed = info?.pid == run.pid && info?.stopping != true
             recoveryPending = true
             session.engineRunEnded()
             engineLog.error(
@@ -169,7 +181,10 @@ final class EngineSupervisor {
             )
             alarms.send(.engineStopped(crashed: crashed))
         }
-        if filed != nil { return }  // another engine is up: the client attaches to it
+        if let live = filed {  // another engine is up: the client attaches to it once it is not stopping
+            if live.stopping { awaitStop(live.pid) }
+            return
+        }
         if let spawned, processes.isEngine(spawned) { return }
         spawnIfAllowed()
     }
@@ -238,6 +253,44 @@ final class EngineSupervisor {
         }
         recoveryPending = true
         guard !everConnected, !session.isShuttingDown else { return }
+        spawnIfAllowed()
+    }
+
+    /// An engine whose shutdown has begun is never attached to and never signalled: wait for it
+    /// to exit, then start the next engine (a start before that would be refused by its lock).
+    private func awaitStop(_ pid: Int32) {
+        guard awaitingStop == nil, !quitting else { return }
+        awaitingStop = pid
+        engineLog.notice("engine pid \(pid, privacy: .public) is stopping: waiting for it to exit")
+        Task { await waitForStopThenSpawn(pid) }
+    }
+
+    private func waitForStopThenSpawn(_ pid: Int32) async {
+        if await !waitForExit(pid, seconds: stoppingWait) {
+            engineLog.error(
+                "engine pid \(pid, privacy: .public) is still stopping after \(self.stoppingWait, privacy: .public) s: waiting"
+            )
+            if !quitting { alarms.send(.stillStopping) }
+            while processes.isEngine(pid), !quitting {
+                do { try await scheduler.sleep(seconds: pollInterval) } catch {
+                    awaitingStop = nil
+                    return
+                }
+            }
+        }
+        awaitingStop = nil
+        guard !quitting, !session.isShuttingDown else { return }
+        engineLog.notice("engine pid \(pid, privacy: .public) has exited")
+        // Its shutdown wrote the recovery files of its unsaved workspaces, or was forced out at its
+        // deadline before it could (a forced exit removes engine.json too, so the file says
+        // nothing): offer the autosaves either way. With none, the offer shows nothing (#388).
+        recoveryPending = true
+        if let info = try? processes.readInfo().get(), processes.isEngine(info.pid) {
+            // Another engine is up (started by someone else): attach to it, or wait for it too.
+            if info.stopping { awaitStop(info.pid) }
+            return
+        }
+        if let spawned, spawned != pid, processes.isEngine(spawned) { return }
         spawnIfAllowed()
     }
 

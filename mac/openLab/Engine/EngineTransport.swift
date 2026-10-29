@@ -5,11 +5,15 @@ import os
 
 let engineLog = Logger(subsystem: "dev.openlab.openLab", category: "engine")
 
-/// `<app-support>/openLab/engine.json`: `{port, token, pid}`, written by the engine (M4.9).
+/// `<app-support>/openLab/engine.json`: `{port, token, pid, stopping}`, written by the engine
+/// (M4.9; the other fields are ignored).
 struct EngineConnectionInfo: Equatable, Sendable, Decodable {
     var port: UInt16
     var token: String
     var pid: Int32
+    /// The engine's shutdown has begun: do not attach, wait for `pid` to exit (docs/control.md,
+    /// Process lifecycle). Absent (an older engine): false.
+    var stopping = false
 
     enum LoadError: Error, Equatable, Sendable {
         /// No file: the engine is not running (or does not write one yet). A normal state.
@@ -24,6 +28,8 @@ struct EngineConnectionInfo: Equatable, Sendable, Decodable {
         return base.appendingPathComponent("openLab/engine.json")
     }
 
+    enum CodingKeys: String, CodingKey { case port, token, pid, stopping }
+
     /// Reads and validates the file. Called afresh on every connection attempt: the engine picks a
     /// new port and token each start.
     static func load(from url: URL = defaultURL) -> Result<EngineConnectionInfo, LoadError> {
@@ -35,6 +41,17 @@ struct EngineConnectionInfo: Equatable, Sendable, Decodable {
             return .failure(.unreadable("engine.json has an empty token or port"))
         }
         return .success(info)
+    }
+}
+
+extension EngineConnectionInfo {
+    // In an extension, so the memberwise init stays.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        port = try c.decode(UInt16.self, forKey: .port)
+        token = try c.decode(String.self, forKey: .token)
+        pid = try c.decode(Int32.self, forKey: .pid)
+        stopping = try c.decodeIfPresent(Bool.self, forKey: .stopping) ?? false
     }
 }
 

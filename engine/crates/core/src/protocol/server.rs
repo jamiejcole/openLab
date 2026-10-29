@@ -163,6 +163,11 @@ pub struct WorkspaceInfo {
     pub path: Option<String>,
     /// Edits since the last save.
     pub dirty: bool,
+    /// [`crate::path_hash`] of `path` as the engine names this doc's autosave
+    /// (`<workspace_id>-<path_hash>`, the `path_hash` of a `recovery_entries` entry); `null` for a
+    /// doc never saved. Absent from an engine that predates it: read as `null`.
+    #[serde(default)]
+    pub path_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
