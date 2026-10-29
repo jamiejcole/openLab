@@ -434,7 +434,7 @@ fn xruns_are_counted_exactly_and_never_from_voice_underruns() {
         assert_eq!(now - seen, n);
         seen = now;
     }
-    // The notifier counts from another thread (the device's error callback in M3.8).
+    // The notifier counts from another thread (the device's error callback).
     let notifier = r.mixer_mut().xrun_notifier();
     std::thread::spawn(move || {
         for _ in 0..10 {

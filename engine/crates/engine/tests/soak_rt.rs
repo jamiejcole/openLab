@@ -28,7 +28,7 @@
 //! Each run first measures the host: a host whose one-block sleeps overshoot by more than a
 //! block at p50 (or past the device lateness bound at p99) cannot run the stand-in device on a
 //! block cadence, and the run is skipped with the reason, or fails when
-//! `OPENLAB_SOAK_RT_REQUIRE` is set. GitHub's hosted macOS VMs are such hosts (issue #213).
+//! `OPENLAB_SOAK_RT_REQUIRE` is set. GitHub's hosted macOS VMs are such hosts.
 //! When a run fails, it prints what the threads measured and the stalls just before.
 //!
 //! The stand-in device is a thread that renders one block every block-length of wall time,
@@ -627,7 +627,7 @@ fn explain_failure(sh: &Shared) {
 /// block cadence, as a real device's clock-driven callback runs. Past one block at the median,
 /// almost every block is rendered late and then in a catch-up burst, so a start committed a
 /// block ahead races the disk worker that fills its ring: the run would measure the host's
-/// timer, not the engine (issue #213: GitHub's Intel macOS VM oversleeps 8 ms by 26-36 ms with
+/// timer, not the engine (issue GitHub's Intel macOS VM oversleeps 8 ms by 26-36 ms with
 /// its CPU idle). Past [`DEVICE_LATE_P99_MAX`] at p99 the run's own lateness bound cannot hold.
 fn host_keeps_real_time(sleep: Spread) -> Result<(), String> {
     let p50 = Duration::from_micros(sleep.p50.into());
@@ -790,7 +790,7 @@ fn a_stalled_device_fails_the_run() {
 // The harness itself. These are in the normal suite: they test `run_observed` and the numbers
 // without waiting on anything but the loop's own 5 ms timeout.
 
-/// Issue #213: GitHub's hosted macOS VMs (idle CPUs; 8 ms sleeps overshooting by 26-36 ms at
+/// Issue GitHub's hosted macOS VMs (idle CPUs; 8 ms sleeps overshooting by 26-36 ms at
 /// p50 and 63 ms at p99 on Intel, 13-18 ms and 34 ms on arm64) are refused; an M4 Mac (1.9 ms /
 /// 2.1 ms, and 2.8 ms / 4.5 ms with twice as many busy processes as cores) is not.
 #[test]

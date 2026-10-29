@@ -247,7 +247,7 @@ fn a_show_with_over_limit_values_opens_with_warnings_and_can_be_mended() {
     .unwrap();
 }
 
-/// Regression (#301): an over-limit value from the show file may be replaced by one no longer
+/// Regression: an over-limit value from the show file may be replaced by one no longer
 /// than it, never by a longer one.
 #[test]
 fn a_loaded_over_limit_value_cannot_be_replaced_by_a_longer_one() {

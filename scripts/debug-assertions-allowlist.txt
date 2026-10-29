@@ -7,7 +7,7 @@ engine/crates/engine/src/main.rs | debug global allocator (assert_no_alloc) so t
 engine/crates/core/src/command.rs | debug-only snapshot compared after a transaction rollback; asserts, changes no state
 engine/crates/audio/tests/cpu_budget.rs | test skips the wall-clock CPU gate in a debug build (meaningless there)
 engine/crates/engine/tests/perf.rs | test skips the wall-clock performance gate in a debug build (meaningless there)
-engine/crates/core/tests/cue_engine_incremental.rs | tests assert the debug detector's counter only when it exists; remove with the H4 fix
-engine/crates/core/tests/cue_engine_broken.rs | test of the debug-only unsignalled-change detector; remove with the H4 fix
+engine/crates/core/tests/cue_engine/incremental.rs | tests assert the debug detector's counter only when it exists; remove with the H4 fix
+engine/crates/core/tests/cue_engine/broken.rs | test of the debug-only unsignalled-change detector; remove with the H4 fix
 engine/crates/core/src/cue_engine/mod.rs | KNOWN H4 (process review 2026-10-28): follow_edits = signalled || cfg!(debug_assertions) runs whole-tree passes only in debug
 engine/crates/core/src/cue_engine/broken.rs | KNOWN H4 (process review 2026-10-28): check_signalled rebuilds the problem cache in debug builds only

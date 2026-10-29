@@ -29,10 +29,6 @@ fn add(at: Position, cue: Cue) -> Command {
     }
 }
 
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
 fn grp(n: u128, children: Vec<Cue>) -> Cue {
     cue(n, group(children))
 }
@@ -192,7 +188,7 @@ fn add_with_a_bad_position_is_refused() {
     );
 }
 
-// ---- M1.10: invariants ----------------------------------------------------------------------
+// ---- invariants ----------------------------------------------------------------------
 
 #[test]
 fn add_refuses_a_duplicate_id() {
@@ -1364,7 +1360,7 @@ fn paste_without_fresh_ids_is_refused() {
 }
 
 /// Undo and redo skip value checks a loaded show may already fail, never the id check: no
-/// command path can give a workspace duplicate cue ids, which the cue engine relies on (M2.32).
+/// command path can give a workspace duplicate cue ids, which the cue engine relies on.
 #[test]
 fn undo_still_refuses_a_duplicate_id() {
     let mut ws = sample();

@@ -173,10 +173,10 @@ fn soak(seed: u64, total_secs: u64, checkpoint_secs: u64) -> Report {
 /// The cue the second doc plays over and over (an id the generated show never uses).
 const BESIDE: u128 = 900_000_001;
 
-/// The offline driver with a second doc open beside the show (M4.15e): it plays a cue of its
+/// The offline driver with a second doc open beside the show: it plays a cue of its
 /// own on output 2 over and over, and stops (Panic twice) whenever the operator panics, until
 /// the operator's next transport action, so the checkpoints still find everything quiet. Its
-/// broadcasts are left out of what the operator sees (untagged until M4.15f).
+/// broadcasts are left out of what the operator sees (untagged).
 struct TwoDocs {
     inner: Offline,
     beside: openlab_engine::control::DocId,
@@ -296,7 +296,7 @@ impl Driver for TwoDocs {
     }
 }
 
-/// The soak with a second doc playing beside the show (M4.15e): the show keeps every
+/// The soak with a second doc playing beside the show: the show keeps every
 /// invariant, sample-exact heartbeats included, and the second doc kept playing.
 #[test]
 fn ten_virtual_minutes_with_a_second_doc_playing_beside_keep_every_invariant() {

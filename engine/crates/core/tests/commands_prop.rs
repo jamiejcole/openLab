@@ -497,7 +497,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         3 => WorkspaceSetting::MasterDb { value: level(p.c) },
         4 | 5 => WorkspaceSetting::Hotkey {
             key,
-            // "escape" is reserved and "l" / "space" are default keys: refusals (M5.11c).
+            // "escape" is reserved and "l" / "space" are default keys: refusals.
             value: ["a", "f5", "Bad Key", "", "escape", "l", "space"]
                 .get(p.d as usize % 8)
                 .map(|k| Hotkey {
@@ -927,7 +927,7 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     // Kept and inert, like a wrong-kind target (a group-mode change makes it
                     // apply again).
                     | IssueKind::SecondTriggerNeedsPlaylist
-                    // Kept as QLab keeps it; the workspace's key wins (M2.28, check K1b).
+                    // Kept as QLab keeps it; the workspace's key wins (check K1b).
                     | IssueKind::HotkeyUsedByWorkspace { .. }
                     // A cue may name a patch the workspace lacks (it was removed with
                     // `even_if_used`, or the cue was added after): the broken-cue state.
@@ -1313,7 +1313,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases(256)))]
 
     /// A transaction refused at a random command is rolled back with the inverses of the
-    /// commands before it (M1.19): the workspace is exactly as before, the error names the
+    /// commands before it: the workspace is exactly as before, the error names the
     /// first refused command, and the history records nothing. A command that is always
     /// refused is put in at a random place; a random edit may be refused earlier. Half start
     /// from a loaded show holding values a command would refuse ([`hostile_base`]).
@@ -1422,7 +1422,7 @@ proptest! {
     /// A client that starts from the workspace and applies each edit's `model_changed` ends
     /// every step with exactly the engine's workspace: commands (groups moved and deleted with
     /// children, renumbering, transactions), undo and redo alike (ED-07, NFR-01). Read through a
-    /// cue index that follows the footprints (M4.12c), the changes are the same as the walk's.
+    /// cue index that follows the footprints, the changes are the same as the walk's.
     #[test]
     fn model_changes_keep_a_mirror_identical(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
@@ -1525,7 +1525,7 @@ proptest! {
 
     /// The cue index follows every edit from its footprint alone and equals one built from
     /// scratch after each (commands, undo, redo, transactions that add, move and remove), its
-    /// positions included (M4.12c); what it answers about order and lists is the workspace's.
+    /// positions included; what it answers about order and lists is the workspace's.
     #[test]
     fn the_cue_index_follows_footprints(sequence in picks(80)) {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
@@ -1596,8 +1596,8 @@ fn status_input(ws: &Workspace, p: &Pick) -> Input {
                 }
             },
         },
-        // The playhead stands anywhere (M4.12c follows it from footprints), GO walks on from
-        // there, in and out of groups (M2.24 group visits).
+        // The playhead stands anywhere (followed from footprints), GO walks on from
+        // there, in and out of groups (group visits).
         7 => Input::PlayheadNext { list },
         8 => Input::PlayheadPrevious { list },
         9 => Input::SetPlayhead {
@@ -1617,9 +1617,9 @@ proptest! {
     /// (`model_changed_cues`) has done exactly what an engine that rebuilds everything
     /// (`model_changed`) has: the same actions on every call (playhead moves and group visits
     /// included), the same playheads, broken cues and group warnings, and its bookkeeping
-    /// equals a from-scratch rebuild (M4.12a). Some edits come two or more to a call, as
+    /// equals a from-scratch rebuild. Some edits come two or more to a call, as
     /// footprints the engine adds up. Following footprints never walks the whole show for the
-    /// chain limit, the playheads or the cues present (M4.12c).
+    /// chain limit, the playheads or the cues present.
     #[test]
     fn incremental_problems_equal_a_full_rebuild(sequence in picks(80)) {
         let config = EngineConfig::new(48_000, 0, 1).unwrap();
@@ -1675,7 +1675,7 @@ proptest! {
     }
 }
 
-/// A show where group visits matter (M2.24): groups of every mode that continue (auto-follow,
+/// A show where group visits matter: groups of every mode that continue (auto-follow,
 /// auto-continue) with timed children, nested groups, and a second list.
 fn visits_show() -> Workspace {
     let timed = |mut c: Cue, mode: ContinueMode| {
@@ -1760,7 +1760,7 @@ fn edit_near_playhead(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
-    /// Playheads and group visits followed from footprints (M4.12c) do exactly what the full
+    /// Playheads and group visits followed from footprints do exactly what the full
     /// rebuild does, on a show built for it: GO into and out of groups that continue while time
     /// passes, the playhead set anywhere, and edits aimed at the playhead cue and the groups
     /// around it (moved in and out of groups and between lists, removed, removed and added
