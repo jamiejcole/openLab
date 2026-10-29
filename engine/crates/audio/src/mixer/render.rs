@@ -48,7 +48,11 @@ impl Mixer {
                 if v.moving.is_some() {
                     v.advance_move(usize::MAX);
                     let (voice, moves) = (v.id, v.moves);
-                    outbox.emit(Event::MoveEnded { voice, at: t0, moves });
+                    outbox.emit(Event::MoveEnded {
+                        voice,
+                        at: t0,
+                        moves,
+                    });
                 }
                 continue;
             }
