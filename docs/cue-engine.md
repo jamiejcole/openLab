@@ -204,7 +204,7 @@ Events:
 | stopping | fade-out ends (`stop at + fade frames`, or `ActionEnded` first) | idle |
 | loaded, any active | `ActionFailed` for the current run | broken: the run's voice is released at once (`StopVoice`, or `UnloadVoice` if it never started). Auto-follow is cancelled; a pending or still-to-be-armed auto-continue fires on its original schedule (a pre-waiting cue skips its action at the action start and arms the post-wait as usual; a paused one stays held until resumed). A broken cue owns no voice, so Stop and Reset have nothing left to silence |
 | paused | time passes | paused (nothing runs) |
-| any non-idle | cue deleted from the workspace | idle; `StopVoice`/`UnloadVoice`, `CueRemoved` warning if it was active. Only an explicit `RemoveCue` (or a list edit) gets here with an active cue: the binary refuses an undo or redo that would remove an active or previewed cue (`CueEngine::cue_an_edit_would_stop`, M5.10d; docs/commands.md "Undo and redo while cues play") |
+| any non-idle | cue deleted from the workspace | idle; `StopVoice`/`UnloadVoice`, `CueRemoved` warning if it was active. A `RemoveCue`, a list edit, or an undo or redo that removes the cue (an undo of its add, a redo of its delete; QLab 5 performs it) gets here with an active cue, and all stop it alike (docs/commands.md "Undo and redo while cues play") |
 | any non-idle | its id now names a cue of the other sort (group vs. not; duplicate ids or a replaced cue) | idle, as if deleted |
 | group pre-waiting | pre-wait elapses at `T` | running; children started at `T` per mode (none busy: the action completes at `T`) |
 | group running | last busy child completes or settles broken at `T` | post-waiting if a post-wait is pending, else idle; auto-follow at `T` unless a child broke |
