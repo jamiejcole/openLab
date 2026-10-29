@@ -448,5 +448,6 @@
 "alert.recoveryOffer.ignore" = "Open Saved File";
 "alert.autosave.title" = "Restore “%@”?";
 "alert.autosave.message" = "This workspace was autosaved at %@ and not saved since. It opens as an untitled workspace.";
+"alert.autosave.setAsideMessage" = "This autosave from %@ was set aside because the saved file looked newer, but file times can be wrong, so it may hold later work than the file. It opens as a separate, untitled workspace.";
 "alert.autosave.open" = "Restore";
 "alert.autosave.skip" = "Skip";

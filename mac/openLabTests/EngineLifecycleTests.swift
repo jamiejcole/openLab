@@ -508,6 +508,135 @@ final class EngineCrashFlowTests: XCTestCase {
         engine.releaseResults()
         await assertEventually { self.app.windows.count == 2 && !self.app.session.isReattaching }
     }
+
+    // MARK: Set-aside autosaves of open workspaces (#332)
+
+    /// Hamlet's workspace id (the fixture's), the same in every engine run of the fake.
+    private let hamletID = "00000000-0000-0000-0000-000000000001"
+
+    private func setAside(_ workspace: String, name: String, ms: Int64) -> JSONValue {
+        .object([
+            "workspace_id": .string(workspace), "show_name": .string(name), "path_hash": .string("00000000000000aa"),
+            "modified_ms": .int(ms), "stale": .bool(true),
+        ])
+    }
+
+    /// #264's case: the engine dies while Hamlet has unsaved edits; its autosave was not newer
+    /// than the file, so the reopen set it aside and the window came back from the file. That
+    /// autosave may be the only copy of the edits: the alarm offers it although Hamlet is open,
+    /// labelled as set aside; once restored it is not offered again.
+    func testASetAsideAutosaveOfAReopenedWorkspaceIsOffered() async throws {
+        engine.recoveryEntries = [setAside(hamletID, name: "Test", ms: 1_700_000_000_000)]
+        processes.crash()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "Test")))
+        XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 1)))
+        presenter.restore?()
+        await assertEventually { self.app.allWindows.count == 3 }
+        XCTAssertEqual(alerts.log, ["setAsideAutosave:Test"])
+        XCTAssertEqual(
+            engine.requestCount {
+                if case .openRecovery(ModelID(self.hamletID), "00000000000000aa", 1_700_000_000_000?) = $0 {
+                    return true
+                }
+                return false
+            }, 1)
+        // The window it opened in holds it now (with a fresh workspace id: Hamlet is open).
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
+    }
+
+    /// Review M1: Hamlet came back from its file and its autosave was set aside; a Save As
+    /// elsewhere afterwards (the file server misbehaving) does not put the autosave's edits in
+    /// the window, so File > Recover Autosaves… still offers it. A time is not lineage.
+    func testASetAsideAutosaveIsStillOfferedAfterASaveAs() async throws {
+        engine.recoveryEntries = [setAside(hamletID, name: "Test", ms: 1_700_000_000_000)]
+        processes.crash()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+
+        let hamlet = try XCTUnwrap(app.session.orderedStores.first { $0.store.model?.id.raw == hamletID }?.store)
+        guard case .success = await hamlet.saveAs(path: "/Users/sam/Desktop/Hamlet.openlab") else {
+            return XCTFail("save as")
+        }
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["setAsideAutosave:Test"])
+    }
+
+    /// A window restored from an autosave holds that autosave (should it be set aside later),
+    /// and no other: an older set-aside one of the same workspace is still offered.
+    func testOnlyTheAutosaveARestoreLoadedIsNotOfferedAgain() async throws {
+        engine.autosaveNewer = ["/Shows/B.openlab"]  // its offer says 1_700_000_000_000
+        alerts.recoveryChoice = .restore
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/B.openlab"))
+        await assertEventually { self.app.windows.count == 3 }
+        let b = try XCTUnwrap(app.session.workspaces.first { $0.path == "/Shows/B.openlab" }?.workspaceId)
+        engine.recoveryEntries = [
+            setAside(b.raw, name: "Restored", ms: 1_700_000_000_000),
+            setAside(b.raw, name: "Older", ms: 1_699_999_999_000),
+        ]
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("setAside") }, ["setAsideAutosave:Older"])
+    }
+}
+
+/// Which autosaves are offered (#332), on the scan data alone.
+final class AutosaveOfferTests: XCTestCase {
+    private let w = ModelID("00000000-0000-0000-0000-0000000000a1")
+    private let other = ModelID("00000000-0000-0000-0000-0000000000b2")
+
+    private func entry(_ id: ModelID, ms: Int64?, stale: Bool, hash: String? = "00000000000000aa")
+        -> RecoveryEntryInfo
+    {
+        RecoveryEntryInfo(workspaceId: id, pathHash: hash, showName: nil, modifiedMs: ms, stale: stale)
+    }
+
+    func testACurrentAutosaveIsOfferedOnlyWhenNoWindowHoldsItsWorkspace() {
+        let mine = entry(w, ms: 5, stale: false)
+        let lost = entry(other, ms: 5, stale: false)
+        let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([mine, lost], held: [w], windows: [window]), [lost])
+    }
+
+    /// A restore by `open` covers the exact offer time of the window's own workspace only.
+    func testASetAsideAutosaveOfAnOpenWorkspaceIsOfferedUnlessThatAutosaveWasRestored() {
+        let stale = entry(w, ms: 1_000, stale: true)
+        var cover = AutosaveCover()
+        XCTAssertEqual(
+            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            "opened from its file: the file's time says nothing reliable")
+        cover.loadOwn(modifiedMs: 2_000)
+        XCTAssertEqual(
+            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            "a later autosave was restored: it need not contain this one")
+        cover.loadOwn(modifiedMs: 1_000)
+        XCTAssertEqual(
+            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [])
+        XCTAssertEqual(
+            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: other, cover: cover)]), [stale],
+            "another workspace's window covers nothing of this one")
+        XCTAssertEqual(
+            AutosaveOffer.offerable(
+                [entry(w, ms: nil, stale: true)], held: [w], windows: [.init(workspace: w, cover: cover)]),
+            [entry(w, ms: nil, stale: true)], "no time: never matched")
+    }
+
+    /// `open_recovery` covers that entry exactly (workspace id, path hash, time), whatever the
+    /// window's own workspace id.
+    func testAWindowOpenedFromAnAutosaveCoversExactlyThatEntry() {
+        var cover = AutosaveCover()
+        cover.load(entry(w, ms: 1_000, stale: true))
+        let windows = [AutosaveOffer.Window(workspace: other, cover: cover)]
+        XCTAssertEqual(AutosaveOffer.offerable([entry(w, ms: 1_000, stale: true)], held: [w], windows: windows), [])
+        for different in [
+            entry(w, ms: 999, stale: true), entry(w, ms: 1_001, stale: true),
+            entry(w, ms: 1_000, stale: true, hash: "00000000000000bb"),
+        ] {
+            XCTAssertEqual(AutosaveOffer.offerable([different], held: [w], windows: windows), [different])
+        }
+    }
 }
 
 final class SystemEngineProcessesTests: XCTestCase {
@@ -568,5 +697,87 @@ final class SingleInstanceTests: XCTestCase {
         let b = SingleInstance.Instance(pid: 20, launched: Date(timeIntervalSince1970: 1))
         XCTAssertEqual(SingleInstance.handOver(me: b, others: [a, b]), a)
         XCTAssertNil(SingleInstance.handOver(me: a, others: [a, b]))
+    }
+}
+
+/// The launch path of a second copy, with the system pieces injected (#338, #336).
+@MainActor
+final class AppLaunchTests: XCTestCase {
+    private var log: [String] = []
+
+    private final class FirstCopy: RunningCopy {
+        let processIdentifier: pid_t = 4242
+        let record: (String) -> Void
+        init(record: @escaping (String) -> Void) { self.record = record }
+        func activate(options: NSApplication.ActivationOptions) -> Bool {
+            record(options.contains(.activateIgnoringOtherApps) ? "activate(ignoringOtherApps)" : "activate")
+            return true
+        }
+        @available(macOS 14, *)
+        func activate(from application: NSRunningApplication, options: NSApplication.ActivationOptions) -> Bool {
+            record(application == NSRunningApplication.current ? "activate(fromThisCopy)" : "activate(fromOther)")
+            return true
+        }
+    }
+
+    private func launch(first: RunningCopy?, cooperative: Bool) -> AppLaunch {
+        AppLaunch(
+            runningFirst: { first },
+            makeEngine: { [unowned self] in
+                log.append("engine")
+                let engine = FakeEngine()
+                let session = EngineSession(transport: engine, infoProvider: { .success(engine.info) })
+                return (session, EngineSupervisor(processes: FakeEngineProcesses(engine: engine), session: session))
+            },
+            installMenu: { [unowned self] _ in log.append("menu") },
+            activation: HandOverActivation(cooperative: cooperative) { [unowned self] copy in
+                log.append("yield(\(copy.processIdentifier))")
+            },
+            terminate: { [unowned self] in log.append("terminate") })
+    }
+
+    private func runLaunch(_ delegate: AppDelegate) {
+        delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    }
+
+    /// The second copy builds no menu and no engine session, fronts the first and exits; the
+    /// delegate hooks that come after never reach the session either.
+    func testASecondCopyHandsOverWithoutTouchingTheEngine() {
+        let delegate = AppDelegate(
+            launch: launch(first: FirstCopy { [unowned self] in log.append($0) }, cooperative: true))
+        delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        XCTAssertTrue(delegate.isSecondInstance)
+        XCTAssertEqual(log, [], "nothing until it is the active app")
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        XCTAssertEqual(log, ["yield(4242)", "activate(fromThisCopy)", "terminate"])
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApp), .terminateNow)
+        XCTAssertEqual(log, ["yield(4242)", "activate(fromThisCopy)", "terminate"], "no menu, no engine, no session")
+    }
+
+    /// macOS 14+ activation is cooperative: the exiting copy yields, then asks for the first's
+    /// activation from itself (`activate(from:options:)`, as NSRunningApplication.h says). Before
+    /// 14 the first is activated over every other app.
+    func testTheHandOverActivationFitsTheSystem() {
+        let first = FirstCopy { [unowned self] in log.append($0) }
+        runLaunch(AppDelegate(launch: launch(first: first, cooperative: true)))
+        XCTAssertEqual(log, ["yield(4242)", "activate(fromThisCopy)", "terminate"])
+        log = []
+        runLaunch(AppDelegate(launch: launch(first: first, cooperative: false)))
+        XCTAssertEqual(log, ["activate(ignoringOtherApps)", "terminate"])
+        if #available(macOS 14, *) {
+            XCTAssertTrue(HandOverActivation.live.cooperative)
+        } else {
+            XCTAssertFalse(HandOverActivation.live.cooperative)
+        }
+    }
+
+    func testTheFirstCopyBuildsItsMenuAndTheTestHostIsNeverASecondCopy() {
+        let delegate = AppDelegate(launch: launch(first: nil, cooperative: true))
+        delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        XCTAssertFalse(delegate.isSecondInstance)
+        XCTAssertEqual(log, ["menu"])
+        XCTAssertNil(AppLaunch.live.runningFirst(), "the unit-test host shares no engine with anyone")
     }
 }

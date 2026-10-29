@@ -5,12 +5,25 @@ import AppKit
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
-    @MainActor private(set) lazy var engine = EngineMode.fromLaunchArguments().make()
+    @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
     @MainActor private(set) lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in appController.alerts })
+
+    /// The system pieces launching uses (tests inject them).
+    private let launch: AppLaunch
+
+    @MainActor override init() {
+        launch = .live
+        super.init()
+    }
+
+    @MainActor init(launch: AppLaunch) {
+        self.launch = launch
+        super.init()
+    }
 
     static func main() {
         let app = NSApplication.shared
@@ -19,32 +32,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         app.run()
     }
 
-    /// Another copy of the app (same bundle id) was already running: this one hands over and exits.
-    @MainActor private var isSecondInstance = false
+    /// Another copy of the app (same bundle id) was already running: this one hands over to it
+    /// and exits, touching neither `engine` nor `appController`.
+    @MainActor private var firstCopy: RunningCopy?
+    @MainActor var isSecondInstance: Bool { firstCopy != nil }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // A second copy (another download, `open -n`) would attach to the same engine and its
-        // Quit would shut down every show the first one runs: it fronts the first and exits. The
-        // fake engine (UI tests) and the unit-test host share no engine with anyone.
-        if EngineMode.fromLaunchArguments() == .real, !EngineMode.isUnitTestHost(),
-            let first = SingleInstance.runningFirst()
-        {
-            isSecondInstance = true
+        // Quit would shut down every show the first one runs: it fronts the first and exits.
+        if let first = launch.runningFirst() {
+            firstCopy = first
             engineLog.notice("openLab is already running (pid \(first.processIdentifier, privacy: .public)): exiting")
-            first.activate(options: [.activateIgnoringOtherApps])
             return
         }
-        NSApp.appearance = NSAppearance(named: .darkAqua)
-        let menu = MainMenu.make()
-        menu.transport.delegate = self
-        menu.edit.delegate = self
-        NSApp.mainMenu = menu.bar
-        NSApp.windowsMenu = menu.windows
-        NSApp.helpMenu = menu.help
+        launch.installMenu(self)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if isSecondInstance { return NSApp.terminate(nil) }
+        if let first = firstCopy {
+            // Now this copy is the active app: it can let the first one in (macOS 14+).
+            launch.activation.bringForward(first)
+            return launch.terminate()
+        }
         // The launcher shows until the engine reports a workspace (fake engine: at once).
         appController.showLauncher()
         appController.installKeyMonitor()
@@ -58,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if isSecondInstance { return false }  // exiting: never builds the session
         appController.reopen()
         return false
     }
