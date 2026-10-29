@@ -18,9 +18,9 @@ extension LogLevel {
 }
 
 /// The show log window (DX-02): the engine's recent records (`log_tail`, fetched when the window
-/// opens or on Refresh) followed by what the store has heard since (`log` messages and the
-/// app's own notes), oldest first with the newest at the bottom, bounded, filterable by level.
-/// It reads the store only.
+/// opens or on Refresh) followed by those pushed since (`log_entry`), oldest first with the newest
+/// at the bottom, bounded, filterable by level. A gap in the record numbers (or `status.log_seq`
+/// ahead of them) reads just the missing ones. It reads the store only.
 @MainActor
 final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     struct Row: Hashable {
@@ -46,21 +46,25 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private let scroll = NSScrollView()
     private(set) var rows: [Row] = []
     private(set) var visible: [Row] = []
-    private var tail: [Row] = []
     private var dropped: UInt64 = 0
     private var tailFailed = false
-    private var tailMark = 0
-    private var sub: AnyCancellable?
     private var gapSub: AnyCancellable?
     private var pushSub: AnyCancellable?
-    /// Records pushed (`log_entry`) above the tail's `seq`, oldest first; `tailSeq`: the newest
-    /// record number the tail held.
-    private var pushed: [(seq: UInt64, row: Row)] = []
-    private var tailSeq: UInt64 = 0
-    /// A gap re-read is out; `gapAgain`: another gap came meanwhile (one more re-read follows).
+    private var runSub: AnyCancellable?
+    /// The engine's records held, oldest first, by record number (`seq`; 0: a tail from an engine
+    /// that numbers none). Only `log_tail` and `log_entry` feed it: `log` notices are the same
+    /// records again (docs/protocol.md "Show log entries and status").
+    private var records: [(seq: UInt64, row: Row)] = []
+    /// Every record up to this number is in `records` (or was dropped from the ring): a gap
+    /// re-read starts above it. 0: nothing known, the next read is the whole tail.
+    private var contiguous: UInt64 = 0
+    /// Bumped on a new engine run: a read begun before it describes the old run and is dropped.
+    private var epoch = 0
+    /// A gap re-read is out; `gapAgain`: another gap came meanwhile (one more re-read follows),
+    /// to the newest record number any of them named.
     private var gapRefreshing = false
     private var gapAgain = false
-    private var storeEntries: [LogEntry]
+    private var gapNewest: UInt64 = 0
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
@@ -73,7 +77,6 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
 
     init(store: WorkspaceStore) {
         self.store = store
-        storeEntries = store.logEntries
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 440),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -84,22 +87,20 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         super.init(window: window)
         window.contentView = buildContent()
         rebuild()
-        // `$logEntries` publishes before the property changes: use the delivered value.
-        sub = store.$logEntries.sink { [weak self] entries in
-            MainActor.assumeIsolated {
-                self?.storeEntries = entries
-                self?.rebuild()
-            }
-        }
         pushSub = store.logPushes.sink { [weak self] push in
             MainActor.assumeIsolated { self?.append(seq: push.seq, entry: push.entry) }
         }
-        // Records the engine made but did not push: an open window reads the tail again.
-        gapSub = store.logGaps.sink { [weak self] in
+        // Records the engine made but did not push: an open window reads what is missing.
+        gapSub = store.logGaps.sink { [weak self] newest in
             MainActor.assumeIsolated {
                 guard let self, self.window?.isVisible == true else { return }
-                self.refreshAfterGap()
+                self.refreshAfterGap(newest: newest)
             }
+        }
+        // A new connection may be a new engine run, whose records count from 1 again: what is
+        // held is of the old one, and numbers below it would be taken for records already shown.
+        runSub = store.logRuns.sink { [weak self] in
+            MainActor.assumeIsolated { self?.newRun() }
         }
     }
 
@@ -108,9 +109,20 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
 
     // MARK: Data
 
+    private func newRun() {
+        epoch += 1
+        records = []
+        contiguous = 0
+        dropped = 0
+        tailFailed = false
+        rebuild()
+        if window?.isVisible == true { refreshAfterGap(newest: 0) }
+    }
+
     /// A burst of gaps (a slow client under a log burst) must not start a re-read each: one is in
     /// flight at a time and the gaps meanwhile fold into a single one after it.
-    private func refreshAfterGap() {
+    private func refreshAfterGap(newest: UInt64) {
+        gapNewest = max(gapNewest, newest)
         guard !gapRefreshing else {
             gapAgain = true
             return
@@ -119,36 +131,69 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         Task {
             repeat {
                 gapAgain = false
-                await refresh()
+                let target = gapNewest
+                gapNewest = 0
+                await refresh(newest: target)
             } while gapAgain
             gapRefreshing = false
         }
     }
 
-    /// Fetches the engine's records again. A failure leaves the store's own entries on screen
-    /// with a note: a log window that goes blank is no use in a fault.
-    func refresh() async {
-        // Entries that arrive while the request is out may or may not be in the answer: only
-        // those from before it can be.
-        let mark = store.logCount
-        switch await store.logTail(max: UInt32(Self.maxRows)) {
+    /// Fetches the engine's records again. A failure leaves what is shown with a note: a log
+    /// window that goes blank is no use in a fault. `newest`: the record number a gap read must
+    /// reach, which reads only what is above the last contiguous one (at most the ring's worth);
+    /// 0, or nothing held yet: the whole tail.
+    func refresh(newest: UInt64 = 0) async {
+        var count = UInt64(Self.maxRows)
+        var merge = false
+        if newest > 0, contiguous > 0 {
+            guard newest > contiguous else { return }  // already held
+            count = min(count, newest - contiguous)
+            merge = true
+        }
+        let started = epoch
+        switch await store.logTail(max: UInt32(count)) {
         case .success(let result):
-            apply(tail: result.entries, dropped: result.dropped, mark: mark, seq: result.seq)
+            guard started == epoch else { return }
+            apply(tail: result.entries, dropped: result.dropped, seq: result.seq, merge: merge)
         case .failure:
+            guard started == epoch else { return }
             tailFailed = true
             rebuild()
         }
     }
 
-    /// `mark`: the store's `logCount` when the tail was asked for.
-    func apply(tail entries: [ShowLogEntry], dropped: UInt64, mark: Int? = nil, seq: UInt64 = 0) {
-        tailMark = mark ?? store.logCount
-        tail = entries.map(row)
-        tailSeq = seq
-        pushed.removeAll { $0.seq <= seq }
+    /// `seq`: the number of the newest record in `entries` (0: unnumbered, so nothing can be
+    /// merged). `merge`: `entries` are only the newest ones, to join those held.
+    func apply(tail entries: [ShowLogEntry], dropped: UInt64, seq: UInt64 = 0, merge: Bool = false) {
+        if seq == 0 || entries.isEmpty && !merge {
+            records = entries.map { (0, row($0)) }
+            contiguous = seq
+        } else {
+            let first = seq >= UInt64(entries.count) ? seq - UInt64(entries.count) + 1 : 1
+            let fresh = entries.enumerated().map { (first + UInt64($0.offset), row($0.element)) }
+            let older = merge ? records.filter { $0.seq > 0 && $0.seq < first } : []
+            // Pushed records above the read stay; those inside it are in it.
+            let newer = records.filter { $0.seq > seq }
+            records = older + fresh + newer
+            contiguous = max(contiguous, seq)
+            advanceContiguous()
+        }
+        trim()
         self.dropped = dropped
         tailFailed = false
         rebuild()
+    }
+
+    private func advanceContiguous() {
+        for r in records where r.seq > contiguous {
+            guard r.seq == contiguous + 1 else { break }
+            contiguous = r.seq
+        }
+    }
+
+    private func trim() {
+        if records.count > Self.maxRows { records.removeFirst(records.count - Self.maxRows) }
     }
 
     private func row(_ e: ShowLogEntry) -> Row {
@@ -157,39 +202,17 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
             level: e.level, kind: e.kind.raw, message: e.message)
     }
 
-    /// A pushed record: one at or below the tail's (or an earlier push's) number is already shown.
+    /// A pushed record: one at or below a number already held is already shown.
     private func append(seq: UInt64, entry: ShowLogEntry) {
-        guard seq > tailSeq, seq > (pushed.last?.seq ?? 0) else { return }
-        pushed.append((seq, row(entry)))
-        if pushed.count > Self.maxRows { pushed.removeFirst(pushed.count - Self.maxRows) }
+        guard seq > contiguous, seq > (records.last?.seq ?? 0) else { return }
+        records.append((seq, row(entry)))
+        if seq == contiguous + 1 { contiguous = seq }
+        trim()
         rebuild()
     }
 
-    /// Engine records, then the store's entries. The engine both pushes `log` and keeps the
-    /// record, so an entry from before the fetch that the tail holds is shown once: each tail
-    /// record cancels one such entry, so two identical entries still show twice. Entries from
-    /// after the fetch are always shown.
     private func rebuild() {
-        var held: [String: Int] = [:]
-        for r in tail { held["\(r.level.rawValue)\u{0}\(r.message)", default: 0] += 1 }
-        // A pushed record may come before or after its `log` notice: it cancels one of any age.
-        var pushedHeld: [String: Int] = [:]
-        for p in pushed { pushedHeld["\(p.row.level.rawValue)\u{0}\(p.row.message)", default: 0] += 1 }
-        let first = store.logCount - storeEntries.count
-        let extra = storeEntries.enumerated().filter { i, e in
-            let key = "\(e.level.rawValue)\u{0}\(e.message)"
-            if let n = pushedHeld[key], n > 0 {
-                pushedHeld[key] = n - 1
-                return false
-            }
-            guard first + i < tailMark else { return true }
-            guard let n = held[key], n > 0 else { return true }
-            held[key] = n - 1
-            return false
-        }.map(\.element)
-        rows = Array(
-            (tail + pushed.map(\.row) + extra.map { Row(time: "", level: $0.level, kind: "", message: $0.message) })
-                .suffix(Self.maxRows))
+        rows = records.map(\.row)
         let wasAtBottom = isAtBottom
         visible = rows.filter { $0.level.severity >= minimumLevel.severity }
         guard isViewLoaded else { return }

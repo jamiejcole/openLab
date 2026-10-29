@@ -30,6 +30,8 @@ final class FakeEngine: EngineTransport {
     var refuseCommands = false
     /// The records `log_tail` answers with (show-log JSON objects), and the `relink` result data.
     var logTailEntries: [JSONValue] = []
+    /// The `seq` `log_tail` answers with (the newest record's number; 0: unnumbered); `max` keeps the newest.
+    var logTailSeq: Int64 = 0
     var relinkData: JSONValue = .object([
         "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
         "truncated": .bool(false), "skipped": .int(0),
@@ -697,12 +699,14 @@ final class FakeEngine: EngineTransport {
             result(
                 c, id,
                 ok: .object(["data": relinkData]))
-        case .logTail:
+        case .logTail(let max):
+            let sent = max.map { Array(logTailEntries.suffix(Int($0))) } ?? logTailEntries
             result(
                 c, id,
                 ok: .object([
                     "data": .object([
-                        "type": .string("log_tail"), "entries": .array(logTailEntries), "dropped": .int(0),
+                        "type": .string("log_tail"), "entries": .array(sent), "dropped": .int(0),
+                        "seq": .int(logTailSeq),
                     ])
                 ]))
         case .preshowCheck:

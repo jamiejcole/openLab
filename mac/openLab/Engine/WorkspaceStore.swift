@@ -59,7 +59,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     private(set) var logSeq: UInt64 = 0
     /// A `log_entry` arrived more than one past the last: records were not pushed, so a live view
     /// reads `log_tail` again (docs/protocol.md "Show log entries and status").
-    let logGaps = PassthroughSubject<Void, Never>()
+    let logGaps = PassthroughSubject<UInt64, Never>()
+    /// A new connection (`welcome`): the engine may be a new run whose records count from 1 again.
+    let logRuns = PassthroughSubject<Void, Never>()
     /// Every `log_entry` heard, in arrival order: an open log window appends those above the tail's `seq`.
     let logPushes = PassthroughSubject<(seq: UInt64, entry: ShowLogEntry), Never>()
     @Published private(set) var connectionState: ConnectionState = .idle
@@ -227,6 +229,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             // A new connection may be a new engine run, whose records count from 1 again; a same-run
             // resync (`snapshot`) keeps the number, or the first entry after it could not show a gap.
             logSeq = 0
+            logRuns.send()
             replace(with: snapshot)
         case .snapshot(let snapshot):
             replace(with: snapshot)
@@ -261,13 +264,13 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             status = s
             // The hub drops a push for a slow client without telling it: the newest record's number
             // in `status` is how a trailing loss is noticed (docs/protocol.md "Show log entries and status").
-            if s.logSeq > logSeq { logGaps.send() }
+            if s.logSeq > logSeq { logGaps.send(s.logSeq) }
         case .closed(let doc):
             if doc == client.workspace { onClosed?() }
         case .logEntry(let seq, let entry):
             // A live view appends the record; its number tells whether any were lost.
             logPushes.send((seq, entry))
-            if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send() }  // no `+ 1`: a hostile u64::MAX
+            if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send(seq) }  // no `+ 1`: a hostile u64::MAX
             logSeq = Swift.max(logSeq, seq)
         case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
             // Meters have no consumer yet; the rest belong to the client or session.
