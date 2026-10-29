@@ -9,14 +9,14 @@
     clippy::print_stderr
 )]
 
-//! CPU budget gate (NFR-23, QA-06, M3.10): 64 stereo voices with fades must render at least
+//! CPU budget gate (NFR-23, QA-06): 64 stereo voices with fades must render at least
 //! 10x faster than real time. Wall-clock dependent, so it is `#[ignore]`d and never part of
 //! `cargo test`; CI runs it on the Intel runner with
 //!
 //! `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`
 //!
 //! One test function runs every measurement in sequence: parallel tests would compete for the
-//! cores and skew each other's timings. `Instant` is used here and, since M4.7a, by the device
+//! cores and skew each other's timings. `Instant` is used here and, by the device
 //! callback adapter (`OutputHost::render`, one pair per callback for `engine_load`); the cost of
 //! that pair is measured and reported here too.
 //!

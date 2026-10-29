@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `display_name` (M2.29c, QLab check R2), driven by the fixture the Swift test will share.
+//! `display_name` (QLab check R2), driven by the fixture the Swift test will share.
 
 mod common;
 

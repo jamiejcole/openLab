@@ -204,15 +204,18 @@ final class CueListTests: XCTestCase {
     }
 
     func testTimeFormat() {
-        XCTAssertEqual(CueTimeFormat.clock(0), "00:00.00")
-        XCTAssertEqual(CueTimeFormat.clock(1), "00:01.00")
-        XCTAssertEqual(CueTimeFormat.clock(60), "01:00.00")
-        XCTAssertEqual(CueTimeFormat.clock(65.254), "01:05.25")
-        XCTAssertEqual(CueTimeFormat.clock(3661.5), "1:01:01.50")
-        XCTAssertEqual(CueTimeFormat.clock(.nan), "")
-        XCTAssertEqual(CueTimeFormat.clock(-1), "")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: 3), "00:02.00 / 00:05.00")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: nil), "00:02.00")
+        XCTAssertEqual(CueTime.running(0), "00:00.00")
+        XCTAssertEqual(CueTime.running(1), "00:01.00")
+        XCTAssertEqual(CueTime.running(60), "01:00.00")
+        XCTAssertEqual(CueTime.running(65.254), "01:05.25")
+        // A stored time keeps its millisecond, so an edit field opened and closed changes nothing.
+        XCTAssertEqual(CueTime.format(65.254), "01:05.254")
+        XCTAssertEqual(CueTime.format(65.25), "01:05.25")
+        XCTAssertEqual(CueTime.running(3661.5), "1:01:01.50")
+        XCTAssertEqual(CueTime.running(.nan), "")
+        XCTAssertEqual(CueTime.running(-1), "")
+        XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: 3), "00:02.00 / 00:05.00")
+        XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: nil), "00:02.00")
     }
 
     func testColourFlagAndContinueAreShownWithShapesAndLabels() async throws {
@@ -475,12 +478,11 @@ final class CueListTests: XCTestCase {
 
     func testEveryBrokenReasonHasAString() {
         for reason in WireBrokenReason.allCases {
-            let key = CueStateStyle.brokenReasonKey(reason)
-            XCTAssertNotEqual(loc(key), key, "\(reason)")
+            XCTAssertNotEqual(ProblemText.reason(reason), "broken.\(reason.rawValue)", "\(reason)")
         }
         XCTAssertEqual(
             CueStateStyle.brokenDetail(reason: .deviceLost, problems: [], groupWarning: true, label: \.raw),
-            loc("cue.broken.deviceLost"))
+            loc("broken.device_lost"))
         XCTAssertEqual(
             CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: true, label: \.raw),
             loc("cue.broken.group"))
@@ -496,7 +498,7 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(try icon(H.door).accessibilityLabel(), loc("cue.state.loaded"))
         XCTAssertEqual(try icon(H.rain).accessibilityLabel(), loc("cue.state.paused"))
         XCTAssertEqual(try icon(H.radio).accessibilityLabel(), loc("cue.state.broken"))
-        XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("cue.broken.deviceLost"))")
+        XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("broken.device_lost"))")
         // Static problems break a cue even without a state entry (the fixture's fade cue).
         XCTAssertEqual(try icon(H.fade).accessibilityLabel(), loc("cue.state.broken"))
         // The tooltip reads as the Warnings tab does: fields filled in, never a raw `{target}`.
@@ -629,7 +631,7 @@ final class CueListTests: XCTestCase {
         XCTAssertNil(h.vc.store.waits[H.intro])
         XCTAssertEqual(
             h.cell("preWait", H.intro)?.label.stringValue,
-            CueTimeFormat.clock(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
+            CueTime.format(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
     }
 
     // MARK: Playhead marker across model changes

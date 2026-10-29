@@ -122,7 +122,6 @@
 "cuelist.col.duration" = "Duration";
 "cuelist.col.postWait" = "Post-Wait";
 
-"cuelist.col.status" = "Status";
 "cue.target.missing" = "Missing target";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
@@ -137,9 +136,6 @@
 "cue.state.fading" = "Fading";
 "cue.state.stopping" = "Stopping";
 "cue.state.broken" = "Broken";
-"cue.broken.voiceRejected" = "The audio engine rejected the cue";
-"cue.broken.streamFailed" = "The audio file could not be read while playing";
-"cue.broken.deviceLost" = "The audio device was lost";
 "cue.broken.group" = "A cue inside this group is broken";
 
 "cue.colour.none" = "None";
@@ -157,6 +153,8 @@
 "inspector.tab.basics" = "Basics";
 "inspector.tab.triggers" = "Triggers";
 "inspector.tab.mode" = "Mode";
+"inspector.tab.loadTime" = "Load Time";
+"inspector.loadTime" = "Load target to time";
 "inspector.groupMode" = "Group mode";
 "inspector.groupMode.timeline" = "Timeline - start all children at once";
 "inspector.groupMode.playlist" = "Playlist - one child at a time";
@@ -212,6 +210,9 @@
 "inspector.invalid.unknownTarget" = "No cue has that number.";
 "inspector.invalid.selfTarget" = "A cue cannot target itself.";
 "inspector.invalid.notApplicable" = "This cue has no target.";
+"inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
+"inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
+"inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 
@@ -358,6 +359,34 @@
 "log.column.message" = "Message";
 "log.tailFailed" = "The engine's log history could not be loaded.";
 "log.dropped" = "%d records were dropped by the engine.";
+"menu.window.preshowCheck" = "Pre-Show Check";
+"preshow.title" = "Pre-Show Check";
+"preshow.title.workspace" = "Pre-Show Check: %@";
+"preshow.checkAgain" = "Check Again";
+"preshow.checking" = "Checking…";
+"preshow.failed" = "The check could not be run. Try again.";
+"preshow.disconnected" = "The engine is not connected: nothing has been checked.";
+"preshow.summary.ok" = "No problems found.";
+"preshow.summary.one" = "1 problem found.";
+"preshow.summary.many" = "%d problems found.";
+"preshow.summary.problems" = "Problems found.";
+"preshow.section.brokenCues" = "Broken cues (%d)";
+"preshow.section.media" = "Media files (%d)";
+"preshow.section.devices" = "Audio patches without a device (%d)";
+"preshow.section.network" = "Network destinations (%d)";
+"preshow.section.system" = "Engine warnings (%d)";
+"preshow.cue.deleted" = "%@ (deleted)";
+"preshow.usedBy" = "Used by: %@";
+"preshow.usedBy.more" = "%@ and %d more";
+"preshow.media.missing" = "File not found.";
+"preshow.media.unsupported" = "Cannot be played: %@";
+"preshow.patch.unknown" = "Patch %@";
+"preshow.patch.missing" = "Cues use this patch, but the workspace does not have it.";
+"preshow.patch.noDevice" = "No audio device to play on.";
+"preshow.patch.unused" = "No cue uses this patch.";
+"preshow.network.unknown" = "Network patch %@";
+"preshow.network.missing" = "Cues use this destination, but the workspace does not have it.";
+"preshow.network.notChecked" = "%@: not checked (reachability is not tested).";
 
 /* Relink missing media (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";
@@ -443,5 +472,6 @@
 "alert.recoveryOffer.ignore" = "Open Saved File";
 "alert.autosave.title" = "Restore “%@”?";
 "alert.autosave.message" = "This workspace was autosaved at %@ and not saved since. It opens as an untitled workspace.";
+"alert.autosave.setAsideMessage" = "This autosave from %@ was set aside because the saved file looked newer, but file times can be wrong, so it may hold later work than the file. It opens as a separate, untitled workspace.";
 "alert.autosave.open" = "Restore";
 "alert.autosave.skip" = "Skip";

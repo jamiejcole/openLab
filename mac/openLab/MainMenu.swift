@@ -25,6 +25,7 @@ enum MainMenu {
                 .separator(),
                 .separator(),
                 logItem(),
+                preshowItem(),
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
         )
@@ -171,6 +172,12 @@ enum MainMenu {
         let log = item("menu.window.log", #selector(AppDelegate.showLog(_:)), "l")
         log.keyEquivalentModifierMask = [.command, .option]
         return log
+    }
+
+    /// QLab keeps its warnings in Workspace Status (Window menu, shift-cmd-W); the pre-show check
+    /// takes that place and key.
+    private static func preshowItem() -> NSMenuItem {
+        item("menu.window.preshowCheck", #selector(AppDelegate.showPreshowCheck(_:)), "W")
     }
 
     private static func menu(_ key: String, _ items: [NSMenuItem]) -> NSMenu {

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Editing a Network cue: `Destination`, `Address` and `Args` (M4.6a, CT-30, ED-07).
+//! Editing a Network cue: `Destination`, `Address` and `Args` (CT-30, ED-07).
 
 mod common;
 

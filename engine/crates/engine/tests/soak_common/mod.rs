@@ -686,7 +686,7 @@ impl<D: Driver> Soak<D> {
             66..=67 => {
                 // Half the loads are 0.5 s in, which is past the end of the short clips: such a
                 // cue sits loaded at its end and finishes on its start sample, its successor
-                // starting on that sample (M4.11b; no `late_start`).
+                // starting on that sample (no `late_start`).
                 let (cue, at) = if self.rng.chance(50) {
                     (self.cue_of(), 0.0)
                 } else {

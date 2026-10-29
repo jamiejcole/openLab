@@ -211,6 +211,22 @@ final class CueEditor {
         _ = report(await store.send(command: command))
     }
 
+    /// The cue list's in-place Duration (QLab: double-click the column): checked as the inspector
+    /// checks it, so a bad time or a cue without a settable duration is refused here and never sent.
+    /// True when there was nothing to send or the engine took it.
+    @discardableResult
+    func setDuration(of id: ModelID, text: String) async -> Bool {
+        guard await begin() else { return false }
+        guard let cue = store.model?.cue(id) else { return false }
+        switch InspectorEdit.durationCommand(text: text, cue: cue) {
+        case .failure(let rejection):
+            notify(loc(rejection.messageKey))
+            return false
+        case .success(nil): return true
+        case .success(let command?): return report(await store.send(command: command))
+        }
+    }
+
     func undo() async {
         guard await begin() else { return }
         _ = report(await store.undo())

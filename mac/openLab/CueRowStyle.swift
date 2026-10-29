@@ -31,21 +31,13 @@ struct CueStateStyle: Equatable {
         }
     }
 
-    static func brokenReasonKey(_ reason: WireBrokenReason) -> String {
-        switch reason {
-        case .voiceRejected: return "cue.broken.voiceRejected"
-        case .streamFailed: return "cue.broken.streamFailed"
-        case .deviceLost: return "cue.broken.deviceLost"
-        }
-    }
-
     /// Why a cue is broken, for the tooltip: a run-time reason, else its static problems, else a
     /// group's warning about a descendant.
     /// Problems read as the Warnings tab words them, fields filled in (`label` names ids).
     static func brokenDetail(
         reason: WireBrokenReason?, problems: [WireProblem], groupWarning: Bool, label: ProblemText.Label
     ) -> String? {
-        if let reason { return loc(brokenReasonKey(reason)) }
+        if let reason { return ProblemText.reason(reason) }
         if !problems.isEmpty {
             return problems.map { ProblemText.problem($0, label: label) }.joined(separator: "\n")
         }
@@ -81,21 +73,4 @@ enum CueKindStyle {
         "auto_continue": ("arrow.down", "cue.continue.autoContinue"),
         "auto_follow": ("arrow.turn.down.right", "cue.continue.autoFollow"),
     ]
-}
-
-/// Cell text for the time columns.
-enum CueTimeFormat {
-    /// `mm:ss.cc` as QLab's cue list shows it; `h:mm:ss.cc` from an hour.
-    static func clock(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "" }
-        let cs = Int(min(seconds, 1e9) * 100 + 0.5)
-        let (h, m, s, c) = (cs / 360_000, cs / 6000 % 60, cs / 100 % 60, cs % 100)
-        return h > 0 ? String(format: "%d:%02d:%02d.%02d", h, m, s, c) : String(format: "%02d:%02d.%02d", m, s, c)
-    }
-
-    /// A running cue: `elapsed / total` when the end is known, else `elapsed`.
-    static func progress(elapsed: Double, remaining: Double?) -> String {
-        guard let remaining else { return clock(elapsed) }
-        return "\(clock(elapsed)) / \(clock(elapsed + remaining))"
-    }
 }

@@ -1,0 +1,14 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "property": {
+      "type": "group_mode",
+      "value": {
+        "type": "timeline"
+      }
+    }
+  }
+}

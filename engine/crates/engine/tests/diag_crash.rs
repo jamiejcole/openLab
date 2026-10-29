@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The crash hook (M4.7; DX-04) in a real panic: the test binary runs itself again as a child
+//! The crash hook (DX-04) in a real panic: the test binary runs itself again as a child
 //! with an environment variable set, the child installs the hook and panics, and the parent
 //! reads the report the hook left. The report text itself is unit-tested in `diag::crash`.
 

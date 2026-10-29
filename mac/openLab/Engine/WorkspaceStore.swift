@@ -59,7 +59,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     private(set) var logSeq: UInt64 = 0
     /// A `log_entry` arrived more than one past the last: records were not pushed, so a live view
     /// reads `log_tail` again (docs/protocol.md "Show log entries and status").
-    let logGaps = PassthroughSubject<Void, Never>()
+    let logGaps = PassthroughSubject<UInt64, Never>()
+    /// A new connection (`welcome`): the engine may be a new run whose records count from 1 again.
+    let logRuns = PassthroughSubject<Void, Never>()
+    /// Notes the app itself made (`receive(.log)` from the app, not from the engine): relink
+    /// results, key warnings, lifecycle warnings. They have no record number, so a log window
+    /// shows them as local rows; `logNotes` announces each, `appNotes` holds the recent ones.
+    let logNotes = PassthroughSubject<LogEntry, Never>()
+    private(set) var appNotes: [LogEntry] = []
+    private var applyingEngineMessage = false
+    /// Every `log_entry` heard, in arrival order: an open log window appends those above the tail's `seq`.
+    let logPushes = PassthroughSubject<(seq: UInt64, entry: ShowLogEntry), Never>()
     @Published private(set) var connectionState: ConnectionState = .idle
     /// This workspace's Show Mode (SM-01), as its window shows it. The engine is told so it can
     /// hold off sleep (SM-07); its `document.show_mode` is read back and wins when it changes.
@@ -160,16 +170,20 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func saveAs(path: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .saveAs(path: path)) }
     }
+    /// The autosaves loaded into this window (EngineSession keeps it up).
+    var autosaveCover = AutosaveCover()
     func relink(folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder)) }
     }
     /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
-    func logTail(max: UInt32? = nil) async -> Result<(entries: [ShowLogEntry], dropped: UInt64), EngineError> {
+    func logTail(max: UInt32? = nil) async -> Result<
+        (entries: [ShowLogEntry], dropped: UInt64, seq: UInt64), EngineError
+    > {
         switch await client.send({ .request(id: $0, .logTail(max: max)) }) {
         case .success(let ok):
             if case .logTail(let entries, let dropped, let seq)? = ok.data {
                 logSeq = Swift.max(logSeq, seq)
-                return .success((entries, dropped))
+                return .success((entries, dropped, seq))
             }
             return .failure(.encoding("log_tail result has no log_tail data"))
         case .failure(let e): return .failure(e)
@@ -228,14 +242,22 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     // MARK: Applying server messages
 
     func engineClient(_ client: EngineClient, didReceive message: ServerMessage) -> ApplyOutcome {
-        receive(message)
+        applyingEngineMessage = true
+        defer { applyingEngineMessage = false }
+        return receive(message)
     }
 
     /// Applies one server message. `.gap` means the caller must request a snapshot.
     @discardableResult
     func receive(_ message: ServerMessage) -> ApplyOutcome {
         switch message {
-        case .welcome(_, let snapshot), .snapshot(let snapshot):
+        case .welcome(_, let snapshot):
+            // A new connection may be a new engine run, whose records count from 1 again; a same-run
+            // resync (`snapshot`) keeps the number, or the first entry after it could not show a gap.
+            logSeq = 0
+            logRuns.send()
+            replace(with: snapshot)
+        case .snapshot(let snapshot):
             replace(with: snapshot)
         case .modelChanged(let rev, let upserts, let deletes):
             return applyModelChange(revision: rev, upserts: upserts, deletes: deletes)
@@ -263,14 +285,24 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .log(let level, let text):
             logCount += 1
             logEntries.append(LogEntry(level: level, message: text))
+            if !applyingEngineMessage {
+                let note = LogEntry(level: level, message: text)
+                appNotes.append(note)
+                if appNotes.count > Self.maxLogEntries { appNotes.removeFirst(appNotes.count - Self.maxLogEntries) }
+                logNotes.send(note)
+            }
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
             status = s
+            // The hub drops a push for a slow client without telling it: the newest record's number
+            // in `status` is how a trailing loss is noticed (docs/protocol.md "Show log entries and status").
+            if s.logSeq > logSeq { logGaps.send(s.logSeq) }
         case .closed(let doc):
             if doc == client.workspace { onClosed?() }
-        case .logEntry(let seq, _):
-            // The record itself is shown from `log_tail`; its number tells whether any were lost.
-            if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send() }  // no `+ 1`: a hostile u64::MAX
+        case .logEntry(let seq, let entry):
+            // A live view appends the record; its number tells whether any were lost.
+            logPushes.send((seq, entry))
+            if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send(seq) }  // no `+ 1`: a hostile u64::MAX
             logSeq = Swift.max(logSeq, seq)
         case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
             // Meters have no consumer yet; the rest belong to the client or session.
@@ -293,8 +325,6 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         warnings = s.warnings
         progress = [:]
         waits = [:]
-        // A new connection may be a new engine run, whose records count from 1 again.
-        logSeq = 0
         runtimeWarnings = []
         // A new connection's health is unknown until its first `status`.
         status = nil

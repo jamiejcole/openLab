@@ -7,7 +7,7 @@
     clippy::print_stderr
 )]
 
-//! Property tests for the cue engine (M2.9, QA-01, QA-02): random workspaces and random input
+//! Property tests for the cue engine (QA-01, QA-02): random workspaces and random input
 //! sequences against a simulated mixer, checked against the rules of `docs/cue-engine.md`.
 //!
 //! **Generator.** Lists with nested groups of every mode, control and Fade cues with random
@@ -35,7 +35,7 @@
 //!   groups the playhead was already inside (Playhead, "Stepping").
 //! - A group shows a warning exactly while a descendant is shown with problems, and its
 //!   `GroupWarningChanged` reports agree, never repeating a value; with no runtime it then
-//!   reports `broken` (Broken cues; M2.24, QLab check G6). A `broken` cue always has a reason
+//!   reports `broken` (Broken cues, QLab check G6). A `broken` cue always has a reason
 //!   to show: problems, a run-time break, or such a descendant.
 //! - Nothing reaches `running` but from pre-waiting, paused or fading: a start always reports
 //!   pre-waiting first, and a child started on its own no longer makes its group run (Groups,
@@ -391,7 +391,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         c.post_wait = f64::from(s.post) * 0.5;
         c.continue_mode = mode(s.mode);
         // Some auto-continue sounds wait long, so a failure while they play (or a device
-        // loss) often finds the continue still pending (M4.2h).
+        // loss) often finds the continue still pending.
         if c.continue_mode == ContinueMode::AutoContinue
             && matches!(c.kind, CueKind::Audio { .. })
             && s.flag
@@ -1179,7 +1179,7 @@ fn preview_action(a: &Action) -> bool {
         Action::PreviewStart { .. }
         | Action::PreviewStop { .. }
         | Action::PreviewChanged { .. } => true,
-        // Pause All / Resume All pause and resume previews too (M2.28, QLab check V4).
+        // Pause All / Resume All pause and resume previews too (QLab check V4).
         Action::PauseVoice { run, .. } | Action::ResumeVoice { run, .. } => {
             run.0 >= PREVIEW_RUN_BASE
         }
@@ -1336,7 +1336,7 @@ impl Run {
                     }
                     // A start reports pre-waiting first; only a resume or the end of a fade
                     // comes back to running. (A group adopted by a child started on its own went
-                    // from idle to running before M2.24.)
+                    // from idle to running.)
                     if *state == CueState::Running {
                         prop_assert!(
                             matches!(
@@ -1412,8 +1412,8 @@ impl Run {
             .map(|p| groups_around(&self.ws.cue_lists[0].cues, p))
             .unwrap_or_default();
         self.enter(around, None, &active_now);
-        // No cue is passed over when a GO leaves a group that fires no continue (Playhead; M2.24
-        // fix rounds 1–2): the group has not been active since the playhead entered it and is
+        // No cue is passed over when a GO leaves a group that fires no continue (Playhead):
+        // the group has not been active since the playhead entered it and is
         // not running now, so its continue targets never fire, and the playhead must stand on
         // the cue right after the outermost group it leaves.
         if self.unique_ids()
@@ -1478,7 +1478,7 @@ impl Run {
         }
         self.sim.apply(&actions);
         prop_assert!(self.sim.errors.is_empty(), "{:?}", self.sim.errors);
-        // M4.9: the sleep-prevention query agrees with the reported states.
+        // The sleep-prevention query agrees with the reported states.
         prop_assert_eq!(
             self.engine.has_active_cues(),
             self.engine.cue_states().any(|(_, s)| s.is_active())
@@ -1493,7 +1493,7 @@ impl Run {
                 prop_assert!(audio, "cue {} fading", id);
             }
         }
-        // The binary applies Arm/Disarm changes to the model before the next call (M4.2).
+        // The binary applies Arm/Disarm changes to the model before the next call.
         for (cue, armed) in arm {
             if let Some(c) = find_mut(&mut self.ws.cue_lists[0].cues, cue) {
                 c.armed = armed;
@@ -1756,7 +1756,7 @@ impl Run {
         }
         // Previews and their voices exist together (Preview).
         for cue in self.engine.previewing() {
-            // A group's preview is its audio cues' (M2.28, QLab check V1).
+            // A group's preview is its audio cues' (QLab check V1).
             if let Some(Cue {
                 kind: CueKind::Group { .. },
                 ..
@@ -2108,7 +2108,7 @@ impl Run {
                 Input::Tick
             }
             // The output device was lost: every runtime stops at once, groups, paused runs and
-            // broken runs with a continue pending included (M4.2h).
+            // broken runs with a continue pending included.
             31 => {
                 // The binary fails every live voice with `device_lost` first (types.rs), and a
                 // voice failing alone on an auto-continue cue (a broken run with its continue
@@ -2569,7 +2569,7 @@ fn follow_case() -> impl Strategy<Value = Case> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(prop_cases(256)))]
 
-    /// M4.11b: loading a Wait, Fade, memo or control cue (armed or not) to a time at or past
+    /// Loading a Wait, Fade, memo or control cue (armed or not) to a time at or past
     /// `pre-wait + action` leaves it loaded, holding nothing; started, its action is over at
     /// once, and its post-wait counts from the load time (`W - (t - P)` left, none if <= 0).
     #[test]
@@ -2595,7 +2595,7 @@ proptest! {
                 target: Some(cue_id(2)),
                 duration: action,
                 curve: FadeCurve::Linear,
-                // A level to fade: one with none is broken (`nothing_to_fade`, M2.26).
+                // A level to fade: one with none is broken (`nothing_to_fade`).
                 levels: FadeLevels {
                     master_db: Some(-6.0),
                     output_db: vec![],
@@ -2702,7 +2702,7 @@ fn invariants(case: &Case) -> Check {
     Ok(())
 }
 
-/// M2.23 (a 300k-case sweep): the loop of a [sound, Devamp with stop] pair is started late,
+/// Found by a 300k-case sweep: the loop of a [sound, Devamp with stop] pair is started late,
 /// devamped and paused at its first sample by Pause All, and learns its length while paused; a
 /// GO's auto-continue resumes it in the lookahead window with that end inside the window, so the
 /// engine completes the run ahead while the mixer still holds the paused voice with the resume
@@ -2908,7 +2908,7 @@ fn the_generator_reaches_what_the_rules_are_about() {
         }
     }
     // DeviceLost reaches running groups, paused runs and broken runs with a continue pending
-    // (M4.2h).
+    //.
     for what in ["group", "paused", "broken run"] {
         let n = lost.iter().filter(|l| **l == what).count();
         assert!(n >= 10, "DeviceLost found {what} only {n} times");

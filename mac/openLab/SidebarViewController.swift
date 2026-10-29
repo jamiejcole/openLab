@@ -589,8 +589,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// `elapsed` and, when the end is known, `-remaining`.
     static func timesText(elapsed: Double, remaining: Double?) -> String {
-        guard let remaining else { return CueTimeFormat.clock(elapsed) }
-        return "\(CueTimeFormat.clock(elapsed))  -\(CueTimeFormat.clock(remaining))"
+        guard let remaining else { return CueTime.running(elapsed) }
+        return "\(CueTime.running(elapsed))  -\(CueTime.running(remaining))"
     }
 
     @objc private func pauseResumeClicked(_ sender: ActiveCueButton) {

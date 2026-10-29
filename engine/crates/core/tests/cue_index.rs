@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The cue index (M4.12a): what it says after an edit is what a rebuild says. The random
+//! The cue index: what it says after an edit is what a rebuild says. The random
 //! version is `commands_prop::the_cue_index_follows_footprints`; these are named cases and the
 //! cases the random one cannot make (duplicate ids, other cue lists).
 
@@ -11,14 +11,6 @@ use std::collections::BTreeSet;
 
 use common::*;
 use openlab_core::*;
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
 
 /// 1, group 2 { 3, group 4 { 5 } }, 6.
 fn sample() -> Workspace {
@@ -325,7 +317,7 @@ fn a_changed_set_of_cue_lists_rebuilds() {
     assert_eq!(index.path(id(10)), Some(vec![1, 0]));
 }
 
-// ----- positions (M4.12c) -----
+// ----- positions -----
 
 /// A flat list of `n` memos, ids 1..=n, then a group 100_000 { group 100_001 { 100_002 } }.
 fn flat(n: u128) -> Workspace {

@@ -390,7 +390,7 @@ fn transport_hotkeys_have_defaults() {
         (key(&keys.pause_all), key(&keys.resume_all)),
         ("[".into(), "]".into())
     );
-    // Since v5 (M5.11c): Esc is panic, outside the map, so Stop All has no key; Next / Previous
+    // Since v5: Esc is panic, outside the map, so Stop All has no key; Next / Previous
     // Cue are QLab's menu keys; L and P are QLab's selected-cue keys.
     assert_eq!(keys.stop_all, None);
     let shift_command = Modifiers {
@@ -614,7 +614,7 @@ fn routing_beyond_64_channels_is_dropped() {
 
 #[test]
 fn routing_survives_a_patch_shrunk_and_restored() {
-    // Regression (review 2, M1): shrinking a patch used to delete the routing of its cues.
+    // Regression (review 2): shrinking a patch used to delete the routing of its cues.
     let routed = audio_with(|levels, _, _, _| {
         levels.outputs = vec![out(0.0), out(-1.0), out(-2.0), out(-3.0)];
         levels.crosspoints = vec![xp(0, 0, 0.0), xp(1, 3, -6.0)];
@@ -710,7 +710,7 @@ fn invalid_hotkey_names_warn() {
 
 #[test]
 fn non_finite_osc_float_is_reset_so_the_show_still_saves() {
-    // Regression (review H1): 1e39 does not fit an f32 and became +inf, which loaded cleanly but
+    // Regression: 1e39 does not fit an f32 and became +inf, which loaded cleanly but
     // made every save fail.
     let net = CueKind::Network {
         destination: net_id(1),
@@ -1108,7 +1108,7 @@ fn issues_render_as_readable_text() {
     );
 }
 
-// ---- OSC passcode table (M4.5c) ----
+// ---- OSC passcode table ----
 
 fn row(passcode: &str, view: bool, edit: bool, control: bool) -> OscPasscode {
     OscPasscode {
