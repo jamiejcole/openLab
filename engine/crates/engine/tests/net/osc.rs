@@ -1629,6 +1629,39 @@ async fn input_waits_while_a_resync_snapshot_is_out() {
     assert_eq!(body(&f.udp_recv().await)["data"], "Changed");
 }
 
+impl Fix {
+    /// Sends `n` runtime broadcasts of [`DOC`] and waits until the fan-out task has taken every
+    /// one. As it takes the next only after offering the one before to the tap, all but
+    /// possibly the last have been offered.
+    async fn fan_out_runtime(&self, n: u64) {
+        guard("the broadcasts to be fanned out", async {
+            for seq in 1..=n {
+                self.out
+                    .send(ServerMessage::Runtime {
+                        seq,
+                        changes: vec![],
+                    })
+                    .await
+                    .unwrap();
+            }
+            while self.out.0.capacity() < self.out.0.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    /// While [`DOC`]'s copy is not ready, offers the tap more of its broadcasts than are kept
+    /// without a lag: up to [`TAP_QUEUE`] wait in the tap and the actor holds as many again
+    /// (however far behind it is), so twice that many is certain to overflow one or the other.
+    async fn overflow_tap(&self) {
+        self.fan_out_runtime(2 * u64::try_from(TAP_QUEUE).unwrap())
+            .await;
+        // Every one of those has been offered once this one is taken.
+        self.fan_out_runtime(1).await;
+    }
+}
+
 #[tokio::test]
 async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
     let f = fixture(test_workspace()).await;
@@ -1649,28 +1682,7 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
     f.control
         .wait_for("the resync request", |c| c.snapshot_requests() == 2)
         .await;
-    // With the snapshot out the actor reads no broadcasts: more than the tap holds fill it.
-    let drained = async |extra: u64| {
-        for seq in 1..=extra {
-            f.out
-                .send(ServerMessage::Runtime {
-                    seq,
-                    changes: vec![],
-                })
-                .await
-                .unwrap();
-        }
-        // The fan-out task has taken every message (and, as it takes the next only after
-        // offering the one before, offered all but possibly the last).
-        while f.out.0.capacity() < f.out.0.max_capacity() {
-            tokio::task::yield_now().await;
-        }
-    };
-    guard("the broadcasts to be fanned out", async {
-        drained(1100).await;
-        drained(1).await;
-    })
-    .await;
+    f.overflow_tap().await;
     f.control.set_name("Third");
     f.control.release();
     // The held answer ("Second") is installed, then the lag is noticed and a third snapshot
@@ -1855,8 +1867,8 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
     })
     .await;
 
-    // A resync is out (its answer held), so the actor reads no broadcasts: more than the tap
-    // holds overflow it, and the second doc's `closed` is among those lost.
+    // A resync is out (its answer held), so the actor applies none of the first doc's
+    // broadcasts: they overflow, and the second doc's `closed` is among those lost.
     f.control
         .hold
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1875,35 +1887,15 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
     f.control
         .wait_for("the resync request", |c| !c.held.lock().unwrap().is_empty())
         .await;
-    let flood = async |extra: u64| {
-        for seq in 1..=extra {
-            f.out
-                .send(ServerMessage::Runtime {
-                    seq,
-                    changes: vec![],
-                })
-                .await
-                .unwrap();
-        }
-        while f.out.0.capacity() < f.out.0.max_capacity() {
-            tokio::task::yield_now().await;
-        }
-    };
-    // Sized from the tap so it always overflows, with a margin for what the actor took
-    // before the hold.
-    let overflow = u64::try_from(TAP_QUEUE).unwrap() + 76;
-    guard("the broadcasts to be fanned out", async {
-        flood(overflow).await;
-        flood(1).await;
-    })
-    .await;
+    f.overflow_tap().await;
     *f.control.second.lock().unwrap() = None;
     f.out
         .0
         .send(Outgoing::doc(DOC2, ServerMessage::Closed { doc: DOC2 }))
         .await
         .unwrap();
-    guard("the broadcasts to be fanned out", flood(1)).await;
+    // Offered (and dropped, the tap being lagged) before the held answer goes.
+    f.fan_out_runtime(1).await;
     f.control.release();
 
     // The rebuild's list names one doc: the other's copy is gone (nothing answers for it, the

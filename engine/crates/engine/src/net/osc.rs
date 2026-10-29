@@ -62,8 +62,9 @@ const EVICT_QUEUE: usize = 8;
 /// 10 s apart, 8 to 10 of them), and its connection closed, so it does not hold its slot.
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(30);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-/// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt. Public so a
-/// test can overflow it whatever its size.
+/// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt. The actor
+/// holds as many again for docs whose copy is not ready (`MAX_HELD_BROADCASTS`), so a lag is
+/// certain only past twice this. Public so a test can overflow both whatever their size.
 pub const TAP_QUEUE: usize = 1024;
 /// Input the actor holds while a doc's copy is not ready (see `Actor::take`), in pieces and in
 /// bytes; past either, input waits in the queues above.
