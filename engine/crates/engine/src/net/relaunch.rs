@@ -75,8 +75,10 @@ pub struct AppProcess {
 /// What a check after the delay decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
-    /// An app connection is back, or the server is stopping: nothing to do.
+    /// An app connection is back, or the server has stopped: nothing to do.
     Done,
+    /// The engine is shutting down and no app is back: nothing to do, and the log says why.
+    Stopping,
     /// The app's process still runs (slow to reconnect, or hung): check again later. Launching
     /// it would only bring it to the front over what the operator is using.
     Wait,
@@ -84,10 +86,13 @@ pub enum Next {
     Relaunch,
 }
 
-/// The decision, from what the check saw.
-pub fn next(app_back: bool, stopping: bool, app_alive: bool) -> Next {
-    if app_back || stopping {
+/// The decision, from what the check saw: an app connection back, the server stopped, the
+/// engine's shutdown begun (`net::Stopping`), the app's process alive.
+pub fn next(app_back: bool, server_stopped: bool, engine_stopping: bool, app_alive: bool) -> Next {
+    if app_back || server_stopped {
         Next::Done
+    } else if engine_stopping {
+        Next::Stopping
     } else if app_alive {
         Next::Wait
     } else {
@@ -159,14 +164,18 @@ mod tests {
     }
 
     /// #168: while the app's process lives it is not relaunched (it is reconnecting, or hung);
-    /// once it is gone it is. A connection back, or a stopping server, ends the wait.
+    /// once it is gone it is. A connection back, or a stopped server, ends the wait; so does
+    /// the engine's shutdown, which is said only when no app is back (an app that reconnected
+    /// was not "not relaunched").
     #[test]
     fn a_running_app_is_waited_for_and_a_gone_one_relaunched() {
-        assert_eq!(next(false, false, true), Next::Wait);
-        assert_eq!(next(false, false, false), Next::Relaunch);
+        assert_eq!(next(false, false, false, true), Next::Wait);
+        assert_eq!(next(false, false, false, false), Next::Relaunch);
         for alive in [false, true] {
-            assert_eq!(next(true, false, alive), Next::Done);
-            assert_eq!(next(false, true, alive), Next::Done);
+            assert_eq!(next(true, false, false, alive), Next::Done);
+            assert_eq!(next(false, true, false, alive), Next::Done);
+            assert_eq!(next(false, false, true, alive), Next::Stopping);
+            assert_eq!(next(true, false, true, alive), Next::Done, "the app is back");
         }
     }
 

@@ -531,14 +531,20 @@ fn app_lost(shared: &Arc<Shared>) {
             tokio::time::sleep(relaunch.delay).await;
             let app = lock(&shared.app).clone();
             let alive = app.as_ref().is_some_and(|a| relaunch.alive(a));
-            let shutting_down = shared.config.stopping.is_set();
-            let stopping = *shared.shutdown.borrow() || shutting_down;
-            match next(shared.hub.app_connections() > 0, stopping, alive) {
+            let decision = next(
+                shared.hub.app_connections() > 0,
+                *shared.shutdown.borrow(),
+                shared.config.stopping.is_set(),
+                alive,
+            );
+            match decision {
                 Next::Done => {
                     lock(&shared.relaunches).end();
-                    if shutting_down {
-                        log(&shared, LogLevel::Info, NOT_RELAUNCHED_STOPPING);
-                    }
+                    return;
+                }
+                Next::Stopping => {
+                    lock(&shared.relaunches).end();
+                    log(&shared, LogLevel::Info, NOT_RELAUNCHED_STOPPING);
                     return;
                 }
                 Next::Wait => {
