@@ -2230,6 +2230,7 @@ mod tests {
                     revision,
                     path: PathBuf::from("/s.openlab"),
                     rebase: false,
+                    respelled: false,
                     waiters: vec![(RequestId(revision), to.clone())],
                 }
             };
