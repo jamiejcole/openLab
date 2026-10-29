@@ -360,6 +360,7 @@
 "log.dropped" = "%d records were dropped by the engine.";
 "menu.window.preshowCheck" = "Pre-Show Check";
 "preshow.title" = "Pre-Show Check";
+"preshow.title.workspace" = "Pre-Show Check: %@";
 "preshow.checkAgain" = "Check Again";
 "preshow.checking" = "Checking…";
 "preshow.failed" = "The check could not be run. Try again.";

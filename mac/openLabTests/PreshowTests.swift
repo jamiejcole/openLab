@@ -215,6 +215,34 @@ final class PreshowTests: XCTestCase {
         XCTAssertEqual(pc.rows, [])
     }
 
+    func testThePanelClosesWithItsWorkspaceAndNamesIt() async throws {
+        let rig = try await demoRig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.workspaceName = "Lear"
+        wc.showWindow(nil)
+        await wc.showPreshowCheck().value
+        let panel = try XCTUnwrap(wc.preshowWindow.window)
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertEqual(panel.title, String(format: loc("preshow.title.workspace"), "Lear"))
+        wc.window?.close()
+        XCTAssertFalse(panel.isVisible)
+    }
+
+    func testCheckAgainClearsTheSelectionAndRevealsNothing() async throws {
+        let rig = try await demoRig()
+        rig.engine.preshowProblems = true
+        let pc = PreshowWindowController(store: rig.store)
+        var inspected: [ModelID] = []
+        pc.onInspect = { id, _ in inspected.append(id) }
+        await pc.runCheck()
+        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio })
+        pc.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        XCTAssertEqual(inspected, [radio])
+        await pc.runCheck()
+        XCTAssertEqual(pc.table.selectedRow, -1)
+        XCTAssertEqual(inspected, [radio], "a new report reveals nothing by itself")
+    }
+
     func testWindowMenuHasThePreshowCheck() {
         let item = MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showPreshowCheck(_:)) }
         XCTAssertEqual(item?.title, loc("menu.window.preshowCheck"))

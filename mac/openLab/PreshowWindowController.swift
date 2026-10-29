@@ -24,6 +24,7 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
     private var connected = false
     /// The row a mouse-down selected: the click's action that follows must not choose it again.
     private var chosenByMouseDown: Int?
+    private var reloading = false
 
     init(store: WorkspaceStore) {
         self.store = store
@@ -89,7 +90,12 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
         summaryLabel.textColor = report.ok ? .labelColor : .systemRed
     }
 
+    /// A new report starts with nothing selected: a selection left on whatever row now sits at
+    /// the old index must not reveal a cue the operator never chose.
     private func setRows(_ new: [PreshowRow]) {
+        reloading = true
+        defer { reloading = false }
+        table.deselectAll(nil)
         rows = new
         table.reloadData()
     }
@@ -197,7 +203,7 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0 else { return }
+        guard row >= 0, !reloading else { return }
         if NSApp.currentEvent?.type == .leftMouseDown { chosenByMouseDown = row }
         choose(row: row)
     }

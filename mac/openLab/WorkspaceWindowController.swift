@@ -38,11 +38,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
     private(set) lazy var logWindow = LogWindowController(store: store)
-    private(set) lazy var preshowWindow: PreshowWindowController = {
+    private var preshowController: PreshowWindowController?
+    /// The pre-show check panel, made on first use. It closes with this window.
+    var preshowWindow: PreshowWindowController {
+        if let pc = preshowController { return pc }
         let pc = PreshowWindowController(store: store)
         pc.onInspect = { [weak self] id, tab in self?.inspect(cue: id, tab: tab) }
+        preshowController = pc
         return pc
-    }()
+    }
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
@@ -138,7 +142,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Opens the pre-show check (SM-06) and runs it. The task's value tells tests it answered.
     @discardableResult
     func showPreshowCheck() -> Task<Void, Never> {
-        Task { await preshowWindow.present() }
+        let pc = preshowWindow
+        pc.window?.title = String(format: loc("preshow.title.workspace"), workspaceName)
+        return Task { await pc.present() }
     }
 
     /// A pre-show report entry was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
@@ -252,6 +258,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
     func commitPendingEdits() async -> Bool { await inspector.commitPendingEdits() }
+
+    /// A report about a workspace that is gone must not float on over the next one.
+    func windowWillClose(_ notification: Notification) {
+        preshowController?.close()
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()
