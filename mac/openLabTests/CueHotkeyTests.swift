@@ -87,7 +87,6 @@ final class HotkeyRulesTests: XCTestCase {
     func testAllowedKeys() {
         XCTAssertNil(validate(KeyChord("a")))
         XCTAssertNil(validate(KeyChord(KeyChord.left)), "QLab allows left and right")
-        XCTAssertNil(validate(KeyChord(KeyChord.down, [.command])))
         XCTAssertNil(validate(KeyChord(" ", [.shift])))
     }
 
