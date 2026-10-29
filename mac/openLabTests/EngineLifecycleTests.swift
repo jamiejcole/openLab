@@ -196,6 +196,83 @@ final class EngineSupervisorTests: XCTestCase {
         _ = controller
     }
 
+    /// An engine whose `engine.json` says its shutdown has begun is not attached to and never
+    /// signalled: the app waits for it to exit, then starts the next engine. No alarm.
+    func testAStoppingEngineIsWaitedForThenReplacedWithoutASignalOrAlarm() async throws {
+        let stopping: Int32 = 779
+        processes.info = .success(EngineConnectionInfo(port: 9, token: engine.token, pid: stopping, stopping: true))
+        processes.alive = [stopping]
+        spawnsTheFake()
+        let waits = ManualScheduler()
+        let supervisor = EngineSupervisor(processes: processes, session: session, scheduler: waits, now: { 0 })
+        var alarms: [EngineSupervisor.Alarm] = []
+        subs.append(supervisor.alarms.sink { alarms.append($0) })
+        supervisor.start()
+        for _ in 0..<10 {
+            await scheduler.fire()
+            await waits.fire()
+            for _ in 0..<20 { await Task.yield() }
+        }
+        XCTAssertEqual(engine.connectCount, 0, "a stopping engine is not attached to")
+        XCTAssertEqual(processes.spawns, 0, "its lock would refuse a second engine")
+        // It exits and removes its file.
+        processes.alive = []
+        processes.info = .failure(.missing)
+        await waits.fire()
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.spawns, 1)
+        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertTrue(alarms.isEmpty)
+        XCTAssertFalse(supervisor.recoveryPending, "it exited cleanly")
+    }
+
+    /// One still stopping past its own exit deadline is reported, still never signalled, and
+    /// replaced once it has gone; the alarm goes away when the new engine answers.
+    func testAnEngineStillStoppingPastItsDeadlineIsAlarmedButNeverSignalled() async throws {
+        let stopping: Int32 = 780
+        processes.info = .success(EngineConnectionInfo(port: 9, token: engine.token, pid: stopping, stopping: true))
+        processes.alive = [stopping]
+        spawnsTheFake()
+        let presenter = RecordingPresenter()
+        let alerts = ScriptedAlerts()
+        let controller = EngineAlarmController(
+            session: session, supervisor: supervisor, presenter: presenter, alerts: { alerts })
+        supervisor.start()
+        let alarmed = await pump { self.alarms == [.stillStopping] }
+        XCTAssertTrue(alarmed)
+        XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.stillStopping"))
+        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertEqual(processes.spawns, 0)
+        // It leaves its file behind (a forced exit on a hung disk): stale, so its autosaves count.
+        processes.alive = []
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.spawns, 1)
+        XCTAssertTrue(processes.signals.isEmpty)
+        await assertEventually { !presenter.isVisible }
+        await assertEventually { self.engine.requestCount { $0 == .scanRecovery } == 1 }
+        _ = controller
+    }
+
+    /// The engine this app was connected to began its shutdown and left its file (forced exit on
+    /// a hung disk): it stopped, it did not crash.
+    func testAnEngineThatLeftAStoppingFileStoppedRatherThanCrashed() async throws {
+        processes.info = .success(engine.info)
+        processes.alive = [engine.pid]
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        var left = engine.info
+        left.stopping = true
+        processes.info = .success(left)
+        processes.alive = []
+        engine.connectFailure = true
+        engine.dropConnections()
+        _ = await pump { !self.alarms.isEmpty }
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false)])
+        XCTAssertTrue(supervisor.recoveryPending)
+    }
+
     func testASilentEngineThatIgnoresSigtermGetsSigkill() async throws {
         let silent: Int32 = 778
         processes.info = .success(EngineConnectionInfo(port: 9, token: "t", pid: silent))

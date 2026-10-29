@@ -20,7 +20,7 @@ enum EngineError: Error, Equatable, Sendable {
 }
 
 enum ConnectionFailure: Equatable, Sendable {
-    /// No readable `engine.json`: the engine is not running. A normal state.
+    /// No readable `engine.json`, or its engine is stopping: no engine to attach to. A normal state.
     case engineNotAvailable
     /// The token in `engine.json` was refused (stale file, engine restarted); the file is re-read.
     case badToken
@@ -294,6 +294,8 @@ final class EngineClient: ObservableObject {
         case .failure: return (.engineNotAvailable, false)
         case .success(let i): info = i
         }
+        // An engine that is shutting down is not attached to: it is about to exit.
+        if info.stopping { return (.engineNotAvailable, false) }
         if let runToken, workspace != nil, info.token != runToken { return (.engineRestarted, false) }
         let conn: any EngineConnection
         do { conn = try await transport.connect(info: info) } catch {

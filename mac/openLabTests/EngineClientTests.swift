@@ -345,10 +345,13 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(
             EngineConnectionInfo.load(from: try tempFile(#"{"port":51234,"token":"abc","pid":42,"extra":1}"#)),
             .success(EngineConnectionInfo(port: 51234, token: "abc", pid: 42)))
+        XCTAssertEqual(
+            EngineConnectionInfo.load(from: try tempFile(#"{"port":51234,"token":"abc","pid":42,"stopping":true}"#)),
+            .success(EngineConnectionInfo(port: 51234, token: "abc", pid: 42, stopping: true)))
         XCTAssertEqual(EngineConnectionInfo.load(from: try tempFile(nil)), .failure(.missing))
         for bad in [
             "", "{", "[]", #"{"port":1}"#, #"{"port":0,"token":"a","pid":1}"#, #"{"port":70000,"token":"a","pid":1}"#,
-            #"{"port":5,"token":"","pid":1}"#,
+            #"{"port":5,"token":"","pid":1}"#, #"{"port":5,"token":"a","pid":1,"stopping":"yes"}"#,
         ] {
             guard case .failure(.unreadable) = EngineConnectionInfo.load(from: try tempFile(bad)) else {
                 return XCTFail("accepted \(bad)")

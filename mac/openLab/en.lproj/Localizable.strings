@@ -450,6 +450,8 @@
 "engine.alarm.restoredOne" = "%@ was reopened from its autosave: edits after the last autosave are lost.";
 "engine.alarm.notResponding" = "The engine is not responding";
 "engine.alarm.notRespondingMessage" = "An engine is running but has not answered. It was not stopped, because it may still be playing. Wait for it; if it is stuck, quit openlab-engine in Activity Monitor and open openLab again.";
+"engine.alarm.stillStopping" = "The engine is still shutting down";
+"engine.alarm.stillStoppingMessage" = "The previous engine began shutting down but has not exited. It was not stopped. openLab starts a new engine as soon as it has gone; if it is stuck, quit openlab-engine in Activity Monitor.";
 "engine.alarm.editsLostOne" = "%@ was reopened from its file: its unsaved edits had no autosave and are lost.";
 "engine.alarm.editsLostSetAside" = "%@ was reopened from its file; an earlier autosave was set aside and can be restored.";
 "engine.alarm.failedOne" = "%@ could not be reopened: %@";

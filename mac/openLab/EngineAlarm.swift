@@ -150,8 +150,9 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
-    /// The "not responding" alarm is up: it tells the operator the engine may still be playing, so
-    /// it goes away when that engine answers (no other alarm is taken down by a connection).
+    /// The "not responding" or "still stopping" alarm is up: it tells the operator about an engine
+    /// that may still be running, so it goes away when an engine answers (no other alarm is taken
+    /// down by a connection).
     private var notRespondingShown = false
 
     private func alarm(_ alarm: EngineSupervisor.Alarm) {
@@ -166,6 +167,9 @@ final class EngineAlarmController {
         case .notResponding:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
+        case .stillStopping:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.stillStopping"), message: loc("engine.alarm.stillStoppingMessage"))
         }
         presenter.setRestoreAction(nil)
         summary = ""
