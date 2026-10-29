@@ -256,6 +256,9 @@ pub(super) struct Voice {
     pub(super) moving: Option<Move>,
     /// A move asked for during `moving`'s crossfade: made when it ends.
     next_patch: Option<usize>,
+    /// [`CommandKind::MoveVoice`]s taken since its start (wrapping), as reported in
+    /// [`Event::MoveEnded`].
+    pub(super) moves: u32,
     /// Devamp requests arrived while paused; the resume answers them.
     devamp_due: bool,
     /// Planar `[channel][frame]`, the de-zipper length per channel: the crossfaded tail.
@@ -314,6 +317,7 @@ impl Voice {
             xfade: None,
             moving: None,
             next_patch: None,
+            moves: 0,
             devamp_due: false,
             xbuf: vec![0.0; max_channels * dezip],
             xstride: dezip,
@@ -426,6 +430,7 @@ impl Voice {
         self.xfade = None;
         self.moving = None;
         self.next_patch = None;
+        self.moves = 0;
         self.devamp_due = false;
         self.start = Some(s);
         self.enter(0);

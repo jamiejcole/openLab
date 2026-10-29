@@ -791,16 +791,36 @@ impl Engine {
     }
 
     /// Sends commands as batches the mixer applies whole (docs/audio.md, Scheduling horizon).
-    fn send_commands(&mut self, mut commands: Vec<(SampleTime, CommandKind)>) {
-        while !commands.is_empty() {
-            let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
-            if self.mixer.send_batch(commands).is_err() {
-                // Cannot happen: the batch is at most the queue's size.
-                self.log(LogLevel::Error, "mixer batch refused".to_owned());
+    fn send_commands(&mut self, commands: Vec<(SampleTime, CommandKind)>) {
+        for mut commands in stops_apart(commands) {
+            while !commands.is_empty() {
+                let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
+                if self.mixer.send_batch(commands).is_err() {
+                    // Cannot happen: the batch is at most the queue's size.
+                    self.log(LogLevel::Error, "mixer batch refused".to_owned());
+                }
+                commands = rest;
             }
-            commands = rest;
         }
     }
+}
+
+/// Stops sent with nothing but ramps (a Panic or Stop All that also holds a running Fade cue's
+/// levels where they are) go first, as a batch of their own, so they can overtake ramps held
+/// ahead of them (`MixerController::pump`). Their order against those ramps does not matter: a
+/// stop and a ramp move different gains, and a ramp of a voice already gone is ignored. Any
+/// other mix (a start, a move) is sent as it is.
+fn stops_apart(commands: Vec<(SampleTime, CommandKind)>) -> Vec<Vec<(SampleTime, CommandKind)>> {
+    let stop = |k: &CommandKind| matches!(k, CommandKind::StopVoice { .. });
+    let ramp = |k: &CommandKind| matches!(k, CommandKind::Ramp { .. });
+    if !commands.iter().all(|(_, k)| stop(k) || ramp(k)) {
+        return vec![commands];
+    }
+    let (stops, ramps): (Vec<_>, Vec<_>) = commands.into_iter().partition(|(_, k)| stop(k));
+    [stops, ramps]
+        .into_iter()
+        .filter(|b| !b.is_empty())
+        .collect()
 }
 
 impl Doc {
@@ -1057,6 +1077,40 @@ fn request_name(r: &Request) -> &'static str {
 mod tests {
     use super::*;
     use openlab_core::Cue;
+
+    /// #291: a Panic's stops sent with a Fade cue's hold ramps go apart, first, so they can
+    /// overtake ramps held ahead of them; with anything else in the batch it is kept whole.
+    #[test]
+    fn stops_sent_with_only_ramps_go_first_in_a_batch_of_their_own() {
+        use openlab_audio::{Fade, GainTarget, VoiceId};
+        let stop = |v| CommandKind::StopVoice {
+            voice: VoiceId(v),
+            fade: Fade::NONE,
+        };
+        let ramp = |v| CommandKind::Ramp {
+            voice: VoiceId(v),
+            target: GainTarget::Master,
+            gain: 0.5,
+            fade: Fade::NONE,
+        };
+        let shape = |b: Vec<Vec<(SampleTime, CommandKind)>>| -> Vec<Vec<(SampleTime, bool)>> {
+            b.into_iter()
+                .map(|b| {
+                    b.into_iter()
+                        .map(|(at, k)| (at, matches!(k, CommandKind::StopVoice { .. })))
+                        .collect()
+                })
+                .collect()
+        };
+        let panic = vec![(1, ramp(1)), (2, stop(2)), (3, ramp(3)), (4, stop(4))];
+        assert_eq!(
+            shape(stops_apart(panic)),
+            [vec![(2, true), (4, true)], vec![(1, false), (3, false)]]
+        );
+        assert_eq!(shape(stops_apart(vec![(5, stop(1))])), [vec![(5, true)]]);
+        let mixed = vec![(1, stop(1)), (1, CommandKind::SetMaster { gain: 1.0 })];
+        assert_eq!(stops_apart(mixed).len(), 1);
+    }
 
     pub(super) fn memo_show() -> crate::control::offline::OfflineShow {
         let mixer = openlab_audio::MixerConfig {

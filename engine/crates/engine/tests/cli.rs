@@ -40,14 +40,22 @@ fn version_into_closed_pipe_does_not_panic() {
 }
 
 #[test]
-fn a_positional_show_file_is_a_usage_error_not_a_run() {
-    // M4.15g: the engine starts empty; `--open` replaced the positional show file.
-    let out = Command::new(ENGINE)
-        .arg("/nonexistent/openlab/show.openlab")
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert!(String::from_utf8(out.stdout).unwrap().starts_with("usage"));
+fn a_bad_command_line_is_a_usage_error_on_stderr_with_exit_2() {
+    // M4.15g: the engine starts empty; `--open` replaced the positional show file. An app that
+    // spawns the engine with a wrong argument must see a failure, not a clean exit (#162).
+    for bad in [
+        &["/nonexistent/openlab/show.openlab"][..],
+        &["--nope"],
+        &["--relaunch-app", "not a bundle id"],
+    ] {
+        let out = Command::new(ENGINE).args(bad).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad:?}");
+        assert!(out.stdout.is_empty(), "{bad:?}");
+        assert!(
+            String::from_utf8(out.stderr).unwrap().starts_with("usage"),
+            "{bad:?}"
+        );
+    }
 }
 
 /// A hang guard for waits on a spawned engine, not a timing assertion: generous for a slow
@@ -178,6 +186,7 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
     assert_eq!(v["pid"].as_u64(), Some(u64::from(engine.child.id())));
     assert!(v["port"].as_u64().unwrap() > 0);
     assert_eq!(v["token"].as_str().unwrap().len(), 64);
+    assert_eq!(v["stopping"].as_bool(), Some(false));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;

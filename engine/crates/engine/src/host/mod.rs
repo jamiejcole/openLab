@@ -10,7 +10,10 @@
 //! with `--watch-stdin`, when stdin closes: the control loop stops the show and writes a
 //! recovery file for every workspace with unsaved changes (bounded), then the server stops, the
 //! log is flushed, the run marker goes and `engine.json` goes last, so a start meanwhile is
-//! refused naming this engine. A signal while starting, a second one while stopping, or an exit
+//! refused naming this engine. As soon as the shutdown begins (whichever of those started it)
+//! the engine is "stopping" ([`Stopping`]): an app connection that ends is not relaunched, and
+//! `engine.json` says `stopping: true`, which tells a client that finds it to wait for this
+//! engine to exit instead of attaching to it. A signal while starting, a second one while stopping, or an exit
 //! that overruns its bound ends the process at once ([`stop`]).
 //!
 //! The stream is opened, closed and reopened on the device thread (`control::devices`), which
@@ -23,7 +26,7 @@ mod stop;
 
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -44,7 +47,7 @@ use crate::control::{
 use crate::diag::crash::{self, CrashConfig};
 use crate::diag::run_marker::{self, RunInfo};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
-use crate::net::{NetError, OscConfig, Relaunch, RelaunchFn, ServerConfig, WsServer};
+use crate::net::{NetError, OscConfig, Relaunch, RelaunchFn, ServerConfig, Stopping, WsServer};
 use crate::persist::{AppDirs, load_machine_settings_checked};
 use crate::platform::{exit, power, relaunch, signals};
 use engine_file::{EngineFile, EngineInfo};
@@ -97,6 +100,10 @@ pub struct Options {
     pub relaunch_app: Option<String>,
 }
 
+/// This run's `engine.json` once written: shared by the run, the thread that marks it stopping
+/// ([`mark_on_stop`]) and its removal at the very end, which take it in turn.
+type EngineSlot = Arc<Mutex<Option<EngineFile>>>;
+
 /// How long shutdown waits for the log writer to write what is queued.
 const LOG_FLUSH_WAIT: Duration = Duration::from_secs(3);
 
@@ -141,12 +148,14 @@ pub fn run(options: Options) -> Result<(), HostError> {
 fn supervised(
     dirs: Option<AppDirs>,
     hook: CrashHook,
-    run: impl FnOnce(ShowLog, &mut Option<EngineFile>) -> Result<(), HostError>,
+    run: impl FnOnce(ShowLog, &EngineSlot) -> Result<(), HostError>,
 ) -> Result<(), HostError> {
-    let mut engine_file = None;
-    let result = supervise(dirs, hook, |show_log| run(show_log, &mut engine_file));
+    let engine_file = EngineSlot::default();
+    let result = supervise(dirs, hook, |show_log| run(show_log, &engine_file));
+    // Taken out of the slot, so a mark that comes later finds nothing to write.
+    let file = crate::lock(&engine_file).take();
     if !matches!(result, Err(HostError::ControlPanicked))
-        && let Some(file) = engine_file
+        && let Some(file) = file
     {
         let _ = file.remove();
     }
@@ -281,7 +290,7 @@ fn run_with(
     dirs: Option<&AppDirs>,
     stop: &Arc<Stop>,
     show_log: ShowLog,
-    engine_file: &mut Option<EngineFile>,
+    engine_file: &EngineSlot,
 ) -> Result<(), HostError> {
     if let Some(dirs) = dirs {
         check_single_instance(dirs)?;
@@ -357,9 +366,11 @@ fn run_with(
         let action: RelaunchFn = std::sync::Arc::new(move || relaunch::launch(&id));
         Relaunch::new(action)
     });
+    let (stopping, stopping_rx) = Stopping::new();
     let net_config = ServerConfig {
         osc: Some(OscConfig::default()),
         relaunch,
+        stopping: stopping.clone(),
         ..ServerConfig::default()
     };
     let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
@@ -372,19 +383,18 @@ fn run_with(
     )?;
     open_at_start(&options.open, &inbox_tx)?;
     // From here a signal is a graceful shutdown through the loop.
-    stop.running(inbox_tx.clone());
+    stop.running(inbox_tx.clone(), stopping.clone());
     if options.watch_stdin {
-        let stdin_inbox = inbox_tx.clone();
+        let (stdin_inbox, stdin_stopping) = (inbox_tx.clone(), stopping.clone());
         thread::Builder::new()
             .name("openlab-stdin".into())
             .spawn(move || {
-                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
-                let _ = stdin_inbox.send(Inbox::Shutdown);
+                shutdown_at_eof(std::io::stdin().lock(), &stdin_inbox, &stdin_stopping);
             })
             .map_err(HostError::Thread)?;
     }
     // Last before the loop: a client that finds the file finds an engine about to serve it.
-    *engine_file = match dirs {
+    let written = match dirs {
         Some(dirs) => {
             let path = dirs.engine_file_path();
             let info = EngineInfo {
@@ -394,6 +404,8 @@ fn run_with(
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 protocol_version: PROTOCOL_VERSION,
                 started_ms: EpochClock::system().now_ms(),
+                // A signal may have come already; `mark_on_stop` covers one from now on.
+                stopping: stopping.is_set(),
             };
             Some(
                 EngineFile::write(&path, info).map_err(|error| HostError::EngineFile {
@@ -409,6 +421,17 @@ fn run_with(
             None
         }
     };
+    *crate::lock(engine_file) = written;
+    // Not essential: without it a client finds the file as it was, not marked stopping.
+    let (marked_rx, marked_slot) = (stopping_rx, Arc::clone(engine_file));
+    if let Err(e) = thread::Builder::new()
+        .name("openlab-stopping".into())
+        .spawn(move || mark_on_stop(&marked_rx, &marked_slot))
+    {
+        say(&format!(
+            "could not start a thread ({e}); engine.json is not marked stopping at shutdown"
+        ));
+    }
     say(&format!("listening on 127.0.0.1:{}", server.port()));
     let worker = thread::Builder::new()
         .name("openlab-control".into())
@@ -417,9 +440,40 @@ fn run_with(
     // The control loop stops the show and writes the recovery files; dropping it ends the
     // device thread, which drops the stream (and the mixer) there.
     let joined = join_control(worker);
+    // However the loop ended (a panic included), the engine is stopping now.
+    stopping.begin();
     stop.loop_ended();
     server.stop();
     joined
+}
+
+/// `--watch-stdin`: reads `input` to its end (the parent closed it, or ended), then shuts the
+/// engine down, saying first that the shutdown has begun.
+fn shutdown_at_eof(
+    mut input: impl std::io::Read,
+    inbox: &crossbeam_channel::Sender<Inbox>,
+    stopping: &Stopping,
+) {
+    let _ = std::io::copy(&mut input, &mut std::io::sink());
+    stopping.begin();
+    let _ = inbox.send(Inbox::Shutdown);
+}
+
+/// Waits for the shutdown to begin, then marks this run's `engine.json` stopping, unless the
+/// run has already taken it out of `slot` (removed, or about to be) or the flag went without
+/// being set. On a thread of its own, so the control loop and its final recovery writes never
+/// wait for it (the exit deadline only starts once the loop has ended). It holds `slot` while
+/// it writes: on a hung disk the final removal waits behind it until the forced exit at the
+/// deadline, and a file left then names a dead pid, which the next start treats as stale.
+fn mark_on_stop(stopping: &crossbeam_channel::Receiver<()>, slot: &EngineSlot) {
+    if stopping.recv().is_err() {
+        return;
+    }
+    if let Some(file) = crate::lock(slot).as_mut()
+        && let Err(e) = file.mark_stopping()
+    {
+        say(&format!("could not mark engine.json as stopping: {e}"));
+    }
 }
 
 /// `--open`: the same app-scope `open` a client sends (recovery offered, not chosen), queued
@@ -546,6 +600,7 @@ mod tests {
             version: "0.0.1".into(),
             protocol_version: PROTOCOL_VERSION,
             started_ms: 0,
+            stopping: false,
         };
         let _file = EngineFile::write(&dirs.engine_file_path(), info.clone()).unwrap();
         let stop = Stop::new(None, |_| {});
@@ -597,6 +652,7 @@ mod tests {
             version: "0.0.1".into(),
             protocol_version: PROTOCOL_VERSION,
             started_ms: 0,
+            stopping: false,
         };
         let _file = EngineFile::write(&dirs.engine_file_path(), info).unwrap();
         let refused = lock_instance(&dirs).unwrap_err();
@@ -624,10 +680,11 @@ mod tests {
             version: "0.0.1".into(),
             protocol_version: PROTOCOL_VERSION,
             started_ms: 0,
+            stopping: false,
         };
         let path = dirs.engine_file_path();
-        let write = |slot: &mut Option<EngineFile>| {
-            *slot = Some(EngineFile::write(&path, info.clone()).unwrap());
+        let write = |slot: &EngineSlot| {
+            *crate::lock(slot) = Some(EngineFile::write(&path, info.clone()).unwrap());
         };
         let result = supervised(Some(dirs.clone()), CrashHook::Skip, |_, slot| {
             write(slot);
@@ -650,6 +707,65 @@ mod tests {
         });
         assert!(matches!(result, Err(HostError::ControlPanicked)));
         assert!(path.exists(), "a crash leaves engine.json");
+    }
+
+    /// Stdin closing with `--watch-stdin` begins the shutdown: the engine is stopping (no app
+    /// relaunch, `engine.json` marked) before the loop is asked to end.
+    #[test]
+    fn stdin_closing_says_stopping_and_asks_the_loop_to_end() {
+        let (stopping, told) = Stopping::new();
+        let (inbox_tx, inbox) = crossbeam_channel::unbounded();
+        shutdown_at_eof(std::io::empty(), &inbox_tx, &stopping);
+        assert!(stopping.is_set());
+        assert!(told.try_recv().is_ok());
+        assert!(matches!(inbox.try_recv(), Ok(Inbox::Shutdown)));
+    }
+
+    /// As soon as the shutdown begins `engine.json` says `stopping: true` (the app then waits for
+    /// this engine to exit instead of attaching to it); once the run has taken the file out to
+    /// remove it, a late mark writes nothing back; a flag dropped unset marks nothing.
+    #[test]
+    fn engine_json_is_marked_stopping_when_the_shutdown_begins_and_never_brought_back() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let path = dirs.engine_file_path();
+        let info = EngineInfo {
+            pid: std::process::id(),
+            port: 50_003,
+            token: "t".into(),
+            version: "0.0.1".into(),
+            protocol_version: PROTOCOL_VERSION,
+            started_ms: 0,
+            stopping: false,
+        };
+        let slot = EngineSlot::default();
+        *crate::lock(&slot) = Some(EngineFile::write(&path, info.clone()).unwrap());
+        let (stopping, told) = Stopping::new();
+        stopping.begin();
+        mark_on_stop(&told, &slot);
+        assert_eq!(
+            engine_file::read(&path).map(|i| i.stopping),
+            Some(true),
+            "marked"
+        );
+        // Still this run's to remove at the end.
+        if let Some(file) = crate::lock(&slot).take() {
+            file.remove().unwrap();
+        }
+        assert!(!path.exists());
+
+        // A mark that comes after the removal.
+        let (stopping, told) = Stopping::new();
+        stopping.begin();
+        mark_on_stop(&told, &slot);
+        assert!(!path.exists(), "brought back");
+
+        // A run that never began to stop (its flag gone unset) leaves the file as written.
+        *crate::lock(&slot) = Some(EngineFile::write(&path, info.clone()).unwrap());
+        let (stopping, told) = Stopping::new();
+        drop(stopping);
+        mark_on_stop(&told, &slot);
+        assert_eq!(engine_file::read(&path), Some(info));
     }
 
     #[test]

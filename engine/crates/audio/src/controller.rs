@@ -5,14 +5,15 @@
 //!
 //! Every command goes through a control-side hold queue ordered by `(at, send order)`. [`pump`]
 //! releases those due within the lookahead horizon, whole batches at a time, so the mixer only
-//! ever holds near-term commands and a far-future schedule cannot delay a stop. The engine's
-//! control loop calls [`pump`] on every tick; [`send`] pumps too.
+//! ever holds near-term commands and a far-future schedule cannot delay a stop. A batch of
+//! stops also overtakes batches of ramps queued ahead of it (a whole-matrix level edit is
+//! thousands of ramps, released one queue's worth per block). The engine's control loop calls
+//! [`pump`] on every tick; [`send`] pumps too.
 //!
 //! [`pump`]: MixerController::pump
 //! [`send`]: MixerController::send
 
-use std::cmp::Ordering as CmpOrdering;
-use std::collections::BinaryHeap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -37,33 +38,6 @@ impl std::fmt::Display for BatchTooLarge {
 
 impl std::error::Error for BatchTooLarge {}
 
-/// Commands waiting on the control thread; a batch is released whole or not at all.
-struct Held {
-    at: SampleTime,
-    seq: u64,
-    cmds: Vec<Command>,
-}
-
-impl Ord for Held {
-    fn cmp(&self, other: &Self) -> CmpOrdering {
-        (other.at, other.seq).cmp(&(self.at, self.seq))
-    }
-}
-
-impl PartialOrd for Held {
-    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for Held {
-    fn eq(&self, other: &Self) -> bool {
-        (self.at, self.seq) == (other.at, other.seq)
-    }
-}
-
-impl Eq for Held {}
-
 pub struct MixerController {
     commands: Producer<Command>,
     events: Consumer<Event>,
@@ -71,7 +45,9 @@ pub struct MixerController {
     shared: Arc<Shared>,
     cue_outputs: usize,
     lookahead: u64,
-    held: BinaryHeap<Held>,
+    /// Batches waiting on the control thread, keyed by `(earliest at, first send order)`; a
+    /// batch is released whole or not at all.
+    held: BTreeMap<(SampleTime, u64), Vec<Command>>,
     held_commands: usize,
     seq: u64,
     meters: MeterReader,
@@ -94,7 +70,7 @@ impl MixerController {
             shared,
             cue_outputs,
             lookahead,
-            held: BinaryHeap::new(),
+            held: BTreeMap::new(),
             held_commands: 0,
             seq: 0,
         }
@@ -178,35 +154,68 @@ impl MixerController {
             .collect();
         let at = cmds.iter().map(|c| c.at).min().unwrap_or(0);
         self.held_commands += cmds.len();
-        self.held.push(Held {
-            at,
-            seq: first,
-            cmds,
-        });
+        self.held.insert((at, first), cmds);
     }
 
     /// Frees returned voice starts, then releases held commands due within the lookahead, in
-    /// `(at, send order)`, stopping at the first batch that does not fit. Returns how many
-    /// commands were released.
+    /// `(at, send order)`, stopping at the first batch that does not fit; batches of stops
+    /// first, past the batches of ramps ahead of them ([`Self::overtaking_stops`]). Returns how
+    /// many commands were released.
     pub fn pump(&mut self) -> usize {
         self.collect_returns();
         let horizon = self.samples_rendered().saturating_add(self.lookahead);
         let mut released = 0;
-        while let Some(n) = self
+        for key in self.overtaking_stops(horizon) {
+            match self.release(key) {
+                Some(n) => released += n,
+                None => break,
+            }
+        }
+        while let Some(key) = self
             .held
-            .peek()
-            .filter(|h| h.at <= horizon)
-            .map(|h| h.cmds.len())
+            .first_key_value()
+            .map(|(&key, _)| key)
+            .filter(|&(at, _)| at <= horizon)
         {
-            // One chunk commit publishes the whole batch at once.
-            let Ok(chunk) = self.commands.write_chunk_uninit(n) else {
-                break;
-            };
-            let Some(h) = self.held.pop() else { break };
-            self.held_commands -= n;
-            released += chunk.fill_from_iter(h.cmds);
+            match self.release(key) {
+                Some(n) => released += n,
+                None => break,
+            }
         }
         released
+    }
+
+    /// The due batches of stops that only batches of ramps are queued ahead of, in order. A
+    /// ramp never starts, resumes or ends a voice, so a stop overtaking one cannot leave a voice
+    /// playing: the ramp just applies later, to a voice fading out or gone (ignored). Without
+    /// this a stop or panic sent just after a whole-matrix edit of a large cue waits behind
+    /// thousands of ramps, a queue's worth per block.
+    fn overtaking_stops(&self, horizon: SampleTime) -> Vec<(SampleTime, u64)> {
+        let mut stops = Vec::new();
+        for (&key, cmds) in self.held.range(..=(horizon, u64::MAX)) {
+            if cmds
+                .iter()
+                .all(|c| matches!(c.kind, CommandKind::StopVoice { .. }))
+            {
+                stops.push(key);
+            } else if !cmds
+                .iter()
+                .all(|c| matches!(c.kind, CommandKind::Ramp { .. }))
+            {
+                break;
+            }
+        }
+        stops
+    }
+
+    /// Writes held batch `key` to the queue in one chunk commit, so the mixer sees all of it
+    /// or none. `None` if it does not fit (it stays held).
+    fn release(&mut self, key: (SampleTime, u64)) -> Option<usize> {
+        let n = self.held.get(&key)?.len();
+        let chunk = self.commands.write_chunk_uninit(n).ok()?;
+        let cmds = self.held.remove(&key)?;
+        self.held_commands -= n;
+        Some(chunk.fill_from_iter(cmds))
     }
 
     /// Commands waiting on the control thread.

@@ -10,11 +10,13 @@ mod osc;
 mod osc_mirror;
 mod refusals;
 mod relaunch;
+mod stopping;
 mod token;
 mod ws;
 
-pub use osc::{OscConfig, OscListenerStats, OscPorts, TAP_QUEUE};
+pub use osc::{MAX_HELD_INPUTS, OscConfig, OscListenerStats, OscPorts, TAP_QUEUE};
 pub use relaunch::{AppProcess, ProcessNameFn, Relaunch, RelaunchFn};
+pub use stopping::Stopping;
 pub use token::{constant_time_eq, generate_token};
 pub use ws::{ServerConfig, WsServer};
 

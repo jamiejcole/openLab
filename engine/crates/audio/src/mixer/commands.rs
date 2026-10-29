@@ -176,10 +176,21 @@ impl Mixer {
             }
             CommandKind::MoveVoice { voice, patch } => {
                 let to = usize::from(patch);
-                if to < self.patches.len()
-                    && let Some(v) = self.voice_mut(voice)
-                {
-                    v.move_to(to, dezip);
+                let known = to < self.patches.len();
+                let Mixer { voices, outbox, .. } = self;
+                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
+                    v.moves = v.moves.wrapping_add(1);
+                    if known {
+                        v.move_to(to, dezip);
+                    }
+                    if v.moving.is_none() {
+                        let moves = v.moves;
+                        outbox.emit(Event::MoveEnded {
+                            voice,
+                            at: t,
+                            moves,
+                        });
+                    }
                 }
             }
             CommandKind::SetOutput { output, settings } => {

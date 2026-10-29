@@ -278,7 +278,8 @@ fn event_voice(e: &Event) -> Option<VoiceId> {
         | Event::LoopReached { voice, .. }
         | Event::SliceEnded { voice, .. }
         | Event::DevampScheduled { voice, .. }
-        | Event::DevampIgnored { voice, .. } => Some(*voice),
+        | Event::DevampIgnored { voice, .. }
+        | Event::MoveEnded { voice, .. } => Some(*voice),
         Event::PendingFull { .. } | Event::StageFaulted { .. } => None,
     }
 }

@@ -134,8 +134,11 @@ pub struct VoiceRec {
     /// The workspace patch `slot` belongs to.
     patch: Option<PatchId>,
     /// Slots it was moved off: its crossfade out of them may still be playing, so they count as
-    /// in use until it ends (at most one per patch slot).
+    /// in use until the mixer reports it settled after every move sent (`moves`) or the voice
+    /// ends (at most one per patch slot).
     former: Vec<u16>,
+    /// `MoveVoice`s sent for it (wrapping), matched against the mixer's `Event::MoveEnded`.
+    moves: u32,
     /// Its cue outputs below this have their levels; those from here on were silenced at its
     /// start, beyond the outputs of the patch it started on ([`voice_start`]).
     levelled: usize,
@@ -959,6 +962,18 @@ impl Voices {
                     ));
                 }
             }
+            Event::MoveEnded { voice, moves, .. } => {
+                // Settled after the last move sent: no crossfade plays out of a former slot,
+                // so they can be reused. A move sent since is still on its way (the counts
+                // differ) and its crossfade will be reported in turn; a lost report keeps
+                // them until the voice ends.
+                if let Some((id, _)) = self.resolve(voice)
+                    && let Some(r) = self.recs.get_mut(&id)
+                    && r.moves == moves
+                {
+                    r.former.clear();
+                }
+            }
             Event::PendingFull { .. }
             | Event::LoopReached { .. }
             | Event::SliceEnded { .. }
@@ -1253,6 +1268,7 @@ impl Voices {
             }
             r.slot = Some(slot);
             r.patch = Some(*patch);
+            r.moves = r.moves.wrapping_add(1);
             commands.push((
                 at,
                 CommandKind::MoveVoice {
@@ -1469,6 +1485,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         slot: None,
         patch: None,
         former: Vec::new(),
+        moves: 0,
         levelled: 0,
     }
 }

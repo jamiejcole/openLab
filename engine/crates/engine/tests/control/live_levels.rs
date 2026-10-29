@@ -445,6 +445,64 @@ fn a_slot_a_move_left_keeps_its_routing_until_the_crossfade_ends() {
     assert_eq!(s.control().live_voices(), 1);
 }
 
+/// #346: the slot a playing cue moved off is free for another patch once the crossfade out of
+/// it has ended, not only when the cue stops; never before it ends (its tail would be heard on
+/// the new patch's outputs). Two mixer slots, Main's and Third's; Side waits for one.
+#[test]
+fn a_slot_a_move_left_is_handed_on_once_the_crossfade_ends() {
+    let b = wav(&dc(RATE as usize, LEVEL));
+    let mut on_side = audio(2, &b, 0);
+    if let CueKind::Audio { patch, .. } = &mut on_side.kind {
+        *patch = side();
+    }
+    let mut s = two_patch_show_with(patch_id(), 0, vec![on_side], |ws, c| {
+        let mut p = ws.patches[1].clone();
+        p.id = third();
+        p.name = "Third".into();
+        ws.patches.insert(1, p);
+        c.block_frames = 16;
+    });
+    go(&mut s);
+    s.run(800);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { patch, .. } = &mut kind {
+        *patch = third();
+    }
+    let at = send_edit(
+        &mut s,
+        Command::Transaction {
+            commands: vec![
+                Command::SetCueProperty {
+                    id: id(1),
+                    property: CueProperty::Kind { value: kind },
+                },
+                Command::RemovePatch {
+                    id: patch_id(),
+                    even_if_used: false,
+                },
+            ],
+        },
+    );
+    s.run(200);
+    // Third's output is Main's: cue 1 is heard on through the move, and never on Side's.
+    assert!(s.channel(0)[at - 100..].iter().all(|&v| near(v, LEVEL)));
+    assert!(s.channel(1).iter().all(|&v| v == 0.0), "tail on Side");
+    let started = start(&mut s, 2) as usize;
+    s.run(400);
+    let x = s.channel(1);
+    assert!(
+        x[started + MOVE..].iter().all(|&v| near(v, LEVEL)),
+        "Side got no slot while cue 1 plays"
+    );
+    assert_eq!(s.control().live_voices(), 2);
+}
+
 /// #347: a preview keeps the patch it started on when its cue's patch changes, as it keeps its
 /// levels: the audition is not moved onto the show's outputs.
 #[test]

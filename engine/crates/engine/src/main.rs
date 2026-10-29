@@ -21,8 +21,16 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 [--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID]";
 
+/// The exit status of a usage error (the convention of `getopt` tools: 2, not 1, which is a
+/// failed run).
+const USAGE_EXIT: u8 = 2;
+
 enum Mode {
+    /// `--version`: printed on stdout, exit 0.
     Print(String),
+    /// A bad command line: the usage on stderr, exit 2, so whoever spawned the engine (the
+    /// app) sees a failure, not a clean exit with no `engine.json`.
+    Usage,
     /// Run the engine (starts with no workspace open; `--open` opens shows through `open`).
     Run(Options),
 }
@@ -37,20 +45,20 @@ fn mode(args: &[String]) -> Mode {
         match arg.as_str() {
             "--open" => match rest.next() {
                 Some(path) => options.open.push(PathBuf::from(path)),
-                None => return Mode::Print(USAGE.to_owned()),
+                None => return Mode::Usage,
             },
             "--app-support" => match rest.next() {
                 Some(dir) => options.app_support = Some(PathBuf::from(dir)),
-                None => return Mode::Print(USAGE.to_owned()),
+                None => return Mode::Usage,
             },
             "--watch-stdin" => options.watch_stdin = true,
             "--relaunch-app" => match rest.next() {
                 Some(id) if relaunch::valid_bundle_id(id) => {
                     options.relaunch_app = Some(id.clone())
                 }
-                _ => return Mode::Print(USAGE.to_owned()),
+                _ => return Mode::Usage,
             },
-            _ => return Mode::Print(USAGE.to_owned()),
+            _ => return Mode::Usage,
         }
     }
     Mode::Run(options)
@@ -65,6 +73,10 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         },
+        Mode::Usage => {
+            let _ = writeln!(std::io::stderr().lock(), "{USAGE}");
+            ExitCode::from(USAGE_EXIT)
+        }
         Mode::Run(options) => match openlab_engine::host::run(options) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -93,7 +105,7 @@ mod tests {
 
     /// M4.15g: no positional show file any more; `--open` (repeatable) is the dev/test path.
     #[test]
-    fn options_parse_and_anything_else_prints_the_usage() {
+    fn options_parse_and_anything_else_is_a_usage_error() {
         let Mode::Run(o) = mode(&args(&[
             "--open",
             "a.openlab",
@@ -118,11 +130,10 @@ mod tests {
             &["--open"],
             &["--app-support"],
             &["--nope"],
+            &["--relaunch-app"],
+            &["--relaunch-app", "not a bundle id"],
         ] {
-            assert!(
-                matches!(mode(&args(bad)), Mode::Print(t) if t.starts_with("usage")),
-                "{bad:?}"
-            );
+            assert!(matches!(mode(&args(bad)), Mode::Usage), "{bad:?}");
         }
     }
 
