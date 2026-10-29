@@ -10,8 +10,8 @@ mod common;
 use common::*;
 use openlab_audio::{
     CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MAX_GAIN, MixerConfig,
-    OutputSettings, RAMP_TOLERANCE, RejectReason, SILENCE_DB, VoiceId, VoiceStart, db_to_linear,
-    ramp_value,
+    MixerController, OfflineRenderer, OutputSettings, RAMP_TOLERANCE, RejectReason, SILENCE_DB,
+    VoiceId, VoiceStart, db_to_linear, ramp_value,
 };
 use proptest::prelude::*;
 
@@ -991,4 +991,157 @@ fn rings_wrapping_mid_frame_deliver_every_channel_in_order() {
             );
         }
     }
+}
+
+fn move_voice(voice: u64, to: u16) -> CommandKind {
+    CommandKind::MoveVoice {
+        voice: VoiceId(voice),
+        patch: to,
+    }
+}
+
+/// Two outputs; patch 0 routes cue output 0 to device output 0 (as it starts), patch 1 to
+/// device output 1. A mono DC voice on patch 0.
+fn two_patches(frames: usize) -> (MixerController, OfflineRenderer) {
+    let (mut ctl, r) = setup(config(2));
+    ctl.send(0, patch(1, 0, 0, 0.0));
+    ctl.send(0, patch(1, 0, 1, 1.0));
+    start(&mut ctl, 0, 1, mono_dc(frames), 1);
+    (ctl, r)
+}
+
+/// #293: a voice moved to another patch (its cue's patch changed) crossfades from the old
+/// patch's outputs to the new one's over the de-zipper (240 frames at 48 kHz), whatever the
+/// block sizes: no step larger than the crossfade's, and the two always add up to the signal.
+#[test]
+fn a_moved_voice_crossfades_from_its_old_patch_to_its_new_one() {
+    for blocks in PATTERNS {
+        let (mut ctl, mut r) = two_patches(4000);
+        ctl.send(1000, move_voice(1, 1));
+        let out = r.render(3000, blocks);
+        let (a, b) = (channel(&out, 2, 0), channel(&out, 2, 1));
+        assert_eq!((a[999], b[999]), (1.0, 0.0), "{blocks:?}");
+        assert_eq!(
+            (a[1000], b[1000]),
+            (1.0, 0.0),
+            "the crossfade starts on its sample"
+        );
+        assert!((a[1120] - 0.5).abs() < 1e-6 && (b[1120] - 0.5).abs() < 1e-6);
+        assert_eq!((a[1240], b[1240]), (0.0, 1.0), "{blocks:?}");
+        assert_eq!((a[2999], b[2999]), (0.0, 1.0));
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x + y - 1.0).abs() < 1e-6, "{x} + {y}");
+        }
+        assert!(max_step(&a) <= 1.0 / 240.0 + 1e-6, "{blocks:?}");
+        assert!(max_step(&b) <= 1.0 / 240.0 + 1e-6, "{blocks:?}");
+    }
+}
+
+/// A move for an unknown voice or patch, or to the patch the voice is on, changes nothing.
+#[test]
+fn a_move_to_nowhere_or_of_nobody_is_ignored() {
+    let (mut ctl, mut r) = two_patches(4000);
+    ctl.send(500, move_voice(9, 1));
+    ctl.send(600, move_voice(1, 99));
+    ctl.send(700, move_voice(1, 0));
+    let out = r.render(2000, &[64]);
+    assert!(channel(&out, 2, 0).iter().all(|s| *s == 1.0));
+    assert!(channel(&out, 2, 1).iter().all(|s| *s == 0.0));
+    assert!(events(&mut ctl).is_empty());
+}
+
+/// A voice not heard yet (moved on its start sample) or paused past its declick tail moves at
+/// once: there is nothing to crossfade.
+#[test]
+fn a_voice_not_heard_moves_at_once() {
+    let (mut ctl, mut r) = setup(config(2));
+    ctl.send(0, patch(1, 0, 0, 0.0));
+    ctl.send(0, patch(1, 0, 1, 1.0));
+    start(&mut ctl, 1000, 1, mono_dc(4000), 1);
+    ctl.send(1000, move_voice(1, 1));
+    ctl.send(2000, CommandKind::PauseVoice { voice: VoiceId(1) });
+    ctl.send(2500, move_voice(1, 0));
+    ctl.send(
+        3000,
+        CommandKind::ResumeVoice {
+            voice: VoiceId(1),
+            new_id: VoiceId(2),
+        },
+    );
+    let out = r.render(4000, &[64]);
+    let (a, b) = (channel(&out, 2, 0), channel(&out, 2, 1));
+    assert_eq!((a[1000], b[1000]), (0.0, 1.0));
+    assert_eq!((a[1999], b[1999]), (0.0, 1.0));
+    // Paused, then resumed on patch 0 with the resume's declick only.
+    assert!(b[2500..].iter().all(|s| *s == 0.0));
+    assert_eq!(a[3240], 1.0);
+}
+
+/// A move asked for during a move's crossfade waits for it (to the end of the block it ends
+/// in), then crossfades in turn: the output never jumps, and the voice ends on the patch asked
+/// for last.
+#[test]
+fn a_move_during_a_move_waits_for_it() {
+    let (mut ctl, mut r) = two_patches(4000);
+    ctl.send(1000, move_voice(1, 1));
+    ctl.send(1100, move_voice(1, 0));
+    let out = r.render(2000, &[100, 37]);
+    let (a, b) = (channel(&out, 2, 0), channel(&out, 2, 1));
+    assert_eq!((a[1240], b[1240]), (0.0, 1.0), "the first move ends first");
+    // From the end of the block the first ended in (at most a block later).
+    assert_eq!(
+        (a[1480 + 100], b[1480 + 100]),
+        (1.0, 0.0),
+        "then the second"
+    );
+    for (x, y) in a.iter().zip(&b) {
+        assert!((x + y - 1.0).abs() < 1e-6, "{x} + {y}");
+    }
+    assert!(max_step(&a) <= 1.0 / 240.0 + 1e-6);
+    assert!(max_step(&b) <= 1.0 / 240.0 + 1e-6);
+}
+
+/// Moving voices renders without allocating (the real-time rule).
+#[test]
+fn moving_a_voice_does_not_allocate() {
+    let (mut ctl, mut r) = two_patches(8000);
+    ctl.send(100, move_voice(1, 1));
+    ctl.send(200, move_voice(1, 0));
+    ctl.send(1000, move_voice(1, 1));
+    let mut out = vec![0.0; 2 * 2000];
+    no_alloc(|| r.render_into(&mut out, &[64, 7]));
+    assert_eq!(channel(&out, 2, 1)[1999], 1.0);
+}
+
+/// #95: `SnapPatch` makes a patch's routing ramps end on their targets on the sample it
+/// applies (here a block boundary, and in the middle of the de-zipper), ignores a patch the
+/// mixer does not have, and does not allocate.
+#[test]
+fn snap_patch_ends_the_routing_ramps_on_their_targets() {
+    let (mut ctl, mut r) = setup(config(2));
+    start(&mut ctl, 0, 1, mono_dc(8000), 1);
+    // Patch 0 starts as identity; route cue output 0 to device output 1 at half gain.
+    ctl.send(1000, patch(0, 0, 0, 0.0));
+    ctl.send(1000, patch(0, 0, 1, 0.5));
+    ctl.send(1024, CommandKind::SnapPatch { patch: 0 });
+    ctl.send(1024, CommandKind::SnapPatch { patch: 99 });
+    // A second change, snapped half-way through its de-zipper.
+    ctl.send(2000, patch(0, 0, 1, 1.0));
+    ctl.send(2120, CommandKind::SnapPatch { patch: 0 });
+    let mut out = vec![0.0; 2 * 3000];
+    no_alloc(|| r.render_into(&mut out, &[256]));
+    let (a, b) = (channel(&out, 2, 0), channel(&out, 2, 1));
+    // Ramping before the snap (the de-zipper runs 240 frames).
+    assert!(a[1023] > 0.0 && a[1023] < 1.0, "{}", a[1023]);
+    assert!(b[1023] > 0.0 && b[1023] < 0.5, "{}", b[1023]);
+    assert_eq!(
+        (a[1024], b[1024]),
+        (0.0, 0.5),
+        "on its targets from the snap"
+    );
+    assert_eq!((a[1999], b[1999]), (0.0, 0.5));
+    assert!(b[2119] > 0.5 && b[2119] < 1.0, "{}", b[2119]);
+    assert_eq!(b[2120], 1.0);
+    assert_eq!(b[2999], 1.0);
+    assert!(events(&mut ctl).is_empty(), "an unknown patch is ignored");
 }
