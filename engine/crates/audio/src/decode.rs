@@ -845,8 +845,10 @@ fn find_pcm_format<R: Read + Seek + ?Sized>(r: &mut R) -> Option<(u16, u16, u16)
     find_chunk_body(r, 0).map(|c| c.format())
 }
 
-/// Finds the `fmt ` / `COMM` chunk of the RIFF/WAVE or AIFF container starting at byte `start`.
+/// Finds the `fmt ` / `COMM` chunk of the RIFF/WAVE or AIFF container starting at byte `start`,
+/// with the PCM reader's chunk walk. A chunk cut short by the end of the file is not found.
 fn find_chunk_body<R: Read + Seek + ?Sized>(r: &mut R, start: u64) -> Option<ChunkBody> {
+    let file_len = r.seek(SeekFrom::End(0)).ok()?;
     r.seek(SeekFrom::Start(start)).ok()?;
     let mut head = [0u8; 12];
     r.read_exact(&mut head).ok()?;
@@ -855,30 +857,25 @@ fn find_chunk_body<R: Read + Seek + ?Sized>(r: &mut R, start: u64) -> Option<Chu
         (b"FORM", b"AIFF" | b"AIFC") => (true, b"COMM"),
         _ => return None,
     };
-    for _ in 0..HEADER_CHUNKS {
-        let mut ch = [0u8; 8];
-        r.read_exact(&mut ch).ok()?;
-        let size = [ch[4], ch[5], ch[6], ch[7]];
-        let size = if big_endian {
-            u32::from_be_bytes(size)
-        } else {
-            u32::from_le_bytes(size)
-        };
-        if &ch[..4] == want {
-            let mut body = [0u8; 40];
-            let len = usize::try_from(size).unwrap_or(usize::MAX).min(40);
-            r.read_exact(body.get_mut(..len)?).ok()?;
-            return Some(ChunkBody {
-                big_endian,
-                body,
-                len,
-            });
+    crate::pcm::walk(r, start, file_len, big_endian, |id, _, size, got| {
+        if id != want {
+            return Ok(None);
         }
-        // Chunks are padded to an even length.
-        let skip = i64::from(size) + i64::from(size & 1);
-        r.seek(SeekFrom::Current(skip)).ok()?;
-    }
-    None
+        let len = usize::try_from(size)
+            .unwrap_or(usize::MAX)
+            .min(crate::pcm::FORMAT_BYTES);
+        let mut body = [0u8; crate::pcm::FORMAT_BYTES];
+        let found = match body.get_mut(..len) {
+            Some(dst) if got.len() == len => {
+                dst.copy_from_slice(got);
+                Some(ChunkBody::new(big_endian, body, len))
+            }
+            _ => None,
+        };
+        Ok(Some(found))
+    })
+    .ok()
+    .flatten()
 }
 
 /// Adapts a [`MediaRead`] to symphonia's source trait.
@@ -1889,6 +1886,40 @@ impl FrameSource for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The routing's format-chunk lookup walks as the PCM reader does (cull M25): past an
+    /// odd-sized chunk and its pad byte, in a container that starts later in the stream, and a
+    /// format chunk cut short by the end of the file is not found.
+    #[test]
+    fn the_format_chunk_is_found_with_the_pcm_readers_walk() {
+        let fmt = |len: usize| {
+            let mut c = b"fmt ".to_vec();
+            c.extend_from_slice(&16u32.to_le_bytes());
+            let mut body = [0u8; 16];
+            body[0] = 1; // PCM
+            body[2] = 2; // channels
+            body[14] = 24; // bits
+            c.extend_from_slice(&body[..len]);
+            c
+        };
+        let wav = |junk: &[u8], fmt: Vec<u8>| {
+            let mut v = junk.to_vec();
+            v.extend_from_slice(b"RIFF\0\0\0\0WAVE");
+            v.extend_from_slice(b"junk");
+            v.extend_from_slice(&3u32.to_le_bytes());
+            v.extend_from_slice(&[9, 9, 9, 0]); // three bytes and the pad
+            v.extend_from_slice(&fmt);
+            v
+        };
+        let found = |bytes: Vec<u8>, at: u64| {
+            find_chunk_body(&mut io::Cursor::new(bytes), at).map(|c| c.format())
+        };
+        assert_eq!(found(wav(&[], fmt(16)), 0), Some((2, 24, 1)));
+        assert_eq!(found(wav(&[7; 5], fmt(16)), 5), Some((2, 24, 1)));
+        assert_eq!(found(wav(&[], fmt(10)), 0), None);
+        let mut header = io::Cursor::new(wav(&[], fmt(16)));
+        assert_eq!(find_pcm_format(&mut header), Some((2, 24, 1)));
+    }
 
     /// A valid WAV/AIFF/FLAC start is taken by the probe: the pre-check walks only its chunks
     /// (here 4 KiB of them, plus one buffer), not the scan window.

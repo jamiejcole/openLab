@@ -12,7 +12,7 @@
 //! threads only; every failure is a typed [`MediaError`], and no length from the file sizes an
 //! allocation.
 
-use std::io::{self, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::decode::{
     FrameSource, HEADER_CHUNKS, MIN_MEDIA_RATE, MediaError, MediaInfo, MediaRead, MediaWarning,
@@ -23,7 +23,7 @@ use crate::mixer::{MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS};
 /// Frames converted per read: bounds the byte scratch (2 MiB at 64 channels of 64-bit floats).
 const CHUNK_FRAMES: usize = 4096;
 /// Bytes of a `fmt ` / `COMM` chunk looked at (WAVE_FORMAT_EXTENSIBLE needs 40, AIFF-C 22).
-const FORMAT_BYTES: usize = 40;
+pub(crate) const FORMAT_BYTES: usize = 40;
 /// The tail of the KSDATAFORMAT_SUBTYPE GUIDs after their two-byte format tag.
 const GUID_TAIL: [u8; 14] = [
     0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
@@ -152,7 +152,7 @@ fn corrupt(what: &str) -> MediaError {
 }
 
 /// Reads `buf.len()` bytes, or fewer at the end of the file; returns how many.
-fn read_full(r: &mut dyn MediaRead, buf: &mut [u8]) -> io::Result<usize> {
+fn read_full<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
     let mut n = 0;
     while let Some(rest) = buf.get_mut(n..).filter(|rest| !rest.is_empty()) {
         match r.read(rest) {
@@ -227,15 +227,19 @@ fn check_channels(ch: u16) -> Result<usize, MediaError> {
     }
 }
 
-/// Walks the chunks after the 12-byte container header, calling `on_chunk(id, body_start, size,
-/// body)` with up to [`FORMAT_BYTES`] of each chunk's body, until it returns `Some`.
-fn walk<T>(
-    r: &mut dyn MediaRead,
+/// Walks the chunks after the 12-byte container header that starts at byte `start`, by their
+/// sizes, calling `on_chunk(id, body_start, size, body)` with up to [`FORMAT_BYTES`] of each
+/// chunk's body, until it returns `Some`. The one size-based chunk walk: the PCM reader parses
+/// with it and `decode`'s routing finds the format chunk with it, so both see the same chunk.
+/// (`riff_check` walks as symphonia does instead, on purpose.)
+pub(crate) fn walk<R: Read + Seek + ?Sized, T>(
+    r: &mut R,
+    start: u64,
     file_len: u64,
     big_endian: bool,
     mut on_chunk: impl FnMut(&[u8; 4], u64, u32, &[u8]) -> Result<Option<T>, MediaError>,
 ) -> Result<T, MediaError> {
-    let mut pos = 12u64;
+    let mut pos = start.saturating_add(12);
     for _ in 0..HEADER_CHUNKS {
         r.seek(SeekFrom::Start(pos)).map_err(|e| io_err(&e))?;
         let mut head = [0u8; 8];
@@ -270,7 +274,7 @@ fn walk<T>(
 
 fn parse_wav(r: &mut dyn MediaRead, file_len: u64) -> Result<Header, MediaError> {
     let mut fmt: Option<(usize, u32, Layout)> = None;
-    walk(r, file_len, false, |id, body_start, size, body| {
+    walk(r, 0, file_len, false, |id, body_start, size, body| {
         match id {
             b"fmt " if fmt.is_none() => {
                 if size < 16 || body.len() < 16 {
@@ -338,69 +342,75 @@ fn parse_wav(r: &mut dyn MediaRead, file_len: u64) -> Result<Header, MediaError>
 
 fn parse_aiff(r: &mut dyn MediaRead, file_len: u64, aifc: bool) -> Result<Header, MediaError> {
     let mut comm: Option<(usize, u32, Layout, u64)> = None;
-    walk(r, file_len, true, |id, body_start, size, body| match id {
-        b"COMM" if comm.is_none() => {
-            let need: usize = if aifc { 22 } else { 18 };
-            if usize::try_from(size).unwrap_or(0) < need || body.len() < need {
-                return Err(corrupt("COMM chunk too short"));
-            }
-            let channels = check_channels(be16(body, 0).unwrap_or(0))?;
-            let frames = u64::from(be32(body, 2).unwrap_or(0));
-            let bits = usize::from(be16(body, 6).unwrap_or(0));
-            let rate = body
-                .get(8..18)
-                .and_then(extended_rate)
-                .ok_or_else(|| corrupt("sample rate"))?;
-            check_rate(rate)?;
-            // Integer samples take as many bytes as their bit count needs, left-justified.
-            let int = |big_endian: bool| {
-                if (1..=32).contains(&bits) {
-                    Ok(Layout::int(bits.div_ceil(8), big_endian, false))
+    walk(
+        r,
+        0,
+        file_len,
+        true,
+        |id, body_start, size, body| match id {
+            b"COMM" if comm.is_none() => {
+                let need: usize = if aifc { 22 } else { 18 };
+                if usize::try_from(size).unwrap_or(0) < need || body.len() < need {
+                    return Err(corrupt("COMM chunk too short"));
+                }
+                let channels = check_channels(be16(body, 0).unwrap_or(0))?;
+                let frames = u64::from(be32(body, 2).unwrap_or(0));
+                let bits = usize::from(be16(body, 6).unwrap_or(0));
+                let rate = body
+                    .get(8..18)
+                    .and_then(extended_rate)
+                    .ok_or_else(|| corrupt("sample rate"))?;
+                check_rate(rate)?;
+                // Integer samples take as many bytes as their bit count needs, left-justified.
+                let int = |big_endian: bool| {
+                    if (1..=32).contains(&bits) {
+                        Ok(Layout::int(bits.div_ceil(8), big_endian, false))
+                    } else {
+                        Err(MediaError::Unsupported(format!(
+                            "AIFF sample size of {bits} bits"
+                        )))
+                    }
+                };
+                let comp = if aifc {
+                    body.get(18..22)
                 } else {
-                    Err(MediaError::Unsupported(format!(
-                        "AIFF sample size of {bits} bits"
-                    )))
-                }
-            };
-            let comp = if aifc {
-                body.get(18..22)
-            } else {
-                Some(&b"NONE"[..])
-            };
-            let layout = match comp {
-                Some(b"NONE" | b"in24" | b"in32") => int(true)?,
-                Some(b"sowt") => int(false)?,
-                Some(b"twos") => int(true)?,
-                Some(b"fl32" | b"FL32") => Layout::float(4, true),
-                Some(b"fl64" | b"FL64") => Layout::float(8, true),
-                _ => {
-                    return Err(MediaError::Unsupported(format!(
-                        "compressed AIFF-C with {channels} channels"
-                    )));
-                }
-            };
-            comm = Some((channels, rate, layout, frames));
-            Ok(None)
-        }
-        b"SSND" => {
-            let (channels, rate, layout, frames) =
-                comm.ok_or_else(|| corrupt("SSND before COMM"))?;
-            let offset = u64::from(be32(body, 0).unwrap_or(0));
-            let skip = 8 + offset;
-            let data_len = u64::from(size)
-                .checked_sub(skip)
-                .ok_or_else(|| corrupt("SSND offset past its chunk"))?;
-            Ok(Some(Header {
-                channels,
-                rate,
-                layout,
-                declared_frames: Some(frames),
-                data_start: body_start + skip,
-                data_len: Some(data_len),
-            }))
-        }
-        _ => Ok(None),
-    })
+                    Some(&b"NONE"[..])
+                };
+                let layout = match comp {
+                    Some(b"NONE" | b"in24" | b"in32") => int(true)?,
+                    Some(b"sowt") => int(false)?,
+                    Some(b"twos") => int(true)?,
+                    Some(b"fl32" | b"FL32") => Layout::float(4, true),
+                    Some(b"fl64" | b"FL64") => Layout::float(8, true),
+                    _ => {
+                        return Err(MediaError::Unsupported(format!(
+                            "compressed AIFF-C with {channels} channels"
+                        )));
+                    }
+                };
+                comm = Some((channels, rate, layout, frames));
+                Ok(None)
+            }
+            b"SSND" => {
+                let (channels, rate, layout, frames) =
+                    comm.ok_or_else(|| corrupt("SSND before COMM"))?;
+                let offset = u64::from(be32(body, 0).unwrap_or(0));
+                let skip = 8 + offset;
+                let data_len = u64::from(size)
+                    .checked_sub(skip)
+                    .ok_or_else(|| corrupt("SSND offset past its chunk"))?;
+                Ok(Some(Header {
+                    channels,
+                    rate,
+                    layout,
+                    declared_frames: Some(frames),
+                    data_start: body_start + skip,
+                    data_len: Some(data_len),
+                }))
+            }
+            _ => Ok(None),
+        },
+    )
 }
 
 impl PcmSource {
