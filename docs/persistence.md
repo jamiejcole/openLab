@@ -84,9 +84,15 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
   needs a final autosave (M4.15g) must wait on its reply;
 - manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
   durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
-- `clear_recovery(workspace, show_path)` runs after the job in flight (the writer is one thread), removes that
-  target's file, and cancels only that target's pending autosave;
-- dropping the writer finishes the running job and pending manual saves, and discards pending
+- `clear_recovery(workspace, show_path)` runs after any job in flight that writes that recovery file (no two writer
+  threads ever write the same show file or recovery file at once), removes that target's file, and cancels
+  only that target's pending autosave;
+- a job stuck on a hung volume for the document timeout is answered `Stalled` and its thread abandoned; a
+  fresh thread serves the queue (at most `MAX_WRITERS`, 5, threads in all). Threads never write the same
+  show file or recovery file at once; the files a stalled write holds are refused at once until it returns,
+  and a stalled save holds only its show file (it skips its recovery-file removal), so the workspace can
+  still be saved elsewhere and autosaved (`SaveWriter::check_stalled`; docs/control.md "A save that stalls");
+- dropping the writer finishes the running jobs and pending manual saves, and discards pending
   autosaves.
 
 ## Backups (NFR-06)
@@ -184,11 +190,16 @@ Settings that travel with the show (hotkeys, autosave interval, passcode, …) s
 Show files store forward-slash paths, relative to the show folder when the media is inside it and
 absolute otherwise. `portable_ref(native, show_dir, style)` builds the stored `MediaRef` from what the
 OS gives: Windows backslashes become forward slashes (relative paths too; a backslash on macOS is a file
-name character and is kept), the text is made NFC, `.` and `..` are resolved lexically, and the path is
-made relative if it lies inside the show folder. `resolve(media, show_dir)` is the way back.
+name character and is kept) and the text is made NFC. An absolute path is made relative only when it is
+literally under the show folder: the same components byte for byte, no case folding, and no `.` or `..`
+anywhere in it. Anything else (a different case, which on a case-sensitive volume is another folder; a `..`,
+which may pass through a symlink) stays absolute exactly as sent, because deciding it needs the file system
+and the control thread that stores the path never touches it. A path that is already relative is kept as
+written (`../Audio/x.wav` stays), so copying a cue never changes how a hand-written path reads.
+`resolve(media, show_dir)` is the way back.
 
 `comparison_key` (lexical normalisation, NFC, lower case) decides whether two paths name the same file
-on macOS or Windows; folder membership is judged the same way. Case folding is `to_lowercase`, not
+on macOS or Windows (find-in-folder and relink matching); storing a path relative does not use it. Case folding is `to_lowercase`, not
 full Unicode folding.
 
 Path parsing rules: exactly two leading slashes are a network share root (`//server/share`); three or

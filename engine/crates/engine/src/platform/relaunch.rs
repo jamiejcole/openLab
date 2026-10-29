@@ -139,6 +139,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn an_unknown_app_is_an_error() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         assert!(launch("dev.openlab.no-such-app-for-tests").is_err());
     }
 }

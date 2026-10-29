@@ -755,12 +755,9 @@ async fn a_message_over_the_frame_cap_makes_the_client_resnapshot() {
     f.control.revision.store(2, Ordering::SeqCst);
     let mut a = f.client().await;
     let mut b = f.client().await;
-    // 33 MiB of log text cannot be sent (MAX_SERVER_FRAME_BYTES is 32 MiB).
+    // A 33 MiB state message cannot be sent (MAX_SERVER_FRAME_BYTES is 32 MiB).
     f.out
-        .try_send(ServerMessage::Log {
-            level: LogLevel::Info,
-            message: "x".repeat(33 * 1024 * 1024),
-        })
+        .try_send(state_text("x".repeat(33 * 1024 * 1024)))
         .unwrap();
     f.control.revision.store(3, Ordering::SeqCst);
     for c in [&mut a, &mut b] {
@@ -815,7 +812,7 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
     let producer = paced_logs(&f.out, total, &read);
     for n in 0..total {
         match next(&mut live).await {
-            Some(ServerMessage::Log { message, .. }) => {
+            Some(ServerMessage::Error { message, .. }) => {
                 assert!(message.starts_with(&format!("{n:08}")));
             }
             other => panic!("{other:?}"),
@@ -836,7 +833,7 @@ async fn a_client_that_does_not_read_blocks_neither_the_control_loop_nor_other_c
             match next(&mut stalled).await {
                 None => break,
                 Some(ServerMessage::Snapshot { .. }) => break,
-                Some(ServerMessage::Log { .. }) => logs += 1,
+                Some(ServerMessage::Error { .. }) => logs += 1,
                 other => panic!("{other:?}"),
             }
         }
@@ -1107,15 +1104,19 @@ fn paced_logs(out: &Out, total: usize, read: &Arc<AtomicUsize>) -> thread::JoinH
             let message = format!("{n:08}{}", "x".repeat(16 * 1024));
             // The control loop's own channel never stays full because the fan-out never waits
             // for a client; one that does not drain within the guard means it blocked.
-            push(
-                &out,
-                ServerMessage::Log {
-                    level: LogLevel::Info,
-                    message,
-                },
-            );
+            push(&out, state_text(message));
         }
     })
+}
+
+/// A broadcast that must reach a client or mark it lagged (a `log` notice is lossy), with a
+/// text to tell them apart.
+fn state_text(message: String) -> ServerMessage {
+    ServerMessage::Error {
+        code: ErrorCode::Internal,
+        message,
+        protocol_version: PROTOCOL_VERSION,
+    }
 }
 
 fn push(out: &Out, mut m: ServerMessage) {
@@ -1159,7 +1160,7 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     // last one, the stalled client's queue has overflowed.
     for n in 0..total {
         match next(&mut live).await {
-            Some(ServerMessage::Log { message, .. }) => {
+            Some(ServerMessage::Error { message, .. }) => {
                 assert!(message.starts_with(&format!("{n:08}")));
             }
             other => panic!("{other:?}"),
@@ -1179,7 +1180,7 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
         // Each read is guarded by `next`; the loop ends at the first snapshot, and at most
         // `total` logs can come before it.
         match next(&mut stalled).await.expect("closed") {
-            ServerMessage::Log { .. } => logs += 1,
+            ServerMessage::Error { .. } => logs += 1,
             ServerMessage::Snapshot { snapshot } => {
                 assert_eq!(snapshot.revision, 5);
                 snapshots += 1;
@@ -1198,7 +1199,7 @@ async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broa
     guard("revision 6 reaching the client", async {
         loop {
             match next(&mut stalled).await.expect("closed") {
-                ServerMessage::Log { .. } => logs += 1,
+                ServerMessage::Error { .. } => logs += 1,
                 ServerMessage::Snapshot { snapshot } => {
                     assert!(snapshot.revision >= 5);
                     snapshots += 1;

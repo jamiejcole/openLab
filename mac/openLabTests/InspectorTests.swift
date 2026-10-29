@@ -289,6 +289,25 @@ final class InspectorTests: XCTestCase {
         XCTAssertTrue(vc.groupLoopCheck.isEnabled)
     }
 
+    func testRechoosingPlaylistKeepsLoopAndShuffleAndSendsNothing() async throws {
+        vc.setSelection([CueListHarness.group])
+        var cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.group)).raw
+        cue["kind"]?.set("mode", .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
+        let upsert =
+            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":2,"cue":\#(try cue.text())}"#
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
+                )), .applied)
+        let before = commands.count
+        choose(vc.groupModePopup, 1)
+        // A command sent after it must be the very next one: the re-choice sent none.
+        toggle(vc.groupShuffleCheck, false)
+        await assertEventually { self.commands.count == before + 1 }
+        XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":false}"#))
+    }
+
     func testGroupControlsAreLockedInShowMode() async {
         vc.setSelection([CueListHarness.group])
         choose(vc.groupModePopup, 1)

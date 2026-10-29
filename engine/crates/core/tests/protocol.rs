@@ -3470,3 +3470,34 @@ fn a_snapshot_without_media_durations_reads_as_none_known() {
     };
     assert!(snapshot.media_durations.is_empty());
 }
+
+/// A key map that leaves a key out, or misspells one, used to be read as "clear that key".
+#[test]
+fn a_partial_or_misspelt_key_map_is_bad_request() {
+    let frame = |value: &str| {
+        decode_client(&format!(
+            r#"{{"type":"command","id":1,"command":{{"type":"set_workspace_setting","setting":{{"type":"hotkeys","value":{value}}}}}}}"#
+        ))
+    };
+    let all = |extra: &str| {
+        let keys = [
+            "go",
+            "stop_all",
+            "pause_all",
+            "resume_all",
+            "playhead_next",
+            "playhead_previous",
+            "load_selected",
+            "pause_resume_selected",
+            "start_selected",
+            "stop_selected",
+            "reset_selected",
+        ];
+        let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":null"#)).collect();
+        format!("{{{}{extra}}}", body.join(","))
+    };
+    assert!(frame(&all("")).is_ok());
+    assert!(frame(r#"{"go":null,"pause_all":null}"#).is_err(), "missing");
+    assert!(frame(&all(r#","load_selcted":null"#)).is_err(), "unknown");
+    assert!(frame("{}").is_err());
+}

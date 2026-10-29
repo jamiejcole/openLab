@@ -648,7 +648,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             send(
                 .setProperty(cue.id, .secondTrigger(Self.secondTriggers[i])), cue: cue.id, key: "second", revert: [])
         } else if sender === groupModePopup, Self.groupModes.indices.contains(i) {
-            sendGroupMode(cue, type: Self.groupModes[i], loop: false, shuffle: false)
+            // Choosing the type the cue already has changes nothing, and must not clear the
+            // playlist's loop and shuffle. A new type starts from what the model holds (a type
+            // that has no loop or shuffle holds none).
+            let mode = cue.raw["kind"]?["mode"]
+            let type = Self.groupModes[i]
+            guard type != (mode?["type"]?.stringValue ?? "timeline") else { return }
+            let playlist = type == "playlist"
+            sendGroupMode(
+                cue, type: type, loop: playlist && mode?["loop"] == .bool(true),
+                shuffle: playlist && mode?["shuffle"] == .bool(true))
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
             send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, key: "continue", revert: [])
         }

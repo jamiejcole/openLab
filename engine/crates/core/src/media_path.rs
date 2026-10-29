@@ -180,19 +180,41 @@ pub fn resolve(media: &str, dir: &str) -> String {
 }
 
 /// Builds the [`MediaRef`] for a file the user picked: forward slashes (also for a native
-/// Windows relative path), NFC, relative to `show_dir` when inside it and absolute otherwise.
-/// A relative `native` is taken as relative to the show folder. With no usable `show_dir` (an
-/// unsaved workspace) the path is only normalised.
+/// Windows relative path), NFC, relative to `show_dir` only when the path as sent is literally
+/// under it. A path that is already relative is kept as written (apart from slashes and NFC): it
+/// may climb out of the show folder on purpose (`../Audio/x.wav`), and the file format reads
+/// such paths as written.
+///
+/// "Literally under" means the same components byte for byte after NFC, with no `.` or `..`
+/// anywhere in the path. Anything else (a different case, a `..` that may pass through a
+/// symlink) stays absolute exactly as sent: deciding it needs the file system, and core, and the
+/// control thread that calls this, must not touch it. The cost is an absolute path where a
+/// relative one would have worked, never a relative path naming another file. With no usable
+/// `show_dir` (an unsaved workspace) an absolute path is only normalised.
 pub fn portable_ref(native: &str, show_dir: Option<&str>, style: PathStyle) -> MediaRef {
     let path = normalize_nfc(&to_portable(native, style));
+    if !is_absolute(&path) {
+        return MediaRef::new(path);
+    }
     let Some(dir) = show_dir
         .map(|d| normalize_nfc(&to_portable(d, style)))
         .filter(|d| is_absolute(d))
     else {
         return MediaRef::new(lexical_normalize(&path));
     };
-    let absolute = resolve(&path, &dir);
-    MediaRef::new(relativize(&absolute, &dir).unwrap_or(absolute))
+    if has_dot_component(&path) || has_dot_component(&dir) {
+        return MediaRef::new(path);
+    }
+    let (p, d) = (parse(&path), parse(&dir));
+    if p.root == d.root && p.comps.len() > d.comps.len() && p.comps.starts_with(&d.comps) {
+        let tail = p.comps.split_at(d.comps.len()).1;
+        return MediaRef::new(tail.join("/"));
+    }
+    MediaRef::new(p.render())
+}
+
+fn has_dot_component(portable: &str) -> bool {
+    portable.split('/').any(|c| c == "." || c == "..")
 }
 
 #[cfg(test)]
@@ -226,14 +248,14 @@ mod tests {
         // Case-insensitive drive letter and folder names.
         assert_eq!(
             r(r"c:\show\Media\a.wav", Some(r"C:\Show"), W),
-            "Media/a.wav"
+            "c:/show/Media/a.wav"
         );
         assert_eq!(
             r(r"\\srv\share\a.wav", Some(r"C:\Show"), W),
             "//srv/share/a.wav"
         );
         assert_eq!(
-            r(r"\\srv\share\x\a.wav", Some(r"\\SRV\Share"), W),
+            r(r"\\srv\share\x\a.wav", Some(r"\\srv\share"), W),
             "x/a.wav"
         );
     }
@@ -258,16 +280,38 @@ mod tests {
 
     #[test]
     fn dot_dot_is_resolved_lexically() {
-        assert_eq!(
-            r("/Show/a/../media/./b.wav", Some("/Show"), P),
-            "media/b.wav"
-        );
-        assert_eq!(r("/Show/../Other/b.wav", Some("/Show"), P), "/Other/b.wav");
-        // A relative path climbing out of the show folder becomes absolute.
-        assert_eq!(r("../Lib/b.wav", Some("/Show"), P), "/Lib/b.wav");
+        // Only with no show folder to compare against is an absolute path collapsed.
+        assert_eq!(r("/Show/a/../media/./b.wav", None, P), "/Show/media/b.wav");
         assert_eq!(lexical_normalize("/../../a"), "/a");
         assert_eq!(lexical_normalize("../../a/../b"), "../../b");
         assert_eq!(lexical_normalize("C:/a/../../b"), "C:/b");
+    }
+
+    #[test]
+    fn a_relative_path_is_kept_as_written() {
+        // It may leave the show folder on purpose (Show/ and Audio/ side by side).
+        assert_eq!(r("../Audio/b.wav", Some("/Show"), P), "../Audio/b.wav");
+        assert_eq!(r("../Audio/b.wav", None, P), "../Audio/b.wav");
+        assert_eq!(r("a/./b.wav", Some("/Show"), P), "a/./b.wav");
+        assert_eq!(r(r"..\Audio\b.wav", Some(r"C:\Show"), W), "../Audio/b.wav");
+    }
+
+    #[test]
+    fn only_a_path_literally_under_the_show_folder_becomes_relative() {
+        // Different case: on a case-sensitive volume that is another folder.
+        assert_eq!(
+            r("/Vol/show/x.wav", Some("/Vol/Show"), P),
+            "/Vol/show/x.wav"
+        );
+        // `..` or `.` anywhere: it may pass through a symlink, so it stays as sent.
+        assert_eq!(
+            r("/Show/media/link/../x.wav", Some("/Show"), P),
+            "/Show/media/link/../x.wav"
+        );
+        assert_eq!(r("/Show/./x.wav", Some("/Show"), P), "/Show/./x.wav");
+        assert_eq!(r("/Show/x.wav", Some("/Show/."), P), "/Show/x.wav");
+        // Repeated slashes are not a different folder.
+        assert_eq!(r("/Show//media/x.wav", Some("/Show/"), P), "media/x.wav");
     }
 
     #[test]

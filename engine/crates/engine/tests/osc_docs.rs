@@ -13,8 +13,8 @@ use std::time::Duration;
 use openlab_core::protocol::{DocId, TransportAction};
 use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
-    CueField, CuePattern, DocShow, LOCKOUT, MATCH_BUDGET, MAX_BAD_PASSCODES, MAX_REPLIES_PER_CALL,
-    Osc, OscInput, OscShow, Outcome, Peer, Target, encode_message, upper,
+    CueField, CuePattern, DocShow, GLOBAL_MAX_FAILURES, LOCKOUT, MATCH_BUDGET, MAX_BAD_PASSCODES,
+    MAX_REPLIES_PER_CALL, Osc, OscInput, OscShow, Outcome, Peer, Target, encode_message, upper,
 };
 use rosc::{OscMessage, OscType};
 use serde_json::{Value, json};
@@ -385,34 +385,134 @@ fn an_unprefixed_connect_is_answered_by_every_doc() {
     assert!(osc.is_connected_in(B, udp()));
 }
 
+/// Wrong guesses are counted per address across docs: trying the docs in turn is no fresh budget.
 #[test]
-fn lockouts_are_per_doc() {
+fn a_peers_wrong_passcodes_lock_it_out_of_every_doc_together() {
     let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
     let mut osc = quiet();
     let d = docs(&a, &b);
-    let prefix = format!("/workspace/{}/connect", ws(&a));
-    for _ in 0..MAX_BAD_PASSCODES {
-        send(&mut osc, &d, udp(), &msg(&prefix, vec![s("0000")]));
+    let to = |show: &Show, verb: &str| format!("/workspace/{}/{verb}", ws(show));
+    for i in 0..MAX_BAD_PASSCODES {
+        let show = if i % 2 == 0 { &a } else { &b };
+        send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&to(show, "connect"), vec![s("0000")]),
+        );
     }
-    let out = send(&mut osc, &d, udp(), &msg(&prefix, vec![s("1111")]));
-    assert_eq!(bodies(&out)[0]["status"], "denied", "A is locked out");
-    let out = send(
-        &mut osc,
-        &d,
-        udp(),
-        &msg(&format!("/workspace/{}/connect", ws(&b)), vec![s("2222")]),
-    );
-    assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control", "B is not");
-    // A's lockout ends on its own clock.
+    // Locked at both, though neither doc saw five guesses.
+    for (show, code) in [(&a, "1111"), (&b, "2222")] {
+        let out = send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&to(show, "connect"), vec![s(code)]),
+        );
+        assert_eq!(bodies(&out)[0]["status"], "denied", "{}", show.name);
+    }
+    // The lockout ends on its own clock, for both.
     let later = T0 + LOCKOUT;
     let out = osc.handle_datagram_docs(
         udp(),
         later,
         later,
-        &encode_message(&msg(&prefix, vec![s("1111")])).unwrap(),
+        &encode_message(&msg(&to(&b, "connect"), vec![s("2222")])).unwrap(),
         &d,
     );
     assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control");
+}
+
+/// The engine-wide failure window is not one per doc: guesses from many addresses at several
+/// docs add up.
+#[test]
+fn the_global_failure_budget_is_shared_by_every_doc() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let mut osc = quiet();
+    let d = docs(&a, &b);
+    let from = |n: usize| {
+        Peer::Udp(IpAddr::V4(Ipv4Addr::new(
+            10,
+            1,
+            (n / 200) as u8,
+            (n % 200) as u8,
+        )))
+    };
+    for n in 0..GLOBAL_MAX_FAILURES as usize {
+        let show = if n % 2 == 0 { &a } else { &b };
+        let addr = format!("/workspace/{}/connect", ws(show));
+        send(&mut osc, &d, from(n), &msg(&addr, vec![s("0000")]));
+    }
+    // A stranger with the right passcode is refused at the doc that saw only half the guesses.
+    let addr = format!("/workspace/{}/connect", ws(&a));
+    let out = send(&mut osc, &d, from(999), &msg(&addr, vec![s("1111")]));
+    assert_eq!(bodies(&out)[0]["status"], "denied", "{out:?}");
+}
+
+/// One un-prefixed guess goes to every doc but is one failure.
+#[test]
+fn an_unprefixed_wrong_guess_counts_once_however_many_docs_answer() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let mut osc = quiet();
+    let d = docs(&a, &b);
+    for _ in 0..MAX_BAD_PASSCODES - 1 {
+        send(&mut osc, &d, udp(), &msg("/connect", vec![s("0000")]));
+    }
+    let out = send(
+        &mut osc,
+        &d,
+        udp(),
+        &msg(&format!("/workspace/{}/connect", ws(&a)), vec![s("1111")]),
+    );
+    assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control", "{out:?}");
+}
+
+/// `/updates` and `/udpReplyPort` are the peer's, not a doc's: a doc opened after them, or after
+/// the doc that was open then closed, has them too.
+#[test]
+fn updates_and_the_reply_port_follow_the_peer_to_docs_opened_later() {
+    let (a, b) = (hamlet(), lear());
+    let mut osc = quiet();
+    send(
+        &mut osc,
+        &[DocShow { doc: A, show: &a }],
+        udp(),
+        &msg("/updates", vec![OscType::Int(1)]),
+    );
+    send(
+        &mut osc,
+        &[DocShow { doc: A, show: &a }],
+        udp(),
+        &msg("/udpReplyPort", vec![OscType::Int(54329)]),
+    );
+    // B opens: before any packet reaches it, its updates have the subscriber.
+    osc.open_doc(B, T0, b.access());
+    assert_eq!(osc.update_subscribers_in(B, T0), vec![udp()]);
+    // A closes; the port is still the peer's.
+    osc.close_doc(A);
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+    // A third doc whose first sight is a packet.
+    let c = Show::new(0xC3, "Macbeth", 1);
+    send(
+        &mut osc,
+        &[DocShow {
+            doc: DocId(7),
+            show: &c,
+        }],
+        udp(),
+        &msg("/version", vec![]),
+    );
+    assert_eq!(osc.update_subscribers_in(DocId(7), T0), vec![udp()]);
+    // Unsubscribing reaches docs opened later too.
+    send(
+        &mut osc,
+        &[DocShow { doc: B, show: &b }],
+        udp(),
+        &msg("/updates", vec![OscType::Int(0)]),
+    );
+    osc.open_doc(DocId(8), T0, c.access());
+    assert!(osc.update_subscribers_in(DocId(8), T0).is_empty());
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
 }
 
 #[test]

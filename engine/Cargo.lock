@@ -841,6 +841,7 @@ dependencies = [
  "openlab-engine",
  "proptest",
  "rosc",
+ "rtrb",
  "serde_json",
  "socket2",
  "tempfile",

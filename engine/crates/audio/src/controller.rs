@@ -237,13 +237,26 @@ impl MixerController {
         self.shared.faults.load(Ordering::Relaxed)
     }
 
-    /// Voices dropped because their render faulted [`VOICE_FAULT_LIMIT`] blocks within
-    /// [`VOICE_FAULT_WINDOW`].
+    /// Voices dropped because their render faulted [`FAULT_LIMIT`] blocks within
+    /// [`FAULT_WINDOW`].
     ///
-    /// [`VOICE_FAULT_LIMIT`]: crate::VOICE_FAULT_LIMIT
-    /// [`VOICE_FAULT_WINDOW`]: crate::VOICE_FAULT_WINDOW
+    /// [`FAULT_LIMIT`]: crate::FAULT_LIMIT
+    /// [`FAULT_WINDOW`]: crate::FAULT_WINDOW
     pub fn faulted_voices(&self) -> u64 {
         self.shared.faulted_voices.load(Ordering::Relaxed)
+    }
+
+    /// Faults blamed on a patch, a device output, the master or the meters, plus rebuilds of the
+    /// mixer's non-voice state after repeated faults with no unit to blame (each one also an
+    /// [`Event::StageFaulted`]).
+    pub fn faulted_stages(&self) -> u64 {
+        self.shared.faulted_stages.load(Ordering::Relaxed)
+    }
+
+    /// The units the mixer has disabled after repeated faults, until a rebuild: also when the
+    /// [`Event::StageFaulted`] that reported one was lost to a full event queue.
+    pub fn disabled_units(&self) -> crate::DisabledUnits {
+        self.shared.disabled.read()
     }
 
     /// Frames of silence output because a source ring was empty.

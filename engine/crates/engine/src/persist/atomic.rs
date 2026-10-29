@@ -292,7 +292,13 @@ fn sync_parent(path: &Path) {
         } else {
             parent
         };
-        if let Ok(dir) = std::fs::File::open(parent) {
+        // Non-blocking: a FIFO swapped in for the folder must not hang the writer.
+        use std::os::unix::fs::OpenOptionsExt as _;
+        if let Ok(dir) = OpenOptions::new()
+            .read(true)
+            .custom_flags(super::files::O_NONBLOCK)
+            .open(parent)
+        {
             let _ = dir.sync_all();
         }
     }
