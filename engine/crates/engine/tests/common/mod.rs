@@ -87,3 +87,33 @@ pub fn touch(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, b"x").unwrap();
 }
+
+pub fn rights(view: bool, edit: bool, control: bool) -> openlab_core::OscRights {
+    openlab_core::OscRights {
+        view,
+        edit,
+        control,
+    }
+}
+
+pub fn udp() -> openlab_engine::osc::Peer {
+    openlab_engine::osc::Peer::Udp(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 7)))
+}
+
+pub fn text(s: &str) -> rosc::OscType {
+    rosc::OscType::String(s.into())
+}
+
+pub fn reload(path: &std::path::Path) -> openlab_core::Workspace {
+    openlab_core::load_show(
+        &openlab_engine::persist::read_text(path, openlab_core::MAX_SHOW_FILE_BYTES).unwrap(),
+    )
+    .unwrap()
+    .workspace
+}
+
+pub fn renamed(name: &str) -> openlab_core::Workspace {
+    let mut ws = example();
+    ws.name = name.into();
+    ws
+}

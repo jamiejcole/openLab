@@ -10,8 +10,10 @@
 //! against a stand-in control thread, plus one run in front of the real control loop. Waits are
 //! on the sockets or on a notification; the timeouts are hang guards only.
 
+mod common;
 mod show;
 
+use common::{rights, text};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -439,10 +441,6 @@ fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
         addr: addr.into(),
         args,
     }
-}
-
-fn text(s: &str) -> OscType {
-    OscType::String(s.into())
 }
 
 impl Fix {
@@ -2399,14 +2397,6 @@ async fn udp_reply_port_over_tcp_is_ignored_and_invalid_ports_do_not_move_replie
 }
 
 // ---- passcode rights over real sockets (M4.5c)
-
-fn rights(view: bool, edit: bool, control: bool) -> OscRights {
-    OscRights {
-        view,
-        edit,
-        control,
-    }
-}
 
 fn row(passcode: &str, rights: OscRights) -> OscPasscode {
     OscPasscode {

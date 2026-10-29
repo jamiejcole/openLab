@@ -589,3 +589,10 @@ impl DeviceShow {
         self.inbox_tx.clone()
     }
 }
+
+pub fn device(name: &str, outputs: u32) -> openlab_core::DeviceInfo {
+    openlab_core::DeviceInfo {
+        name: name.into(),
+        output_channels: outputs,
+    }
+}

@@ -17,15 +17,8 @@ use openlab_core::{CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping,
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::persist::load_machine_settings_checked;
-use show::device::{DeviceShow, listed};
+use show::device::{DeviceShow, device, listed};
 use show::*;
-
-fn device(name: &str, outputs: u32) -> DeviceInfo {
-    DeviceInfo {
-        name: name.into(),
-        output_channels: outputs,
-    }
-}
 
 fn mixer4() -> openlab_audio::MixerConfig {
     let mut m = mixer_config();

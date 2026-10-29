@@ -507,3 +507,12 @@ pub fn wait_probed(paths: &[PathBuf], n: usize) {
             .0;
     }
 }
+
+pub fn statuses(msgs: Vec<ServerMessage>) -> Vec<openlab_core::protocol::SystemStatus> {
+    msgs.into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Status { status } => Some(*status),
+            _ => None,
+        })
+        .collect()
+}

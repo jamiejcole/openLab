@@ -9,22 +9,10 @@ use std::fs;
 use std::io;
 
 use common::*;
-use openlab_core::{MAX_SHOW_FILE_BYTES, backup_file_name, load_show, parse_backup_name};
+use openlab_core::{backup_file_name, parse_backup_name};
 use openlab_engine::persist::{
-    PersistError, SaveWriter, Stage, read_text, save_workspace, save_workspace_with,
+    PersistError, SaveWriter, Stage, save_workspace, save_workspace_with,
 };
-
-fn renamed(name: &str) -> openlab_core::Workspace {
-    let mut ws = example();
-    ws.name = name.into();
-    ws
-}
-
-fn reload(path: &std::path::Path) -> openlab_core::Workspace {
-    load_show(&read_text(path, MAX_SHOW_FILE_BYTES).unwrap())
-        .unwrap()
-        .workspace
-}
 
 #[test]
 fn save_new_file_and_reload_equal() {

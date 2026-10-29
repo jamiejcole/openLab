@@ -12,12 +12,6 @@ use common::*;
 use openlab_core::backup_file_name;
 use openlab_engine::persist::save_workspace;
 
-fn renamed(name: &str) -> openlab_core::Workspace {
-    let mut ws = example();
-    ws.name = name.into();
-    ws
-}
-
 #[test]
 fn rotation_orders_by_backup_name_not_mtime() {
     let env = env();

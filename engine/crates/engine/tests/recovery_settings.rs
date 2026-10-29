@@ -9,8 +9,6 @@ use std::fs;
 
 use common::*;
 use openlab_core::{DeviceInfo, MachineSettings, PatchMapping, PatchResolution, resolve_patch};
-use openlab_core::{MAX_SHOW_FILE_BYTES, load_show};
-use openlab_engine::persist::read_text;
 use openlab_engine::persist::{
     AppDirs, RecoveryCheck, check_recovery, clear_recovery, load_machine_settings,
     save_machine_settings, save_workspace, write_recovery,
@@ -407,10 +405,4 @@ fn system_dirs_end_in_open_lab() {
             "openLab"
         );
     }
-}
-
-fn reload(path: &std::path::Path) -> openlab_core::Workspace {
-    load_show(&read_text(path, MAX_SHOW_FILE_BYTES).unwrap())
-        .unwrap()
-        .workspace
 }

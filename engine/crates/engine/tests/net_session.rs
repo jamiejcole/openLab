@@ -22,8 +22,10 @@
 //! closing another doc, shutdown), and both protocols and several clients
 //! at once seeing the same show.
 
+mod common;
 mod show;
 
+use common::text;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::thread::{self, JoinHandle};
@@ -766,10 +768,6 @@ struct Osc {
     /// Update messages seen per cue id, and the last playhead update.
     updates: HashMap<CueId, u64>,
     playhead: Option<String>,
-}
-
-fn text(s: &str) -> OscType {
-    OscType::String(s.into())
 }
 
 impl Osc {

@@ -9,6 +9,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::{rights, udp};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::ControlFlow;
@@ -255,10 +258,6 @@ fn bytes(m: &OscMessage) -> Vec<u8> {
 
 fn s(text: &str) -> OscType {
     OscType::String(text.to_owned())
-}
-
-fn udp() -> Peer {
-    Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)))
 }
 
 const T0: Duration = Duration::from_secs(100);
@@ -3540,14 +3539,6 @@ fn changing_the_reply_port_does_not_reset_the_reply_budget() {
 }
 
 // ---- passcode rights (M4.5c)
-
-fn rights(view: bool, edit: bool, control: bool) -> OscRights {
-    OscRights {
-        view,
-        edit,
-        control,
-    }
-}
 
 /// No Passcode has `none`; 1111 View; 2222 View + Edit; 3333 View + Control; 4444 all.
 fn table(none: OscRights) -> OscAccess {

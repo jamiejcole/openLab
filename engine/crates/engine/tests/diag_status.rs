@@ -9,7 +9,7 @@ mod show;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use openlab_core::protocol::{DeviceState, LogKind, ServerMessage, SystemStatus};
+use openlab_core::protocol::{DeviceState, LogKind, ServerMessage};
 use openlab_core::{MachineSettings, PatchMapping};
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::control::{ControlConfig, ManualClock};
@@ -24,15 +24,6 @@ static CPU_MS: AtomicU64 = AtomicU64::new(0);
 
 fn fake_cpu() -> Option<f64> {
     Some(CPU_MS.load(Ordering::SeqCst) as f64 / 1000.0)
-}
-
-fn statuses(msgs: Vec<ServerMessage>) -> Vec<SystemStatus> {
-    msgs.into_iter()
-        .filter_map(|m| match m {
-            ServerMessage::Status { status } => Some(*status),
-            _ => None,
-        })
-        .collect()
 }
 
 fn rig(ws: openlab_core::Workspace) -> (OfflineShow, ManualClock) {

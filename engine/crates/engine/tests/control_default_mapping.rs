@@ -24,14 +24,8 @@ use openlab_core::{
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::persist::{load_machine_settings, load_machine_settings_checked};
+use show::device::device;
 use show::*;
-
-fn device(name: &str, outputs: u32) -> DeviceInfo {
-    DeviceInfo {
-        name: name.into(),
-        output_channels: outputs,
-    }
-}
 
 /// A config with no mapping for anybody, the given devices and settings stored in `env`.
 fn bare(env: &Env, devices: Vec<DeviceInfo>) -> ControlConfig {

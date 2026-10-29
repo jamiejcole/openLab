@@ -6,6 +6,9 @@
 //! picks one, `/connect` and its sessions and lockouts are per peer and doc, the reply budgets
 //! per IP, and the per-call caps bound the fan-out.
 
+mod common;
+
+use common::udp;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::ControlFlow;
 use std::time::Duration;
@@ -124,10 +127,6 @@ fn quiet() -> Osc {
     let mut osc = Osc::new();
     osc.set_duplicate_window(Duration::ZERO);
     osc
-}
-
-fn udp() -> Peer {
-    Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)))
 }
 
 fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {

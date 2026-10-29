@@ -17,8 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use openlab_core::protocol::{
-    ClientMessage, Outcome, Request, RuntimeChange, ServerMessage, SystemStatus, WireProblem,
-    WireWarning,
+    ClientMessage, Outcome, Request, RuntimeChange, ServerMessage, WireProblem, WireWarning,
 };
 use openlab_core::{
     ContinueMode, CueKind, CueProblem, CueState, NetworkPatch, NetworkPatchId, NetworkProtocol,
@@ -171,15 +170,6 @@ fn notices(msgs: &[ServerMessage]) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|w| match w {
             WireWarning::Notice { code, message, .. } => Some((code, message)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn statuses(msgs: Vec<ServerMessage>) -> Vec<SystemStatus> {
-    msgs.into_iter()
-        .filter_map(|m| match m {
-            ServerMessage::Status { status } => Some(*status),
             _ => None,
         })
         .collect()
