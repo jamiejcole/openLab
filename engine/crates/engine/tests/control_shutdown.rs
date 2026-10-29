@@ -511,7 +511,7 @@ fn hold_first_autosave() -> (SaveHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
 fn recovery_name(env: &Env) -> String {
     let files = names(&env.dirs.recovery_dir());
     assert_eq!(files.len(), 1, "{files:?}");
-    let text = fs::read_to_string(env.dirs.recovery_dir().join(&files[0])).unwrap();
+    let text = fs::read_to_string(env.dirs.recovery_dir().join(files.first().unwrap())).unwrap();
     openlab_core::load_show(&text).unwrap().workspace.name
 }
 
@@ -556,7 +556,11 @@ fn an_autosave_of_the_last_edit_in_flight_at_shutdown_is_waited_for() {
     );
     releaser.join().unwrap();
     assert_eq!(recovery_name(&env), "last edit");
-    assert_eq!(*writes.lock().unwrap(), 1, "no second write of the revision");
+    assert_eq!(
+        *writes.lock().unwrap(),
+        1,
+        "no second write of the revision"
+    );
 }
 
 /// #163: an autosave of an older revision is still in flight when the engine quits: the final
