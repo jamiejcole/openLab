@@ -42,15 +42,6 @@ fn picks(max: usize) -> impl Strategy<Value = Vec<Pick>> {
     proptest::collection::vec(pick(), 0..max)
 }
 
-/// Case count of a property: `default`, or `OPENLAB_PROP_CASES` for a long sweep, e.g.
-/// `OPENLAB_PROP_CASES=5000 cargo test --release -p openlab-core --test commands_prop`.
-fn cases(default: u32) -> u32 {
-    std::env::var("OPENLAB_PROP_CASES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
 /// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists and the OSC
 /// passcode table.
 const OPS: u8 = 29;
@@ -993,7 +984,7 @@ fn round_trip(prefix: &[Pick], op: u8, p: &Pick) -> Result<(), TestCaseError> {
 macro_rules! round_trip_tests {
     ($($name:ident: $op:expr,)*) => {
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(cases(64)))]
+            #![proptest_config(ProptestConfig::with_cases(prop_cases(64)))]
             $(
                 #[test]
                 fn $name(prefix in picks(30), p in pick()) {
@@ -1036,7 +1027,7 @@ round_trip_tests! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(cases(128)))]
+    #![proptest_config(ProptestConfig::with_cases(prop_cases(128)))]
 
     /// `BatchSet` is applied in place with rollback. The oracle is the plain `Transaction` of the
     /// same sets, which rolls back with the inverses of the sets it applied: result, inverse and workspace bytes must
@@ -1310,7 +1301,7 @@ fn transaction_commands(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(cases(256)))]
+    #![proptest_config(ProptestConfig::with_cases(prop_cases(256)))]
 
     /// A transaction refused at a random command is rolled back with the inverses of the
     /// commands before it (M1.19): the workspace is exactly as before, the error names the
@@ -1392,10 +1383,7 @@ proptest! {
 /// Cases for the properties that hold incremental bookkeeping to its full rebuild: 256 for CI;
 /// `OPENLAB_PROP_CASES=20000 cargo test --release -p openlab-core --test commands_prop` sweeps.
 fn incremental_cases() -> u32 {
-    std::env::var("OPENLAB_PROP_CASES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(256)
+    prop_cases(256)
 }
 
 /// The footprint's touched and structural cues, as `CueIndex::reconcile` takes them.

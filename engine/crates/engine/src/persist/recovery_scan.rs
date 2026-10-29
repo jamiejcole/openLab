@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use openlab_core::{WorkspaceId, load_show, parse_recovery_file_name, parse_store_name};
 
+use super::recovery::STALE_SUFFIX;
 use super::{AppDirs, modified_ms, read_text};
 
 /// A sensible `max_entries` for [`scan_recovery`].
@@ -19,8 +20,6 @@ const MAX_VISITED: usize = 5_000;
 /// Files larger than this are listed without a name instead of being parsed, so a scan of many
 /// big autosaves stays quick. (Real shows are far smaller; the limit for loading is larger.)
 pub const MAX_NAME_READ_BYTES: usize = 4 * 1024 * 1024;
-
-const STALE_SUFFIX: &str = ".stale.openlab";
 
 /// A recovery file found by [`scan_recovery`].
 #[derive(Clone, Debug, PartialEq, Eq)]

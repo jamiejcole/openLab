@@ -179,3 +179,12 @@ pub fn handle_as_binary(
     assert_eq!(engine.unsignalled_model_changes(), 0);
     out
 }
+
+/// Case count of a property: `default`, or `OPENLAB_PROP_CASES` for a long sweep, e.g.
+/// `OPENLAB_PROP_CASES=5000 cargo test --release -p openlab-core --test commands_prop`.
+pub fn prop_cases(default: u32) -> u32 {
+    std::env::var("OPENLAB_PROP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}

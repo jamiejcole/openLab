@@ -22,7 +22,8 @@ use super::{
 };
 
 const KEEP_STALE: usize = 5;
-const STALE_SUFFIX: &str = ".stale.openlab";
+/// What a moved-aside recovery file's name ends in.
+pub(crate) const STALE_SUFFIX: &str = ".stale.openlab";
 
 /// Writes the autosave file for `workspace`, bound to `show_path` (`None` before the first
 /// save). Never touches the show file. Like a manual save this serialises and validates, so
@@ -59,10 +60,7 @@ pub fn clear_recovery(
 }
 
 fn remove_if_present(path: &Path) -> Result<(), PersistError> {
-    match fs::remove_file(path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(PersistError::io("remove", path)(e)),
-        _ => Ok(()),
-    }
+    crate::persist::remove_if_present(path).map_err(PersistError::io("remove", path))
 }
 
 /// Moved-aside files of `stem`, oldest first.

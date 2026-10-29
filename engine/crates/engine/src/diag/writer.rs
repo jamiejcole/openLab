@@ -8,7 +8,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
@@ -18,6 +18,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use openlab_core::protocol::{LogEntry, LogKind, LogLevel};
 
 use crate::control::EpochClock;
+use crate::persist::remove_if_present;
 
 /// Lines that may wait for the writer.
 pub const QUEUE_CAPACITY: usize = 4096;
@@ -241,16 +242,10 @@ impl RotatingFile {
     }
 }
 
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn names(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = fs::read_dir(dir)

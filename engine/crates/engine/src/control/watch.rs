@@ -21,11 +21,12 @@
 //!
 //! Following a moved file (`locate`, M2.29b) is not done yet: a file that is gone is `Gone`.
 
+use crate::lock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -635,10 +636,6 @@ pub const RETRY_MAX: Duration = Duration::from_secs(300);
 
 fn millis(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[derive(Default)]

@@ -100,9 +100,29 @@ pub fn unique_sibling(path: &Path, suffix: &str) -> PathBuf {
     candidate
 }
 
+/// Removes a file; one that is already gone is not an error.
+pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_missing_file_is_not_an_error_but_other_failures_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.log");
+        fs::write(&file, b"x").unwrap();
+        remove_if_present(&file).unwrap();
+        assert!(!file.exists());
+        remove_if_present(&file).unwrap();
+        // A folder is not removed as a file: that failure is reported.
+        assert!(remove_if_present(dir.path()).is_err());
+    }
 
     /// A FIFO in place of the show file when the worker opens it (swapped in after any check
     /// of the path) is refused at once, not waited on: the open itself must not block.

@@ -556,16 +556,7 @@ fn refilled(tokens: u64, updated: Duration, now: Duration, burst: u64, rate: u64
         .min(burst)
 }
 
-/// Compares every byte of the longer string against the shorter one padded with zeros, so the
-/// time depends on the longer length but not on where the first difference is. It does not hide
-/// whether the lengths are equal.
+/// [`crate::net::constant_time_eq`] on the text's bytes.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut diff = u8::from(a.len() != b.len());
-    for i in 0..a.len().max(b.len()) {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        diff |= x ^ y;
-    }
-    diff == 0
+    crate::net::constant_time_eq(a.as_bytes(), b.as_bytes())
 }

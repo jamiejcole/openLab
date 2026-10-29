@@ -10,7 +10,7 @@
 //! and the `workspaces` list to the app connections (M4.15f).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use openlab_core::protocol::{DocId, MAX_SERVER_FRAME_BYTES, ServerMessage, encode_server};
 use tokio::sync::{Notify, mpsc};
@@ -111,7 +111,7 @@ impl Hub {
     }
 
     fn lock(&self) -> MutexGuard<'_, Vec<Slot>> {
-        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::lock(&self.slots)
     }
 
     /// Offers one message to every client it is for.

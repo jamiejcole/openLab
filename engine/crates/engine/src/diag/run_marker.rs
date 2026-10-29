@@ -313,8 +313,7 @@ pub(crate) mod tests {
     /// runs while this run's marker is held anyway), so this is only a test-process hazard.
     pub(crate) fn serialize_spawn_and_lock_release() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&LOCK)
     }
 
     const T0: i64 = 1_700_000_000_000;

@@ -26,6 +26,7 @@ use openlab_core::{SaveError, WorkspaceId};
 pub(crate) use atomic::write_engine_file;
 pub use atomic::{Stage, write_atomic, write_atomic_with};
 pub use backup::backup_existing;
+pub(crate) use files::remove_if_present;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub use recovery::{
     RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, write_recovery,

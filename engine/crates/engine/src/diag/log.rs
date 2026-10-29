@@ -7,7 +7,7 @@
 //! the writer has no room for is dropped and counted.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use openlab_core::protocol::{LogEntry, LogLevel};
 
@@ -93,11 +93,7 @@ impl ShowLog {
         if let Some(sink) = &self.sink {
             sink.offer(&entry);
         }
-        let mut ring = self
-            .shared
-            .ring
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut ring = crate::lock(&self.shared.ring);
         if ring.entries.len() >= RING_CAPACITY {
             ring.entries.pop_front();
         }
@@ -114,22 +110,14 @@ impl ShowLog {
     /// [`ShowLog::tail`] and the sequence number of the newest record (0: none yet), read
     /// together.
     pub fn tail_seq(&self, max: usize) -> (Vec<LogEntry>, u64) {
-        let ring = self
-            .shared
-            .ring
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let ring = crate::lock(&self.shared.ring);
         let skip = ring.entries.len().saturating_sub(max);
         (ring.entries.iter().skip(skip).cloned().collect(), ring.seq)
     }
 
     /// The sequence number of the newest record (0: none yet), for `status`.
     pub fn seq(&self) -> u64 {
-        self.shared
-            .ring
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .seq
+        crate::lock(&self.shared.ring).seq
     }
 
     /// Records the disk writer had no room for (or could not write) so far.
@@ -139,11 +127,7 @@ impl ShowLog {
 
     /// Tells the crash hook which workspace is open.
     pub fn set_workspace(&self, path: Option<String>) {
-        *self
-            .shared
-            .workspace
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = path;
+        *crate::lock(&self.shared.workspace) = path;
     }
 }
 

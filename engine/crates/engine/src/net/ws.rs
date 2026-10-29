@@ -3,12 +3,13 @@
 //! The WebSocket server: accept, authenticate, then relay between one client and the control
 //! thread (docs/network.md, docs/protocol.md section 2).
 
+use crate::lock;
 use std::collections::VecDeque;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdListener};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -229,11 +230,7 @@ impl WsServer {
     /// Closes every connection and stops the runtime (and with it the fan-out task).
     pub fn stop(&self) {
         let _ = self.shutdown.send(true);
-        let runtime = self
-            .runtime
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let runtime = lock(&self.runtime).take();
         if let Some(runtime) = runtime {
             runtime.shutdown_background();
         }
@@ -565,10 +562,6 @@ fn app_lost(shared: &Arc<Shared>) {
             Err(_) => log(&shared, LogLevel::Error, "could not relaunch the app"),
         }
     });
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn request_id(message: &ClientMessage) -> Option<RequestId> {

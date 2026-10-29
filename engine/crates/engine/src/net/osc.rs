@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdListener, UdpSocket as StdUdp};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
@@ -194,11 +194,7 @@ pub struct Running {
 
 impl Running {
     pub fn stats(&self) -> OscListenerStats {
-        let mut stats = *self
-            .stats
-            .stats
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut stats = *crate::lock(&self.stats.stats);
         stats.udp_dropped = self.stats.udp_dropped.load(Ordering::Relaxed);
         stats.tcp_refused = self.stats.tcp_refused.load(Ordering::Relaxed);
         stats.tcp_pending_bytes = self.stats.pending_total.load(Ordering::Relaxed);
@@ -589,7 +585,7 @@ impl HostSlots {
     /// One of `ip`'s `max` slots, or `None` if it holds them all. The slot is given back when
     /// the returned guard is dropped.
     fn try_take(self: &Arc<Self>, ip: IpAddr, max: usize) -> Option<HostSlot> {
-        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut open = crate::lock(&self.open);
         let n = open.entry(ip).or_insert(0);
         if *n >= max {
             if *n == 0 {
@@ -606,7 +602,7 @@ impl HostSlots {
 
     /// Marks `ip` as having a connection waiting for its slot; `None` if one already is.
     fn start_waiting(self: &Arc<Self>, ip: IpAddr) -> Option<Waiting> {
-        let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut waiting = crate::lock(&self.waiting);
         waiting.insert(ip).then(|| Waiting {
             hosts: self.clone(),
             ip,
@@ -645,11 +641,7 @@ struct Waiting {
 
 impl Drop for Waiting {
     fn drop(&mut self) {
-        let mut waiting = self
-            .hosts
-            .waiting
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut waiting = crate::lock(&self.hosts.waiting);
         waiting.remove(&self.ip);
     }
 }
@@ -661,11 +653,7 @@ struct HostSlot {
 
 impl Drop for HostSlot {
     fn drop(&mut self) {
-        let mut open = self
-            .hosts
-            .open
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut open = crate::lock(&self.hosts.open);
         if let Some(n) = open.get_mut(&self.ip) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -1016,11 +1004,7 @@ impl Actor {
     fn publish(&mut self) {
         self.listener.osc = *self.osc.stats();
         self.listener.tcp_connections = self.tcp.len();
-        *self
-            .shared
-            .stats
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = self.listener;
+        *crate::lock(&self.shared.stats) = self.listener;
     }
 
     fn report(&mut self) {
