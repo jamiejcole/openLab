@@ -413,21 +413,11 @@ impl CueEngine {
         // The first cue with each id in `Workspace::find_cue`'s order (lists in order, cues
         // depth-first), as the engine reads it. Iterative: nesting depth cannot overflow.
         let mut found: BTreeMap<CueId, &Cue> = BTreeMap::new();
-        'lists: for list in &ws.cue_lists {
-            let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
-            while let Some(level) = stack.last_mut() {
-                let Some(cue) = level.next() else {
-                    stack.pop();
-                    continue;
-                };
-                if ids.contains(&cue.id) {
-                    found.entry(cue.id).or_insert(cue);
-                    if found.len() == ids.len() {
-                        break 'lists;
-                    }
-                }
-                if matches!(cue.kind, CueKind::Group { .. }) {
-                    stack.push(cue.children().iter());
+        for cue in ws.cues() {
+            if ids.contains(&cue.id) {
+                found.entry(cue.id).or_insert(cue);
+                if found.len() == ids.len() {
+                    break;
                 }
             }
         }
@@ -2001,30 +1991,10 @@ enum Act {
     Group,
 }
 
-/// Every cue in `cues`, depth-first. Iterative, so nesting depth cannot overflow the stack.
-fn each_cue<'a>(cues: &'a [Cue], mut f: impl FnMut(&'a Cue)) {
-    let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![cues.iter()];
-    while let Some(level) = stack.last_mut() {
-        match level.next() {
-            Some(cue) => {
-                f(cue);
-                stack.push(cue.children().iter());
-            }
-            None => {
-                stack.pop();
-            }
-        }
-    }
-}
-
 fn collect_ids(cues: &[Cue], ids: &mut HashSet<CueId>) {
-    each_cue(cues, |c| {
-        ids.insert(c.id);
-    });
+    ids.extend(crate::tree::descendants(cues).map(|c| c.id));
 }
 
 fn count_cues(cues: &[Cue]) -> usize {
-    let mut n = 0usize;
-    each_cue(cues, |_| n = n.saturating_add(1));
-    n
+    crate::tree::descendants(cues).count()
 }

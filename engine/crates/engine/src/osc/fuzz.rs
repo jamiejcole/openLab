@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Fuzz entry for the OSC decoder and dispatcher (QA-04). Lives in the library so the fuzz crate
-//! can call it; nothing else uses it.
+//! Fuzz entry for the OSC decoder and dispatcher (QA-04), and the fake show both OSC fuzz
+//! targets dispatch to. Lives in the library so the fuzz crate can call it; nothing else uses it.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::ControlFlow;
@@ -18,9 +18,11 @@ use super::{
     encode_message,
 };
 
-struct FuzzShow {
-    id: u128,
-    access: OscAccess,
+/// A one-list, one-cue show for the OSC fuzz targets: list 2 holds cue 3, numbered `1` and `2.5`
+/// and triggered by `/trigger`. Workspace `1` is named "one", any other "two".
+pub struct FuzzShow {
+    pub id: u128,
+    pub access: OscAccess,
 }
 
 impl OscShow for FuzzShow {

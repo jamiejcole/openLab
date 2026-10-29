@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cue::{Cue, CueKind, Hotkey, Modifiers};
+use crate::cue::{CueKind, Hotkey, Modifiers};
 use crate::model::{Workspace, is_reserved_key};
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
@@ -130,29 +130,21 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
 /// out for the user to check. Iterative, so nesting depth cannot overflow the stack.
 fn group_fades_now_relative(workspace: &Workspace) -> Vec<ValidationIssue> {
     let mut out = Vec::new();
-    for list in &workspace.cue_lists {
-        let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
-        while let Some(level) = stack.last_mut() {
-            let Some(cue) = level.next() else {
-                stack.pop();
-                continue;
-            };
-            if let CueKind::Fade {
-                target: Some(target),
-                ..
-            } = &cue.kind
-                && matches!(
-                    workspace.find_cue(*target).map(|t| &t.kind),
-                    Some(CueKind::Group { .. })
-                )
-            {
-                out.push(ValidationIssue {
-                    severity: Severity::Warning,
-                    cue_id: Some(cue.id),
-                    kind: IssueKind::GroupFadeNowRelative,
-                });
-            }
-            stack.push(cue.children().iter());
+    for cue in workspace.cues() {
+        if let CueKind::Fade {
+            target: Some(target),
+            ..
+        } = &cue.kind
+            && matches!(
+                workspace.find_cue(*target).map(|t| &t.kind),
+                Some(CueKind::Group { .. })
+            )
+        {
+            out.push(ValidationIssue {
+                severity: Severity::Warning,
+                cue_id: Some(cue.id),
+                kind: IssueKind::GroupFadeNowRelative,
+            });
         }
     }
     out

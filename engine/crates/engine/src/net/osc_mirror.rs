@@ -444,17 +444,10 @@ impl MirrorShow<'_> {
     /// first, a group before its children), until it breaks. Iterative.
     fn walk(&self, mut visit: impl FnMut(&Cue, &CueList) -> ControlFlow<()>) {
         for list in &self.0.workspace.cue_lists {
-            let mut stack: Vec<&[Cue]> = vec![list.cues.as_slice()];
-            while let Some(cues) = stack.pop() {
-                let Some((cue, rest)) = cues.split_first() else {
-                    continue;
-                };
+            for cue in openlab_core::descendants(&list.cues) {
                 if visit(cue, list).is_break() {
                     return;
                 }
-                // The children come before the siblings after the group.
-                stack.push(rest);
-                stack.push(cue.children());
             }
         }
     }
@@ -597,16 +590,10 @@ impl OscShow for MirrorShow<'_> {
             if visit(Target::List(list.id), "").is_break() {
                 return;
             }
-            let mut stack: Vec<&[Cue]> = vec![list.cues.as_slice()];
-            while let Some(cues) = stack.pop() {
-                let Some((cue, rest)) = cues.split_first() else {
-                    continue;
-                };
+            for cue in openlab_core::descendants(&list.cues) {
                 if visit(Target::Cue(cue.id), cue.number.as_deref().unwrap_or("")).is_break() {
                     return;
                 }
-                stack.push(rest);
-                stack.push(cue.children());
             }
         }
     }

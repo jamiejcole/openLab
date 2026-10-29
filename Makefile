@@ -13,6 +13,9 @@ lint:
 	scripts/check-repo.sh
 	cd engine && cargo fmt --all --check
 	cd engine && cargo clippy --workspace --all-targets -- -D warnings
+	# Without --all-targets: test-only features (test-support) are not unified in, so this is the
+	# build the app ships and a warning only it shows is caught.
+	cd engine && cargo clippy --workspace --lib --bins -- -D warnings
 	cd engine && cargo deny check
 	cd engine/fuzz && cargo fmt --check && cargo clippy --locked -- -D warnings
 	swift format lint --strict -r mac/

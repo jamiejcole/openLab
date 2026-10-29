@@ -589,6 +589,7 @@ impl PatchProperty {
             Self::ChannelCount { value } => {
                 // Bound before allocating: the count comes from the wire.
                 if !(1..=MAX_CHANNELS as usize).contains(value) {
+                    const _: () = assert!(MAX_CHANNELS == 64, "the message below names the limit");
                     return Err(CommandError::InvalidValue("a patch has 1 to 64 outputs"));
                 }
                 patch.outputs.resize(*value, default_output());

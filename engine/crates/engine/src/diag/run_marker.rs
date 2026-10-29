@@ -11,12 +11,13 @@
 //! still running (a second instance), which is left alone. No signal handler is involved.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use openlab_core::protocol::{LogEntry, LogKind, LogLevel};
 
 use super::{ShowLog, time};
+use crate::persist;
 
 /// Marker files are `running-<pid>.json`.
 const PREFIX: &str = "running-";
@@ -197,30 +198,13 @@ fn marker_name(pid: u32) -> String {
 fn create(dir: &Path, me: &RunInfo) -> io::Result<RunMarker> {
     fs::create_dir_all(dir)?;
     let path = dir.join(marker_name(me.pid));
-    let temp = dir.join(format!(".{}.tmp", marker_name(me.pid)));
-    let written = (|| {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)?;
-        // Without the lock a second instance would take this run for a dead one; the marker
-        // still does its main job, so a filesystem without locks is not an error.
+    // Without the lock a second instance would take this run for a dead one; the marker still
+    // does its main job, so a filesystem without locks is not an error.
+    let file = persist::write_engine_file(&path, me.to_json().as_bytes(), |file| {
         let _ = file.try_lock();
-        file.write_all(me.to_json().as_bytes())?;
-        // Best effort: after a power cut the marker should still name its run.
-        let _ = file.sync_all();
-        fs::rename(&temp, &path)?;
-        Ok(file)
-    })();
-    match written {
-        Ok(file) => Ok(RunMarker { path, file }),
-        Err(e) => {
-            let _ = fs::remove_file(&temp);
-            Err(e)
-        }
-    }
+    })
+    .map_err(io::Error::other)?;
+    Ok(RunMarker { path, file })
 }
 
 /// Leftover markers in `dir`: read, then removed. A marker some live process still holds is
@@ -329,8 +313,7 @@ pub(crate) mod tests {
     /// runs while this run's marker is held anyway), so this is only a test-process hazard.
     pub(crate) fn serialize_spawn_and_lock_release() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&LOCK)
     }
 
     const T0: i64 = 1_700_000_000_000;
@@ -515,8 +498,13 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         fs::create_dir_all(&dir).unwrap();
-        // A temporary file from a start that died while writing is not a marker.
-        fs::write(dir.join(".running-3.json.tmp"), "").unwrap();
+        // A temporary file from a start that died while writing is not a marker, and is
+        // cleaned up once it is clearly older than this write.
+        let leftover = File::create(dir.join("running-3.json.99999-0.tmp")).unwrap();
+        leftover
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+            .unwrap();
+        drop(leftover);
         let (marker, previous) = RunMarker::start(&dir, &crashes, &info(3, T0));
         assert!(previous.is_empty(), "{previous:?}");
         let marker = marker.unwrap();

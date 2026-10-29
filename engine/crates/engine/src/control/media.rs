@@ -29,10 +29,11 @@
 //! tagged the same way, so the control loop hands each to its doc (an answer for a closed doc
 //! is dropped).
 
+use crate::lock;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -466,10 +467,6 @@ impl Gate {
         self.members.remove(&doc);
         self.show_dirs.remove(&doc);
     }
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One media file's state on the control thread.
@@ -3139,7 +3136,10 @@ mod tests {
             g.0 += 1;
             self.1.notify_all();
             while !g.1 {
-                g = self.1.wait(g).unwrap_or_else(PoisonError::into_inner);
+                g = self
+                    .1
+                    .wait(g)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
 

@@ -1325,10 +1325,18 @@ fn every_message_type_and_variant_has_a_fixture() {
     let mut server_types = BTreeSet::new();
     let mut files = BTreeSet::new();
     for (name, sample) in fixtures() {
-        match &sample {
-            Sample::Client(m) => client_types.insert(m.type_name()),
-            Sample::Server(m) => server_types.insert(m.type_name()),
+        // The hand-written `type_name` tables say what serde writes as the frame's "type".
+        let (json, type_name) = match &sample {
+            Sample::Client(m) => {
+                client_types.insert(m.type_name());
+                (serde_json::to_value(m).unwrap(), m.type_name())
+            }
+            Sample::Server(m) => {
+                server_types.insert(m.type_name());
+                (serde_json::to_value(m).unwrap(), m.type_name())
+            }
         };
+        assert_eq!(json["type"], type_name, "{name}");
         files.insert(name);
     }
     let want = |list: &[&'static str]| list.iter().copied().collect::<BTreeSet<_>>();

@@ -47,6 +47,7 @@ pub use recovery::*;
 pub use relink::*;
 pub use settings::*;
 pub use show_file::*;
+pub use tree::descendants;
 pub use validate::*;
 
 /// Crate version, as set in the workspace manifest.

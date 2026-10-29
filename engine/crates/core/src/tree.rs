@@ -116,6 +116,26 @@ pub(crate) fn height(cues: &[Cue], limit: usize) -> usize {
     deepest
 }
 
+/// Every cue in `cues` and inside their groups, parents before children, in workspace order.
+/// Iterative, so nesting depth cannot overflow the stack.
+pub fn descendants(cues: &[Cue]) -> impl Iterator<Item = &Cue> {
+    let mut stack = vec![cues.iter()];
+    std::iter::from_fn(move || {
+        loop {
+            let level = stack.last_mut()?;
+            match level.next() {
+                Some(cue) => {
+                    stack.push(cue.children().iter());
+                    return Some(cue);
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+        }
+    })
+}
+
 /// Calls `f` on every cue, parents before children. Recursive: bound the depth with [`height`]
 /// first unless the tree is known to be valid.
 pub(crate) fn walk_mut(cues: &mut [Cue], f: &mut impl FnMut(&mut Cue)) {

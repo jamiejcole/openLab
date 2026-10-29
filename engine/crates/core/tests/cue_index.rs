@@ -433,3 +433,36 @@ fn list_order_and_next_follow_depth_first_order() {
     assert_eq!(index.list_of(id(99)), None);
     assert!(index.list_order(list_id(9)).is_empty());
 }
+
+// ----- the shared tree walk (cull M24) -----
+
+#[test]
+fn the_tree_walk_is_depth_first_in_order_and_finds_nested_cues() {
+    let mut ws = sample();
+    ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "B".into(),
+        cues: vec![memo(10)],
+    });
+    let order: Vec<CueId> = ws.cues().map(|c| c.id).collect();
+    assert_eq!(order, [1, 2, 3, 4, 5, 6, 10].map(id));
+    let in_group: Vec<CueId> = descendants(ws.cue_lists[0].cues[1].children())
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(in_group, [3, 4, 5].map(id));
+
+    // A cue two groups deep and one in another list are found and changed in place.
+    ws.find_cue_mut(id(5)).unwrap().armed = false;
+    ws.find_cue_mut(id(10)).unwrap().armed = false;
+    assert!(!ws.find_cue(id(5)).unwrap().armed);
+    assert!(!ws.find_cue(id(10)).unwrap().armed);
+    assert!(ws.find_cue(id(3)).unwrap().armed);
+    assert!(ws.find_cue_mut(id(99)).is_none());
+
+    // Deep nesting is walked without recursion.
+    let mut deep = memo(1_000);
+    for n in (1_001..=2_000).rev() {
+        deep = cue(n, group(vec![deep]));
+    }
+    assert_eq!(descendants(std::slice::from_ref(&deep)).count(), 1_001);
+}

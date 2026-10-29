@@ -85,13 +85,6 @@ use proptest::test_runner::TestCaseError;
 
 type Check = Result<(), TestCaseError>;
 
-fn cases() -> u32 {
-    std::env::var("OPENLAB_PROP_CASES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(256)
-}
-
 // ----- generator -----
 
 #[derive(Clone, Debug)]
@@ -2574,7 +2567,7 @@ fn follow_case() -> impl Strategy<Value = Case> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(cases()))]
+    #![proptest_config(ProptestConfig::with_cases(prop_cases(256)))]
 
     /// Loading a Wait, Fade, memo or control cue (armed or not) to a time at or past
     /// `pre-wait + action` leaves it loaded, holding nothing; started, its action is over at

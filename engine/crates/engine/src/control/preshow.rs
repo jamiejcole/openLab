@@ -13,6 +13,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, Workspace,
+    descendants,
 };
 
 use super::DocCx;
@@ -208,9 +209,9 @@ type Place<'a> = (CueListId, Option<&'a str>, &'a str);
 fn places(ws: &Workspace) -> BTreeMap<CueId, Place<'_>> {
     let mut out = BTreeMap::new();
     for list in &ws.cue_lists {
-        super::visit(&list.cues, &mut |c| {
+        for c in descendants(&list.cues) {
             out.insert(c.id, (list.id, c.number.as_deref(), c.name.as_str()));
-        });
+        }
     }
     out
 }
@@ -227,14 +228,14 @@ impl Uses {
             patch: BTreeMap::new(),
             network: BTreeMap::new(),
         };
-        for list in &ws.cue_lists {
-            super::visit(&list.cues, &mut |c| match &c.kind {
+        for c in ws.cues() {
+            match &c.kind {
                 CueKind::Audio { patch, .. } => uses.patch.entry(*patch).or_default().push(c.id),
                 CueKind::Network { destination, .. } => {
                     uses.network.entry(*destination).or_default().push(c.id);
                 }
                 _ => {}
-            });
+            }
         }
         uses
     }

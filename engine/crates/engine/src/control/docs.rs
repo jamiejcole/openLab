@@ -45,7 +45,7 @@ use super::inbox::reply;
 use super::media::{Indexed, MediaCatalog, index_workspace};
 use super::{
     Control, ControlConfig, ControlError, Doc, DocCx, DocId, Engine, Inbox, MAX_DOCS, ReplyTx,
-    Scope, notice, ok,
+    Scope, fail, notice, ok,
 };
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
@@ -800,16 +800,6 @@ fn scan(ticket: u64, dirs: Option<&AppDirs>) -> DocAnswer {
 
 // ---- The control loop's side ----------------------------------------------------------------
 
-fn fail(to: &ReplyTx, id: RequestId, code: ErrorCode, message: impl Into<String>) {
-    reply(
-        to,
-        ServerMessage::Result {
-            id,
-            outcome: Outcome::Error(ErrorBody::new(code, message)),
-        },
-    );
-}
-
 fn persist_code(e: &PersistError) -> ErrorCode {
     match e {
         PersistError::Io { .. } | PersistError::WriterGone | PersistError::Stalled { .. } => {
@@ -1156,51 +1146,9 @@ impl DocCx<'_> {
     }
 
     fn poll_saves(&mut self) {
-        if self.doc.file.saves.is_empty() {
-            return;
-        }
-        // Collect every answer first: a superseded save is answered with the save that replaced
-        // it, which may be later in the list (or already finished).
-        let mut waiting = Vec::new();
-        let mut finished = Vec::new();
-        for save in std::mem::take(&mut self.doc.file.saves) {
-            match save.rx.try_recv() {
-                Ok(result) => finished.push((save, result)),
-                Err(TryRecvError::Empty) => waiting.push(save),
-                Err(TryRecvError::Disconnected) => {
-                    finished.push((save, Err(PersistError::WriterGone)));
-                }
-            }
-        }
-        let (superseded, finished): (Vec<_>, Vec<_>) = finished
-            .into_iter()
-            .partition(|(_, r)| matches!(r, Err(PersistError::Superseded)));
-        let mut finished = finished;
-        for (mut old, _) in superseded {
-            // The newest save of the same file that holds at least these edits.
-            let newer = waiting
-                .iter_mut()
-                .map(|p| (p.revision, &mut p.waiters, &p.path))
-                .chain(
-                    finished
-                        .iter_mut()
-                        .map(|(p, _)| (p.revision, &mut p.waiters, &p.path)),
-                )
-                .filter(|(revision, _, path)| *revision >= old.revision && **path == old.path)
-                .max_by_key(|(revision, _, _)| *revision);
-            match newer {
-                Some((_, waiters, _)) => waiters.append(&mut old.waiters),
-                None => {
-                    for (id, to) in &old.waiters {
-                        fail(to, *id, ErrorCode::Internal, "the save was superseded");
-                    }
-                }
-            }
-        }
-        for (save, result) in finished {
+        for (save, result) in take_finished(&mut self.doc.file.saves) {
             self.save_done(save, result);
         }
-        self.doc.file.saves.extend(waiting);
     }
 
     fn save_done(&mut self, save: PendingSave, result: Result<SaveReport, PersistError>) {
@@ -2031,39 +1979,11 @@ impl Control {
         if self.eng.docs.orphans.is_empty() {
             return;
         }
-        let mut finished = Vec::new();
-        for save in std::mem::take(&mut self.eng.docs.orphans) {
-            match save.rx.try_recv() {
-                Ok(result) => finished.push((save, result)),
-                Err(TryRecvError::Empty) => self.eng.docs.orphans.push(save),
-                Err(TryRecvError::Disconnected) => {
-                    finished.push((save, Err(PersistError::WriterGone)));
-                }
-            }
-        }
-        for (mut save, result) in finished {
+        for (save, result) in take_finished(&mut self.eng.docs.orphans) {
             match result {
                 Ok(_) => {
                     for (id, to) in &save.waiters {
                         reply(to, ok(*id, None));
-                    }
-                }
-                // As for an open doc's saves: the newer save of the same file answers for it.
-                Err(PersistError::Superseded) => {
-                    let newer = self
-                        .eng
-                        .docs
-                        .orphans
-                        .iter_mut()
-                        .filter(|p| p.revision >= save.revision && p.path == save.path)
-                        .max_by_key(|p| p.revision);
-                    match newer {
-                        Some(newer) => newer.waiters.append(&mut save.waiters),
-                        None => {
-                            for (id, to) in &save.waiters {
-                                fail(to, *id, ErrorCode::Internal, "the save was superseded");
-                            }
-                        }
                     }
                 }
                 Err(e) => {
@@ -2079,6 +1999,48 @@ impl Control {
             }
         }
     }
+}
+
+/// Takes the saves in `saves` that finished, leaving those still under way. A superseded save
+/// is not returned: its waiters move to the newest save of the same file that holds at least
+/// its edits, still waiting or finished in this same pass (so every answer is collected before
+/// any is forwarded), and are failed only when there is none.
+fn take_finished(
+    saves: &mut Vec<PendingSave>,
+) -> Vec<(PendingSave, Result<SaveReport, PersistError>)> {
+    let mut finished = Vec::new();
+    let mut superseded = Vec::new();
+    for save in std::mem::take(saves) {
+        let result = match save.rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => {
+                saves.push(save);
+                continue;
+            }
+            Err(TryRecvError::Disconnected) => Err(PersistError::WriterGone),
+        };
+        if matches!(result, Err(PersistError::Superseded)) {
+            superseded.push(save);
+        } else {
+            finished.push((save, result));
+        }
+    }
+    for mut old in superseded {
+        let newer = saves
+            .iter_mut()
+            .chain(finished.iter_mut().map(|(p, _)| p))
+            .filter(|p| p.revision >= old.revision && p.path == old.path)
+            .max_by_key(|p| p.revision);
+        match newer {
+            Some(newer) => newer.waiters.append(&mut old.waiters),
+            None => {
+                for (id, to) in &old.waiters {
+                    fail(to, *id, ErrorCode::Internal, "the save was superseded");
+                }
+            }
+        }
+    }
+    finished
 }
 
 impl Doc {
@@ -2252,5 +2214,41 @@ mod tests {
         assert_eq!(access.passcodes[0].passcode, "4821");
         assert_eq!(make(4821), make(4821));
         assert_ne!(make(1), make(2));
+    }
+
+    /// A superseded save whose newer save finished in the same pass is answered by it, whichever
+    /// order the two are listed in (closed docs' saves used to fail it as "superseded").
+    #[test]
+    fn a_superseded_save_is_answered_by_a_newer_one_finished_in_the_same_pass() {
+        for newer_first in [false, true] {
+            let (to, mut replies) = super::super::inbox::reply_channel();
+            let save = |revision, result: Result<SaveReport, PersistError>| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                tx.send(result).unwrap();
+                PendingSave {
+                    rx,
+                    revision,
+                    path: PathBuf::from("/s.openlab"),
+                    rebase: false,
+                    respelled: false,
+                    waiters: vec![(RequestId(revision), to.clone())],
+                }
+            };
+            let old = save(1, Err(PersistError::Superseded));
+            let new = save(2, Ok(SaveReport::default()));
+            let mut saves = if newer_first {
+                vec![new, old]
+            } else {
+                vec![old, new]
+            };
+            let finished = take_finished(&mut saves);
+            assert!(saves.is_empty());
+            assert_eq!(finished.len(), 1);
+            let (newer, result) = &finished[0];
+            assert!(result.is_ok());
+            let ids: Vec<_> = newer.waiters.iter().map(|(id, _)| id.0).collect();
+            assert_eq!(ids, [2, 1]);
+            assert!(replies.try_recv().is_err(), "nothing failed");
+        }
     }
 }

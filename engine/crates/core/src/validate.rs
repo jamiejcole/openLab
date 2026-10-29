@@ -1165,9 +1165,7 @@ pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     }
 }
 
+/// Calls `f` on every cue in `cues`, parents first ([`crate::descendants`]).
 pub(crate) fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
-    for cue in cues {
-        f(cue);
-        visit(cue.children(), f);
-    }
+    crate::tree::descendants(cues).for_each(f);
 }

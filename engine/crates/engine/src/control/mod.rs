@@ -57,9 +57,9 @@ use openlab_core::protocol::{
     TransportAction, WaitProgress, WireProblem, WireWait, WireWarning, WorkspaceInfo,
 };
 use openlab_core::{
-    Action, BrokenReason, Command, CommandError, Cue, CueEngine, CueId, CueKind, CueState,
-    DeviceInfo, EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings,
-    MediaStatus, NetworkPatchId, OscArg, PatchResolution, SampleTime, Timer, Workspace,
+    Action, BrokenReason, Command, CommandError, CueEngine, CueId, CueKind, CueState, DeviceInfo,
+    EngineConfig, EngineConfigError, Footprint, History, Input, MachineSettings, MediaStatus,
+    NetworkPatchId, OscArg, PatchResolution, SampleTime, Timer, Workspace, descendants,
     model_changes, model_changes_indexed, seconds_to_samples,
 };
 
@@ -943,16 +943,11 @@ impl Control {
                     Addr::App => None,
                 };
                 let Some(doc) = doc.or(own) else {
-                    let e = ErrorBody::new(
+                    fail(
+                        to,
+                        id,
                         ErrorCode::NoWorkspace,
                         "close names no workspace and this connection is bound to none",
-                    );
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(e),
-                        },
                     );
                     return Ok(Flow::Continue);
                 };
@@ -961,13 +956,7 @@ impl Control {
                         reply(to, ok(id, None));
                         self.closed(doc);
                     }
-                    Err(e) => reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(e),
-                        },
-                    ),
+                    Err(e) => reply(to, failed(id, e)),
                 }
             }
             ClientMessage::Panic { id } => {
@@ -1320,16 +1309,7 @@ fn no_doc(message: ClientMessage, to: &ReplyTx) -> Flow {
         | ClientMessage::Panic { id }
         | ClientMessage::Hotkey { id, .. } => id,
     };
-    reply(
-        to,
-        ServerMessage::Result {
-            id,
-            outcome: Outcome::Error(ErrorBody::new(
-                ErrorCode::NoWorkspace,
-                "no workspace is open",
-            )),
-        },
-    );
+    fail(to, id, ErrorCode::NoWorkspace, "no workspace is open");
     Flow::Continue
 }
 
@@ -1525,14 +1505,13 @@ impl Doc {
                 problems: problems.iter().map(WireProblem::from).collect(),
             })
             .collect();
-        let mut group_warnings = Vec::new();
-        for list in &self.ws.cue_lists {
-            groups(&list.cues, &mut |c| {
-                if self.engine.has_broken_descendant(c) {
-                    group_warnings.push(c);
-                }
-            });
-        }
+        let group_warnings = self
+            .ws
+            .cues()
+            .filter(|c| matches!(c.kind, CueKind::Group { .. }))
+            .map(|c| c.id)
+            .filter(|&c| self.engine.has_broken_descendant(c))
+            .collect();
         Snapshot {
             revision: self.revision,
             runtime_seq: self.runtime_seq,
@@ -1637,15 +1616,11 @@ impl DocCx<'_> {
                     .as_ref()
                     .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
                 {
-                    reply(
+                    fail(
                         to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(ErrorBody::new(
-                                ErrorCode::BadRequest,
-                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
-                            )),
-                        },
+                        id,
+                        ErrorCode::BadRequest,
+                        format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
                     );
                     return Flow::Continue;
                 }
@@ -1717,16 +1692,7 @@ impl DocCx<'_> {
                             Some(cue),
                             None,
                         );
-                        reply(
-                            to,
-                            ServerMessage::Result {
-                                id,
-                                outcome: Outcome::Error(ErrorBody::new(
-                                    ErrorCode::CommandRefused,
-                                    message,
-                                )),
-                            },
-                        );
+                        fail(to, id, ErrorCode::CommandRefused, message);
                     }
                     Err(e) => {
                         self.partly_changed(now, &e);
@@ -1773,15 +1739,11 @@ impl DocCx<'_> {
             // App-scope: [`Control::app_scope`] takes them before any doc does.
             ClientMessage::Close { id, .. }
             | ClientMessage::Panic { id }
-            | ClientMessage::Hotkey { id, .. } => reply(
+            | ClientMessage::Hotkey { id, .. } => fail(
                 to,
-                ServerMessage::Result {
-                    id,
-                    outcome: Outcome::Error(ErrorBody::new(
-                        ErrorCode::Internal,
-                        "an app-scope message reached a workspace",
-                    )),
-                },
+                id,
+                ErrorCode::Internal,
+                "an app-scope message reached a workspace",
             ),
         }
         Flow::Continue
@@ -1838,7 +1800,7 @@ impl DocCx<'_> {
                         .doc
                         .ws
                         .find_cue(root)
-                        .is_some_and(|r| visit_any(r.children(), cue))
+                        .is_some_and(|r| descendants(r.children()).any(|c| c.id == cue))
             }
         };
         let orphans = self
@@ -3637,11 +3599,25 @@ fn ok(id: openlab_core::protocol::RequestId, revision: Option<u64>) -> ServerMes
     }
 }
 
-fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMessage {
+/// The one way an error reply is built.
+fn failed(id: openlab_core::protocol::RequestId, error: ErrorBody) -> ServerMessage {
     ServerMessage::Result {
         id,
-        outcome: Outcome::Error(ErrorBody::from(e)),
+        outcome: Outcome::Error(error),
     }
+}
+
+fn fail(
+    to: &ReplyTx,
+    id: openlab_core::protocol::RequestId,
+    code: ErrorCode,
+    message: impl Into<String>,
+) {
+    reply(to, failed(id, ErrorBody::new(code, message)));
+}
+
+fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMessage {
+    failed(id, ErrorBody::from(e))
 }
 
 fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
@@ -3727,50 +3703,10 @@ fn orphan_scope(action: &TransportAction) -> Option<Scope> {
     }
 }
 
-fn visit_any(cues: &[Cue], id: CueId) -> bool {
-    cues.iter()
-        .any(|c| c.id == id || visit_any(c.children(), id))
-}
-
 /// Applies an Arm/Disarm cue's change to the model, as a runtime change (no undo step).
 fn set_armed(ws: &mut Workspace, cue: CueId, armed: bool) -> bool {
-    fn find(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
-        for c in cues {
-            if c.id == id {
-                return Some(c);
-            }
-            if let CueKind::Group { children, .. } = &mut c.kind
-                && let Some(found) = find(children, id)
-            {
-                return Some(found);
-            }
-        }
-        None
-    }
-    for list in &mut ws.cue_lists {
-        if let Some(c) = find(&mut list.cues, cue) {
-            let changed = c.armed != armed;
-            c.armed = armed;
-            return changed;
-        }
-    }
-    false
-}
-
-fn groups(cues: &[Cue], f: &mut impl FnMut(CueId)) {
-    for c in cues {
-        if let CueKind::Group { children, .. } = &c.kind {
-            f(c.id);
-            groups(children, f);
-        }
-    }
-}
-
-fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
-    for c in cues {
-        f(c);
-        visit(c.children(), f);
-    }
+    ws.find_cue_mut(cue)
+        .is_some_and(|c| std::mem::replace(&mut c.armed, armed) != armed)
 }
 
 /// The cues to keep primed: from each list's playhead the next `per_list` audio cues, the
@@ -3804,15 +3740,15 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> 
     for t in targets {
         if let Some(c) = ws.find_cue(t) {
             // A group target primes its audio children.
-            visit(std::slice::from_ref(c), &mut |c| add(c.id, &mut wanted));
-        }
-    }
-    for list in &ws.cue_lists {
-        visit(&list.cues, &mut |c| {
-            if c.triggers.hotkey.is_some() || c.triggers.osc.is_some() {
+            for c in descendants(std::slice::from_ref(c)) {
                 add(c.id, &mut wanted);
             }
-        });
+        }
+    }
+    for c in ws.cues() {
+        if c.triggers.hotkey.is_some() || c.triggers.osc.is_some() {
+            add(c.id, &mut wanted);
+        }
     }
     wanted
 }
@@ -3820,6 +3756,7 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openlab_core::Cue;
 
     /// `wake_frames` agrees with the engine's own wake rule (`CueEngine::is_due`, lookahead =
     /// block, `now = rendered + block`) for every rendered position around a deadline: 0

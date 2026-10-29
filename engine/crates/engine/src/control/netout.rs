@@ -42,7 +42,7 @@ use std::fmt;
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -122,7 +122,7 @@ pub trait Transport: Send + Sync {
 }
 
 fn set_cache(cache: &Resolved, addrs: &[SocketAddr]) {
-    let mut c = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut c = crate::lock(cache);
     c.clear();
     c.extend_from_slice(addrs);
 }
@@ -870,10 +870,7 @@ impl NetOut {
                     {
                         Err(("destination too late".to_owned(), false))
                     } else {
-                        let found = resolved
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .clone();
+                        let found = crate::lock(&resolved).clone();
                         transport
                             .send(&dest, &found, &job.packet)
                             .map_err(|e| (e, true))
@@ -1234,10 +1231,7 @@ mod tests {
     }
     impl Transport for Rec {
         fn send(&self, _: &Destination, resolved: &[SocketAddr], _: &[u8]) -> Result<(), String> {
-            self.sent
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(resolved.to_vec());
+            crate::lock(&self.sent).push(resolved.to_vec());
             if self.fail.load(Ordering::SeqCst) {
                 Err("refused".into())
             } else {
@@ -1286,19 +1280,13 @@ mod tests {
     }
 
     fn sent(rec: &Rec) -> Vec<Vec<SocketAddr>> {
-        rec.sent
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        crate::lock(&rec.sent).clone()
     }
 
     fn cache_of(net: &NetOut, n: u128) -> Option<Vec<SocketAddr>> {
-        net.links.get(&nid(n)).map(|l| {
-            l.cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
-        })
+        net.links
+            .get(&nid(n))
+            .map(|l| crate::lock(&l.cache).clone())
     }
 
     /// M1(a): a host that moves is followed: the refresh every 60 s of sample time updates
@@ -1420,18 +1408,12 @@ mod tests {
         let q = patch(1, "new.local");
         net.sync(std::slice::from_ref(&q), false, 10);
         resolve_ok(&mut net, 1, vec![a(2)], 20);
-        assert_ne!(
-            *old.lock().unwrap_or_else(PoisonError::into_inner),
-            vec![a(2)]
-        );
+        assert_ne!(*crate::lock(&old), vec![a(2)]);
         send_one(&mut net, &q);
         assert_eq!(sent(&rec).last(), Some(&vec![a(2)]));
         let new = net.links.get(&nid(1)).map(|l| Arc::clone(&l.cache));
         assert!(new.is_some_and(|n| !Arc::ptr_eq(&n, &old)));
-        assert_ne!(
-            *old.lock().unwrap_or_else(PoisonError::into_inner),
-            vec![a(2)]
-        );
+        assert_ne!(*crate::lock(&old), vec![a(2)]);
     }
 
     /// M2: forgetting an in-flight look-up does not free its thread's slot, and a name has

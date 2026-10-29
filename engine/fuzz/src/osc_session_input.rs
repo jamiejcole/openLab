@@ -33,49 +33,20 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use openlab_core::protocol::DocId;
-use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
+use openlab_core::{OscAccess, OscPasscode, OscRights};
+use openlab_engine::osc::fuzz::FuzzShow;
 use openlab_engine::osc::{
-    CueField, DocShow, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder,
-    decode_packet, encode_message, upper,
+    DocShow, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder, decode_packet,
+    encode_message, upper,
 };
 use rosc::OscMessage;
-use serde_json::{Value, json};
-use uuid::Uuid;
+use serde_json::Value;
 
 pub const SEPARATOR: u8 = 0x1e;
 const FIRST_PASSCODE: &str = "1234";
 const SECOND_PASSCODE: &str = "5678";
 const MAX_RECORDS: usize = 256;
 const PEERS: u8 = 6;
-
-struct Show {
-    id: u128,
-    access: OscAccess,
-}
-
-impl OscShow for Show {
-    fn workspace_id(&self) -> WorkspaceId {
-        WorkspaceId(Uuid::from_u128(self.id))
-    }
-    fn access(&self) -> &OscAccess {
-        &self.access
-    }
-    fn active_list(&self) -> Option<CueListId> {
-        Some(CueListId(Uuid::from_u128(2)))
-    }
-    fn cue_by_number(&self, number: &str) -> Option<CueId> {
-        matches!(number, "1" | "2.5").then_some(CueId(Uuid::from_u128(3)))
-    }
-    fn cue_exists(&self, id: CueId) -> bool {
-        id == CueId(Uuid::from_u128(3))
-    }
-    fn cue_property(&self, _id: CueId, _field: CueField) -> Option<Value> {
-        Some(json!("x"))
-    }
-    fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        (address == "/trigger").then_some(CueId(Uuid::from_u128(3)))
-    }
-}
 
 fn udp(n: u8) -> Peer {
     Peer::Udp(IpAddr::V4(Ipv4Addr::new(10, 0, 0, n % PEERS)))
@@ -146,11 +117,11 @@ pub fn run(data: &[u8]) -> Result<(), String> {
     let Some((&config, rest)) = data.split_first() else {
         return Ok(());
     };
-    let first = Show {
+    let first = FuzzShow {
         id: 1,
         access: access(config & 1 != 0, FIRST_PASSCODE),
     };
-    let second = Show {
+    let second = FuzzShow {
         id: 2,
         access: access(config & 2 != 0, SECOND_PASSCODE),
     };
