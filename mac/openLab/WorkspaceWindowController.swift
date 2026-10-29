@@ -37,7 +37,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var sub: AnyCancellable?
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
-    private(set) lazy var logWindow = LogWindowController(store: store)
+    private var logController: LogWindowController?
+    private var closeObserver: NSObjectProtocol?
+    var logWindow: LogWindowController {
+        if let logController { return logController }
+        let made = LogWindowController(store: store)
+        logController = made
+        return made
+    }
+    /// The log window if it was ever made (closing a workspace must not make one just to close it).
+    var existingLogWindow: LogWindowController? { logController }
     private var preshowController: PreshowWindowController?
     /// The pre-show check panel, made on first use. It closes with this window.
     var preshowWindow: PreshowWindowController {
@@ -67,6 +76,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 800, height: 500)
         super.init(window: window)
         window.delegate = self
+        // The log window belongs to this workspace: it goes when the workspace's window does.
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logController?.close() }
+        }
         cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
