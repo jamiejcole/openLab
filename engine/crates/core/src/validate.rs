@@ -27,12 +27,12 @@ use crate::osc_access::{
 
 /// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
 /// bytes: a name in any script gets the same room, and a UI text field counts characters).
-/// QLab 5 documents no limit (docs/todo/open-qlab-questions.md, row 13).
-pub const MAX_NAME_SCALARS: usize = 256;
+/// QLab 5 documents no limit; it took 300 characters, and we allow 1024.
+pub const MAX_NAME_SCALARS: usize = 1024;
 
-/// Longest cue name, in bytes: 256 characters of any script (at most 4 bytes each), as for the
-/// names [`MAX_NAME_SCALARS`] bounds. Cue names are free text otherwise (QLab 5 sets no rule).
-pub const MAX_CUE_NAME_BYTES: usize = 4 * MAX_NAME_SCALARS;
+/// Longest cue name, in bytes: 256 characters of any script (at most 4 bytes each). Cue names are
+/// free text otherwise (QLab 5 sets no rule).
+pub const MAX_CUE_NAME_BYTES: usize = 1024;
 
 /// Longest cue notes, in bytes (the bound on a Network cue's string argument too).
 pub const MAX_CUE_NOTES_BYTES: usize = 64 * 1024;
@@ -48,14 +48,15 @@ pub const MAX_NETWORK_ARGS: usize = 1024;
 pub const MAX_NETWORK_STRING_BYTES: usize = 64 * 1024;
 
 /// Why `name` is refused as a new name (workspace, cue list, patch, network patch): too long, or
-/// holding a control character (NUL, a newline, a tab, escape codes), which no single-line name
-/// field can show. Load keeps such a name and warns ([`IssueKind::InvalidName`]).
+/// holding a control character other than a newline (NUL, a tab, escape codes, a carriage
+/// return). A newline is allowed, as in QLab 5's names. Load keeps such a name and warns
+/// ([`IssueKind::InvalidName`]).
 pub fn name_problem(name: &str) -> Option<&'static str> {
     // Bounded scan: stops at the first control character or just past the limit.
     if name.chars().take(MAX_NAME_SCALARS + 1).count() > MAX_NAME_SCALARS {
-        Some("a name is at most 256 characters")
-    } else if name.chars().any(char::is_control) {
-        Some("a name cannot contain control characters")
+        Some("a name is at most 1024 characters")
+    } else if name.chars().any(|c| c.is_control() && c != '\n') {
+        Some("a name cannot contain control characters other than a newline")
     } else {
         None
     }
@@ -306,7 +307,7 @@ impl fmt::Display for ValidationIssue {
             ),
             IssueKind::InvalidName { field } => write!(
                 f,
-                "{field} is too long or has a control character; kept as it is"
+                "{field} is too long or has a control character other than a newline; kept as it is"
             ),
             IssueKind::TooLarge { field, limit } => {
                 let unit = if *field == "args" { "entries" } else { "bytes" };

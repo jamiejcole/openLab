@@ -109,7 +109,7 @@ cue, and the cue shows as broken where it cannot run.
 | An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
 | An OSC passcode that is not made of digits only | Warning (`OscPasscodeNotDigits`); kept, since dropping it would change who can connect (a v3 passcode may be any text) |
 | A cue name over 1024 bytes, cue notes over 64 KiB, or a Network cue address over 64 KiB, more than 1024 arguments or a string argument over 64 KiB | Warning (`TooLarge`, per cue and field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
-| A workspace, cue list, patch or network patch name over 256 characters or with a control character, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one (M1.20) |
+| A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one (M1.20) |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a

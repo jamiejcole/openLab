@@ -258,7 +258,7 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
 /// Why a workspace key was refused ([`CommandError::HotkeyRefused`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HotkeyClash {
-    /// Esc, or a bare Up / Down arrow ([`is_reserved_key`]).
+    /// Esc, or an Up / Down arrow, with any modifiers ([`is_reserved_key`]).
     Reserved,
     /// Another key of the new map is the same; its show-file path.
     Workspace { other: &'static str },
@@ -270,7 +270,7 @@ impl fmt::Display for HotkeyClash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserved => f.write_str(
-                "the key is reserved: Esc is panic and the bare Up and Down arrows move the selection",
+                "the key is reserved: Esc is panic and the Up and Down arrows move the selection",
             ),
             Self::Workspace { other } => write!(f, "the same key is already {other}"),
             Self::Cue {
@@ -295,14 +295,18 @@ fn check_key_map(
     new: &TransportHotkeys,
 ) -> Result<(), CommandError> {
     let new_slots = new.slots();
-    for ((name, key), (_, before)) in new_slots.iter().zip(old.slots()) {
+    let defaults = TransportHotkeys::default();
+    for (((name, key), (_, before)), (_, default)) in
+        new_slots.iter().zip(old.slots()).zip(defaults.slots())
+    {
         let Some(key) = key else { continue };
         if Some(key) == before.as_ref() {
             continue;
         }
         let field = hotkey_field(name);
         let refuse = |reason| Err(CommandError::HotkeyRefused { field, reason });
-        if is_reserved_key(key) {
+        // Reset to defaults must work: Next / Previous Cue default to Shift-Command-Down / Up.
+        if is_reserved_key(key) && Some(key) != default.as_ref() {
             return refuse(HotkeyClash::Reserved);
         }
         if let Some((other, _)) = new_slots

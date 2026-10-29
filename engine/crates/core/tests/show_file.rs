@@ -1287,7 +1287,12 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
         &mut keys.playhead_next,
         &mut keys.playhead_previous,
     ] {
-        if key.as_ref().is_some_and(is_reserved_key) {
+        if key.as_ref().is_some_and(|k| {
+            // The v5 rule the migration applies, not the stricter rule of edits.
+            let m = k.modifiers;
+            k.key == "escape"
+                || (matches!(k.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
+        }) {
             *key = None;
         }
         taken.extend(key.clone());

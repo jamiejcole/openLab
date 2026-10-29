@@ -46,16 +46,16 @@ fn picks(max: usize) -> impl Strategy<Value = Vec<Pick>> {
 /// passcode table.
 const OPS: u8 = 29;
 
-/// Names and hosts a command takes or refuses: plain, empty, at and over the limits (256 scalars,
-/// 253 bytes; multi-byte text is counted in scalars, so 256 emoji pass), with a newline, a NUL.
+/// Names and hosts a command takes or refuses: plain, empty, at and over the limits (1024 scalars,
+/// 253 bytes; multi-byte text is counted in scalars, so 1024 emoji pass), with a newline, a NUL.
 fn name_pool(n: u32) -> String {
     match n % 9 {
         0 => "Act 1".into(),
         1 => String::new(),
-        2 => "n".repeat(256),
-        3 => "n".repeat(257),
-        4 => "\u{1F3AD}".repeat(256),
-        5 => "\u{1F3AD}".repeat(257),
+        2 => "n".repeat(1024),
+        3 => "n".repeat(1025),
+        4 => "\u{1F3AD}".repeat(1024),
+        5 => "\u{1F3AD}".repeat(1025),
         6 => "two\nlines".into(),
         7 => "nul\0".into(),
         _ => format!("name {}", n % 5),

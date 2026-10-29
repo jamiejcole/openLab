@@ -184,7 +184,7 @@ fn an_oversize_name_or_notes_is_refused_on_every_path() {
 #[test]
 fn values_at_the_limits_are_accepted() {
     let mut w = ws();
-    // 256 four-byte characters: any name the 256-character rule for other names allows fits.
+    // 256 four-byte characters: the cue name limit is 1024 bytes.
     w.apply(Command::SetCueProperty {
         id: cue_id(1),
         property: CueProperty::Name {

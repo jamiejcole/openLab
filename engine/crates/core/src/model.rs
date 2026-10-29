@@ -272,14 +272,12 @@ pub(crate) fn hotkey_field(name: &str) -> &'static str {
     }
 }
 
-/// Keys no workspace key may be: Esc with any modifiers (the fixed panic key; QLab 5: a single
-/// Esc is always panic) and Up / Down without Command, Control or Option (they move the
-/// selection, and with it the playhead; QLab 5 does not allow the up and down arrows). Shift
-/// alone extends the selection, so Shift-Up counts as bare too, as in the app's recorder.
+/// Keys no workspace key may be when an edit sets them: Esc and Up / Down, each with any
+/// modifiers (QLab 5 refuses Esc as the fixed panic key and the arrows whatever is held). The
+/// defaults Shift-Command-Down / Up (QLab's menu keys) stay because an edit does not judge a key
+/// it leaves as it is; recording one anew is refused.
 pub fn is_reserved_key(hotkey: &Hotkey) -> bool {
-    let m = hotkey.modifiers;
-    hotkey.key == "escape"
-        || (matches!(hotkey.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
+    hotkey.key == "escape" || matches!(hotkey.key.as_str(), "up" | "down")
 }
 
 impl Default for TransportHotkeys {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cue::{CueKind, Hotkey, Modifiers};
-use crate::model::{Workspace, is_reserved_key};
+use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
@@ -266,6 +266,15 @@ fn v3_to_v4(mut document: Value) -> Result<Value, String> {
     Ok(document)
 }
 
+/// What v5 reserved: Esc and the Up / Down arrows without Command, Control or Option. Fixed at
+/// that rule so the migration keeps a v4 file's Shift-Command-Down / Up (the v5 defaults); edits
+/// since refuse every arrow chord (`is_reserved_key`).
+fn was_reserved_in_v5(hotkey: &Hotkey) -> bool {
+    let m = hotkey.modifiers;
+    hotkey.key == "escape"
+        || (matches!(hotkey.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
+}
+
 /// v5 added the selected-cue keys to `settings.hotkeys` (M5.11c) and made Esc and the bare Up /
 /// Down arrows reserved (`is_reserved_key`). The result keeps what the app bound before:
 /// - A transport key that is reserved becomes null. The app never bound one (Esc is its fixed
@@ -305,7 +314,7 @@ fn v4_to_v5(mut document: Value) -> Result<Value, String> {
         .filter(|(k, _)| v4_fields.contains(&k.as_str()))
     {
         if let Ok(hotkey) = Hotkey::deserialize(&*value) {
-            if is_reserved_key(&hotkey) {
+            if was_reserved_in_v5(&hotkey) {
                 *value = Value::Null;
             } else {
                 taken.push(hotkey);
