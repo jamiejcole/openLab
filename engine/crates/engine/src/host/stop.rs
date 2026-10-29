@@ -29,6 +29,7 @@ use openlab_core::protocol::LogLevel;
 
 use super::{LOG_FLUSH_WAIT, engine_file};
 use crate::control::{Inbox, SHUTDOWN_WAIT};
+use crate::net::Stopping;
 use crate::persist::DROP_WAIT;
 use crate::platform::signals::Signal;
 
@@ -47,8 +48,9 @@ const FORCED: i32 = 1;
 
 enum Phase {
     Starting,
-    /// The control loop is about to run (or runs): a signal asks it to shut down.
-    Running(Sender<Inbox>),
+    /// The control loop is about to run (or runs): a signal asks it to shut down, and says the
+    /// shutdown has begun.
+    Running(Sender<Inbox>, Stopping),
     /// The shutdown is under way; `signalled`: a signal has been seen since it began (the next
     /// one forces the exit).
     Stopping {
@@ -96,11 +98,12 @@ impl Stop {
         })
     }
 
-    /// The control loop is about to run: from now on a signal is a graceful shutdown.
-    pub fn running(&self, inbox: Sender<Inbox>) {
+    /// The control loop is about to run: from now on a signal is a graceful shutdown, which
+    /// sets `stopping` first.
+    pub fn running(&self, inbox: Sender<Inbox>, stopping: Stopping) {
         let mut state = self.lock();
         if matches!(state.phase, Phase::Starting) {
-            state.phase = Phase::Running(inbox);
+            state.phase = Phase::Running(inbox, stopping);
         }
     }
 
@@ -126,9 +129,10 @@ impl Stop {
                 drop(state);
                 self.force(0, &format!("{}: exiting while starting", signal.name()));
             }
-            Phase::Running(inbox) => {
+            Phase::Running(inbox, stopping) => {
                 let arm = !std::mem::replace(&mut state.armed, true);
                 drop(state);
+                stopping.begin();
                 let _ = inbox.send(Inbox::Log {
                     level: LogLevel::Info,
                     message: format!("{}: shutting down", signal.name()),
@@ -215,6 +219,7 @@ mod tests {
             version: "0.0.1".into(),
             protocol_version: 1,
             started_ms: 0,
+            stopping: false,
         };
         let _file = EngineFile::write(&path, info).unwrap();
         let (tx, exits) = crossbeam_channel::unbounded();
@@ -222,10 +227,12 @@ mod tests {
             let _ = tx.send(code);
         });
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-        stop.running(inbox_tx);
+        let stopping = Stopping::default();
+        stop.running(inbox_tx, stopping.clone());
         stop.signal(Signal::Int);
         let sent: Vec<Inbox> = inbox.try_iter().collect();
         assert!(matches!(sent.last(), Some(Inbox::Shutdown)), "{sent:?}");
+        assert!(stopping.is_set(), "the shutdown has begun: no app relaunch");
         assert!(
             exits.try_recv().is_err(),
             "the graceful shutdown runs first"
@@ -243,7 +250,7 @@ mod tests {
     fn a_shutdown_that_hangs_after_a_signal_is_forced_after_the_bound() {
         let (stop, exits) = recorded(Duration::ZERO);
         let (inbox_tx, _inbox) = crossbeam_channel::unbounded();
-        stop.running(inbox_tx);
+        stop.running(inbox_tx, Stopping::default());
         stop.signal(Signal::Term);
         assert_eq!(exits.recv_timeout(GUARD), Ok(FORCED));
     }
@@ -252,7 +259,7 @@ mod tests {
     fn an_exit_that_hangs_after_the_loop_ended_is_forced_after_the_bound() {
         let (stop, exits) = recorded(Duration::ZERO);
         let (inbox_tx, _inbox) = crossbeam_channel::unbounded();
-        stop.running(inbox_tx);
+        stop.running(inbox_tx, Stopping::default());
         stop.loop_ended();
         assert_eq!(exits.recv_timeout(GUARD), Ok(FORCED));
     }
@@ -263,7 +270,7 @@ mod tests {
     fn after_the_loop_ended_only_a_second_signal_forces_the_exit() {
         let (stop, exits) = recorded(GUARD);
         let (inbox_tx, _inbox) = crossbeam_channel::unbounded();
-        stop.running(inbox_tx);
+        stop.running(inbox_tx, Stopping::default());
         stop.loop_ended();
         stop.signal(Signal::Term);
         assert!(

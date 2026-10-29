@@ -186,6 +186,7 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
     assert_eq!(v["pid"].as_u64(), Some(u64::from(engine.child.id())));
     assert!(v["port"].as_u64().unwrap() > 0);
     assert_eq!(v["token"].as_str().unwrap().len(), 64);
+    assert_eq!(v["stopping"].as_bool(), Some(false));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;

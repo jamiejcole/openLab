@@ -1489,3 +1489,55 @@ async fn an_app_that_still_runs_is_not_relaunched_until_it_is_gone() {
     fix.sync().await;
     assert_eq!(fix.logs_with("relaunching the app"), 1);
 }
+
+impl Fix {
+    /// Waits until `n` log lines contain `text` (hang-guarded: they come from the server's
+    /// tasks through the stand-in control thread).
+    async fn wait_logs(&self, text: &str, n: usize) {
+        guard(&format!("{n} log line(s) with {text:?}"), async {
+            while self.logs_with(text) < n {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+}
+
+/// A shutdown under way (here a window's `goodbye { shutdown: true }`, before the server itself
+/// stops) is no app crash: a relaunch already waiting for a running app gives up, and an app
+/// connection lost after it is not relaunched, so the app is never started onto an engine about
+/// to exit.
+#[tokio::test]
+async fn an_app_lost_while_the_engine_shuts_down_is_not_relaunched() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const PID: u32 = 813;
+    const STOPPING: &str = "while the engine shuts down";
+    let launched = Arc::new(AtomicBool::new(false));
+    let launches = launched.clone();
+    let action: openlab_engine::net::RelaunchFn = Arc::new(move || {
+        launches.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let mut relaunch = openlab_engine::net::Relaunch::new(action);
+    relaunch.delay = Duration::from_millis(1);
+    relaunch.process_name = Arc::new(|pid| (pid == PID).then(|| "openLab".to_owned()));
+    let fix = fixture_with(ServerConfig {
+        relaunch: Some(relaunch),
+        ..ServerConfig::default()
+    });
+
+    // The app's connection drops while its process runs: the relaunch waits for it.
+    drop(fix.app_client_with_pid(Some(PID)).await);
+    fix.wait_logs("is still running", 1).await;
+    // A window asks the engine to shut down: the waiting relaunch gives up.
+    let mut window = fix.client().await;
+    send(&mut window, &ClientMessage::Goodbye { shutdown: true }).await;
+    expect_closed(&mut window).await;
+    fix.wait_logs(STOPPING, 1).await;
+    // The app goes away during the shutdown: no crash, no relaunch.
+    drop(fix.app_client().await);
+    fix.wait_logs(STOPPING, 2).await;
+    assert_eq!(fix.logs_with("closed without goodbye"), 1, "only the first");
+    assert_eq!(fix.logs_with("relaunching the app"), 0);
+    assert!(!launched.load(Ordering::SeqCst));
+}
