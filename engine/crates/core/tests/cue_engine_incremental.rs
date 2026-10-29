@@ -12,12 +12,6 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
 fn sound(n: u128, file: &str) -> Cue {
     let mut c = cue(n, audio());
     if let CueKind::Audio { media, .. } = &mut c.kind {
@@ -508,14 +502,6 @@ fn an_edit_costs_what_it_touched() {
 // ----- playheads, the chain limit and group visits followed from footprints (M4.12c) -----
 
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn wait(n: u128, seconds: f64) -> Cue {
-    cue(n, CueKind::Wait { duration: seconds })
-}
 
 fn timed(mut c: Cue, mode: ContinueMode) -> Cue {
     c.continue_mode = mode;

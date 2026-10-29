@@ -9,28 +9,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoFollow as AF, DoNotContinue as DNC};
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
-    c
-}
 
 /// A Fade of cue `target` over `seconds` to `levels`.
 fn fade_to(
@@ -64,71 +43,6 @@ fn master(db: f64) -> FadeLevels {
 /// A linear master fade of cue 1 over `seconds` to `db`.
 fn master_fade(n: u128, seconds: f64, db: f64) -> Cue {
     fade_to(n, 1, seconds, FadeCurve::Linear, master(db), false)
-}
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    /// The workspace as the engine last saw it (see `handle_as_binary`).
-    last: Option<Workspace>,
-}
-
-impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        Self::with_lookahead(cues, 0)
-    }
-
-    fn with_lookahead(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, lookahead, 1).unwrap()),
-            last: None,
-        };
-        rig.tick(0);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Tick)
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
-    fn pause(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Pause { cue: id(n) })
-    }
-
-    fn resume(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Resume { cue: id(n) })
-    }
-
-    fn stop(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(
-            now,
-            Input::Stop {
-                cue: id(n),
-                fade_out: None,
-            },
-        )
-    }
-
-    fn run(&self, n: u128) -> RunId {
-        self.engine.run_of(id(n)).unwrap()
-    }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
-    fn level(&self, n: u128, param: LevelParam, at: SampleTime) -> Option<f32> {
-        self.engine.fade_level(id(n), param, at)
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -175,36 +89,6 @@ fn ramp(n: u128, at: SampleTime, param: LevelParam, gain: f32, frames: SampleTim
         frames,
         curve: FadeCurve::Linear,
     }
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn voice_stops(actions: &[Action]) -> Vec<(CueId, SampleTime, Option<StopFade>)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StopVoice { cue, at, fade, .. } => Some((*cue, *at, *fade)),
-            _ => None,
-        })
-        .collect()
 }
 
 const M: LevelParam = LevelParam::Master;

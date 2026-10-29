@@ -12,14 +12,6 @@ use std::collections::BTreeSet;
 use common::*;
 use openlab_core::*;
 
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
 /// 1, group 2 { 3, group 4 { 5 } }, 6.
 fn sample() -> Workspace {
     workspace(vec![

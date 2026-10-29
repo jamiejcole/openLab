@@ -9,54 +9,9 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
 
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
-    c
-}
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
-            last: None,
-        };
-        rig.at(0, Input::Tick);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list_id(1) })
-    }
-
     fn preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
         self.at(now, Input::Preview { cue: id(n) })
     }
@@ -64,20 +19,6 @@ impl Rig {
     fn stop_preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
         self.at(now, Input::StopPreview { cue: Some(id(n)) })
     }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// Everything that is not a preview action or a warning: what the show would notice.

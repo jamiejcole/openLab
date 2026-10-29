@@ -10,24 +10,6 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn list() -> CueListId {
-    list_id(1)
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
 fn with(mut c: Cue, option: SecondTrigger) -> Cue {
     c.second_trigger = option;
     c
@@ -110,52 +92,13 @@ fn devamp_cue(n: u128, target: u128, mode: DevampMode, start_next: bool) -> Cue 
     )
 }
 
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    /// One list; the panic lasts one second.
-    fn new(cues: Vec<Cue>) -> Self {
-        let mut ws = workspace(cues);
-        ws.settings.panic_duration = 1.0;
-        let mut rig = Self {
-            ws,
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
-            last: None,
-        };
-        rig.at(0, Input::Tick);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
-    fn pause(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Pause { cue: id(n) })
-    }
-
     fn release(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
         self.at(now, Input::TriggerReleased { cue: id(n) })
     }
 
     fn preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
         self.at(now, Input::Preview { cue: id(n) })
-    }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
-    fn run(&self, n: u128) -> RunId {
-        self.engine.run_of(id(n)).unwrap()
     }
 
     /// Presses each hotkey cue for `key` as the binary does (M4.2 contract).
@@ -166,16 +109,6 @@ impl Rig {
         }
         out
     }
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 fn voice_starts(actions: &[Action]) -> Vec<CueId> {
@@ -269,7 +202,7 @@ fn close(a: f32, b: f32) -> bool {
 /// "Devamp currently looping slice" leaves the slice loop playing (what openLab always did).
 #[test]
 fn d7_devamp_current_slice_leaves_the_looping_slice() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         sliced_sound(1, 1),
         devamp_cue(2, 1, DevampMode::CurrentSlice, false),
     ]);
@@ -283,7 +216,7 @@ fn d7_devamp_current_slice_leaves_the_looping_slice() {
 /// and so its "start next cue" never fires.
 #[test]
 fn d7_devamp_looping_cue_does_nothing_while_a_slice_loops() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         sliced_sound(1, 1),
         devamp_cue(2, 1, DevampMode::LoopingCue, true),
         memo(3),
@@ -319,7 +252,7 @@ fn d7_devamp_looping_cue_does_nothing_while_a_slice_loops() {
 /// Also when the slice after the marker loops: with markers every loop is a slice's.
 #[test]
 fn d7_devamp_looping_cue_does_nothing_on_any_sliced_cue() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         sliced_sound(1, 0),
         devamp_cue(2, 1, DevampMode::LoopingCue, false),
     ]);
@@ -333,7 +266,7 @@ fn d7_devamp_looping_cue_does_nothing_on_any_sliced_cue() {
 #[test]
 fn d7_both_modes_leave_the_loop_of_a_cue_without_slices() {
     for mode in [DevampMode::LoopingCue, DevampMode::CurrentSlice] {
-        let mut rig = Rig::new(vec![looping_sound(1), devamp_cue(2, 1, mode, false)]);
+        let mut rig = Rig::panicking(vec![looping_sound(1), devamp_cue(2, 1, mode, false)]);
         rig.start(0, 1);
         let out = rig.start(500, 2);
         assert_eq!(devamps(&out), vec![id(1)], "{mode:?}");
@@ -345,7 +278,7 @@ fn d7_both_modes_leave_the_loop_of_a_cue_without_slices() {
 #[test]
 fn d7_both_modes_devamp_a_looping_playlist() {
     for mode in [DevampMode::LoopingCue, DevampMode::CurrentSlice] {
-        let mut rig = Rig::new(vec![
+        let mut rig = Rig::panicking(vec![
             grp(1, playlist(true), vec![sound(11), sound(12)]),
             devamp_cue(2, 1, mode, false),
         ]);
@@ -387,7 +320,7 @@ fn f2_a_fade_of_a_group_moves_each_child_by_the_fades_level() {
             db: -3.0,
         }];
     }
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         grp(
             1,
             GroupMode::Timeline,
@@ -440,7 +373,7 @@ fn f2_relative_from_the_current_level_capped_and_absolute_for_an_audio_target() 
         }
         cue(n, k)
     };
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         grp(1, GroupMode::Timeline, vec![sound_at(11, 0.0, 0.0)]),
         fade_by(2, 11, -20.0),
         fade_by(3, 1, -6.0),
@@ -468,7 +401,7 @@ fn s1_go_or_a_start_cue_on_a_paused_cue_resumes_it_whatever_its_option() {
             target: Some(id(1)),
         },
     );
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         with(sound(1), SecondTrigger::HardStop),
         memo(2),
         start_cue,
@@ -506,7 +439,7 @@ fn s4_play_previous_on_the_first_child_stops_the_playlist_and_goes_back_from_a_l
         SecondTrigger::PlayPrevious,
     );
     group.continue_mode = ContinueMode::AutoFollow;
-    let mut rig = Rig::new(vec![group, memo(2)]);
+    let mut rig = Rig::panicking(vec![group, memo(2)]);
     rig.start(0, 1);
     // On child 2 it goes back to child 1.
     let run = rig.run(11);
@@ -538,7 +471,7 @@ fn s4_play_previous_on_the_first_child_stops_the_playlist_and_goes_back_from_a_l
 fn s5_hotkey_press_resumes_a_paused_cue_and_release_stops_it() {
     let mut c = keyed(with(sound(1), SecondTrigger::Stop), "q");
     c.second_trigger_on_release = true;
-    let mut rig = Rig::new(vec![c]);
+    let mut rig = Rig::panicking(vec![c]);
     // Press starts, release stops (the sampler use of "on release").
     rig.press(0, "q");
     assert_eq!(rig.state(1), CueState::Running);
@@ -564,7 +497,7 @@ fn v1_previewing_a_group_plays_every_armed_audio_cue_in_it() {
     disarmed.armed = false;
     let mut disarmed_group = grp(14, GroupMode::Timeline, vec![sound(141)]);
     disarmed_group.armed = false;
-    let mut rig = Rig::new(vec![grp(
+    let mut rig = Rig::panicking(vec![grp(
         1,
         playlist(false),
         vec![
@@ -627,7 +560,7 @@ fn v1_a_group_preview_skips_broken_and_already_previewed_audio_cues() {
     if let CueKind::Audio { media, .. } = &mut broken.kind {
         *media = None;
     }
-    let mut rig = Rig::new(vec![grp(
+    let mut rig = Rig::panicking(vec![grp(
         1,
         GroupMode::Timeline,
         vec![sound(11), broken, sound(13)],
@@ -648,7 +581,7 @@ fn v1_a_group_preview_skips_broken_and_already_previewed_audio_cues() {
 
 #[test]
 fn v1_a_group_preview_ends_when_its_group_is_deleted() {
-    let mut rig = Rig::new(vec![grp(1, GroupMode::Timeline, vec![sound(11)])]);
+    let mut rig = Rig::panicking(vec![grp(1, GroupMode::Timeline, vec![sound(11)])]);
     rig.preview(0, 1);
     rig.ws.cue_lists[0].cues.clear();
     let out = rig.at(100, Input::Tick);
@@ -663,7 +596,7 @@ fn v2_a_disarmed_cue_or_group_cannot_be_previewed() {
     c.armed = false;
     let mut g = grp(2, GroupMode::Timeline, vec![sound(21)]);
     g.armed = false;
-    let mut rig = Rig::new(vec![c, g]);
+    let mut rig = Rig::panicking(vec![c, g]);
     for n in [1, 2] {
         assert_eq!(
             rig.preview(0, n),
@@ -680,7 +613,7 @@ fn v2_a_disarmed_cue_or_group_cannot_be_previewed() {
 
 #[test]
 fn v4_pause_all_pauses_previews_and_resume_all_resumes_them() {
-    let mut rig = Rig::new(vec![sound(1)]);
+    let mut rig = Rig::panicking(vec![sound(1)]);
     let (_, first) = preview_starts(&rig.preview(100, 1))[0];
     let out = rig.at(400, Input::PauseAll);
     assert_eq!(
@@ -748,7 +681,7 @@ fn v4_pause_all_pauses_previews_and_resume_all_resumes_them() {
 
 #[test]
 fn v4_v6_panic_fades_a_playing_preview_and_a_second_panic_cuts_it() {
-    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    let mut rig = Rig::panicking(vec![sound(1), sound(2)]);
     let (_, one) = preview_starts(&rig.preview(0, 1))[0];
     let (_, two) = preview_starts(&rig.preview(0, 2))[0];
     let panic = rig.at(300, Input::Panic);
@@ -781,7 +714,7 @@ fn v4_v6_panic_fades_a_playing_preview_and_a_second_panic_cuts_it() {
 
 #[test]
 fn v4_a_paused_preview_stops_at_once_on_panic() {
-    let mut rig = Rig::new(vec![sound(1)]);
+    let mut rig = Rig::panicking(vec![sound(1)]);
     let (_, run) = preview_starts(&rig.preview(0, 1))[0];
     rig.at(100, Input::PauseAll);
     let panic = rig.at(300, Input::Panic);
@@ -793,7 +726,7 @@ fn v4_a_paused_preview_stops_at_once_on_panic() {
 
 #[test]
 fn v6_a_panicked_preview_is_forgotten_after_the_fade_or_its_end() {
-    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    let mut rig = Rig::panicking(vec![sound(1), sound(2)]);
     let (_, one) = preview_starts(&rig.preview(0, 1))[0];
     rig.preview(0, 2);
     rig.at(100, Input::Panic);
@@ -822,7 +755,7 @@ fn v6_a_panicked_preview_is_forgotten_after_the_fade_or_its_end() {
 
 #[test]
 fn k1b_a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
-    let mut rig = Rig::new(vec![keyed(sound(1), "space"), keyed(sound(2), "w")]);
+    let mut rig = Rig::panicking(vec![keyed(sound(1), "space"), keyed(sound(2), "w")]);
     let issues = validate(&rig.ws);
     assert_eq!(
         issues
@@ -918,7 +851,7 @@ fn s4_play_previous_on_the_first_child_of_a_shuffled_playlist_stops_it() {
         ),
         SecondTrigger::PlayPrevious,
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     let playing = |rig: &Rig| {
         [11, 12, 13]
             .into_iter()
@@ -957,7 +890,7 @@ fn s4_play_previous_on_the_first_child_of_a_shuffled_playlist_stops_it() {
 /// preview and an audio preview, and a repeated child id gets one preview, not a lost voice.
 #[test]
 fn v1_a_group_preview_skips_children_with_the_groups_or_a_repeated_id() {
-    let mut rig = Rig::new(vec![grp(
+    let mut rig = Rig::panicking(vec![grp(
         6,
         GroupMode::Timeline,
         vec![sound(6), sound(11), sound(11), sound(12)],
@@ -978,7 +911,7 @@ fn v1_a_group_preview_skips_children_with_the_groups_or_a_repeated_id() {
 /// not audio, and the next pass over the edits would stop it as gone (an unsignalled change).
 #[test]
 fn v1_a_group_preview_skips_children_whose_id_names_another_cue_first() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         memo(2),
         grp(
             3,
@@ -1010,7 +943,7 @@ fn v1_a_group_preview_skips_children_whose_id_names_another_cue_first() {
 /// With every audio child shadowed that way there is nothing to preview.
 #[test]
 fn v1_a_group_preview_of_only_shadowed_children_has_nothing_to_preview() {
-    let mut rig = Rig::new(vec![memo(2), grp(3, GroupMode::Timeline, vec![sound(2)])]);
+    let mut rig = Rig::panicking(vec![memo(2), grp(3, GroupMode::Timeline, vec![sound(2)])]);
     let out = rig.preview(0, 3);
     assert!(preview_starts(&out).is_empty(), "{out:?}");
     assert_eq!(
@@ -1027,7 +960,7 @@ fn v1_a_group_preview_of_only_shadowed_children_has_nothing_to_preview() {
 /// running, as the other mode does, before it looks at the slices.
 #[test]
 fn d7_devamp_looping_cue_on_a_stopped_sliced_cue_reports_not_running() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         sliced_sound(1, 1),
         devamp_cue(2, 1, DevampMode::LoopingCue, false),
     ]);

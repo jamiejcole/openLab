@@ -17,13 +17,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use SecondTrigger as ST;
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
 
 fn with(mut c: Cue, option: SecondTrigger) -> Cue {
     c.second_trigger = option;
@@ -33,14 +27,6 @@ fn with(mut c: Cue, option: SecondTrigger) -> Cue {
 fn on_release(mut c: Cue) -> Cue {
     c.second_trigger_on_release = true;
     c
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
 }
 
 fn pre(mut c: Cue, seconds: f64) -> Cue {
@@ -74,67 +60,10 @@ fn start_cue(n: u128, target: u128) -> Cue {
     )
 }
 
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    /// One list; the panic lasts one second.
-    fn new(cues: Vec<Cue>) -> Self {
-        let mut ws = workspace(cues);
-        ws.settings.panic_duration = 1.0;
-        let mut rig = Self {
-            ws,
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
-            last: None,
-        };
-        rig.tick(0);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Tick)
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
     fn release(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
         self.at(now, Input::TriggerReleased { cue: id(n) })
     }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list_id(1) })
-    }
-
-    fn pause(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Pause { cue: id(n) })
-    }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
-    fn run(&self, n: u128) -> RunId {
-        self.engine.run_of(id(n)).unwrap()
-    }
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
 }
 
 fn starts(actions: &[Action]) -> Vec<CueId> {
@@ -171,16 +100,6 @@ fn voice_stops(actions: &[Action]) -> Vec<(CueId, RunId, SampleTime, Option<Stop
         .collect()
 }
 
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
 fn has_chain_limit(actions: &[Action]) -> bool {
     warnings(actions)
         .iter()
@@ -198,7 +117,7 @@ fn panic_fade(frames: SampleTime) -> Option<StopFade> {
 
 #[test]
 fn nothing_ignores_a_trigger_on_a_running_cue() {
-    let mut rig = Rig::new(vec![sound(1)]);
+    let mut rig = Rig::panicking(vec![sound(1)]);
     rig.start(0, 1);
     let run = rig.run(1);
     let out = rig.start(100, 1);
@@ -214,7 +133,7 @@ fn nothing_ignores_a_trigger_on_a_running_cue() {
 
 #[test]
 fn panic_fades_a_running_cue_out_over_the_panic_duration() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Panic), sound(2)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Panic), sound(2)]);
     rig.start(0, 1);
     rig.start(0, 2);
     let run = rig.run(1);
@@ -230,7 +149,7 @@ fn panic_fades_a_running_cue_out_over_the_panic_duration() {
 
 #[test]
 fn a_cue_fading_out_in_its_own_panic_restarts_on_the_next_trigger() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Panic)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Panic)]);
     rig.start(0, 1);
     let first = rig.run(1);
     rig.start(100, 1);
@@ -245,7 +164,7 @@ fn a_cue_fading_out_in_its_own_panic_restarts_on_the_next_trigger() {
 
 #[test]
 fn a_zero_panic_duration_stops_the_cue_at_once() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Panic)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Panic)]);
     rig.ws.settings.panic_duration = 0.0;
     rig.start(0, 1);
     let run = rig.run(1);
@@ -257,7 +176,7 @@ fn a_zero_panic_duration_stops_the_cue_at_once() {
 #[test]
 fn stop_and_hard_stop_stop_a_running_cue_at_once() {
     for option in [ST::Stop, ST::HardStop] {
-        let mut rig = Rig::new(vec![continuing(
+        let mut rig = Rig::panicking(vec![continuing(
             with(sound(1), option),
             ContinueMode::AutoContinue,
             5.0,
@@ -278,7 +197,7 @@ fn stop_and_hard_stop_stop_a_running_cue_at_once() {
 
 #[test]
 fn hard_stop_and_restart_starts_a_running_cue_again_from_the_top() {
-    let mut rig = Rig::new(vec![pre(with(sound(1), ST::HardStopAndRestart), 0.5)]);
+    let mut rig = Rig::panicking(vec![pre(with(sound(1), ST::HardStopAndRestart), 0.5)]);
     rig.start(0, 1);
     rig.tick(500);
     let run = rig.run(1);
@@ -296,7 +215,7 @@ fn hard_stop_and_restart_starts_a_running_cue_again_from_the_top() {
 
 #[test]
 fn devamp_sends_a_devamp_to_a_running_cue_without_starting_anything() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Devamp), memo(2)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Devamp), memo(2)]);
     rig.start(0, 1);
     let run = rig.run(1);
     let out = rig.start(100, 1);
@@ -330,7 +249,7 @@ fn devamp_sends_a_devamp_to_a_running_cue_without_starting_anything() {
 #[test]
 fn devamp_on_a_cue_that_cannot_devamp_does_nothing_but_say_so() {
     // A non-looping voice: the audio side answers that there is no loop to leave.
-    let mut rig = Rig::new(vec![with(sound(1), ST::Devamp), with(memo(2), ST::Devamp)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Devamp), with(memo(2), ST::Devamp)]);
     rig.start(0, 1);
     let run = rig.run(1);
     rig.start(100, 1);
@@ -341,7 +260,7 @@ fn devamp_on_a_cue_that_cannot_devamp_does_nothing_but_say_so() {
     );
     assert_eq!(rig.state(1), CueState::Running);
     // A Wait cue (any kind but audio and playlists) has nothing to devamp.
-    let mut rig = Rig::new(vec![with(
+    let mut rig = Rig::panicking(vec![with(
         cue(3, CueKind::Wait { duration: 5.0 }),
         ST::Devamp,
     )]);
@@ -357,7 +276,7 @@ fn devamp_on_a_cue_that_cannot_devamp_does_nothing_but_say_so() {
 
 #[test]
 fn nothing_resumes_a_paused_cue() {
-    let mut rig = Rig::new(vec![sound(1)]);
+    let mut rig = Rig::panicking(vec![sound(1)]);
     rig.start(0, 1);
     rig.pause(50, 1);
     let out = rig.start(100, 1);
@@ -379,7 +298,7 @@ fn a_trigger_on_a_paused_cue_resumes_it_whatever_its_option() {
         ST::HardStopAndRestart,
         ST::Devamp,
     ] {
-        let mut rig = Rig::new(vec![with(sound(1), option)]);
+        let mut rig = Rig::panicking(vec![with(sound(1), option)]);
         rig.start(0, 1);
         rig.pause(50, 1);
         let run = rig.run(1);
@@ -407,7 +326,7 @@ fn a_trigger_on_a_paused_cue_resumes_it_whatever_its_option() {
 #[test]
 fn stop_panic_and_hard_stop_on_release_stop_a_paused_cue_without_resuming_it() {
     for option in [ST::Stop, ST::HardStop, ST::Panic] {
-        let mut rig = Rig::new(vec![on_release(with(sound(1), option))]);
+        let mut rig = Rig::panicking(vec![on_release(with(sound(1), option))]);
         rig.start(0, 1);
         rig.pause(50, 1);
         let run = rig.run(1);
@@ -428,7 +347,7 @@ fn stop_panic_and_hard_stop_on_release_stop_a_paused_cue_without_resuming_it() {
 
 #[test]
 fn hard_stop_and_restart_on_release_restarts_a_paused_cue() {
-    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::HardStopAndRestart))]);
+    let mut rig = Rig::panicking(vec![on_release(with(sound(1), ST::HardStopAndRestart))]);
     rig.start(0, 1);
     rig.pause(50, 1);
     let run = rig.run(1);
@@ -442,7 +361,7 @@ fn hard_stop_and_restart_on_release_restarts_a_paused_cue() {
 
 #[test]
 fn devamp_on_release_on_a_paused_cue_is_held_for_the_resume() {
-    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Devamp))]);
+    let mut rig = Rig::panicking(vec![on_release(with(sound(1), ST::Devamp))]);
     rig.start(0, 1);
     rig.pause(50, 1);
     // Nothing is sent to the paused voice, and the release does not resume it.
@@ -471,7 +390,7 @@ fn devamp_on_release_on_a_paused_cue_is_held_for_the_resume() {
 #[test]
 fn options_on_a_pre_waiting_cue() {
     // Nothing: ignored, the pre-wait keeps counting.
-    let mut rig = Rig::new(vec![pre(sound(1), 1.0)]);
+    let mut rig = Rig::panicking(vec![pre(sound(1), 1.0)]);
     rig.start(0, 1);
     assert_eq!(
         warnings(&rig.start(100, 1)),
@@ -484,7 +403,7 @@ fn options_on_a_pre_waiting_cue() {
 
     // Stop, hard stop, panic: stopped at once; the action never starts.
     for option in [ST::Stop, ST::HardStop, ST::Panic] {
-        let mut rig = Rig::new(vec![pre(with(sound(1), option), 1.0)]);
+        let mut rig = Rig::panicking(vec![pre(with(sound(1), option), 1.0)]);
         rig.start(0, 1);
         let out = rig.start(100, 1);
         assert_eq!(changes(&out, 1), vec![(CueState::Idle, 100)], "{option:?}");
@@ -493,7 +412,7 @@ fn options_on_a_pre_waiting_cue() {
     }
 
     // Restart: the pre-wait starts again in full.
-    let mut rig = Rig::new(vec![pre(with(sound(1), ST::HardStopAndRestart), 1.0)]);
+    let mut rig = Rig::panicking(vec![pre(with(sound(1), ST::HardStopAndRestart), 1.0)]);
     rig.start(0, 1);
     let out = rig.start(100, 1);
     assert_eq!(
@@ -504,7 +423,7 @@ fn options_on_a_pre_waiting_cue() {
     assert_eq!(voice_starts(&rig.tick(1100)).len(), 1);
 
     // Devamp: nothing to devamp before the action.
-    let mut rig = Rig::new(vec![pre(with(sound(1), ST::Devamp), 1.0)]);
+    let mut rig = Rig::panicking(vec![pre(with(sound(1), ST::Devamp), 1.0)]);
     rig.start(0, 1);
     assert_eq!(
         rig.start(100, 1),
@@ -516,7 +435,7 @@ fn options_on_a_pre_waiting_cue() {
 // ----- a stopping cue (stop with a fade) -----
 
 fn stopping_rig(option: SecondTrigger) -> (Rig, RunId) {
-    let mut rig = Rig::new(vec![with(sound(1), option)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), option)]);
     rig.start(0, 1);
     let run = rig.run(1);
     rig.at(
@@ -577,7 +496,7 @@ fn options_on_a_stopping_cue() {
 
 #[test]
 fn a_panic_keeps_a_stop_that_ends_sooner() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Panic)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Panic)]);
     rig.start(0, 1);
     rig.at(
         50,
@@ -595,7 +514,7 @@ fn a_panic_keeps_a_stop_that_ends_sooner() {
 
 #[test]
 fn stop_on_a_post_waiting_cue_cancels_its_continue() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         continuing(with(memo(1), ST::Stop), ContinueMode::AutoContinue, 2.0),
         memo(2),
     ]);
@@ -609,7 +528,7 @@ fn stop_on_a_post_waiting_cue_cancels_its_continue() {
 
 #[test]
 fn a_groups_option_applies_to_the_group_as_a_whole() {
-    let mut rig = Rig::new(vec![with(
+    let mut rig = Rig::panicking(vec![with(
         grp(1, GroupMode::Timeline, vec![sound(2), sound(3)]),
         ST::HardStopAndRestart,
     )]);
@@ -626,7 +545,7 @@ fn a_groups_option_applies_to_the_group_as_a_whole() {
 
 #[test]
 fn a_childs_option_applies_when_the_child_itself_is_triggered() {
-    let mut rig = Rig::new(vec![grp(
+    let mut rig = Rig::panicking(vec![grp(
         1,
         GroupMode::Timeline,
         vec![with(sound(2), ST::Stop)],
@@ -658,7 +577,7 @@ fn playlist_rig(loop_: bool, option: SecondTrigger) -> Rig {
         ContinueMode::AutoFollow,
         0.0,
     );
-    let mut rig = Rig::new(vec![group, memo(2)]);
+    let mut rig = Rig::panicking(vec![group, memo(2)]);
     let out = rig.start(0, 1);
     assert_eq!(voice_starts(&out)[0].0, id(11));
     rig
@@ -767,7 +686,7 @@ fn play_next_follows_a_shuffled_pass() {
         ),
         ST::PlayNext,
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     let mut pass = playing(&rig.start(0, 1));
     for t in 1..3 {
         pass.extend(playing(&rig.start(t * 100, 1)));
@@ -791,7 +710,7 @@ fn play_next_on_a_playlist_not_in_its_action_is_ignored() {
         with(grp(1, playlist(false), vec![sound(11)]), ST::PlayNext),
         1.0,
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     rig.start(0, 1);
     assert_eq!(
         rig.start(100, 1),
@@ -809,7 +728,7 @@ fn a_restarted_current_child_keeps_its_place_in_the_playlist() {
         playlist(false),
         vec![with(sound(11), ST::HardStopAndRestart), sound(12)],
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     rig.start(0, 1);
     let old = rig.run(11);
     rig.start(100, 11);
@@ -841,7 +760,7 @@ fn a_restarted_current_child_keeps_its_place_in_the_playlist() {
 
 #[test]
 fn play_next_and_previous_on_another_cue_act_as_nothing_and_validation_warns() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         with(sound(1), ST::PlayNext),
         with(
             grp(2, GroupMode::Timeline, vec![sound(3)]),
@@ -897,7 +816,7 @@ fn play_next_and_previous_on_another_cue_act_as_nothing_and_validation_warns() {
 
 #[test]
 fn go_applies_the_option_and_still_moves_the_playhead() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Stop), memo(2)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Stop), memo(2)]);
     rig.go(0);
     rig.at(
         50,
@@ -913,7 +832,7 @@ fn go_applies_the_option_and_still_moves_the_playhead() {
 
 #[test]
 fn double_go_protection_still_filters_before_the_option() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Stop), memo(2)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Stop), memo(2)]);
     rig.ws.settings.min_go_interval = 1.0;
     rig.go(0);
     rig.at(
@@ -938,7 +857,7 @@ fn double_go_protection_still_filters_before_the_option() {
 
 #[test]
 fn a_start_cue_is_a_second_trigger() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Stop), start_cue(2, 1)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Stop), start_cue(2, 1)]);
     rig.start(0, 1);
     let run = rig.run(1);
     let out = rig.start(100, 2);
@@ -955,7 +874,7 @@ fn go_to_and_go_is_a_second_trigger() {
             then_go: true,
         },
     );
-    let mut rig = Rig::new(vec![with(sound(1), ST::HardStopAndRestart), goto, memo(3)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::HardStopAndRestart), goto, memo(3)]);
     rig.start(0, 1);
     let run = rig.run(1);
     let out = rig.start(100, 2);
@@ -967,7 +886,7 @@ fn go_to_and_go_is_a_second_trigger() {
 
 #[test]
 fn a_continue_is_a_second_trigger() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         continuing(memo(1), ContinueMode::AutoContinue, 0.0),
         with(sound(2), ST::Stop),
     ]);
@@ -987,7 +906,7 @@ fn a_devamp_cues_start_next_cue_is_a_second_trigger() {
             devamp_mode: DevampMode::CurrentSlice,
         },
     );
-    let mut rig = Rig::new(vec![sound(1), devamp, with(sound(3), ST::Stop)]);
+    let mut rig = Rig::panicking(vec![sound(1), devamp, with(sound(3), ST::Stop)]);
     rig.start(0, 1);
     rig.start(0, 3);
     let run = rig.run(1);
@@ -1006,7 +925,7 @@ fn a_devamp_cues_start_next_cue_is_a_second_trigger() {
 
 #[test]
 fn a_broken_cue_is_not_affected_by_its_option() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::HardStopAndRestart)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::HardStopAndRestart)]);
     rig.start(0, 1);
     let run = rig.run(1);
     rig.at(
@@ -1026,7 +945,7 @@ fn a_broken_cue_is_not_affected_by_its_option() {
 #[test]
 fn a_cue_fading_out_in_a_workspace_panic_restarts_whatever_its_option() {
     for option in [ST::Nothing, ST::Stop, ST::Devamp] {
-        let mut rig = Rig::new(vec![with(sound(1), option)]);
+        let mut rig = Rig::panicking(vec![with(sound(1), option)]);
         rig.start(0, 1);
         rig.at(100, Input::Panic);
         let out = rig.start(200, 1);
@@ -1039,7 +958,7 @@ fn a_cue_fading_out_in_a_workspace_panic_restarts_whatever_its_option() {
 
 #[test]
 fn release_is_a_second_trigger_when_the_cue_asks_for_it() {
-    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Stop))]);
+    let mut rig = Rig::panicking(vec![on_release(with(sound(1), ST::Stop))]);
     rig.start(0, 1);
     let run = rig.run(1);
     let out = rig.release(100, 1);
@@ -1052,7 +971,7 @@ fn release_is_a_second_trigger_when_the_cue_asks_for_it() {
 
 #[test]
 fn release_is_ignored_silently_without_the_flag() {
-    let mut rig = Rig::new(vec![with(sound(1), ST::Stop)]);
+    let mut rig = Rig::panicking(vec![with(sound(1), ST::Stop)]);
     rig.start(0, 1);
     assert!(rig.release(100, 1).is_empty());
     assert_eq!(rig.state(1), CueState::Running);
@@ -1060,7 +979,7 @@ fn release_is_ignored_silently_without_the_flag() {
 
 #[test]
 fn release_with_nothing_never_resumes_or_warns() {
-    let mut rig = Rig::new(vec![on_release(sound(1))]);
+    let mut rig = Rig::panicking(vec![on_release(sound(1))]);
     rig.start(0, 1);
     assert!(rig.release(50, 1).is_empty());
     rig.pause(60, 1);
@@ -1070,7 +989,7 @@ fn release_with_nothing_never_resumes_or_warns() {
 
 #[test]
 fn release_applies_to_a_paused_cue_and_restarts_like_a_trigger() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         on_release(with(sound(1), ST::Stop)),
         on_release(with(sound(2), ST::HardStopAndRestart)),
     ]);
@@ -1087,7 +1006,7 @@ fn release_applies_to_a_paused_cue_and_restarts_like_a_trigger() {
 
 #[test]
 fn release_leaves_a_cue_fading_out_in_a_panic_alone() {
-    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Panic))]);
+    let mut rig = Rig::panicking(vec![on_release(with(sound(1), ST::Panic))]);
     rig.start(0, 1);
     // Sampler use: press to start, release to fade out.
     let out = rig.release(100, 1);
@@ -1100,7 +1019,7 @@ fn release_leaves_a_cue_fading_out_in_a_panic_alone() {
 
 #[test]
 fn release_of_an_unknown_cue_warns() {
-    let mut rig = Rig::new(vec![]);
+    let mut rig = Rig::panicking(vec![]);
     assert_eq!(
         rig.release(0, 9),
         vec![Action::Warning(EngineWarning::UnknownCue { cue: id(9) })]
@@ -1115,7 +1034,7 @@ fn release_of_an_unknown_cue_warns() {
 /// once instead of restarting it until the chain limit.
 #[test]
 fn a_restart_reached_again_on_the_same_sample_is_ignored() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         continuing(
             with(sound(1), ST::HardStopAndRestart),
             ContinueMode::AutoContinue,
@@ -1151,7 +1070,7 @@ fn a_restart_reached_again_on_the_same_sample_is_ignored() {
 /// cue reaches the group on the sample it was triggered on, so it is not restarted again.
 #[test]
 fn a_group_restart_cycle_restarts_at_most_once_per_sample() {
-    let mut rig = Rig::new(vec![with(
+    let mut rig = Rig::panicking(vec![with(
         grp(1, GroupMode::Timeline, vec![start_cue(2, 1), sound(3)]),
         ST::HardStopAndRestart,
     )]);
@@ -1168,7 +1087,7 @@ fn a_group_restart_cycle_restarts_at_most_once_per_sample() {
 /// A restart cycle that takes time (a pre-wait) is a timed loop: one restart per lap.
 #[test]
 fn a_timed_restart_cycle_restarts_once_per_lap() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         continuing(
             with(sound(1), ST::HardStopAndRestart),
             ContinueMode::AutoContinue,
@@ -1191,7 +1110,7 @@ fn a_timed_restart_cycle_restarts_once_per_lap() {
 /// the playlist completes.
 #[test]
 fn a_play_next_cycle_ends_at_the_chain_limit() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         with(
             grp(1, playlist(true), vec![start_cue(2, 1), start_cue(3, 1)]),
             ST::PlayNext,
@@ -1209,7 +1128,7 @@ fn a_play_next_cycle_ends_at_the_chain_limit() {
 /// A Stop option cannot make a cycle: it starts nothing.
 #[test]
 fn a_stop_option_ends_a_start_cycle() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         continuing(with(sound(1), ST::Stop), ContinueMode::AutoContinue, 0.0),
         start_cue(2, 1),
     ]);
@@ -1317,7 +1236,7 @@ fn a_paused_cue_whose_option_cannot_act_resumes() {
         with(grp(1, playlist(false), vec![sound(11)]), ST::PlayNext),
         5.0,
     );
-    let mut rig = Rig::new(vec![group, pre(with(sound(2), ST::Devamp), 5.0)]);
+    let mut rig = Rig::panicking(vec![group, pre(with(sound(2), ST::Devamp), 5.0)]);
     rig.start(0, 1);
     rig.start(0, 2);
     rig.at(100, Input::PauseAll);
@@ -1338,7 +1257,7 @@ fn a_paused_cue_whose_option_cannot_act_resumes() {
 /// (QLab check S1) and sends the devamp held for the resume.
 #[test]
 fn a_paused_cue_whose_option_can_act_gets_it_on_release() {
-    let mut rig = Rig::new(vec![on_release(with(sound(1), ST::Devamp))]);
+    let mut rig = Rig::panicking(vec![on_release(with(sound(1), ST::Devamp))]);
     rig.start(0, 1);
     rig.pause(50, 1);
     assert!(rig.release(100, 1).is_empty());
@@ -1369,7 +1288,7 @@ fn play_previous_passes_over_broken_and_disarmed_children() {
         ),
         ST::PlayPrevious,
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     rig.start(0, 1);
     // Get 14 playing: 11 ends, 12 and 13 are passed at once.
     let run = rig.run(11);
@@ -1398,7 +1317,7 @@ fn play_previous_passes_over_broken_and_disarmed_children() {
         ),
         ST::PlayPrevious,
     );
-    let mut rig = Rig::new(vec![group]);
+    let mut rig = Rig::panicking(vec![group]);
     rig.start(0, 1);
     assert_eq!(playing(&rig.start(100, 1)), vec![id(12)]);
 }

@@ -10,33 +10,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    fn new(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, lookahead, 1).unwrap()),
-            last: None,
-        };
-        rig.at(0, Input::Tick);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn run(&self, n: u128) -> RunId {
-        self.engine.run_of(cue_id(n)).unwrap()
-    }
-
     fn length(&mut self, now: SampleTime, n: u128, frames: SampleTime) -> Vec<Action> {
         let run = self.run(n);
         self.at(
@@ -70,7 +44,7 @@ use ContinueMode::{AutoFollow as AF, DoNotContinue as DNC};
 
 #[test]
 fn auto_follow_comes_on_the_end_sample() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     r.length(0, 1, 500);
     assert_eq!(r.engine.next_deadline(), Some(500));
@@ -86,7 +60,7 @@ fn auto_follow_comes_on_the_end_sample() {
 
 #[test]
 fn with_a_lookahead_the_successor_is_committed_ahead_on_its_sample() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 100);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 100);
     r.at(0, Input::Go { list: list_id(1) });
     r.length(0, 1, 500);
     let a = r.at(450, Input::Tick);
@@ -95,7 +69,7 @@ fn with_a_lookahead_the_successor_is_committed_ahead_on_its_sample() {
 
 #[test]
 fn the_voice_report_after_the_deadline_is_stale() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC), sound(3, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC), sound(3, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     let run = r.run(1);
     r.length(0, 1, 500);
@@ -114,7 +88,7 @@ fn the_voice_report_after_the_deadline_is_stale() {
 
 #[test]
 fn an_earlier_end_report_still_wins() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     let run = r.run(1);
     r.length(0, 1, 500);
@@ -132,7 +106,7 @@ fn an_earlier_end_report_still_wins() {
 
 #[test]
 fn a_pause_moves_the_end_by_its_length() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     r.length(0, 1, 500);
     r.at(200, Input::Pause { cue: cue_id(1) });
@@ -145,7 +119,7 @@ fn a_pause_moves_the_end_by_its_length() {
 
 #[test]
 fn a_length_sent_while_paused_counts_from_the_resume() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     r.at(200, Input::Pause { cue: cue_id(1) });
     r.length(300, 1, 500);
@@ -158,7 +132,7 @@ fn a_length_sent_while_paused_counts_from_the_resume() {
 /// come after the run is over and are stale.
 #[test]
 fn a_resume_whose_known_end_is_in_the_window_completes_the_run_ahead() {
-    let mut r = Rig::new(vec![sound(1, DNC)], 300);
+    let mut r = Rig::with_lookahead(vec![sound(1, DNC)], 300);
     r.at(0, Input::Go { list: list_id(1) });
     r.at(0, Input::Pause { cue: cue_id(1) });
     r.length(10, 1, 100);
@@ -187,7 +161,7 @@ fn a_resume_whose_known_end_is_in_the_window_completes_the_run_ahead() {
 
 #[test]
 fn a_stop_cancels_the_planned_end() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     r.length(0, 1, 500);
     r.at(
@@ -220,7 +194,7 @@ fn a_stop_cancels_the_planned_end() {
 
 #[test]
 fn a_failure_cancels_the_planned_end() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     let run = r.run(1);
     r.length(0, 1, 500);
@@ -247,7 +221,7 @@ fn a_devamp_answer_and_its_length_end_the_loop_on_time() {
             devamp_mode: DevampMode::CurrentSlice,
         },
     );
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC), devamp], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC), devamp], 0);
     r.at(0, Input::Go { list: list_id(1) });
     let run = r.run(1);
     // Looping: no length yet.
@@ -277,7 +251,7 @@ fn a_playlist_moves_on_on_the_end_sample() {
             children: vec![sound(1, DNC), sound(2, DNC)],
         },
     );
-    let mut r = Rig::new(vec![playlist], 0);
+    let mut r = Rig::with_lookahead(vec![playlist], 0);
     r.at(0, Input::Go { list: list_id(1) });
     r.length(0, 1, 400);
     assert_eq!(starts(&r.at(400, Input::Tick)), vec![(cue_id(2), 400)]);
@@ -285,7 +259,7 @@ fn a_playlist_moves_on_on_the_end_sample() {
 
 #[test]
 fn a_stale_or_unknown_length_is_ignored() {
-    let mut r = Rig::new(vec![sound(1, AF), sound(2, DNC)], 0);
+    let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
     r.at(0, Input::Go { list: list_id(1) });
     let a = r.at(
         0,

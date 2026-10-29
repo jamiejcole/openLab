@@ -9,28 +9,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF, DoNotContinue as DNC};
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
-    c
-}
 
 fn start_cue(n: u128, target: u128) -> Cue {
     cue(
@@ -39,56 +18,6 @@ fn start_cue(n: u128, target: u128) -> Cue {
             target: Some(id(target)),
         },
     )
-}
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
-impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
-            last: None,
-        };
-        rig.at(0, Input::Tick);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list_id(1) })
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
 }
 
 // ----- M2-A L3: a GO the chain budget cannot start -----

@@ -18,41 +18,12 @@ use proptest::prelude::*;
 
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
 
-const RATE: u32 = 1000;
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn list() -> CueListId {
-    list_id(1)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn wait(n: u128, seconds: f64) -> Cue {
-    cue(n, CueKind::Wait { duration: seconds })
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
 /// An audio cue with no media file: it has static problems (`no_media`), so it shows as broken.
 fn broken_sound(n: u128) -> Cue {
     let mut c = sound(n);
     if let CueKind::Audio { media, .. } = &mut c.kind {
         *media = None;
     }
-    c
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
     c
 }
 
@@ -65,97 +36,6 @@ fn playlist() -> GroupMode {
         loop_: false,
         shuffle: false,
     }
-}
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
-impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        Self::seeded(cues, 1)
-    }
-
-    fn seeded(cues: Vec<Cue>, seed: u64) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, seed).unwrap()),
-            last: None,
-        };
-        rig.tick(0);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Tick)
-    }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list() })
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
-    fn set_playhead(&mut self, n: u128) {
-        self.at(
-            0,
-            Input::SetPlayhead {
-                list: list(),
-                cue: Some(id(n)),
-            },
-        );
-    }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
-    fn playhead(&self) -> Option<CueId> {
-        self.engine.playhead(list())
-    }
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// `(cue, at)` of every start (a report of pre-waiting).
-fn starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged {
-                cue,
-                state: CueState::PreWaiting,
-                at,
-            } => Some((*cue, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 // ----- G1: a random group's chosen child keeps its own continue mode -----
@@ -224,7 +104,7 @@ fn g2_playlist_skips_a_broken_child_and_still_auto_follows_out_of_the_group() {
 fn three_children(mode: GroupMode) -> Rig {
     let g = grp(1, mode, vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)]);
     let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
-    rig.set_playhead(11);
+    rig.set_playhead(0, 11);
     rig
 }
 
@@ -284,6 +164,7 @@ fn g6_a_group_with_a_broken_child_shows_broken_and_can_still_be_goed() {
         ws: workspace(vec![p, memo(2)]),
         engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
         last: None,
+        check_cache: false,
     };
     let first = rig.tick(0);
     assert_eq!(changes(&first, 1), vec![(CueState::Broken, 0)]);
@@ -434,6 +315,7 @@ fn d6_a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
         ws,
         engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
         last: None,
+        check_cache: false,
     };
     rig.tick(0);
     let go = rig.go(0);
@@ -537,7 +419,7 @@ fn h1_go_on_a_playlist_child_stands_on_the_cue_after_the_group_without_losing_it
         AF,
     );
     let mut rig = Rig::new(vec![p, memo(2), memo(3)]);
-    rig.set_playhead(10);
+    rig.set_playhead(0, 10);
     rig.go(0);
     assert_eq!(rig.playhead(), Some(id(2)));
     assert_eq!(starts(&rig.tick(1000)), vec![(id(11), 1000)]);
@@ -559,7 +441,7 @@ fn h1_leaving_a_start_first_group_that_never_ran_stands_on_its_continue_target()
         AC,
     );
     let mut rig = Rig::new(vec![g, memo(2), memo(3)]);
-    rig.set_playhead(11);
+    rig.set_playhead(0, 11);
     rig.go(0);
     assert_eq!(rig.playhead(), Some(id(2)));
     // A group that ran and fired its continue: its target has played, so it is skipped.
@@ -1280,7 +1162,7 @@ fn follow_through_rig(loop_: bool, shuffle: bool) -> Rig {
         vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)],
     );
     let mut rig = Rig::new(vec![g, memo(2)]);
-    rig.set_playhead(11);
+    rig.set_playhead(0, 11);
     rig
 }
 
@@ -1533,7 +1415,7 @@ fn q1_go_on_a_child_or_on_a_stopped_auto_follow_playlist_moves_the_playhead_as_q
             AF,
         );
         let mut rig = Rig::new(vec![p, memo(2), memo(3)]);
-        rig.set_playhead(n);
+        rig.set_playhead(0, n);
         rig
     };
     // GO on child 10: 10 then 11 play, the playhead goes to 2, and 2 does not start.
@@ -1567,7 +1449,7 @@ fn q3_go_on_a_child_of_a_stopped_random_or_start_first_group_plays_only_that_chi
     ] {
         let g = grp(1, mode, vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)]);
         let mut rig = Rig::new(vec![g, memo(2)]);
-        rig.set_playhead(10);
+        rig.set_playhead(0, 10);
         let mut all = rig.go(0);
         all.extend(rig.tick(1000));
         assert_eq!(starts(&all), vec![(id(10), 0)], "{mode:?}");

@@ -14,21 +14,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
 
 fn sound_of(n: u128, file: &str, patch: u128) -> Cue {
     let mut c = sound(n);
@@ -39,13 +25,6 @@ fn sound_of(n: u128, file: &str, patch: u128) -> Cue {
         *media = Some(MediaRef::new(file));
         *p = patch_id(patch);
     }
-    c
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
     c
 }
 
@@ -62,40 +41,7 @@ fn media() -> MediaRef {
     MediaRef::new("media/a.wav")
 }
 
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    /// The workspace as the engine last saw it (see `handle_as_binary`).
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap()),
-            last: None,
-        };
-        rig.tick(0);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Tick)
-    }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list_id(1) })
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
     fn media(&mut self, now: SampleTime, file: &str, status: MediaStatus) -> Vec<Action> {
         self.at(
             now,
@@ -116,40 +62,9 @@ impl Rig {
         )
     }
 
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
     fn problems(&self, n: u128) -> Vec<CueProblem> {
         self.engine.problems(id(n)).to_vec()
     }
-
-    fn find_mut(&mut self, n: u128) -> &mut Cue {
-        fn find(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
-            for c in cues {
-                if c.id == id {
-                    return Some(c);
-                }
-                if let CueKind::Group { children, .. } = &mut c.kind
-                    && let Some(found) = find(children, id)
-                {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&mut self.ws.cue_lists[0].cues, id(n)).unwrap()
-    }
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
 }
 
 fn problem_reports(actions: &[Action]) -> Vec<(CueId, Vec<CueProblem>)> {
@@ -157,40 +72,6 @@ fn problem_reports(actions: &[Action]) -> Vec<(CueId, Vec<CueProblem>)> {
         .iter()
         .filter_map(|a| match a {
             Action::ProblemsChanged { cue, problems } => Some((*cue, problems.clone())),
-            _ => None,
-        })
-        .collect()
-}
-
-fn starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged {
-                cue,
-                state: CueState::PreWaiting,
-                at,
-            } => Some((*cue, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn voice_starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StartVoice { cue, at, .. } => Some((*cue, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
             _ => None,
         })
         .collect()

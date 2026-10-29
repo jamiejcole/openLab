@@ -29,10 +29,6 @@ fn add(at: Position, cue: Cue) -> Command {
     }
 }
 
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
 fn grp(n: u128, children: Vec<Cue>) -> Cue {
     cue(n, group(children))
 }

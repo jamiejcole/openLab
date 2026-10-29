@@ -14,36 +14,7 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF, DoNotContinue as DNC};
-
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn list() -> CueListId {
-    list_id(1)
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-fn wait(n: u128, seconds: f64) -> Cue {
-    cue(n, CueKind::Wait { duration: seconds })
-}
-
-fn sound(n: u128) -> Cue {
-    cue(n, audio())
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
-    c
-}
 
 fn grp(n: u128, mode: GroupMode, children: Vec<Cue>) -> Cue {
     cue(n, CueKind::Group { mode, children })
@@ -65,121 +36,11 @@ fn children_mut(c: &mut Cue) -> &mut Vec<Cue> {
     }
 }
 
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    /// The workspace as the engine last saw it (see `handle_as_binary`).
-    last: Option<Workspace>,
-}
-
-impl Rig {
-    fn new(cues: Vec<Cue>) -> Self {
-        Self::seeded(cues, 1)
-    }
-
-    fn seeded(cues: Vec<Cue>, seed: u64) -> Self {
-        let mut rig = Self {
-            ws: workspace(cues),
-            engine: CueEngine::new(EngineConfig::new(RATE, 0, seed).unwrap()),
-            last: None,
-        };
-        rig.tick(0);
-        rig
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn tick(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Tick)
-    }
-
-    fn go(&mut self, now: SampleTime) -> Vec<Action> {
-        self.at(now, Input::Go { list: list() })
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(now, Input::Start { cue: id(n) })
-    }
-
-    fn stop(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        self.at(
-            now,
-            Input::Stop {
-                cue: id(n),
-                fade_out: None,
-            },
-        )
-    }
-
-    fn ended(&mut self, now: SampleTime, n: u128, at: SampleTime) -> Vec<Action> {
-        let run = self.engine.run_of(id(n)).unwrap();
-        self.at(
-            now,
-            Input::ActionEnded {
-                cue: id(n),
-                run,
-                at,
-            },
-        )
-    }
-
-    fn failed(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
-        let run = self.engine.run_of(id(n)).unwrap();
-        self.at(
-            now,
-            Input::ActionFailed {
-                cue: id(n),
-                run,
-                reason: BrokenReason::StreamFailed,
-            },
-        )
-    }
-
-    fn state(&self, n: u128) -> CueState {
-        self.engine.state(id(n))
-    }
-
-    fn playhead(&self) -> Option<CueId> {
-        self.engine.playhead(list())
-    }
-
-    fn cues_mut(&mut self) -> &mut Vec<Cue> {
-        &mut self.ws.cue_lists[0].cues
-    }
-}
-
-fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
 fn running_at(actions: &[Action], n: u128) -> Option<SampleTime> {
     changes(actions, n)
         .into_iter()
         .find(|(s, _)| *s == CueState::Running)
         .map(|(_, at)| at)
-}
-
-/// `(cue, at)` of every start (a report of pre-waiting).
-fn starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::StateChanged {
-                cue,
-                state: CueState::PreWaiting,
-                at,
-            } => Some((*cue, *at)),
-            _ => None,
-        })
-        .collect()
 }
 
 fn voice_starts(actions: &[Action]) -> Vec<(CueId, SampleTime, SampleTime)> {
@@ -199,16 +60,6 @@ fn stopped_voices(actions: &[Action]) -> Vec<CueId> {
         .iter()
         .filter_map(|a| match a {
             Action::StopVoice { cue, .. } => Some(*cue),
-            _ => None,
-        })
-        .collect()
-}
-
-fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::Warning(w) => Some(w.clone()),
             _ => None,
         })
         .collect()

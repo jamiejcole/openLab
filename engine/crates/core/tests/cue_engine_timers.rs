@@ -10,60 +10,9 @@ mod common;
 use common::*;
 use openlab_core::*;
 
-const RATE: u32 = 1000;
-
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
 
-fn id(n: u128) -> CueId {
-    cue_id(n)
-}
-
-fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
-    c.pre_wait = pre;
-    c.post_wait = post;
-    c.continue_mode = mode;
-    c
-}
-
-fn wait(n: u128, seconds: f64) -> Cue {
-    cue(n, CueKind::Wait { duration: seconds })
-}
-
-fn memo(n: u128) -> Cue {
-    cue(n, CueKind::Memo)
-}
-
-struct Rig {
-    ws: Workspace,
-    engine: CueEngine,
-    last: Option<Workspace>,
-}
-
 impl Rig {
-    fn with_lookahead(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
-        let mut ws = workspace(cues);
-        ws.settings.panic_duration = 1.0;
-        let mut rig = Self {
-            ws,
-            engine: CueEngine::new(EngineConfig::new(RATE, lookahead, 1).unwrap()),
-            last: None,
-        };
-        rig.at(0, Input::Tick);
-        rig
-    }
-
-    fn new(cues: Vec<Cue>) -> Self {
-        Self::with_lookahead(cues, 0)
-    }
-
-    fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
-        handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now)
-    }
-
-    fn start(&mut self, now: SampleTime, n: u128) {
-        self.at(now, Input::Start { cue: id(n) });
-    }
-
     /// Ticks at `now`, then reads the timers there.
     fn timers(&mut self, now: SampleTime) -> Vec<(u128, Timer, SampleTime, Option<SampleTime>)> {
         self.at(now, Input::Tick);
@@ -81,7 +30,7 @@ impl Rig {
 
 #[test]
 fn a_pre_wait_counts_up_and_down_to_its_action() {
-    let mut rig = Rig::new(vec![timed(memo(1), 2.0, 0.0, AC)]);
+    let mut rig = Rig::panicking(vec![timed(memo(1), 2.0, 0.0, AC)]);
     rig.start(100, 1);
     assert_eq!(rig.read(100), [(1, Timer::PreWait, 0, Some(2000))]);
     assert_eq!(rig.timers(600), [(1, Timer::PreWait, 500, Some(1500))]);
@@ -93,7 +42,7 @@ fn a_pre_wait_counts_up_and_down_to_its_action() {
 
 #[test]
 fn a_wait_cue_shows_its_action_and_a_group_its_elapsed_time() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         wait(1, 3.0),
         cue(2, group(vec![timed(memo(3), 10.0, 0.0, AC)])),
     ]);
@@ -115,7 +64,7 @@ fn a_wait_cue_shows_its_action_and_a_group_its_elapsed_time() {
 
 #[test]
 fn a_post_wait_counts_from_the_action_start_alongside_the_action() {
-    let mut rig = Rig::new(vec![timed(wait(1, 2.0), 0.0, 5.0, AC), memo(2)]);
+    let mut rig = Rig::panicking(vec![timed(wait(1, 2.0), 0.0, 5.0, AC), memo(2)]);
     rig.start(0, 1);
     assert_eq!(
         rig.timers(1000),
@@ -132,7 +81,7 @@ fn a_post_wait_counts_from_the_action_start_alongside_the_action() {
 
 #[test]
 fn an_audio_cue_shows_only_its_waits_its_action_comes_from_the_voice() {
-    let mut rig = Rig::new(vec![timed(cue(1, audio()), 1.0, 4.0, AC), memo(2)]);
+    let mut rig = Rig::panicking(vec![timed(cue(1, audio()), 1.0, 4.0, AC), memo(2)]);
     rig.start(0, 1);
     assert_eq!(rig.timers(500), [(1, Timer::PreWait, 500, Some(500))]);
     assert_eq!(rig.timers(2000), [(1, Timer::PostWait, 1000, Some(3000))]);
@@ -140,7 +89,7 @@ fn an_audio_cue_shows_only_its_waits_its_action_comes_from_the_voice() {
 
 #[test]
 fn paused_timers_freeze_and_resume_where_they_stood() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         timed(memo(1), 2.0, 0.0, AC),
         timed(wait(2, 3.0), 0.0, 4.0, AC),
         memo(3),
@@ -170,7 +119,7 @@ fn paused_timers_freeze_and_resume_where_they_stood() {
 fn a_pause_committed_ahead_freezes_once_it_is_reached() {
     // Lookahead 10: a pause at `now` is committed on that sample, which is ahead of what has
     // been rendered.
-    let mut rig = Rig::with_lookahead(vec![wait(1, 3.0)], 10);
+    let mut rig = Rig::panicking_with(vec![wait(1, 3.0)], 10);
     rig.start(0, 1);
     rig.at(1000, Input::Pause { cue: id(1) });
     assert_eq!(rig.read(995), [(1, Timer::Action, 995, Some(2005))]);
@@ -180,7 +129,7 @@ fn a_pause_committed_ahead_freezes_once_it_is_reached() {
 
 #[test]
 fn a_start_scheduled_ahead_shows_the_whole_timer_not_more() {
-    let mut rig = Rig::with_lookahead(vec![timed(wait(1, 3.0), 2.0, 0.0, AF)], 10);
+    let mut rig = Rig::panicking_with(vec![timed(wait(1, 3.0), 2.0, 0.0, AF)], 10);
     rig.start(100, 1);
     // Rendered sample 90: the start on 100 has not been reached.
     assert_eq!(rig.read(90), [(1, Timer::PreWait, 0, Some(2000))]);
@@ -205,13 +154,13 @@ fn panic_stop_and_reset_clear_every_timer() {
         assert_eq!(rig.timers(1000).len(), 4);
     };
 
-    let mut rig = Rig::new(cues());
+    let mut rig = Rig::panicking(cues());
     started(&mut rig);
     rig.at(1000, Input::Panic);
     assert_eq!(rig.read(1000), []);
     assert_eq!(rig.timers(3000), []);
 
-    let mut rig = Rig::new(cues());
+    let mut rig = Rig::panicking(cues());
     started(&mut rig);
     for n in 1..=3 {
         let input = Input::Stop {
@@ -222,7 +171,7 @@ fn panic_stop_and_reset_clear_every_timer() {
     }
     assert_eq!(rig.read(1000), []);
 
-    let mut rig = Rig::new(cues());
+    let mut rig = Rig::panicking(cues());
     started(&mut rig);
     for n in 1..=3 {
         rig.at(1000, Input::Reset { cue: id(n) });
@@ -232,7 +181,7 @@ fn panic_stop_and_reset_clear_every_timer() {
 
 #[test]
 fn nothing_counts_when_idle_or_loaded() {
-    let mut rig = Rig::new(vec![timed(wait(1, 3.0), 2.0, 1.0, AC), memo(2)]);
+    let mut rig = Rig::panicking(vec![timed(wait(1, 3.0), 2.0, 1.0, AC), memo(2)]);
     assert_eq!(rig.read(0), []);
     rig.at(
         0,
@@ -247,7 +196,7 @@ fn nothing_counts_when_idle_or_loaded() {
 
 #[test]
 fn a_load_to_time_counts_from_where_it_was_loaded() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         timed(wait(1, 5.0), 2.0, 6.0, AC),
         timed(wait(2, 5.0), 2.0, 0.0, AF),
         memo(3),
@@ -305,7 +254,7 @@ fn a_cue_with_static_problems_keeps_its_waits_but_shows_no_action() {
             stop_target_when_done: false,
         },
     );
-    let mut rig = Rig::new(vec![timed(fade, 1.0, 4.0, AC), memo(2)]);
+    let mut rig = Rig::panicking(vec![timed(fade, 1.0, 4.0, AC), memo(2)]);
     rig.start(0, 1);
     assert_eq!(rig.engine.state(id(1)), CueState::Broken);
     assert_eq!(rig.timers(500), [(1, Timer::PreWait, 500, Some(500))]);
@@ -314,7 +263,7 @@ fn a_cue_with_static_problems_keeps_its_waits_but_shows_no_action() {
 
 #[test]
 fn a_groups_post_wait_counts_from_its_action_start() {
-    let mut rig = Rig::new(vec![
+    let mut rig = Rig::panicking(vec![
         timed(cue(1, group(vec![wait(2, 1.0)])), 0.0, 3.0, AC),
         memo(3),
     ]);
@@ -352,7 +301,7 @@ fn a_halted_playlists_follow_wait_counts_its_whole_rest_down() {
         0.0,
         AF,
     );
-    let mut rig = Rig::new(vec![p, memo(2)]);
+    let mut rig = Rig::panicking(vec![p, memo(2)]);
     let lengths = [(10, 4000), (11, 3000)]
         .into_iter()
         .map(|(n, f)| (id(n), Some(f)))
