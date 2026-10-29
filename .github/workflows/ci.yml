@@ -94,7 +94,11 @@ jobs:
       - uses: actions/checkout@v7
       # Installs the toolchain pinned in engine/rust-toolchain.toml.
       - run: rustup toolchain install
+      # A hosted runner's cache extract can hang (gtar | unzstd seen stuck 40+ min on macos-26-intel);
+      # give up on the cache and build cold instead of holding the job until its timeout.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 10
+        continue-on-error: true
         with:
           workspaces: engine
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
@@ -168,7 +172,11 @@ jobs:
       # The osc, osc_session and protocol targets link openlab-engine, which pulls in cpal; ALSA headers are needed to build it on Linux.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+      # A hosted runner's cache extract can hang (gtar | unzstd seen stuck 40+ min on macos-26-intel);
+      # give up on the cache and build cold instead of holding the job until its timeout.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 10
+        continue-on-error: true
         with:
           workspaces: engine/fuzz
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -207,7 +215,11 @@ jobs:
       # openlab-audio's default `device` feature pulls in cpal, which needs ALSA headers on Linux.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - run: rustup toolchain install "$SAN_TOOLCHAIN" --profile minimal -c rust-src -c miri
+      # A hosted runner's cache extract can hang (gtar | unzstd seen stuck 40+ min on macos-26-intel);
+      # give up on the cache and build cold instead of holding the job until its timeout.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 10
+        continue-on-error: true
         with:
           workspaces: engine
           key: ${{ matrix.check }}
@@ -236,7 +248,11 @@ jobs:
       - run: brew install xcodegen
       - run: rustup toolchain install
         working-directory: engine
+      # A hosted runner's cache extract can hang (gtar | unzstd seen stuck 40+ min on macos-26-intel);
+      # give up on the cache and build cold instead of holding the job until its timeout.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 10
+        continue-on-error: true
         with:
           workspaces: engine
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.

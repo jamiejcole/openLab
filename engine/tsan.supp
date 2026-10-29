@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# ThreadSanitizer suppressions for `make sanitize-thread` (QA-09).
+#
+# tokio's I/O driver: a thread builds a `ScheduledIo` and registers its fd with epoll; the driver
+# thread gets the pointer back from epoll_wait. The kernel gives that handoff its ordering, which
+# TSan does not model, so it reports a race on the initial memcpy. Reproduced with the engine
+# alone (UDP socket start-up, no test code involved); a false positive in tokio, not in openLab.
+# Matches only stacks through tokio's scheduled_io module.
+race:tokio::runtime::io::scheduled_io

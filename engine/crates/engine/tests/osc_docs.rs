@@ -27,17 +27,17 @@ const T0: Duration = Duration::from_secs(100);
 /// A doc with `cues` cues numbered 1..=cues in one list, its own id, name and passcode table.
 struct Show {
     id: WorkspaceId,
-    name: &'static str,
+    name: String,
     access: OscAccess,
     list: CueListId,
     cues: u128,
 }
 
 impl Show {
-    fn new(n: u128, name: &'static str, cues: u128) -> Self {
+    fn new(n: u128, name: &str, cues: u128) -> Self {
         Self {
             id: WorkspaceId(Uuid::from_u128(n)),
-            name,
+            name: name.to_string(),
             access: OscAccess::default(),
             list: CueListId(Uuid::from_u128(n << 16)),
             cues,
@@ -70,7 +70,7 @@ impl OscShow for Show {
         self.id
     }
     fn workspace_name(&self) -> &str {
-        self.name
+        &self.name
     }
     fn access(&self) -> &OscAccess {
         &self.access
@@ -254,7 +254,8 @@ fn an_id_another_doc_has_as_its_name_picks_the_doc_with_that_id() {
     let a = hamlet();
     let mut b = lear();
     let id = ws(&a);
-    b.name = Box::leak(id.clone().into_boxed_str());
+    // An owned name, not a leaked one: LeakSanitizer fails the binary on a `Box::leak`.
+    b.name = id.clone();
     let mut osc = quiet();
     let out = send(
         &mut osc,
@@ -770,7 +771,7 @@ fn a_passcode_another_doc_accepts_is_no_failed_guess() {
 fn a_name_several_docs_share_is_refused_with_one_warning() {
     let a = hamlet();
     let mut b = lear();
-    b.name = "Hamlet";
+    b.name = "Hamlet".into();
     let mut osc = quiet();
     let out = send(
         &mut osc,

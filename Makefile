@@ -65,7 +65,7 @@ sanitize-address:
 
 # TSan needs every crate instrumented, hence -Zbuild-std; on macOS it is not supported for all targets.
 sanitize-thread:
-	cd engine && RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST) -- --skip long_start_chains_validate_in_linear_time
+	cd engine && TSAN_OPTIONS="suppressions=$(CURDIR)/engine/tsan.supp" RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" $(SAN_TEST) -- --skip long_start_chains_validate_in_linear_time
 
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.

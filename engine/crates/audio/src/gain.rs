@@ -76,6 +76,10 @@ impl Curve {
 }
 
 fn exp_shape(t: f64) -> f64 {
+    // Same guard as openlab-core's `exp_shape` (tests/level_maths.rs holds them bit-equal).
+    if t >= 1.0 {
+        return 1.0;
+    }
     (EXP_K * t).exp_m1() / EXP_K.exp_m1()
 }
 
