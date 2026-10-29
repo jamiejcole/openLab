@@ -421,3 +421,65 @@ fn a_restarted_cue_compares_with_the_levels_it_restarted_with() {
         vec![edit(600, M, 0.0)]
     );
 }
+
+fn fade_output0(n: u128, target: u128, db: f64) -> Cue {
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(target)),
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: None,
+                output_db: vec![Some(db)],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+        },
+    )
+}
+
+#[test]
+fn a_mute_taken_from_a_paused_fade_stays_muted_through_the_resume() {
+    // #295: the mute takes output 0 from the fade; resuming the fade must not ramp it back up.
+    let mut rig = Rig::new(vec![sound(1), fade_output0(2, 1, 6.0)]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    rig.at(300, Input::Pause { cue: id(2) });
+    assert!(rig.engine.fade_level(id(1), O0, 300).is_some());
+    assert_eq!(
+        ramps(&rig.edit(400, 1, |l| l.outputs[0].mute = true)),
+        vec![edit(400, O0, SILENCE_DB)]
+    );
+    assert_eq!(rig.engine.fade_level(id(1), O0, 400), None);
+    let resumed = rig.at(500, Input::Resume { cue: id(2) });
+    assert!(
+        ramps(&resumed).iter().all(|r| r.param != O0),
+        "resume ramped the muted output: {resumed:?}"
+    );
+    // Nor does the fade's end touch it.
+    let end = rig.tick(1600);
+    assert!(ramps(&end).iter().all(|r| r.param != O0), "{end:?}");
+    assert_eq!(rig.engine.fade_level(id(1), O0, 1600), None);
+}
+
+#[test]
+fn an_edit_after_a_stopped_fade_is_heard() {
+    // #295: a stopped fade holds its level with no owner; the next edit of that level rules it.
+    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    rig.at(
+        600,
+        Input::Stop {
+            cue: id(2),
+            fade_out: None,
+        },
+    );
+    assert!(rig.engine.fade_level(id(1), M, 600).is_some());
+    assert_eq!(
+        ramps(&rig.edit(700, 1, |l| l.master_db = -6.0)),
+        vec![edit(700, M, -6.0)]
+    );
+    assert_eq!(rig.engine.fade_level(id(1), M, 700), None);
+}
