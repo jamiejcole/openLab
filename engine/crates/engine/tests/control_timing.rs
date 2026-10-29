@@ -101,6 +101,25 @@ fn a_batch_starts_and_stops_its_cues_on_the_same_sample() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// The contrast the batch exists for: two lone starts handled in different wakes, with the
+/// device rendering a block between them (as it does while a client's messages arrive one by
+/// one), land a block apart. The offline driver renders nothing between two messages, so
+/// without this the batch test above would pass with two lone starts as well.
+#[test]
+fn lone_starts_handled_in_different_wakes_land_a_block_apart() {
+    let a = wav(&dc(8000, 0.25));
+    let b = wav(&dc(8000, 0.75));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    s.run(BLOCK * 3 + 17);
+    let at = s.now() as usize;
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(BLOCK);
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(BLOCK * 4);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at + BLOCK as usize));
+}
+
 /// A cue the batch names that is not in this workspace (deleted meanwhile, or another doc's)
 /// gets the `unknown_cue` warning, as a lone `start` does; the others still start together.
 #[test]
