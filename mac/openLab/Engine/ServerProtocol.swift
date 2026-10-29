@@ -452,17 +452,22 @@ struct WorkspaceInfo: Hashable, Sendable, Decodable {
     let name: String
     let path: String?
     let dirty: Bool
+    /// The hash the engine names this doc's autosave by (a `recovery_entries` entry's
+    /// `path_hash`); nil for a doc never saved, or from an engine that does not send it.
+    let pathHash: String?
     enum CodingKeys: String, CodingKey {
         case doc, name, path, dirty
         case workspaceId = "workspace_id"
+        case pathHash = "path_hash"
     }
 
-    init(doc: ModelID, workspaceId: ModelID, name: String, path: String?, dirty: Bool) {
+    init(doc: ModelID, workspaceId: ModelID, name: String, path: String?, dirty: Bool, pathHash: String? = nil) {
         self.doc = doc
         self.workspaceId = workspaceId
         self.name = name
         self.path = path
         self.dirty = dirty
+        self.pathHash = pathHash
     }
 
     init(from decoder: Decoder) throws {
@@ -472,6 +477,7 @@ struct WorkspaceInfo: Hashable, Sendable, Decodable {
         name = try c.decode(String.self, forKey: .name)
         path = try c.decodeIfPresent(String.self, forKey: .path)
         dirty = try c.decode(Bool.self, forKey: .dirty)
+        pathHash = try c.decodeIfPresent(String.self, forKey: .pathHash)
     }
 }
 

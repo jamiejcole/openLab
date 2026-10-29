@@ -97,6 +97,14 @@ extension AppController {
         }
         quitting = true
         defer { quitting = false }
+        if session.connectionState == .retrying(.engineStopping) {
+            // The engine is shutting down: no save, close or goodbye can reach it, and it writes
+            // the recovery file of every workspace with unsaved changes itself. Nothing is left
+            // running behind the app, so there is nothing to confirm (#386).
+            engineLog.notice("quit while the engine is shutting down: no save prompts")
+            supervisor?.appWillQuit()
+            return true
+        }
         if engineUnreachable {
             // An engine still coming up plays nothing and is ended at quit: nothing to warn about.
             if supervisor?.engineNotReached == nil, !alerts.confirmQuitDisconnected() { return false }

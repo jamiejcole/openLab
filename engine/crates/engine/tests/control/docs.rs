@@ -666,6 +666,37 @@ fn an_untitled_workspace_autosaves_under_its_id_alone() {
     );
 }
 
+/// The app tells another copy's autosave from the open doc's own by the `path_hash` in
+/// `workspaces`, so it must be the hash the autosave is named and listed by.
+#[test]
+fn the_workspace_list_carries_the_hash_its_autosave_is_named_by() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.settle_docs();
+    let entries = match data(&request(&mut r.s, Request::ScanRecovery)) {
+        ResultData::RecoveryEntries { entries } => entries,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(entries.len(), 1);
+    let listed = r.s.control().workspace_list();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].path_hash.is_some());
+    assert_eq!(listed[0].path_hash, entries[0].path_hash);
+    let id = r.s.control().workspace().id;
+    assert_eq!(
+        names(&r.env.dirs.recovery_dir()),
+        vec![format!(
+            "{id}-{}.openlab",
+            entries[0].path_hash.as_deref().unwrap()
+        )]
+    );
+    // A doc never saved lists no hash, as its autosave is named by its id alone.
+    let untitled = rig(memo_ws("two", &[2]));
+    assert_eq!(untitled.s.control().workspace_list()[0].path_hash, None);
+}
+
 /// Simulates an unclean exit: a show saved at `path`, edited and autosaved, then dropped
 /// without a save. Returns the show path and the workspace id.
 fn crash_with_autosave(r: Rig) -> (Env, PathBuf, openlab_core::WorkspaceId) {

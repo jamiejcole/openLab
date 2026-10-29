@@ -314,14 +314,17 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         storesChanged.send()
     }
 
-    /// What the window showed: the store's own document state is the newest.
-    private func info(of store: WorkspaceStore, doc: ModelID) -> WorkspaceInfo {
+    /// What the window shows: the store's own document state is the newest.
+    func info(of store: WorkspaceStore, doc: ModelID) -> WorkspaceInfo {
         let listed = workspaces.first { $0.doc == doc }
+        let path = store.document != nil ? store.document?.path : listed?.path
         return WorkspaceInfo(
             doc: doc, workspaceId: store.model?.id ?? listed?.workspaceId ?? ModelID(""),
             name: store.model?.name ?? listed?.name ?? "",
-            path: store.document != nil ? store.document?.path : listed?.path,
-            dirty: store.document?.dirty ?? listed?.dirty ?? false)
+            path: path,
+            dirty: store.document?.dirty ?? listed?.dirty ?? false,
+            // The listed hash is of the listed path: a newer path (a save as not listed yet) has none.
+            pathHash: path != nil && path == listed?.path ? listed?.pathHash : nil)
     }
 
     private func startReattach() {

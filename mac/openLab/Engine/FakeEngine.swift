@@ -83,6 +83,9 @@ final class FakeEngine: EngineTransport {
     var preshowProblemDocs: Set<ModelID> = []
     /// `scan_recovery` lists these (`recovery_entries` entry objects).
     var recoveryEntries: [JSONValue] = []
+    /// `workspaces` lists a doc saved at one of these paths with this `path_hash`; at any other
+    /// path with none, as an engine before the field did.
+    var pathHashes: [String: String] = [:]
     /// `open` of one of these paths without a `recovery` choice answers `recovery_offer`.
     var autosaveNewer: Set<String> = []
     /// `open` of one of these paths fails with this code.
@@ -224,11 +227,15 @@ final class FakeEngine: EngineTransport {
         .array(
             docOrder.map { doc in
                 let s = docs[doc] ?? .null
-                return .object([
+                var entry: [String: JSONValue] = [
                     "doc": Self.docJSON(doc), "workspace_id": s["workspace"]?["id"] ?? .null,
                     "name": s["workspace"]?["name"] ?? .null, "path": s["document"]?["path"] ?? .null,
                     "dirty": s["document"]?["dirty"] ?? .bool(false),
-                ])
+                ]
+                if let hash = s["document"]?["path"]?.stringValue.flatMap({ pathHashes[$0] }) {
+                    entry["path_hash"] = .string(hash)
+                }
+                return .object(entry)
             })
     }
 
