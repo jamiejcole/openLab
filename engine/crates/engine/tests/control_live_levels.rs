@@ -19,6 +19,7 @@ use openlab_core::{
     Command, Crosspoint, CueKind, CueLevels, CueProperty, FadeCurve, FadeLevels, GroupMode,
     OutputPatch, PatchId, PatchMapping, PatchOutput, db_to_gain,
 };
+use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
 
@@ -45,14 +46,23 @@ fn set_audio(s: &mut OfflineShow, n: u128, f: impl FnOnce(&mut PatchId, &mut Cue
         panic!("not audio");
     };
     f(patch, levels);
+    send_edit(
+        s,
+        Command::SetCueProperty {
+            id: id(n),
+            property: CueProperty::Kind { value: kind },
+        },
+    )
+}
+
+/// Sends `command` (with the Levels tab's coalesce key) and asserts it was not refused.
+/// Returns the sample the edit is dated on.
+fn send_edit(s: &mut OfflineShow, command: Command) -> usize {
     let at = s.now() as usize;
     let rid = s.request_id();
     let replies = s.send(ClientMessage::Command {
         id: rid,
-        command: Box::new(Command::SetCueProperty {
-            id: id(n),
-            property: CueProperty::Kind { value: kind },
-        }),
+        command: Box::new(command),
         coalesce: Some("levels".into()),
     });
     assert!(
@@ -316,6 +326,16 @@ fn side() -> PatchId {
 
 /// [`long_show`] with the "Side" patch as well, cue 1 on `patch` routed to cue output `out`.
 fn two_patch_show(patch: PatchId, out: u32, extra: Vec<openlab_core::Cue>) -> OfflineShow {
+    two_patch_show_with(patch, out, extra, |_, _| {})
+}
+
+/// [`two_patch_show`], with `tweak` applied to the workspace and the config before it starts.
+fn two_patch_show_with(
+    patch: PatchId,
+    out: u32,
+    extra: Vec<openlab_core::Cue>,
+    tweak: impl FnOnce(&mut openlab_core::Workspace, &mut ControlConfig),
+) -> OfflineShow {
     let a = wav(&dc(RATE as usize * 10, LEVEL));
     let mut c = audio(1, &a, out);
     if let CueKind::Audio { patch: p, .. } = &mut c.kind {
@@ -349,6 +369,7 @@ fn two_patch_show(patch: PatchId, out: u32, extra: Vec<openlab_core::Cue>) -> Of
             },
         )
         .unwrap();
+    tweak(&mut ws, &mut c);
     show_with(ws, c)
 }
 
@@ -386,6 +407,91 @@ fn a_playing_cue_follows_its_patch_change_without_a_click() {
     heard_move(&s, 1, 0, at, at + 300);
     assert_eq!(s.control().live_voices(), 1);
     assert!(states(&s.take_outbound(), id(1)).is_empty());
+}
+
+/// #346: the slot a voice moved off keeps its routing while the crossfade out of it plays,
+/// even when its patch is removed by the same edit. Buffers shorter than the 5 ms crossfade
+/// (as 64 frames at 48 kHz are) let a sync run during it: the slot must not be zeroed then.
+#[test]
+fn a_slot_a_move_left_keeps_its_routing_until_the_crossfade_ends() {
+    let mut s = two_patch_show_with(patch_id(), 0, vec![], |_, c| c.block_frames = 16);
+    go(&mut s);
+    s.run(800);
+    let mut kind = s.control().workspace().find_cue(id(1)).unwrap().kind.clone();
+    if let CueKind::Audio { patch, .. } = &mut kind {
+        *patch = side();
+    }
+    let at = send_edit(
+        &mut s,
+        Command::Transaction {
+            commands: vec![
+                Command::SetCueProperty {
+                    id: id(1),
+                    property: CueProperty::Kind { value: kind },
+                },
+                Command::RemovePatch {
+                    id: patch_id(),
+                    even_if_used: false,
+                },
+            ],
+        },
+    );
+    s.run(400);
+    heard_move(&s, 0, 1, at, at + 300);
+    assert_eq!(s.control().live_voices(), 1);
+}
+
+/// #347: a preview keeps the patch it started on when its cue's patch changes, as it keeps its
+/// levels: the audition is not moved onto the show's outputs.
+#[test]
+fn a_preview_keeps_its_patch_when_the_cue_changes_patch() {
+    let mut s = two_patch_show(patch_id(), 0, vec![]);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(800);
+    let at = set_audio(&mut s, 1, |p, _| *p = side());
+    s.run(400);
+    let (main, side_out) = (s.channel(0), s.channel(1));
+    assert!(main[at - 100..].iter().all(|&v| near(v, LEVEL)), "moved off");
+    assert!(side_out.iter().all(|&v| v == 0.0), "heard on the new patch");
+}
+
+/// #347: a cue changed to a patch with no free slot keeps playing where it is; once a slot
+/// frees, the next sync gives the patch that slot and moves the voice onto it.
+#[test]
+fn a_cue_whose_new_patch_has_no_slot_moves_once_one_frees() {
+    let third = PatchId(uuid::Uuid::from_u128(903));
+    // Two mixer slots: Main and Third take them, so Side has none. Third is routed as Side is,
+    // so the slot Side gets later already has Side's routing.
+    let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
+        let mut p = ws.patches[1].clone();
+        p.id = third;
+        p.name = "Third".into();
+        ws.patches.insert(1, p);
+        let mapping = PatchMapping {
+            device: "Offline".into(),
+            channels: vec![1],
+        };
+        c.machine.set_patch_mapping(ws.id, third, mapping).unwrap();
+    });
+    go(&mut s);
+    s.run(800);
+    let at = set_audio(&mut s, 1, |p, _| *p = side());
+    s.run(400);
+    assert!(
+        s.channel(0)[at - 100..].iter().all(|&v| near(v, LEVEL)),
+        "left its outputs without a slot to go to"
+    );
+    assert!(s.channel(1).iter().all(|&v| v == 0.0));
+    let at = send_edit(
+        &mut s,
+        Command::RemovePatch {
+            id: third,
+            even_if_used: false,
+        },
+    );
+    s.run(400);
+    heard_move(&s, 0, 1, at, at + 300);
+    assert_eq!(s.control().live_voices(), 1);
 }
 
 /// A cue started on a one-output patch, routed to cue output 2 (silent there), moved to a
