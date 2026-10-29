@@ -28,4 +28,19 @@ extension XCTestCase {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: object)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
+
+    /// The inspector or sidebar tab titled `title`, once it has laid out: the tab bar is a segmented
+    /// control (radio buttons) or a tab view (tabs), and the same query is retried until the control
+    /// exists instead of reading `.exists` once while the pane is still laying out (#361). The
+    /// subscript matches the element's accessibility identifier, label or title.
+    @MainActor func tabButton(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        let radio = app.radioButtons[title]
+        let tab = app.tabs[title]
+        for _ in 0..<20 {
+            if radio.waitForExistence(timeout: 0.5) { return radio }
+            if tab.waitForExistence(timeout: 0.5) { return tab }
+        }
+        XCTFail("no tab \(title)")
+        return radio
+    }
 }

@@ -29,6 +29,9 @@ final class CueEditor {
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
     var notify: (String) -> Void = { _ in NSSound.beep() }
+    /// Tells the inspector a kind edit is in flight, so its own kind edits build on it; the result
+    /// is called when the engine has answered.
+    var trackPending: (Command, ModelID) -> () -> Void = { _, _ in {} }
 
     init(store: WorkspaceStore, cueList: CueListViewController) {
         self.store = store
@@ -223,7 +226,10 @@ final class CueEditor {
             notify(loc(rejection.messageKey))
             return false
         case .success(nil): return true
-        case .success(let command?): return report(await store.send(command: command))
+        case .success(let command?):
+            let answered = trackPending(command, id)
+            defer { answered() }
+            return report(await store.send(command: command))
         }
     }
 

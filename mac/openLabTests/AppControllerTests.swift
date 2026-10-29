@@ -468,6 +468,20 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.batch(actions: toggles)), ["1"])
     }
 
+    func testPauseResumeSelectedResumesACueThatBrokeWhilePaused() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let cue = try XCTUnwrap(wc.cueList.roots.first?.id)
+        engine.push(
+            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"broken","reason":"stream_failed"}]}"#,
+            doc: "1")
+        await assertEventually { store.cueStates[cue]?.state == .broken }
+        wc.cueList.select([cue])
+        await app.perform(.pauseResumeSelected)
+        XCTAssertEqual(transports(.resume(cue: cue)), ["1"])
+    }
+
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
         let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
         let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
@@ -1111,6 +1125,41 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(goodbyes.count, 1)
     }
 
+    /// Don't Save at quit drops the edits on the engine too: otherwise its shutdown writes a
+    /// recovery file for the workspace and File > Recover Autosaves lists it later (#333).
+    func testQuitDontSaveClosesWithDiscardBeforeGoodbyeAndASavedOneIsNotClosed() async throws {
+        let b = try await addWorkspace()
+        await makeDirty(b)  // the fixture's "Test" is dirty already
+        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        alerts.saveChoices = [.dontSave, .save]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let sent = engine.received
+        let closes = sent.enumerated().compactMap { i, m -> (Int, ModelID, Bool)? in
+            if case .close(_, let doc?, let discard) = m { return (i, doc, discard) }
+            return nil
+        }
+        XCTAssertEqual(closes.count, 1, "only the workspace answered Don't Save")
+        XCTAssertEqual(closes.first?.2, true)
+        let goodbye = sent.firstIndex { if case .goodbye(true) = $0 { return true } else { return false } }
+        XCTAssertNotNil(goodbye)
+        XCTAssertLessThan(closes.first?.0 ?? .max, goodbye ?? 0)
+    }
+
+    /// A close that fails ends the discarding: each further one would wait out its own bound on a
+    /// stalled engine, and the quit still says goodbye.
+    func testQuitStopsDiscardingAfterTheFirstCloseFails() async throws {
+        let b = try await addWorkspace()
+        await makeDirty(b)
+        alerts.saveChoices = [.dontSave, .dontSave]
+        engine.garbleResults = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let closes = engine.received.filter { if case .close = $0 { return true } else { return false } }
+        XCTAssertEqual(closes.count, 1)
+        XCTAssertTrue(engine.received.contains { if case .goodbye(true) = $0 { return true } else { return false } })
+    }
+
     func testQuitCancelOnASecondWorkspaceAbortsAndSendsNoGoodbye() async throws {
         let b = try await addWorkspace()
         await makeDirty(b)
@@ -1119,6 +1168,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("unsaved") }.count, 2)
         XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.received.contains { if case .close = $0 { return true } else { return false } })
         XCTAssertEqual(app.windows.count, 2)
     }
 

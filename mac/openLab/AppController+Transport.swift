@@ -80,7 +80,10 @@ extension AppController {
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {
-                case .paused?: return .resume(cue: id)
+                // A cue that broke while paused (a playlist child held under Pause) reads `broken`;
+                // the wire does not say it is also paused. Resume on a broken cue that is not paused
+                // is a no-op in the engine, so offering it is safe and the only way to release the hold.
+                case .paused?, .broken?: return .resume(cue: id)
                 case .running?, .fading?, .preWaiting?, .postWaiting?: return .pause(cue: id)
                 default: return nil
                 }

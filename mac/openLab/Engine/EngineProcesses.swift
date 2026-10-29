@@ -37,15 +37,22 @@ final class SystemEngineProcesses: EngineProcesses {
     let executable: URL?
     let bundleID: String
     let infoURL: URL
+    /// What the engine prints on stderr, read back into the app's log.
+    let stderrTail: EngineStderrTail
+    private let watchStderr: Bool
+    private var stderrWatcher: EngineStderrWatcher?
 
     init(
         executable: URL? = Bundle.main.url(forAuxiliaryExecutable: SystemEngineProcesses.engineName),
         bundleID: String = Bundle.main.bundleIdentifier ?? "dev.openlab.openLab",
-        infoURL: URL = EngineConnectionInfo.defaultURL
+        infoURL: URL = EngineConnectionInfo.defaultURL, stderrURL: URL? = nil, watchStderr: Bool = true
     ) {
         self.executable = executable
         self.bundleID = bundleID
         self.infoURL = infoURL
+        stderrTail = EngineStderrTail(
+            url: stderrURL ?? infoURL.deletingLastPathComponent().appendingPathComponent("engine-stderr.log"))
+        self.watchStderr = watchStderr
     }
 
     func readInfo() -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError> {
@@ -71,7 +78,8 @@ final class SystemEngineProcesses: EngineProcesses {
         }
     }
 
-    /// `openlab-engine --relaunch-app BUNDLE_ID`, stdin/stdout/stderr on /dev/null, in its own
+    /// `openlab-engine --relaunch-app BUNDLE_ID`, stdin/stdout on /dev/null, stderr appended to
+    /// `engine-stderr.log` (the app logs what lands there; /dev/null if the file cannot be made), in its own
     /// process group (a signal to the app's group does not reach it), no other descriptor
     /// inherited. Not `--watch-stdin`: the engine must outlive the app (it relaunches it).
     func spawnEngine() throws -> Int32 {
@@ -93,7 +101,19 @@ final class SystemEngineProcesses: EngineProcesses {
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+        // Opened here, not by posix_spawn: a file that cannot be opened (read-only, a directory, gone
+        // since the check) must cost the engine its stderr log, never its start.
+        let logFD =
+            stderrTail.prepare()
+            ? open(stderrTail.url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600) : -1
+        defer { if logFD >= 0 { close(logFD) } }
+        let logged = logFD >= 0
+        if logged {
+            posix_spawn_file_actions_adddup2(&actions, logFD, 2)
+        } else {
+            engineLog.error("no stderr file for the engine: its error output is discarded")
+            posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+        }
 
         let args = [executable.path, "--relaunch-app", bundleID]
         let env = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
@@ -106,6 +126,12 @@ final class SystemEngineProcesses: EngineProcesses {
         var pid: pid_t = 0
         let rc = posix_spawn(&pid, executable.path, &actions, &attr, &argv, &envp)
         guard rc == 0 else { throw EngineSpawnError.spawnFailed(rc) }
+        if logged, watchStderr {
+            stderrWatcher?.stop()
+            let watcher = EngineStderrWatcher(tail: stderrTail)
+            watcher.start()
+            stderrWatcher = watcher
+        }
         return pid
     }
 

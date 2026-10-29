@@ -182,7 +182,7 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(spy.inserts + spy.removals, 0)
         let cell = ActiveCueCell()
         side.fill(cell, Self.rain)
-        XCTAssertEqual(cell.times.stringValue, "00:02.50  -00:07.50")
+        XCTAssertEqual(cell.times.stringValue, "Paused  00:02.50  -00:07.50")  // rain is paused: frozen times
         XCTAssertEqual(cell.bar.doubleValue, 0.25, accuracy: 0.001)
         // Progress for a cue that is not in the panel touches only the row that lost its progress.
         side.clearUpdateLog()
@@ -190,10 +190,29 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(side.updatedActiveRows, [Self.rain])
     }
 
+    func testPausedAndStoppingCuesKeepTheirProgressAcrossStateChanges() async throws {
+        _ = try await make()
+        try state(Self.door, "running")
+        try receive(#"{"type":"progress","items":[{"cue":"\#(Self.door)","elapsed":1,"remaining":3}]}"#)
+        var progressChanges = 0
+        let sub = store.changes.sink { if case .progress = $0 { progressChanges += 1 } }
+        defer { sub.cancel() }
+        try state(Self.door, "paused")
+        XCTAssertEqual(store.progress[Self.door]?.elapsed, 1, "paused keeps the frozen progress")
+        try state(Self.door, "stopping")
+        XCTAssertEqual(store.progress[Self.door]?.elapsed, 1)
+        XCTAssertEqual(progressChanges, 0, "no drop and re-add on each state change")
+        let cell = ActiveCueCell()
+        side.fill(cell, Self.door)
+        XCTAssertEqual(cell.times.stringValue, "Stopping  00:01.00  -00:03.00")
+        try state(Self.door, "idle")
+        XCTAssertNil(store.progress[Self.door])
+    }
+
     func testCueWithoutProgressShowsItsState() async throws {
         _ = try await make()
         let cell = ActiveCueCell()
-        side.fill(cell, Self.rain)  // paused: the engine reports no progress for it
+        side.fill(cell, Self.rain)  // paused, and no progress arrived for it
         XCTAssertEqual(cell.times.stringValue, "Paused")
         XCTAssertEqual(cell.pauseButton.accessibilityLabel(), "Resume")
         side.fill(cell, Self.intro)

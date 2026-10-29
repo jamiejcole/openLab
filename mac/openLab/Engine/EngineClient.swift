@@ -28,6 +28,9 @@ enum ConnectionFailure: Equatable, Sendable {
     case lost
     case engine(code: ErrorCode, message: String)
     case transport(String)
+    /// The socket opened but no `welcome` came in time. The engine builds it from a snapshot of
+    /// its control loop, so this means busy (maybe playing), not gone: never silence.
+    case noWelcome
     /// The engine closed this connection's workspace (`closed`): never reconnect to it.
     case workspaceClosed
     /// `engine.json` names another engine run than the one this workspace connection was bound in:
@@ -366,7 +369,7 @@ final class EngineClient: ObservableObject {
             }
         } catch {
             if workspaceClosed { return (.workspaceClosed, welcomed) }
-            return (handshakeTimedOut && !welcomed ? .transport("no welcome") : .lost, welcomed)
+            return (handshakeTimedOut && !welcomed ? .noWelcome : .lost, welcomed)
         }
     }
 

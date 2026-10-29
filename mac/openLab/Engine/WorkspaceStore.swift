@@ -446,7 +446,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .cueState(let cue, let state, let reason):
                 cueStates[cue] = CueRunState(state: state, reason: reason)
                 cues.insert(cue)
-                if state != .running && state != .fading, progress[cue] != nil {
+                // A paused or stopping cue keeps its (frozen or elapsed) progress: the engine still
+                // reports it, and dropping it here would only have the next `progress` put it back.
+                let keepsProgress = state == .running || state == .fading || state == .paused || state == .stopping
+                if !keepsProgress, progress[cue] != nil {
                     progress[cue] = nil
                     progressEnded.insert(cue)
                 }

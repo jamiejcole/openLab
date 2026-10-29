@@ -12,6 +12,10 @@ extension InspectorViewController {
     /// not tell the UI a file's channel count yet, so a stereo file is assumed.
     static let defaultInputs = 2
 
+    /// Separates this launch's gesture keys from another client's or an earlier launch's: the engine
+    /// joins consecutive edits with the same key into one undo step (#280).
+    static let launchToken = UUID().uuidString
+
     func buildLevelsTabs() {
         audioLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         fadeLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
@@ -122,7 +126,9 @@ extension InspectorViewController {
     }
 
     func sendLevels(_ set: LevelSet, gesture: Int?) {
-        sendKind({ set.json(into: $0) }, key: "levels", coalesce: gesture.map { g in { "levels:\($0):\(g)" } })
+        sendKind(
+            { set.json(into: $0) }, key: "levels",
+            coalesce: gesture.map { g in { "levels:\($0):\(Self.launchToken):\(g)" } })
     }
 
     func sendFade(_ change: FadeSettingsPanel.Change) {

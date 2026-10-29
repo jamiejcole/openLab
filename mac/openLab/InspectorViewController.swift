@@ -611,6 +611,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
     }
 
+    /// An edit sent outside the inspector (the cue list's Duration column) that changes the cue's kind:
+    /// until it is answered, a kind edit made here must build on it, not on a pendingKinds entry that
+    /// still holds the old value (#354). The returned closure ends the tracking once the engine answers.
+    func trackPending(_ command: Command, cue: ModelID) -> () -> Void {
+        guard let property = command.json["property"], let sentKind = pendingKind(cue, after: property) else {
+            return {}
+        }
+        pendingKinds[cue] = sentKind
+        return { [weak self] in
+            if self?.pendingKinds[cue] == sentKind { self?.pendingKinds[cue] = nil }
+        }
+    }
+
     private func show(rejection: InspectorEdit.Rejection) {
         messageLabel.stringValue = loc(rejection.messageKey)
     }
