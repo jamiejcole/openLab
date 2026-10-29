@@ -669,7 +669,13 @@ mod tests {
             ..OutputSettings::default()
         };
         let at = ctl.samples_rendered();
-        ctl.send(at, CommandKind::SetOutput { output: 0, settings });
+        ctl.send(
+            at,
+            CommandKind::SetOutput {
+                output: 0,
+                settings,
+            },
+        );
         assert_eq!(play(&mut r, 8), [0.5, 0.5]);
         r.mixer_mut().stage.panic_at = Some(Stage::Output(0));
         fault(&mut r);

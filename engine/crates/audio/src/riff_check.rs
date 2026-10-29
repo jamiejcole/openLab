@@ -353,7 +353,10 @@ mod tests {
         let header = format!("name = \"{name}\"");
         let mut lines = lock.lines();
         lines.find(|l| *l == header)?;
-        lines.next()?.strip_prefix("version = \"")?.strip_suffix('"')
+        lines
+            .next()?
+            .strip_prefix("version = \"")?
+            .strip_suffix('"')
     }
 
     /// A symphonia upgrade can change the chunk walk this module mirrors, letting a hostile
