@@ -31,6 +31,11 @@ enum CueProperty: Hashable, Sendable {
     /// Group cues only: core's `GroupMode` (`type`: timeline, start_first_and_enter,
     /// start_first_and_go_to_next, playlist, start_random; `loop`/`shuffle` for a playlist only).
     case groupMode(type: String, loop: Bool, shuffle: Bool)
+    /// Wait and Fade cues only: the action's length in seconds (0 to 24 h), without resending the
+    /// whole kind.
+    case duration(Double)
+    /// Load cues only: the time the target is loaded to, in seconds (0 to 24 h).
+    case loadToTime(Double)
 
     var json: JSONValue {
         func p(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
@@ -60,6 +65,8 @@ enum CueProperty: Hashable, Sendable {
                 mode["shuffle"] = .bool(shuffle)
             }
             return p("group_mode", .object(mode))
+        case .duration(let v): return p("duration", .double(v))
+        case .loadToTime(let v): return p("load_to_time", .double(v))
         }
     }
 }

@@ -6,16 +6,7 @@ import XCTest
 @MainActor
 final class ShowModeUITests: XCTestCase {
     func testShowModeLocksTheInspectorAndSpaceStillGoes() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)  // the empty second workspace is in front: close it
-        let one = NSPredicate(format: "count == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
-            .completed)
+        let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
@@ -31,15 +22,9 @@ final class ShowModeUITests: XCTestCase {
         let loaded = states.matching(NSPredicate(format: "label == 'Loaded'"))
         XCTAssertTrue(loaded.firstMatch.waitForExistence(timeout: 10))
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
-        let gone = NSPredicate(format: "count == 0")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: loaded)], timeout: 10),
-            .completed, "GO still fires in Show Mode")
+        XCTAssertTrue(waitFor("count == 0", loaded), "GO still fires in Show Mode")
 
         app.radioGroups["mode-switch"].radioButtons["Edit"].click()
-        let enabled = NSPredicate(format: "isEnabled == true")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: enabled, object: name)], timeout: 5),
-            .completed, "leaving Show Mode unlocks editing")
+        XCTAssertTrue(waitFor("isEnabled == true", name, timeout: 5), "leaving Show Mode unlocks editing")
     }
 }

@@ -56,8 +56,8 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     var restoreAutosaves = true
-    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool {
-        log.append("autosave:\(name)")
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+        log.append(setAside ? "setAsideAutosave:\(name)" : "autosave:\(name)")
         return restoreAutosaves
     }
 }
@@ -215,19 +215,17 @@ final class AppControllerTests: XCTestCase {
     func testGoAndPauseAllAddressTheKeyWindowsWorkspace() async throws {
         let second = try await addWorkspace()
         keyDoc = second
-        let go = await app.goFront()
-        XCTAssertNotNil(go)
-        _ = await app.pauseAllFront()
+        await app.perform(.go)
+        await app.perform(.pauseAll)
         XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")), [second])
         XCTAssertEqual(transports(.pauseAll), [second])
 
         keyDoc = "1"
-        _ = await app.goFront()
+        await app.perform(.go)
         XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")), [second, "1"])
 
         keyDoc = nil  // no workspace window is key: nothing is sent
-        let none = await app.goFront()
-        XCTAssertNil(none)
+        await app.perform(.go)
         XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")).count, 2)
     }
 
@@ -1284,7 +1282,7 @@ final class AppControllerTests: XCTestCase {
         let wc = try XCTUnwrap(app.windows["1"])
         wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         XCTAssertEqual(wc.cueList.listID, second)
-        _ = await app.goFront()
+        await app.perform(.go)
         await app.perform(.playheadNext)
         XCTAssertEqual(transports(.go(list: second)), ["1"])
         XCTAssertEqual(transports(.playheadNext(list: second)), ["1"])

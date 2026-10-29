@@ -46,10 +46,11 @@ final class FakeEngine: EngineTransport {
     ])
 
     /// One cue with a missing file and one lost device: `total` is 2 (the cue and the system entry).
+    /// The cue is the demo show's Radio (2.3, inside the collapsed group Act One).
     private static let sampleReportWithProblems: JSONValue = {
-        let cue = "00000000-0000-0000-0000-00000000000a"
-        let list = "00000000-0000-0000-0000-000000000001"
-        let path = "/Shows/storm.wav"
+        let cue = "00000000-0000-0000-0000-000000000023"
+        let list = demoListID
+        let path = "media/o.wav"
         return .object([
             "type": .string("preshow_check"), "ok": .bool(false),
             "summary": .object([
@@ -58,7 +59,7 @@ final class FakeEngine: EngineTransport {
             ]),
             "broken_cues": .array([
                 .object([
-                    "cue": .string(cue), "list": .string(list), "number": .string("3"), "name": .string("Storm"),
+                    "cue": .string(cue), "list": .string(list), "number": .string("2.3"), "name": .string("Radio"),
                     "problems": .array([.object(["type": .string("media_missing"), "media": .string(path)])]),
                 ])
             ]),
@@ -371,7 +372,7 @@ final class FakeEngine: EngineTransport {
                         switch type {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
-                        case "media": cue["kind"]?.set("media", value)
+                        case "media", "duration", "load_to_time": cue["kind"]?.set(type, value)
                         default: cue.set(type, value)
                         }
                     }

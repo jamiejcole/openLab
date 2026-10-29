@@ -148,7 +148,11 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 
 A media path uses **forward slashes** as separators. It is relative to the folder containing the
 show file when the media is inside that folder (`"media/thunder.wav"`), otherwise absolute
-(`"/Volumes/Show/thunder.wav"`, `"C:/Show/thunder.wav"`, `"//server/share/thunder.wav"`).
+(`"/Volumes/Show/thunder.wav"`, `"C:/Show/thunder.wav"`, `"//server/share/thunder.wav"`). "Inside" is
+literal: the same components byte for byte after NFC, no case folding, no `.` or `..`. A show never
+saved holds absolute paths; its first Save As stores the ones literally inside the new folder
+relative and leaves every other absolute path as it was. Cues pasted from a show in another folder
+have their relative paths read against that folder first.
 Windows absolute paths written with backslashes (`C:\Show\a.wav`, `\\server\share\a.wav`) are
 converted to forward slashes on load. Any other backslash is kept as part of a file name, because
 macOS allows it (`"sfx/Door\\Slam.wav"` in JSON is the file `Door\Slam.wav`).

@@ -7,9 +7,7 @@ import XCTest
 @MainActor
 final class EngineAlarmUITests: XCTestCase {
     func testEngineCrashShowsTheAlarmAndKeepsTheWindows() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake", "-OpenLabFakeCrashAfter", "3"]
-        app.launch()
+        let app = launchFake(["-OpenLabFakeCrashAfter", "3"])
         let windows = app.windows.matching(identifier: "main-window")
         XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
 
@@ -19,9 +17,7 @@ final class EngineAlarmUITests: XCTestCase {
 
         // The new engine came up and the windows were reopened, not duplicated.
         let detail = app.staticTexts["engine-alarm-detail"]
-        let reopened = NSPredicate(format: "value CONTAINS %@", "your workspaces were reopened")
-        let exp = XCTNSPredicateExpectation(predicate: reopened, object: detail)
-        XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 15), .completed)
+        XCTAssertTrue(waitFor("value CONTAINS 'your workspaces were reopened'", detail, timeout: 15))
         XCTAssertEqual(windows.count, 2)
 
         // Not modal: the workspace windows still take keys while it is up (a key that acts on
@@ -33,8 +29,7 @@ final class EngineAlarmUITests: XCTestCase {
         XCTAssertTrue(cues.firstMatch.waitForExistence(timeout: 5), "the key reached the workspace window")
         XCTAssertTrue(title.exists, "the alarm is still up")
         app.buttons["engine-alarm-dismiss"].click()
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: title)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed)
+        XCTAssertTrue(waitFor("exists == false", title, timeout: 5))
         XCTAssertEqual(windows.count, 2)
     }
 }

@@ -160,6 +160,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func saveAs(path: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .saveAs(path: path)) }
     }
+    /// The autosaves loaded into this window (EngineSession keeps it up).
+    var autosaveCover = AutosaveCover()
     func relink(folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder)) }
     }

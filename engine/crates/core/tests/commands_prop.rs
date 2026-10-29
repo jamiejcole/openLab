@@ -263,7 +263,7 @@ fn make_cue(ws: &Workspace, g: &mut Gen, p: &Pick) -> Cue {
 }
 
 fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
-    match variant % 17 {
+    match variant % 19 {
         0 => CueProperty::Name {
             value: format!("name {}", p.b),
         },
@@ -351,6 +351,9 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
                 _ => vec![OscArg::Bool { value: true }, OscArg::Float { value: 0.25 }],
             },
         },
+        // Valid and hostile times; refused on a cue that has no such field.
+        17 => CueProperty::Duration { value: time(p.b) },
+        18 => CueProperty::LoadToTime { value: time(p.b) },
         _ => CueProperty::Kind { value: kind(ws, p) },
     }
 }
@@ -743,7 +746,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
         },
         6 => Command::SetCueProperty {
             id: id?,
-            property: property(ws, (p.d % 17) as u8, p),
+            property: property(ws, (p.d % 19) as u8, p),
         },
         7 => {
             let selected = (0..1 + p.c % 3).filter_map(|n| choose(&ids, p.a.wrapping_add(n * 7)));
@@ -752,7 +755,8 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                 // Every variant but `Kind` (11).
                 property: property(
                     ws,
-                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16][p.d as usize % 16],
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18]
+                        [p.d as usize % 18],
                     p,
                 ),
             }
@@ -812,7 +816,7 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
             }
             Command::Transaction { commands }
         }
-        100..=116 => Command::SetCueProperty {
+        100..=118 => Command::SetCueProperty {
             id: id?,
             property: property(ws, op - 100, p),
         },
@@ -1033,6 +1037,8 @@ round_trip_tests! {
     set_destination_round_trips: 114,
     set_address_round_trips: 115,
     set_args_round_trips: 116,
+    set_duration_round_trips: 117,
+    set_load_to_time_round_trips: 118,
 }
 
 proptest! {

@@ -408,6 +408,23 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A Wait or Fade cue's duration and a Load cue's time, alone (M5.6b).
+    for (name, property) in [
+        ("duration", CueProperty::Duration { value: 12.5 }),
+        ("load_to_time", CueProperty::LoadToTime { value: 90.25 }),
+    ] {
+        add(
+            &format!("command_set_cue_{name}"),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property,
+                }),
+                coalesce: None,
+            }),
+        );
+    }
     add(
         "command_paste_clipboard",
         client(ClientMessage::Command {
@@ -419,6 +436,23 @@ fn fixtures() -> Vec<(String, Sample)> {
                     index: 2,
                 },
                 cues: vec![sample_cue()],
+                source_dir: None,
+            }),
+            coalesce: None,
+        }),
+    );
+    add(
+        "command_paste_clipboard_from_folder",
+        client(ClientMessage::Command {
+            id: rid(5),
+            command: Box::new(Command::PasteClipboard {
+                at: Position {
+                    list: list(),
+                    parent: Some(cue_id(10)),
+                    index: 2,
+                },
+                cues: vec![sample_cue()],
+                source_dir: Some("/Volumes/Show A".to_owned()),
             }),
             coalesce: None,
         }),

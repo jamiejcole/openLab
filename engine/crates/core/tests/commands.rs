@@ -1841,3 +1841,228 @@ fn a_session_of_edits_still_saves_and_loads_back_unchanged() {
         assert_eq!(loaded.warnings, vec![]);
     }
 }
+
+// ---- durations and load time (M5.6b; CUE-02, CT-14, CT-20) ----------------------------------
+
+/// Wait 1 (2 s), Fade 2 of cue 4 (5 s), Load 3 of cue 4 (1.5 s), Audio 4, Memo 5, Group 6.
+fn timed_cues() -> Workspace {
+    workspace(vec![
+        cue(1, CueKind::Wait { duration: 2.0 }),
+        cue(2, fade(4)),
+        cue(
+            3,
+            CueKind::Load {
+                target: Some(cue_id(4)),
+                load_to_time: 1.5,
+            },
+        ),
+        cue(4, audio()),
+        memo(5),
+        grp(6, vec![]),
+    ])
+}
+
+fn kind_of(ws: &Workspace, n: u128) -> CueKind {
+    ws.find_cue(cue_id(n)).unwrap().kind.clone()
+}
+
+fn duration(value: f64) -> CueProperty {
+    CueProperty::Duration { value }
+}
+
+fn load_time(value: f64) -> CueProperty {
+    CueProperty::LoadToTime { value }
+}
+
+#[test]
+fn a_wait_or_fade_duration_is_set_alone_and_undone() {
+    let mut ws = timed_cues();
+    round_trip(&mut ws, set(1, duration(12.25)));
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 12.25 });
+    let mut expected = kind_of(&ws, 2);
+    round_trip(&mut ws, set(2, duration(0.5)));
+    // Only the duration changes: target, curve, levels and the stop flag stay.
+    if let CueKind::Fade { duration, .. } = &mut expected {
+        *duration = 0.5;
+    }
+    assert_eq!(kind_of(&ws, 2), expected);
+    assert_clean(&ws);
+    // The same value changes nothing and leaves no undo step.
+    let inverse = ws.apply(set(1, duration(12.25))).unwrap();
+    assert_eq!(inverse, Command::Transaction { commands: vec![] });
+}
+
+#[test]
+fn a_load_cues_time_is_set_alone_and_undone() {
+    let mut ws = timed_cues();
+    round_trip(&mut ws, set(3, load_time(90.0)));
+    assert_eq!(
+        kind_of(&ws, 3),
+        CueKind::Load {
+            target: Some(cue_id(4)),
+            load_to_time: 90.0
+        }
+    );
+    assert_clean(&ws);
+}
+
+#[test]
+fn durations_and_load_times_at_the_limits_are_accepted() {
+    let mut ws = timed_cues();
+    for value in [0.0, 0.001, MAX_TIME] {
+        ws.apply(set(1, duration(value))).unwrap();
+        ws.apply(set(2, duration(value))).unwrap();
+        ws.apply(set(3, load_time(value))).unwrap();
+        assert_clean(&ws);
+    }
+}
+
+#[test]
+fn bad_durations_and_load_times_are_refused() {
+    let mut ws = timed_cues();
+    for bad in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        -0.001,
+        -1.0,
+        MAX_TIME + 0.001,
+        1e300,
+        f64::MAX,
+    ] {
+        for (n, property, field) in [
+            (1, duration(bad), "duration"),
+            (2, duration(bad), "duration"),
+            (3, load_time(bad), "load_to_time"),
+        ] {
+            let error = refused(&mut ws, set(n, property));
+            let CommandError::InvalidCue(issues) = error else {
+                panic!("{bad}: {error:?}")
+            };
+            assert_eq!(
+                issues.iter().map(|i| i.kind.clone()).collect::<Vec<_>>(),
+                vec![IssueKind::InvalidTime { field }],
+                "{bad}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_duration_or_load_time_on_a_cue_without_one_is_refused() {
+    let mut ws = timed_cues();
+    for n in [3, 4, 5, 6] {
+        assert_eq!(
+            refused(&mut ws, set(n, duration(1.0))),
+            CommandError::PropertyNotApplicable(cue_id(n))
+        );
+    }
+    for n in [1, 2, 4, 5, 6] {
+        assert_eq!(
+            refused(&mut ws, set(n, load_time(1.0))),
+            CommandError::PropertyNotApplicable(cue_id(n))
+        );
+    }
+    assert_eq!(
+        refused(&mut ws, set(99, duration(1.0))),
+        CommandError::CueNotFound(cue_id(99))
+    );
+}
+
+#[test]
+fn a_duration_is_batch_set_on_waits_and_fades_all_or_none() {
+    let mut ws = timed_cues();
+    round_trip(
+        &mut ws,
+        Command::BatchSet {
+            ids: vec![cue_id(1), cue_id(2)],
+            property: duration(3.0),
+        },
+    );
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 3.0 });
+    // A Memo in the batch refuses it all; the Wait written first gets its old value back.
+    refused(
+        &mut ws,
+        Command::BatchSet {
+            ids: vec![cue_id(1), cue_id(5)],
+            property: duration(4.0),
+        },
+    );
+}
+
+#[test]
+fn a_fade_whose_target_is_missing_can_still_have_its_duration_edited() {
+    // References are not checked (broken-cue state), so a dangling target does not block it.
+    let mut ws = workspace(vec![cue(2, fade(99))]);
+    round_trip(&mut ws, set(2, duration(1.0)));
+}
+
+#[test]
+fn coalesced_duration_edits_are_one_undo_step() {
+    let mut ws = timed_cues();
+    let before = ws.clone();
+    let mut history = History::new();
+    for value in [3.0, 4.0, 5.5] {
+        history
+            .execute_coalescing(&mut ws, set(1, duration(value)), Some("duration:1"))
+            .unwrap();
+    }
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 5.5 });
+    assert_eq!(history.undo_len(), 1);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+    history.redo(&mut ws).unwrap();
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 5.5 });
+}
+
+#[test]
+fn a_kind_change_after_a_duration_edit_in_one_gesture_still_undoes() {
+    // Wait -> Memo -> Wait (3 s), its duration to 5 s, then -> Memo, all with one coalesce key.
+    // A Kind replaces the duration, so the last step's Kind may not be dropped in favour of the
+    // older chain: that would apply the Duration step to a Memo, and the undo would be refused.
+    let mut ws = timed_cues();
+    let before = ws.clone();
+    let mut history = History::new();
+    for property in [
+        CueProperty::Kind {
+            value: CueKind::Memo,
+        },
+        CueProperty::Kind {
+            value: CueKind::Wait { duration: 3.0 },
+        },
+        duration(5.0),
+        CueProperty::Kind {
+            value: CueKind::Memo,
+        },
+    ] {
+        history
+            .execute_coalescing(&mut ws, set(1, property), Some("k"))
+            .unwrap();
+    }
+    assert_eq!(history.undo_len(), 1);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+}
+
+#[test]
+fn a_kind_replacement_between_duration_edits_of_one_cue_undoes_to_the_start() {
+    // A Kind replaces the duration too, so merging the steps must not drop one the others need.
+    let mut ws = timed_cues();
+    let before = ws.clone();
+    let mut history = History::new();
+    let mut kind = kind_of(&ws, 2);
+    if let CueKind::Fade { curve, .. } = &mut kind {
+        *curve = FadeCurve::Linear;
+    }
+    for property in [
+        duration(9.0),
+        CueProperty::Kind { value: kind },
+        duration(1.0),
+    ] {
+        history
+            .execute_coalescing(&mut ws, set(2, property), Some("k"))
+            .unwrap();
+    }
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+}

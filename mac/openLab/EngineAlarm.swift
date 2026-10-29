@@ -19,7 +19,7 @@ protocol EngineAlarmPresenting: AnyObject {
 /// Esc keep working in the workspace windows while it is up.
 @MainActor
 final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private let titleLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
@@ -78,6 +78,10 @@ final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
         titleLabel.textColor = .systemRed
         titleLabel.setAX(AX.engineAlarmTitle)
         messageLabel.setAX(AX.engineAlarmMessage)
+        // Selectable text needs its panel to be key: a click on the message would take the keys
+        // from the workspace window and GO would stop working while the engine is down.
+        messageLabel.isSelectable = false
+        detailLabel.isSelectable = false
         detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.setAX(AX.engineAlarmDetail)
@@ -215,12 +219,20 @@ final class EngineAlarmController {
         }
     }
 
-    /// The entries of workspaces no window shows or is waiting to reopen.
+    /// The entries no window holds: see `AutosaveOffer.offerable`.
     private func unheld(_ entries: [RecoveryEntryInfo]) -> [RecoveryEntryInfo] {
         let held = Set(
             session.stores.values.compactMap { $0.model?.id } + session.workspaces.map(\.workspaceId)
                 + session.detached.map(\.info.workspaceId))
-        return entries.filter { !held.contains($0.workspaceId) }
+        let listed = Dictionary(session.workspaces.map { ($0.doc, $0.workspaceId) }, uniquingKeysWith: { a, _ in a })
+        let windows =
+            session.stores.map { doc, store in
+                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc], cover: store.autosaveCover)
+            }
+            + session.detached.map {
+                AutosaveOffer.Window(workspace: $0.info.workspaceId, cover: $0.store.autosaveCover)
+            }
+        return AutosaveOffer.offerable(entries, held: held, windows: windows)
     }
 
     /// One prompt per autosave, newest first, while there is room (at most 8 workspaces, §21).
@@ -228,7 +240,9 @@ final class EngineAlarmController {
         for entry in entries {
             guard session.stores.count < 8 else { break }
             let name = entry.showName ?? loc("engine.alarm.untitled")
-            guard alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs) else { continue }
+            guard alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs, setAside: entry.stale) else {
+                continue
+            }
             if case .failure(let e) = await session.openRecovery(entry) {
                 alerts().showError(String(format: loc("error.openFailed"), EngineSession.describe(e)))
             }

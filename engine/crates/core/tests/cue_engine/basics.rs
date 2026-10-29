@@ -1396,6 +1396,44 @@ fn edited_waits_apply_to_timers_not_yet_started() {
     assert_eq!(running_at(&rig.tick(3000), 2), Some(3000));
 }
 
+/// Sets a Wait or Fade cue's duration with the editing command the inspector sends (M5.6b).
+fn set_duration(ws: &mut Workspace, n: u128, value: f64) {
+    ws.apply(Command::SetCueProperty {
+        id: id(n),
+        property: CueProperty::Duration { value },
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_running_wait_keeps_the_end_it_started_with_when_its_duration_is_edited() {
+    // QLab does not document this; the duration is fixed when the action starts (Model edits).
+    for edited in [10.0, 0.5, 0.0] {
+        let mut rig = Rig::new(vec![timed(wait(1, 2.0), 0.0, 0.0, AF), memo(2)]);
+        rig.go(0);
+        set_duration(&mut rig.ws, 1, edited);
+        rig.tick(1000);
+        assert_eq!(rig.state(1), CueState::Running, "{edited}");
+        assert_eq!(running_at(&rig.tick(2000), 2), Some(2000), "{edited}");
+        assert_eq!(rig.state(1), CueState::Idle);
+        // The next run takes the edit.
+        let started = rig.start(3000, 1);
+        let end = 3000 + (edited * 1000.0) as SampleTime;
+        let ended = if end == 3000 { started } else { rig.tick(end) };
+        assert_eq!(running_at(&ended, 2), Some(end), "{edited}");
+    }
+}
+
+#[test]
+fn a_wait_duration_edited_during_its_pre_wait_applies_to_its_action() {
+    let mut rig = Rig::new(vec![timed(wait(1, 2.0), 1.0, 0.0, AF), memo(2)]);
+    rig.go(0);
+    set_duration(&mut rig.ws, 1, 0.5);
+    rig.tick(500);
+    assert_eq!(running_at(&rig.tick(1000), 1), Some(1000));
+    assert_eq!(running_at(&rig.tick(1500), 2), Some(1500));
+}
+
 #[test]
 fn continue_goes_to_the_cue_that_is_next_when_it_fires() {
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 1.0, AC), memo(2), memo(3)]);

@@ -57,6 +57,17 @@ extension CueEditor {
         return cues.allSatisfy(valid) ? cues : nil
     }
 
+    /// The folder of the show file at `path`; nil for a show never saved (or a path that is not absolute).
+    static func sourceDir(showPath path: String?) -> String? {
+        guard let path, path.hasPrefix("/") else { return nil }
+        return (path as NSString).deletingLastPathComponent.precomposedStringWithCanonicalMapping
+    }
+
+    /// The folder recorded with a pasteboard payload when it was copied; nil when it came from an unsaved show.
+    static func clipboardSourceDir(_ text: String) -> String? {
+        JSONValue.parse(text)?["source_dir"]?.stringValue
+    }
+
     // MARK: Finder drops
 
     /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
@@ -120,11 +131,12 @@ extension CueEditor {
     }
 
     private func writePasteboard(_ nodes: [CueNode]) -> Bool {
-        guard !nodes.isEmpty,
-            let text = try? JSONValue.object([
-                "version": .int(Int64(Self.clipboardVersion)), "cues": .array(nodes.map(Self.fullJSON)),
-            ]).text()
-        else { return false }
+        var payload: JSONValue = .object([
+            "version": .int(Int64(Self.clipboardVersion)), "cues": .array(nodes.map(Self.fullJSON)),
+        ])
+        // Relative media paths mean the folder of the show they were copied from.
+        if let dir = Self.sourceDir(showPath: store.document?.path) { payload.set("source_dir", .string(dir)) }
+        guard !nodes.isEmpty, let text = try? payload.text() else { return false }
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: Self.pasteType)
     }
@@ -138,8 +150,6 @@ extension CueEditor {
         await deleteSelection()
     }
 
-    var canPaste: Bool { !isLocked() && pasteboard.string(forType: Self.pasteType) != nil }
-
     /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
     func paste() async {
         guard await begin(), let list = cueList?.listID else { return }
@@ -148,7 +158,11 @@ extension CueEditor {
         }
         let place = Self.insertion(selected: selectedNodes(), roots: cueList?.roots ?? [])
         let at = Command.position(list: list, parent: place.parent, index: place.index)
-        guard report(await store.send(command: .pasteClipboard(at: at, cues: clipboard))) else { return }
+        guard
+            report(
+                await store.send(
+                    command: .pasteClipboard(at: at, cues: clipboard, sourceDir: Self.clipboardSourceDir(text))))
+        else { return }
         // The engine made the ids; the cues it added are the ones now at the place pasted to (its
         // `model_changed` arrives before the result).
         let pasted = children(of: place.parent).dropFirst(place.index).prefix(clipboard.count).map(\.id)

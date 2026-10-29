@@ -6,20 +6,8 @@ import XCTest
 /// matches it to that cue and moves it from Loaded to Running.
 @MainActor
 final class TriggersUITests: XCTestCase {
-    private func wait(_ format: String, _ object: Any) -> Bool {
-        XCTWaiter().wait(
-            for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: object)], timeout: 10)
-            == .completed
-    }
-
     func testRecordedHotkeyStartsTheCue() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)  // the empty second workspace is in front: close it
-        XCTAssertTrue(wait("count == 1", windows))
+        let app = launchDemo()
         let loaded = app.images.matching(identifier: "cue-state").matching(NSPredicate(format: "label == 'Loaded'"))
         XCTAssertTrue(loaded.firstMatch.waitForExistence(timeout: 10))
 
@@ -30,9 +18,9 @@ final class TriggersUITests: XCTestCase {
         XCTAssertTrue(hotkey.waitForExistence(timeout: 5))
         hotkey.click()
         hotkey.typeKey("j", modifierFlags: [])
-        XCTAssertTrue(wait("value == 'J'", hotkey), "the recorded key shows once the engine answered")
+        XCTAssertTrue(waitFor("value == 'J'", hotkey), "the recorded key shows once the engine answered")
 
         app.typeKey("j", modifierFlags: [])
-        XCTAssertTrue(wait("count == 0", loaded), "the hotkey started the cue")
+        XCTAssertTrue(waitFor("count == 0", loaded), "the hotkey started the cue")
     }
 }

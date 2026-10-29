@@ -1812,3 +1812,192 @@ fn a_stalled_save_is_answered_io_after_the_document_timeout() {
         } if e.code == ErrorCode::Io && e.message.contains("did not finish within 20 s")
     ));
 }
+
+fn portable(p: &Path) -> String {
+    openlab_core::to_portable(p.to_str().unwrap(), openlab_core::PathStyle::host())
+}
+
+fn media_cue(n: u128, media: &str) -> openlab_core::Cue {
+    let mut c = audio(n, Path::new("x.wav"), 0);
+    if let CueKind::Audio { media: m, .. } = &mut c.kind {
+        *m = Some(MediaRef::new(media));
+    }
+    c
+}
+
+fn saved_media(path: &Path, n: u128) -> String {
+    let saved = load_show(&fs::read_to_string(path).unwrap())
+        .unwrap()
+        .workspace;
+    media_of(&saved, n)
+}
+
+fn set_media(s: &mut OfflineShow, n: u128, media: &str) {
+    let id1 = s.request_id();
+    ok_result(&s.send(ClientMessage::Command {
+        id: id1,
+        command: Box::new(Command::SetCueProperty {
+            id: id(n),
+            property: CueProperty::Media {
+                value: Some(MediaRef::new(media)),
+            },
+        }),
+        coalesce: None,
+    }));
+}
+
+fn save_as(s: &mut OfflineShow, path: &Path) {
+    ok_result(&request(
+        s,
+        Request::SaveAs {
+            path: path.to_string_lossy().into_owned(),
+        },
+    ));
+}
+
+#[test]
+fn the_first_save_makes_media_inside_the_folder_relative_and_leaves_the_rest_absolute() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let inside = portable(&dir.path().join("media").join("thunder.wav"));
+    let outside = portable(&other.path().join("rain.wav"));
+    // Not literally inside: `..` and a different case stay as the user gave them.
+    let dotted = format!("{}/media/../up.wav", portable(dir.path()));
+    let cased = portable(dir.path()).to_uppercase() + "/Cased.wav";
+    let ws = workspace(vec![
+        media_cue(1, &inside),
+        media_cue(2, &outside),
+        media_cue(3, &dotted),
+        media_cue(4, &cased),
+        media_cue(5, "already/relative.wav"),
+    ]);
+    let mut r = rig(ws);
+    rename(&mut r.s, 2, "renamed");
+    let show = dir.path().join("first.openlab");
+    save_as(&mut r.s, &show);
+    let out = r.s.take_outbound();
+    let live = r.s.control().workspace().clone();
+    assert_eq!(media_of(&live, 1), "media/thunder.wav");
+    assert_eq!(media_of(&live, 2), outside);
+    assert_eq!(media_of(&live, 3), dotted);
+    assert_eq!(media_of(&live, 4), cased);
+    assert_eq!(media_of(&live, 5), "already/relative.wav");
+    // The file on disk holds the same.
+    assert_eq!(saved_media(&show, 1), "media/thunder.wav");
+    assert_eq!(saved_media(&show, 2), outside);
+    assert_eq!(saved_media(&show, 3), dotted);
+    assert!(!r.s.control().is_unsaved());
+    // Clients are told, since cues changed without an edit of theirs.
+    let snap = out
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Snapshot { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .expect("snapshot");
+    assert_eq!(media_of(&snap.workspace, 1), "media/thunder.wav");
+
+    // Undo after the save still works: the earlier edit goes and the paths stay as saved.
+    let undo_id = r.s.request_id();
+    ok_result(&r.s.send(ClientMessage::Undo { id: undo_id }));
+    assert_ne!(cue_name(&r.s, 2), "renamed");
+    assert_eq!(media_of(r.s.control().workspace(), 1), "media/thunder.wav");
+    assert_eq!(media_of(r.s.control().workspace(), 2), outside);
+    assert!(r.s.control().is_unsaved(), "the undo is an edit");
+}
+
+#[test]
+fn undo_and_redo_of_a_media_edit_after_the_first_save_name_the_same_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let inside = portable(&dir.path().join("a.wav"));
+    let mut r = rig(workspace(vec![media_cue(1, "/Old/old.wav")]));
+    set_media(&mut r.s, 1, &inside);
+    save_as(&mut r.s, &dir.path().join("s.openlab"));
+    assert_eq!(media_of(r.s.control().workspace(), 1), "a.wav");
+    let undo_id = r.s.request_id();
+    ok_result(&r.s.send(ClientMessage::Undo { id: undo_id }));
+    assert_eq!(media_of(r.s.control().workspace(), 1), "/Old/old.wav");
+    let redo_id = r.s.request_id();
+    ok_result(&r.s.send(ClientMessage::Redo { id: redo_id }));
+    // Redo re-applies the value the undo replaced, which was the relative spelling by then.
+    assert_eq!(media_of(r.s.control().workspace(), 1), "a.wav");
+}
+
+#[test]
+fn save_as_to_another_folder_relativizes_only_what_lies_inside_the_new_one() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let in_b = portable(&b.path().join("sfx").join("b.wav"));
+    let in_a = portable(&a.path().join("a.wav"));
+    let ws = workspace(vec![
+        media_cue(1, &in_b),
+        media_cue(2, &in_a),
+        media_cue(3, "rel/c.wav"),
+    ]);
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    let b_show = b.path().join("copy.openlab");
+    save_as(&mut r.s, &b_show);
+    for ws in [
+        r.s.control().workspace().clone(),
+        load_show(&fs::read_to_string(&b_show).unwrap())
+            .unwrap()
+            .workspace,
+    ] {
+        assert_eq!(media_of(&ws, 1), "sfx/b.wav");
+        assert_eq!(media_of(&ws, 2), in_a, "outside the new folder: untouched");
+        assert_eq!(
+            media_of(&ws, 3),
+            portable(&a.path().join("rel").join("c.wav")),
+            "a relative path is re-spelled to the same file"
+        );
+    }
+    assert!(!r.s.control().is_unsaved());
+}
+
+#[test]
+fn an_odd_file_name_is_made_relative_composed_and_a_backslash_is_a_name_on_posix() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = portable(dir.path());
+    // NFD "e" + acute in a sub-folder; a backslash in a name only where it is one.
+    let nfd = format!("{base}/Cafe\u{301}/a b.wav");
+    let mut cues = vec![media_cue(1, &nfd)];
+    if cfg!(unix) {
+        cues.push(media_cue(2, &format!("{base}/Door\\Slam.wav")));
+    }
+    let mut r = rig(workspace(cues));
+    save_as(&mut r.s, &dir.path().join("odd.openlab"));
+    assert_eq!(media_of(r.s.control().workspace(), 1), "Caf\u{e9}/a b.wav");
+    if cfg!(unix) {
+        assert_eq!(media_of(r.s.control().workspace(), 2), "Door\\Slam.wav");
+    }
+}
+
+#[test]
+fn save_as_from_one_folder_to_another_drops_history_that_names_relative_paths_of_the_old_one() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let in_b = portable(&b.path().join("b.wav"));
+    // Saved in A with a relative file; the edit replaces it with a file that lies inside B, so
+    // the Save As to B only turns an absolute path relative, yet the undo step holds "old.wav".
+    let ws = workspace(vec![media_cue(1, "old.wav")]);
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    set_media(&mut r.s, 1, &in_b);
+    save_as(&mut r.s, &b.path().join("copy.openlab"));
+    assert_eq!(media_of(r.s.control().workspace(), 1), "b.wav");
+    let snap =
+        r.s.take_outbound()
+            .into_iter()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("snapshot");
+    assert!(!snap.document.can_undo, "no step may bring back old.wav");
+    let undo_id = r.s.request_id();
+    let _ = r.s.send(ClientMessage::Undo { id: undo_id });
+    assert_eq!(media_of(r.s.control().workspace(), 1), "b.wav");
+}

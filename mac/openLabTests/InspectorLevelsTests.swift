@@ -302,7 +302,7 @@ final class InspectorLevelsTests: XCTestCase {
     func testFadeTabShowsTheFadeSettings() {
         vc.setSelection([Self.fade])
         let f = vc.fadeSettings
-        XCTAssertEqual(f.durationField.stringValue, "00:05.000")
+        XCTAssertEqual(f.durationField.stringValue, "00:05.00")
         XCTAssertEqual(f.curvePopup.indexOfSelectedItem, FadeSettingsPanel.curves.firstIndex(of: "equal_power"))
         XCTAssertEqual(f.stopCheck.state, .on)
         XCTAssertEqual(vc.fadeLevels.matrix.outputCount, 2, "the target Intro has two cue outputs")
@@ -315,9 +315,10 @@ final class InspectorLevelsTests: XCTestCase {
         f.durationField.stringValue = "0:02.5"
         endEditing(f.durationField, f)
         await assertEventually { self.sent.count == 1 }
-        XCTAssertEqual(lastKind?["duration"], .double(2.5))
-        XCTAssertEqual(lastKind?["target"], .string(Self.intro.raw), "the rest of the kind is untouched")
-        XCTAssertEqual(f.durationField.stringValue, "00:02.500")
+        // The duration has its own property (M5.6b): the rest of the kind is not resent.
+        XCTAssertEqual(sent.last?.command["property"]?["type"], .string("duration"))
+        XCTAssertEqual(sent.last?.command["property"]?["value"], .double(2.5))
+        XCTAssertEqual(f.durationField.stringValue, "00:02.50")
 
         for (i, curve) in FadeSettingsPanel.curves.enumerated() {
             f.curvePopup.selectItem(at: i)
@@ -359,7 +360,7 @@ final class InspectorLevelsTests: XCTestCase {
         endEditing(f.durationField, f)
         await settle()
         XCTAssertTrue(sent.isEmpty)
-        XCTAssertEqual(f.durationField.stringValue, "00:05.000")
+        XCTAssertEqual(f.durationField.stringValue, "00:05.00")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"))
     }
 

@@ -50,6 +50,8 @@ enum EngineMode: Equatable {
                 let engine = FakeEngine(snapshot: FakeEngine.demoSnapshot())
                 // Two clean workspaces so UI tests start with several windows and no save prompts.
                 for doc in engine.openDocs { engine.setDocument(doc, dirty: false) }
+                // The demo show has broken cues, so its pre-show check reports them.
+                engine.preshowProblems = true
                 _ = engine.addDoc(FakeEngine.emptySnapshot(name: "Second"), path: nil)
                 if empty { engine.closeAll() }
                 let processes = FakeEngineProcesses(engine: engine)

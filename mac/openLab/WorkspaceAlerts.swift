@@ -23,7 +23,8 @@ protocol WorkspaceAlerts {
     /// `open` found an autosave newer than the show file (NFR-05). nil: Cancel, nothing opens.
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice?
     /// After an unclean engine exit: open this autosave as an untitled workspace? True: open it.
-    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool
+    /// `setAside`: the engine set it aside as not newer than its show file (it may still be).
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool
 }
 
 /// The real thing. Cancel is the default (Return) button on the destructive prompts: a stray
@@ -92,10 +93,12 @@ struct AppKitAlerts: WorkspaceAlerts {
         }
     }
 
-    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool {
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
         let alert = NSAlert()
         alert.messageText = String(format: loc("alert.autosave.title"), name)
-        alert.informativeText = String(format: loc("alert.autosave.message"), modifiedMs.map(Self.date) ?? "?")
+        alert.informativeText = String(
+            format: loc(setAside ? "alert.autosave.setAsideMessage" : "alert.autosave.message"),
+            modifiedMs.map(Self.date) ?? "?")
         for key in ["alert.autosave.open", "alert.autosave.skip"] { alert.addButton(withTitle: loc(key)) }
         return alert.runModal() == .alertFirstButtonReturn
     }
