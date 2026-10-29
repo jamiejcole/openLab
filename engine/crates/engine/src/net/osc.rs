@@ -11,7 +11,7 @@
 //! hears back on its own reply channel and the hub's broadcasts ([`super::hub::Tap`]); it never
 //! asks the control thread a question it must wait for.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdListener, UdpSocket as StdUdp};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
-use openlab_core::OscAccess;
 use openlab_core::protocol::{
     ClientMessage, DocId, LogLevel, Outcome, Request, RequestId, ServerMessage, TransportAction,
     WorkspaceInfo,
 };
+use openlab_core::{OscAccess, WorkspaceId};
 use rosc::{OscMessage, OscType};
 use socket2::{Domain, Socket, Type};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -36,7 +36,8 @@ use super::refusals::Refusals;
 use crate::control::{Inbox, Outgoing, ReplyRx, ReplyTx, reply_channel};
 use crate::osc::{
     DocShow, MAX_PACKET_BYTES, OSC_PORT, OSC_REPLY_PORT, Osc, OscInput, OscShow, OscStats,
-    Outcome as OscOutcome, Peer, ServerInfo, SlipDecoder, encode_message, slip_encode, upper,
+    Outcome as OscOutcome, Peer, ServerInfo, SlipDecoder, encode_message, named_workspaces,
+    slip_encode, upper,
 };
 
 /// OSC request ids start here, well away from the small numbers clients count up from, and
@@ -64,6 +65,13 @@ const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 /// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt. Public so a
 /// test can overflow it whatever its size.
 pub const TAP_QUEUE: usize = 1024;
+/// Input the actor holds while a doc's copy is not ready (see `Actor::take`), in pieces and in
+/// bytes; past either, input waits in the queues above.
+/// Public so a test can fill it whatever its size.
+pub const MAX_HELD_INPUTS: usize = UDP_QUEUE + EVENT_QUEUE;
+const MAX_HELD_INPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Broadcasts the actor holds for docs whose copy is not ready; more is a lag, as a full tap.
+const MAX_HELD_BROADCASTS: usize = TAP_QUEUE;
 /// Messages waiting to be written to one TCP connection.
 const TCP_WRITE_QUEUE: usize = 256;
 /// Bytes waiting to be written to one TCP connection, and to all of them together. A reply may
@@ -175,6 +183,8 @@ pub struct OscListenerStats {
     pub tcp_connections: usize,
     /// Bytes of replies and updates queued for TCP connections and not yet written.
     pub tcp_pending_bytes: usize,
+    /// Input waiting for a doc's copy (taken from the queues, not handled yet).
+    pub held_inputs: usize,
 }
 
 #[derive(Default)]
@@ -300,6 +310,11 @@ pub fn start(
         counter: 0,
         waits: HashMap::new(),
         held: None,
+        lagged: false,
+        held_input: VecDeque::new(),
+        held_input_bytes: 0,
+        held_tap: VecDeque::new(),
+        release_due: false,
         inflight: HashSet::new(),
         fail_udp_sends: config.fail_udp_sends,
         start: Instant::now(),
@@ -354,6 +369,12 @@ enum Event {
     TcpData {
         conn: u64,
         bytes: Vec<u8>,
+        at: Instant,
+    },
+    /// The frames the actor decoded from one `TcpData` that had to wait (never queued).
+    TcpFrames {
+        conn: u64,
+        frames: Vec<Vec<u8>>,
         at: Instant,
     },
     TcpClosed {
@@ -855,8 +876,55 @@ struct Queues {
 /// One open doc as the actor knows it.
 struct DocCopy {
     doc: DocId,
-    /// `None` until its first snapshot: input waits in the queues until then.
+    /// `None` until its first snapshot: input that may reach it waits until then.
     mirror: Option<Mirror>,
+    /// Its id and name in the last list of open docs that named it: what `/workspace/{id}` may
+    /// call it before its first snapshot is in.
+    listed_as: Option<(WorkspaceId, String)>,
+}
+
+impl DocCopy {
+    /// Whether `/workspace/{id}` may name this doc, by what its list entry or its copy says.
+    fn may_be_named(&self, id: &str) -> bool {
+        let named = |ws: WorkspaceId, name: &str| upper(ws) == id || name == id;
+        self.listed_as
+            .as_ref()
+            .is_some_and(|(ws, name)| named(*ws, name))
+            || self.mirror.as_ref().is_some_and(|m| {
+                let show = MirrorShow(m);
+                named(show.workspace_id(), show.workspace_name())
+            })
+    }
+}
+
+/// The docs a piece of input can reach.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Reach {
+    /// Every open doc: an un-prefixed message (QLab sends it to every workspace), `/version`
+    /// or `/workspaces`, anything while the list is out, or a TCP read not decoded yet.
+    All,
+    /// These docs only (none: it reaches no doc, as a packet that does not decode).
+    Docs(Vec<DocId>),
+}
+
+impl Reach {
+    fn overlaps(&self, other: &Reach) -> bool {
+        match (self, other) {
+            (Reach::Docs(a), Reach::Docs(b)) => a.iter().any(|d| b.contains(d)),
+            (Reach::All, Reach::Docs(d)) | (Reach::Docs(d), Reach::All) => !d.is_empty(),
+            (Reach::All, Reach::All) => true,
+        }
+    }
+}
+
+/// Input taken from the queues that waits for a doc's copy (see [`Actor::take`]); handled as
+/// if just taken once it may go.
+struct HeldInput {
+    peer: Peer,
+    reach: Reach,
+    event: Event,
+    /// What it holds in memory, counted against [`MAX_HELD_INPUT_BYTES`].
+    bytes: usize,
 }
 
 /// A request of the actor's own whose answer it waits for.
@@ -885,13 +953,24 @@ struct Actor {
     pending_total: Arc<AtomicUsize>,
     reply_tx: ReplyTx,
     counter: u64,
-    /// Requests of ours not answered yet. While any is out, broadcasts wait in their queue (as
-    /// in the WebSocket connections): one made after the answer was taken must not be applied
-    /// before it, and one made before is dropped as stale once it is in.
+    /// Requests of ours not answered yet. While a doc's snapshot is out its copy is not ready:
+    /// its broadcasts wait (as in the WebSocket connections: one made after the answer was taken
+    /// must not be applied before it, and one made before is dropped as stale once it is in),
+    /// and so does input that may reach it. While the list is out, nothing is ready.
     waits: HashMap<RequestId, Wait>,
     /// The answer that came ahead of its `result` (a `snapshot` or `workspaces` message names no
     /// request; the `result` right after it on the channel does).
     held: Option<ServerMessage>,
+    /// The copies missed broadcasts and are to be rebuilt (as of the top of this turn): nothing
+    /// is ready.
+    lagged: bool,
+    /// Input that waits for a copy, in arrival order (see [`Actor::take`]).
+    held_input: VecDeque<HeldInput>,
+    held_input_bytes: usize,
+    /// Broadcasts for a doc whose copy is not ready (or the list, while ours is out), in order.
+    held_tap: VecDeque<Outgoing>,
+    /// A request of ours was answered since held work was last looked at.
+    release_due: bool,
     inflight: HashSet<RequestId>,
     /// UDP sends still to be failed on purpose (see [`OscConfig::fail_udp_sends`]).
     fail_udp_sends: u32,
@@ -918,19 +997,26 @@ impl Actor {
             return;
         }
         loop {
-            let ready = self.listed && self.docs.iter().all(|d| d.mirror.is_some());
-            let waiting = !self.waits.is_empty();
-            if !waiting && lagged.load(Ordering::Acquire) {
+            self.lagged = lagged.load(Ordering::Acquire);
+            if self.waits.is_empty() && self.lagged {
                 // The copies missed broadcasts: the list, then every doc's snapshot. Cleared
                 // before asking, so a broadcast made after the answers are taken is queued again
-                // and filtered against them.
+                // and filtered against them. Held broadcasts are older still. Held input waits
+                // for the new copies.
                 while tap.try_recv().is_ok() {}
+                self.held_tap.clear();
                 lagged.store(false, Ordering::Release);
+                self.lagged = false;
                 if !self.ask(Wait::List) {
                     return;
                 }
                 continue;
             }
+            if !self.release() {
+                return;
+            }
+            let room = self.held_input.len() < MAX_HELD_INPUTS
+                && self.held_input_bytes < MAX_HELD_INPUT_BYTES;
             tokio::select! {
                 biased;
                 reply = replies.recv() => match reply {
@@ -948,20 +1034,28 @@ impl Actor {
                     self.evict(host);
                     self.publish();
                 }
-                message = tap.recv(), if ready && !waiting => match message {
+                // Not while the copies are to be rebuilt: what is queued is dropped then.
+                message = tap.recv(), if !self.lagged => match message {
                     Some(message) => {
-                        if !self.broadcast(message) {
+                        if !self.take_broadcast(message) {
                             return;
+                        }
+                        if self.held_tap.len() >= MAX_HELD_BROADCASTS {
+                            // As if the tap had overflowed: the held ones go, and the copies
+                            // are rebuilt once the answers are in.
+                            self.held_tap.clear();
+                            lagged.store(true, Ordering::Release);
                         }
                     }
                     None => return,
                 },
-                // Not while an answer is out: a `/cue/5` or a trigger address must not be
-                // resolved against a copy just found to be wrong (it could start the cue that
-                // used to be 5), and an un-prefixed message must reach every doc. Input waits,
-                // within the age limit.
-                event = next_input(&mut udp, &mut events, &mut streak), if ready && !waiting => match event {
-                    Some(event) => self.event(event),
+                // Input that may reach a doc whose copy is not ready waits, within the age
+                // limit (`take`): a `/cue/5` or a trigger address must not be resolved against
+                // a copy just found to be wrong (it could start the cue that used to be 5), and
+                // an un-prefixed message must reach every doc. Past the room for held input it
+                // waits in the queues.
+                event = next_input(&mut udp, &mut events, &mut streak), if room => match event {
+                    Some(event) => self.take(event),
                     None => return,
                 },
                 _ = ticker.tick() => self.report(),
@@ -1004,6 +1098,7 @@ impl Actor {
     fn publish(&mut self) {
         self.listener.osc = *self.osc.stats();
         self.listener.tcp_connections = self.tcp.len();
+        self.listener.held_inputs = self.held_input.len();
         *crate::lock(&self.shared.stats) = self.listener;
     }
 
@@ -1031,7 +1126,9 @@ impl Actor {
                 self.inflight.remove(&id);
                 let held = self.held.take();
                 let ok = matches!(outcome, Outcome::Ok(_));
-                match self.waits.remove(&id) {
+                let wait = self.waits.remove(&id);
+                self.release_due |= wait.is_some();
+                match wait {
                     Some(Wait::List) => {
                         if let (true, Some(ServerMessage::Workspaces { workspaces })) = (ok, held) {
                             return self.listed(&workspaces);
@@ -1075,7 +1172,7 @@ impl Actor {
             self.drop_doc(doc);
         }
         for info in workspaces {
-            self.add_doc(info.doc);
+            self.add_doc(info);
             if !self.ask(Wait::Snapshot(info.doc)) {
                 return false;
             }
@@ -1083,13 +1180,24 @@ impl Actor {
         true
     }
 
-    /// Knows `doc` from now on (no copy yet), in open order.
-    fn add_doc(&mut self, doc: DocId) {
-        if self.docs.iter().any(|d| d.doc == doc) {
+    /// Knows the doc from now on (no copy yet), in open order; a doc it knows notes what the
+    /// list calls it.
+    fn add_doc(&mut self, info: &WorkspaceInfo) {
+        let doc = info.doc;
+        let listed_as = Some((info.workspace_id, info.name.clone()));
+        if let Some(copy) = self.copy_mut(doc) {
+            copy.listed_as = listed_as;
             return;
         }
         let at = self.docs.partition_point(|d| d.doc < doc);
-        self.docs.insert(at, DocCopy { doc, mirror: None });
+        self.docs.insert(
+            at,
+            DocCopy {
+                doc,
+                mirror: None,
+                listed_as,
+            },
+        );
     }
 
     /// `doc` closed: its copy goes and its sessions end (ARCHITECTURE section 7).
@@ -1141,12 +1249,11 @@ impl Actor {
             // a doc: `closed` and our own list do. A closed doc it names again answers our
             // snapshot request with `no_workspace` and is dropped.
             if let ServerMessage::Workspaces { workspaces } = message {
-                for info in workspaces {
-                    if !self.docs.iter().any(|d| d.doc == info.doc) {
-                        self.add_doc(info.doc);
-                        if !self.ask(Wait::Snapshot(info.doc)) {
-                            return false;
-                        }
+                for info in &workspaces {
+                    let known = self.docs.iter().any(|d| d.doc == info.doc);
+                    self.add_doc(info);
+                    if !known && !self.ask(Wait::Snapshot(info.doc)) {
+                        return false;
                     }
                 }
             }
@@ -1159,7 +1266,8 @@ impl Actor {
         // The doc sent its whole state again (a save-as moved it): the copy is replaced (sessions
         // end if the workspace or its passcode changed). The stale rule of the WebSocket
         // connections: a snapshot at or below what the copy holds is the one it already has.
-        // This only runs while no request of ours is out, so it cannot be a stale answer to one.
+        // This only runs while no list or snapshot of this doc we asked for is out (held until
+        // then: `take_broadcast`), so it cannot be a stale answer to one.
         if let ServerMessage::Snapshot { snapshot } = message {
             let stale = self
                 .docs
@@ -1203,6 +1311,229 @@ impl Actor {
             }
             Applied::Resync => self.ask(Wait::Snapshot(doc)),
         }
+    }
+
+    /// Nothing is ready: the first list is not in, our list request is out, or the copies are to
+    /// be rebuilt.
+    fn list_out(&self) -> bool {
+        !self.listed || self.lagged || self.waits.values().any(|w| *w == Wait::List)
+    }
+
+    /// Whether `doc`'s copy is not ready: it has none yet, or a snapshot we asked for is out.
+    fn doc_pending(&self, doc: DocId) -> bool {
+        self.list_out()
+            || self.waits.values().any(|w| *w == Wait::Snapshot(doc))
+            || self.docs.iter().any(|d| d.doc == doc && d.mirror.is_none())
+    }
+
+    fn any_pending(&self) -> bool {
+        self.list_out() || !self.waits.is_empty() || self.docs.iter().any(|d| d.mirror.is_none())
+    }
+
+    /// The copies that are ready, in open order.
+    fn ready_shows(&self) -> Vec<(DocId, MirrorShow<'_>)> {
+        self.docs
+            .iter()
+            .filter(|d| !self.doc_pending(d.doc))
+            .filter_map(|d| d.mirror.as_ref().map(|m| (d.doc, MirrorShow(m))))
+            .collect()
+    }
+
+    /// The docs `/workspace/{id}` may name: every doc whose copy or list entry goes by that id
+    /// or name (more than the dispatcher picks, never fewer); when none does, every doc whose
+    /// copy is not ready, as its name may not be known yet. A doc renamed to `id` in a snapshot
+    /// not in yet is not counted: the input then goes as it would have a moment earlier, before
+    /// the rename reached us. `None`: the docs themselves are not known (the list is out).
+    fn docs_named(&self, id: &str) -> Option<Vec<DocId>> {
+        if self.list_out() {
+            return None;
+        }
+        let named: Vec<DocId> = self
+            .docs
+            .iter()
+            .filter(|d| d.may_be_named(id))
+            .map(|d| d.doc)
+            .collect();
+        if !named.is_empty() {
+            return Some(named);
+        }
+        Some(
+            self.docs
+                .iter()
+                .filter(|d| self.doc_pending(d.doc))
+                .map(|d| d.doc)
+                .collect(),
+        )
+    }
+
+    /// The docs a packet (a datagram or a frame) can reach as the copies stand: by its
+    /// prefixes ([`Actor::docs_named`]); every doc for an un-prefixed message.
+    fn reach_of(&self, packet: &[u8]) -> Reach {
+        let Some(named) = named_workspaces(packet) else {
+            return Reach::All;
+        };
+        let mut docs = Vec::new();
+        for id in &named {
+            let Some(more) = self.docs_named(id) else {
+                return Reach::All;
+            };
+            for doc in more {
+                if !docs.contains(&doc) {
+                    docs.push(doc);
+                }
+            }
+        }
+        Reach::Docs(docs)
+    }
+
+    /// Whether input from `peer` that reaches `reach` must wait: a doc it reaches is not ready,
+    /// or input before it (`earlier`) waits that came from the same peer or reaches a doc it
+    /// reaches. A peer's input stays in order (its session, its stream decoder and its replies
+    /// depend on that), and so does each doc's.
+    fn must_wait<'a>(
+        &self,
+        peer: Peer,
+        reach: &Reach,
+        mut earlier: impl Iterator<Item = &'a HeldInput>,
+    ) -> bool {
+        let waits = match reach {
+            Reach::All => self.any_pending(),
+            Reach::Docs(docs) => docs.iter().any(|d| self.doc_pending(*d)),
+        };
+        waits || earlier.any(|h| h.peer == peer || h.reach.overlaps(reach))
+    }
+
+    /// Input from the queues: handled now, or held while it may reach a doc whose copy is not
+    /// ready (only then is a packet looked at before it is handled).
+    fn take(&mut self, event: Event) {
+        if !self.any_pending() && self.held_input.is_empty() {
+            return self.event(event);
+        }
+        let (peer, reach, event) = match event {
+            Event::TcpOpen { .. } | Event::TcpFrames { .. } => return self.event(event),
+            Event::Datagram { ip, ref bytes, .. } => (Peer::Udp(ip), self.reach_of(bytes), event),
+            Event::TcpClosed { conn } => {
+                let Some(connection) = self.tcp.get(&conn) else {
+                    return self.event(event);
+                };
+                let peer = Peer::Tcp {
+                    conn,
+                    ip: connection.ip,
+                };
+                (peer, Reach::Docs(Vec::new()), event)
+            }
+            Event::TcpData { conn, bytes, at } => {
+                let Some(connection) = self.tcp.get_mut(&conn) else {
+                    return;
+                };
+                connection.last_rx = Instant::now();
+                let peer = Peer::Tcp {
+                    conn,
+                    ip: connection.ip,
+                };
+                // Decoded now only when the peer's frame limit depends on no copy that is not
+                // ready (it may ask in a ready one: the full limit), and nothing of the peer's
+                // waits (its decoder takes its reads in order). Otherwise the read waits whole.
+                let early = !self.held_input.iter().any(|h| h.peer == peer) && {
+                    let ready = self.ready_shows();
+                    self.osc.may_ask_any(peer, &doc_shows(&ready))
+                };
+                let decoder = self.tcp.get_mut(&conn).map(|c| &mut c.decoder);
+                match decoder {
+                    Some(decoder) if early => {
+                        let frames = self.osc.read_frames(decoder, &bytes, true);
+                        let mut reach = Reach::Docs(Vec::new());
+                        for frame in &frames {
+                            match (self.reach_of(frame), &mut reach) {
+                                (Reach::All, _) => {
+                                    reach = Reach::All;
+                                    break;
+                                }
+                                (Reach::Docs(more), Reach::Docs(docs)) => {
+                                    for doc in more {
+                                        if !docs.contains(&doc) {
+                                            docs.push(doc);
+                                        }
+                                    }
+                                }
+                                (Reach::Docs(_), Reach::All) => {}
+                            }
+                        }
+                        (peer, reach, Event::TcpFrames { conn, frames, at })
+                    }
+                    _ => (peer, Reach::All, Event::TcpData { conn, bytes, at }),
+                }
+            }
+        };
+        if self.must_wait(peer, &reach, self.held_input.iter()) {
+            let bytes = match &event {
+                Event::Datagram { bytes, .. } | Event::TcpData { bytes, .. } => bytes.len(),
+                Event::TcpFrames { frames, .. } => frames.iter().map(Vec::len).sum(),
+                Event::TcpOpen { .. } | Event::TcpClosed { .. } => 0,
+            };
+            self.held_input_bytes = self.held_input_bytes.saturating_add(bytes);
+            self.held_input.push_back(HeldInput {
+                peer,
+                reach,
+                event,
+                bytes,
+            });
+            self.publish();
+        } else {
+            self.event(event);
+        }
+    }
+
+    /// Whether a broadcast about `doc` (`None`: the list) must wait for a copy.
+    fn tap_waits(&self, doc: Option<DocId>) -> bool {
+        match doc {
+            None => self.list_out(),
+            Some(doc) => self.doc_pending(doc),
+        }
+    }
+
+    /// A broadcast from the tap: applied now, or held, behind any held before it for the same
+    /// doc, while that doc's copy is not ready. `false`: the control loop is gone.
+    fn take_broadcast(&mut self, out: Outgoing) -> bool {
+        if self.tap_waits(out.doc) || self.held_tap.iter().any(|h| h.doc == out.doc) {
+            self.held_tap.push_back(out);
+            return true;
+        }
+        self.broadcast(out)
+    }
+
+    /// Hands on, in order, what was held and may go now that a request of ours was answered:
+    /// broadcasts first, so that input that waited is resolved against what was made before it,
+    /// then input. `false`: the control loop is gone.
+    fn release(&mut self) -> bool {
+        if !std::mem::take(&mut self.release_due) {
+            return true;
+        }
+        let mut kept = VecDeque::new();
+        let mut blocked: Vec<Option<DocId>> = Vec::new();
+        while let Some(out) = self.held_tap.pop_front() {
+            if blocked.contains(&out.doc) || self.tap_waits(out.doc) {
+                if !blocked.contains(&out.doc) {
+                    blocked.push(out.doc);
+                }
+                kept.push_back(out);
+            } else if !self.broadcast(out) {
+                return false;
+            }
+        }
+        self.held_tap = kept;
+        let mut kept: VecDeque<HeldInput> = VecDeque::new();
+        while let Some(held) = self.held_input.pop_front() {
+            if self.must_wait(held.peer, &held.reach, kept.iter()) {
+                kept.push_back(held);
+            } else {
+                self.held_input_bytes = self.held_input_bytes.saturating_sub(held.bytes);
+                self.event(held.event);
+            }
+        }
+        self.held_input = kept;
+        self.publish();
+        true
     }
 
     fn event(&mut self, event: Event) {
@@ -1260,6 +1591,24 @@ impl Actor {
                     &bytes,
                     &docs,
                 );
+                self.carry_out(peer, outcome, stale);
+            }
+            Event::TcpFrames { conn, frames, at } => {
+                let stale = at.elapsed() >= self.config.max_input_age;
+                let now = self.now();
+                let arrived = at.saturating_duration_since(self.start);
+                let Some(connection) = self.tcp.get(&conn) else {
+                    return;
+                };
+                let peer = Peer::Tcp {
+                    conn,
+                    ip: connection.ip,
+                };
+                let shows = shows(&self.docs);
+                let docs = doc_shows(&shows);
+                let outcome = self
+                    .osc
+                    .handle_frames_docs(peer, now, arrived, &frames, &docs);
                 self.carry_out(peer, outcome, stale);
             }
             Event::TcpClosed { conn } => {
@@ -1405,13 +1754,25 @@ impl Actor {
         let ip = match peer {
             Peer::Udp(ip) | Peer::Tcp { ip, .. } => ip,
         };
-        // Just before the input, so the show log says where a GO came from (DX-02). Only
-        // transport actions are triggers: a command is an edit, and a chatty controller
-        // sending those must not double the inbox traffic.
+        // Just before the input, so the show log says where a GO came from and which workspace
+        // it was for: an un-prefixed GO is one input per open doc (DX-02). Only transport
+        // actions are triggers: a command is an edit, and a chatty controller sending those
+        // must not double the inbox traffic. The doc goes in the detail, not the source, which
+        // the log's per-source rate limit counts by.
         if matches!(message, ClientMessage::Transport { .. }) {
+            let name = self
+                .docs
+                .iter()
+                .find(|d| d.doc == doc)
+                .and_then(|d| d.mirror.as_ref())
+                .map(|m| MirrorShow(m).workspace_name().to_owned())
+                .unwrap_or_default();
             let _ = self.inbox.send(Inbox::Trigger {
                 source: format!("osc {ip}"),
-                detail: super::describe(&message),
+                detail: format!(
+                    "{}, workspace {name:?} (doc {doc})",
+                    super::describe(&message)
+                ),
             });
         }
         // To the doc it is for, as a connection bound to it would send it.
@@ -1527,8 +1888,8 @@ impl Actor {
     }
 }
 
-/// The copies as the dispatcher reads them, in open order. Only called while every copy is
-/// ready (input waits until then).
+/// The copies as the dispatcher reads them, in open order. A doc with no copy yet is left out:
+/// input that may reach it waits until it has one (`Actor::take`).
 fn shows(docs: &[DocCopy]) -> Vec<(DocId, MirrorShow<'_>)> {
     docs.iter()
         .filter_map(|d| d.mirror.as_ref().map(|m| (d.doc, MirrorShow(m))))

@@ -8,7 +8,7 @@ One structured record per event, made on the control thread (`control/observe.rs
 
 | `kind` | When | Fields beyond the common ones |
 |---|---|---|
-| `trigger` | a transport action reached the engine from a client (`ui`) or an OSC peer (`osc <ip>`), logged just before it is acted on; edits and requests are not triggers. Rate-limited per source (below) | `source`, `message` = `transport go`, `transport start`... |
+| `trigger` | a transport action reached the engine from a client (`ui`) or an OSC peer (`osc <ip>`), logged just before it is acted on; edits and requests are not triggers. Rate-limited per source (below) | `source`, `message` = `transport go`, `transport start`...; for OSC also the workspace the input was for (`transport go, workspace "Main" (doc 2)`: an un-prefixed GO is one record per open doc) |
 | `go` | a GO, before it runs | `cue` = the cue at the playhead, or none (the engine then warns) |
 | `transport` | every other transport action | `cue` when the action names one |
 | `cue_start` | a cue's state becomes `pre_waiting` or `running` from idle, loaded or broken (a resume or the end of a pre-wait is not a start) | `cue` |

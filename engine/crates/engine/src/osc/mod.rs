@@ -13,7 +13,7 @@ pub mod fuzz;
 mod pattern;
 mod session;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use openlab_core::protocol::DocId;
@@ -127,6 +127,28 @@ impl Outcome {
     pub fn routed(self) -> impl Iterator<Item = (DocId, OscInput)> {
         self.input_docs.into_iter().zip(self.inputs)
     }
+}
+
+/// The workspaces the messages of one packet (a datagram or a SLIP frame) name with a
+/// `/workspace/{id}` prefix, in order, as written; `None` when one of them can reach every open
+/// doc: it has no prefix, or it is `/version` or `/workspaces`, which are answered from every
+/// doc whatever the prefix, or the packet does not decode (fail safe: what it reaches is not
+/// known). A message with an unusable address reaches no doc. Lets the runtime tell which docs a
+/// packet needs before it handles it. No size cut of its own: a TCP frame may be larger than a
+/// datagram, and the frame limit already bounds it.
+pub fn named_workspaces(packet: &[u8]) -> Option<Vec<String>> {
+    let messages = decode_packet(packet).ok()?;
+    let mut named = Vec::new();
+    for message in &messages {
+        let Some(parsed) = parse_address(&message.addr) else {
+            continue;
+        };
+        if matches!(parsed.address, Address::Version | Address::Workspaces) {
+            return None;
+        }
+        named.push(parsed.workspace?);
+    }
+    Some(named)
 }
 
 /// Most (peer, name) pairs remembered as warned about an ambiguous name.
@@ -274,15 +296,14 @@ impl Osc {
     /// Peers that asked any doc for updates (`/updates 1`). A UDP peer silent for [`UDP_IDLE`]
     /// is not one (`now` as for the handlers).
     pub fn update_subscribers(&self, now: Duration) -> Vec<Peer> {
-        let mut all: Vec<Peer> = Vec::new();
-        for sessions in self.docs.values() {
-            for peer in sessions.update_subscribers(now) {
-                if !all.contains(&peer) {
-                    all.push(peer);
-                }
-            }
-        }
-        all
+        // A set, not `Vec::contains`: up to 8 docs of 1024 subscribers each, and this runs on
+        // every eviction a connect flood asks for.
+        let mut seen = HashSet::new();
+        self.docs
+            .values()
+            .flat_map(|sessions| sessions.update_subscribers(now))
+            .filter(|peer| seen.insert(*peer))
+            .collect()
     }
 
     /// Peers subscribed to `doc`'s updates: the fan-out of that doc's changes.
@@ -454,8 +475,29 @@ impl Osc {
     ) -> Outcome {
         let mut out = Outcome::default();
         self.start_call(docs);
-        // A peer that may not ask yet gets small frames only (it can still send `/connect`).
-        let may_ask = docs.iter().any(|d| self.may_ask(d.doc, peer, d.show));
+        let may_ask = self.may_ask_any(peer, docs);
+        for frame in self.read_frames(decoder, bytes, may_ask) {
+            self.handle_packet(peer, now, arrived, &frame, docs, &mut out);
+        }
+        out
+    }
+
+    /// Whether `peer` may ask anything (has View) in one of `docs`: its TCP frames may then be
+    /// full size.
+    pub fn may_ask_any(&self, peer: Peer, docs: &[DocShow<'_>]) -> bool {
+        docs.iter().any(|d| self.may_ask(d.doc, peer, d.show))
+    }
+
+    /// The complete frames in bytes read from a TCP connection (`decoder` is its own), without
+    /// handling them; oversize and badly escaped frames are counted and dropped. A peer that may
+    /// not ask yet (`may_ask`, see [`Osc::may_ask_any`]) gets small frames only: it can still
+    /// send `/connect`.
+    pub fn read_frames(
+        &mut self,
+        decoder: &mut SlipDecoder,
+        bytes: &[u8],
+        may_ask: bool,
+    ) -> Vec<Vec<u8>> {
         decoder.set_max_frame(if may_ask {
             MAX_FRAME_BYTES
         } else {
@@ -463,14 +505,31 @@ impl Osc {
         });
         let mut events = Vec::new();
         decoder.feed(bytes, &mut events);
+        let mut frames = Vec::new();
         for event in events {
             match event {
-                SlipEvent::Frame(frame) => {
-                    self.handle_packet(peer, now, arrived, &frame, docs, &mut out);
-                }
+                SlipEvent::Frame(frame) => frames.push(frame),
                 SlipEvent::Oversize => self.stats.oversize_frames += 1,
                 SlipEvent::BadEscape => self.stats.malformed += 1,
             }
+        }
+        frames
+    }
+
+    /// Frames [`Osc::read_frames`] took from a TCP connection, handled as one read, for the docs
+    /// open now (as [`Osc::handle_datagram_docs`]).
+    pub fn handle_frames_docs(
+        &mut self,
+        peer: Peer,
+        now: Duration,
+        arrived: Duration,
+        frames: &[Vec<u8>],
+        docs: &[DocShow<'_>],
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        self.start_call(docs);
+        for frame in frames {
+            self.handle_packet(peer, now, arrived, frame, docs, &mut out);
         }
         out
     }

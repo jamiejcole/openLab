@@ -157,10 +157,19 @@ Windows absolute paths written with backslashes (`C:\Show\a.wav`, `\\server\shar
 converted to forward slashes on load. Any other backslash is kept as part of a file name, because
 macOS allows it (`"sfx/Door\\Slam.wav"` in JSON is the file `Door\Slam.wav`).
 
-openLab writes the paths it creates in Unicode NFC (macOS file systems report names decomposed, NFD)
-and compares media paths ignoring NFC/NFD form and letter case, so a file written on macOS and opened
-on Windows (or the reverse) still matches. A native Windows relative path (`media\a.wav`) is
-converted to forward slashes when the path is created. Paths already in a file are read as written.
+openLab writes the paths it creates in Unicode NFC (macOS file systems report names decomposed, NFD).
+Two different rules apply to letter case:
+
+- **Storing a path relative** (above) is literal: a path whose folders differ from the show
+  folder's only in case or Unicode form stays absolute, exactly as picked. Deciding otherwise would
+  need the file system, and the cost of the literal rule is only an absolute path where a relative
+  one would have worked, never a relative path that names another file.
+- **Matching paths** (two spellings of the same file, as when Relink compares candidates, or when
+  openLab tells whether two show paths are one file) ignores NFC/NFD form, letter case and `.`/`..`,
+  so a file written on macOS and opened on Windows (or the reverse) still matches.
+
+A native Windows relative path (`media\a.wav`) is converted to forward slashes when the path is
+created. Paths already in a file are read as written.
 See `docs/persistence.md`.
 
 ### 4.4 Output patches
