@@ -8,8 +8,9 @@
 //! `fuzz_osc_session` test; public APIs only, no `unwrap`, `expect`, `panic!` or indexing.
 //!
 //! Two docs are open (M4.15h: an un-prefixed message goes to each). Input: byte 0 picks whether
-//! the first has the passcode `1234` (bit 0) and whether the second has it too (bit 1; else it is
-//! open). The rest is records separated by 0x1e; a record is `[op][peer][delay][payload...]`:
+//! the first has the passcode `1234` (bit 0) and whether the second has its own, `5678` (bit 1;
+//! else it is open). The passcodes differ so that a peer with rights in one doc and a leak into
+//! the other cannot hide. The rest is records separated by 0x1e; a record is `[op][peer][delay][payload...]`:
 //!
 //! - op 0, 1: the payload as a UDP datagram, or as a chunk of the peer's TCP stream
 //! - op 2: the peer's TCP connection closes
@@ -20,10 +21,12 @@
 //! `delay` moves the clock on by `delay` x 250 ms (255: eleven minutes, past the UDP idle time).
 //!
 //! Invariants: every reply and update encodes, and survives decode; the tables stay within their
-//! bounds; a closed or reset peer is not connected; a closed doc has no session; every input is
-//! for a doc that is open; and input that never contains the passcode's bytes gets nothing
-//! through to a doc with a passcode: no engine input, no connected peer, no subscriber that may
-//! view.
+//! bounds; a closed or reset peer is not connected; a closed doc has no session (checked on the
+//! calls after it closed, when a later message could have brought one back); every input is for
+//! a doc that is open; and, doc by doc, input that never contains that doc's passcode gets
+//! nothing through to it: no engine input, no `ok` reply naming it, no connected peer, no
+//! subscriber that may view. The passcode of the other doc, or a leak from one doc's session to
+//! the other, is therefore caught.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -33,14 +36,15 @@ use openlab_core::protocol::DocId;
 use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
     CueField, DocShow, MAX_KNOWN_IPS, MAX_PEERS, Osc, OscShow, Outcome, Peer, SlipDecoder,
-    decode_packet, encode_message,
+    decode_packet, encode_message, upper,
 };
 use rosc::OscMessage;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub const SEPARATOR: u8 = 0x1e;
-const PASSCODE: &str = "1234";
+const FIRST_PASSCODE: &str = "1234";
+const SECOND_PASSCODE: &str = "5678";
 const MAX_RECORDS: usize = 256;
 const PEERS: u8 = 6;
 
@@ -100,18 +104,41 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-fn access(locked: bool) -> OscAccess {
+fn access(locked: bool, passcode: &str) -> OscAccess {
     if locked {
         OscAccess {
             no_passcode: OscRights::NONE,
             passcodes: vec![OscPasscode {
-                passcode: PASSCODE.to_owned(),
+                passcode: passcode.to_owned(),
                 rights: OscRights::ALL,
             }],
         }
     } else {
         OscAccess::default()
     }
+}
+
+/// Whether `passcode`'s bytes could reach the dispatcher: inside one datagram, or inside what a
+/// peer's TCP chunks add up to (a chunk may end mid-string, and the record separator is not part
+/// of the stream). An over-approximation: it ignores disconnects, which only lose bytes.
+fn passcode_sent(records: &[&[u8]], passcode: &str) -> bool {
+    let mut streams: HashMap<u8, Vec<u8>> = HashMap::new();
+    for record in records {
+        let [op, peer, _delay, payload @ ..] = record else {
+            continue;
+        };
+        match op % 6 {
+            0 if contains(payload, passcode.as_bytes()) => return true,
+            1 => streams
+                .entry(peer % PEERS)
+                .or_default()
+                .extend_from_slice(payload),
+            _ => {}
+        }
+    }
+    streams
+        .values()
+        .any(|bytes| contains(bytes, passcode.as_bytes()))
 }
 
 /// Runs one input. `Err` is a broken invariant.
@@ -121,21 +148,27 @@ pub fn run(data: &[u8]) -> Result<(), String> {
     };
     let first = Show {
         id: 1,
-        access: access(config & 1 != 0),
+        access: access(config & 1 != 0, FIRST_PASSCODE),
     };
     let second = Show {
         id: 2,
-        access: access(config & 2 != 0),
+        access: access(config & 2 != 0, SECOND_PASSCODE),
     };
-    // Without the passcode's bytes anywhere in the input, nobody can have connected.
-    let never_sent = !contains(rest, PASSCODE.as_bytes());
+    let records: Vec<&[u8]> = rest.split(|&b| b == SEPARATOR).take(MAX_RECORDS).collect();
+    // Without a doc's passcode bytes anywhere in the input, nobody can have rights in it. The
+    // first doc is doc 0; the second is whichever id it has when open.
+    let first_never = !passcode_sent(&records, FIRST_PASSCODE);
+    let second_never = !passcode_sent(&records, SECOND_PASSCODE);
+    // Every id the second doc has closed under: nothing may be left of it, checked after every
+    // later record.
+    let mut closed_docs: Vec<DocId> = Vec::new();
     let mut osc = Osc::new();
     let mut decoders: HashMap<u8, SlipDecoder> = HashMap::new();
     let mut now = Duration::ZERO;
     // The second doc's id while it is open; it opens again under a new one.
     let mut second_doc: Option<DocId> = Some(DocId(1));
     let mut next_doc = 2u64;
-    for record in rest.split(|&b| b == SEPARATOR).take(MAX_RECORDS) {
+    for record in records {
         let (&op, tail) = match record.split_first() {
             Some(x) => x,
             None => continue,
@@ -161,10 +194,16 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             docs.push(DocShow { doc, show: &second });
         }
         let open = |doc: DocId| docs.iter().any(|d| d.doc == doc);
-        let locked = |doc: DocId| {
-            docs.iter()
-                .any(|d| d.doc == doc && d.show.access().requires_passcode())
+        // A locked doc nobody sent the passcode of: no peer may have any right in it.
+        let sealed = |d: &DocShow<'_>| {
+            d.show.access().requires_passcode()
+                && if d.show.workspace_id() == first.workspace_id() {
+                    first_never
+                } else {
+                    second_never
+                }
         };
+        let sealed_doc = |doc: DocId| docs.iter().any(|d| d.doc == doc && sealed(d));
         let check_inputs = |outcome: &Outcome| -> Result<(), String> {
             if outcome.input_docs.len() != outcome.inputs.len() {
                 return Err("an input without its doc".into());
@@ -172,8 +211,31 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             if outcome.input_docs.iter().any(|d| !open(*d)) {
                 return Err("an input for a doc that is not open".into());
             }
-            if never_sent && outcome.input_docs.iter().any(|d| locked(*d)) {
-                return Err("input got through without the passcode".into());
+            if outcome.input_docs.iter().any(|d| sealed_doc(*d)) {
+                return Err("input got through to a doc without its passcode".into());
+            }
+            // An `ok` reply that names a doc is a right used in it.
+            for reply in &outcome.replies {
+                let [rosc::OscType::String(text)] = reply.args.as_slice() else {
+                    continue;
+                };
+                let Ok(body) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                // A wrong passcode is an `ok` reply that says `badpass` (QLab's), and a `/connect` with none
+                // on a locked doc one that grants no rights (`ok:`): neither uses a right.
+                let field = |name: &str| body.get(name).and_then(Value::as_str);
+                if field("status") == Some("ok")
+                    && !matches!(field("data"), Some("badpass" | "ok:"))
+                    && docs.iter().any(|d| {
+                        sealed(d)
+                            && field("workspace_id") == Some(upper(d.show.workspace_id()).as_str())
+                    })
+                {
+                    return Err(format!(
+                        "an ok reply for a doc without its passcode: {text}"
+                    ));
+                }
             }
             Ok(())
         };
@@ -234,20 +296,25 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             _ => match second_doc.take() {
                 Some(doc) => {
                     osc.close_doc(doc);
-                    if !osc.update_subscribers_in(doc, now).is_empty()
-                        || osc.known_ips_in(doc) != 0
-                        || (0..PEERS).any(|n| {
-                            osc.is_connected_in(doc, udp(n)) || osc.is_connected_in(doc, tcp(n))
-                        })
-                    {
-                        return Err("a closed doc kept a session".into());
-                    }
+                    closed_docs.push(doc);
                 }
                 None => {
                     second_doc = Some(DocId(next_doc));
                     next_doc += 1;
                 }
             },
+        }
+        // Checked here, after the records that followed the close, not right after
+        // `close_doc` (which has just removed the entries): a later message must not bring a
+        // closed doc's sessions back.
+        for &doc in &closed_docs {
+            if !osc.update_subscribers_in(doc, now).is_empty()
+                || osc.known_ips_in(doc) != 0
+                || (0..PEERS)
+                    .any(|n| osc.is_connected_in(doc, udp(n)) || osc.is_connected_in(doc, tcp(n)))
+            {
+                return Err("a closed doc kept a session".into());
+            }
         }
         for d in &docs {
             if osc.known_ips_in(d.doc) > MAX_KNOWN_IPS
@@ -257,8 +324,7 @@ pub fn run(data: &[u8]) -> Result<(), String> {
             }
             // `/updates` works at any access level, but a subscriber that may not view is sent
             // nothing.
-            if never_sent
-                && d.show.access().requires_passcode()
+            if sealed(d)
                 && (osc
                     .update_subscribers_in(d.doc, now)
                     .into_iter()
