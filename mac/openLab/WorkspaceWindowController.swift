@@ -38,6 +38,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
     private(set) lazy var logWindow = LogWindowController(store: store)
+    private(set) lazy var preshowWindow: PreshowWindowController = {
+        let pc = PreshowWindowController(store: store)
+        pc.onInspect = { [weak self] id, tab in self?.inspect(cue: id, tab: tab) }
+        return pc
+    }()
     let footer = FooterBar()
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
@@ -124,6 +129,28 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func showLog() {
         logWindow.showWindow(nil)
         Task { await logWindow.refresh() }
+    }
+
+    /// The pre-show check asks the engine: without a connection there is nothing to ask (the menu
+    /// item is greyed rather than showing an empty, all-clear-looking report).
+    var canRunPreshowCheck: Bool { store.connectionState == .connected }
+
+    /// Opens the pre-show check (SM-06) and runs it. The task's value tells tests it answered.
+    @discardableResult
+    func showPreshowCheck() -> Task<Void, Never> {
+        Task { await preshowWindow.present() }
+    }
+
+    /// A pre-show report entry was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
+    /// shows the inspector on the tab that holds what to fix, as QLab's "Inspect Cue" does.
+    func inspect(cue id: ModelID, tab: String?) {
+        reveal(cue: id)
+        window?.orderFront(nil)
+        guard !isShowMode else { return }
+        setVisible(.inspector, true)
+        if let tab, inspector.tabView.indexOfTabViewItem(withIdentifier: tab) != NSNotFound {
+            inspector.tabView.selectTabViewItem(withIdentifier: tab)
+        }
     }
 
     /// Show Mode (SM-01) belongs to this window only and is not saved; the store tells the engine
