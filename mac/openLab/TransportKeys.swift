@@ -5,7 +5,6 @@ import AppKit
 /// The transport commands in the Transport menu, in menu order.
 enum TransportCommand: String, CaseIterable, Codable, Sendable {
     case go, stopAll, pauseAll, resumeAll, panic
-    case playheadPrevious, playheadNext
     case loadSelected, startSelected, pauseResumeSelected, stopSelected, resetSelected, previewSelected
 
     var titleKey: String { "menu.transport.\(rawValue)" }
@@ -66,7 +65,7 @@ struct KeyChord: Hashable, Sendable {
 }
 
 enum KeyBindError: Error, Equatable {
-    /// Esc is panic and cannot move (QLab: fixed safety key); the arrows alone are not allowed either.
+    /// Esc is panic and cannot move (QLab: fixed safety key); the Up and Down arrows are never allowed.
     case reserved
     case duplicate(of: TransportCommand)
     case cueHotkey
@@ -81,9 +80,8 @@ enum KeyBindError: Error, Equatable {
 /// - `go`, `pause_all`, `resume_all`: bound as given. Absent: the QLab default (Space, `[`, `]`);
 ///   `null`: no key.
 /// - `stop_all`: Esc is the fixed app-wide panic, so it binds nothing; any other key binds Stop All.
-/// - `playhead_next` / `playhead_previous`: a bare Down / Up means "the selection moves the
-///   playhead" (cue list behaviour), so it binds nothing; any other key binds Next / Previous Cue.
-///   Absent: Shift-Cmd-Down / Up (QLab's menu keys).
+/// - There are no Next / Previous Cue keys (format v6): QLab's key map has none and takes no Up or
+///   Down arrow; the arrows and the fixed Select Next / Select Previous items move the selection.
 /// - The model has no fields for the selected-cue keys: Load Selected `L`, Pause/Resume
 ///   Selected `P` and Preview Selected `V` (QLab's key) are fixed app defaults, dropped if a show's key already uses the chord.
 ///
@@ -104,8 +102,6 @@ struct TransportKeys: Equatable {
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
         ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
         ("resume_all", .resumeAll, KeyChord("]")),
-        ("playhead_next", .playheadNext, KeyChord(KeyChord.down, [.command, .shift])),
-        ("playhead_previous", .playheadPrevious, KeyChord(KeyChord.up, [.command, .shift])),
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
@@ -130,7 +126,6 @@ struct TransportKeys: Equatable {
             }
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
-            if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
             if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append(
                     String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
@@ -154,22 +149,23 @@ struct TransportKeys: Equatable {
     func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
 
     /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
-    /// loader above and the key-map editor (M5.11a).
+    /// loader above and the key-map editor (M5.11a). Up and Down are refused with any modifiers
+    /// (QLab 5), as are Esc and the empty key.
     static func validate(
         _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],
         isCueHotkey: (KeyChord) -> Bool = { _ in false }
     ) -> KeyBindError? {
         guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
-        if isBareArrow(chord) { return .reserved }
+        if isArrow(chord) { return .reserved }
         if let other = existing.first(where: { $0.value == chord && $0.key != command })?.key {
             return .duplicate(of: other)
         }
         return isCueHotkey(chord) ? .cueHotkey : nil
     }
 
-    static func isBareArrow(_ chord: KeyChord) -> Bool {
-        (chord.key == KeyChord.up || chord.key == KeyChord.down)
-            && chord.modifiers.isDisjoint(with: [.command, .control, .option])
+    /// Up or Down with any modifiers: no key of the key map or cue hotkey may be one.
+    static func isArrow(_ chord: KeyChord) -> Bool {
+        chord.key == KeyChord.up || chord.key == KeyChord.down
     }
 
     private static func describe(_ error: KeyBindError) -> String {

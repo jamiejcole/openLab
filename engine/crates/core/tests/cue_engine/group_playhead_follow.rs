@@ -228,7 +228,7 @@ fn go_on_a_devamp_with_start_next_moves_the_playhead_onto_that_cue() {
     assert_eq!(rig.playhead(), Some(id(3)));
 }
 
-// ----- D6: slices and loops are at least 51 ms -----
+// ----- D6: slices and loops are at least 50 ms -----
 
 fn sliced(start: f64, end: f64, marks: &[(f64, u32)]) -> CueKind {
     let mut kind = audio();
@@ -259,27 +259,27 @@ fn slices_of(ws: &Workspace) -> Vec<f64> {
 }
 
 #[test]
-fn a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
-    assert_eq!(MIN_SLICE_SECONDS, 0.051);
+fn a_40_ms_slice_is_refused_and_a_50_ms_loop_plays() {
+    assert_eq!(MIN_SLICE_SECONDS, 0.05);
 
-    // 50 ms: the show file is repaired (the marker that ends it moves to make it 51 ms long),
+    // 40 ms: the show file is repaired (the marker that ends it moves to make it 50 ms long),
     // and an edit that would make one is refused, as QLab's editor refuses it.
-    let short = sliced(0.0, 2.0, &[(1.0, 1), (1.05, 0)]);
+    let short = sliced(0.0, 2.0, &[(1.0, 1), (1.04, 0)]);
     let mut ws = workspace(vec![cue(1, short.clone())]);
     let issues = repair(&mut ws);
     assert!(
         issues.iter().any(|i| i.kind
             == IssueKind::SliceMoved {
-                from: 1.05,
+                from: 1.04,
                 to: 1.0 + MIN_SLICE_SECONDS
             }),
         "{issues:?}"
     );
     assert_eq!(slices_of(&ws), vec![1.0, 1.0 + MIN_SLICE_SECONDS]);
-    // Also against the trim points: a marker 50 ms after the start or before the end.
+    // Also against the trim points: a marker 40 ms after the start or before the end.
     for (marks, to) in [
-        ([(0.55, 1)], 0.5 + MIN_SLICE_SECONDS),
-        ([(1.95, 1)], 2.0 - MIN_SLICE_SECONDS),
+        ([(0.54, 1)], 0.5 + MIN_SLICE_SECONDS),
+        ([(1.96, 1)], 2.0 - MIN_SLICE_SECONDS),
     ] {
         let mut ws = workspace(vec![cue(1, sliced(0.5, 2.0, &marks))]);
         assert!(
@@ -300,8 +300,8 @@ fn a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
         "{refused:?}"
     );
 
-    // 51 ms: accepted everywhere, and it plays (an infinite loop of it).
-    let ok = sliced(0.0, 2.0, &[(1.0, 1), (1.051, 0)]);
+    // 50 ms: accepted everywhere, and it plays (an infinite loop of it).
+    let ok = sliced(0.0, 2.0, &[(1.0, 1), (1.05, 0)]);
     let mut ws = workspace(vec![sound(1)]);
     ws.apply(Command::SetCueProperty {
         id: id(1),
@@ -327,7 +327,7 @@ fn a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
         let frames = |s: f64| seconds_to_samples(s, rate_nz);
         let plan = openlab_audio::plan_at_rate(
             0..frames(2.0),
-            &[frames(1.0), frames(1.051)],
+            &[frames(1.0), frames(1.05)],
             &[
                 openlab_audio::Plays::Times(1),
                 openlab_audio::Plays::Infinite,
@@ -478,7 +478,7 @@ fn audio_of(ws: &Workspace) -> (Option<f64>, Vec<(f64, u32)>, u32) {
 
 #[test]
 fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
-    // A 40 ms trim is moved to the 51 ms floor, not cleared (which would play the whole file).
+    // A 40 ms trim is moved to the 50 ms floor, not cleared (which would play the whole file).
     let mut trim = sliced(1.0, 1.04, &[]);
     let mut ws = workspace(vec![cue(1, trim.clone())]);
     let issues = repair(&mut ws);
@@ -503,14 +503,14 @@ fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
     );
     assert_eq!(audio_of(&ws).0, None);
 
-    // A short slice is lengthened to 51 ms where there is room, keeping its loop or vamp, so
+    // A short slice is lengthened to 50 ms where there is room, keeping its loop or vamp, so
     // the cue's length barely changes; where there is none, it merges and the merged slice
     // plays as the longer part did. Each repaired show saves and loads back unchanged.
     let m = MIN_SLICE_SECONDS;
     let cases: [(&[Mark], Vec<Mark>, u32); 6] = [
-        // A 30 ms stutter (x3) before a long rest of the song: still a 51 ms stutter.
+        // A 30 ms stutter (x3) before a long rest of the song: still a 50 ms stutter.
         (&[(1.0, 1), (1.03, 3)], vec![(1.0, 1), (1.0 + m, 3)], 1),
-        // A 30 ms vamp: still a vamp, 51 ms long.
+        // A 30 ms vamp: still a vamp, 50 ms long.
         (&[(1.0, 1), (1.03, 0)], vec![(1.0, 1), (1.0 + m, 0)], 1),
         // Consecutive short slices: the first two merge (no room), then that slice is
         // lengthened; the long slice after keeps its single play.
@@ -519,9 +519,13 @@ fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
         (&[(1.0, 1), (1.98, 0)], vec![(1.0, 1), (2.0 - m, 0)], 1),
         // No room at the end either: merged, and the longer part (the vamp) gives the count.
         (&[(1.93, 1), (1.98, 0)], vec![(1.93, 1)], 0),
-        // A short loop next to a longer single play with no room: the single play wins, the
-        // loop is not spread over it.
-        (&[(1.9, 1), (1.92, 4), (1.96, 1)], vec![(1.9, 1)], 1),
+        // A short loop next to single plays with little room: the single plays win and the
+        // loop is not spread over them (the remaining marker is moved to leave 50 ms).
+        (
+            &[(1.9, 1), (1.92, 4), (1.96, 1)],
+            vec![(1.9, 1), (1.95, 1)],
+            1,
+        ),
     ];
     for (marks, kept, last) in cases {
         let mut ws = workspace(vec![cue(1, sliced(0.0, 2.0, marks))]);

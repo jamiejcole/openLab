@@ -149,14 +149,14 @@ fn pause_all_and_resume_all() {
 
 #[test]
 fn a_lost_voice_end_is_reconciled() {
-    // Cue 1 loops a 10 ms (80 frame) slice for ever: one loop event per 80 frames. With the
+    // Cue 1 loops a 50 ms (400 frame) slice for ever: one loop event per 400 frames. With the
     // control thread held off, 1100 of them overflow the mixer's event queue (1024). Cue 2 loops
     // too, so the engine cannot know its end; a Devamp cue (stop) ends it while the queue is
     // full, so both its devamp answer and its end report are lost.
     let looping = wav(&dc(800, 0.25));
     let other = wav(&dc(600, 0.5));
-    let c1 = with_slices(audio(1, &looping, 0), &[(secs(80), 0)], 1);
-    let c2 = with_slices(audio(2, &other, 1), &[(secs(300), 0)], 1);
+    let c1 = with_slices(audio(1, &looping, 0), &[(secs(400), 0)], 1);
+    let c2 = with_slices(audio(2, &other, 1), &[(secs(400), 0)], 1);
     let devamp = cue(
         3,
         CueKind::Devamp {
@@ -171,7 +171,7 @@ fn a_lost_voice_end_is_reconciled() {
     start(&mut s, 2);
     // Long enough for meter reads to see both voices.
     s.run(BLOCK * 12);
-    s.render_only(80 * 1100);
+    s.render_only(400 * 1100);
     start(&mut s, 3);
     s.render_only(1000);
     assert!(s.control().mixer().dropped_events() > 0);
@@ -288,7 +288,7 @@ fn a_lost_rejection_breaks_the_cue() {
     // (`voice_rejected`) instead of completing and firing its continue.
     let looping = wav(&dc(800, 0.25));
     let long = wav(&dc(8000, 0.5));
-    let c1 = with_slices(audio(1, &looping, 0), &[(secs(80), 0)], 1);
+    let c1 = with_slices(audio(1, &looping, 0), &[(secs(400), 0)], 1);
     let ws = workspace(vec![c1, audio(2, &long, 1)]);
     let mut mixer = mixer_config();
     mixer.max_voices = 1;
@@ -297,7 +297,7 @@ fn a_lost_rejection_breaks_the_cue() {
     s.settle_media();
     start(&mut s, 1);
     s.run(BLOCK * 12);
-    s.render_only(80 * 1100);
+    s.render_only(400 * 1100);
     start(&mut s, 2);
     s.render_only(BLOCK * 4);
     assert!(s.control().mixer().dropped_events() > 0);

@@ -119,6 +119,9 @@ pub(super) struct Run {
     /// Broke (`broken`) before its voice produced any audio (`Input::StartFailed`): skipped,
     /// as a cue with static problems is, so it still follows and its group is not failed.
     pub unplayed: bool,
+    /// A playlist child that broke while paused (QLab 5.5.3): it reports `paused` until it
+    /// resumes, then `broken`; its end, held for the resume, carries out the failure there.
+    pub broke_paused: Option<BrokePaused>,
     /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
     /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
     pub panicked: bool,
@@ -139,11 +142,13 @@ pub(super) struct Run {
     pub devamp: Option<DevampWait>,
     /// Fade cues, from their action start: what the fade is doing.
     pub fade: Option<FadeRun>,
+    /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
+    /// an edit of a running cue's duration re-times it (`follow_duration_edits`).
+    pub duration: Option<SampleTime>,
 }
 
 /// The levels an audio cue's voice has been given: the model's at its start, and each edit
-/// sent to it since. A level an edit left to a fade keeps what the voice was given before,
-/// so the edit is still owed and goes out with the next edit after the fade lets go.
+/// sent to it since (every edit is sent; one of a level a fade moves ends that fade).
 #[derive(Clone, Debug)]
 pub(super) struct Given {
     /// The model's levels as of the last comparison (a call with the same levels compares
@@ -151,6 +156,15 @@ pub(super) struct Given {
     pub model: CueLevels,
     /// Per parameter, the gain and mute the voice was given (missing: silent).
     pub played: BTreeMap<LevelParam, Played>,
+}
+
+/// What a playlist child that broke while paused still owes its playlist on the resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BrokePaused {
+    /// It broke while playing: a running playlist around it halts on the resume, its action
+    /// ending this many samples after the resume (the child's nominal end, moved on by the
+    /// pause; `None`: not known, so it ends then). `None` for a child skipped before it played.
+    pub halt: Option<Option<SampleTime>>,
 }
 
 /// A devamp sent to a cue's voice by a Devamp cue.
@@ -166,13 +180,35 @@ pub(super) struct DevampWait {
     pub at: Option<SampleTime>,
 }
 
-/// One gain a Fade cue ramps: on `cue`'s run `seq`, towards `gain`.
+/// One gain a Fade cue ramps: on `cue`'s run `seq`, towards `gain`. Its curve as planned at
+/// the action start (from `from`, `lead` samples into the action, over `frames`) says where it
+/// is at any point of the action, for a Fade whose duration is edited while it runs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FadeRamp {
     pub cue: CueId,
     pub seq: u64,
     pub param: LevelParam,
     pub gain: f32,
+    pub from: f32,
+    pub lead: SampleTime,
+    pub frames: SampleTime,
+}
+
+impl FadeRamp {
+    /// The gain the planned curve reaches `length` samples into the fade's action: where a
+    /// fade that keeps its rate ends when its action is `length` long (QLab 5).
+    pub fn gain_at(&self, length: SampleTime, curve: FadeCurve) -> f32 {
+        if self.frames == 0 {
+            return self.gain;
+        }
+        super::level::ramp_gain(
+            self.from,
+            self.gain,
+            length.saturating_sub(self.lead),
+            self.frames,
+            curve,
+        )
+    }
 }
 
 /// A Fade cue's part of its run.
@@ -184,6 +220,9 @@ pub(super) struct FadeRun {
     /// Stop this cue (the Fade's target) when the fade completes.
     pub stop_target: Option<CueId>,
     pub curve: FadeCurve,
+    /// Its duration was edited while it ran: it ends on the new end, at the levels its curve
+    /// reaches there, and lets go of them then.
+    pub retimed: bool,
 }
 
 /// How a cue's runtime ended, as its group sees it.
@@ -267,6 +306,7 @@ impl Run {
             broken: None,
             static_broken: false,
             unplayed: false,
+            broke_paused: None,
             panicked: false,
             started: 0,
             group,
@@ -275,13 +315,15 @@ impl Run {
             given: None,
             devamp: None,
             fade: None,
+            duration: None,
         }
     }
 
     pub fn state(&self) -> CueState {
-        if self.is_broken() {
+        let paused = self.paused_at.is_some();
+        if self.is_broken() && !(paused && self.broke_paused.is_some()) {
             CueState::Broken
-        } else if self.paused_at.is_some() {
+        } else if paused {
             CueState::Paused
         } else if self.stop_end.is_some() || self.is_group_stopping() {
             CueState::Stopping

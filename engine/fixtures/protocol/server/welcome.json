@@ -1,6 +1,6 @@
 {
   "type": "welcome",
-  "protocol_version": 2,
+  "protocol_version": 3,
   "doc": 3,
   "snapshot": {
     "revision": 7,
@@ -54,24 +54,6 @@
               "control": false,
               "alt": false,
               "command": false
-            }
-          },
-          "playhead_next": {
-            "key": "down",
-            "modifiers": {
-              "shift": true,
-              "control": false,
-              "alt": false,
-              "command": true
-            }
-          },
-          "playhead_previous": {
-            "key": "up",
-            "modifiers": {
-              "shift": true,
-              "control": false,
-              "alt": false,
-              "command": true
             }
           },
           "load_selected": {

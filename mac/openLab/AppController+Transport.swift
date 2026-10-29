@@ -39,6 +39,12 @@ extension AppController {
         frontController.map { keys(for: $0.store) } ?? TransportKeys(settings: nil)
     }
 
+    /// Select Next / Select Previous: the selection of the front window's cue list moves by `delta`
+    /// rows (one cue selected, the playhead follows).
+    func selectAdjacentCue(by delta: Int) {
+        frontController?.cueList.selectAdjacent(by: delta)
+    }
+
     /// Whether the menu item for `command` may fire now. Disabled items also let their key through
     /// to the text field being edited (see `KeyMap` for the precedence rule).
     func canPerform(_ command: TransportCommand) -> Bool {
@@ -66,8 +72,6 @@ extension AppController {
         case .resumeAll: await run(.resumeAll, on: store)
         case .stopAll: await run(.stopAll, on: store)  // atomic in the engine: every cue and preview
         case .panic: break
-        case .playheadNext: if let list { await run(.playheadNext(list: list), on: store) }
-        case .playheadPrevious: if let list { await run(.playheadPrevious(list: list), on: store) }
         case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
         case .startSelected: await runAll(selected.map { .start(cue: $0) }, on: store)
         case .stopSelected: await runAll(selected.map { .hardStop(cue: $0) }, on: store)

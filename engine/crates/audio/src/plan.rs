@@ -143,13 +143,17 @@ pub fn plan(
 /// Shortest slice that may play more than once, in milliseconds of device time (M3.17). Every
 /// play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few
 /// frames would flood the event queue (1024 entries) and keep the mixer at its boundaries.
-/// At 10 ms, 128 looping voices raise at most about 64 loop events per 5 ms control tick.
-pub const MIN_LOOP_MS: u32 = 10;
+/// At 50 ms, 128 looping voices raise at most about 13 loop events per 5 ms control tick. The
+/// same floor as core's `MIN_SLICE_SECONDS`: QLab 5 accepts no region under 0.05 s.
+pub const MIN_LOOP_MS: u32 = 50;
 
-/// [`MIN_LOOP_MS`] in device frames at `device_rate`, rounded up; at least 1.
+/// [`MIN_LOOP_MS`] in device frames at `device_rate`, less one frame of slack, at least 1. The
+/// slack is because a slice's length is the difference of two times each rounded to a frame, so
+/// a slice of exactly 50 ms may come out one frame short (2204 frames at 44.1 kHz) and must
+/// still play.
 pub fn min_loop_frames(device_rate: u32) -> u64 {
-    (u64::from(device_rate) * u64::from(MIN_LOOP_MS))
-        .div_ceil(1000)
+    (u64::from(device_rate) * u64::from(MIN_LOOP_MS) / 1000)
+        .saturating_sub(1)
         .max(1)
 }
 
@@ -393,21 +397,23 @@ mod tests {
 
     #[test]
     fn minimum_loop_length_is_enforced_exactly_at_the_edge() {
-        assert_eq!(min_loop_frames(48_000), 480);
-        assert_eq!(min_loop_frames(44_100), 441);
-        assert_eq!(min_loop_frames(22_050), 221); // 220.5 rounds up
+        assert_eq!(min_loop_frames(48_000), 2399);
+        assert_eq!(min_loop_frames(44_100), 2204);
+        assert_eq!(min_loop_frames(22_050), 1101); // 1102.5 rounds down
         assert_eq!(min_loop_frames(1), 1);
         let plays = [Plays::Times(1), Plays::Infinite, Plays::Times(1)];
         // Exactly the minimum loops; one frame less is refused, as a typed error.
-        assert!(plan_at_rate(0..2_000, &[100, 580], &plays, 0, 48_000).is_ok());
+        assert!(plan_at_rate(0..6_000, &[100, 2_499], &plays, 0, 48_000).is_ok());
         assert_eq!(
-            plan_at_rate(0..2_000, &[100, 579], &plays, 0, 48_000),
+            plan_at_rate(0..6_000, &[100, 2_498], &plays, 0, 48_000),
             Err(PlanError::LoopTooShort {
                 slice: 1,
-                frames: 479,
-                min: 480
+                frames: 2_398,
+                min: 2_399
             })
         );
+        // A 50 ms loop whose two ends rounded to frames came out a frame short still plays.
+        assert!(plan_at_rate(0..6_000, &[100, 2_304], &plays, 0, 44_100).is_ok());
         // Slices that play once may be as short as one frame.
         let once = [Plays::Times(1), Plays::Times(1), Plays::Times(1)];
         assert!(plan_at_rate(0..2_000, &[1, 2], &once, 0, 48_000).is_ok());
@@ -424,11 +430,11 @@ mod tests {
         // A start offset inside a short slice played twice: its second play is a loop.
         let twice = [Plays::Times(2), Plays::Times(1)];
         assert_eq!(
-            plan_at_rate(0..2_000, &[100], &twice, 50, 48_000),
+            plan_at_rate(0..6_000, &[100], &twice, 50, 48_000),
             Err(PlanError::LoopTooShort {
                 slice: 0,
                 frames: 100,
-                min: 480
+                min: 2_399
             })
         );
         // plan() itself is unchanged: it accepts a one-frame loop.

@@ -389,11 +389,6 @@ pub enum CommandError {
         source: Box<CommandError>,
         rollback: Box<CommandError>,
     },
-    /// An undo or redo would stop this cue, which is active or being previewed (M5.10d). Its
-    /// step stays on the stack and nothing was changed. The binary words the message the client
-    /// sees with the cue's number and name.
-    #[error("cue {0} is playing; stop it, then try again")]
-    CueIsActive(CueId),
     /// A `PasteClipboard` reached `apply` without [`Command::prepare`]: a bug in the caller.
     #[error("the pasted cues were not prepared")]
     NotPrepared,

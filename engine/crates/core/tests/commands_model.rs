@@ -124,7 +124,7 @@ fn every_setting_can_be_set_and_undone() {
             value: Some(key.clone()),
         }),
         setting(WorkspaceSetting::Hotkey {
-            key: TransportKey::PlayheadPrevious,
+            key: TransportKey::PauseAll,
             value: None,
         }),
     ] {
@@ -207,7 +207,7 @@ fn every_selected_cue_key_can_be_set_and_undone() {
 }
 
 #[test]
-fn esc_and_bare_up_down_are_refused_as_workspace_keys() {
+fn esc_and_up_down_with_any_modifiers_are_refused_as_workspace_keys() {
     let ws = workspace(vec![]);
     for (key, value) in [
         (TransportKey::StopAll, plain("escape")),
@@ -215,12 +215,28 @@ fn esc_and_bare_up_down_are_refused_as_workspace_keys() {
             TransportKey::Go,
             with_mods("escape", true, true, true, true),
         ),
-        (TransportKey::PlayheadNext, plain("down")),
-        (TransportKey::PlayheadPrevious, plain("up")),
-        // Shift alone extends the selection: still bare.
+        (TransportKey::PauseAll, plain("down")),
+        (TransportKey::ResumeAll, plain("up")),
         (
             TransportKey::LoadSelected,
             with_mods("up", true, false, false, false),
+        ),
+        // QLab 5 refuses the arrows whatever is held, Shift-Command-Down included.
+        (
+            TransportKey::Go,
+            with_mods("down", true, false, false, true),
+        ),
+        (
+            TransportKey::PauseAll,
+            with_mods("down", false, false, true, false),
+        ),
+        (
+            TransportKey::ResumeAll,
+            with_mods("up", false, true, false, false),
+        ),
+        (
+            TransportKey::StartSelected,
+            with_mods("down", true, true, true, true),
         ),
     ] {
         let (field, reason, message) = refusal(&ws, set_key(key, Some(value)));
@@ -228,24 +244,26 @@ fn esc_and_bare_up_down_are_refused_as_workspace_keys() {
         assert!(message.starts_with(field), "{message}");
         assert!(message.contains("Esc is panic"), "{message}");
     }
-    // Arrows with Command, Control or Option, and Left / Right, are keys like any other.
-    let ws = round_trip(
-        &ws,
-        set_key(
-            TransportKey::PlayheadNext,
-            Some(with_mods("down", false, false, true, false)),
-        ),
-    );
-    let ws = round_trip(
+    // Left / Right are keys like any other.
+    round_trip(
         &ws,
         set_key(TransportKey::StartSelected, Some(plain("right"))),
     );
-    round_trip(
+    // The whole map is judged the same way, and no default is an arrow.
+    let mut bad = ws.settings.hotkeys.clone();
+    bad.stop_selected = Some(with_mods("up", false, false, false, true));
+    refusal(
         &ws,
-        set_key(
-            TransportKey::PlayheadPrevious,
-            Some(with_mods("up", false, true, false, false)),
-        ),
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(bad),
+        }),
+    );
+    assert!(
+        ws.settings
+            .hotkeys
+            .slots()
+            .iter()
+            .all(|(_, k)| k.as_ref().is_none_or(|k| !is_reserved_key(k)))
     );
 }
 

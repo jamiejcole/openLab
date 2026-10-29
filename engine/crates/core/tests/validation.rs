@@ -390,21 +390,9 @@ fn transport_hotkeys_have_defaults() {
         (key(&keys.pause_all), key(&keys.resume_all)),
         ("[".into(), "]".into())
     );
-    // Since v5: Esc is panic, outside the map, so Stop All has no key; Next / Previous
-    // Cue are QLab's menu keys; L and P are QLab's selected-cue keys.
+    // Since v5: Esc is panic, outside the map, so Stop All has no key; L and P are QLab's
+    // selected-cue keys.
     assert_eq!(keys.stop_all, None);
-    let shift_command = Modifiers {
-        shift: true,
-        command: true,
-        ..Modifiers::default()
-    };
-    for (k, name) in [
-        (&keys.playhead_next, "down"),
-        (&keys.playhead_previous, "up"),
-    ] {
-        let k = k.as_ref().unwrap();
-        assert_eq!((k.key.as_str(), k.modifiers), (name, shift_command));
-    }
     assert_eq!(
         (key(&keys.load_selected), key(&keys.pause_resume_selected)),
         ("l".into(), "p".into())
@@ -417,7 +405,7 @@ fn transport_hotkeys_have_defaults() {
         ),
         (&None, &None, &None)
     );
-    // No default breaks the edit rules: none is reserved and none repeats another.
+    // No default breaks the edit rules, and none repeats another.
     let set: Vec<&Hotkey> = keys
         .slots()
         .into_iter()

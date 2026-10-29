@@ -54,24 +54,6 @@
               "command": false
             }
           },
-          "playhead_next": {
-            "key": "down",
-            "modifiers": {
-              "shift": true,
-              "control": false,
-              "alt": false,
-              "command": true
-            }
-          },
-          "playhead_previous": {
-            "key": "up",
-            "modifiers": {
-              "shift": true,
-              "control": false,
-              "alt": false,
-              "command": true
-            }
-          },
           "load_selected": {
             "key": "l",
             "modifiers": {

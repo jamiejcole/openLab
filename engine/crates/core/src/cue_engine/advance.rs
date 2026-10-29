@@ -104,6 +104,8 @@ impl CueEngine {
             run.length = None;
             let follow = run.follow;
             let seq = run.seq;
+            // A playlist child that broke while paused: its playlist hears of it now.
+            let halt = run.broke_paused.take().and_then(|b| b.halt);
             if run.fade.is_some() {
                 self.fade_finish(cue, at, cx);
                 // Stopping its target stopped the Fade cue too (it is inside the group); that
@@ -116,6 +118,9 @@ impl CueEngine {
             self.report(cue, before, at, cx);
             if follow {
                 self.continue_after(cue, at, cx);
+            }
+            if let Some(rest) = halt {
+                self.halt_playlist(cue, seq, rest.map(|r| at.saturating_add(r)), cx);
             }
             self.child_action_done(cue, seq, at, cx);
         }
@@ -141,8 +146,9 @@ impl CueEngine {
             Some(Slot::Active(r)) if r.broken.is_some() && !r.unplayed);
         let broken =
             problems || matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.is_broken());
+        let skipped = !self.is_armed(model) || broken;
         let act = match &model.kind {
-            _ if !self.is_armed(model) || broken => Act::Silent(0),
+            _ if skipped => Act::Silent(0),
             CueKind::Audio { .. } => Act::Voice,
             CueKind::Wait { duration } => Act::Silent(cx.secs(*duration, &self.config)),
             CueKind::Memo => Act::Silent(0),
@@ -241,6 +247,12 @@ impl CueEngine {
         run.post_wait = (continue_mode == ContinueMode::AutoContinue)
             .then(|| at.saturating_add(post_wait.saturating_sub(offset)));
         run.post_wait_total = post_wait;
+        // A Wait or Fade that acts is timed by its duration, which an edit can change while it
+        // runs (a disarmed or broken one has no action to re-time).
+        run.duration = match (act, &model.kind) {
+            (Act::Fade(d), _) | (Act::Silent(d), CueKind::Wait { .. }) if !skipped => Some(d),
+            _ => None,
+        };
         // A cue skipped for static problems follows as a disarmed one does (QLab 5: GO on a
         // broken auto-follow cue starts the next cue); one that broke at run time does not.
         run.follow = !failed && continue_mode == ContinueMode::AutoFollow;

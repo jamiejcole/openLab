@@ -204,7 +204,7 @@ Notes and decisions go in the issue, the PR, the task's docs or `docs/handoff/`.
 - [ ] M5.9 #116 Inspector: audio levels, routing matrix, Fade cue settings
 - [ ] M5.10 #117 Editing: drag-drop, reorder, batch edit, copy/paste, undo/redo, find
   - [x] M5.10b Editing part 2: Finder drops, copy/cut/paste across workspaces
-  - [ ] M5.10c #118 Editing part 3: batch edit, find, fade-this-out, drag to list, Network cue
+  - [ ] M5.10c #118 Editing part 3: batch edit, find, drag to list, Network cue
   - [ ] M5.10d #238 Engine: refuse undo/redo that removes an active cue
   - [ ] M5.10e #239 Engine: relative media paths, media-only property, raw paste
 - [ ] M5.11 #119 Transport: GO/Stop/Panic/Pause/Resume, remappable hotkeys

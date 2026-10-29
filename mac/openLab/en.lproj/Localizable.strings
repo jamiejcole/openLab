@@ -28,6 +28,8 @@
 "menu.cues.renumber" = "Renumber Selected Cues...";
 "menu.cues.moveUp" = "Move Selected Cues Up";
 "menu.cues.moveDown" = "Move Selected Cues Down";
+"menu.cues.selectNext" = "Select Next";
+"menu.cues.selectPrevious" = "Select Previous";
 "edit.ok" = "OK";
 "edit.cancel" = "Cancel";
 "edit.renumber.title" = "Renumber Selected Cues";
@@ -48,8 +50,6 @@
 "menu.transport.pauseAll" = "Pause All";
 "menu.transport.resumeAll" = "Resume All";
 "menu.transport.panic" = "Panic";
-"menu.transport.playheadPrevious" = "Previous Cue";
-"menu.transport.playheadNext" = "Next Cue";
 "menu.transport.loadSelected" = "Load Selected";
 "menu.transport.startSelected" = "Start Selected";
 "menu.transport.pauseResumeSelected" = "Pause or Resume Selected";

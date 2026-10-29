@@ -117,7 +117,15 @@ enum MainMenu {
             "menu.cues.moveDown", #selector(AppDelegate.moveCuesDown(_:)),
             String(UnicodeScalar(NSDownArrowFunctionKey)!))
         for e in [up, down] { e.keyEquivalentModifierMask = [.command, .option] }
-        return menu("menu.cues", items + [up, down])
+        // Fixed, not in the key map (QLab): the selection moves, and the playhead follows it.
+        let next = item(
+            "menu.cues.selectNext", #selector(AppDelegate.selectNextCue(_:)),
+            String(UnicodeScalar(NSDownArrowFunctionKey)!))
+        let previous = item(
+            "menu.cues.selectPrevious", #selector(AppDelegate.selectPreviousCue(_:)),
+            String(UnicodeScalar(NSUpArrowFunctionKey)!))
+        for e in [next, previous] { e.keyEquivalentModifierMask = [.command] }
+        return menu("menu.cues", items + [up, down, .separator(), next, previous])
     }
 
     /// QLab's View menu has Enter Edit Mode (shift-cmd-[) and Enter Show Mode (shift-cmd-]).
@@ -148,7 +156,7 @@ enum MainMenu {
     private static func transportMenu(_ keys: TransportKeys) -> NSMenu {
         var items: [NSMenuItem] = []
         for command in TransportCommand.allCases {
-            if command == .playheadPrevious || command == .loadSelected { items.append(.separator()) }
+            if command == .loadSelected { items.append(.separator()) }
             let entry = item(command.titleKey, #selector(AppDelegate.transportCommand(_:)))
             entry.representedObject = command.rawValue
             items.append(entry)

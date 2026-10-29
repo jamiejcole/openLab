@@ -1,6 +1,6 @@
 # openLab show file format
 
-Status: format version **5** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
+Status: format version **6** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
 
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the
@@ -44,7 +44,7 @@ The top level of every file is:
 
 ```json
 {
-  "format_version": 5,
+  "format_version": 6,
   "workspace": { … }
 }
 ```
@@ -66,8 +66,9 @@ The top level of every file is:
 | 1 | v0.0.1 (development) | Identical to v2 except that cues had no `second_trigger` and `second_trigger_on_release`. Upgrading gives every cue, at every depth, `"nothing"` and `false` (a v1 reader ignored those keys, so a hand-added value is replaced by the default). |
 | 2 | v0.0.1 (development) | Identical to v3 except that Devamp cues had no `devamp_mode`. Upgrading gives every Devamp cue, at every depth, `"current_slice"`, which is what a v2 Devamp cue did (it left whatever loop was playing); a hand-added value is replaced. Also, in v2 a Fade aimed at a Group set each child's levels to its values; from v3 it moves them by its values (QLab check F2). No upgrade can keep the old meaning (it depends on each child's level when the Fade runs), so loading a v0–v2 file warns once for every Fade cue whose target is a Group (`GroupFadeNowRelative`, shown as a load notice on that cue) and leaves the cue as it is; saving writes v3, after which the warning is gone. Old-version fixture: `v2-example.openlab`. |
 | 3 | v0.0.1 (development) | Identical to v4 except that the settings had the single `osc_passcode` (string or `null`) where v4 has the `osc_access` table. Upgrading: a non-empty passcode becomes the one row of the table with all rights and No Passcode gets none (what the show did: nothing without `/connect`, everything with it); `null`, empty or absent becomes No Passcode with all rights and no rows (open, as before). A hand-added `osc_access` is replaced; a passcode that is not text is left for the model parse to refuse. Old-version fixtures: `v3-example.openlab` (a passcode) and `v3-no-passcode.openlab` (`null`). |
-| 4 | v0.0.1 (development) | Identical to v5 except that `settings.hotkeys` had no selected-cue keys and its defaults were Esc for `stop_all` and bare Down / Up for `playhead_next` / `playhead_previous`, which the app never bound (Esc is its fixed panic; bare Up / Down move the selection). Upgrading (M5.11c) keeps what the app did: a transport key that is reserved (§4.2) becomes `null`; `load_selected` becomes `l` and `pause_resume_selected` `p` (the app's fixed keys), each `null` instead where a cue hotkey or a remaining transport key is that key (the app gave it up there, so no cue loses its hotkey); `start_selected`, `stop_selected`, `reset_selected` become `null`. Hand-added selected-cue keys are replaced. Old-version fixture: `v4-example.openlab`. |
-| 5 | v0.0.1 | Current. Adds the selected-cue keys to `settings.hotkeys` (§4.2, M5.11c). M2.29d's `media_hints` will be v6. |
+| 4 | v0.0.1 (development) | Identical to v5 except that `settings.hotkeys` had no selected-cue keys and its defaults were Esc for `stop_all` and bare Down / Up for `playhead_next` / `playhead_previous`, which the app never bound (Esc is its fixed panic; bare Up / Down move the selection). (A v4 key that was not reserved, `playhead_next` / `playhead_previous` included, is kept by this step; v6 then drops those two.) Upgrading (M5.11c) keeps what the app did: a transport key that is reserved (§4.2) becomes `null`; `load_selected` becomes `l` and `pause_resume_selected` `p` (the app's fixed keys), each `null` instead where a cue hotkey or a remaining transport key is that key (the app gave it up there, so no cue loses its hotkey); `start_selected`, `stop_selected`, `reset_selected` become `null`. Hand-added selected-cue keys are replaced. Old-version fixture: `v4-example.openlab`. |
+| 5 | v0.0.1 (development) | Identical to v6 except that `settings.hotkeys` also had `playhead_next` and `playhead_previous` (Next / Previous Cue; defaults Shift-Command-Down / Up). Upgrading removes both keys. If either held anything but `null` or its default, loading warns once (`PlayheadKeysRemoved`): the user's own key is gone, because QLab 5's key map has no such action and takes no Up or Down arrow (the arrows and the fixed Select Next / Previous items move the selection, and the playhead follows it). Old-version fixture: `v5-example.openlab`. |
+| 6 | v0.0.1 | Current. Removes `playhead_next` and `playhead_previous` from `settings.hotkeys` (§4.2). M2.29d's `media_hints` will be v7. |
 
 ## 3. Loading, validation and refusal
 
@@ -92,11 +93,11 @@ cue, and the cue shows as broken where it cannot run.
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
 | A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (docs/osc.md, "Sending") | Kept; the cue shows as broken until it is edited |
 | An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
-| An Audio cue's `end_time` less than 51 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 51 ms (QLab 5's shortest trim) |
+| An Audio cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
-| A slice marker less than 51 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; every slice, and so every loop, is at least 51 ms long, as QLab 5's editor allows (M2.24). The marker moves to make the short slice exactly 51 ms long (later; the last marker earlier when the last slice is short), keeping its play count, so a stutter or a vamp stays one and the cue's length barely changes. Only when the slice beside it is too short to give the room is the marker removed: the two slices become one, which plays as the longer of the two did (the later on a tie), so a short loop is never spread over a long slice. Without an `end_time` the file's length is not in the show, so the last slice meets only the audio engine's 10 ms loop floor (`MIN_LOOP_MS`) when the voice is planned |
+| A slice marker less than 50 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; every slice, and so every loop, is at least 50 ms long, as QLab 5's editor allows (M2.24). The marker moves to make the short slice exactly 50 ms long (later; the last marker earlier when the last slice is short), keeping its play count, so a stutter or a vamp stays one and the cue's length barely changes. Only when the slice beside it is too short to give the room is the marker removed: the two slices become one, which plays as the longer of the two did (the later on a tie), so a short loop is never spread over a long slice. Without an `end_time` the file's length is not in the show, so the last slice meets only the audio engine's 50 ms loop floor (`MIN_LOOP_MS`) when the voice is planned |
 | A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
 | A patch output delay outside 0–1000 ms | Warning; clamped |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
@@ -104,12 +105,13 @@ cue, and the cue shows as broken where it cannot run.
 | The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
 | A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
 | A Fade cue aimed at a Group, in a file older than version 3 | Warning (`GroupFadeNowRelative`); kept: such a Fade now moves each child relative to its level (see §2, version 2) |
+| A file older than version 6 whose Next Cue or Previous Cue key (`playhead_next`, `playhead_previous`) held anything but none or v5's default Shift-Command-Down / Up | Warning (`PlayheadKeysRemoved`, once, no cue); the migration removes both keys (version 6 has none) |
 | A cue hotkey that is one of the workspace's keys (`settings.hotkeys`, transport or selected-cue, e.g. Space = GO) | Warning (`HotkeyUsedByWorkspace`, QLab 5's "Hotkey used by workspace"); kept, but the workspace action wins and the key never starts the cue (M2.28) |
 | OSC rights with Edit or Control but no View | Warning (`OscRightsNeedView`); Edit and Control are cleared |
 | An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
 | An OSC passcode that is not made of digits only | Warning (`OscPasscodeNotDigits`); kept, since dropping it would change who can connect (a v3 passcode may be any text) |
 | A cue name over 1024 bytes, cue notes over 64 KiB, or a Network cue address over 64 KiB, more than 1024 arguments or a string argument over 64 KiB | Warning (`TooLarge`, per cue and field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
-| A workspace, cue list, patch or network patch name over 256 characters or with a control character, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one (M1.20) |
+| A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one (M1.20) |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
@@ -140,7 +142,7 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `autosave_interval` | seconds, 5–3600 | How often unsaved changes are written to the recovery file. |
 | `osc_access` | object | The OSC passcode table (NET-02, `docs/osc.md` "Rights"): `no_passcode` (the rights of a peer that has not connected or connects without a passcode) and `passcodes` (rows). Rights are `{"view": bool, "edit": bool, "control": bool}`; a row is `{"passcode": string, "rights": rights}`. Edit and Control need View. A new workspace: `no_passcode` all false and one random 4-digit passcode with all rights. |
 | `master_db` | level | Global master. |
-| `hotkeys` | object | The workspace's key map (TRG-01, QLab 5's Workspace Settings → Controls → Keyboard). Transport keys `go`, `stop_all`, `pause_all`, `resume_all`, `playhead_next`, `playhead_previous`, and selected-cue keys `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`. Each is `null` (no key) or a hotkey object (§5.1). New workspaces get Space, none, `[`, `]`, Shift-Command-Down, Shift-Command-Up, `l`, `p`, none, none, none. **Reserved** (refused by the edit command, `docs/commands.md`): Esc with any modifiers (always panic, outside the map) and Up / Down without Command, Control or Option (they move the selection and the playhead). A cue hotkey equal to any key of the map never starts the cue (`HotkeyUsedByWorkspace`, §3). The loader keeps a reserved or repeated key a hand edit put here; the app binds no reserved key and only the first of a repeated one. |
+| `hotkeys` | object | The workspace's key map (TRG-01, QLab 5's Workspace Settings → Controls → Keyboard). Transport keys `go`, `stop_all`, `pause_all`, `resume_all`, and selected-cue keys `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`. Each is `null` (no key) or a hotkey object (§5.1). New workspaces get Space, none, `[`, `]`, `l`, `p`, none, none, none. There is no Next / Previous Cue key (v6): as in QLab, Select Next and Select Previous are fixed menu items (Command-Down, Command-Up). **Reserved** (refused by the edit command, `docs/commands.md`): Esc with any modifiers (always panic, outside the map) and Up / Down with any modifiers (QLab 5 refuses the arrows whatever is held). A cue hotkey equal to any key of the map never starts the cue (`HotkeyUsedByWorkspace`, §3). The loader keeps a reserved or repeated key a hand edit put here; the app binds no reserved key and only the first of a repeated one. |
 | `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
 | `auto_number_increment` | number, above 0 up to 1 000 000 | Step between auto-numbered cues. |
 
@@ -246,9 +248,9 @@ Option on macOS).
 | `media` | path or `null` | §4.3. `null` until a file is assigned. |
 | `patch` | patch id | Output patch the cue plays to. |
 | `start_time` | seconds | Trim in point, from the start of the file. |
-| `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be at least 51 ms after `start_time`. |
+| `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be at least 50 ms after `start_time`. |
 | `fade_in`, `fade_out` | fade spec | Fades built into the cue. |
-| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 51 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
+| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
 | `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
 | `levels.master_db` | level | Cue master. |
 | `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 64. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
@@ -303,12 +305,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v5-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v6-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 5,                                   // (1)
+  "format_version": 6,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",

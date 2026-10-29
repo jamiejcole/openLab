@@ -115,12 +115,14 @@ fn renames_in_a_row_coalesce_into_one_undo_step() {
 #[test]
 fn a_name_at_the_limit_is_accepted_in_scalars_not_bytes() {
     let ws = workspace(vec![]);
-    // 256 characters of four bytes each is 1024 bytes.
+    // 1024 characters of four bytes each is 4096 bytes. A newline is a character like any other.
     for name in [
-        long(256),
-        "\u{1F3AD}".repeat(256),
+        long(1024),
+        "\u{1F3AD}".repeat(1024),
         String::new(),
         "Ça va".into(),
+        "two\nlines".into(),
+        "\n".into(),
     ] {
         for command in name_commands(&name) {
             let mut work = ws.clone();
@@ -136,9 +138,9 @@ fn a_name_at_the_limit_is_accepted_in_scalars_not_bytes() {
 fn an_over_long_or_control_character_name_is_refused_everywhere() {
     let ws = workspace(vec![]);
     for name in [
-        long(257),
-        "\u{1F3AD}".repeat(257),
-        "two\nlines".to_owned(),
+        long(1025),
+        "\u{1F3AD}".repeat(1025),
+        "cr\rhere".to_owned(),
         "tab\there".to_owned(),
         "nul\0".to_owned(),
         "esc\u{1b}[0m".to_owned(),
@@ -197,7 +199,7 @@ fn a_refused_name_inside_a_transaction_leaves_nothing_behind() {
     let error = refused(
         &ws,
         Command::Transaction {
-            commands: vec![rename("Fine"), rename(&long(300))],
+            commands: vec![rename("Fine"), rename(&long(1025))],
         },
     );
     assert!(matches!(
@@ -210,9 +212,9 @@ fn a_refused_name_inside_a_transaction_leaves_nothing_behind() {
 /// hand-edited file could.
 fn odd_workspace() -> Workspace {
     let mut ws = workspace(vec![]);
-    ws.name = "w".repeat(300);
-    ws.cue_lists[0].name = "two\nlines".into();
-    ws.patches[0].name = "\u{1F3AD}".repeat(300);
+    ws.name = "w".repeat(1025);
+    ws.cue_lists[0].name = "cr\rhere".into();
+    ws.patches[0].name = "\u{1F3AD}".repeat(1025);
     ws.network_patches[0].name = "nul\0".into();
     ws.network_patches[0].host = "h".repeat(300);
     ws

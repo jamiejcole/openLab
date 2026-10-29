@@ -15,8 +15,8 @@
 use crate::show::*;
 use openlab_core::protocol::{ClientMessage, Outcome, ServerMessage, TransportAction};
 use openlab_core::{
-    Command, Crosspoint, CueKind, CueLevels, CueProperty, FadeCurve, FadeLevels, GroupMode,
-    OutputPatch, PatchId, PatchMapping, PatchOutput, db_to_gain,
+    Command, Crosspoint, CueKind, CueLevels, CueProperty, CueState, FadeCurve, FadeLevels,
+    GroupMode, OutputPatch, PatchId, PatchMapping, PatchOutput, db_to_gain,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -192,24 +192,26 @@ fn master_fade(n: u128, target: u128, frames: u64, db: f64) -> openlab_core::Cue
     )
 }
 
+/// QLab 5.5.3: an edit of the master a running Fade is moving is heard, and ends the Fade: the
+/// room hears the edited level from the edit ramp on, not the rest of the fade.
 #[test]
-fn a_running_fade_keeps_the_master_it_moves_but_a_mute_is_heard() {
-    // The same fade twice; in the second show the operator edits the master mid-fade.
-    let mut plain = long_show(vec![master_fade(2, 1, 800, -20.0)]);
-    let mut edited = long_show(vec![master_fade(2, 1, 800, -20.0)]);
-    for s in [&mut plain, &mut edited] {
-        start(s, 1);
-        s.run(800);
-        start(s, 2);
-        s.run(400);
-    }
-    set_levels(&mut edited, 1, |l| l.master_db = -6.0);
-    plain.run(800);
-    edited.run(800);
-    // The fade wins: the edit is in the model, the room hears the fade as programmed.
-    assert_eq!(plain.channel(0), edited.channel(0));
+fn a_master_edit_during_a_fade_ends_the_fade_and_is_heard() {
+    let mut s = long_show(vec![master_fade(2, 1, 8000, -20.0)]);
+    start(&mut s, 1);
+    s.run(800);
+    start(&mut s, 2);
+    s.run(400);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    let at = set_levels(&mut s, 1, |l| l.master_db = -6.0);
+    s.run(1600);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    let x = s.channel(0);
+    let g6 = LEVEL * db_to_gain(-6.0);
+    assert!(x[at + EDIT..].iter().all(|&v| near(v, g6)));
+    assert!(max_jump(&x[at - 100..]) <= ramp_step(LEVEL, g6));
 
-    // A mute is heard even on a level a fade is moving.
+    // A mute is heard the same way.
     let mut s = long_show(vec![master_fade(2, 1, 8000, -20.0)]);
     start(&mut s, 1);
     s.run(800);

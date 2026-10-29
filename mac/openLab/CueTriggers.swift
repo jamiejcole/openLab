@@ -58,14 +58,14 @@ extension WorkspaceModel {
 
 /// Which chords a cue's hotkey may take. Pure: the inspector and the loader share it.
 enum HotkeyRules {
-    /// Why `chord` cannot be `cue`'s hotkey; nil if it can. Esc and the bare Up/Down arrows are
-    /// refused as in QLab 5 (left/right and modifier combinations are fine); a transport key, a
+    /// Why `chord` cannot be `cue`'s hotkey; nil if it can. Esc and Up/Down with any
+    /// modifiers are refused as in QLab 5 (left/right are fine); a transport key, a
     /// menu command's key and another cue's hotkey are refused so one key press never does two
     /// things (QLab refuses keys already assigned in Workspace Settings).
     static func validate(
         _ chord: KeyChord, for cue: ModelID, in model: WorkspaceModel, keys: TransportKeys, menuChords: Set<KeyChord>
     ) -> KeyBindError? {
-        if chord.key == KeyChord.escape || TransportKeys.isBareArrow(chord) { return .reserved }
+        if chord.key == KeyChord.escape || TransportKeys.isArrow(chord) { return .reserved }
         if chord.hotkeyJSON == nil { return .unsupported }
         // The fixed app defaults (L, P, V) yield to a cue hotkey, so they do not refuse it.
         if let command = keys.command(for: chord), !TransportKeys.fixed.contains(where: { $0.0 == command }) {
