@@ -429,6 +429,28 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(log.note.stringValue, String(format: loc("log.dropped"), 7))
     }
 
+    /// The log window must never take the keys from the workspace (GO, transport keys).
+    func testLogWindowCanNeverBecomeKey() throws {
+        let log = LogWindowController(store: try Rig().store)
+        let window = try XCTUnwrap(log.window)
+        XCTAssertTrue(window is NSPanel)
+        XCTAssertFalse(window.canBecomeKey)
+        XCTAssertFalse(window.canBecomeMain)
+    }
+
+    /// The log window goes with its workspace's window; none is made just to be closed.
+    func testLogWindowClosesWithItsWorkspaceWindow() throws {
+        let wc = WorkspaceWindowController(store: try Rig().store)
+        wc.window?.close()
+        XCTAssertNil(wc.existingLogWindow, "closing does not make a log window")
+        let other = WorkspaceWindowController(store: try Rig().store)
+        other.showLog()
+        let log = try XCTUnwrap(other.existingLogWindow)
+        XCTAssertTrue(log.window?.isVisible == true)
+        other.window?.close()
+        XCTAssertFalse(log.window?.isVisible == true)
+    }
+
     func testWindowMenuOpensTheLog() {
         let window = MainMenu.make().windows
         XCTAssertTrue(window.items.contains { $0.action == #selector(AppDelegate.showLog(_:)) })

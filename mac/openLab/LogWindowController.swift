@@ -17,6 +17,14 @@ extension LogLevel {
     var title: String { loc("log.level.\(rawValue)") }
 }
 
+/// The log window never takes the keyboard: GO and the transport keys must reach the workspace
+/// window while it is in front. (`becomesKeyOnlyIfNeeded` is not enough: a table view asks for
+/// key on a click.)
+final class LogPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 /// The show log window (DX-02): the engine's recent records (`log_tail`, fetched when the window
 /// opens or on Refresh) followed by those pushed since (`log_entry`), oldest first with the newest
 /// at the bottom, bounded, filterable by level. A gap in the record numbers (or `status.log_seq`
@@ -77,9 +85,11 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
 
     init(store: WorkspaceStore) {
         self.store = store
-        let window = NSWindow(
+        let window = LogPanel(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 440),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        window.hidesOnDeactivate = false
         window.title = loc("log.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.logWindow)
         window.isReleasedWhenClosed = false
