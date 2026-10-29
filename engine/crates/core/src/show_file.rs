@@ -11,7 +11,7 @@ use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -91,13 +91,18 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     let probe: VersionProbe = serde_json::from_str(text).map_err(LoadError::Syntax)?;
     let version = probe.format_version.ok_or(LoadError::MissingVersion)?;
     let mut from = FORMAT_VERSION;
+    let mut had_playhead_keys = false;
     let file: ShowFileIn = match u32::try_from(version) {
         // Parse straight from text so errors carry line and column.
         Ok(FORMAT_VERSION) => serde_json::from_str(text).map_err(LoadError::Model)?,
         Ok(old) if old < FORMAT_VERSION => {
             from = old;
             let value = serde_json::from_str(text).map_err(LoadError::Syntax)?;
-            serde_json::from_value(migrate(value, old)?).map_err(LoadError::Model)?
+            // Version 6 dropped the Next / Previous Cue keys: look at the version-5 document
+            // first, to say so when a show had its own.
+            let v5 = migrate_to(value, old, 5)?;
+            had_playhead_keys = custom_playhead_keys(&v5);
+            serde_json::from_value(migrate_to(v5, 5, FORMAT_VERSION)?).map_err(LoadError::Model)?
         }
         _ => {
             return Err(LoadError::TooNew {
@@ -110,6 +115,13 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     let mut issues = repair(&mut workspace);
     if from < 3 {
         issues.extend(group_fades_now_relative(&workspace));
+    }
+    if had_playhead_keys {
+        issues.push(ValidationIssue {
+            severity: Severity::Warning,
+            cue_id: None,
+            kind: IssueKind::PlayheadKeysRemoved,
+        });
     }
     if issues.iter().any(|issue| issue.severity == Severity::Error) {
         let errors = issues
@@ -165,14 +177,20 @@ pub fn save_show(workspace: &Workspace) -> Result<String, SaveError> {
 
 /// Upgrades a parsed show file from format version `from` to [`FORMAT_VERSION`], one version
 /// at a time. Each step is a pure function of the document.
-pub fn migrate(mut document: Value, from: u32) -> Result<Value, LoadError> {
-    for version in from..FORMAT_VERSION {
+pub fn migrate(document: Value, from: u32) -> Result<Value, LoadError> {
+    migrate_to(document, from, FORMAT_VERSION)
+}
+
+/// [`migrate`] up to version `to` only.
+fn migrate_to(mut document: Value, from: u32, to: u32) -> Result<Value, LoadError> {
+    for version in from..to {
         document = match version {
             0 => v0_to_v1(document),
             1 => v1_to_v2(document),
             2 => v2_to_v3(document),
             3 => v3_to_v4(document),
             4 => v4_to_v5(document),
+            5 => v5_to_v6(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -337,6 +355,51 @@ fn v4_to_v5(mut document: Value) -> Result<Value, String> {
         keys.insert(field.into(), Value::Null);
     }
     Ok(document)
+}
+
+/// v6 removed `playhead_next` and `playhead_previous` from `settings.hotkeys`: QLab's key map has
+/// no Next / Previous Cue action and takes no Up or Down arrow. Nothing else changes; a document
+/// not shaped like this is left for the model parse to refuse.
+fn v5_to_v6(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    root.insert("format_version".into(), 6.into());
+    if let Some(keys) = root
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("settings"))
+        .and_then(|s| s.get_mut("hotkeys"))
+        .and_then(Value::as_object_mut)
+    {
+        keys.remove("playhead_next");
+        keys.remove("playhead_previous");
+    }
+    Ok(document)
+}
+
+/// Whether a version-5 document's Next / Previous Cue keys held anything but v5's defaults
+/// (Shift-Command-Down / Up) or none: a key the user chose, which v6 drops.
+fn custom_playhead_keys(v5: &Value) -> bool {
+    let keys = v5
+        .get("workspace")
+        .and_then(|w| w.get("settings"))
+        .and_then(|s| s.get("hotkeys"));
+    [("playhead_next", "down"), ("playhead_previous", "up")]
+        .into_iter()
+        .any(|(field, arrow)| {
+            let Some(value) = keys.and_then(|k| k.get(field)).filter(|v| !v.is_null()) else {
+                return false;
+            };
+            let default = Hotkey {
+                key: arrow.into(),
+                modifiers: Modifiers {
+                    shift: true,
+                    command: true,
+                    ..Modifiers::default()
+                },
+            };
+            Hotkey::deserialize(value).ok().as_ref() != Some(&default)
+        })
 }
 
 /// The hotkeys of every cue of a workspace document that has a readable one, any depth.

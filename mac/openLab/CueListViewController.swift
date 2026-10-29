@@ -258,6 +258,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var dragged: [CueNode] = []
     static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
 
+    /// Select Next / Previous: selects the visible row `delta` rows from the last selected one (from
+    /// before the first row, or after the last, when nothing is selected), as a click would: the
+    /// inspector follows and the playhead moves. At either end nothing changes.
+    func selectAdjacent(by delta: Int) {
+        let count = outlineView.numberOfRows
+        guard count > 0 else { return }
+        let from = outlineView.selectedRow >= 0 ? outlineView.selectedRow : (delta > 0 ? -1 : count)
+        let row = min(max(from + delta, 0), count - 1)
+        guard row != from, let node = outlineView.item(atRow: row) as? CueNode else { return }
+        selectAsUser([node.id])
+    }
+
     /// Selects and shows `ids` as a click would: the inspector follows and the playhead moves.
     func selectAsUser(_ ids: [ModelID]) {
         for id in ids {

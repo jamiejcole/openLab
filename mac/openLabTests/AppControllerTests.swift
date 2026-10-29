@@ -302,7 +302,6 @@ final class AppControllerTests: XCTestCase {
         let list: ModelID = "00000000-0000-0000-0000-000000000001"
         for (command, action) in [
             (TransportCommand.go, TransportAction.go(list: list)), (.pauseAll, .pauseAll), (.resumeAll, .resumeAll),
-            (.playheadNext, .playheadNext(list: list)), (.playheadPrevious, .playheadPrevious(list: list)),
         ] {
             await app.perform(command)
             XCTAssertEqual(transports(action), [second], "\(command)")
@@ -671,7 +670,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(app.canPerform(.go), "Space types a space")
         XCTAssertFalse(app.canPerform(.pauseAll))
         XCTAssertFalse(app.canPerform(.pauseResumeSelected), "P types a p")
-        XCTAssertTrue(app.canPerform(.playheadNext), "Shift-Cmd-Down is not a typing key")
         XCTAssertTrue(app.canPerform(.panic))
         typing = false
         XCTAssertTrue(app.canPerform(.go))
@@ -687,9 +685,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(item(.go)?.keyEquivalent, " ")
         XCTAssertEqual(item(.pauseAll)?.keyEquivalent, "[")
         XCTAssertEqual(item(.resumeAll)?.keyEquivalent, "]")
-        // Format v5 defaults (M5.11c): Next Cue is Shift-Cmd-Down, Stop All has no key.
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+        // Stop All has no key by default; there are no Next / Previous Cue items (format v6).
         XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "no Stop All key: Esc is the app-wide panic")
         XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
         XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
@@ -698,12 +694,49 @@ final class AppControllerTests: XCTestCase {
 
         try await setHotkeys(
             "1",
-            #"{"go":\#(Self.hotkey("g", ["command"])),"playhead_next":\#(Self.hotkey("down", ["command", "shift"]))}"#)
+            #"{"go":\#(Self.hotkey("g", ["command"]))}"#)
         MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, "g")
         XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalent, KeyChord.down)
-        XCTAssertEqual(item(.playheadNext)?.keyEquivalentModifierMask, [.command, .shift])
+    }
+
+    /// Select Next / Select Previous are fixed Cues-menu items (Cmd-Down / Cmd-Up), not in the key
+    /// map, and they move the selection of the front cue list; the playhead follows it.
+    func testSelectNextAndPreviousAreFixedMenuItemsThatMoveTheSelection() async throws {
+        keyDoc = "1"
+        let menus = MainMenu.make()
+        func item(_ title: String) -> NSMenuItem? { menus.cues.items.first { $0.title == loc(title) } }
+        XCTAssertEqual(item("menu.cues.selectNext")?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item("menu.cues.selectNext")?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item("menu.cues.selectPrevious")?.keyEquivalent, KeyChord.up)
+        XCTAssertEqual(item("menu.cues.selectPrevious")?.keyEquivalentModifierMask, [.command])
+        XCTAssertNotEqual(loc("menu.cues.selectNext"), "menu.cues.selectNext", "string exists")
+        let wc = try XCTUnwrap(app.windows["1"])
+        let outline = wc.cueList.outlineView
+        outline.selectRowIndexes([1], byExtendingSelection: false)
+        let selected = wc.cueList.selectedIDs()
+        app.selectAdjacentCue(by: 1)
+        XCTAssertEqual(outline.selectedRow, 2)
+        app.selectAdjacentCue(by: -1)
+        app.selectAdjacentCue(by: -1)
+        XCTAssertEqual(outline.selectedRow, 0)
+        app.selectAdjacentCue(by: -1)
+        XCTAssertEqual(outline.selectedRow, 0, "no wrap at the top")
+        XCTAssertEqual(selected.count, 1)
+        // The playhead follows the selection (the new cue is sent to the engine).
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        let target = try XCTUnwrap(wc.cueList.selectedIDs().first)
+        await assertEventually { !transports(.setPlayhead(list: list, cue: target)).isEmpty }
+    }
+
+    func testSuggestedFileNameIsTheFirstLineCappedToASafeLength() {
+        XCTAssertEqual(AppController.suggestedFileName("Hamlet"), "Hamlet")
+        XCTAssertEqual(AppController.suggestedFileName("Act 1\nsecond line"), "Act 1")
+        XCTAssertEqual(AppController.suggestedFileName("  a/b:c  "), "a-b-c")
+        XCTAssertEqual(AppController.suggestedFileName("\nonly the second"), "")
+        let long = AppController.suggestedFileName(String(repeating: "\u{1F3AD}", count: 1024))
+        XCTAssertLessThanOrEqual(long.utf8.count, 200)
+        XCTAssertFalse(long.isEmpty)
     }
 
     func testTransportMenuTitlesAreLocalised() {
@@ -1397,9 +1430,7 @@ final class AppControllerTests: XCTestCase {
         wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         XCTAssertEqual(wc.cueList.listID, second)
         await app.perform(.go)
-        await app.perform(.playheadNext)
         XCTAssertEqual(transports(.go(list: second)), ["1"])
-        XCTAssertEqual(transports(.playheadNext(list: second)), ["1"])
         XCTAssertTrue(transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty)
         wc.masthead.goButton.performClick(nil)  // the GO button follows the same list
         await assertEventually { transports(.go(list: second)).count == 2 }

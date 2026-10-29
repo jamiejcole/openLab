@@ -17,7 +17,6 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(keys.chord(for: .go), KeyChord(" "))
         XCTAssertEqual(keys.chord(for: .pauseAll), KeyChord("["))
         XCTAssertEqual(keys.chord(for: .resumeAll), KeyChord("]"))
-        XCTAssertEqual(keys.chord(for: .playheadNext), KeyChord(KeyChord.down, [.command, .shift]))
         XCTAssertEqual(keys.chord(for: .pauseResumeSelected), KeyChord("p"))
         XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("l"))
         XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("v"))
@@ -29,14 +28,11 @@ final class TransportKeysTests: XCTestCase {
     func testTheEnginesNewWorkspaceDefaultsMapToTheAppBehaviour() throws {
         let model = try settings(
             """
-            {"go":\(hk("space")),"stop_all":\(hk("escape")),"pause_all":\(hk("[")),"resume_all":\(hk("]")),
-             "playhead_next":\(hk("down")),"playhead_previous":\(hk("up"))}
+            {"go":\(hk("space")),"stop_all":\(hk("escape")),"pause_all":\(hk("[")),"resume_all":\(hk("]"))}
             """)
         let keys = TransportKeys(settings: model)
         XCTAssertEqual(keys.chord(for: .go), KeyChord(" "))
         XCTAssertNil(keys.chord(for: .stopAll), "Esc stays the app-wide panic")
-        XCTAssertNil(keys.chord(for: .playheadNext), "bare arrows: the selection moves the playhead")
-        XCTAssertNil(keys.chord(for: .playheadPrevious))
         XCTAssertTrue(keys.warnings.isEmpty)
     }
 
@@ -80,19 +76,24 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape), for: .go, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord("q"), for: .panic, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down), for: .go, in: [:]), .reserved)
-        // Up and Down are refused with any modifiers when recorded, but a show file's defaults
-        // (Shift-Command-Down / Up) still load.
+        // Up and Down are refused with any modifiers: there are no arrow keys in the key map.
         for mods: NSEvent.ModifierFlags in [.command, .shift, .option, .control, [.command, .shift]] {
             XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down, mods), for: .go, in: [:]), .reserved)
             XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.up, mods), for: .go, in: [:]), .reserved)
         }
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape, .shift), for: .go, in: [:]), .reserved)
         XCTAssertNil(TransportKeys.validate(KeyChord(KeyChord.left, .command), for: .go, in: [:]))
-        XCTAssertNil(
-            TransportKeys.validate(
-                KeyChord(KeyChord.down, [.command, .shift]), for: .playheadNext, in: [:], loading: true))
         XCTAssertEqual(
             TransportKeys.validate(KeyChord("x"), for: .go, in: [:], isCueHotkey: { _ in true }), .cueHotkey)
+    }
+
+    func testAStaleArrowKeyInAShowFileWarnsAndBindsNothing() throws {
+        let keys = TransportKeys(
+            settings: try settings(#"{"go":\#(hk("down", ["command", "shift"])),"pause_all":\#(hk("up", ["option"]))}"#)
+        )
+        XCTAssertNil(keys.chord(for: .go))
+        XCTAssertNil(keys.chord(for: .pauseAll))
+        XCTAssertEqual(keys.warnings.count, 2)
     }
 
     func testTypingClassification() {

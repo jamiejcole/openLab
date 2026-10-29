@@ -189,6 +189,11 @@ pub enum IssueKind {
     /// group, and since version 3 a group Fade moves each child relative to its level (QLab 5,
     /// check F2) where it used to set it, so the cue may now sound different. Kept as it is.
     GroupFadeNowRelative,
+    /// Warning, only when loading a show file older than version 6: the workspace had its own
+    /// Next Cue or Previous Cue key. Version 6 has none (QLab 5's key map has no such action and
+    /// takes no Up or Down arrow; the arrows and Select Next / Previous move the selection and
+    /// with it the playhead), so the key was removed.
+    PlayheadKeysRemoved,
     /// An OSC rights set had Edit or Control without View: they were cleared. `row` is the
     /// passcode row (`None`: the No Passcode row).
     OscRightsNeedView { row: Option<usize> },
@@ -283,6 +288,12 @@ impl fmt::Display for ValidationIssue {
             IssueKind::HotkeyUsedByWorkspace { action } => write!(
                 f,
                 "hotkey is the workspace's {action} key, which wins: it does not start this cue"
+            ),
+            IssueKind::PlayheadKeysRemoved => write!(
+                f,
+                "this show had its own Next Cue or Previous Cue key; the key map no longer has \
+                 them (the Up and Down arrows and Select Next / Previous move the playhead with \
+                 the selection), so the key was removed"
             ),
             IssueKind::GroupFadeNowRelative => write!(
                 f,

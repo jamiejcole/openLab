@@ -207,7 +207,9 @@ pub struct WorkspaceSettings {
 
 /// Remappable workspace keys (TRG-01): the transport keys and the selected-cue keys of QLab 5's
 /// keyboard map (Workspace Settings, Controls, Keyboard). `None` = no key. Esc is not among them:
-/// it is the fixed panic key, as in QLab.
+/// it is the fixed panic key, as in QLab. Neither is a Next / Previous Cue key (format v6
+/// dropped them): QLab's key map has none and takes no Up or Down arrow, which move the
+/// selection (and with it the playhead).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransportHotkeys {
     pub go: Option<Hotkey>,
@@ -215,8 +217,6 @@ pub struct TransportHotkeys {
     pub stop_all: Option<Hotkey>,
     pub pause_all: Option<Hotkey>,
     pub resume_all: Option<Hotkey>,
-    pub playhead_next: Option<Hotkey>,
-    pub playhead_previous: Option<Hotkey>,
     /// Load the selected cue (QLab: Load Last Selected, `L`).
     pub load_selected: Option<Hotkey>,
     /// Pause or resume the selected cues (QLab: `P`).
@@ -228,14 +228,12 @@ pub struct TransportHotkeys {
 
 impl TransportHotkeys {
     /// Every key with its field name (`"go"`, `"stop_all"`, ...), in declaration order.
-    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 11] {
+    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 9] {
         [
             ("go", &self.go),
             ("stop_all", &self.stop_all),
             ("pause_all", &self.pause_all),
             ("resume_all", &self.resume_all),
-            ("playhead_next", &self.playhead_next),
-            ("playhead_previous", &self.playhead_previous),
             ("load_selected", &self.load_selected),
             ("pause_resume_selected", &self.pause_resume_selected),
             ("start_selected", &self.start_selected),
@@ -261,8 +259,6 @@ pub(crate) fn hotkey_field(name: &str) -> &'static str {
         "stop_all" => "settings.hotkeys.stop_all",
         "pause_all" => "settings.hotkeys.pause_all",
         "resume_all" => "settings.hotkeys.resume_all",
-        "playhead_next" => "settings.hotkeys.playhead_next",
-        "playhead_previous" => "settings.hotkeys.playhead_previous",
         "load_selected" => "settings.hotkeys.load_selected",
         "pause_resume_selected" => "settings.hotkeys.pause_resume_selected",
         "start_selected" => "settings.hotkeys.start_selected",
@@ -272,17 +268,14 @@ pub(crate) fn hotkey_field(name: &str) -> &'static str {
     }
 }
 
-/// Keys no workspace key may be when an edit sets them: Esc and Up / Down, each with any
-/// modifiers (QLab 5 refuses Esc as the fixed panic key and the arrows whatever is held). The
-/// defaults Shift-Command-Down / Up (QLab's menu keys) stay because an edit does not judge a key
-/// it leaves as it is; recording one anew is refused.
+/// Keys no workspace key may be: Esc and Up / Down, each with any modifiers (QLab 5 refuses Esc
+/// as the fixed panic key and the arrows whatever is held).
 pub fn is_reserved_key(hotkey: &Hotkey) -> bool {
     hotkey.key == "escape" || matches!(hotkey.key.as_str(), "up" | "down")
 }
 
 impl Default for TransportHotkeys {
-    /// A new workspace's keys (format v5), QLab 5's defaults: Next / Previous Cue are QLab's
-    /// menu keys Shift-Command-Down / Up; Stop All has no key (Esc is panic).
+    /// A new workspace's keys (format v5), QLab 5's defaults; Stop All has no key (Esc is panic).
     fn default() -> Self {
         let key = |key: &str| {
             Some(Hotkey {
@@ -290,23 +283,11 @@ impl Default for TransportHotkeys {
                 modifiers: Modifiers::default(),
             })
         };
-        let shift_command = |key: &str| {
-            Some(Hotkey {
-                key: key.into(),
-                modifiers: Modifiers {
-                    shift: true,
-                    command: true,
-                    ..Modifiers::default()
-                },
-            })
-        };
         Self {
             go: key("space"),
             stop_all: None,
             pause_all: key("["),
             resume_all: key("]"),
-            playhead_next: shift_command("down"),
-            playhead_previous: shift_command("up"),
             load_selected: key("l"),
             pause_resume_selected: key("p"),
             start_selected: None,

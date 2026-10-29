@@ -77,8 +77,6 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case stopAll = "stop_all"
     case pauseAll = "pause_all"
     case resumeAll = "resume_all"
-    case playheadNext = "playhead_next"
-    case playheadPrevious = "playhead_previous"
     case loadSelected = "load_selected"
     case pauseResumeSelected = "pause_resume_selected"
     case startSelected = "start_selected"
@@ -104,8 +102,9 @@ extension Command {
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 
-    /// `RenameWorkspace { name }`: the show title, undoable. At most 256 characters, no control
-    /// characters (docs/commands.md); the engine refuses anything else.
+    /// `RenameWorkspace { name }`: the show title, undoable. At most 1024 Unicode scalars; a newline
+    /// is allowed, other control characters are not (docs/commands.md); the engine refuses anything
+    /// else.
     static func renameWorkspace(_ name: String) -> Command {
         Command(.object(["type": .string("rename_workspace"), "name": .string(name)]))
     }

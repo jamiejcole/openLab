@@ -124,7 +124,7 @@ fn every_setting_can_be_set_and_undone() {
             value: Some(key.clone()),
         }),
         setting(WorkspaceSetting::Hotkey {
-            key: TransportKey::PlayheadPrevious,
+            key: TransportKey::PauseAll,
             value: None,
         }),
     ] {
@@ -215,19 +215,23 @@ fn esc_and_up_down_with_any_modifiers_are_refused_as_workspace_keys() {
             TransportKey::Go,
             with_mods("escape", true, true, true, true),
         ),
-        (TransportKey::PlayheadNext, plain("down")),
-        (TransportKey::PlayheadPrevious, plain("up")),
+        (TransportKey::PauseAll, plain("down")),
+        (TransportKey::ResumeAll, plain("up")),
         (
             TransportKey::LoadSelected,
             with_mods("up", true, false, false, false),
         ),
-        // QLab 5 refuses the arrows whatever is held (answer R21).
+        // QLab 5 refuses the arrows whatever is held, Shift-Command-Down included.
         (
-            TransportKey::PlayheadNext,
+            TransportKey::Go,
+            with_mods("down", true, false, false, true),
+        ),
+        (
+            TransportKey::PauseAll,
             with_mods("down", false, false, true, false),
         ),
         (
-            TransportKey::PlayheadPrevious,
+            TransportKey::ResumeAll,
             with_mods("up", false, true, false, false),
         ),
         (
@@ -245,18 +249,22 @@ fn esc_and_up_down_with_any_modifiers_are_refused_as_workspace_keys() {
         &ws,
         set_key(TransportKey::StartSelected, Some(plain("right"))),
     );
-    // Reset to the defaults is never refused, though Next / Previous Cue default to arrows.
-    let mut moved = ws.clone();
-    moved.settings.hotkeys.playhead_next = Some(plain("n"));
-    moved.settings.hotkeys.playhead_previous = Some(plain("m"));
-    let defaults = ws.settings.hotkeys.clone();
-    let reset = round_trip(
-        &moved,
+    // The whole map is judged the same way, and no default is an arrow.
+    let mut bad = ws.settings.hotkeys.clone();
+    bad.stop_selected = Some(with_mods("up", false, false, false, true));
+    refusal(
+        &ws,
         setting(WorkspaceSetting::Hotkeys {
-            value: Box::new(defaults.clone()),
+            value: Box::new(bad),
         }),
     );
-    assert_eq!(reset.settings.hotkeys, defaults);
+    assert!(
+        ws.settings
+            .hotkeys
+            .slots()
+            .iter()
+            .all(|(_, k)| k.as_ref().is_none_or(|k| !is_reserved_key(k)))
+    );
 }
 
 #[test]

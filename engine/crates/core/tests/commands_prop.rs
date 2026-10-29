@@ -472,8 +472,6 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::StopAll,
         TransportKey::PauseAll,
         TransportKey::ResumeAll,
-        TransportKey::PlayheadNext,
-        TransportKey::PlayheadPrevious,
         TransportKey::LoadSelected,
         TransportKey::PauseResumeSelected,
         TransportKey::StartSelected,
