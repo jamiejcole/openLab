@@ -745,9 +745,10 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("autosave") }, ["autosave:Copy"])
     }
 
-    /// No hash to compare (A is listed without one, as by an engine before the field; the new
-    /// workspace has no path): the workspace id alone holds its autosaves, as before.
-    func testWithoutAListedHashAnOpenWorkspaceHoldsItsAutosavesByIdAlone() async throws {
+    /// No hash to compare (A is listed without one, as by an engine before the field): the
+    /// workspace id alone holds its autosaves, as before. An untitled window holds only its own
+    /// hashless autosave: one of a saved copy with its workspace id is offered (#385).
+    func testWithoutAListedHashTheIdHoldsAndAnUntitledWindowHoldsOnlyItsOwn() async throws {
         await app.newWorkspace()
         await assertEventually { self.app.windows.count == 3 }
         let a = try XCTUnwrap(app.session.workspaces.first { $0.path == "/Shows/A.openlab" })
@@ -758,6 +759,28 @@ final class EngineCrashFlowTests: XCTestCase {
             current(untitled, name: "Other", hash: "00000000000000c1"),
             current(untitled, name: "Own", hash: nil),
         ]
+        alerts.restoreAutosaves = false
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["autosave:Other"])
+    }
+
+    /// Review M1: right after a Save As the window's document has the new path while the list
+    /// still names the old one with its hash. The window holds its workspace by id alone until the
+    /// list catches up, so its own new autosave is not offered.
+    func testAfterASaveAsNotListedYetTheWindowsOwnAutosaveIsNotOffered() async throws {
+        engine.pathHashes = ["/Shows/B.openlab": "00000000000000b1", "/Shows/C.openlab": "00000000000000c1"]
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/B.openlab"))
+        await assertEventually {
+            self.app.windows.count == 3 && self.app.session.workspaces.contains { $0.pathHash == "00000000000000b1" }
+        }
+        let listed = try XCTUnwrap(app.session.workspaces.first { $0.path == "/Shows/B.openlab" })
+        let store = try XCTUnwrap(app.session.stores[listed.doc])
+        await assertEventually { store.model != nil }
+        guard case .success = await store.saveAs(path: "/Shows/C.openlab") else { return XCTFail("save as") }
+        await assertEventually { store.document?.path == "/Shows/C.openlab" }
+        XCTAssertEqual(
+            app.session.workspaces.first { $0.doc == listed.doc }?.path, "/Shows/B.openlab", "the list lags")
+        engine.recoveryEntries = [current(listed.workspaceId, name: "Own", hash: "00000000000000c1")]
         await alarm.recoverAutosaves()
         XCTAssertEqual(alerts.log, ["info:" + loc("recover.none")])
     }
@@ -803,6 +826,16 @@ final class AutosaveOfferTests: XCTestCase {
         XCTAssertEqual(AutosaveOffer.offerable([copy, untitled], held: [holder(w, nil)], windows: [window]), [])
         XCTAssertEqual(AutosaveOffer.offerable([untitled], held: [holder(w)], windows: [window]), [])
         XCTAssertEqual(AutosaveOffer.offerable([untitled], held: [holder(other, nil)], windows: []), [untitled])
+    }
+
+    /// #385: a window known to be untitled (restored from a copy's autosave, it kept that
+    /// workspace id) holds only its own hashless autosave, not the saved copies'.
+    func testAnUntitledWindowHoldsOnlyTheHashlessAutosave() {
+        let copy = entry(w, ms: 6, stale: false, hash: "00000000000000bb")
+        let own = entry(w, ms: 7, stale: false, hash: nil)
+        let held: Set = [AutosaveOffer.Holder(workspace: w, pathHash: nil, untitled: true)]
+        let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([copy, own], held: held, windows: [window]), [copy])
     }
 
     /// Another copy's autosave restored into a window (which got a fresh workspace id) is that

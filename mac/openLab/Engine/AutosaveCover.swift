@@ -52,16 +52,20 @@ enum AutosaveOffer {
     }
 
     /// A workspace a window shows or waits to reopen, with the hash the engine names its autosave
-    /// by (`workspaces`' `path_hash`). nil: never saved, or not known (an engine that does not send
-    /// it, or a path the engine has not listed yet).
+    /// by (`workspaces`' `path_hash`). nil: not known (an engine that does not send it, a path the
+    /// engine has not listed yet), or never saved (`untitled`).
     struct Holder: Hashable {
         var workspace: ModelID
         var pathHash: String?
+        /// Known to have no path: its autosave is `<workspace id>.openlab`, with no hash.
+        var untitled = false
 
         /// A copy of a show has its workspace id, so the id alone does not say whose autosave it
-        /// is: the hash does, when both sides have one (#359).
+        /// is: the hash does, when both sides have one (#359). An untitled window (one restored
+        /// from a copy's autosave keeps that workspace id) holds only the hashless one (#385).
         func holds(_ entry: RecoveryEntryInfo) -> Bool {
             guard entry.workspaceId == workspace else { return false }
+            if untitled { return entry.pathHash == nil }
             guard let pathHash, let other = entry.pathHash else { return true }
             return pathHash == other
         }
