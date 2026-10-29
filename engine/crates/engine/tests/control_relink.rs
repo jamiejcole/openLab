@@ -38,6 +38,15 @@ fn rig_with(
     names: &[&str],
     tweak: impl FnOnce(&mut openlab_engine::control::ControlConfig),
 ) -> Rig {
+    rig_inner(names, false, tweak)
+}
+
+/// `saved`: the show has a file (`<env>/show/My Show.openlab`), so Save works.
+fn rig_inner(
+    names: &[&str],
+    saved: bool,
+    tweak: impl FnOnce(&mut openlab_engine::control::ControlConfig),
+) -> Rig {
     let env = env();
     let gone = env.root.path().join("gone");
     let ws = workspace(
@@ -51,6 +60,9 @@ fn rig_with(
     let mut c = config(&ws);
     c.app_dirs = Some(env.dirs.clone());
     c.clock = clock.clock();
+    if saved {
+        c.show_path = Some(env.show_path());
+    }
     tweak(&mut c);
     let lib = env.root.path().join("lib");
     fs::create_dir_all(&lib).unwrap();
@@ -442,4 +454,109 @@ fn a_relinked_cue_gets_its_new_files_lengths() {
     };
     assert_eq!(told, vec![expected.clone()]);
     assert_eq!(r.s.control().snapshot().media_durations, vec![expected]);
+}
+
+#[test]
+fn save_works_while_a_relink_walk_is_pending_and_saves_the_model_as_it_is() {
+    // #200: Save does not use the single pending document-request slot, so a walk stuck on a
+    // slow volume does not stop the operator saving.
+    let (hook, entered, release) = hold_first_job();
+    let mut r = rig_inner(&["a.wav"], true, |c| c.doc_hook = Some(hook));
+    touch(&r.lib.join("a.wav"));
+    let folder = r.lib.to_string_lossy().into_owned();
+    let (_, mut walk) = deliver(&mut r, Request::Relink { folder });
+    entered.recv().unwrap();
+    let gone_ref = media(&r.s, 1);
+    let (_, mut save) = deliver(&mut r, Request::Save);
+    let mut answer = None;
+    while answer.is_none() {
+        r.s.tick();
+        answer = save.try_recv().ok();
+        std::thread::yield_now();
+    }
+    assert!(
+        matches!(
+            answer,
+            Some(ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            })
+        ),
+        "{answer:?}"
+    );
+    assert!(walk.try_recv().is_err(), "the walk is still pending");
+    assert!(!r.s.control().is_unsaved());
+    // The file holds the model as it stood: the cue still points at the missing file.
+    let saved = openlab_core::load_show(&fs::read_to_string(r._env.show_path()).unwrap())
+        .unwrap()
+        .workspace;
+    let saved_media = openlab_core::audio_media(&saved);
+    assert_eq!(
+        openlab_core::to_portable(saved_media[0].1.as_str(), openlab_core::PathStyle::host()),
+        gone_ref
+    );
+    // The walk then lands as an edit after the save: relinked, and the show is dirty again.
+    release.send(()).unwrap();
+    let mut got = None;
+    while got.is_none() {
+        r.s.tick();
+        got = walk.try_recv().ok();
+        std::thread::yield_now();
+    }
+    assert_eq!(counts(&[got.unwrap()]).0, 1);
+    assert!(r.s.control().is_unsaved());
+}
+
+/// Plays a 2 s cue; with `relink`, its file moves into a library folder mid-play and a relink
+/// follows. Returns the audible span of the output. Unix only: Windows refuses to move a file
+/// a voice has open.
+#[cfg(unix)]
+fn playing_cue_span(relink_midway: bool) -> (usize, usize) {
+    let env = env();
+    let lib = env.root.path().join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    let original = wav(&dc(2 * RATE as usize, 0.5));
+    let name = original.file_name().unwrap().to_owned();
+    let ws = workspace(vec![audio(1, &original, 0)]);
+    let mut c = config(&ws);
+    c.app_dirs = Some(env.dirs.clone());
+    let mut s = show_with(ws, c);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    let run = s.control().engine().run_of(id(1)).unwrap();
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Running
+    );
+    if relink_midway {
+        fs::copy(&original, lib.join(&name)).unwrap();
+        fs::remove_file(&original).unwrap();
+        let request_id = s.request_id();
+        let msgs = s.send(ClientMessage::Request {
+            id: request_id,
+            request: Request::Relink {
+                folder: lib.to_string_lossy().into_owned(),
+            },
+        });
+        assert_eq!(counts(&msgs).0, 1);
+        assert_eq!(media(&s, 1), portable(&lib.join(&name)));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running
+        );
+        assert_eq!(s.control().engine().run_of(id(1)), Some(run));
+    }
+    run_until_idle(&mut s, id(1), 4 * u64::from(RATE));
+    let out = s.channel(0);
+    (first_nonzero(&out).unwrap(), last_nonzero(&out).unwrap())
+}
+
+/// #200: relinking the media of a cue that is playing leaves its voice alone: same run, and it
+/// sounds exactly as long as the same cue with no relink.
+#[cfg(unix)]
+#[test]
+fn relinking_the_media_of_a_playing_cue_leaves_its_voice_alone() {
+    let (first, last) = playing_cue_span(false);
+    assert!(last - first >= 2 * RATE as usize - 2 * BLOCK as usize);
+    assert_eq!(playing_cue_span(true), (first, last));
 }

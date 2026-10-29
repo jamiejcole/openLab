@@ -329,3 +329,52 @@ fn a_groups_post_wait_counts_from_its_action_start() {
     );
     assert_eq!(rig.timers(2000), [(1, Timer::PostWait, 2000, Some(1000))]);
 }
+
+#[test]
+fn a_halted_playlists_follow_wait_counts_its_whole_rest_down() {
+    // #192: an auto-follow playlist of two sounds (4 s and 3 s) halts when the first breaks
+    // while playing. Its action ends at the broken child's nominal end (4 s); the follow then
+    // comes 3 s later, as if the second child had played. The countdown shows that rest as
+    // the whole post-wait: elapsed + remaining = 3000, not a total of 0.
+    let sound = |n| cue(n, audio());
+    let p = timed(
+        cue(
+            1,
+            CueKind::Group {
+                mode: GroupMode::Playlist {
+                    loop_: false,
+                    shuffle: false,
+                },
+                children: vec![sound(10), sound(11)],
+            },
+        ),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![p, memo(2)]);
+    let lengths = [(10, 4000), (11, 3000)]
+        .into_iter()
+        .map(|(n, f)| (id(n), Some(f)))
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    rig.start(0, 1);
+    let run = rig.engine.run_of(id(10)).unwrap();
+    rig.at(
+        1000,
+        Input::ActionFailed {
+            cue: id(10),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    // Still in the broken child's nominal time: no follow wait yet.
+    assert!(rig.timers(3000).iter().all(|t| t.1 != Timer::PostWait));
+    assert_eq!(rig.engine.state(id(1)), CueState::Running);
+    // The action is over; the group waits for its follow.
+    assert_eq!(rig.timers(4000), [(1, Timer::PostWait, 0, Some(3000))]);
+    assert_eq!(rig.engine.state(id(1)), CueState::PostWaiting);
+    assert_eq!(rig.timers(5000), [(1, Timer::PostWait, 1000, Some(2000))]);
+    assert_eq!(rig.read(6500), [(1, Timer::PostWait, 2500, Some(500))]);
+    assert_eq!(rig.timers(7000), []);
+}

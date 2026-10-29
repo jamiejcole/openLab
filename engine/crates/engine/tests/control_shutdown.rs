@@ -490,3 +490,129 @@ fn a_show_whose_save_is_stuck_still_gets_its_final_recovery_write() {
     assert_eq!(names(&env.dirs.recovery_dir()).len(), 1);
     drop(release);
 }
+
+/// Holds the first autosave on the writer until `release` is sent; `entered` says it is held.
+fn hold_first_autosave() -> (SaveHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release, gate) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let gate = Mutex::new(gate);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Autosave && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(60));
+        }
+    }));
+    (hook, entered, release)
+}
+
+/// The workspace name held by the only recovery file.
+fn recovery_name(env: &Env) -> String {
+    let files = names(&env.dirs.recovery_dir());
+    assert_eq!(files.len(), 1, "{files:?}");
+    let text = fs::read_to_string(env.dirs.recovery_dir().join(files.first().unwrap())).unwrap();
+    openlab_core::load_show(&text).unwrap().workspace.name
+}
+
+fn rename(s: &mut OfflineShow, doc: DocId, name: &str) {
+    edit(s, doc, Command::RenameWorkspace { name: name.into() });
+}
+
+/// #163: the autosave of the last edit is still being written when the engine quits: the final
+/// write waits for that one instead of writing the same revision again.
+#[test]
+fn an_autosave_of_the_last_edit_in_flight_at_shutdown_is_waited_for() {
+    let env = env();
+    let (hook, entered, release) = hold_first_autosave();
+    let writes = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&writes);
+    let counting = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Autosave {
+            *counted.lock().unwrap() += 1;
+        }
+        (hook.0)(kind);
+    }));
+    let (mut s, clock) = launch(&env, |c| {
+        c.save_hook = Some(counting);
+        c.shutdown_wait = Duration::from_secs(30);
+    });
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    rename(&mut s, doc, "last edit");
+    s.tick();
+    clock.advance(31_000);
+    s.tick();
+    // The autosave of this revision is on the writer, held there.
+    entered.recv().unwrap();
+    assert!(names(&env.dirs.recovery_dir()).is_empty());
+    // The disk answers once shutdown is waiting (the control thread polls nothing meanwhile).
+    let releaser = std::thread::spawn(move || release.send(()).unwrap());
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            written: 1,
+            ..FinalWrites::default()
+        }
+    );
+    releaser.join().unwrap();
+    assert_eq!(recovery_name(&env), "last edit");
+    assert_eq!(
+        *writes.lock().unwrap(),
+        1,
+        "no second write of the revision"
+    );
+}
+
+/// #163: an autosave of an older revision is still in flight when the engine quits: the final
+/// write is its own, newer one, queued behind it (the writer takes one write of a show at a
+/// time), and the file ends up holding the last edit, not the older one.
+#[test]
+fn an_older_autosave_in_flight_at_shutdown_is_superseded_by_the_final_write() {
+    let env = env();
+    let (hook, entered, release) = hold_first_autosave();
+    let (mut s, clock) = launch(&env, |c| {
+        c.save_hook = Some(hook);
+        c.shutdown_wait = Duration::from_secs(30);
+    });
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    rename(&mut s, doc, "first edit");
+    s.tick();
+    clock.advance(31_000);
+    s.tick();
+    entered.recv().unwrap();
+    // An edit after the autosave went out: the held one is of an older revision.
+    // (Delivered, not sent: `send_doc` settles the writer first, which this test holds.)
+    let (tx, mut reply) = openlab_engine::control::reply_channel();
+    let request = s.request_id();
+    s.deliver(openlab_engine::control::Inbox::Conn {
+        doc: Some(doc),
+        message: ClientMessage::Command {
+            id: request,
+            command: Box::new(Command::RenameWorkspace {
+                name: "last edit".into(),
+            }),
+            coalesce: None,
+        },
+        reply: tx,
+    });
+    assert!(matches!(
+        reply.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    ));
+    let releaser = std::thread::spawn(move || release.send(()).unwrap());
+    let finals = s.shutdown();
+    assert_eq!(
+        finals,
+        FinalWrites {
+            written: 1,
+            ..FinalWrites::default()
+        }
+    );
+    releaser.join().unwrap();
+    assert_eq!(recovery_name(&env), "last edit");
+    drop(s);
+    assert_eq!(recovery_name(&env), "last edit");
+}
