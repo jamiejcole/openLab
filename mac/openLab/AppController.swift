@@ -214,9 +214,21 @@ final class AppController {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    /// A workspace name as the Save panel's suggested file name: its first line, trimmed, without
+    /// path separators, and short enough for a file name with the extension (a name can be 1024
+    /// characters and span lines; file names are at most 255 bytes).
+    static func suggestedFileName(_ name: String) -> String {
+        let line =
+            name.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        var out = line.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        while out.utf8.count > 200 { out.removeLast() }
+        return out
+    }
+
     private static func savePanel(_ name: String) -> URL? {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = name
+        panel.nameFieldStringValue = suggestedFileName(name)
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
         return panel.runModal() == .OK ? panel.url : nil
     }

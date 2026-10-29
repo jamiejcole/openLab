@@ -48,8 +48,6 @@ pub enum TransportKey {
     StopAll,
     PauseAll,
     ResumeAll,
-    PlayheadNext,
-    PlayheadPrevious,
     LoadSelected,
     PauseResumeSelected,
     StartSelected,
@@ -112,10 +110,6 @@ struct StrictHotkeys {
     #[serde(deserialize_with = "required")]
     resume_all: Option<Hotkey>,
     #[serde(deserialize_with = "required")]
-    playhead_next: Option<Hotkey>,
-    #[serde(deserialize_with = "required")]
-    playhead_previous: Option<Hotkey>,
-    #[serde(deserialize_with = "required")]
     load_selected: Option<Hotkey>,
     #[serde(deserialize_with = "required")]
     pause_resume_selected: Option<Hotkey>,
@@ -142,8 +136,6 @@ fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(
         stop_all: w.stop_all,
         pause_all: w.pause_all,
         resume_all: w.resume_all,
-        playhead_next: w.playhead_next,
-        playhead_previous: w.playhead_previous,
         load_selected: w.load_selected,
         pause_resume_selected: w.pause_resume_selected,
         start_selected: w.start_selected,
@@ -211,8 +203,6 @@ fn key_name(key: TransportKey) -> &'static str {
         TransportKey::StopAll => "stop_all",
         TransportKey::PauseAll => "pause_all",
         TransportKey::ResumeAll => "resume_all",
-        TransportKey::PlayheadNext => "playhead_next",
-        TransportKey::PlayheadPrevious => "playhead_previous",
         TransportKey::LoadSelected => "load_selected",
         TransportKey::PauseResumeSelected => "pause_resume_selected",
         TransportKey::StartSelected => "start_selected",
@@ -228,8 +218,6 @@ fn hotkey_slot(s: &WorkspaceSettings, key: TransportKey) -> &Option<Hotkey> {
         TransportKey::StopAll => &keys.stop_all,
         TransportKey::PauseAll => &keys.pause_all,
         TransportKey::ResumeAll => &keys.resume_all,
-        TransportKey::PlayheadNext => &keys.playhead_next,
-        TransportKey::PlayheadPrevious => &keys.playhead_previous,
         TransportKey::LoadSelected => &keys.load_selected,
         TransportKey::PauseResumeSelected => &keys.pause_resume_selected,
         TransportKey::StartSelected => &keys.start_selected,
@@ -245,8 +233,6 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
         TransportKey::StopAll => &mut keys.stop_all,
         TransportKey::PauseAll => &mut keys.pause_all,
         TransportKey::ResumeAll => &mut keys.resume_all,
-        TransportKey::PlayheadNext => &mut keys.playhead_next,
-        TransportKey::PlayheadPrevious => &mut keys.playhead_previous,
         TransportKey::LoadSelected => &mut keys.load_selected,
         TransportKey::PauseResumeSelected => &mut keys.pause_resume_selected,
         TransportKey::StartSelected => &mut keys.start_selected,
@@ -258,7 +244,7 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
 /// Why a workspace key was refused ([`CommandError::HotkeyRefused`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HotkeyClash {
-    /// Esc, or a bare Up / Down arrow ([`is_reserved_key`]).
+    /// Esc, or an Up / Down arrow, with any modifiers ([`is_reserved_key`]).
     Reserved,
     /// Another key of the new map is the same; its show-file path.
     Workspace { other: &'static str },
@@ -270,7 +256,7 @@ impl fmt::Display for HotkeyClash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserved => f.write_str(
-                "the key is reserved: Esc is panic and the bare Up and Down arrows move the selection",
+                "the key is reserved: Esc is panic and the Up and Down arrows move the selection",
             ),
             Self::Workspace { other } => write!(f, "the same key is already {other}"),
             Self::Cue {

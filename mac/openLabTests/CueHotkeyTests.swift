@@ -74,6 +74,9 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord(KeyChord.escape)), .reserved)
         XCTAssertEqual(validate(KeyChord(KeyChord.up)), .reserved)
         XCTAssertEqual(validate(KeyChord(KeyChord.down)), .reserved)
+        XCTAssertEqual(validate(KeyChord(KeyChord.down, .command)), .reserved, "any modifiers")
+        XCTAssertEqual(validate(KeyChord(KeyChord.up, [.control, .option])), .reserved)
+        XCTAssertEqual(validate(KeyChord(KeyChord.escape, .shift)), .reserved)
         XCTAssertEqual(validate(KeyChord(" ")), .duplicate(of: .go))
         XCTAssertEqual(validate(KeyChord("[")), .duplicate(of: .pauseAll))
         XCTAssertNil(validate(KeyChord("p")), "a fixed app default (L, P, V) yields to a cue hotkey")
@@ -84,7 +87,6 @@ final class HotkeyRulesTests: XCTestCase {
     func testAllowedKeys() {
         XCTAssertNil(validate(KeyChord("a")))
         XCTAssertNil(validate(KeyChord(KeyChord.left)), "QLab allows left and right")
-        XCTAssertNil(validate(KeyChord(KeyChord.down, [.command])))
         XCTAssertNil(validate(KeyChord(" ", [.shift])))
     }
 
@@ -194,12 +196,15 @@ final class TriggersTabTests: XCTestCase {
         let cases: [(KeyChord, String)] = [
             (KeyChord(KeyChord.escape), "inspector.hotkey.reserved"),
             (KeyChord(KeyChord.up), "inspector.hotkey.reserved"),
+            (KeyChord(KeyChord.down, [.command, .shift]), "inspector.hotkey.reserved"),
             (KeyChord(" "), "inspector.hotkey.transport"),
             (KeyChord("s", [.command]), "inspector.hotkey.menu"),
             (KeyChord("\u{7F}"), "inspector.hotkey.unsupported"),
         ]
+        let shown = vc.hotkeyField.stringValue
         for (chord, key) in cases {
             XCTAssertFalse(vc.record(chord))
+            XCTAssertEqual(vc.hotkeyField.stringValue, shown, "a refused key does not appear in the field")
             XCTAssertEqual(vc.messageLabel.stringValue, loc(key))
             XCTAssertNotEqual(loc(key), key, "string exists")
         }

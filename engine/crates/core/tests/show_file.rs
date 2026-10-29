@@ -17,7 +17,8 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
+const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
 const V4_EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
 const V3_EXAMPLE: &str = include_str!("../../../fixtures/show/v3-example.openlab");
 const V3_NO_PASSCODE: &str = include_str!("../../../fixtures/show/v3-no-passcode.openlab");
@@ -125,8 +126,6 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
     assert_eq!(loaded.warnings, vec![]);
     let keys = &loaded.workspace.settings.hotkeys;
     assert_eq!(keys.stop_all, None);
-    assert_eq!(keys.playhead_next, None);
-    assert_eq!(keys.playhead_previous, None);
     assert_eq!(keys.go.as_ref().unwrap().key, "space");
     assert_eq!(keys.load_selected.as_ref().unwrap().key, "l");
     assert_eq!(keys.pause_resume_selected.as_ref().unwrap().key, "p");
@@ -143,6 +142,64 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
         (&None, &None, &None)
     );
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+}
+
+/// v6 dropped the Next / Previous Cue keys (QLab's key map has none and takes no arrow keys).
+/// The v5 example, which has the defaults Shift-Command-Down / Up, loads without a warning and is
+/// the current example.
+#[test]
+fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
+    let loaded = load_show(V5_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let migrated = migrate(serde_json::from_str(V5_EXAMPLE).unwrap(), 5).unwrap();
+    let keys = &migrated["workspace"]["settings"]["hotkeys"];
+    assert!(keys.get("playhead_next").is_none() && keys.get("playhead_previous").is_none());
+    assert_eq!(keys["go"]["key"], "space", "the other keys stay");
+    assert_eq!(migrated["format_version"], FORMAT_VERSION);
+}
+
+/// A v5 show whose own Next / Previous Cue key is not the default loses it with one warning;
+/// none or the defaults give no warning. A value that is not even a key counts as the user's.
+#[test]
+fn a_custom_playhead_key_is_dropped_with_one_warning() {
+    let key = |k: &str, shift: bool, command: bool| {
+        serde_json::json!({"key": k, "modifiers": {
+            "shift": shift, "control": false, "alt": false, "command": command}})
+    };
+    let load = |next: serde_json::Value, previous: serde_json::Value| {
+        let mut doc: serde_json::Value = serde_json::from_str(V5_EXAMPLE).unwrap();
+        let keys = &mut doc["workspace"]["settings"]["hotkeys"];
+        keys["playhead_next"] = next;
+        keys["playhead_previous"] = previous;
+        load_show(&doc.to_string()).unwrap()
+    };
+    let removed = |show: &LoadedShow| {
+        show.warnings
+            .iter()
+            .filter(|w| w.kind == IssueKind::PlayheadKeysRemoved)
+            .count()
+    };
+    let default_next = key("down", true, true);
+    let default_previous = key("up", true, true);
+    let none = serde_json::Value::Null;
+    let current = load_show(EXAMPLE).unwrap().workspace;
+    for (next, previous, warnings) in [
+        (default_next.clone(), default_previous.clone(), 0),
+        (none.clone(), none.clone(), 0),
+        (key("n", false, false), default_previous.clone(), 1),
+        (default_next.clone(), key("down", false, true), 1),
+        (key("n", false, false), key("m", false, false), 1),
+        (serde_json::json!(7), none.clone(), 1),
+    ] {
+        let show = load(next, previous);
+        assert_eq!(removed(&show), warnings);
+        assert_eq!(show.workspace, current, "the keys are gone, nothing else");
+        // Saved, it is the current format with no trace of them.
+        let text = save_show(&show.workspace).unwrap();
+        assert!(!text.contains("playhead_next"));
+        assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+    }
 }
 
 /// A selected-cue key the app gave up in v4 (a cue hotkey or a transport key on L or P) stays
@@ -169,8 +226,6 @@ fn v4_migration_keeps_every_key_a_cue_or_transport_key_had() {
     let keys = &ws.settings.hotkeys;
     assert_eq!(keys.go.as_ref().unwrap().key, "p");
     assert_eq!(keys.stop_all, None);
-    assert_eq!(keys.playhead_next.as_ref().unwrap().key, "down");
-    assert_eq!(keys.playhead_previous, None);
     assert_eq!(keys.load_selected, None, "L is Thunder's");
     assert_eq!(keys.pause_resume_selected, None, "P is GO's");
     assert_eq!(keys.start_selected, None);
@@ -565,7 +620,7 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 5", "\"format_version\": 7", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 6", "\"format_version\": 7", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
@@ -1074,27 +1129,23 @@ fn any_access() -> impl Strategy<Value = OscAccess> {
 }
 
 fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
-    let hotkeys = vec(option::of(hotkey()), 11).prop_map(|keys| {
+    let hotkeys = vec(option::of(hotkey()), 9).prop_map(|keys| {
         let [
             go,
             stop_all,
             pause_all,
             resume_all,
-            playhead_next,
-            playhead_previous,
             load_selected,
             pause_resume_selected,
             start_selected,
             stop_selected,
             reset_selected,
-        ] = <[Option<Hotkey>; 11]>::try_from(keys).unwrap();
+        ] = <[Option<Hotkey>; 9]>::try_from(keys).unwrap();
         TransportHotkeys {
             go,
             stop_all,
             pause_all,
             resume_all,
-            playhead_next,
-            playhead_previous,
             load_selected,
             pause_resume_selected,
             start_selected,
@@ -1284,10 +1335,14 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
         &mut keys.stop_all,
         &mut keys.pause_all,
         &mut keys.resume_all,
-        &mut keys.playhead_next,
-        &mut keys.playhead_previous,
     ] {
-        if key.as_ref().is_some_and(is_reserved_key) {
+        if key.as_ref().is_some_and(|k| {
+            // An independent oracle of the v5 rule the v4 migration applies (not the stricter
+            // rule of edits), written out so it does not share the code it checks.
+            let m = k.modifiers;
+            k.key == "escape"
+                || (matches!(k.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
+        }) {
             *key = None;
         }
         taken.extend(key.clone());

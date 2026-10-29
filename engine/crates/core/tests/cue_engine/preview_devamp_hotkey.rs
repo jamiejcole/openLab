@@ -794,11 +794,6 @@ fn a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
             Some(action)
         );
     }
-    let next = rig.ws.settings.hotkeys.playhead_next.clone().unwrap();
-    assert_eq!(
-        rig.ws.settings.hotkeys.action_of(&next),
-        Some("playhead_next")
-    );
     rig.ws.settings.hotkeys.stop_selected = Some(hotkey("f2"));
     assert_eq!(
         rig.ws.settings.hotkeys.action_of(&hotkey("f2")),

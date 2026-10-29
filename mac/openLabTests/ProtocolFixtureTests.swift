@@ -134,7 +134,7 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .welcome(let v, let snap) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")
         }
-        XCTAssertEqual(v, 2)
+        XCTAssertEqual(v, protocolVersion)
         XCTAssertEqual(snap.revision, 7)
         XCTAssertEqual(snap.runtimeSeq, 42)
         XCTAssertEqual(snap.workspace.name, "Test")
@@ -240,7 +240,7 @@ final class ProtocolFixtureTests: XCTestCase {
 
     func testWorkspaceMessagesDecode() throws {
         let app = try ServerMessage.decode(
-            #"{"type":"welcome","protocol_version":2,"workspaces":[{"doc":4,"workspace_id":"w","name":"A","path":null,"dirty":false}]}"#
+            #"{"type":"welcome","protocol_version":3,"workspaces":[{"doc":4,"workspace_id":"w","name":"A","path":null,"dirty":false}]}"#
         )
         guard case .appWelcome(_, let list) = app else { return XCTFail() }
         XCTAssertEqual(list.first?.doc, "4")

@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn a_too_short_loop_is_refused() {
-        // 10 ms minimum = 10 frames at 1 kHz.
+        // The 50 ms minimum is 49 frames at 1 kHz (one frame of slack).
         let m = [marker(0.005, 2)];
         let err = cue_slices(&spec(&m, 1), &info(1000), rate(), 0).unwrap_err();
         assert!(matches!(

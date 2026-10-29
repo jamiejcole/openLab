@@ -129,6 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
     @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
     @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
+    @MainActor @objc func selectNextCue(_ sender: Any?) { appController.selectAdjacentCue(by: 1) }
+    @MainActor @objc func selectPreviousCue(_ sender: Any?) { appController.selectAdjacentCue(by: -1) }
     @MainActor @objc func undoEdit(_ sender: Any?) {
         switch CueEditor.textUndo(textEditor, redo: false) {
         case nil: Task { await editor?.undo() }
@@ -175,6 +177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return canEditFront
         case #selector(copyCues(_:))?, #selector(cutCues(_:))?, #selector(pasteCues(_:))?:
             return anyText != nil || canEditFront
+        case #selector(selectNextCue(_:))?, #selector(selectPreviousCue(_:))?:
+            // Not while a text field is edited: Cmd-Up / Down move its insertion point.
+            return appController.frontController != nil && !appController.isTextEditing()
         case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
             return textEditor == nil && canEditFront
         case #selector(undoEdit(_:))?: return textEditor != nil || (editor?.canUndo ?? false)

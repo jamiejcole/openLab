@@ -72,7 +72,7 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
         next
     };
     let audio_cue = |n: u128| {
-        // Slice cues need room for slices of at least `MIN_SLICE_SECONDS` (51 ms).
+        // Slice cues need room for slices of at least `MIN_SLICE_SECONDS` (50 ms).
         let sliced = n.is_multiple_of(50);
         let path = wav(&dc(if sliced { 2000 } else { 64 }, 0.25));
         let mut c = audio(n, &path, (n % 2) as u32);

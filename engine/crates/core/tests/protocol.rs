@@ -3683,8 +3683,6 @@ fn a_partial_or_misspelt_key_map_is_bad_request() {
             "stop_all",
             "pause_all",
             "resume_all",
-            "playhead_next",
-            "playhead_previous",
             "load_selected",
             "pause_resume_selected",
             "start_selected",

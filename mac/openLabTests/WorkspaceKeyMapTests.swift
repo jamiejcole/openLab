@@ -47,10 +47,8 @@ final class WorkspaceKeyMapTests: XCTestCase {
         XCTAssertEqual(ws.hotkey(.pauseResumeSelected)?["key"]?.stringValue, "p")
         XCTAssertNil(ws.hotkey(.stopAll), "v5: Esc is panic, Stop All has no key")
         XCTAssertNil(ws.hotkey(.startSelected))
-        let next = try XCTUnwrap(ws.hotkey(.playheadNext))
-        XCTAssertEqual(next["key"]?.stringValue, "down")
-        XCTAssertEqual(next["modifiers"]?["command"], .bool(true))
-        XCTAssertEqual(next["modifiers"]?["shift"], .bool(true))
+        XCTAssertNil(ws.settings["hotkeys"]?["playhead_next"], "v6: no Next / Previous Cue key")
+        XCTAssertNil(ws.settings["hotkeys"]?["playhead_previous"])
     }
 
     func testAMapWithoutTheKeyReadsAsNone() {

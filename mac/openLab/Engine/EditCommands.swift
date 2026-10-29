@@ -77,8 +77,6 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case stopAll = "stop_all"
     case pauseAll = "pause_all"
     case resumeAll = "resume_all"
-    case playheadNext = "playhead_next"
-    case playheadPrevious = "playhead_previous"
     case loadSelected = "load_selected"
     case pauseResumeSelected = "pause_resume_selected"
     case startSelected = "start_selected"
@@ -88,7 +86,7 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
 
 extension Command {
     /// `SetWorkspaceSetting { hotkey { key, value } }`: one key of the map; nil clears it. The
-    /// engine refuses Esc, bare Up/Down, a key already in the map and a cue's hotkey
+    /// engine refuses Esc, Up/Down with any modifiers, a key already in the map and a cue's hotkey
     /// (`command_refused`, the message names the clash).
     static func setWorkspaceKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) -> Command {
         let setting = JSONValue.object([
@@ -104,8 +102,9 @@ extension Command {
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 
-    /// `RenameWorkspace { name }`: the show title, undoable. At most 256 characters, no control
-    /// characters (docs/commands.md); the engine refuses anything else.
+    /// `RenameWorkspace { name }`: the show title, undoable. At most 1024 Unicode scalars; a newline
+    /// is allowed, other control characters are not (docs/commands.md); the engine refuses anything
+    /// else.
     static func renameWorkspace(_ name: String) -> Command {
         Command(.object(["type": .string("rename_workspace"), "name": .string(name)]))
     }
