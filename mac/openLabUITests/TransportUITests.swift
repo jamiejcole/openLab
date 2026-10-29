@@ -49,7 +49,9 @@ final class TransportUITests: XCTestCase {
         let log = app.descendants(matching: .any).matching(identifier: "log-window").firstMatch
         XCTAssertTrue(log.waitForExistence(timeout: 10))
         // The table's own area, not a label: a table view asks for key on a click.
-        app.tables.matching(identifier: "log-table").firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).click()
+        app.tables.matching(identifier: "log-table").firstMatch.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)
+        ).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
 
         let gone = NSPredicate(format: "count == 0")
