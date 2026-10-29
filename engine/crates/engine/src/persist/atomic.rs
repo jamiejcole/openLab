@@ -157,7 +157,9 @@ enum Owner {
 }
 
 /// [`write_atomic`] for a file the engine owns outright (`engine.json`, run markers): replaced
-/// as a whole, mode 0600 on Unix, stale temp files of a crashed run removed. `prepare` runs on
+/// as a whole, mode 0600 on Unix, stale temp files of a crashed run of another pid removed
+/// ([`remove_stale_tmp`]: for `engine.json`; a marker's temp always carries its own pid, so
+/// `diag::run_marker` removes crashed runs' marker temps itself). `prepare` runs on
 /// the temp file before anything is written to it (a run marker takes its lock there, so it is
 /// never seen unlocked under its name); the open file is returned.
 pub(crate) fn write_engine_file(
