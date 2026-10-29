@@ -7,16 +7,7 @@ import XCTest
 @MainActor
 final class InspectorUITests: XCTestCase {
     func testRenamingACueShowsInTheList() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)  // the empty second workspace is in front: close it
-        let one = NSPredicate(format: "count == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
-            .completed)
+        let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["No cue selected"].exists)
@@ -33,16 +24,7 @@ final class InspectorUITests: XCTestCase {
     }
 
     func testGroupSetToPlaylistAndLoop() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)
-        let one = NSPredicate(format: "count == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
-            .completed)
+        let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
         app.staticTexts["Act One"].click()
@@ -55,28 +37,13 @@ final class InspectorUITests: XCTestCase {
         XCTAssertFalse(loop.isEnabled, "loop is for playlists")
         mode.click()
         app.menuItems["Playlist - one child at a time"].click()
-        let enabled = NSPredicate(format: "isEnabled == true")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: enabled, object: loop)], timeout: 10),
-            .completed)
+        XCTAssertTrue(waitFor("isEnabled == true", loop))
         loop.click()
-        let on = NSPredicate(format: "value == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: on, object: loop)], timeout: 10),
-            .completed)
+        XCTAssertTrue(waitFor("value == 1", loop))
     }
 
     func testPreviewButtonMarksTheRowAndClears() {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)
-        let one = NSPredicate(format: "count == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
-            .completed)
+        let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
@@ -92,10 +59,7 @@ final class InspectorUITests: XCTestCase {
         XCTAssertEqual(button.title, "Stop Preview")
 
         button.click()
-        let gone = NSPredicate(format: "count == 0")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: marks)], timeout: 10),
-            .completed)
+        XCTAssertTrue(waitFor("count == 0", marks))
         XCTAssertEqual(button.title, "Preview")
     }
 }

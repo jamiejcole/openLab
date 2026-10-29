@@ -5,22 +5,8 @@ import XCTest
 /// Add, rename, delete and undo against the fake engine, and the same keys doing nothing in Show Mode.
 @MainActor
 final class EditingUITests: XCTestCase {
-    private func launch() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments += ["-OpenLabEngine", "fake"]
-        app.launch()
-        let windows = app.windows.matching(identifier: "main-window")
-        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
-        app.typeKey("w", modifierFlags: .command)  // the empty second workspace is in front: close it
-        let one = NSPredicate(format: "count == 1")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: one, object: windows)], timeout: 10),
-            .completed)
-        return app
-    }
-
     func testAddRenameDeleteAndUndo() {
-        let app = launch()
+        let app = launchDemo()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
 
@@ -36,17 +22,14 @@ final class EditingUITests: XCTestCase {
 
         storm.click()  // focus back in the list
         app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: .command)
-        let gone = NSPredicate(format: "exists == false")
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: storm)], timeout: 10),
-            .completed, "Cmd-Delete removes the selected cue")
+        XCTAssertTrue(waitFor("exists == false", storm), "Cmd-Delete removes the selected cue")
 
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Storm"].waitForExistence(timeout: 10), "undo brings the cue back")
     }
 
     func testCopyAndPasteDuplicatesACue() {
-        let app = launch()
+        let app = launchDemo()
         let intro = app.staticTexts.matching(identifier: "Intro")
         XCTAssertTrue(intro.firstMatch.waitForExistence(timeout: 10))
         let before = intro.count
@@ -56,14 +39,11 @@ final class EditingUITests: XCTestCase {
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: copied, object: nil)], timeout: 10), .completed)
         app.typeKey("v", modifierFlags: .command)
-        let more = NSPredicate(format: "count == %d", before + 1)
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: more, object: intro)], timeout: 10),
-            .completed, "the pasted copy shows in the list")
+        XCTAssertTrue(waitFor("count == \(before + 1)", intro), "the pasted copy shows in the list")
     }
 
     func testEditingKeysDoNothingInShowMode() {
-        let app = launch()
+        let app = launchDemo()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
