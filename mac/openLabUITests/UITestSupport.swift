@@ -28,4 +28,20 @@ extension XCTestCase {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: object)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
+
+    /// The inspector or sidebar tab titled `title`, once it has laid out: the tab bar is a radio
+    /// button (segmented control) or a tab, depending on the control, and is found inside the control
+    /// named by its accessibility identifier, waiting rather than testing `.exists` at once (#361).
+    /// Falls back to the whole app if the control's identifier does not scope the query.
+    @MainActor func tabButton(_ title: String, in app: XCUIApplication, within container: String) -> XCUIElement {
+        let isTab = NSPredicate(
+            format: "label == %@ AND (elementType == %d OR elementType == %d)", title,
+            XCUIElement.ElementType.radioButton.rawValue, XCUIElement.ElementType.tab.rawValue)
+        let box = app.descendants(matching: .any).matching(identifier: container).firstMatch
+        let scoped = box.descendants(matching: .any).matching(isTab).firstMatch
+        if box.waitForExistence(timeout: 10), scoped.waitForExistence(timeout: 5) { return scoped }
+        let anywhere = app.descendants(matching: .any).matching(isTab).firstMatch
+        XCTAssertTrue(anywhere.waitForExistence(timeout: 10), "tab \(title)")
+        return anywhere
+    }
 }

@@ -468,6 +468,20 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.batch(actions: toggles)), ["1"])
     }
 
+    func testPauseResumeSelectedResumesACueThatBrokeWhilePaused() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let cue = try XCTUnwrap(wc.cueList.roots.first?.id)
+        engine.push(
+            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"broken","reason":"stream_failed"}]}"#,
+            doc: "1")
+        await assertEventually { store.cueStates[cue]?.state == .broken }
+        wc.cueList.select([cue])
+        await app.perform(.pauseResumeSelected)
+        XCTAssertEqual(transports(.resume(cue: cue)), ["1"])
+    }
+
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
         let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
         let fade: ModelID = "00000000-0000-0000-0000-00000000000b"

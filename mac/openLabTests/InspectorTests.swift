@@ -44,8 +44,8 @@ final class CueTimeTests: XCTestCase {
 final class EditCommandTests: XCTestCase {
     private func shape(_ c: Command) throws -> JSONValue? { JSONValue.parse(try c.json.text()) }
 
-    /// #255: the group mode on the wire is the engine's own fixture, every variant, in both
-    /// directions (the app's encoding equals it; what it decodes encodes back to it).
+    /// #255: the group mode on the wire is the engine's own fixture, every variant: the app's encoding
+    /// equals it. (The app only encodes this command; it never decodes one.)
     func testGroupModeCommandsMatchTheEnginesFixtures() throws {
         let id: ModelID = "00000000-0000-0000-0000-00000000000c"
         let modes: [(String, String, Bool, Bool)] = [
@@ -60,7 +60,7 @@ final class EditCommandTests: XCTestCase {
             let command = Command.setProperty(id, .groupMode(type: type, loop: loop, shuffle: shuffle))
             XCTAssertEqual(try shape(command), fixture, file)
             let value = try XCTUnwrap(fixture?["property"]?["value"])
-            XCTAssertEqual(value["type"], .string(type), file)
+            XCTAssertEqual(value["type"], .string(type), "\(file): the fixture holds the variant its name says")
         }
         // A loop/shuffle flag only travels with a playlist.
         let random = try shape(.setProperty(id, .groupMode(type: "start_random", loop: true, shuffle: true)))

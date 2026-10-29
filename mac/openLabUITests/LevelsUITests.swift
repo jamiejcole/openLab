@@ -7,9 +7,7 @@ import XCTest
 @MainActor
 final class LevelsUITests: XCTestCase {
     private func open(_ tab: String, in app: XCUIApplication) {
-        let item = app.tabs[tab].exists ? app.tabs[tab] : app.radioButtons[tab]
-        XCTAssertTrue(item.waitForExistence(timeout: 5), tab)
-        item.click()
+        tabButton(tab, in: app, within: "inspector-tabs").click()
     }
 
     /// Clicks the matrix cell at `row` (0 is the cue outputs' row) and `column` (-1 is the master's).

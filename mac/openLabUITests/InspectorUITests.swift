@@ -28,9 +28,7 @@ final class InspectorUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
         app.staticTexts["Act One"].click()
-        let tab = app.tabs["Mode"].exists ? app.tabs["Mode"] : app.radioButtons["Mode"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 5))
-        tab.click()
+        tabButton("Mode", in: app, within: "inspector-tabs").click()
         let mode = app.popUpButtons["inspector-group-mode"]
         XCTAssertTrue(mode.waitForExistence(timeout: 5))
         let loop = app.checkBoxes["inspector-group-loop"]

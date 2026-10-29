@@ -268,6 +268,30 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
         XCTAssertEqual(kind(CueListHarness.fade)?["duration"], .double(2.5))
     }
+
+    /// #354: a Duration typed in the cue list while an inspector kind edit is unanswered: the next
+    /// inspector kind edit builds on both, so it does not put the old duration back.
+    func testCueListDurationEditIsSeenByAnInspectorKindEditInFlight() async {
+        vc.setSelection([CueListHarness.fade])
+        let editor = CueEditor(store: rig.store, cueList: CueListViewController(store: rig.store))
+        editor.trackPending = { [weak self] command, cue in self?.vc.trackPending(command, cue: cue) ?? {} }
+        rig.engine.holdResults = true
+        let f = vc.fadeSettings
+        f.curvePopup.selectItem(at: 1)
+        _ = f.curvePopup.target?.perform(f.curvePopup.action, with: f.curvePopup)
+        await assertEventually { self.commands.count == 1 }
+        let typed = Task { await editor.setDuration(of: CueListHarness.fade, text: "7") }
+        await assertEventually { self.commands.count == 2 }
+        XCTAssertEqual(commands[1], property(CueListHarness.fade, "duration", "7"))
+        f.curvePopup.selectItem(at: 0)
+        _ = f.curvePopup.target?.perform(f.curvePopup.action, with: f.curvePopup)
+        await assertEventually { self.commands.count == 3 }
+        XCTAssertEqual(commands[2]?["property"]?["value"]?["duration"]?.doubleValue, 7, "the cue-list edit is kept")
+        rig.engine.holdResults = false
+        rig.engine.releaseResults()
+        _ = await typed.value
+        await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
+    }
 }
 
 /// The cue list's Duration column, edited in place (double-click in the app).
@@ -307,6 +331,76 @@ final class CueListDurationTests: XCTestCase {
         let row = h.spy.row(forItem: h.vc.node(DurationEditingTests.wait))
         let column = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
         XCTAssertEqual(h.vc.durationEditor.frame, h.spy.frameOfCell(atColumn: column, row: row))
+    }
+
+    /// The demo show with a 3 s Wait inside the group (the group opens expanded in `H(collapsed: false)`).
+    private static let nested: ModelID = "00000000-0000-0000-0000-000000000040"
+    private func snapshotWithNestedWait() throws -> JSONValue {
+        var s = try DurationEditingTests.snapshot()
+        var lists = s["workspace"]?["cue_lists"]?.arrayValue ?? []
+        var cues = lists[0]["cues"]?.arrayValue ?? []
+        let g = try XCTUnwrap(cues.firstIndex { $0["id"]?.stringValue == H.group.raw })
+        var kind = try XCTUnwrap(cues[g]["kind"])
+        let wait = FakeEngine.cueJSON(
+            id: Self.nested.raw, number: "2.4", name: "Nested hold",
+            kind: .object(["type": .string("wait"), "duration": .double(3)]))
+        kind.set("children", .array((kind["children"]?.arrayValue ?? []) + [wait]))
+        cues[g].set("kind", kind)
+        lists[0].set("cues", .array(cues))
+        s["workspace"]?.set("cue_lists", .array(lists))
+        return s
+    }
+
+    /// #355: the open field is an accessibility child of the outline, with a localized label.
+    func testOpenEditorIsExposedToAccessibility() async throws {
+        let (h, _, _, window) = try await harness()
+        defer { window.orderOut(nil) }
+        XCTAssertEqual(h.vc.durationEditor.accessibilityLabel(), loc("cuelist.durationEditor.label"))
+        XCTAssertFalse(
+            (h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor },
+            "closed: not listed")
+        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
+        XCTAssertTrue((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor })
+        XCTAssertTrue(h.vc.durationEditor.accessibilityParent() as AnyObject === h.spy)
+        h.vc.cancelDurationEdit()
+        XCTAssertFalse((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor })
+    }
+
+    /// #357: collapsing the group above, or resizing the column, moves the field with its cell; a cue
+    /// collapsed out of sight closes the edit and sends nothing.
+    func testEditorFollowsCollapseExpandAndColumnResize() async throws {
+        let h = try await H(snapshot: try snapshotWithNestedWait(), collapsed: false)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = h.vc.view
+        defer { window.orderOut(nil) }
+        let column = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
+        func cell(_ id: ModelID) -> NSRect {
+            h.spy.frameOfCell(atColumn: column, row: h.spy.row(forItem: h.vc.node(id)))
+        }
+        // A cue after the group moves up when the group collapses.
+        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
+        let before = h.vc.durationEditor.frame
+        h.spy.collapseItem(h.vc.node(H.group))
+        XCTAssertNotEqual(cell(DurationEditingTests.wait), before)
+        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the collapse")
+        h.spy.expandItem(h.vc.node(H.group))
+        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the expand")
+        // A column resize before the Duration column moves it sideways.
+        let name = h.spy.tableColumns[h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))]
+        name.width += 40
+        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the column resize")
+        // A cue inside the group: collapsing the group closes the edit; nothing is sent.
+        let log = CueEditingTests.SendLog(h.rig.engine)
+        XCTAssertTrue(h.vc.beginDurationEdit(Self.nested))
+        h.vc.durationEditor.stringValue = "9"
+        h.spy.collapseItem(h.vc.node(H.group))
+        XCTAssertNil(h.vc.editingDuration)
+        XCTAssertNil(h.vc.durationEditor.superview)
+        await settle()
+        XCTAssertTrue(log.commands.isEmpty)
     }
 
     func testCommittingSendsTheDurationCommand() async throws {

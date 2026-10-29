@@ -561,7 +561,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Row content from the store: elapsed and remaining while the engine reports progress, else the
-    /// state (paused and waiting cues have no progress).
+    /// state (waiting cues have no progress). A paused or stopping cue keeps its frozen times but
+    /// leads with the state name, so a held cue never reads like a running one (QLab marks it paused).
     func fill(_ cell: ActiveCueCell, _ id: ModelID) {
         let cue = store.model?.cue(id)
         let state = store.cueStates[id]?.state ?? .idle
@@ -576,7 +577,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.pauseButton.setAccessibilityLabel(pauseName)
         cell.pauseButton.isEnabled = state != .stopping
         if let p = store.progress[id] {
-            cell.times.stringValue = Self.timesText(elapsed: p.elapsed, remaining: p.remaining)
+            let times = Self.timesText(elapsed: p.elapsed, remaining: p.remaining)
+            cell.times.stringValue =
+                state == .paused || state == .stopping ? "\(CueStateStyle.style(for: state).label)  \(times)" : times
             let total = p.elapsed + (p.remaining ?? 0)
             cell.bar.doubleValue = p.remaining != nil && total > 0 ? min(1, p.elapsed / total) : 0
         } else {

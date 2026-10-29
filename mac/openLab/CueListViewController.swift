@@ -138,6 +138,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// While `applyModel` runs: every cue it touched (their targeters refresh), the groups it created
     /// (shown expanded, like QLab) and the existing groups that were collapsed (they stay so).
     private var batching = false
+    /// The tree is being replaced: its collapses and expands are not the operator's, so they must not move or close an open Duration editor.
+    private var rebuilding = false
     private var batchTouched = Set<ModelID>()
     private var batchNewGroups = Set<ModelID>()
     private var batchCollapsed = Set<ModelID>()
@@ -176,7 +178,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
         outlineView.doubleAction = #selector(doubleClicked)
-        durationEditor.setAX(AX.cueDurationEditor)
+        durationEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         durationEditor.delegate = self
         durationEditor.usesSingleLineMode = true
         durationEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -305,6 +307,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// Replaces the tree from the store and reloads the table, keeping selection and expansion.
     func rebuild() {
+        rebuilding = true
+        defer { rebuilding = false }
         let selected = selectedIDs()
         let known = Set(nodes.keys)
         let expanded = Set(nodes.values.filter { $0.isGroup && outlineView.isItemExpanded($0) }.map(\.id))
@@ -713,7 +717,23 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // `editingDuration` is already nil, so the end-of-editing this causes sends nothing.
         if durationEditor.currentEditor() != nil { view.window?.makeFirstResponder(outlineView) }
         durationEditor.removeFromSuperview()
+        outlineView.setAccessibilityChildren(nil)  // back to the rows alone
     }
+
+    /// The outline reports only its rows to accessibility; the open field is added to them (and made
+    /// to name the outline as its parent) so VoiceOver and UI tests can reach it (#355).
+    private func exposeDurationEditor() {
+        outlineView.setAccessibilityChildren(nil)
+        let rows = outlineView.accessibilityChildren() ?? []
+        durationEditor.setAccessibilityParent(outlineView)
+        outlineView.setAccessibilityChildren(rows + [durationEditor])
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    func outlineViewItemDidExpand(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    func outlineViewColumnDidResize(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    private func replaceEditorAfterLayoutChange() { if !rebuilding && !batching { placeDurationEditor() } }
 
     /// Keeps the open editor over its cue's cell after rows moved; closes it if the cue is gone or no
     /// longer has a duration to set (another client deleted it or changed its kind).
@@ -725,6 +745,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return cancelDurationEdit() }
         durationEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        exposeDurationEditor()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {

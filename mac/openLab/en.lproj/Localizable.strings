@@ -120,6 +120,7 @@
 "cuelist.col.target" = "Target";
 "cuelist.col.preWait" = "Pre-Wait";
 "cuelist.col.duration" = "Duration";
+"cuelist.durationEditor.label" = "Edit duration";
 "cuelist.col.postWait" = "Post-Wait";
 
 "cue.target.missing" = "Missing target";

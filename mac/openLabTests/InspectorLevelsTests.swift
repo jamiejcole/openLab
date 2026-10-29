@@ -183,7 +183,10 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.sent.count == 5 }
         let keys = Set(sent.map { $0.coalesce })
         XCTAssertEqual(keys.count, 1, "one key for the whole gesture")
-        XCTAssertNotNil(keys.first ?? nil)
+        let key = try XCTUnwrap(keys.first ?? nil)
+        XCTAssertTrue(
+            key.contains(InspectorViewController.launchToken),
+            "a counter alone repeats across clients and launches: \(key)")
         XCTAssertTrue(sent.allSatisfy { kindOf($0.command) != nil })
         await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-5) }
 
