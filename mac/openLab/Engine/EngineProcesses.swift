@@ -101,9 +101,15 @@ final class SystemEngineProcesses: EngineProcesses {
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
-        let logged = stderrTail.prepare()
+        // Opened here, not by posix_spawn: a file that cannot be opened (read-only, a directory, gone
+        // since the check) must cost the engine its stderr log, never its start.
+        let logFD =
+            stderrTail.prepare()
+            ? open(stderrTail.url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600) : -1
+        defer { if logFD >= 0 { close(logFD) } }
+        let logged = logFD >= 0
         if logged {
-            posix_spawn_file_actions_addopen(&actions, 2, stderrTail.url.path, O_WRONLY | O_APPEND, 0)
+            posix_spawn_file_actions_adddup2(&actions, logFD, 2)
         } else {
             engineLog.error("no stderr file for the engine: its error output is discarded")
             posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)

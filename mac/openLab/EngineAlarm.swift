@@ -133,7 +133,7 @@ final class EngineAlarmController {
     private var isShown: Bool { presenter.isVisible }
     /// What the last reattach reported (kept when the autosave line is added).
     private var summary = ""
-    private var reattach: (failures: [ReattachFailure], restored: [String], editsLost: [String])?
+    private var reattach: (failures: [ReattachFailure], restored: [String], editsLost: [String], ids: [ModelID])?
     /// The latest offer check (tests await it).
     private(set) var offerTask: Task<Void, Never>?
 
@@ -150,7 +150,12 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
+    /// The "not responding" alarm is up: it tells the operator the engine may still be playing, so
+    /// it goes away when that engine answers (no other alarm is taken down by a connection).
+    private var notRespondingShown = false
+
     private func alarm(_ alarm: EngineSupervisor.Alarm) {
+        notRespondingShown = false
         switch alarm {
         case .engineStopped(let crashed):
             presenter.show(
@@ -158,6 +163,9 @@ final class EngineAlarmController {
                 message: loc("engine.alarm.restarting"))
         case .cannotStart(let reason):
             presenter.show(title: loc("engine.alarm.cannotStart"), message: reason)
+        case .notResponding:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
         }
         presenter.setRestoreAction(nil)
         summary = ""
@@ -166,12 +174,16 @@ final class EngineAlarmController {
 
     /// A reattach is reported when it ends; with nothing to reattach the offer comes now.
     private func engineReady() {
+        if notRespondingShown {
+            notRespondingShown = false
+            presenter.dismiss()
+        }
         if !session.isReattaching { checkRecovery() }
     }
 
     private func sessionEvent(_ event: SessionEvent) {
-        guard case .reattached(let failures, let restored, let editsLost) = event else { return }
-        reattach = (failures, restored, editsLost)
+        guard case .reattached(let failures, let restored, let editsLost, let editsLostIDs) = event else { return }
+        reattach = (failures, restored, editsLost, editsLostIDs)
         summary = reattachSummary(setAside: [])
         if !isShown {
             presenter.show(title: loc("engine.alarm.restarted"), message: loc("engine.alarm.restartedMessage"))
@@ -181,14 +193,15 @@ final class EngineAlarmController {
     }
 
     /// What the reattach reported. A workspace reopened from its file that lost its unsaved edits
-    /// has the earlier autosave set aside when one is offered (`setAside`, by show name): saying
+    /// has the earlier autosave set aside when one is offered (`setAside`, by workspace id): saying
     /// the edits are lost then would keep the operator from pressing Restore (#360).
-    private func reattachSummary(setAside: Set<String>) -> String {
+    private func reattachSummary(setAside: Set<ModelID>) -> String {
         guard let r = reattach else { return "" }
         var lines = [loc("engine.alarm.back")]
         for name in r.restored { lines.append(String(format: loc("engine.alarm.restoredOne"), name)) }
-        for name in r.editsLost {
-            let key = setAside.contains(name) ? "engine.alarm.editsLostSetAside" : "engine.alarm.editsLostOne"
+        for (i, name) in r.editsLost.enumerated() {
+            let set = i < r.ids.count && setAside.contains(r.ids[i])
+            let key = set ? "engine.alarm.editsLostSetAside" : "engine.alarm.editsLostOne"
             lines.append(String(format: loc(key), name))
         }
         for f in r.failures { lines.append(String(format: loc("engine.alarm.failedOne"), f.name, f.reason)) }
@@ -213,7 +226,7 @@ final class EngineAlarmController {
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
-            self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).compactMap(\.showName)))
+            self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
             let line = String(format: loc("engine.alarm.autosaves"), offer.count)
             self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
             self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }
@@ -236,20 +249,18 @@ final class EngineAlarmController {
 
     /// The entries no window holds: see `AutosaveOffer.offerable`.
     private func unheld(_ entries: [RecoveryEntryInfo]) -> [RecoveryEntryInfo] {
-        let listed = Dictionary(session.workspaces.map { ($0.doc, $0) }, uniquingKeysWith: { a, _ in a })
-        // Every open doc (a window, or listed with none yet), then the windows waiting to be rebound.
-        var windows: [AutosaveOffer.Window] = session.stores.map { doc, store in
-            AutosaveOffer.Window(
-                workspace: store.model?.id ?? listed[doc]?.workspaceId,
-                path: store.document?.path ?? listed[doc]?.path, cover: store.autosaveCover)
-        }
-        windows += session.workspaces.filter { session.stores[$0.doc] == nil }.map {
-            AutosaveOffer.Window(workspace: $0.workspaceId, path: $0.path, cover: AutosaveCover())
-        }
-        windows += session.detached.map {
-            AutosaveOffer.Window(workspace: $0.info.workspaceId, path: $0.info.path, cover: $0.store.autosaveCover)
-        }
-        return AutosaveOffer.offerable(entries, windows: windows)
+        let held = Set(
+            session.stores.values.compactMap { $0.model?.id } + session.workspaces.map(\.workspaceId)
+                + session.detached.map(\.info.workspaceId))
+        let listed = Dictionary(session.workspaces.map { ($0.doc, $0.workspaceId) }, uniquingKeysWith: { a, _ in a })
+        let windows =
+            session.stores.map { doc, store in
+                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc], cover: store.autosaveCover)
+            }
+            + session.detached.map {
+                AutosaveOffer.Window(workspace: $0.info.workspaceId, cover: $0.store.autosaveCover)
+            }
+        return AutosaveOffer.offerable(entries, held: held, windows: windows)
     }
 
     /// One prompt per autosave, newest first, while there is room (at most 8 workspaces, §21).

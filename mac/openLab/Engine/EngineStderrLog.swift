@@ -109,9 +109,18 @@ final class EngineStderrTail: @unchecked Sendable {
 /// utility queue (never the main thread).
 final class EngineStderrWatcher: @unchecked Sendable {
     private let tail: EngineStderrTail
+    private let sink: @Sendable (String) -> Void
     private var source: DispatchSourceFileSystemObject?
+    /// Called on the watcher's queue once the file descriptor is closed (after `stop`).
+    var onClosed: (@Sendable () -> Void)?
 
-    init(tail: EngineStderrTail) { self.tail = tail }
+    init(
+        tail: EngineStderrTail,
+        sink: @escaping @Sendable (String) -> Void = { engineLog.error("engine stderr: \($0, privacy: .public)") }
+    ) {
+        self.tail = tail
+        self.sink = sink
+    }
 
     func start() {
         let fd = open(tail.url.path, O_EVTONLY)
@@ -121,10 +130,14 @@ final class EngineStderrWatcher: @unchecked Sendable {
         }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.extend, .write], queue: DispatchQueue.global(qos: .utility))
-        source.setEventHandler { [tail] in
-            for line in tail.read() { engineLog.error("engine stderr: \(line, privacy: .public)") }
+        source.setEventHandler { [tail, sink] in
+            for line in tail.read() { sink(line) }
         }
-        source.setCancelHandler { close(fd) }
+        let closed = onClosed
+        source.setCancelHandler {
+            close(fd)
+            closed?()
+        }
         self.source = source
         source.resume()
     }
