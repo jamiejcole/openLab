@@ -2715,28 +2715,43 @@ async fn adding_a_passcode_keeps_sessions_but_narrowing_the_table_ends_them() {
     grown
         .passcodes
         .push(row("5555", rights(true, false, false)));
+    // A rename in the same change tells when it is in, by a read: polling `/connect` instead
+    // would count each try before it as a wrong passcode and lock the address out.
+    let mut renamed = test_workspace().cue_lists[0].cues[0].clone();
+    renamed.name = "Grown".into();
     f.out
         .send(ServerMessage::ModelChanged {
             revision: 1,
-            upserts: vec![settings_upsert(grown.clone())],
+            upserts: vec![
+                settings_upsert(grown.clone()),
+                Upsert::Cue {
+                    list: list_id(),
+                    parent: None,
+                    index: 0,
+                    cue: Box::new(renamed),
+                },
+            ],
             deletes: vec![],
         })
         .await
         .unwrap();
-    // The new row works, and the console's session survived it.
-    let mut viewer = f.tcp().await;
-    guard("the new row to work", async {
+    // The console's session survived it (a read that ended it would be denied) ...
+    guard("the change to apply", async {
         loop {
-            viewer.send(&msg("/connect", vec![text("5555")])).await;
-            if body(&viewer.recv().await.unwrap())["data"] == "ok:view" {
+            console.send(&msg("/cue/1/name", vec![])).await;
+            let reply = console.recv().await.unwrap();
+            assert_eq!(status(&reply), "ok");
+            if body(&reply)["data"] == "Grown" {
                 return;
             }
             tokio::task::yield_now().await;
         }
     })
     .await;
-    console.send(&msg("/cue/1/name", vec![])).await;
-    assert_eq!(body(&console.recv().await.unwrap())["data"], "Opening");
+    // ... and the new row works.
+    let mut viewer = f.tcp().await;
+    viewer.send(&msg("/connect", vec![text("5555")])).await;
+    assert_eq!(body(&viewer.recv().await.unwrap())["data"], "ok:view");
     // The console's row loses Control: its session ends, and it must connect again.
     let mut narrowed = grown;
     narrowed.passcodes[3].rights = rights(true, true, false);
