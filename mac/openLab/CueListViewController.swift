@@ -272,15 +272,35 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if let row = rows.first { outlineView.scrollRowToVisible(row) }
     }
 
+    /// The selection as of the last change, to tell which cue the user selected last.
+    private var lastSelection: Set<ModelID> = []
+
+    /// The cue the playhead goes to when the selection (in row order) becomes `selected` from
+    /// `previous`: the most recently selected one (QLab 5). A click or Shift-arrow adds one cue;
+    /// a Shift-click range adds several, and `latest` (the table's last selected row) is the one
+    /// clicked. A selection that only shrinks (a click on one of several selected) goes to `latest`.
+    static func playheadTarget(selected: [ModelID], previous: Set<ModelID>, latest: ModelID?) -> ModelID? {
+        let added = selected.filter { !previous.contains($0) }
+        if added.count == 1 { return added[0] }
+        if let latest, added.isEmpty || added.contains(latest) { return latest }
+        return added.last ?? selected.last
+    }
+
     /// Told of every selection change (the inspector follows it).
     var onSelectionChange: (([ModelID]) -> Void)?
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         // Programmatic restores (select, rebuild, batches) are not the user's choice.
         if !restoringSelection && !batching { onSelectionChange?(selectedIDs()) }
+        let selected = selectedIDs()
+        let previous = lastSelection
+        lastSelection = Set(selected)
+        let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
+        let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
         // Compared with what was last sent, not only what the engine echoed: A, B, A within one
         // round trip must still end on A.
-        guard !restoringSelection, !batching, let list = listID, let id = selectedIDs().first,
+        guard !restoringSelection, !batching, let list = listID,
+            let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest),
             (sentPlayhead ?? store.playheads[list]) != id
         else { return }
         sentPlayhead = id

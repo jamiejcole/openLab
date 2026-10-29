@@ -389,6 +389,39 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.setPlayhead(list: list, cue: b)).count, 1)
     }
 
+    func testSelectingSeveralCuesMovesThePlayheadToTheMostRecentlySelected() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let a: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let b: ModelID = "00000000-0000-0000-0000-00000000000b"
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        let outline = wc.cueList.outlineView
+        let rowOfB = outline.row(forItem: wc.cueList.node(b))
+        let rowOfA = outline.row(forItem: wc.cueList.node(a))
+        XCTAssertLessThan(rowOfA, rowOfB, "the test needs A above B")
+        // B first, then A added by Shift/Cmd-click: A is the latest, though B is not first in row
+        // order (and is where the playhead already is).
+        outline.selectRowIndexes([rowOfB], byExtendingSelection: false)
+        outline.selectRowIndexes([rowOfA], byExtendingSelection: true)
+        await assertEventually { !transports(.setPlayhead(list: list, cue: a)).isEmpty }
+        // Then B added again to a selection that holds A: the playhead goes back to B.
+        outline.selectRowIndexes([rowOfA], byExtendingSelection: false)
+        outline.selectRowIndexes([rowOfB], byExtendingSelection: true)
+        await assertEventually { transports(.setPlayhead(list: list, cue: b)).count >= 1 }
+    }
+
+    func testPlayheadTargetIsTheLastAddedCue() {
+        let a: ModelID = "a", b: ModelID = "b", c: ModelID = "c"
+        XCTAssertEqual(CueListViewController.playheadTarget(selected: [a, b], previous: [b], latest: b), a, "one added")
+        XCTAssertEqual(
+            CueListViewController.playheadTarget(selected: [a, b, c], previous: [a], latest: c), c, "range ends at the click")
+        XCTAssertEqual(
+            CueListViewController.playheadTarget(selected: [a, b, c], previous: [a], latest: b), b, "range from below")
+        XCTAssertEqual(
+            CueListViewController.playheadTarget(selected: [b], previous: [a, b], latest: b), b, "click on one of several")
+        XCTAssertEqual(CueListViewController.playheadTarget(selected: [a, b], previous: [], latest: nil), b)
+        XCTAssertNil(CueListViewController.playheadTarget(selected: [], previous: [a], latest: nil))
+    }
+
     func testKeyCacheIsEvictedWhenAWorkspaceCloses() async throws {
         let second = try await addWorkspace()
         let before = app.keyCacheCount

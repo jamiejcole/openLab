@@ -88,7 +88,7 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
 
 extension Command {
     /// `SetWorkspaceSetting { hotkey { key, value } }`: one key of the map; nil clears it. The
-    /// engine refuses Esc, bare Up/Down, a key already in the map and a cue's hotkey
+    /// engine refuses Esc, Up/Down with any modifiers, a key already in the map and a cue's hotkey
     /// (`command_refused`, the message names the clash).
     static func setWorkspaceKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) -> Command {
         let setting = JSONValue.object([

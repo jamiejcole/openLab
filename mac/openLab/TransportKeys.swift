@@ -131,7 +131,7 @@ struct TransportKeys: Equatable {
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
             if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
-            if let error = Self.validate(chord, for: command, in: chords) {
+            if let error = Self.validate(chord, for: command, in: chords, loading: true) {
                 warnings.append(
                     String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
                 continue
@@ -154,17 +154,24 @@ struct TransportKeys: Equatable {
     func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
 
     /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
-    /// loader above and the key-map editor (M5.11a).
+    /// loader above and the key-map editor (M5.11a). A key being recorded is refused if it is Up
+    /// or Down with any modifiers (QLab 5); a key `loading` from a show file is judged by the
+    /// older rule (bare arrows only), because the defaults Shift-Command-Down / Up are arrows.
     static func validate(
         _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],
-        isCueHotkey: (KeyChord) -> Bool = { _ in false }
+        isCueHotkey: (KeyChord) -> Bool = { _ in false }, loading: Bool = false
     ) -> KeyBindError? {
         guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
-        if isBareArrow(chord) { return .reserved }
+        if loading ? isBareArrow(chord) : isArrow(chord) { return .reserved }
         if let other = existing.first(where: { $0.value == chord && $0.key != command })?.key {
             return .duplicate(of: other)
         }
         return isCueHotkey(chord) ? .cueHotkey : nil
+    }
+
+    /// Up or Down with any modifiers: no key of the key map or cue hotkey may be one.
+    static func isArrow(_ chord: KeyChord) -> Bool {
+        chord.key == KeyChord.up || chord.key == KeyChord.down
     }
 
     static func isBareArrow(_ chord: KeyChord) -> Bool {

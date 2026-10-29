@@ -80,7 +80,16 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape), for: .go, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord("q"), for: .panic, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down), for: .go, in: [:]), .reserved)
-        XCTAssertNil(TransportKeys.validate(KeyChord(KeyChord.down, .command), for: .go, in: [:]))
+        // Up and Down are refused with any modifiers when recorded, but a show file's defaults
+        // (Shift-Command-Down / Up) still load.
+        for mods: NSEvent.ModifierFlags in [.command, .shift, .option, .control, [.command, .shift]] {
+            XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down, mods), for: .go, in: [:]), .reserved)
+            XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.up, mods), for: .go, in: [:]), .reserved)
+        }
+        XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape, .shift), for: .go, in: [:]), .reserved)
+        XCTAssertNil(TransportKeys.validate(KeyChord(KeyChord.left, .command), for: .go, in: [:]))
+        XCTAssertNil(
+            TransportKeys.validate(KeyChord(KeyChord.down, [.command, .shift]), for: .playheadNext, in: [:], loading: true))
         XCTAssertEqual(
             TransportKeys.validate(KeyChord("x"), for: .go, in: [:], isCueHotkey: { _ in true }), .cueHotkey)
     }
