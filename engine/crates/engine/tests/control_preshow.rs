@@ -35,7 +35,7 @@ fn spare_patch() -> PatchId {
 }
 
 /// A patch the device cannot take (four outputs on a two-output device): the default mapping
-/// (M4.4c) leaves it unmapped, which is what these tests need an unmapped patch for.
+/// leaves it unmapped, which is what these tests need an unmapped patch for.
 fn wide_spare(main: &OutputPatch) -> OutputPatch {
     let mut spare = OutputPatch {
         id: spare_patch(),

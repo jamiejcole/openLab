@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `CueEngine::timers` (M4.2e): the pre-wait, silent-action and post-wait countdowns a client
+//! `CueEngine::timers`: the pre-wait, silent-action and post-wait countdowns a client
 //! shows for cues without a voice (docs/cue-engine.md, "Timer progress"). Virtual sample clock
 //! at 1 kHz: one second is 1000 samples.
 
@@ -281,7 +281,7 @@ fn a_groups_post_wait_counts_from_its_action_start() {
 
 #[test]
 fn a_halted_playlists_follow_wait_counts_its_whole_rest_down() {
-    // #192: an auto-follow playlist of two sounds (4 s and 3 s) halts when the first breaks
+    // An auto-follow playlist of two sounds (4 s and 3 s) halts when the first breaks
     // while playing. Its action ends at the broken child's nominal end (4 s); the follow then
     // comes 3 s later, as if the second child had played. The countdown shows that rest as
     // the whole post-wait: elapsed + remaining = 3000, not a total of 0.

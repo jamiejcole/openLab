@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The socket-free OSC layer (M4.5 part 1): codec, SLIP, dispatch, sessions, replies.
+//! The socket-free OSC layer (part 1): codec, SLIP, dispatch, sessions, replies.
 
 #![allow(
     clippy::unwrap_used,
@@ -1673,7 +1673,7 @@ fn a_table_full_of_tcp_peers_refuses_a_new_peer_politely() {
     assert_eq!(osc.update_subscribers(T0).len(), MAX_PEERS);
 }
 
-// ---- QLab 5 behaviour (M4.5b): each point of the brief, as measured in the capture
+// ---- QLab 5 behaviour: each point of the brief, as measured in the capture
 
 fn replies_of(out: &Outcome) -> Vec<Value> {
     out.replies.iter().map(reply_json).collect()
@@ -2591,7 +2591,7 @@ fn the_wire_limits_are_the_decided_ones() {
     assert_eq!(MAX_REPLIES_PER_CALL, 1024);
 }
 
-// ---- fix round 1
+// ---- follow-up cases
 
 #[test]
 fn identical_messages_are_judged_by_arrival_not_by_when_they_are_handled() {
@@ -2666,7 +2666,7 @@ fn a_class_costs_by_its_ranges() {
     assert!(MATCH_BUDGET - few > 2 * (MATCH_BUDGET - plain_budget));
 }
 
-// ---- fix round 3
+// ---- later follow-up cases
 
 #[test]
 fn cycling_many_forged_addresses_does_not_reset_a_victims_reply_budget() {
@@ -3538,7 +3538,7 @@ fn changing_the_reply_port_does_not_reset_the_reply_budget() {
     assert!(!budgets.spend_reply_bytes(ip, kind, T0, 1000));
 }
 
-// ---- passcode rights (M4.5c)
+// ---- passcode rights
 
 /// No Passcode has `none`; 1111 View; 2222 View + Edit; 3333 View + Control; 4444 all.
 fn table(none: OscRights) -> OscAccess {
@@ -3677,7 +3677,7 @@ fn each_message_class_needs_its_right_over_udp_and_tcp() {
 #[test]
 fn a_peer_that_has_not_connected_has_the_no_passcode_rights() {
     // Nothing: everything but /connect, /version and /workspaces is denied (as with a passcode
-    // before M4.5c).
+    //.
     let show = Show::with_access(table(OscRights::NONE));
     for peer in [udp(), tcp_peer(1)] {
         let mut osc = quiet_osc();

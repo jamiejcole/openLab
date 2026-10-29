@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `progress` for cues without a voice (M4.2e): pre-wait and post-wait countdowns in `waits`,
+//! `progress` for cues without a voice: pre-wait and post-wait countdowns in `waits`,
 //! silent actions (Wait cues) in `items`, at the existing rate, per doc, and nothing when idle
 //! (docs/protocol.md section 4). Offline render driver at [`RATE`].
 

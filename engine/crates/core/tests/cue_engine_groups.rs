@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Group cues (CT-22) and the playhead inside groups (M2.11), per docs/cue-engine.md "Groups".
+//! Group cues (CT-22) and the playhead inside groups, per docs/cue-engine.md "Groups".
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 mod common;
@@ -211,7 +211,7 @@ fn start_first_and_go_to_next_chains_children_and_skips_the_group() {
     assert_eq!(rig.state(3), CueState::Idle);
 }
 
-// ----- start first and enter (M2.11) -----
+// ----- start first and enter -----
 
 #[test]
 fn start_first_and_enter_moves_the_playhead_into_the_group() {
@@ -266,7 +266,7 @@ fn go_inside_an_idle_entered_group_starts_the_child_alone() {
 
     let go = rig.go(100);
     assert_eq!(running_at(&go, 11), Some(100));
-    // The group does not run (M2.24, QLab check G4), so it fires no continue either.
+    // The group does not run (QLab check G4), so it fires no continue either.
     assert!(changes(&go, 1).is_empty());
     let tick = rig.tick(1100);
     assert_eq!(changes(&tick, 11), vec![(CueState::Idle, 1100)]);
@@ -278,7 +278,7 @@ fn go_inside_an_idle_entered_group_starts_the_child_alone() {
 
 #[test]
 fn starting_a_child_leaves_the_idle_groups_around_it_idle() {
-    // M2.24 (QLab check G4): a child started on its own does not make its groups run.
+    // QLab check G4: a child started on its own does not make its groups run.
     let inner = grp(2, TIMELINE, vec![wait(20, 1.0)]);
     let outer = timed(grp(1, TIMELINE, vec![inner]), 0.0, 0.0, AF);
     let mut rig = Rig::new(vec![outer, memo(3)]);
@@ -318,7 +318,7 @@ fn a_child_started_while_its_group_post_waits_leaves_it_post_waiting() {
     assert_eq!(running_at(&rig.tick(5000), 2), Some(5000));
 }
 
-// ----- playhead navigation in and out of groups (PB-05, M2.11) -----
+// ----- playhead navigation in and out of groups (PB-05) -----
 
 fn nav_rig() -> Rig {
     let numbered_group = |n: u128, number: &str, mode, children| {
@@ -551,13 +551,13 @@ fn go_on_a_timeline_child_starts_only_that_child_and_moves_to_its_sibling() {
     let go = rig.go(0);
     // Children's continue modes are ignored in a timeline: 10's auto-continue starts nothing.
     assert_eq!(starts(&go), vec![(id(10), 0)]);
-    // The group does not run (M2.24, QLab check G4).
+    // The group does not run (QLab check G4).
     assert!(changes(&go, 1).is_empty());
     assert_eq!(rig.playhead(), Some(id(11)));
     rig.go(100);
     rig.go(200);
     // Past the last child: out of the group. It never ran, so its auto-follow (2) never fires:
-    // the playhead stands on 2 rather than passing over it (M2.24 fix round 1, review H1).
+    // the playhead stands on 2 rather than passing over it.
     assert_eq!(rig.playhead(), Some(id(2)));
     let tick = rig.tick(1200);
     // It never ran, so it does not auto-follow.
@@ -568,7 +568,7 @@ fn go_on_a_timeline_child_starts_only_that_child_and_moves_to_its_sibling() {
 
 #[test]
 fn go_on_a_playlist_child_plays_on_through_the_rest_without_the_group_running() {
-    // M2.24 (QLab checks G4, G5).
+    // QLab checks G4.
     let g = grp(
         1,
         playlist(false, false),
@@ -861,7 +861,7 @@ fn pick_run(rig: &mut Rig, count: u64) -> Vec<CueId> {
             let start = rig.start(i * 1000, 1);
             let children = picked(&start, 1);
             assert_eq!(children.len(), 1, "{start:?}");
-            // (Broken while a child is: M2.24, QLab check G6.)
+            // (Broken while a child is: QLab check G6.)
             assert!(matches!(rig.state(1), CueState::Idle | CueState::Broken));
             children[0]
         })
@@ -990,7 +990,7 @@ fn random_group_with_one_child_always_starts_it() {
 
 #[test]
 fn random_group_chosen_child_continue_mode_applies() {
-    // M2.24 (QLab check G1): the chosen child's auto-follow starts the child after it, every
+    // QLab check G1: the chosen child's auto-follow starts the child after it, every
     // time it is chosen; the group completes when both are done.
     let r = timed(
         grp(
@@ -1095,7 +1095,7 @@ fn looping_playlist_of_instant_children_is_cut_at_the_chain_limit() {
 
 #[test]
 fn looping_playlist_of_zero_length_sounds_is_cut_across_feedback_calls_at_one_sample() {
-    // Regression (M2.9 property seed): each lap needs the mixer's end report, and a voice that
+    // Regression: each lap needs the mixer's end report, and a voice that
     // ends on its start sample (loaded past its file's end) is reported on that same sample. The
     // binary hands such reports over one call each, all at one `now`; with a fresh chain budget
     // per call the playlist went round forever there and the control thread never got past it.
@@ -1127,7 +1127,7 @@ fn looping_playlist_of_zero_length_sounds_is_cut_across_feedback_calls_at_one_sa
 
 #[test]
 fn a_cut_looping_playlist_still_starts_the_cue_after_its_group() {
-    // Regression (M2-B L1): the zero-length loop used up the call's whole budget, so the group's
+    // Regression: the zero-length loop used up the call's whole budget, so the group's
     // own continue (the cue after the group) was dropped with ChainLimit.
     let mut p = grp(1, playlist(true, false), vec![memo(10), memo(11)]);
     p.continue_mode = AF;
@@ -1373,7 +1373,7 @@ fn feedback_naming_a_group_is_ignored() {
     assert_eq!(rig.state(1), CueState::Running);
 }
 
-// ----- a child breaking (M2.13 rules inside groups) -----
+// ----- a child breaking (rules inside groups) -----
 
 #[test]
 fn broken_child_keeps_its_auto_continue_and_the_group_does_not_auto_follow() {
@@ -1538,7 +1538,7 @@ fn nesting_beyond_the_limit_does_not_panic() {
     assert_eq!(rig.engine.cue_states().count(), 0);
 }
 
-// ----- fix round 1 (M2-B review) -----
+// ----- follow-up cases from review -----
 
 fn fade(seconds: f64) -> Option<FadeSpec> {
     Some(FadeSpec {
@@ -1549,7 +1549,7 @@ fn fade(seconds: f64) -> Option<FadeSpec> {
 
 #[test]
 fn fade_stop_on_a_pre_waiting_group_cancels_its_action() {
-    // Review H1: the pre-wait stayed armed and started every child after the stop.
+    // The pre-wait stayed armed and started every child after the stop.
     let g = timed(grp(1, TIMELINE, vec![sound(10), sound(11)]), 1.0, 0.0, DNC);
     let mut rig = Rig::new(vec![g, memo(2)]);
     rig.go(0);
@@ -1587,7 +1587,7 @@ fn fade_stop_on_a_pre_waiting_cue_cancels_its_action() {
 }
 
 fn paused_with_end_in_flight(loop_: bool, fail: bool) -> (Rig, Vec<Action>) {
-    // Review M1: a child's end (dated before the pause) arrives while the playlist is paused.
+    // A child's end (dated before the pause) arrives while the playlist is paused.
     let g = grp(
         1,
         playlist(loop_, false),
@@ -1651,7 +1651,7 @@ fn paused_non_looping_playlist_does_not_skip_its_remaining_children() {
 
 #[test]
 fn go_on_a_disarmed_enter_group_skips_it_as_a_unit() {
-    // Review M2: the playhead went inside a group that started nothing.
+    // The playhead went inside a group that started nothing.
     let mut g = grp(1, ENTER, vec![memo(10), memo(11)]);
     g.armed = false;
     let mut rig = Rig::new(vec![g, memo(2)]);
@@ -1662,7 +1662,6 @@ fn go_on_a_disarmed_enter_group_skips_it_as_a_unit() {
 
 #[test]
 fn shuffled_loop_never_repeats_a_child_across_a_pass_boundary() {
-    // Review L2.
     for seed in 0..200u64 {
         let kids = (10..12).map(|n| wait(n, 1.0)).collect();
         let mut rig = Rig::seeded(vec![grp(1, playlist(true, true), kids)], seed);
@@ -1683,7 +1682,7 @@ fn shuffled_loop_never_repeats_a_child_across_a_pass_boundary() {
     }
 }
 
-// ----- fix round 2 (M2-B re-review) -----
+// ----- further follow-up cases from review -----
 
 /// Group 1 [10, 11] auto-follows into memo 2; 10 has ended, 11 plays. Group 1 is paused at 2000
 /// while 11's end (or failure) report is in flight; returns the actions of the resume at 3000.
@@ -1720,7 +1719,7 @@ fn last_child_report_in_flight(mode: GroupMode, fail: bool) -> (Rig, Vec<Action>
 
 #[test]
 fn paused_playlist_whose_last_child_ended_completes_and_auto_follows_on_resume() {
-    // Re-review M1: the group was stopped instead, and cue 2 never fired.
+    // The group was stopped instead, and cue 2 never fired.
     let (rig, resume) = last_child_report_in_flight(playlist(false, false), false);
     assert_eq!(changes(&resume, 1).last(), Some(&(CueState::Idle, 3000)));
     assert_eq!(running_at(&resume, 2), Some(3000));
@@ -1821,7 +1820,7 @@ fn paused_nested_playlist_completing_on_resume_moves_the_outer_one_on() {
     assert_eq!(running_at(&end, 2), Some(3000));
 }
 
-// ----- load past the end of a playlist or random group (M4.11b) -----
+// ----- load past the end of a playlist or random group -----
 
 fn followed(mut g: Cue) -> Cue {
     g.continue_mode = ContinueMode::AutoFollow;

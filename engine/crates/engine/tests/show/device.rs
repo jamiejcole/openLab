@@ -2,7 +2,7 @@
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
 #![allow(clippy::indexing_slicing)]
 
-//! A stand-in device layer and a test driver for the control loop on a "device" (M4.2b): the
+//! A stand-in device layer and a test driver for the control loop on a "device": the
 //! mixer sits in an `OutputHost` the test renders block by block, as a device callback would;
 //! the stream is opened and closed on the real device thread (`control::devices`), and the
 //! device policy reads a wall clock the test moves. Nothing sleeps: the driver waits for the
@@ -112,7 +112,7 @@ impl Fake {
     }
 
     /// The open stream stops calling back, with no error and the device still listed (a host
-    /// that hangs): the M4.2g stall watchdog's case.
+    /// that hangs): the stall watchdog's case.
     pub fn stall(&self) {
         self.state.lock().unwrap().rendering = false;
     }

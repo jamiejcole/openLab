@@ -178,7 +178,7 @@ fn drop_finishes_manual_saves_and_discards_pending_autosaves() {
     );
 }
 
-/// M4.15g: a save stuck on a hung volume does not keep the drop (and so the engine's exit)
+/// A save stuck on a hung volume does not keep the drop (and so the engine's exit)
 /// waiting past its bound; the detached thread still finishes the save when the disk answers.
 #[test]
 fn drop_of_a_writer_stuck_on_a_hung_disk_returns_after_its_bound() {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Fade cues (M2.6, CT-10 audio levels), per docs/cue-engine.md "Fade cues". Virtual sample
+//! Fade cues (CT-10 audio levels), per docs/cue-engine.md "Fade cues". Virtual sample
 //! clock at 1 kHz: one second is 1000 samples.
 
 mod common;
@@ -619,11 +619,11 @@ fn a_fade_that_stops_its_own_group_reports_once() {
     assert_eq!(rig.state(1), CueState::Idle);
 }
 
-// ----- review round 1 -----
+// ----- follow-up cases from review -----
 
 #[test]
 fn a_fade_taking_over_never_ramps_before_a_committed_ramp() {
-    // Review M1: Fade 2's ramp is committed for 1400 (lookahead); an operator Fade at 1100
+    // Fade 2's ramp is committed for 1400 (lookahead); an operator Fade at 1100
     // must not be dated before it, or the mixer would carry out the two the wrong way round.
     let mut f2 = master_fade(2, 1.0, SILENCE_DB);
     f2.pre_wait = 0.4;
@@ -643,7 +643,7 @@ fn a_fade_taking_over_never_ramps_before_a_committed_ramp() {
 
 #[test]
 fn in_progress_ramps_can_be_read_back_for_a_restart() {
-    // Review L4: what the binary needs to restart a voice mid-fade.
+    // What the binary needs to restart a voice mid-fade.
     let mut rig = Rig::new(vec![sound(1), master_fade(2, 4.0, SILENCE_DB)]);
     rig.start(0, 1);
     rig.start(0, 2);
@@ -673,7 +673,7 @@ fn in_progress_ramps_can_be_read_back_for_a_restart() {
 
 #[test]
 fn a_zero_length_fade_is_tracked_as_the_mixer_de_zippers_it() {
-    // Regression (M2-C L5): a 0-frame Ramp was tracked as an instant change while the mixer
+    // Regression: a 0-frame Ramp was tracked as an instant change while the mixer
     // moves such a gain linearly over 5 ms (5 samples at 1 kHz), so the tracked level ran ahead
     // of the sound; a voice restarted from `fade_ramps` would then start with the wrong value.
     let mut rig = Rig::new(vec![
@@ -697,7 +697,7 @@ fn a_zero_length_fade_is_tracked_as_the_mixer_de_zippers_it() {
 
 #[test]
 fn a_zero_length_fade_on_a_resume_sample_is_de_zippered() {
-    // Review L3: a resume re-keys the same mixer voice, so only its original start sample sets
+    // A resume re-keys the same mixer voice, so only its original start sample sets
     // a gain at once. A 0-frame Fade dated on the resume sample was tracked as immediate while
     // the mixer moves it over 5 ms.
     let mut rig = Rig::new(vec![

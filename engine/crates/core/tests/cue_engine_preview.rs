@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Preview / audition (M2.10, CUE-05), per docs/cue-engine.md "Preview". Virtual sample clock at
+//! Preview / audition (CUE-05), per docs/cue-engine.md "Preview". Virtual sample clock at
 //! 1 kHz: one second is 1000 samples.
 
 mod common;
@@ -127,7 +127,7 @@ fn a_preview_leaves_the_playhead_the_double_go_timer_and_groups_alone() {
     let playhead = rig.engine.playhead(list_id(1));
     rig.preview(900, 11);
     assert_eq!(rig.engine.playhead(list_id(1)), playhead);
-    // A previewed child does not make its idle group run (nor does a started one, M2.24).
+    // A previewed child does not make its idle group run (nor does a started one).
     assert_eq!(rig.state(10), CueState::Idle);
     let early = rig.go(950);
     assert!(early.contains(&Action::GoIgnored {
@@ -225,7 +225,7 @@ fn only_playable_audio_cues_are_previewed() {
             reason: PreviewIgnoredReason::NotAudio
         })]
     );
-    // A group with no audio cue in it has nothing to play (M2.28, QLab check V1).
+    // A group with no audio cue in it has nothing to play (QLab check V1).
     assert_eq!(
         rig.preview(0, 3),
         vec![Action::Warning(EngineWarning::PreviewIgnored {
@@ -255,7 +255,7 @@ fn only_playable_audio_cues_are_previewed() {
     assert!(!rig.engine.is_previewing(id(2)));
 }
 
-/// M2.28, QLab check V2: QLab does not play a preview of a disarmed cue.
+/// QLab check V2: QLab does not play a preview of a disarmed cue.
 #[test]
 fn a_disarmed_cue_cannot_be_previewed() {
     let mut c = sound(1);

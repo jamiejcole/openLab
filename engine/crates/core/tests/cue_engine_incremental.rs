@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The incremental static-problem bookkeeping (M4.12a): an engine told only an edit's footprint
+//! The incremental static-problem bookkeeping: an engine told only an edit's footprint
 //! (`model_changed_cues`) behaves exactly like one that rebuilds everything (`model_changed`),
 //! at a cost that follows the edit. The random-sequence version of this is
 //! `commands_prop::incremental_problems_equal_a_full_rebuild`; these are the named cases,
@@ -490,7 +490,7 @@ fn an_edit_costs_what_it_touched() {
         vec![CueProblem::TargetMissing { target: id(1500) }]
     );
     assert_eq!(twin.inc.model_syncs(), twin.full.model_syncs());
-    // M4.12c: the chain limit, the playhead and the cues present were followed without
+    // The chain limit, the playhead and the cues present were followed without
     // walking the show (the full rebuild walks it on every edit).
     // (300 was moved to after 1,100.)
     twin.edit(Command::RemoveCue { id: id(300) });
@@ -499,7 +499,7 @@ fn an_edit_costs_what_it_touched() {
     assert!(twin.full.whole_show_passes() >= passes.1 + 9);
 }
 
-// ----- playheads, the chain limit and group visits followed from footprints (M4.12c) -----
+// ----- playheads, the chain limit and group visits followed from footprints -----
 
 use ContinueMode::{AutoContinue as AC, AutoFollow as AF};
 
@@ -680,7 +680,7 @@ fn edits_added_up_before_a_call_are_followed_as_one() {
 
 #[test]
 fn deleting_the_standby_cue_inside_a_group_keeps_the_visit() {
-    // M2.24 H1, followed from the footprint: the playhead moves to 12, still inside the group
+    // Followed from the footprint: the playhead moves to 12, still inside the group
     // whose auto-follow has played 2, so GO from 12 passes over 2.
     let g = timed(
         grp(
@@ -702,7 +702,7 @@ fn deleting_the_standby_cue_inside_a_group_keeps_the_visit() {
 
 #[test]
 fn a_standby_cue_dragged_into_a_group_enters_it_afresh() {
-    // M2.24 H1, followed from the footprint: the playlist ran (and played 2 by its
+    // Followed from the footprint: the playlist ran (and played 2 by its
     // auto-follow), then the standby cue is dragged into it. A fresh visit: the group does not
     // run in it, so GO from 12 stands on 2.
     let p = timed(
@@ -732,7 +732,7 @@ fn a_standby_cue_dragged_into_a_group_enters_it_afresh() {
 
 #[test]
 fn a_cue_moved_into_the_group_just_before_it_enters_it() {
-    // M2.24 H1, followed from the footprint: [G [10], 12, 2, 3] → [G [10, 12], 2, 3] keeps
+    // Followed from the footprint: [G [10], 12, 2, 3] → [G [10, 12], 2, 3] keeps
     // every cue's place in the order, but the playhead on 12 is now inside G: a fresh visit,
     // G's continue does not fire, so GO from 12 stands on 2.
     let g = timed(grp(1, GroupMode::Timeline, vec![memo(10)]), AC);

@@ -363,7 +363,7 @@ fn bad_plans(messages: &[ServerMessage]) -> Option<Vec<openlab_core::CueId>> {
 
 #[test]
 fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
-    // M4.12c: the slice-plan checks look only at what each edit touched; the warnings still
+    // The slice-plan checks look only at what each edit touched; the warnings still
     // name exactly the cues whose slices cannot play, in workspace order. A 300-frame file and
     // a start time past its end make a plan that cannot play.
     let path = wav(&dc(300, 0.5));

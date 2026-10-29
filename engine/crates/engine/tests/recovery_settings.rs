@@ -105,7 +105,7 @@ fn older_or_equal_recovery_file_is_moved_aside_never_deleted() {
     }
 }
 
-/// M5: a stale recovery file is never moved over another stale one; with every name taken it
+/// A stale recovery file is never moved over another stale one; with every name taken it
 /// stays where it is, and the others are kept.
 #[test]
 fn a_stale_recovery_file_never_replaces_another() {

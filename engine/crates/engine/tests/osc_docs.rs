@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The socket-free OSC layer over several open docs (M4.15h, ARCHITECTURE section 7): an
+//! The socket-free OSC layer over several open docs (ARCHITECTURE section 7): an
 //! un-prefixed message goes to every doc and each answers for itself, `/workspace/{id|name}`
 //! picks one, `/connect` and its sessions and lockouts are per peer and doc, the reply budgets
 //! per IP, and the per-call caps bound the fan-out.
@@ -365,7 +365,7 @@ fn connect_to_one_doc_leaves_the_other_locked() {
     assert_eq!(replies[0]["workspace_id"], ws(&b));
 }
 
-/// A pattern address over a connected doc A and a locked doc B (#188): A's matching cues start,
+/// A pattern address over a connected doc A and a locked doc B: A's matching cues start,
 /// B is denied once and contributes no input, whichever way the pattern is addressed.
 #[test]
 fn a_cue_pattern_over_a_connected_and_a_locked_doc_starts_only_the_connected_one() {
@@ -764,7 +764,7 @@ fn the_matching_budget_is_shared_by_every_doc() {
     assert_eq!(out.replies.len(), 2);
 }
 
-/// Review M1: a console connecting to two locked docs with their two passcodes, un-prefixed,
+/// A console connecting to two locked docs with their two passcodes, un-prefixed,
 /// is not guessing: the passcode one doc accepts must not count as a wrong one in the other,
 /// or after five rounds it is locked out of the running show.
 #[test]
@@ -802,7 +802,7 @@ fn a_passcode_another_doc_accepts_is_no_failed_guess() {
     );
 }
 
-/// Review M2: a name two open docs share (a Finder copy keeps it) picks neither: the bare error
+/// A name two open docs share (a Finder copy keeps it) picks neither: the bare error
 /// of an unknown workspace, and one warning for the show log per peer and name.
 #[test]
 fn a_name_several_docs_share_is_refused_with_one_warning() {

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Documents through the control loop on the offline driver (M4.4, M4.15f; NFR-04, NFR-05, NFR-06,
+//! Documents through the control loop on the offline driver (NFR-04, NFR-05, NFR-06,
 //! WS-02, WS-03, WS-06, WS-07, WS-08): new, open, open-recovery, close, save, save-as, autosave
 //! and recovery, with a virtual wall clock and the persistence layer on a temp folder.
 //!
@@ -260,7 +260,7 @@ fn new_save_as_and_open_round_trip_through_the_protocol() {
     assert_eq!(snap.workspace.cue_lists.len(), 1);
     assert!(snap.workspace.cue_lists[0].cues.is_empty());
     assert_ne!(snap.workspace.id, saved.id);
-    // QLab's default OSC access (M4.5c): nothing without a passcode, one 4-digit passcode with
+    // QLab's default OSC access: nothing without a passcode, one 4-digit passcode with
     // all rights (the digits are random).
     let access = &snap.workspace.settings.osc_access;
     assert_eq!(access.no_passcode, openlab_core::OscRights::NONE);
@@ -934,7 +934,7 @@ fn only_one_document_request_at_a_time() {
     );
 }
 
-/// The doc open keeps playing and editing while another is read (M4.15f: the file opens beside
+/// The doc open keeps playing and editing while another is read (the file opens beside
 /// it; the edit is not thrown away, and the open is not refused for it).
 #[test]
 fn an_edit_made_while_a_file_is_read_stays_in_its_doc() {
@@ -1481,9 +1481,9 @@ fn an_answer_already_in_the_inbox_when_the_timeout_fires_is_not_reported_as_io()
     );
 }
 
-/// M4.15f: `new` and `open` open another doc beside the one open, which keeps playing; the
+/// `new` and `open` open another doc beside the one open, which keeps playing; the
 /// requester gets `opened { doc }` and no snapshot (a connection bound to the doc gets that),
-/// nothing is broadcast as a snapshot (M4.4a's replacement broadcast is gone), and the app
+/// nothing is broadcast as a snapshot, and the app
 /// connections get the list with both. Closing the first then stops its cue.
 #[test]
 fn another_doc_opens_beside_a_playing_one_and_closing_it_stops_its_cues() {
@@ -1639,7 +1639,7 @@ fn opened_doc(msgs: &[ServerMessage]) -> openlab_engine::control::DocId {
     }
 }
 
-/// Review H1 (M4.15f): a Save As onto the show file another open doc has is refused with
+/// A Save As onto the show file another open doc has is refused with
 /// `already_open` and writes nothing, also when the path reaches it through a symlinked folder
 /// (the writer compares the files themselves); else the later save of either doc would silently
 /// overwrite the other's.
@@ -1686,7 +1686,7 @@ fn save_as_onto_another_open_docs_show_is_already_open() {
     assert_eq!(view.show_path(), None, "the new doc is still untitled");
 }
 
-/// Review H1: an open through a symlinked folder of a show that is open is `already_open`
+/// An open through a symlinked folder of a show that is open is `already_open`
 /// (the document worker compares the files), not a second doc on the same file.
 #[cfg(unix)]
 #[test]
@@ -1709,7 +1709,7 @@ fn opening_an_open_show_through_a_symlink_is_already_open() {
     assert_eq!(r.s.control().doc_ids().len(), 1);
 }
 
-/// Review H1: a show file a Save As is still writing is claimed: opening it meanwhile is
+/// A show file a Save As is still writing is claimed: opening it meanwhile is
 /// `already_open` (its doc only takes the path when the write is done).
 #[test]
 fn opening_a_show_a_save_as_is_writing_is_already_open() {

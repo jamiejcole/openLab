@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The `status` message through the control loop (M4.7; DX-03): cadence, content and the
+//! The `status` message through the control loop (DX-03): cadence, content and the
 //! device state, on a manual wall clock and fake counters. Nothing waits for real time.
 
 mod show;

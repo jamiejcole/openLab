@@ -6,9 +6,9 @@
     clippy::indexing_slicing
 )]
 
-//! M2.24: where the QLab 5 checks (answers of 2026-10-27) showed openLab behaving differently,
-//! openLab now does what QLab does. One regression test per point, named after the check's id.
-//! Virtual sample clock at 1 kHz: one second is 1000 samples.
+//! GO on a group's child, the playhead after groups, broken and failing children, and the
+//! auto-follow timing of a halted playlist, where QLab 5 was measured (answers of 2026-10-27) and
+//! openLab now does what QLab does. Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 mod common;
 
@@ -41,7 +41,7 @@ fn playlist() -> GroupMode {
 // ----- G1: a random group's chosen child keeps its own continue mode -----
 
 #[test]
-fn g1_random_child_keeps_its_own_continue_mode() {
+fn random_child_keeps_its_own_continue_mode() {
     // Child 10 auto-continues 0.5 s into its action; 11 is a plain wait. Round-robin picks each
     // once in the first two starts.
     let r = grp(
@@ -76,7 +76,7 @@ fn g1_random_child_keeps_its_own_continue_mode() {
 // ----- G2: a playlist with a broken child skips it and still auto-follows -----
 
 #[test]
-fn g2_playlist_skips_a_broken_child_and_still_auto_follows_out_of_the_group() {
+fn playlist_skips_a_broken_child_and_still_auto_follows_out_of_the_group() {
     let p = timed(
         grp(
             1,
@@ -109,7 +109,7 @@ fn three_children(mode: GroupMode) -> Rig {
 }
 
 #[test]
-fn g4_playlist_go_on_a_child_plays_it_and_follows_through_the_rest() {
+fn playlist_go_on_a_child_plays_it_and_follows_through_the_rest() {
     let mut rig = three_children(playlist());
     let go = rig.go(0);
     assert_eq!(starts(&go), vec![(id(11), 0)]);
@@ -130,7 +130,7 @@ fn g4_playlist_go_on_a_child_plays_it_and_follows_through_the_rest() {
 }
 
 #[test]
-fn g4_timeline_go_on_a_child_plays_only_that_child_and_the_group_does_not_run() {
+fn timeline_go_on_a_child_plays_only_that_child_and_the_group_does_not_run() {
     let mut rig = three_children(GroupMode::Timeline);
     let go = rig.go(0);
     assert_eq!(starts(&go), vec![(id(11), 0)]);
@@ -144,7 +144,7 @@ fn g4_timeline_go_on_a_child_plays_only_that_child_and_the_group_does_not_run() 
 }
 
 #[test]
-fn g5_playhead_after_go_on_a_child_of_a_stopped_group_follows_the_mode() {
+fn playhead_after_go_on_a_child_of_a_stopped_group_follows_the_mode() {
     // Playlist: the playhead goes to the next cue outside the group.
     let mut rig = three_children(playlist());
     rig.go(0);
@@ -158,7 +158,7 @@ fn g5_playhead_after_go_on_a_child_of_a_stopped_group_follows_the_mode() {
 // ----- G6: a group with a broken child is broken, but can still be GOed -----
 
 #[test]
-fn g6_a_group_with_a_broken_child_shows_broken_and_can_still_be_goed() {
+fn a_group_with_a_broken_child_shows_broken_and_can_still_be_goed() {
     let p = grp(1, playlist(), vec![broken_sound(10), wait(11, 1.0)]);
     let mut rig = Rig {
         ws: workspace(vec![p, memo(2)]),
@@ -198,7 +198,7 @@ fn g6_a_group_with_a_broken_child_shows_broken_and_can_still_be_goed() {
 // ----- D5: GO on a Devamp with "start next cue" stands on the cue it will start -----
 
 #[test]
-fn d5_go_on_a_devamp_with_start_next_moves_the_playhead_onto_that_cue() {
+fn go_on_a_devamp_with_start_next_moves_the_playhead_onto_that_cue() {
     let devamp = cue(
         2,
         CueKind::Devamp {
@@ -261,7 +261,7 @@ fn slices_of(ws: &Workspace) -> Vec<f64> {
 }
 
 #[test]
-fn d6_a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
+fn a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
     assert_eq!(MIN_SLICE_SECONDS, 0.051);
 
     // 50 ms: the show file is repaired (the marker that ends it moves to make it 51 ms long),
@@ -347,7 +347,7 @@ fn d6_a_50_ms_slice_is_refused_and_a_51_ms_loop_plays() {
 // ----- P5: GO on a broken auto-follow cue -----
 
 #[test]
-fn p5_go_on_a_broken_auto_follow_cue_starts_the_next_cue_and_moves_past_it() {
+fn go_on_a_broken_auto_follow_cue_starts_the_next_cue_and_moves_past_it() {
     let mut rig = Rig::new(vec![
         timed(broken_sound(1), 0.0, 0.0, AF),
         wait(2, 1.0),
@@ -368,7 +368,7 @@ fn p5_go_on_a_broken_auto_follow_cue_starts_the_next_cue_and_moves_past_it() {
 // ----- K1: two cues with the same hotkey both start, with no warning -----
 
 #[test]
-fn k1_two_cues_with_the_same_hotkey_both_start_with_no_warning() {
+fn two_cues_with_the_same_hotkey_both_start_with_no_warning() {
     let w = Hotkey {
         key: "w".into(),
         modifiers: Modifiers::default(),
@@ -407,10 +407,10 @@ fn k1_two_cues_with_the_same_hotkey_both_start_with_no_warning() {
     assert_eq!(rig.state(30), CueState::Running);
 }
 
-// ----- fix round 1 (review of M2.24) -----
+// ----- later review cases -----
 
 #[test]
-fn h1_go_on_a_playlist_child_stands_on_the_cue_after_the_group_without_losing_its_continue() {
+fn go_on_a_playlist_child_stands_on_the_cue_after_the_group_without_losing_its_continue() {
     // The group never runs, so its auto-follow (2) never fires: the playhead stands on 2.
     let p = timed(
         grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
@@ -429,7 +429,7 @@ fn h1_go_on_a_playlist_child_stands_on_the_cue_after_the_group_without_losing_it
 }
 
 #[test]
-fn h1_leaving_a_start_first_group_that_never_ran_stands_on_its_continue_target() {
+fn leaving_a_start_first_group_that_never_ran_stands_on_its_continue_target() {
     let g = timed(
         grp(
             1,
@@ -479,7 +479,7 @@ fn audio_of(ws: &Workspace) -> (Option<f64>, Vec<(f64, u32)>, u32) {
 }
 
 #[test]
-fn m1_d6_repair_keeps_a_short_trim_and_the_loops_it_merges() {
+fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
     // A 40 ms trim is moved to the 51 ms floor, not cleared (which would play the whole file).
     let mut trim = sliced(1.0, 1.04, &[]);
     let mut ws = workspace(vec![cue(1, trim.clone())]);
@@ -555,7 +555,7 @@ fn failed_before_playing(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action>
 }
 
 #[test]
-fn m2_an_auto_follow_cue_whose_stream_fails_before_playing_starts_the_next_cue() {
+fn an_auto_follow_cue_whose_stream_fails_before_playing_starts_the_next_cue() {
     // Its file went away after the probe: found only when its stream opens (QLab check P5).
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), wait(2, 1.0), memo(3)]);
     rig.go(0);
@@ -584,7 +584,7 @@ fn m2_an_auto_follow_cue_whose_stream_fails_before_playing_starts_the_next_cue()
 }
 
 #[test]
-fn m2_a_playlist_skips_a_child_whose_stream_fails_before_playing_and_still_auto_follows() {
+fn a_playlist_skips_a_child_whose_stream_fails_before_playing_and_still_auto_follows() {
     let p = timed(
         grp(1, playlist(), vec![sound(10), wait(11, 0.5)]),
         0.0,
@@ -599,10 +599,10 @@ fn m2_a_playlist_skips_a_child_whose_stream_fails_before_playing_and_still_auto_
     assert_eq!(starts(&end), vec![(id(2), 550)]);
 }
 
-// ----- fix round 2 (re-review of M2.24) -----
+// ----- later review cases, continued -----
 
 #[test]
-fn h1_a_group_that_ran_earlier_does_not_hide_its_continue_from_a_later_go_on_a_child() {
+fn a_group_that_ran_earlier_does_not_hide_its_continue_from_a_later_go_on_a_child() {
     let p = timed(
         grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
         0.0,
@@ -630,7 +630,7 @@ fn h1_a_group_that_ran_earlier_does_not_hide_its_continue_from_a_later_go_on_a_c
 }
 
 #[test]
-fn h1_leaving_a_group_whose_own_run_fired_its_continue_does_not_play_it_twice() {
+fn leaving_a_group_whose_own_run_fired_its_continue_does_not_play_it_twice() {
     let g = timed(
         grp(
             1,
@@ -653,7 +653,7 @@ fn h1_leaving_a_group_whose_own_run_fired_its_continue_does_not_play_it_twice() 
 }
 
 #[test]
-fn m2_a_paused_cue_whose_stream_fails_before_playing_follows_only_on_resume() {
+fn a_paused_cue_whose_stream_fails_before_playing_follows_only_on_resume() {
     let list_of = || vec![timed(sound(1), 0.0, 0.0, AF), wait(2, 1.0), memo(3)];
     // Pause, then Resume.
     let mut rig = Rig::new(list_of());
@@ -698,7 +698,7 @@ fn m2_a_paused_cue_whose_stream_fails_before_playing_follows_only_on_resume() {
     assert!(starts(&rig.tick(10_000)).is_empty());
 }
 
-// ----- fix round 3 (final re-review of M2.24) -----
+// ----- later review cases, last -----
 
 fn children_of(rig: &mut Rig, n: u128) -> &mut Vec<Cue> {
     let cues = &mut rig.ws.cue_lists[0].cues;
@@ -709,7 +709,7 @@ fn children_of(rig: &mut Rig, n: u128) -> &mut Vec<Cue> {
 }
 
 #[test]
-fn h1_deleting_the_standby_cue_inside_a_group_keeps_the_visit_and_plays_nothing_twice() {
+fn deleting_the_standby_cue_inside_a_group_keeps_the_visit_and_plays_nothing_twice() {
     let g = timed(
         grp(
             1,
@@ -734,7 +734,7 @@ fn h1_deleting_the_standby_cue_inside_a_group_keeps_the_visit_and_plays_nothing_
 }
 
 #[test]
-fn h1_a_standby_cue_dragged_into_a_group_enters_it_afresh() {
+fn a_standby_cue_dragged_into_a_group_enters_it_afresh() {
     let p = timed(
         grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
         0.0,
@@ -763,7 +763,7 @@ fn h1_a_standby_cue_dragged_into_a_group_enters_it_afresh() {
 }
 
 #[test]
-fn h1_a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_unchanged() {
+fn a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_unchanged() {
     // Found by the property suite: [G [10], 12, 2, 3] → [G [10, 12], 2, 3] keeps every cue's
     // place in the list's order, but the playhead on 12 is now inside G.
     let g = timed(grp(1, GroupMode::Timeline, vec![memo(10)]), 0.0, 0.0, AC);
@@ -786,7 +786,7 @@ fn h1_a_cue_moved_into_the_group_just_before_it_enters_it_although_the_order_is_
     assert_eq!(rig.playhead(), Some(id(2)));
 }
 
-// ----- M2.27: the QLab checks M2.24 left open (answers 2026-10-27) -----
+// ----- the QLab checks left open (answers 2026-10-27) -----
 
 /// Tells the engine the nominal length of Audio cues, in seconds, as the binary does from its
 /// plans (`None`: unknown or endless).
@@ -840,7 +840,7 @@ fn stop(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
 
 /// QLab check Q2's setup: an auto-follow playlist of three 10 s sounds (the third given), then
 /// cue 2. GO; the first child plays out, the second starts at 10 s and breaks at 15 s.
-fn q2_rig(third: Cue, third_length: Option<f64>, loop_: bool) -> (Rig, Vec<Action>) {
+fn halted_rig(third: Cue, third_length: Option<f64>, loop_: bool) -> (Rig, Vec<Action>) {
     let p = timed(
         grp(
             1,
@@ -870,8 +870,8 @@ fn q2_rig(third: Cue, third_length: Option<f64>, loop_: bool) -> (Rig, Vec<Actio
 }
 
 #[test]
-fn q2_a_playlist_child_that_breaks_while_playing_halts_the_playlist_and_still_follows() {
-    let (mut rig, broke) = q2_rig(sound(12), Some(10.0), false);
+fn a_playlist_child_that_breaks_while_playing_halts_the_playlist_and_still_follows() {
+    let (mut rig, broke) = halted_rig(sound(12), Some(10.0), false);
     // QLab: the broken child shows broken and the playlist does not move on.
     assert_eq!(changes(&broke, 11), vec![(CueState::Broken, 15_000)]);
     assert!(starts(&broke).is_empty());
@@ -896,7 +896,7 @@ fn q2_a_playlist_child_that_breaks_while_playing_halts_the_playlist_and_still_fo
 }
 
 #[test]
-fn q2_the_broken_childs_end_comes_from_its_nominal_length_when_its_start_did_not_tell() {
+fn the_broken_childs_end_comes_from_its_nominal_length_when_its_start_did_not_tell() {
     // No `ActionLength` for the broken child: its nominal length (`CueLengths`) dates its end
     // from its action start.
     let p = timed(grp(1, playlist(), vec![sound(10), sound(11)]), 0.0, 0.0, AF);
@@ -911,7 +911,7 @@ fn q2_the_broken_childs_end_comes_from_its_nominal_length_when_its_start_did_not
 }
 
 #[test]
-fn q2_the_follow_counts_the_remaining_childrens_pre_waits_and_any_kind_of_child() {
+fn the_follow_counts_the_remaining_childrens_pre_waits_and_any_kind_of_child() {
     // The rest: a Wait with a 2 s pre-wait (2 + 3 s), a disarmed sound (its pre-wait only, 1 s),
     // a memo (0) and a sound with static problems (skipped: its 0.5 s pre-wait only).
     let mut disarmed = timed(sound(13), 1.0, 0.0, ContinueMode::DoNotContinue);
@@ -946,10 +946,10 @@ fn q2_the_follow_counts_the_remaining_childrens_pre_waits_and_any_kind_of_child(
 }
 
 #[test]
-fn q2_a_remaining_child_with_no_known_end_cancels_the_follow() {
+fn a_remaining_child_with_no_known_end_cancels_the_follow() {
     // The third child's length is unknown (not probed): the group could never say when it
     // would have ended, so it does not follow (open question in docs/cue-engine.md).
-    let (mut rig, broke) = q2_rig(sound(12), None, false);
+    let (mut rig, broke) = halted_rig(sound(12), None, false);
     assert!(starts(&broke).is_empty());
     let end = rig.tick(20_000);
     assert_eq!(changes(&end, 1), vec![(CueState::Idle, 20_000)]);
@@ -959,7 +959,7 @@ fn q2_a_remaining_child_with_no_known_end_cancels_the_follow() {
 }
 
 #[test]
-fn q2_a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
+fn a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
     for mode in [
         GroupMode::Playlist {
             loop_: true,
@@ -969,7 +969,7 @@ fn q2_a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
         GroupMode::StartRandom,
     ] {
         let inner = grp(12, mode, vec![wait(20, 1.0)]);
-        let (mut rig, _) = q2_rig(inner, None, false);
+        let (mut rig, _) = halted_rig(inner, None, false);
         rig.tick(20_000);
         assert!(rig.engine.next_deadline().is_none(), "{mode:?}");
     }
@@ -985,15 +985,15 @@ fn q2_a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
         ),
     ] {
         let inner = grp(12, mode, vec![wait(20, 2.0), wait(21, 3.0)]);
-        let (mut rig, _) = q2_rig(inner, None, false);
+        let (mut rig, _) = halted_rig(inner, None, false);
         rig.tick(20_000);
         assert_eq!(rig.engine.next_deadline(), Some(end), "{mode:?}");
     }
 }
 
 #[test]
-fn q2_a_looping_playlist_that_halts_never_follows() {
-    let (mut rig, broke) = q2_rig(sound(12), Some(10.0), true);
+fn a_looping_playlist_that_halts_never_follows() {
+    let (mut rig, broke) = halted_rig(sound(12), Some(10.0), true);
     assert!(starts(&broke).is_empty());
     let end = rig.tick(20_000);
     assert_eq!(changes(&end, 1), vec![(CueState::Idle, 20_000)]);
@@ -1001,17 +1001,17 @@ fn q2_a_looping_playlist_that_halts_never_follows() {
 }
 
 #[test]
-fn q2_stop_or_panic_while_the_halted_playlist_waits_cancels_its_follow() {
+fn stop_or_panic_while_the_halted_playlist_waits_cancels_its_follow() {
     // During the rest of the broken child, and during the wait for the follow.
     for at in [17_000, 25_000] {
-        let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+        let (mut rig, _) = halted_rig(sound(12), Some(10.0), false);
         rig.tick(at.min(20_000));
         let stopped = stop(&mut rig, at, 1);
         assert_eq!(changes(&stopped, 1), vec![(CueState::Idle, at)]);
         assert!(rig.engine.next_deadline().is_none());
         assert!(starts(&rig.tick(30_000)).is_empty());
 
-        let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+        let (mut rig, _) = halted_rig(sound(12), Some(10.0), false);
         rig.tick(at.min(20_000));
         rig.at(at, Input::Panic);
         assert_eq!(rig.state(1), CueState::Idle);
@@ -1021,8 +1021,8 @@ fn q2_stop_or_panic_while_the_halted_playlist_waits_cancels_its_follow() {
 }
 
 #[test]
-fn q2_a_pause_while_the_halted_playlist_waits_moves_its_follow_by_the_pause() {
-    let (mut rig, _) = q2_rig(sound(12), Some(10.0), false);
+fn a_pause_while_the_halted_playlist_waits_moves_its_follow_by_the_pause() {
+    let (mut rig, _) = halted_rig(sound(12), Some(10.0), false);
     rig.at(17_000, Input::Pause { cue: id(1) });
     assert!(rig.tick(20_000).is_empty());
     rig.at(21_000, Input::Resume { cue: id(1) });
@@ -1035,7 +1035,7 @@ fn q2_a_pause_while_the_halted_playlist_waits_moves_its_follow_by_the_pause() {
 }
 
 #[test]
-fn q2_play_next_on_a_halted_playlist_moves_it_on() {
+fn play_next_on_a_halted_playlist_moves_it_on() {
     // The second trigger "play next" is the operator moving the playlist on: the next child
     // plays, the halt is over, and as a child broke while playing the group does not follow.
     let mut p = timed(
@@ -1060,7 +1060,7 @@ fn q2_play_next_on_a_halted_playlist_moves_it_on() {
 }
 
 #[test]
-fn q2_a_shuffled_playlist_times_its_follow_by_the_rest_of_its_pass() {
+fn a_shuffled_playlist_times_its_follow_by_the_rest_of_its_pass() {
     // Lengths 1, 2 and 4 s; the second child of the pass breaks as it starts: the follow comes
     // after its nominal end plus the third child of the pass, whichever that is.
     let ms = |n: u128| -> SampleTime {
@@ -1112,7 +1112,7 @@ fn q2_a_shuffled_playlist_times_its_follow_by_the_rest_of_its_pass() {
 }
 
 #[test]
-fn q2_a_child_that_fails_before_playing_is_still_skipped_with_lengths_known() {
+fn a_child_that_fails_before_playing_is_still_skipped_with_lengths_known() {
     // `StartFailed` (no audio yet) is unchanged: skipped, the playlist moves on at once.
     let p = timed(
         grp(1, playlist(), vec![sound(10), wait(11, 0.5)]),
@@ -1129,7 +1129,7 @@ fn q2_a_child_that_fails_before_playing_is_still_skipped_with_lengths_known() {
 }
 
 #[test]
-fn q2_a_single_cue_or_a_timeline_child_that_breaks_while_playing_still_cancels_the_follow() {
+fn a_single_cue_or_a_timeline_child_that_breaks_while_playing_still_cancels_the_follow() {
     // Rule 2 is unchanged outside playlists (QLab-confirmed earlier).
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
     lengths(&mut rig, 0, &[(1, Some(1.0))]);
@@ -1167,7 +1167,7 @@ fn follow_through_rig(loop_: bool, shuffle: bool) -> Rig {
 }
 
 #[test]
-fn q4_follow_through_with_loop_wraps_to_the_first_child_and_keeps_going() {
+fn follow_through_with_loop_wraps_to_the_first_child_and_keeps_going() {
     for shuffle in [false, true] {
         let mut rig = follow_through_rig(true, shuffle);
         let mut all = rig.go(0);
@@ -1191,7 +1191,7 @@ fn q4_follow_through_with_loop_wraps_to_the_first_child_and_keeps_going() {
 }
 
 #[test]
-fn q4_panic_ends_a_looping_follow_through() {
+fn panic_ends_a_looping_follow_through() {
     let mut rig = follow_through_rig(true, false);
     rig.go(0);
     rig.tick(1000);
@@ -1202,7 +1202,7 @@ fn q4_panic_ends_a_looping_follow_through() {
 }
 
 #[test]
-fn q4_follow_through_without_loop_ends_after_the_last_child() {
+fn follow_through_without_loop_ends_after_the_last_child() {
     let mut rig = follow_through_rig(false, true);
     let mut all = rig.go(0);
     for t in 1..=4 {
@@ -1213,7 +1213,7 @@ fn q4_follow_through_without_loop_ends_after_the_last_child() {
 }
 
 #[test]
-fn q4_a_looping_follow_through_of_zero_length_children_is_bounded_by_the_chain_budget() {
+fn a_looping_follow_through_of_zero_length_children_is_bounded_by_the_chain_budget() {
     let g = grp(
         1,
         GroupMode::Playlist {
@@ -1236,7 +1236,7 @@ fn q4_a_looping_follow_through_of_zero_length_children_is_bounded_by_the_chain_b
 }
 
 #[test]
-fn q4_a_looping_follow_through_passes_over_children_that_cannot_start_and_wraps() {
+fn a_looping_follow_through_passes_over_children_that_cannot_start_and_wraps() {
     // A child broken at run time is passed over on every round; the lone playable child plays
     // round and round.
     let g = grp(
@@ -1406,7 +1406,7 @@ proptest! {
 // ----- Q1, Q3, Q5: QLab-confirmed as openLab had them (regression tests) -----
 
 #[test]
-fn q1_go_on_a_child_or_on_a_stopped_auto_follow_playlist_moves_the_playhead_as_qlab() {
+fn go_on_a_child_or_on_a_stopped_auto_follow_playlist_moves_the_playhead_as_qlab() {
     let rig_on = |n: u128| {
         let p = timed(
             grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]),
@@ -1441,7 +1441,7 @@ fn q1_go_on_a_child_or_on_a_stopped_auto_follow_playlist_moves_the_playhead_as_q
 }
 
 #[test]
-fn q3_go_on_a_child_of_a_stopped_random_or_start_first_group_plays_only_that_child() {
+fn go_on_a_child_of_a_stopped_random_or_start_first_group_plays_only_that_child() {
     for mode in [
         GroupMode::StartRandom,
         GroupMode::StartFirstAndGoToNext,
@@ -1459,7 +1459,7 @@ fn q3_go_on_a_child_of_a_stopped_random_or_start_first_group_plays_only_that_chi
 }
 
 #[test]
-fn q5_a_child_that_ends_during_its_playlists_post_wait_does_not_carry_the_playlist_on() {
+fn a_child_that_ends_during_its_playlists_post_wait_does_not_carry_the_playlist_on() {
     // The playlist runs its children (0–1 s) and then post-waits to 3 s; a child started on
     // its own at 1.5 s ends at 2 s, inside that post-wait: nothing follows it.
     let p = timed(
@@ -1482,7 +1482,7 @@ fn q5_a_child_that_ends_during_its_playlists_post_wait_does_not_carry_the_playli
 
 #[test]
 fn go_from_into_a_groups_child_clears_the_visit_memory_as_set_playhead_then_go_does() {
-    // PR #15's group visits: a group whose continue fired is remembered for the playhead's visit.
+    // Group visits: a group whose continue fired is remembered for the playhead's visit.
     // `GoFrom` (OSC `/go "3"`) moves the playhead through the same code as `SetPlayhead`, so the
     // result must be the same as `SetPlayhead` then `Go`.
     let scenario = |from: bool| {

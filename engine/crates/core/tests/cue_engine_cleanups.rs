@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Regression tests for the cue engine cleanups of M2.12 (the Lows of the M2-A, M2-B and M2-C
-//! reviews). Virtual sample clock at 1 kHz: one second is 1000 samples.
+//! Regression tests for the cue engine cleanups (small defects found in review of the cue engine).
+//! Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 mod common;
 
@@ -20,7 +20,7 @@ fn start_cue(n: u128, target: u128) -> Cue {
     )
 }
 
-// ----- M2-A L3: a GO the chain budget cannot start -----
+// ----- a GO the chain budget cannot start -----
 
 /// A wait that, when it ends at 1 s, starts a cycle of two Start cues with no time in it: the
 /// whole chain budget goes in that deadline pass.
@@ -33,7 +33,7 @@ fn cycle_after_a_wait() -> Rig {
 
 #[test]
 fn a_go_after_a_spent_chain_budget_is_ignored_and_changes_nothing() {
-    // Regression (M2-A L3): the GO's start was dropped with only a ChainLimit warning while the
+    // Regression: the GO's start was dropped with only a ChainLimit warning while the
     // playhead and the double-GO interval still advanced.
     let mut rig = cycle_after_a_wait();
     rig.go(0);
@@ -65,11 +65,11 @@ fn a_go_after_a_spent_chain_budget_is_ignored_and_changes_nothing() {
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(4)));
 }
 
-// ----- M2-A L7: a broken cue that was paused -----
+// ----- a broken cue that was paused -----
 
 #[test]
 fn start_resumes_a_cue_that_broke_while_paused() {
-    // Regression (M2-A L7): a cue broken while paused only shows Broken and GO/Start refused it
+    // Regression: a cue broken while paused only shows Broken and GO/Start refused it
     // (`CueBroken`) while its pending auto-continue stayed frozen until Resume.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 2.0, AC), memo(2)]);
     rig.start(0, 1);
@@ -123,11 +123,11 @@ fn start_still_refuses_a_broken_cue_that_is_not_paused() {
     assert_eq!(rig.engine.next_deadline(), Some(2000));
 }
 
-// ----- M2-A L8: run_of of a broken cue -----
+// ----- run_of of a broken cue -----
 
 #[test]
 fn run_of_is_none_for_every_kind_of_broken_cue() {
-    // Regression (M2-A L8): a run-time broken cue with a pending continue still had a run id,
+    // Regression: a run-time broken cue with a pending continue still had a run id,
     // one that settled into Slot::Broken did not.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 2.0, AC), memo(2)]);
     rig.start(0, 1);
@@ -159,11 +159,11 @@ fn run_of_is_none_for_every_kind_of_broken_cue() {
     assert_eq!(rig.engine.run_of(id(1)), None, "started broken");
 }
 
-// ----- M2-A L9: Resume of a cue that is not paused -----
+// ----- Resume of a cue that is not paused -----
 
 #[test]
 fn resume_of_a_cue_that_is_not_paused_takes_no_run_id() {
-    // Regression (M2-A L9): every Resume consumed a RunId, paused or not.
+    // Regression: every Resume consumed a RunId, paused or not.
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     rig.start(0, 1);
     let first = rig.engine.run_of(id(1)).unwrap();
@@ -175,11 +175,11 @@ fn resume_of_a_cue_that_is_not_paused_takes_no_run_id() {
     assert_eq!(rig.engine.run_of(id(2)), Some(RunId(first.0 + 1)));
 }
 
-// ----- M2-A L4: the pre-wait split of a loaded cue is frozen at load -----
+// ----- the pre-wait split of a loaded cue is frozen at load -----
 
 #[test]
 fn a_loaded_cue_starts_from_the_offset_it_was_loaded_with_after_a_pre_wait_edit() {
-    // Regression (M2-A L4): LoadVoice used the pre-wait at load time and StartVoice the
+    // Regression: LoadVoice used the pre-wait at load time and StartVoice the
     // pre-wait at start, so an edit between them made the primed stream disagree with the start.
     let mut rig = Rig::new(vec![timed(sound(1), 2.0, 0.0, DNC)]);
     let load = rig.at(
@@ -238,7 +238,7 @@ fn a_cue_loaded_inside_its_pre_wait_keeps_the_pre_wait_left_at_load() {
     )));
 }
 
-// ----- M2-A L5 / M2-B L6: whole-workspace passes only after a model change -----
+// ----- Whole-workspace passes only after a model change -----
 
 #[test]
 fn the_per_call_workspace_passes_run_only_after_model_changed() {

@@ -7,7 +7,7 @@
 )]
 
 //! A refused transaction is rolled back with the inverses of the commands it already applied
-//! (M1.19), not with a copy of the workspace: these check that every kind of command it can hold
+//!, not with a copy of the workspace: these check that every kind of command it can hold
 //! comes back exactly, and what the history does around it.
 
 mod common;
@@ -389,7 +389,7 @@ fn an_undo_refused_partway_is_rolled_back_and_kept() {
 
 /// Measurement, not a check (no wall-clock assertion): the cost of a transaction on a
 /// 2,000-cue show, refused at its last command and applied, against cloning the show. Before
-/// M1.19 both paid one clone. Run in release, where the debug-build check clone is gone:
+/// Both paid one clone. Run in release, where the debug-build check clone is gone:
 /// `cargo test --release -p openlab-core --test transaction_rollback -- --ignored --nocapture`.
 #[test]
 #[ignore = "measurement; prints timings"]
@@ -523,7 +523,7 @@ fn with_loaded_port_zero() -> Workspace {
     loaded.workspace
 }
 
-/// Review H1 (a): removing the port-0 patch, then a patch in use, is refused and rolled back
+/// Removing the port-0 patch, then a patch in use, is refused and rolled back
 /// with the port-0 patch put back where it was.
 #[test]
 fn a_rollback_restores_a_loaded_network_patch_on_port_zero() {
@@ -543,7 +543,7 @@ fn a_rollback_restores_a_loaded_network_patch_on_port_zero() {
     refused_at(&mut ws, command, 1);
 }
 
-/// Review H1 (b): setting that patch's port, then a refused command, rolls the port back to 0.
+/// Setting that patch's port, then a refused command, rolls the port back to 0.
 #[test]
 fn a_rollback_restores_a_loaded_port_of_zero() {
     let mut ws = with_loaded_port_zero();

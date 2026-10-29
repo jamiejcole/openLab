@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Each audio cue's media lengths for the cue list's Duration column (M5.4d, CL-02): in the
+//! Each audio cue's media lengths for the cue list's Duration column (CL-02): in the
 //! snapshot, and as `media_duration` runtime changes when a probe answers, a trim or slice is
 //! edited, the cue is pointed at another file, or its file goes missing; one cue's change costs
 //! one change, never a whole-show broadcast. Files are an in-memory `FakeFs` with a fake probe;

@@ -30,7 +30,7 @@ fn step(
     changes(ws, mirror, &footprint)
 }
 
-/// The changes for `footprint`, applied to `mirror`; read through a cue index (M4.12c) they are
+/// The changes for `footprint`, applied to `mirror`; read through a cue index they are
 /// the same as the walk's.
 fn changes(
     ws: &Workspace,

@@ -317,7 +317,7 @@ fn a_lost_rejection_breaks_the_cue() {
 
 #[test]
 fn a_refused_first_start_is_skipped_and_fires_its_auto_follow() {
-    // M4.14: one voice in the pool, so cue 2's start is refused (`PoolFull`). It never played:
+    // One voice in the pool, so cue 2's start is refused (`PoolFull`). It never played:
     // the binary reports `StartFailed`, so cue 2 is skipped and its auto-follow starts cue 3.
     let long = wav(&dc(8000, 0.5));
     let other = wav(&dc(8000, 0.5));
@@ -406,7 +406,7 @@ fn a_stop_all_and_a_cues_own_panic_end_playback_through_the_control_loop() {
 
 #[test]
 fn a_second_panic_on_a_fading_cue_stops_it_within_the_next_blocks() {
-    // M4.1d (QLab check Q7), through the control loop: the first panic fades the cue over the
+    // QLab check Q7, through the control loop: the first panic fades the cue over the
     // panic time, the second hard-stops it at once; the other cue plays on.
     let long = wav(&dc(80_000, 0.5));
     let mut s = show(workspace(vec![audio(1, &long, 0), audio(2, &long, 1)]));
@@ -432,7 +432,7 @@ fn a_second_panic_on_a_fading_cue_stops_it_within_the_next_blocks() {
 
 #[test]
 fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
-    // M2.26 (QLab check F4): the problem reaches the clients, GO skips the Fade, and its
+    // QLab check F4: the problem reaches the clients, GO skips the Fade, and its
     // "stop target when done" does not stop the target.
     let long = wav(&dc(80_000, 0.5));
     let nothing = cue(

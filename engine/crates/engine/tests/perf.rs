@@ -9,7 +9,7 @@
     dead_code
 )]
 
-//! Performance budgets (NFR-24, NFR-25; M4.12). Hardware testing is out of scope, so the
+//! Performance budgets (NFR-24, NFR-25). Hardware testing is out of scope, so the
 //! budgets are CI stand-ins for the 2014 Mac mini (NFR-24's minimum spec): the requirement is
 //! divided by [`HEADROOM`], the same 2x as cpu_budget (ARCHITECTURE 3.6), and CI must stay
 //! under the divided figure.
@@ -300,7 +300,7 @@ fn an_edit_rebuilds_only_what_it_changed() {
         let named = fp.added.len() + fp.removed.len() + fp.moved.len() + fp.edited.len();
         let replies = command(&mut s, edit);
         s.tick();
-        // M4.12c: what is left per edit follows the edit too. The slice-plan checks look at
+        // What is left per edit follows the edit too. The slice-plan checks look at
         // the cues it named (a removed group's children with it), `model_changed` is read
         // through the cue index, and the cue engine counts cues and places playheads without
         // walking the show.
@@ -435,7 +435,7 @@ fn probe_answers_do_not_rescan_the_workspace() {
         s.control().preload_reserved() > 0,
         "the new cue is preloaded"
     );
-    // Nor do the slice-plan checks walk the show for the edit or its answer (M4.12c).
+    // Nor do the slice-plan checks walk the show for the edit or its answer.
     assert_eq!(s.control().plan_walks(), walks);
 }
 
@@ -475,7 +475,7 @@ fn performance_budgets() {
 
     // NFR-24 edit: command, model_changed, engine follow-up and the next tick.
     // Tighter than a frame but looser than HEADROOM: edits measure ~3-4 ms on a dev machine,
-    // so a 2x gate (8 ms) would trip on a slow or noisy shared Intel runner (M4.12 review M1).
+    // so a 2x gate (8 ms) would trip on a slow or noisy shared Intel runner.
     let edit_limit = EDIT_LIMIT * 3 / 4;
     let names: Vec<_> = edits(&ws).into_iter().map(|e| e.0).collect();
     let mut worst = vec![Duration::MAX; names.len()];
@@ -559,7 +559,7 @@ fn performance_budgets() {
     two_doc_budgets(&path);
 }
 
-/// M2.25: the media watch thread may take at most 1% of a core with 2,000 files (half the
+/// The media watch thread may take at most 1% of a core with 2,000 files (half the
 /// 2% idle CPU of NFR-25), divided by [`HEADROOM`] like every gate. Ten whole
 /// passes over 2,000 real files are timed on this thread, each made the way the watch thread
 /// makes it (`timed_pass`: jobs, skip checks, busy state, locks, stats), without its pauses,
@@ -606,7 +606,7 @@ fn rename(id: openlab_core::CueId) -> Command {
     }
 }
 
-// Two docs (M4.15i, ARCHITECTURE 3.1, docs/control.md "Several docs"). Every doc ticks on the
+// Two docs (ARCHITECTURE 3.1, docs/control.md "Several docs"). Every doc ticks on the
 // one control thread and renders through the one mixer, so a second 2,000-cue doc must not
 // change what the first costs: the idle wake rate stays one per `MAX_WAIT` (virtual time), an
 // idle tick and an edit cost what one doc's do plus that doc's own share, installing and

@@ -7,7 +7,7 @@
 )]
 
 //! Media paths stored relative to the show folder, the media-only property and the raw-clipboard
-//! paste, through the control loop (M5.10e; WS-03, ED-05).
+//! paste, through the control loop (WS-03, ED-05).
 
 mod common;
 mod show;

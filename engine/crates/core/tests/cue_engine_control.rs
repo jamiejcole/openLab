@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Control cues (M2.5, M2.15: CT-11..CT-17, CT-19..CT-21), per docs/cue-engine.md "Control
+//! Control cues (CT-11..CT-17, CT-19..CT-21), per docs/cue-engine.md "Control
 //! cues". Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 mod common;
@@ -203,8 +203,8 @@ fn start_cue_on_a_broken_target_warns() {
 
 #[test]
 fn control_cue_with_a_missing_target_is_broken_and_keeps_its_auto_continue() {
-    // M2.8: a missing or unset target makes the cue broken before it runs. GO does not start
-    // it, but its continue keeps its timing (an auto-follow too since M2.24, QLab check P5).
+    // A missing or unset target makes the cue broken before it runs. GO does not start
+    // it, but its continue keeps its timing (an auto-follow too since QLab check P5).
     let mut rig = Rig::new(vec![
         timed(start_cue(1, 99), 0.0, 0.5, AC),
         timed(cue(2, CueKind::Start { target: None }), 0.0, 0.0, AF),
@@ -220,7 +220,7 @@ fn control_cue_with_a_missing_target_is_broken_and_keeps_its_auto_continue() {
     assert!(starts(&go).is_empty());
     let tick = rig.tick(500);
     // Cue 1's continue starts cue 2 (broken: no start, but it is skipped and its auto-follow
-    // starts cue 3, as in QLab: M2.24, check P5).
+    // starts cue 3, as in QLab: check P5).
     assert_eq!(
         warnings(&tick),
         vec![EngineWarning::CueBroken { cue: id(2) }]
@@ -255,7 +255,7 @@ fn start_cue_on_a_group_starts_it_in_its_mode() {
 
 #[test]
 fn start_cue_on_a_child_starts_only_that_child() {
-    // M2.24 (QLab check G4): the group does not run.
+    // QLab check G4: the group does not run.
     let mut rig = Rig::new(vec![
         start_cue(1, 3),
         grp(2, GroupMode::Timeline, vec![sound(3), sound(4)]),
@@ -551,7 +551,7 @@ fn a_start_cue_targeting_itself_is_broken() {
 
 #[test]
 fn a_start_cue_retargeted_to_itself_in_its_pre_wait_does_not_act() {
-    // Broken while it pre-waits: its action is skipped when it comes (M2.8).
+    // Broken while it pre-waits: its action is skipped when it comes.
     let mut rig = Rig::new(vec![timed(start_cue(1, 2), 1.0, 0.0, DNC), memo(2)]);
     rig.go(0);
     rig.find_mut(1).kind.set_target(Some(id(1)));
@@ -621,7 +621,7 @@ fn a_cycle_through_audio_feedback_moves_with_the_mixer_clock() {
 
 #[test]
 fn a_cycle_through_feedback_on_its_own_sample_is_cut() {
-    // Regression (M2.9 property seed): a zero-length voice is reported ended on its start
+    // Regression: a zero-length voice is reported ended on its start
     // sample, and the binary may hand that report over at the same `now`. The chain budget
     // spans every call at one sample, so the lap cannot repeat there forever.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), start_cue(2, 1)]);
@@ -646,7 +646,7 @@ fn a_cycle_through_feedback_on_its_own_sample_is_cut() {
 
 #[test]
 fn ignored_triggers_do_not_use_up_the_chain_budget_of_their_sample() {
-    // Review M1: the budget is shared by every call at one `now` (one audio block), so a stuck
+    // The budget is shared by every call at one `now` (one audio block), so a stuck
     // controller key repeating Start on a playing cue must not leave the operator's GO in that
     // block with `GoIgnored { chain_limit }`. Starts of unknown cues cost nothing either.
     let mut rig = Rig::new(vec![sound(1), memo(2), memo(3)]);
@@ -726,7 +726,7 @@ fn goto_into_a_group_stands_on_the_child() {
     ]);
     let go = rig.go(0);
     assert_eq!(voice_starts(&go), vec![(id(4), 0)]);
-    // The group does not run (M2.24, QLab check G4); the playhead goes to the next sibling
+    // The group does not run (QLab check G4); the playhead goes to the next sibling
     // (timeline children do not chain).
     assert_eq!(rig.state(2), CueState::Idle);
     assert_eq!(rig.playhead(), Some(id(5)));
@@ -1046,7 +1046,7 @@ fn devamp_of_a_memo_is_the_wrong_kind() {
     );
 }
 
-// ----- Devamp of a playlist group (M2.15) -----
+// ----- Devamp of a playlist group -----
 
 /// A looping playlist (1) of two one-second waits, auto-following to memo 4; the Devamp cue
 /// (5) and the cue after it (6).
@@ -1146,7 +1146,7 @@ fn devamp_of_other_groups_or_idle_playlists() {
     }));
 }
 
-// ----- review round 1 -----
+// ----- follow-up cases from review -----
 
 fn voice_times(actions: &[Action]) -> Vec<(&'static str, SampleTime)> {
     actions
@@ -1162,7 +1162,7 @@ fn voice_times(actions: &[Action]) -> Vec<(&'static str, SampleTime)> {
 
 #[test]
 fn a_resume_is_never_dated_before_a_committed_pause() {
-    // Review M1: the Pause cue's PauseVoice is committed for 1050.
+    // The Pause cue's PauseVoice is committed for 1050.
     let mut rig = Rig::with_lookahead(vec![sound(1), timed(pause_cue(2, 1), 0.05, 0.0, DNC)], 100);
     rig.start(0, 1);
     assert_eq!(voice_times(&rig.start(1000, 2)), vec![("pause", 1050)]);
@@ -1197,7 +1197,7 @@ fn scheduled(rig: &mut Rig, now: SampleTime, run: RunId, at: SampleTime) -> Vec<
 
 #[test]
 fn a_pending_devamp_is_sent_again_for_the_resumed_voice() {
-    // Review M2: the answer for the voice before the pause is stale after the resume.
+    // The answer for the voice before the pause is stale after the resume.
     let mut rig = devamp_rig(true, false, 0);
     rig.go(100);
     let old = rig.run(1);
@@ -1327,7 +1327,7 @@ fn a_devamped_target_stopped_while_paused_starts_nothing() {
 
 #[test]
 fn go_on_a_devamp_with_start_next_stands_on_the_cue_it_will_start() {
-    // M2.24 (QLab check D5, superseding review M3): the playhead stands on the cue the Devamp
+    // QLab check D5: the playhead stands on the cue the Devamp
     // cue will start when the loop is left.
     let mut rig = devamp_rig(true, false, 0);
     rig.go(100);
@@ -1340,7 +1340,7 @@ fn go_on_a_devamp_with_start_next_stands_on_the_cue_it_will_start() {
 
 #[test]
 fn start_next_supersedes_the_devamp_cues_own_continue() {
-    // Review M4: the next cue starts once, on the devamp sample, not also at the action start.
+    // The next cue starts once, on the devamp sample, not also at the action start.
     let mut rig = Rig::new(vec![
         sound(1),
         timed(devamp_cue(2, 1, true, false), 0.0, 0.0, AC),
@@ -1367,7 +1367,7 @@ fn start_next_supersedes_the_devamp_cues_own_continue() {
 
 #[test]
 fn an_operator_edit_after_a_disarm_counts_on_the_next_call() {
-    // Review L2: the binary applies SetArmed before the next call, so the override ends there;
+    // The binary applies SetArmed before the next call, so the override ends there;
     // a user edit flipping `armed` back right after is honoured.
     let mut rig = Rig::new(vec![arm_cue(1, 2, false), sound(2)]);
     assert_eq!(set_armed(&rig.go(0)), vec![(id(2), false)]);

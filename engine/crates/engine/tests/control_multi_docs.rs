@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Several workspaces (docs) in one engine (M4.15e; WS-02, REQUIREMENTS §21: at most 8;
+//! Several workspaces (docs) in one engine (WS-02, REQUIREMENTS §21: at most 8;
 //! ARCHITECTURE §1, §3.1, §3.5): the docs share the mixer, the device, the probe pool and the
 //! media watch, and nothing one doc does reaches another. Driven through the engine's test API
 //! (`OfflineShow::open_doc`, `close_doc`, `transport_doc`, `panic_all`, `hotkey`); the
-//! protocol's bound connections are M4.15f.
+//! protocol's bound connections are in net_docs.rs.
 
 mod common;
 mod show;
@@ -228,7 +228,7 @@ fn a_hotkey_fires_in_every_doc() {
     assert!(s.channel(0)[later..].iter().all(|&v| v == 0.0));
 }
 
-/// M5.11c (TRG-01): the app-scope hotkey follows each doc's edited key map. A key edit that
+/// (TRG-01): the app-scope hotkey follows each doc's edited key map. A key edit that
 /// takes a cue's hotkey is refused over the protocol, naming the cue; the key GO moves to starts
 /// no cue, the key it left starts the cue that has it, and undo gives it back to GO. An edit in
 /// one doc does not change what a key does in another.
@@ -952,7 +952,7 @@ fn marked_wav(marker: &str, frames: usize, value: f32) -> std::path::PathBuf {
 }
 
 /// A closed doc's jobs still waiting in the shared probe queues are dropped, never run: closing
-/// a big show opened by mistake does not keep both workers busy on its files (review M1).
+/// a big show opened by mistake does not keep both workers busy on its files.
 #[test]
 fn a_closed_docs_queued_probes_are_never_run() {
     let files: Vec<_> = (0..20).map(|_| marked_wav("m1gate", 100, 0.5)).collect();
@@ -1001,7 +1001,7 @@ fn m2_volume(path: &std::path::Path) -> String {
     }
 }
 
-/// One doc's show volume hanging cannot take the shared workers from another doc (review M2):
+/// One doc's show volume hanging cannot take the shared workers from another doc:
 /// with several docs open the show's own volume is held back like any other once two of its
 /// files are stuck, so the other doc's probes still run.
 #[test]
@@ -1063,7 +1063,7 @@ fn a_hung_show_volume_of_one_doc_leaves_workers_for_the_others() {
 }
 
 /// Primes are a head start only: the docs' primes together never take the stream permits a
-/// start needs (review M3). With 4 permits, two docs prime one cue each and a start of a cue
+/// start needs. With 4 permits, two docs prime one cue each and a start of a cue
 /// nobody primed still plays.
 #[test]
 fn other_docs_primes_never_refuse_a_start() {
@@ -1086,7 +1086,7 @@ fn other_docs_primes_never_refuse_a_start() {
     assert!(!format!("{msgs:?}").contains("stream_failed"));
 }
 
-/// The preload budget (AUD-05) is the engine's, not each doc's (M4.15e1): a second doc's
+/// The preload budget (AUD-05) is the engine's, not each doc's: a second doc's
 /// preload that does not fit what the first holds streams, and a closed doc gives its share
 /// back.
 #[test]
@@ -1130,7 +1130,7 @@ fn the_preload_budget_is_shared_by_every_doc() {
 }
 
 /// A doc's mixer slot takes its gains at once when the doc opens: a GO on the sample it is
-/// installed is heard at its level, not faded in over the de-zipper (review L1).
+/// installed is heard at its level, not faded in over the de-zipper.
 #[test]
 fn a_cue_started_as_its_doc_opens_is_not_faded_in() {
     let f = wav(&dc(800, 0.25));
@@ -1156,7 +1156,7 @@ fn a_cue_started_as_its_doc_opens_is_not_faded_in() {
 }
 
 /// With several docs open, a doc's show-log lines name its workspace; alone, they read as
-/// before (review L4).
+/// before.
 #[test]
 fn log_lines_name_their_doc_while_several_are_open() {
     let f = wav(&dc(200, 0.25));
@@ -1187,7 +1187,7 @@ fn log_lines_name_their_doc_while_several_are_open() {
     );
 }
 
-/// The PB-10 override is app-scope: it is set even with no doc open (review L6).
+/// The PB-10 override is app-scope: it is set even with no doc open.
 #[test]
 fn the_output_override_needs_no_open_doc() {
     let (mut s, ids) = docs_show(workspace(vec![]), vec![]);
@@ -1238,7 +1238,7 @@ fn an_idle_second_doc_takes_no_primes_from_a_busy_show() {
 }
 
 /// Under real contention each doc keeps at least its fair share of the prime pool (half the
-/// stream permits), and a start of a cue nobody primed still finds a permit (review M-C, M3).
+/// stream permits), and a start of a cue nobody primed still finds a permit (review M-C).
 #[test]
 fn contended_primes_are_shared_fairly_and_never_refuse_a_start() {
     let f = wav(&dc(400, 0.25));

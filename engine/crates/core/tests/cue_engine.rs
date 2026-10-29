@@ -982,7 +982,7 @@ fn load_to_time_shortens_known_durations_and_post_waits() {
     );
 }
 
-// ----- load past the end (M4.11b; QLab 5 loads it to its end) -----
+// ----- load past the end (QLab 5 loads it to its end) -----
 //
 // `t` is a position on the cue's own timeline. The action is over once `t` is past its length
 // (the action is clamped, at its start); the post-wait is not clamped and counts from `t`.
@@ -1095,7 +1095,7 @@ fn load_past_the_end_of_a_group_counts_the_post_wait_from_the_time() {
 
 #[test]
 fn a_cue_disarmed_at_load_and_armed_before_the_start_keeps_its_load_time() {
-    // Regression (review of M4.11b): the load time must not depend on whether the cue was armed
+    // Regression: the load time must not depend on whether the cue was armed
     // when it was loaded.
     let mut a = sound(1);
     a.armed = false;
@@ -1268,8 +1268,8 @@ fn deleting_a_running_cue_stops_it() {
     assert!(rig.tick(10_000).is_empty());
 }
 
-/// `cue_an_edit_would_stop` names the cues the engine stops when it follows the edit (M5.10d:
-/// the binary refuses an undo or redo that would): a running cue removed or turned into a
+/// `cue_an_edit_would_stop` names the cues the engine stops when it follows the edit
+/// (the binary refuses an undo or redo that would): a running cue removed or turned into a
 /// group, not one that moved or stayed.
 #[test]
 fn an_edit_would_stop_the_cues_the_engine_then_stops() {
@@ -1306,7 +1306,7 @@ fn an_edit_would_stop_the_cues_the_engine_then_stops() {
     assert_eq!(rig.state(3), CueState::Running);
 }
 
-/// #250: the group branches of the undo guard. A previewed group that an edit removes or
+/// The group branches of the undo guard. A previewed group that an edit removes or
 /// turns into a non-group would be cut (`sync_previews`), so the guard names it.
 #[test]
 fn an_edit_would_stop_a_previewed_group_it_removes_or_turns_into_a_non_group() {
@@ -1338,7 +1338,7 @@ fn an_edit_would_stop_a_previewed_group_it_removes_or_turns_into_a_non_group() {
     assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
 }
 
-/// #250: a running group whose cue an edit turns into a non-group is stopped by the engine, so
+/// A running group whose cue an edit turns into a non-group is stopped by the engine, so
 /// the guard names it (core's other test covers the opposite turn).
 #[test]
 fn an_edit_would_stop_a_running_group_turned_into_a_non_group() {
@@ -1696,7 +1696,7 @@ fn event_fade_out_completes() {
 
 #[test]
 fn event_failure_breaks_every_running_state() {
-    // The failed run's voice is released at once, so nothing can keep sounding (review H1).
+    // The failed run's voice is released at once, so nothing can keep sounding.
     // Cue 1 auto-continues 5 s after its action start: a failure keeps that schedule (a device_lost
     // failure cancels it: `a_device_lost_run_cancels_its_auto_continue_and_pre_wait`), except
     // where it was already cancelled (stopping) or is held by a pause.
@@ -1932,7 +1932,7 @@ fn failed_paused_voice_is_stopped() {
 #[test]
 fn end_report_dated_during_a_pause_is_ignored() {
     // A paused voice cannot end by itself: a report dated after the pause sample comes from
-    // carrying out the pause (review M1). One dated on it is an end (M2.34).
+    // carrying out the pause. One dated on it is an end.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
     rig.start(0, 1);
     let run = rig.engine.run_of(id(1)).unwrap();
@@ -1946,7 +1946,7 @@ fn end_report_dated_during_a_pause_is_ignored() {
 }
 
 /// An end dated before the pause, arriving after it, completes the action but its auto-follow
-/// waits for the resume: a paused cue starts nothing (M2.33). Without an auto-follow it completes
+/// waits for the resume: a paused cue starts nothing. Without an auto-follow it completes
 /// on its own sample.
 #[test]
 fn end_before_the_pause_completes_and_follows_on_the_resume() {
@@ -1977,7 +1977,7 @@ fn pause_offset(actions: &[Action]) -> Option<SampleTime> {
 
 #[test]
 fn voice_position_counts_from_a_start_committed_in_the_lookahead() {
-    // Review L1: the voice starts at 100 although the pause came at 95.
+    // The voice starts at 100 although the pause came at 95.
     let mut rig = Rig::with_config(vec![timed(sound(1), 0.1, 0.0, DNC)], config(10));
     rig.start(0, 1);
     assert_eq!(voice_starts(&rig.tick(95)), vec![(id(1), 100)]);
@@ -2006,7 +2006,7 @@ fn voice_position_counts_from_a_late_start() {
 #[test]
 fn lookahead_window_excludes_its_end() {
     // With lookahead one block, `now .. now + block` is the next block; its end is the first
-    // sample of the block after, which is not committed yet (review L2).
+    // sample of the block after, which is not committed yet.
     let mut rig = Rig::with_config(vec![timed(sound(1), 1.6, 0.0, DNC)], config(10));
     rig.start(0, 1);
     assert!(rig.tick(1590).is_empty());
@@ -2037,7 +2037,7 @@ fn config_is_checked() {
 
 #[test]
 fn end_report_of_a_pause_arriving_after_resume_is_ignored() {
-    // Review M1': a pause carried out as a stop reports its end late, after a quick resume.
+    // A pause carried out as a stop reports its end late, after a quick resume.
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), memo(2)]);
     rig.start(0, 1);
     let paused_run = rig.engine.run_of(id(1)).unwrap();
@@ -2084,7 +2084,7 @@ fn resume_ids(actions: &[Action]) -> Vec<(RunId, RunId)> {
 
 #[test]
 fn wake_rule_ticks_a_deadline_at_now_on_time() {
-    // Review L6: with lookahead 0 a deadline at `now` must be due at `now`, not a wake later.
+    // With lookahead 0 a deadline at `now` must be due at `now`, not a wake later.
     let mut rig = Rig::new(vec![timed(sound(1), 1.6, 0.0, DNC)]);
     rig.start(0, 1);
     assert!(!rig.engine.is_due(1599));

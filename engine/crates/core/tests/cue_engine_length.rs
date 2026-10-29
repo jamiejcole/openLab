@@ -127,7 +127,7 @@ fn a_length_sent_while_paused_counts_from_the_resume() {
     assert_eq!(r.engine.next_deadline(), Some(1000));
 }
 
-/// M2.23: a resume committed with the planned end inside the lookahead window completes the run
+/// A resume committed with the planned end inside the lookahead window completes the run
 /// in that same call; the voice still plays to that sample, and its own reports for the fresh id
 /// come after the run is over and are stale.
 #[test]

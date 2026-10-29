@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The media watch through the control loop (M2.25, QLab checks R3/R4; docs/control.md "Media
+//! The media watch through the control loop (QLab checks R3/R4; docs/control.md "Media
 //! watch"): a file sent to the Trash breaks its cues within the tick that hears of it, a file
 //! put back un-breaks them after two passes and a probe, a replaced file is probed again, an
 //! unreadable one is unsupported, a playing cue keeps playing, a volume that stops answering is
@@ -597,7 +597,7 @@ fn with_four_watchers_stuck_a_fifth_stall_stops_the_watch_until_the_volume_answe
 
 /// A show opened before its drive is mounted: the probe finds no file, and the file appears
 /// before or after the watch first looks. Either way it is reported back and the cue
-/// un-breaks (review M1: it used to be taken silently on the first pass).
+/// un-breaks (it used to be taken silently on the first pass).
 #[test]
 fn a_file_that_appears_after_its_probe_failed_unbreaks_its_cue() {
     for appears_before_first_pass in [true, false] {

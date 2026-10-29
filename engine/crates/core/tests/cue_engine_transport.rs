@@ -248,7 +248,7 @@ fn panic_cancels_pending_pre_waits_continues_and_devamp_next_cues() {
     rig.assert_quiet();
 }
 
-/// A Panic with nothing running does nothing (it skips walking the cues, M4.15i: closing an
+/// A Panic with nothing running does nothing (it skips walking the cues: closing an
 /// idle 2,000-cue doc panics it twice), yet its window opens as always: a cue started in it is
 /// stopped at once by the next Panic, as a second press.
 #[test]
@@ -682,11 +682,11 @@ fn panic_and_pause_all_reach_the_children_of_a_group_with_a_duplicated_id() {
     rig.assert_quiet();
 }
 
-// ----- triggers during a panic fade (review M1) -----
+// ----- triggers during a panic fade -----
 
 #[test]
 fn go_on_a_cue_fading_out_in_a_panic_starts_it_afresh() {
-    // Regression (review M1): the operator panicked by mistake, set the playhead back and
+    // Regression: the operator panicked by mistake, set the playhead back and
     // pressed GO. The cue was `stopping`, so the GO was ignored and the playhead moved on.
     let mut rig = Rig::panicking(vec![sound(1), sound(2)]);
     rig.ws.settings.panic_duration = 2.0;
@@ -758,7 +758,7 @@ fn a_group_in_a_panic_restarts_on_start_and_a_child_started_on_its_own_ends_it()
     assert_eq!(rig.state(1), CueState::Stopping);
     // GO on a child during the panic: it starts afresh on its own, and its group stops waiting
     // (it would otherwise stay `stopping` until that child ends) and ends at once, as a child
-    // started on its own does not make its group run (M2.24, QLab check G4).
+    // started on its own does not make its group run (QLab check G4).
     let start = rig.start(200, 3);
     assert_eq!(voice_starts(&start), vec![(id(3), 200)]);
     assert_eq!(changes(&start, 1), vec![(CueState::Idle, 200)]);
@@ -788,7 +788,7 @@ fn a_group_in_a_panic_restarts_on_start_and_a_child_started_on_its_own_ends_it()
     assert_eq!(rig.state(2), CueState::Running);
 }
 
-// ----- feedback during the panic fade (review M3) -----
+// ----- feedback during the panic fade -----
 
 #[test]
 fn feedback_during_the_panic_fade_starts_nothing() {
@@ -892,10 +892,10 @@ fn fail_as(rig: &mut Rig, now: SampleTime, n: u128, unplayed: bool) -> Vec<Actio
     )
 }
 
-/// M2.31 (found by `cue_engine_prop`): a child of a playlist that is not running (started on its
+/// Found by `cue_engine_prop`: a child of a playlist that is not running (started on its
 /// own) fails while it fades out in a panic. It was leaving anyway, so it ends as a stopped cue
 /// does: the playlist does not carry on to its next child, looping or not, whether the voice had
-/// played (`ActionFailed`) or not (`StartFailed`, review M1).
+/// played (`ActionFailed`) or not (`StartFailed`).
 #[test]
 fn a_stream_failure_during_the_panic_fade_does_not_carry_a_playlist_on() {
     for (loop_, unplayed) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -937,7 +937,7 @@ fn a_stream_failure_during_the_panic_fade_stops_its_group_and_starts_nothing() {
     assert!(starts(&rig.tick(1100)).is_empty());
 }
 
-/// A cue's own panic (M4.1d) is a panic too: a failure while it fades starts nothing, also from the
+/// A cue's own panic is a panic too: a failure while it fades starts nothing, also from the
 /// group around it, which neither panicked nor stops by itself.
 #[test]
 fn a_stream_failure_during_a_cues_own_panic_starts_nothing() {
@@ -1063,7 +1063,7 @@ fn a_device_lost_failure_during_the_panic_fade_starts_nothing() {
     }
 }
 
-// ----- a failure while paused (M2.31 review M2) -----
+// ----- a failure while paused -----
 
 /// Under Pause All, a child that was started on its own in a playlist fails (a read error of its
 /// paused stream). A paused show starts nothing: the playlist has no run to hold its step, so the
@@ -1171,7 +1171,7 @@ fn a_stream_failure_after_stop_all_or_a_hard_panic_is_ignored() {
 
 #[test]
 fn a_clock_restart_ends_the_panic_window() {
-    // Regression (review L2): after a device restart the old panic's end stayed, so the next
+    // Regression: after a device restart the old panic's end stayed, so the next
     // Panic was a hard stop and `panic_end()` was stale.
     let mut rig = Rig::panicking(vec![sound(1)]);
     rig.panic(5000);
@@ -1267,7 +1267,7 @@ fn a_cues_own_panic_fades_it_and_what_is_in_it_and_leaves_the_rest() {
 
 #[test]
 fn a_second_panic_on_a_cue_fading_out_stops_it_at_once_and_leaves_the_rest() {
-    // M4.1d (QLab check Q7): only the selected cues fade, a second press on them stops them at
+    // QLab check Q7: only the selected cues fade, a second press on them stops them at
     // once, other cues keep playing.
     let mut rig = Rig::panicking(vec![
         sound(1),
@@ -1418,7 +1418,7 @@ fn a_refused_go_from_leaves_the_playhead_where_it_was() {
     assert_eq!(voice_starts(&from(&mut rig, 2000, 1)), vec![(id(1), 2000)]);
 }
 
-// ----- an end dated before a pause, arriving after it (M2.33) -----
+// ----- an end dated before a pause, arriving after it -----
 
 /// Reports `cue`'s current run ended on `at`, received at `now`.
 fn ended(rig: &mut Rig, now: SampleTime, n: u128, at: SampleTime) -> Vec<Action> {
@@ -1683,11 +1683,11 @@ fn an_end_dated_before_a_pause_with_nothing_to_start_completes_the_cue() {
     assert!(rig.at(6000, Input::ResumeAll).is_empty());
 }
 
-// ----- an end on the pause sample (M2.34) -----
+// ----- an end on the pause sample -----
 
 /// Pause All on 100; the voice's end report, dated `at`, arrives on 150. The mixer dates an end
 /// on the first sample after the voice's last, so an end on 100 left nothing to play when the
-/// pause applied: it is an end, as one before it (M2.33). One after it is the pause being carried
+/// pause applied: it is an end, as one before it. One after it is the pause being carried
 /// out. Whatever the tie, a cue left paused either still has its voice (the resume resumes it)
 /// or holds an end the resume carries out: never paused with nothing to resume.
 #[test]
@@ -1720,7 +1720,7 @@ fn an_end_on_the_pause_sample_ends_the_cue_and_one_after_it_is_the_pause() {
                 assert!(starts(&resumed).is_empty(), "{case}");
                 assert_eq!(rig.state(2), CueState::Running, "{case}");
             } else if follow {
-                // Held (M2.33): paused with no voice until the resume, which carries the end out.
+                // Held: paused with no voice until the resume, which carries the end out.
                 assert!(changes(&end, 2).is_empty(), "{case}");
                 assert!(!resumes_voice, "{case}");
                 assert_eq!(starts(&resumed), vec![(id(3), 6000)], "{case}");

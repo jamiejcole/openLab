@@ -80,7 +80,7 @@ fn golden_fixture_is_in_canonical_form() {
 
 /// v3 had one passcode: it becomes the one row of the table with all rights, and No Passcode
 /// has none, so a show that needed `/connect` still does and what it grants is what it did
-/// (M4.5c). Apart from the table the show is the current example.
+///. Apart from the table the show is the current example.
 #[test]
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();
@@ -116,7 +116,7 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     assert_eq!(loaded.workspace, current);
 }
 
-/// v4 had no selected-cue keys and Esc / bare arrows as transport keys (M5.11c): the v4
+/// v4 had no selected-cue keys and Esc / bare arrows as transport keys: the v4
 /// example (v4 defaults: Stop All Esc, playhead Down / Up) loads with those as none and the
 /// app's L / P as model keys, and is otherwise the current example.
 #[test]
@@ -280,7 +280,7 @@ fn cue_named<'a>(ws: &'a Workspace, name: &str) -> &'a Cue {
     found.unwrap()
 }
 
-/// v1 had no second-trigger settings (M2.14): every cue, at every depth, gets the defaults, and
+/// v1 had no second-trigger settings: every cue, at every depth, gets the defaults, and
 /// apart from them the show is the current example's.
 #[test]
 fn v1_fixture_migrates_with_default_second_triggers() {
@@ -342,7 +342,7 @@ fn devamp_modes(ws: &Workspace) -> Vec<DevampMode> {
 }
 
 /// v2 had one Devamp behaviour, leaving whatever loop was playing: every Devamp cue gets the
-/// mode `current_slice` (M2.28, QLab check D7), and apart from it the show is the current
+/// mode `current_slice` (QLab check D7), and apart from it the show is the current
 /// example's.
 #[test]
 fn v2_fixture_migrates_with_devamp_mode_current_slice() {
@@ -398,7 +398,7 @@ fn v2_migration_sets_the_mode_of_nested_and_hand_edited_devamp_cues() {
 }
 
 /// Before v3 a Fade aimed at a group set its children's levels; since v3 it moves them
-/// (M2.28, QLab check F2). A v2 show with such Fades loads unchanged, with one warning per Fade
+/// (QLab check F2). A v2 show with such Fades loads unchanged, with one warning per Fade
 /// (at any depth) for the user to check; a Fade of an audio cue, and a current file, get none.
 #[test]
 fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
@@ -1268,7 +1268,7 @@ proptest! {
     }
 }
 
-/// The oracle of the v4 -> v5 step (M5.11c), written from its rules: reserved transport keys
+/// The oracle of the v4 -> v5 step, written from its rules: reserved transport keys
 /// become none; Load Selected is L and Pause/Resume Selected P unless a cue hotkey or a kept
 /// transport key is that chord; Start, Stop and Reset Selected have none.
 fn migrate_keys_to_v5(ws: &mut Workspace) {
@@ -1303,7 +1303,7 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
     keys.reset_selected = None;
 }
 
-/// What a v3 file's `osc_passcode` becomes (M4.5c): none or empty is No Passcode with all rights
+/// What a v3 file's `osc_passcode` becomes: none or empty is No Passcode with all rights
 /// and an empty table; a passcode is one row with all rights and No Passcode with none.
 fn migrated_access(passcode: &Option<String>) -> OscAccess {
     match passcode.as_deref() {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Several workspaces over real sockets in front of the real control loop (M4.15f, docs/protocol.md
+//! Several workspaces over real sockets in front of the real control loop (docs/protocol.md
 //! section 2): an app connection (`hello` without a workspace) sees the `workspaces` list and
 //! opens and closes docs; a connection bound to a doc (`hello { workspace }`) gets that doc's
 //! snapshot and changes only, numbered per doc; closing a doc sends `closed` to its connections

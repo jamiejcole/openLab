@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Per-cue second-trigger options (M2.14, QLab 5), per docs/cue-engine.md "Second trigger":
+//! Per-cue second-trigger options (QLab 5), per docs/cue-engine.md "Second trigger":
 //! every option on a running, paused, pre-waiting and stopping cue; playlist next/previous;
 //! the trigger sources (Start, GO, Start cue, GoTo-and-GO, continue, Devamp "start next cue");
 //! the release input; cycles staying within the chain budget; editing with undo and validation.
@@ -287,7 +287,7 @@ fn nothing_resumes_a_paused_cue() {
     assert_eq!(rig.state(1), CueState::Running);
 }
 
-/// QLab check S1 (M2.28): a trigger on a paused cue resumes it, whatever its option.
+/// QLab check S1: a trigger on a paused cue resumes it, whatever its option.
 #[test]
 fn a_trigger_on_a_paused_cue_resumes_it_whatever_its_option() {
     for option in [
@@ -619,7 +619,7 @@ fn play_previous_goes_back_wrapping_when_the_playlist_loops() {
     assert_eq!(playing(&rig.start(200, 1)), vec![id(12)]);
     assert_eq!(playing(&rig.start(300, 1)), vec![id(11)]);
 
-    // Without loop, "previous" on the first child stops the playlist (QLab check S4, M2.28):
+    // Without loop, "previous" on the first child stops the playlist (QLab check S4):
     // nothing starts and its auto-follow does not fire.
     let mut rig = playlist_rig(false, ST::PlayPrevious);
     let first = rig.run(11);
@@ -1028,7 +1028,7 @@ fn release_of_an_unknown_cue_warns() {
 
 // ----- cycles stay within the chain budget -----
 
-/// A sound that auto-continues into a Start cue targeting it (review M3): with "hard stop and
+/// A sound that auto-continues into a Start cue targeting it: with "hard stop and
 /// restart", the Start cue's trigger reaches the sound on the sample the sound was triggered
 /// on, so it is ignored. A restart happens at most once per sample, so a GO plays the sound
 /// once instead of restarting it until the chain limit.
@@ -1226,9 +1226,9 @@ fn a_group_mode_change_keeps_a_playlist_option_and_undo_restores_both() {
     assert_eq!(ws, original);
 }
 
-// ----- fix round 1 (review M1–M3) -----
+// ----- follow-up cases from review -----
 
-/// Review M1: a paused cue whose option has nothing to act on (a playlist paused in its
+/// A paused cue whose option has nothing to act on (a playlist paused in its
 /// pre-wait, a sound paused in its pre-wait with "devamp") resumes, as with `nothing`.
 #[test]
 fn a_paused_cue_whose_option_cannot_act_resumes() {
@@ -1253,7 +1253,7 @@ fn a_paused_cue_whose_option_cannot_act_resumes() {
     assert_eq!(started, vec![id(2), id(11)]);
 }
 
-/// Review M1: on release, a paused cue whose option can act gets it; a trigger resumes it
+/// On release, a paused cue whose option can act gets it; a trigger resumes it
 /// (QLab check S1) and sends the devamp held for the resume.
 #[test]
 fn a_paused_cue_whose_option_can_act_gets_it_on_release() {
@@ -1270,7 +1270,7 @@ fn a_paused_cue_whose_option_can_act_gets_it_on_release() {
     );
 }
 
-/// Review M2: "play previous" passes over children that would refuse to start, as moving on
+/// "play previous" passes over children that would refuse to start, as moving on
 /// does, instead of coming back round to the child playing.
 #[test]
 fn play_previous_passes_over_broken_and_disarmed_children() {
@@ -1322,7 +1322,7 @@ fn play_previous_passes_over_broken_and_disarmed_children() {
     assert_eq!(playing(&rig.start(100, 1)), vec![id(12)]);
 }
 
-/// Review M3: a playlist moves on at most once per sample.
+/// A playlist moves on at most once per sample.
 #[test]
 fn play_next_moves_a_playlist_on_at_most_once_per_sample() {
     let mut rig = playlist_rig(false, ST::PlayNext);

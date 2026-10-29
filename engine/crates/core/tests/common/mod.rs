@@ -168,7 +168,7 @@ pub fn show_text(workspace: &Workspace) -> String {
     )
 }
 
-/// Calls `handle` as the binary must (M4.2 contract): `model_changed` before the first call
+/// Calls `handle` as the binary must: `model_changed` before the first call
 /// after any change to the workspace. Checks that the engine never caught an unsignalled change.
 pub fn handle_as_binary(
     engine: &mut CueEngine,

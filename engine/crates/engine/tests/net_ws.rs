@@ -1397,7 +1397,7 @@ impl Fix {
     }
 }
 
-/// M4.9 (NFR-01, ARCHITECTURE §8): an app connection that ends without `goodbye` is logged and
+/// (NFR-01, ARCHITECTURE §8): an app connection that ends without `goodbye` is logged and
 /// the app is relaunched, unless an app connection is back by then; one that says goodbye is not
 /// a crash. Bound connections (windows) never relaunch anything.
 #[tokio::test]
@@ -1437,7 +1437,7 @@ async fn an_app_connection_lost_without_goodbye_relaunches_the_app() {
     assert_eq!(fix.logs_with("relaunching the app"), 1);
 }
 
-/// #168: an app connection lost while the app's process still runs (reconnecting slowly, or
+/// An app connection lost while the app's process still runs (reconnecting slowly, or
 /// hung) does not relaunch it: `open -b` would only bring it to the front mid-show. Once the
 /// process is gone the app is relaunched.
 #[tokio::test]

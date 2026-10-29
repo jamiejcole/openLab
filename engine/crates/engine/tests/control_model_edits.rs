@@ -7,9 +7,9 @@
     clippy::indexing_slicing
 )]
 
-//! Settings, patch, network patch and cue list commands through the control loop (M1.12,
-//! ED-07): what clients are sent, what the engine and mixer do with them, patch layout edits
-//! under a playing voice (stable mixer slots, M4.2f/M4.15b), the workspace master in the
+//! Settings, patch, network patch and cue list commands through the control loop
+//! (ED-07): what clients are sent, what the engine and mixer do with them, patch layout edits
+//! under a playing voice (stable mixer slots), the workspace master in the
 //! matrices, undo coalescing and edits that change nothing.
 
 mod show;

@@ -171,7 +171,7 @@ fn ok(id: RequestId) -> ServerMessage {
 fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
     while let Ok(msg) = rx.recv() {
         match msg {
-            // The OSC side asks which docs are open as an app connection does (M4.15h): one,
+            // The OSC side asks which docs are open as an app connection does: one,
             // [`DOC`]. Not recorded: `snapshot_requests` counts the doc's.
             Inbox::Conn {
                 doc: None,
@@ -1676,7 +1676,7 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
     .await;
 }
 
-/// #183: a doc closes while the tap overflows, so its `closed` is lost. The rebuild's own list
+/// A doc closes while the tap overflows, so its `closed` is lost. The rebuild's own list
 /// answer must drop its copy: it answers nothing, takes no input and is not listed.
 #[tokio::test]
 async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
@@ -2055,7 +2055,7 @@ async fn a_passcode_edit_that_fails_to_apply_still_ends_every_session() {
     .await;
 }
 
-// ---- QLab 5 behaviour (M4.5b) over real sockets
+// ---- QLab 5 behaviour over real sockets
 
 #[tokio::test]
 async fn version_and_workspaces_report_the_bound_ports() {
@@ -2396,7 +2396,7 @@ async fn udp_reply_port_over_tcp_is_ignored_and_invalid_ports_do_not_move_replie
     assert_eq!(f.udp_recv().await.addr, "/reply/version");
 }
 
-// ---- passcode rights over real sockets (M4.5c)
+// ---- passcode rights over real sockets
 
 fn row(passcode: &str, rights: OscRights) -> OscPasscode {
     OscPasscode {
@@ -2791,7 +2791,7 @@ async fn opening_another_workspace_forgets_the_known_addresses() {
     assert_eq!(status(&f.udp_recv().await), "denied");
 }
 
-/// M4.15h, issue #152: a doc's `closed` drops its copy at once, so reads are not answered from a
+/// Issue a doc's `closed` drops its copy at once, so reads are not answered from a
 /// show that is no longer open; a list from the tap that leaves a doc out (it may be older than
 /// what the actor knows) does not drop it.
 #[tokio::test]

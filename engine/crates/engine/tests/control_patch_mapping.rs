@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `set_patch_mapping` (M4.4g, WS-07): an operator sets or clears where a patch plays on this
+//! `set_patch_mapping` (WS-07): an operator sets or clears where a patch plays on this
 //! machine. Validated against the device list, stored in the machine settings, applied live.
 //! Offline driver, virtual clock, settings in a temp folder.
 
@@ -139,7 +139,7 @@ fn setting_a_mapping_stores_it_and_moves_a_playing_cue() {
     );
 }
 
-/// #174: clearing the mapping under a playing cue makes the patch `Unmapped`. The cue is not
+/// Clearing the mapping under a playing cue makes the patch `Unmapped`. The cue is not
 /// stopped or broken (it is running, as after any device edit); its slot ramps to silence on
 /// every output, and mapping the patch again brings the sound back to the same running cue.
 #[test]

@@ -254,7 +254,7 @@ fn backing_up_a_fifo_is_an_error_not_a_hang() {
     assert!(err.is_err());
 }
 
-/// M5: a backup never replaces another one, even when every name it may take is in use (the
+/// A backup never replaces another one, even when every name it may take is in use (the
 /// save goes on and reports the failed backup).
 #[test]
 fn a_backup_never_replaces_another_even_with_every_name_taken() {

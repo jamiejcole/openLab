@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! The engine starts with no doc and ends with a final recovery write of every doc with unsaved
-//! changes (M4.15g, M4.4d, M4.4e; ARCHITECTURE §8, NFR-05), on the offline driver with a
+//! changes (ARCHITECTURE §8, NFR-05), on the offline driver with a
 //! virtual wall clock and the persistence layer on a temp folder.
 
 mod common;
@@ -114,7 +114,7 @@ fn the_engine_starts_with_no_doc_and_the_client_opens_one() {
     assert!(names(&env.dirs.recovery_dir()).is_empty());
 }
 
-/// M4.15g: shutdown with two dirty docs writes two recovery files; the next launch lists both
+/// Shutdown with two dirty docs writes two recovery files; the next launch lists both
 /// (`scan_recovery`) and opens both (`open_recovery`) with their edits.
 #[test]
 fn shutdown_writes_a_recovery_file_per_dirty_doc_and_the_next_launch_restores_both() {
@@ -193,7 +193,7 @@ fn shutdown_writes_a_recovery_file_per_dirty_doc_and_the_next_launch_restores_bo
     assert!(b.is_unsaved());
 }
 
-/// M4.4d: the writer discards autosaves still queued when it is dropped, so shutdown queues and
+/// The writer discards autosaves still queued when it is dropped, so shutdown queues and
 /// waits; on a hung disk the wait is bounded and the doc that did not make it is logged.
 #[test]
 fn a_final_write_on_a_hung_disk_is_bounded_and_logged() {
@@ -519,7 +519,7 @@ fn rename(s: &mut OfflineShow, doc: DocId, name: &str) {
     edit(s, doc, Command::RenameWorkspace { name: name.into() });
 }
 
-/// #163: the autosave of the last edit is still being written when the engine quits: the final
+/// The autosave of the last edit is still being written when the engine quits: the final
 /// write waits for that one instead of writing the same revision again.
 #[test]
 fn an_autosave_of_the_last_edit_in_flight_at_shutdown_is_waited_for() {
@@ -563,7 +563,7 @@ fn an_autosave_of_the_last_edit_in_flight_at_shutdown_is_waited_for() {
     );
 }
 
-/// #163: an autosave of an older revision is still in flight when the engine quits: the final
+/// An autosave of an older revision is still in flight when the engine quits: the final
 /// write is its own, newer one, queued behind it (the writer takes one write of a show at a
 /// time), and the file ends up holding the last edit, not the older one.
 #[test]

@@ -67,7 +67,7 @@ fn a_group_starts_its_children_on_the_same_sample() {
     assert_eq!(s.stalls(), 0);
 }
 
-/// M5.11g: Start Selected on several cues is one `batch`: every cue starts on the same sample
+/// Start Selected on several cues is one `batch`: every cue starts on the same sample
 /// (NFR-21), and Stop Selected likewise ends them all on one sample.
 #[test]
 fn a_batch_starts_and_stops_its_cues_on_the_same_sample() {
@@ -428,7 +428,7 @@ fn load_to_time_starts_part_way_in() {
     assert_eq!(last_nonzero(&ch0), Some(at + 2999));
 }
 
-/// M4.11b: a load past the end of an audio cue's length loads it to its end (QLab 5). Starting it
+/// A load past the end of an audio cue's length loads it to its end (QLab 5). Starting it
 /// plays nothing and ends on its start sample, so its auto-follow successor starts on that
 /// sample too, with no `late_start` warning.
 #[test]
@@ -485,7 +485,7 @@ fn hints_while_frozen(
         .collect()
 }
 
-/// M4.2j: a deadline one frame outside the window gives a one-frame `wait_hint`. With sample
+/// A deadline one frame outside the window gives a one-frame `wait_hint`. With sample
 /// time frozen it never comes into the window, so the loop used to wake every frame (125 us at
 /// 8 kHz, 21 us at 48 kHz), ticking at full cost for as long as the stall lasts (up to 3 s).
 #[test]

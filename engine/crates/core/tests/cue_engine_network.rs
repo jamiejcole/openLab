@@ -383,7 +383,7 @@ fn an_incremental_edit_notices_a_changed_network_patch() {
     ));
 }
 
-/// M4.6a: the commands that edit a Network cue reach the engine; GO sends the edited message.
+/// The commands that edit a Network cue reach the engine; GO sends the edited message.
 #[test]
 fn an_edited_network_cue_sends_the_edited_message() {
     let mut rig = Rig::checked(vec![network(1), memo(2)]);

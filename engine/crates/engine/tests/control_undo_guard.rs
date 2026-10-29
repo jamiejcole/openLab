@@ -2,7 +2,7 @@
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
 #![allow(clippy::indexing_slicing)]
 
-//! An undo or redo that would stop an active cue is refused (M5.10d, NFR-01, ED-07): the
+//! An undo or redo that would stop an active cue is refused (NFR-01, ED-07): the
 //! workspace, the revision and both stacks stay, the cue plays on, and the same step goes
 //! through once the cue is idle. Offline render, virtual clock.
 

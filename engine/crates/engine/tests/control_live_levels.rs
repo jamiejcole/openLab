@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-//! Level, mute and routing edits on a playing audio cue (M5.9b, AUD-06, AUD-08, NFR-01),
+//! Level, mute and routing edits on a playing audio cue (AUD-06, AUD-08, NFR-01),
 //! through the control loop and rendered offline: the edit is heard within the 10 ms edit ramp
 //! (80 frames at 8 kHz), with no step in the samples, no voice restart, and fades start from
 //! what is heard. Rules: docs/cue-engine.md, "Level edits on a playing cue".
@@ -304,7 +304,7 @@ fn an_edit_to_an_idle_cue_changes_nothing_until_it_starts_with_it() {
     assert!(x[at..].iter().all(|&v| near(v, LEVEL * db_to_gain(-6.0))));
 }
 
-// ----- a patch change of a playing cue (#293) -----
+// ----- a patch change of a playing cue -----
 
 /// The mixer's de-zipper at [`RATE`] (5 ms): a moved voice crossfades over it.
 const MOVE: usize = 40;
@@ -369,7 +369,7 @@ fn heard_move(s: &OfflineShow, from: usize, to: usize, at: usize, until: usize) 
     }
 }
 
-/// #293: an operator switches a playing cue to another patch: it is heard on the new patch's
+/// An operator switches a playing cue to another patch: it is heard on the new patch's
 /// outputs at once (a 5 ms crossfade, no click), with no restart, no new voice and no state
 /// change, and back again.
 #[test]

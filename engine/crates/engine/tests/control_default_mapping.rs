@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Default patch mapping (M4.4c, WS-07): a workspace with no mapping on this machine plays on
+//! Default patch mapping (WS-07): a workspace with no mapping on this machine plays on
 //! the device's first outputs without a mapping step, as in QLab; an existing mapping is never
 //! touched. Offline driver, virtual wall clock, settings in a temp folder.
 
@@ -37,7 +37,7 @@ fn bare(env: &Env, devices: Vec<DeviceInfo>) -> ControlConfig {
     c
 }
 
-/// `new`: another workspace opens (M4.15f); its snapshot.
+/// `new`: another workspace opens; its snapshot.
 fn new_workspace(s: &mut OfflineShow) -> Snapshot {
     let id = s.request_id();
     let replies = s.send(ClientMessage::Request {

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Whole show sessions over real sockets (M4.10, QA-04): the WebSocket server and the OSC
+//! Whole show sessions over real sockets (QA-04): the WebSocket server and the OSC
 //! listeners in front of the real `Control`, driven on a virtual clock.
 //!
 //! `runner::run` never renders in the offline backend, so sample time would stand still. These
@@ -532,7 +532,7 @@ fn session_workspace() -> Workspace {
 }
 
 /// What a client folded must be what the engine says, once the client has read up to the
-/// snapshot: runtime changes a control-loop tick makes (`media_duration`, M5.4d) are not held
+/// snapshot: runtime changes a control-loop tick makes (`media_duration`) are not held
 /// behind a command's result, so the snapshot can be ahead of what the client has read.
 async fn assert_consistent(ws: &mut Ws, engine: &Snapshot) {
     ws.wait("the engine's revision and runtime seq", |c| {
@@ -664,7 +664,7 @@ async fn a_full_show_session_over_the_websocket() {
     assert!(matches!(o, Outcome::Ok(_)));
     assert_eq!((c.states.clone(), c.playhead, c.revision, c.seq), before);
 
-    // Documents (M4.10a, M4.15f): save as, an edit, save; the bound client follows the file
+    // Documents: save as, an edit, save; the bound client follows the file
     // state. An app connection then finds the show open already, opens another doc beside it
     // and closes that one; the session's doc is not touched.
     let path = show.dir.path().join("Session.openlab");
@@ -940,7 +940,7 @@ impl Osc {
     }
 }
 
-/// M5.10d over the wire: undoing the add of a cue that is playing is answered
+/// Over the wire: undoing the add of a cue that is playing is answered
 /// `command_refused` with a message naming it, changes nothing, and the cue plays on; once it
 /// is stopped the same undo goes through.
 #[tokio::test]

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Level edits on a playing audio cue (M5.9b, AUD-06, AUD-08), per docs/cue-engine.md "Level
+//! Level edits on a playing audio cue (AUD-06, AUD-08), per docs/cue-engine.md "Level
 //! edits on a playing cue". Virtual sample clock at 1 kHz: the edit ramp is 10 samples.
 
 mod common;
@@ -308,7 +308,7 @@ fn ramps_any_curve(actions: &[Action]) -> Vec<f32> {
 
 #[test]
 fn an_edit_in_the_call_that_ends_the_fade_owning_the_level_is_heard() {
-    // Review M1: the fade ends on 1100; the first call after it carries the edit. The fade's
+    // The fade ends on 1100; the first call after it carries the edit. The fade's
     // end is carried out in that call, so the edit is no longer the fade's and must be sent.
     let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
     rig.start(0, 1);
@@ -404,7 +404,7 @@ fn fade_output0(n: u128, target: u128, db: f64) -> Cue {
 
 #[test]
 fn a_mute_taken_from_a_paused_fade_stays_muted_through_the_resume() {
-    // #295: the mute takes output 0 from the fade; resuming the fade must not ramp it back up.
+    // The mute takes output 0 from the fade; resuming the fade must not ramp it back up.
     let mut rig = Rig::new(vec![sound(1), fade_output0(2, 1, 6.0)]);
     rig.start(0, 1);
     rig.start(100, 2);
@@ -428,7 +428,7 @@ fn a_mute_taken_from_a_paused_fade_stays_muted_through_the_resume() {
 
 #[test]
 fn an_edit_after_a_stopped_fade_is_heard() {
-    // #295: a stopped fade holds its level with no owner; the next edit of that level rules it.
+    // A stopped fade holds its level with no owner; the next edit of that level rules it.
     let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
     rig.start(0, 1);
     rig.start(100, 2);

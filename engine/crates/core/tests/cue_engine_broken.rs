@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Static broken-cue detection (M2.8: CUE-06, NFR-07), per docs/cue-engine.md "Broken cues".
+//! Static broken-cue detection (CUE-06, NFR-07), per docs/cue-engine.md "Broken cues".
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 mod common;
@@ -129,7 +129,7 @@ fn unsupported_media_is_broken_with_its_reason() {
 
 #[test]
 fn damaged_but_playable_media_is_not_broken() {
-    // The binary reports a file that probed with damage warnings as available (M3-B decision).
+    // The binary reports a file that probed with damage warnings as available.
     let mut rig = Rig::new(vec![sound(1)]);
     let report = rig.media(0, "media/a.wav", MediaStatus::Available);
     assert!(report.is_empty());
@@ -361,7 +361,7 @@ fn go_on_a_broken_cue_does_not_start_it_but_keeps_its_auto_continue() {
 
 #[test]
 fn a_cue_with_static_problems_auto_follows_like_a_disarmed_one() {
-    // M2.24 (QLab check P5): it is skipped, and the cue it auto-follows into starts.
+    // QLab check P5: it is skipped, and the cue it auto-follows into starts.
     let mut rig = Rig::new(vec![timed(start_cue(1, None), 0.0, 0.0, AF), memo(2)]);
     let go = rig.go(0);
     assert_eq!(starts(&go), vec![(id(2), 0)]);
@@ -452,7 +452,7 @@ fn a_cue_that_breaks_during_its_pre_wait_skips_its_action() {
     assert!(voice_starts(&tick).is_empty());
     assert_eq!(changes(&tick, 1), vec![(CueState::Broken, 1000)]);
     // Fixed before its continue: it stays a skipped run, and the continue still fires. While
-    // it reports broken it has a reason to show (review L3).
+    // it reports broken it has a reason to show.
     let fixed = rig.media(1200, "media/a.wav", MediaStatus::Available);
     assert_eq!(rig.state(1), CueState::Broken);
     assert_eq!(rig.problems(1), vec![CueProblem::StartedBroken]);
@@ -489,7 +489,7 @@ fn a_group_with_a_broken_child_shows_broken_runs_and_follows() {
         ),
         memo(4),
     ]);
-    // M2.24 (QLab check G6): it shows as broken, with no problem of its own, and can be GOed.
+    // QLab check G6: it shows as broken, with no problem of its own, and can be GOed.
     assert!(rig.problems(1).is_empty());
     assert_eq!(rig.state(1), CueState::Broken);
     assert!(rig.engine.has_broken_descendant(id(1)));
@@ -740,7 +740,7 @@ fn a_broken_devamp_cue_uses_its_own_continue_like_a_disarmed_one() {
     assert_eq!(rig.engine.playhead(list_id(1)), Some(id(2)));
 }
 
-// ----- cost (review H1) -----
+// ----- cost -----
 
 fn many(n: u128) -> Workspace {
     workspace(
@@ -752,7 +752,7 @@ fn many(n: u128) -> Workspace {
 
 #[test]
 fn problem_work_is_proportional_to_what_changed() {
-    // Regression (review H1): every call, and every status input, recomputed every cue.
+    // Regression: every call, and every status input, recomputed every cue.
     let ws = many(2000);
     let mut engine = CueEngine::new(EngineConfig::new(RATE, 5, 1).unwrap());
     engine.handle(&ws, Input::Tick, 0);
@@ -897,7 +897,7 @@ fn an_unsignalled_model_change_is_caught_in_debug_builds() {
 
 #[test]
 fn the_pre_show_list_is_in_workspace_order() {
-    // Review L4: lists in order, cues depth-first, not id order.
+    // Lists in order, cues depth-first, not id order.
     let mut rig = Rig::new(vec![
         start_cue(9, None),
         cue(5, group(vec![start_cue(7, None), memo(1)])),
@@ -920,7 +920,7 @@ fn the_pre_show_list_is_in_workspace_order() {
 
 #[test]
 fn go_on_a_broken_auto_follow_cue_starts_the_cue_it_follows_into_and_moves_past_it() {
-    // M2.24 (QLab check P5): the broken cue's auto-follow fires (it is skipped), so the cue it
+    // QLab check P5: the broken cue's auto-follow fires (it is skipped), so the cue it
     // follows into starts and the playhead moves past it.
     let mut rig = Rig::new(vec![
         timed(sound(1), 0.0, 0.0, AF),
@@ -975,7 +975,7 @@ fn no_levels() -> FadeLevels {
 
 #[test]
 fn a_fade_that_sets_no_level_is_broken_and_go_skips_it_even_with_stop_target() {
-    // M2.26 (QLab check F4): "No parameters set to fade". An all-`None` output list and no
+    // QLab check F4: "No parameters set to fade". An all-`None` output list and no
     // crosspoints count as nothing too.
     let mut rig = Rig::new(vec![
         sound(1),
@@ -1087,7 +1087,7 @@ fn lose_device(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
 
 #[test]
 fn a_device_lost_break_clears_when_its_patch_is_mapped_again() {
-    // The binary reports the device missing, then fails the runs that played on it (M4.2b).
+    // The binary reports the device missing, then fails the runs that played on it.
     let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/a.wav", 2)]);
     rig.ws.patches.push(patch(2, 2));
     rig.tick(0);
@@ -1130,7 +1130,7 @@ fn a_device_lost_break_clears_when_its_patch_is_mapped_again() {
 
 #[test]
 fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
-    // M4.2g: a lost device ends the run for good, as QLab: its pending auto-continue never
+    // A lost device ends the run for good, as QLab: its pending auto-continue never
     // fires, and neither does the pre-wait of a run that had not started its action.
     let mut rig = Rig::new(vec![
         timed(sound(1), 0.0, 1.0, AC),
@@ -1169,7 +1169,7 @@ fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
 
 #[test]
 fn device_lost_stops_every_other_active_run_and_cancels_what_it_scheduled() {
-    // M4.2g: a memo with an auto-continue and a pre-waiting cue are not audio runs the binary
+    // A memo with an auto-continue and a pre-waiting cue are not audio runs the binary
     // can fail; `DeviceLost` stops them, so neither fires after the device returns.
     let mut rig = Rig::new(vec![
         timed(memo(1), 0.0, 1.0, AC),
@@ -1199,7 +1199,7 @@ fn a_device_lost_break_without_any_patch_status_stays_until_reset() {
     assert_eq!(rig.state(1), CueState::Idle);
 }
 
-// ----- a lost device moves nothing on (M2.31 review M3) -----
+// ----- a lost device moves nothing on -----
 
 fn disarm_cue(n: u128, target: u128) -> Cue {
     cue(

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A 64-channel audio file plays through the control loop (M3.23, AUD-03, AUD-04): symphonia
+//! A 64-channel audio file plays through the control loop (AUD-03, AUD-04): symphonia
 //! cannot read such WAVs, so this is the in-house PCM reader behind a real cue, with every file
 //! channel routed to its own output of a 64-output offline device.
 

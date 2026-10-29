@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control loop and its output device (M4.2b, M4.2g; NFR-08, AUD-01, AUD-03, WS-07): the
+//! The control loop and its output device (NFR-08, AUD-01, AUD-03, WS-07): the
 //! device list, hot-plug, loss and reopen, the device-loss policy (cues on a lost device stop
 //! at once and do not come back, as in QLab 5), output delays and dropped outputs. A stand-in
 //! device layer (`show::device`) replaces cpal; a test-driven wall clock replaces time.
@@ -521,7 +521,7 @@ fn a_first_open_that_never_answers_fails_the_start_with_a_clear_error() {
     fake.open_gate();
 }
 
-// ---- The device-loss policy (M4.2g, QLab 5: PROGRESS check X1) ----
+// ---- The device-loss policy (QLab 5: PROGRESS check X1) ----
 
 /// Cue 1 plays a ramp (every sample distinct) and auto-follows into cue 2; both on the device.
 fn follow_show() -> DeviceShow {
@@ -916,7 +916,7 @@ fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return
     assert_eq!(s.control_mut().mixer_voice_count(), 0);
 }
 
-// ---- Nothing scheduled before a loss fires after it (M4.2g, orchestrator decision) ----
+// ---- Nothing scheduled before a loss fires after it (a design rule) ----
 
 /// Lets `s` (640 frames after a start) lose its device for 20 s, bring it back, and run on past
 /// every deadline set before the loss. Nothing may sound or run by itself.
@@ -1026,7 +1026,7 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
     nothing_starts_after_the_return(s, &[2]);
 }
 
-// ---- M4.2g stall watchdog: a stream that stops calling back with no error, device listed ----
+// ---- stall watchdog: a stream that stops calling back with no error, device listed ----
 //
 // Two stages (docs/control.md "Devices"): a `device_stalled` warning after 500 ms of silence
 // (nothing stops), a loss after 3 s. The supervisor samples every tick; these tests tick every
@@ -1466,7 +1466,7 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
         id,
         request: Request::New {},
     });
-    // Another doc opens beside the first (M4.15f), built on the document worker.
+    // Another doc opens beside the first, built on the document worker.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while s.control().doc_ids().len() < 2 {
         assert!(

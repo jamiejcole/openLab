@@ -143,7 +143,7 @@ fn preview_changes(msgs: &[ServerMessage], cue: openlab_core::CueId) -> Vec<bool
 
 #[test]
 fn a_preview_that_ends_by_itself_reports_inactive_and_leaves_no_voice() {
-    // M4.13: the voice's end comes back as `ActionEnded` with the preview's run.
+    // The voice's end comes back as `ActionEnded` with the preview's run.
     let path = wav(&dc(300, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
     s.take_outbound();
@@ -353,7 +353,7 @@ fn panic_fades_the_show_cue_and_its_preview_together() {
 
 /// Pids are reused and the target dir is never cleaned, so files an earlier run left under its
 /// pid-named folder must never be handed out as fresh: one was a named pipe, and writing a
-/// "fresh" WAV to it blocked the test for ever (M4.4j).
+/// "fresh" WAV to it blocked the test for ever.
 #[test]
 fn fresh_paths_never_land_on_an_earlier_runs_files() {
     let first = fresh_path("wav");
@@ -424,7 +424,7 @@ fn the_control_loop_never_waits_for_the_disk() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
-/// #323: a named pipe (or a device) chosen as media is refused by its probe at once, without
+/// A named pipe (or a device) chosen as media is refused by its probe at once, without
 /// waiting for a writer: the cue is broken before it is triggered, as for any unplayable file,
 /// and a GO plays nothing.
 #[cfg(unix)]
@@ -524,7 +524,7 @@ fn a_start_held_by_its_probe_fails_after_five_seconds() {
     let path = wav(&dc(200, 0.5));
     let next = wav(&dc(200, 0.5));
     gate(&path);
-    // The held start never played, so it is skipped: its auto-follow still fires (M4.14).
+    // The held start never played, so it is skipped: its auto-follow still fires.
     let mut held = audio(1, &path, 0);
     held.continue_mode = ContinueMode::AutoFollow;
     let ws = workspace(vec![held, audio(2, &next, 1)]);
@@ -966,7 +966,7 @@ fn a_reset_silences_a_stalled_tail_at_once() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
-// ----- preload follows the cues' settings (M4.12b) -----
+// ----- preload follows the cues' settings -----
 
 #[allow(clippy::unwrap_used)]
 fn set_preload(s: &mut OfflineShow, cue: u128, on: bool) {
@@ -1004,7 +1004,7 @@ fn set_kind(s: &mut OfflineShow, cue: u128, kind: CueKind) {
 
 #[test]
 fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
-    // Regression (M4.12b): only a cue that was new, or a workspace opened, was preloaded; a
+    // Regression: only a cue that was new, or a workspace opened, was preloaded; a
     // file probed already stayed streamed after its cue's preload was switched on.
     let path = wav(&dc(400, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
@@ -1165,7 +1165,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
 
 #[test]
 fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
-    // M4.14 (QLab P5/G2): c2's file changes after its probe, so its stream fails before it
+    // QLab P5/G2: c2's file changes after its probe, so its stream fails before it
     // produced any audio: c2 is skipped (StartFailed), the playlist does not halt and c3 plays.
     let one = wav(&dc(300, 0.5));
     let two = wav(&dc(300, 0.5));
@@ -1200,7 +1200,7 @@ fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
 
 #[test]
 fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
-    // The other side of M4.14 (QLab check Q2): c1 has played audio when its file is cut short
+    // The other side of QLab check Q2: c1 has played audio when its file is cut short
     // under it, so its stream fails mid-play (`Changed`): the binary reports `ActionFailed`,
     // the playlist halts and c2 never plays.
     let long = wav(&dc(40_000, 0.5));
@@ -1239,7 +1239,7 @@ fn a_playlist_child_whose_stream_fails_after_it_played_halts_the_playlist() {
     assert!(s.channel(1).iter().all(|&v| v == 0.0), "c2 never plays");
 }
 
-/// M4.11b: a start held by its probe that then finds nothing left to play (loaded past the end)
+/// A start held by its probe that then finds nothing left to play (loaded past the end)
 /// ends on the sample it is released on, so its successor starts there with no `late_start`.
 #[test]
 fn a_held_start_loaded_past_the_end_starts_its_successor_on_release() {
@@ -1279,7 +1279,7 @@ fn a_held_start_loaded_past_the_end_starts_its_successor_on_release() {
     run_until_idle(&mut s, id(2), 2000);
 }
 
-/// M2.34: a preview whose voice ends on the Pause All sample has ended (the mixer dates the end
+/// A preview whose voice ends on the Pause All sample has ended (the mixer dates the end
 /// on the first sample after its last, so nothing was left to pause). The engine ends the
 /// preview, and no record of the voice is left waiting for a resume that never comes.
 #[test]
@@ -1310,7 +1310,7 @@ fn a_preview_ending_on_the_pause_all_sample_leaves_no_voice() {
     }
 }
 
-/// M2.34, show cue: a voice ending on the Pause All sample ends before the pause (the engine
+/// Show cue: a voice ending on the Pause All sample ends before the pause (the engine
 /// carries out its known end first, and the mixer's end report on that sample is an end), and
 /// leaves no record behind that would keep the cue from being primed for its next GO. (The
 /// mixer-report path itself is pinned by `voices.rs`'s unit test: offline, a show voice's

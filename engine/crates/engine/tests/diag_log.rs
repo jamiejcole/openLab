@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The show log through the control loop on the offline driver (M4.7; DX-02): what each kind of
+//! The show log through the control loop on the offline driver (DX-02): what each kind of
 //! event writes, `log_tail`, and the disk side, with a manual wall clock and no real waiting.
 
 mod common;
