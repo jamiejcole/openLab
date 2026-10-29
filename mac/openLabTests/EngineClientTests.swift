@@ -444,7 +444,7 @@ final class EngineClientTests: XCTestCase {
         let asked = await rig.handshakeScheduler.requested
         XCTAssertEqual(asked, [ReconnectPolicy().handshakeTimeout])
         await rig.handshakeScheduler.fire()
-        await assertEventually { rig.client.state == .retrying(.transport("no welcome")) }
+        await assertEventually { rig.client.state == .retrying(.noWelcome) }
         rig.engine.welcomeFault = .none
         await rig.scheduler.fire()
         await assertEventually { rig.client.state == .connected }

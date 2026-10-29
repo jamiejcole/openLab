@@ -57,6 +57,7 @@ final class RecordingPresenter: EngineAlarmPresenting {
 @MainActor
 final class EngineSupervisorTests: XCTestCase {
     private let scheduler = ManualScheduler()
+    private let handshakeScheduler = ManualScheduler()
     private var engine: FakeEngine!
     private var processes: ScriptedProcesses!
     private var session: EngineSession!
@@ -69,7 +70,9 @@ final class EngineSupervisorTests: XCTestCase {
         engine = FakeEngine(snapshot: try Fixtures.json("server", "welcome")["snapshot"])
         processes = ScriptedProcesses()
         let processes = processes!
-        session = EngineSession(transport: engine, infoProvider: { processes.readInfo() }, scheduler: scheduler)
+        session = EngineSession(
+            transport: engine, infoProvider: { processes.readInfo() }, scheduler: scheduler,
+            handshakeScheduler: handshakeScheduler)
         supervisor = EngineSupervisor(
             processes: processes, session: session, scheduler: ImmediateScheduler(), now: { [unowned self] in clock })
         subs.append(supervisor.alarms.sink { [unowned self] in alarms.append($0) })
@@ -155,6 +158,32 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
         XCTAssertEqual(processes.spawns, 1)
         XCTAssertTrue(alarms.isEmpty, "nothing was bound: no alarm")
+    }
+
+    /// An engine that accepts the connection but is slow to send its welcome (its control loop
+    /// is busy while the audio thread plays) is never ended for it (#268).
+    func testALaunchHandshakeTimeoutIsBusyNotSilence() async throws {
+        processes.info = .success(engine.info)
+        processes.alive = [engine.pid]
+        engine.welcomeFault = .silent
+        supervisor.start()
+        var timeouts = 0
+        for _ in 0..<(supervisor.probeAttempts * 3) {
+            let waiting = await eventually {
+                await self.scheduler.fire()  // the reconnect backoff
+                return await self.handshakeScheduler.waitingCount > 0
+            }
+            XCTAssertTrue(waiting)
+            await handshakeScheduler.fire()
+            timeouts += 1
+        }
+        XCTAssertGreaterThan(timeouts, supervisor.probeAttempts)
+        XCTAssertTrue(processes.signals.isEmpty, "a slow welcome never ends the engine")
+        XCTAssertEqual(processes.spawns, 0)
+        // It answers in the end: attached, nothing was lost.
+        engine.welcomeFault = .none
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
     }
 
     func testASilentEngineThatIgnoresSigtermGetsSigkill() async throws {
@@ -463,6 +492,23 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { !self.app.session.isReattaching }
     }
 
+    /// File > New during a reattach: no waiting window can claim a new workspace, so it gets its
+    /// window at once instead of when every detached window is rebound (#262).
+    func testANewWorkspaceDuringAReattachGetsItsWindowAtOnce() async throws {
+        engine.holdResults = true  // the new engine does not answer the reopens yet
+        processes.crash()
+        let waiting = await pump { self.app.session.detached.count == 2 && self.app.session.isReattaching }
+        XCTAssertTrue(waiting)
+        engine.holdResults = false
+        await app.newWorkspace()
+        let shown = self.app.session.orderedStores.count
+        XCTAssertEqual(shown, 1, "the new workspace has its store while the others wait")
+        XCTAssertTrue(app.session.isReattaching)
+        XCTAssertEqual(app.allWindows.count, 3)
+        engine.releaseResults()
+        await assertEventually { self.app.windows.count == 3 && !self.app.session.isReattaching }
+    }
+
     func testTransportStillWorksWhileTheAlarmIsUp() async throws {
         processes.crash()
         let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
@@ -530,7 +576,8 @@ final class EngineCrashFlowTests: XCTestCase {
         processes.crash()
         let offered = await pump { self.presenter.restore != nil }
         XCTAssertTrue(offered)
-        XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "Test")))
+        XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.editsLostSetAside"), "Test")))
+        XCTAssertFalse(presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "Test")))
         XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 1)))
         presenter.restore?()
         await assertEventually { self.app.allWindows.count == 3 }
@@ -596,8 +643,31 @@ final class AutosaveOfferTests: XCTestCase {
     func testACurrentAutosaveIsOfferedOnlyWhenNoWindowHoldsItsWorkspace() {
         let mine = entry(w, ms: 5, stale: false)
         let lost = entry(other, ms: 5, stale: false)
-        let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
-        XCTAssertEqual(AutosaveOffer.offerable([mine, lost], held: [w], windows: [window]), [lost])
+        let window = AutosaveOffer.Window(workspace: w, path: nil, cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([mine, lost], windows: [window]), [lost])
+    }
+
+    /// A Finder duplicate shares the workspace id: the current autosave of the other copy is not
+    /// held by the window of this one (#359); the window's own copy's is.
+    func testACurrentAutosaveOfAnotherCopyOfAnOpenWorkspaceIsOffered() {
+        let ownHash = RecoveryPathHash.of("/Shows/Show.openlab")
+        let own = entry(w, ms: 5, stale: false, hash: ownHash)
+        let copy = entry(w, ms: 6, stale: false, hash: RecoveryPathHash.of("/Shows/Show copy.openlab"))
+        let untitled = entry(w, ms: 7, stale: false, hash: nil)
+        let window = AutosaveOffer.Window(workspace: w, path: "/Shows/Show.openlab", cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([own, copy, untitled], windows: [window]), [copy])
+    }
+
+    /// The hash is the engine's `path_hash` (values pinned in the engine's own test and computed
+    /// with the same FNV-1a): spelling-independent, NFC and case-insensitive.
+    func testThePathHashMatchesTheEnginesAndIgnoresSpelling() {
+        XCTAssertEqual(RecoveryPathHash.of(""), "cbf29ce484222325")
+        XCTAssertEqual(RecoveryPathHash.of("/Show/a.openlab"), "1560fec8ba18f71e")
+        XCTAssertEqual(RecoveryPathHash.of("/show/./x/../A.OPENLAB"), RecoveryPathHash.of("/Show/a.openlab"))
+        XCTAssertEqual(RecoveryPathHash.of("/Users/sam/Shows/Caf\u{e9}.openlab"), "d4bc43e7fe1d07eb")
+        XCTAssertEqual(RecoveryPathHash.of("/Users/sam/Shows/Cafe\u{301}.openlab"), "d4bc43e7fe1d07eb")
+        XCTAssertEqual(RecoveryPathHash.of("///x"), RecoveryPathHash.of("/x"))
+        XCTAssertNotEqual(RecoveryPathHash.of("//srv/x"), RecoveryPathHash.of("/srv/x"))
     }
 
     /// A restore by `open` covers the exact offer time of the window's own workspace only.
@@ -605,21 +675,21 @@ final class AutosaveOfferTests: XCTestCase {
         let stale = entry(w, ms: 1_000, stale: true)
         var cover = AutosaveCover()
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], windows: [.init(workspace: w, path: nil, cover: cover)]), [stale],
             "opened from its file: the file's time says nothing reliable")
         cover.loadOwn(modifiedMs: 2_000)
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], windows: [.init(workspace: w, path: nil, cover: cover)]), [stale],
             "a later autosave was restored: it need not contain this one")
         cover.loadOwn(modifiedMs: 1_000)
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [])
+            AutosaveOffer.offerable([stale], windows: [.init(workspace: w, path: nil, cover: cover)]), [])
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: other, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], windows: [.init(workspace: other, path: nil, cover: cover)]), [stale],
             "another workspace's window covers nothing of this one")
         XCTAssertEqual(
             AutosaveOffer.offerable(
-                [entry(w, ms: nil, stale: true)], held: [w], windows: [.init(workspace: w, cover: cover)]),
+                [entry(w, ms: nil, stale: true)], windows: [.init(workspace: w, path: nil, cover: cover)]),
             [entry(w, ms: nil, stale: true)], "no time: never matched")
     }
 
@@ -628,13 +698,13 @@ final class AutosaveOfferTests: XCTestCase {
     func testAWindowOpenedFromAnAutosaveCoversExactlyThatEntry() {
         var cover = AutosaveCover()
         cover.load(entry(w, ms: 1_000, stale: true))
-        let windows = [AutosaveOffer.Window(workspace: other, cover: cover)]
-        XCTAssertEqual(AutosaveOffer.offerable([entry(w, ms: 1_000, stale: true)], held: [w], windows: windows), [])
+        let windows = [AutosaveOffer.Window(workspace: other, path: nil, cover: cover)]
+        XCTAssertEqual(AutosaveOffer.offerable([entry(w, ms: 1_000, stale: true)], windows: windows), [])
         for different in [
             entry(w, ms: 999, stale: true), entry(w, ms: 1_001, stale: true),
             entry(w, ms: 1_000, stale: true, hash: "00000000000000bb"),
         ] {
-            XCTAssertEqual(AutosaveOffer.offerable([different], held: [w], windows: windows), [different])
+            XCTAssertEqual(AutosaveOffer.offerable([different], windows: windows), [different])
         }
     }
 }
@@ -671,6 +741,72 @@ final class SystemEngineProcessesTests: XCTestCase {
         child.terminate()
         child.waitUntilExit()
         XCTAssertFalse(p.isEngine(child.processIdentifier), "gone once it exited")
+    }
+
+    private func scratchDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    /// What a starting engine prints on stderr reaches the app (#263): the spawned program's
+    /// stderr is the log file, and the tail reads exactly what was written since the spawn.
+    @MainActor
+    func testWhatTheEnginePrintsOnStderrIsReadBack() throws {
+        let dir = try scratchDirectory()
+        let program = dir.appendingPathComponent("engine.sh")
+        try "#!/bin/sh\necho 'no audio device'\necho 'second line' >&2\necho 'no audio device' >&2\n"
+            .write(to: program, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        let log = dir.appendingPathComponent("logs/engine-stderr.log")
+        let p = SystemEngineProcesses(
+            executable: program, bundleID: "x", infoURL: dir.appendingPathComponent("engine.json"), stderrURL: log,
+            watchStderr: false)
+        let pid = try p.spawnEngine()
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, 0), pid)
+        XCTAssertEqual(p.stderrTail.read(), ["second line", "no audio device"], "stdout is not read")
+        XCTAssertEqual(p.stderrTail.read(), [], "each line once")
+    }
+
+    func testTheStderrTailIsBounded() throws {
+        let dir = try scratchDirectory()
+        let url = dir.appendingPathComponent("e.log")
+        let tail = EngineStderrTail(url: url)
+        XCTAssertTrue(tail.prepare())
+        let handle = try FileHandle(forWritingTo: url)
+        func write(_ text: String) {
+            handle.seekToEndOfFile()
+            handle.write(Data(text.utf8))
+        }
+
+        write("par")
+        XCTAssertEqual(tail.read(), [], "a line is complete at its newline")
+        write("tial\n" + String(repeating: "x", count: 5000) + "\n")
+        let lines = tail.read()
+        XCTAssertEqual(lines.first, "partial")
+        XCTAssertEqual(lines.last?.count, EngineStderrTail.lineLimit + 3, "a long line is cut")
+
+        // A flood larger than one read keeps the newest part; a budget caps the lines returned.
+        write(String(repeating: "noise\n", count: 100_000))
+        let flood = tail.read()
+        XCTAssertLessThanOrEqual(flood.count, EngineStderrTail.lineBudget + 1)
+        XCTAssertEqual(flood.last, "(further engine stderr output is not logged)")
+        write("more\n")
+        XCTAssertEqual(tail.read(), [], "nothing is logged past the budget")
+
+        // The file emptied under the reader (a new run's prepare) restarts it at the top.
+        handle.truncateFile(atOffset: 0)
+        let fresh = EngineStderrTail(url: url)
+        XCTAssertTrue(fresh.prepare())
+        write("again\n")
+        XCTAssertEqual(fresh.read(), ["again"])
+        try handle.close()
+        // Over the limit at the start of a run: emptied, so the file cannot grow without end.
+        try Data(count: Int(EngineStderrTail.fileLimit) + 1).write(to: url)
+        XCTAssertTrue(fresh.prepare())
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue, 0)
     }
 
     @MainActor

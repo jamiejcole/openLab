@@ -53,14 +53,16 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     init(
         transport: EngineTransport,
         infoProvider: @escaping @MainActor () -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError>,
-        scheduler: Scheduler = SystemScheduler(), clientName: String = "openLab for macOS"
+        scheduler: Scheduler = SystemScheduler(), handshakeScheduler: Scheduler = SystemScheduler(),
+        clientName: String = "openLab for macOS"
     ) {
         self.transport = transport
         self.infoProvider = infoProvider
         self.scheduler = scheduler
         self.clientName = clientName
         appClient = EngineClient(
-            transport: transport, infoProvider: infoProvider, scheduler: scheduler, clientName: clientName)
+            transport: transport, infoProvider: infoProvider, scheduler: scheduler,
+            handshakeScheduler: handshakeScheduler, clientName: clientName)
         appClient.delegate = self
         stateSub = appClient.$state.sink { [weak self] in self?.connectionState = $0 }
     }
@@ -233,8 +235,19 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         storesChanged.send()
     }
 
+    /// A doc the operator just opened gets its store (and so its window) at once, unless a
+    /// window waiting to be rebound will claim it: the reattach takes a doc open at that window's
+    /// path (`alreadyOpen`), so a second store would leave that window failed. Only a doc with
+    /// that path is claimable; a new or other file's doc is nobody's.
     private func ensureStore(_ doc: ModelID) {
-        guard stores[doc] == nil, detached.isEmpty, reattachTask == nil else { return }
+        guard stores[doc] == nil else { return }
+        if !detached.isEmpty || reattachTask != nil {
+            if let path = workspaces.first(where: { $0.doc == doc })?.path,
+                detached.contains(where: { $0.info.path == path })
+            {
+                return
+            }
+        }
         makeStore(doc)
         storesChanged.send()
     }

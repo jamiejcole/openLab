@@ -1111,6 +1111,27 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(goodbyes.count, 1)
     }
 
+    /// Don't Save at quit drops the edits on the engine too: otherwise its shutdown writes a
+    /// recovery file for the workspace and File > Recover Autosaves lists it later (#333).
+    func testQuitDontSaveClosesWithDiscardBeforeGoodbyeAndASavedOneIsNotClosed() async throws {
+        let b = try await addWorkspace()
+        await makeDirty(b)  // the fixture's "Test" is dirty already
+        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        alerts.saveChoices = [.dontSave, .save]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let sent = engine.received
+        let closes = sent.enumerated().compactMap { i, m -> (Int, ModelID, Bool)? in
+            if case .close(_, let doc?, let discard) = m { return (i, doc, discard) }
+            return nil
+        }
+        XCTAssertEqual(closes.count, 1, "only the workspace answered Don't Save")
+        XCTAssertEqual(closes.first?.2, true)
+        let goodbye = sent.firstIndex { if case .goodbye(true) = $0 { return true } else { return false } }
+        XCTAssertNotNil(goodbye)
+        XCTAssertLessThan(closes.first?.0 ?? .max, goodbye ?? 0)
+    }
+
     func testQuitCancelOnASecondWorkspaceAbortsAndSendsNoGoodbye() async throws {
         let b = try await addWorkspace()
         await makeDirty(b)
@@ -1119,6 +1140,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("unsaved") }.count, 2)
         XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.received.contains { if case .close = $0 { return true } else { return false } })
         XCTAssertEqual(app.windows.count, 2)
     }
 

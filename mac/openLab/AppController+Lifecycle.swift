@@ -111,9 +111,20 @@ extension AppController {
         } else if controllers.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
             return false
         }
+        var discarded: [ModelID] = []
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
-            if await resolveUnsaved(info.doc) == nil { return false }
+            guard let discard = await resolveUnsaved(info.doc) else { return false }
+            if discard { discarded.append(info.doc) }
+        }
+        // Don't Save is answered only now that no later prompt cancelled the quit. The shutdown
+        // writes a recovery file for every dirty workspace, so the dropped edits are discarded
+        // first (the engine removes their autosave too). A stalled or failed close must not trap
+        // the app: the workspace is then autosaved as before.
+        for doc in discarded {
+            let closed = await bounded { await self.session.close(doc: doc, discardChanges: true) }
+            if case .success? = closed { continue }
+            engineLog.error("could not discard the unsaved edits of doc \(doc.raw, privacy: .public) at quit")
         }
         // A stalled flush must not trap the app; the engine still sees the socket drop.
         _ = await bounded { await self.session.shutdown() }

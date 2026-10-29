@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Show safety: an engine this app run has talked to is never signalled. Ending an engine that
 /// is alive but does not answer (SIGTERM, then SIGKILL) happens only at launch, before any
-/// connection, after `probeAttempts` failed attempts. Later a dropped connection is retried for
+/// connection, after `probeAttempts` refused or reset attempts (a slow `welcome` is busy, not silence). Later a dropped connection is retried for
 /// as long as the engine's pid lives; only once it is gone is it an alarm and a new engine.
 @MainActor
 final class EngineSupervisor {
@@ -126,10 +126,17 @@ final class EngineSupervisor {
             // Launch: nothing is bound yet.
             if let live = filed {
                 if live.pid == spawned { return }  // still starting
-                // Only silence counts (refused, dropped, no welcome): an engine that answers with
-                // an error is talking, and is never ended for it.
+                // Only silence counts (refused or reset connections): an engine that answers with
+                // an error is talking, and one that accepts the socket but is slow to send its
+                // `welcome` is busy (its control loop may be stalled while the audio thread plays),
+                // so neither is ever ended for it.
                 switch failure {
                 case .transport, .lost: break
+                case .noWelcome:
+                    engineLog.error(
+                        "engine pid \(live.pid, privacy: .public) accepted the connection but sent no welcome: busy, waiting"
+                    )
+                    return
                 default: return
                 }
                 silentAttempts += 1
