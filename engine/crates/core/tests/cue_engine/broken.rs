@@ -1234,9 +1234,10 @@ fn set_armed(actions: &[Action]) -> Vec<(CueId, bool)> {
 }
 
 /// The binary marks the patch missing, then fails each run that played on it, then sends
-/// `DeviceLost` (control/mod.rs). Between the failure and `DeviceLost` the playlist must not move
-/// on: its next audio child would be refused as broken, but a control cue would act (a Disarm is
-/// saved with the show), and a looping playlist of such children spun it to the chain limit.
+/// `DeviceLost` (control/device_events.rs). Between the failure and `DeviceLost` the playlist
+/// must not move on: its next audio child would be refused as broken, but a control cue would
+/// act (a Disarm is saved with the show), and a looping playlist of such children spun it to the
+/// chain limit.
 #[test]
 fn a_device_lost_failure_does_not_move_a_playlist_on() {
     for (loop_, on_its_own) in [(false, false), (true, false), (false, true), (true, true)] {
