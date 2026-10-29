@@ -100,7 +100,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     func open(path: String, recovery: RecoveryChoice? = nil) async -> Result<ModelID, EngineError> {
         let result = await opened(appClient.send { .request(id: $0, .open(path: path, recovery: recovery)) })
         if recovery == .restore, case .success(let doc) = result, let ms = offeredAutosaves[path] {
-            cover(doc) { $0.coverOwn(upTo: ms) }
+            cover(doc) { $0.loadOwn(modifiedMs: ms) }
         }
         // Keyed by the path asked for: the caller repeats it with `restore`.
         if case .failure(.recoveryOffered(_, _, let ms)) = result { offeredAutosaves[path] = ms }
@@ -110,9 +110,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     func openRecovery(_ entry: RecoveryEntryInfo) async -> Result<ModelID, EngineError> {
         let result = await opened(sendOpenRecovery(entry))
-        if case .success(let doc) = result, let ms = entry.modifiedMs {
-            cover(doc) { $0.coverRestored(entry.workspaceId, upTo: ms) }
-        }
+        if case .success(let doc) = result { cover(doc) { $0.load(entry) } }
         return result
     }
 
@@ -387,7 +385,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
                 // An autosave newer than the file: the window showed it if it had unsaved changes
                 // (the engine stopped before they were saved); otherwise it showed the saved file.
                 source = info.dirty ? .autosave : .file
-                if info.dirty { cover.coverOwn(upTo: modified) }
+                if info.dirty { cover.loadOwn(modifiedMs: modified) }
                 result = await openForRebind(.open(path: path, recovery: info.dirty ? .restore : .ignore))
             }
             switch result {
@@ -416,7 +414,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             }
         }
         let request: Request
-        if let entry = recovery?.first(where: { $0.workspaceId == info.workspaceId }) {
+        let entry = recovery?.first { $0.workspaceId == info.workspaceId }
+        if let entry {
             request = .openRecovery(
                 workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs)
         } else if !info.dirty {
@@ -428,7 +427,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         case .success(let ok):
             if let doc = ok.data?.openedDoc, stores[doc] == nil {
                 var cover = AutosaveCover()
-                if case .openRecovery(let id, _, let ms?) = request { cover.coverRestored(id, upTo: ms) }
+                if let entry { cover.load(entry) }
                 return .bound(doc, request == .new ? .file : .autosave, cover: cover)
             }
             return .failed(loc("engine.reattach.noDoc"))

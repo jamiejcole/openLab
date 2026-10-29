@@ -6,6 +6,10 @@ import AppKit
 protocol RunningCopy: AnyObject {
     var processIdentifier: pid_t { get }
     @discardableResult func activate(options: NSApplication.ActivationOptions) -> Bool
+    /// The cooperative request (macOS 14+): honoured when `application` is active or yielded.
+    @available(macOS 14, *)
+    @discardableResult func activate(from application: NSRunningApplication, options: NSApplication.ActivationOptions)
+        -> Bool
 }
 
 extension NSRunningApplication: RunningCopy {}
@@ -22,9 +26,9 @@ struct HandOverActivation {
     /// Called once this copy finished launching (it is the active app then, so it has
     /// something to yield).
     func bringForward(_ first: RunningCopy) {
-        if cooperative {
+        if cooperative, #available(macOS 14, *) {
             yield(first)
-            first.activate(options: [])
+            first.activate(from: NSRunningApplication.current, options: [])
         } else {
             first.activate(options: [.activateIgnoringOtherApps])
         }
