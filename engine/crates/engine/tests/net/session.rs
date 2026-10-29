@@ -33,9 +33,8 @@ use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use openlab_audio::{Mixer, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, Delete, DocId, ErrorCode, Outcome, PROTOCOL_VERSION, Request, RequestId,
-    RuntimeChange, ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server,
-    encode_client,
+    ClientMessage, Delete, DocId, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
+    ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server, encode_client,
 };
 use openlab_core::{Command, CueId, CueKind, CueProperty, Position, Workspace};
 use openlab_engine::control::{
@@ -937,11 +936,10 @@ impl Osc {
     }
 }
 
-/// Over the wire: undoing the add of a cue that is playing is answered
-/// `command_refused` with a message naming it, changes nothing, and the cue plays on; once it
-/// is stopped the same undo goes through.
+/// Over the wire: undoing the add of a cue that is playing is performed (as QLab 5 does) and
+/// stops the cue as a delete does.
 #[tokio::test]
-async fn an_undo_that_would_stop_a_playing_cue_is_refused_over_the_websocket() {
+async fn an_undo_that_removes_a_playing_cue_stops_it_over_the_websocket() {
     let ws = session_workspace();
     let show = Show::start(&ws, None);
     let (mut c, _) = Ws::connect(&show).await;
@@ -965,29 +963,11 @@ async fn an_undo_that_would_stop_a_playing_cue_is_refused_over_the_websocket() {
     .await;
     let revision = c.revision;
 
-    let refused = c.call(|id| ClientMessage::Undo { id }).await;
-    match &refused {
-        Outcome::Error(e) => {
-            assert_eq!(e.code, ErrorCode::CommandRefused);
-            assert!(
-                e.message.contains("cue 4 \"cue 4\" is running"),
-                "{}",
-                e.message
-            );
-        }
-        other => panic!("not refused: {other:?}"),
-    }
-    assert_eq!(c.revision, revision);
-    assert!(show.advance(1000).peak > 0.2, "cue 4 plays on");
-    let engine = show.engine_snapshot().await;
-    assert!(engine.workspace.find_cue(id(4)).is_some());
-    assert!(engine.document.can_undo);
-
-    c.transport(TransportAction::HardStop { cue: id(4) }).await;
-    show.advance(256);
-    c.wait("cue 4 idle", |c| c.state(4).is_none()).await;
     c.undo().await;
     assert_eq!(c.revision, revision + 1);
+    show.advance(1000);
+    c.wait("cue 4 idle", |c| c.state(4).is_none()).await;
+    assert!(show.advance(1000).peak == 0.0, "cue 4 stopped");
     let engine = show.engine_snapshot().await;
     assert!(engine.workspace.find_cue(id(4)).is_none());
     assert_consistent(&mut c, &engine).await;

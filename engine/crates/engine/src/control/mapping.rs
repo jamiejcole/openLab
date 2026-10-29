@@ -6,7 +6,9 @@
 //! operator's mapping is never touched.
 
 use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
-use openlab_core::{DeviceInfo, PatchId, PatchMapping};
+use openlab_core::{
+    CueId, CueKind, CueState, DeviceInfo, Input, PatchId, PatchMapping, SampleTime,
+};
 
 use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
@@ -28,8 +30,14 @@ impl Control {
         to: &ReplyTx,
     ) -> Flow {
         let devices = self.eng.device_list();
+        // Cleared: the cues playing through the patch, in every doc that shares its entry.
+        let cleared = mapping.is_none();
+        let mut workspace = None;
         let outcome = match self.cx_of(doc) {
-            Some(mut cx) => cx.apply_patch_mapping(patch, mapping, &devices),
+            Some(mut cx) => {
+                workspace = Some(cx.doc.ws.id);
+                cx.apply_patch_mapping(patch, mapping, &devices)
+            }
             None => Err(ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace")),
         };
         match outcome {
@@ -37,6 +45,9 @@ impl Control {
             Ok(()) => {
                 self.each_doc(|cx| {
                     let now = cx.now();
+                    if cleared && Some(cx.doc.ws.id) == workspace {
+                        cx.pause_cues_on(patch, now);
+                    }
                     for input in cx.sync_patches(false) {
                         cx.feed(input, now);
                     }
@@ -102,6 +113,24 @@ fn mapping_refusal(
 }
 
 impl DocCx<'_> {
+    /// The operator cleared `patch`'s device: every Audio cue playing through it (running or
+    /// fading) pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A device
+    /// that disappears by itself is device loss, not this (docs/control.md, Devices).
+    fn pause_cues_on(&mut self, patch: PatchId, now: SampleTime) {
+        let engine = &self.doc.engine;
+        let playing: Vec<CueId> = self
+            .doc
+            .ws
+            .cues()
+            .filter(|c| matches!(&c.kind, CueKind::Audio { patch: p, .. } if *p == patch))
+            .map(|c| c.id)
+            .filter(|id| matches!(engine.state(*id), CueState::Running | CueState::Fading))
+            .collect();
+        for cue in playing {
+            self.feed(Input::Pause { cue }, now);
+        }
+    }
+
     /// Validates and stores the request's mapping (`None` clears it: an explicit "unmapped"
     /// entry, so the default mapping leaves the patch alone) and saves the machine settings.
     fn apply_patch_mapping(

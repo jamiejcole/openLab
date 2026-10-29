@@ -10,7 +10,7 @@ use crate::cue_index::CueContainer;
 use crate::model::{CueId, Workspace};
 
 use super::playhead::{self, Playhead};
-use super::run::{Exit, Slot};
+use super::run::{Exit, Phase, Slot};
 use super::types::{Action, EngineWarning};
 use super::{Ctx, CueEngine, collect_ids, release};
 
@@ -83,6 +83,61 @@ impl CueEngine {
             self.drain(cx);
         }
         changed
+    }
+
+    /// A running (or paused) Wait or Fade whose duration was edited takes the new duration, as
+    /// QLab 5 does: its action ends at the new length from its start, or at once if it is past
+    /// that already (on the resume, if paused). A Fade keeps its rate: its ramps go on as
+    /// planned and it lets go of its levels at the new end, where its curve has got to
+    /// (`fade_finish`). One look per running Wait or Fade.
+    pub(super) fn follow_duration_edits(&mut self, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let tree = self.problems.tree();
+        let duplicates = tree.has_duplicates();
+        for (id, slot) in &mut self.slots {
+            let Slot::Active(run) = slot else { continue };
+            let (
+                Some(old),
+                Phase::Action {
+                    start,
+                    end: Some(_),
+                },
+            ) = (run.duration, run.phase)
+            else {
+                continue;
+            };
+            if run.is_broken() || run.stop_end.is_some() {
+                continue;
+            }
+            let cue = if duplicates {
+                ws.find_cue(*id)
+            } else {
+                tree.locate(ws, *id)
+            };
+            let duration = match cue.map(|c| &c.kind) {
+                Some(CueKind::Wait { duration } | CueKind::Fade { duration, .. }) => {
+                    cx.secs(*duration, &self.config)
+                }
+                _ => continue,
+            };
+            if duration == old {
+                continue;
+            }
+            run.duration = Some(duration);
+            // Not before now: a paused cue is frozen on its pause sample, and the resume moves
+            // its end on by the pause.
+            let floor = run.paused_at.unwrap_or(cx.now);
+            let end = start
+                .saturating_add(duration.saturating_sub(run.action_offset))
+                .max(floor);
+            run.phase = Phase::Action {
+                start,
+                end: Some(end),
+            };
+            if let Some(fade) = run.fade.as_mut() {
+                fade.retimed = true;
+            }
+        }
     }
 
     /// Follows edits to the cue lists. Returns whether any list's cues (or the set of lists)

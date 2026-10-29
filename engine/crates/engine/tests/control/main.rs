@@ -25,6 +25,6 @@ mod progress;
 mod protocol;
 mod shutdown;
 mod timing;
-mod undo_guard;
+mod undo_active;
 mod watch;
 mod wide_media;

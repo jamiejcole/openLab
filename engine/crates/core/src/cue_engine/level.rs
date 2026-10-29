@@ -74,8 +74,6 @@ pub(super) struct LevelEdit {
     pub param: LevelParam,
     /// What the voice plays it at under the new levels (linear gain, muted).
     pub to: Played,
-    /// The edit muted it (a mute always takes effect, also on a level a fade is moving).
-    pub muted: bool,
 }
 
 /// What a voice plays one parameter at: its gain and whether it is muted (a mute is gain 0).
@@ -129,11 +127,7 @@ pub(super) fn level_edits(
         .filter_map(|param| {
             let was = given.get(&param).copied().unwrap_or(SILENT);
             let is = now.get(&param).copied().unwrap_or(SILENT);
-            (was != is).then_some(LevelEdit {
-                param,
-                to: is,
-                muted: is.1 && !was.1,
-            })
+            (was != is).then_some(LevelEdit { param, to: is })
         })
         .collect()
 }
@@ -365,13 +359,11 @@ mod tests {
             vec![
                 LevelEdit {
                     param: LevelParam::Output(0),
-                    to: (0.0, true),
-                    muted: true
+                    to: (0.0, true)
                 },
                 LevelEdit {
                     param: LevelParam::Output(1),
-                    to: (0.0, false),
-                    muted: false
+                    to: (0.0, false)
                 },
             ]
         );
@@ -379,8 +371,7 @@ mod tests {
             edits(&old, &grown),
             vec![LevelEdit {
                 param: LevelParam::Output(2),
-                to: (db_to_gain(-3.0), false),
-                muted: false
+                to: (db_to_gain(-3.0), false)
             }]
         );
         // Crosspoints out of any voice's range are never sent.

@@ -5,11 +5,11 @@
 
 use std::path::PathBuf;
 
+use openlab_core::Command;
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, HotkeyPhase, LogKind, LogLevel, MAX_COALESCE_KEY, OkBody, Outcome,
-    Request, ResultData, ServerMessage, TransportAction,
+    ClientMessage, ErrorCode, HotkeyPhase, MAX_COALESCE_KEY, OkBody, Outcome, Request, ResultData,
+    ServerMessage, TransportAction,
 };
-use openlab_core::{Command, CommandError, Workspace};
 
 use super::docs::DocSource;
 use super::inbox::reply;
@@ -345,19 +345,13 @@ impl DocCx<'_> {
                 }
                 .map(Command::footprint)
                 .unwrap_or_default();
-                // A step that would stop a playing cue (an undo of its add, a redo of its
-                // delete) is refused and stays on its stack (M5.10d): whoever presses undo
-                // cannot predict that, and it must not cut a cue during a show.
-                let engine = &self.doc.engine;
-                let refuse = |ws: &Workspace| {
-                    engine
-                        .cue_an_edit_would_stop(ws)
-                        .map(CommandError::CueIsActive)
-                };
+                // A step that removes an active cue (an undo of its add, a redo of its delete)
+                // is performed, as QLab 5 does; the engine stops the cue as it stops a deleted
+                // one when it follows the edit.
                 let result = if undo {
-                    self.doc.history.undo_unless(&mut self.doc.ws, refuse)
+                    self.doc.history.undo(&mut self.doc.ws)
                 } else {
-                    self.doc.history.redo_unless(&mut self.doc.ws, refuse)
+                    self.doc.history.redo(&mut self.doc.ws)
                 };
                 match result {
                     Ok(true) => {
@@ -365,17 +359,6 @@ impl DocCx<'_> {
                         reply(to, ok(id, Some(self.doc.revision)));
                     }
                     Ok(false) => reply(to, ok(id, None)),
-                    Err(CommandError::CueIsActive(cue)) => {
-                        let message = self.active_cue_refusal(cue, undo);
-                        self.record(
-                            LogKind::Engine,
-                            LogLevel::Info,
-                            message.clone(),
-                            Some(cue),
-                            None,
-                        );
-                        fail(to, id, ErrorCode::CommandRefused, message);
-                    }
                     Err(e) => {
                         self.partly_changed(now, &e);
                         reply(to, refused(id, &e));

@@ -12,7 +12,9 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, PreshowReport, Request, ResultData, ServerMessage,
     TransportAction, WireResolution,
 };
-use openlab_core::{CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping, Workspace};
+use openlab_core::{
+    CueKind, CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping, Workspace,
+};
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::persist::load_machine_settings_checked;
@@ -136,23 +138,35 @@ fn setting_a_mapping_stores_it_and_moves_a_playing_cue() {
     );
 }
 
-/// Clearing the mapping under a playing cue makes the patch `Unmapped`. The cue is not
-/// stopped or broken (it is running, as after any device edit); its slot ramps to silence on
-/// every output, and mapping the patch again brings the sound back to the same running cue.
+/// Clearing the mapping under a playing cue makes the patch `Unmapped` and pauses the cue
+/// (QLab 5.5.3: setting the device to none shows the cue paused). Mapping the patch again does
+/// not resume it; a Resume plays it on, on the new outputs. A cue on another patch plays on.
 #[test]
-fn clearing_a_mapping_while_a_cue_plays_silences_it_and_keeps_it_running() {
+fn clearing_a_mapping_while_a_cue_plays_pauses_it_and_remapping_does_not_resume_it() {
     let env = env();
     let path = wav(&dc(40_000, 0.5));
-    let ws = workspace(vec![audio(1, &path, 0)]);
+    let other = PatchId(uuid::Uuid::from_u128(77));
+    let mut ws = workspace(vec![audio(1, &path, 0), audio(2, &path, 0)]);
+    let mut second = ws.patches[0].clone();
+    second.id = other;
+    second.name = "Other".into();
+    ws.patches.push(second);
+    if let CueKind::Audio { patch, .. } = &mut ws.cue_lists[0].cues[1].kind {
+        *patch = other;
+    }
     let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Offline", 4)]));
     s.transport(TransportAction::Start { cue: id(1) });
+    s.transport(TransportAction::Start { cue: id(2) });
     s.run(500);
     assert!(last_nonzero(&s.channel(0)).is_some_and(|f| f > 400));
 
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(stored(&s, &ws), None);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
-    // Past the de-zipper ramp: silent on every output while the cue is still running.
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    // Out of the way of the silence checks below.
+    s.transport(TransportAction::HardStop { cue: id(2) });
+    // Past the pause's declick: silent on every output, still paused.
     s.run(2000);
     let after_ramp = s.channel(0).len();
     s.run(500);
@@ -160,10 +174,10 @@ fn clearing_a_mapping_while_a_cue_plays_silences_it_and_keeps_it_running() {
         let out = s.channel(ch);
         assert!(
             out[after_ramp..].iter().all(|&x| x == 0.0),
-            "output {ch} still sounds after the ramp"
+            "output {ch} still sounds after the pause"
         );
     }
-    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     let p = preshow(&mut s)
         .patches
         .into_iter()
@@ -172,11 +186,18 @@ fn clearing_a_mapping_while_a_cue_plays_silences_it_and_keeps_it_running() {
     assert!(!p.mapped);
     assert_eq!(p.resolution, Some(WireResolution::Unmapped));
 
-    // Mapping it again brings the same running cue back on the new outputs.
+    // Mapping it again leaves the cue paused and silent.
     assert_eq!(
         set(&mut s, patch_id(), Some(mapping("Offline", &[2, 3]))),
         Ok(())
     );
+    let before = s.channel(2).len();
+    s.run(1000);
+    assert!(s.channel(2)[before..].iter().all(|&x| x == 0.0));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+
+    // The operator's Resume plays it on, on the new outputs.
+    s.transport(TransportAction::Resume { cue: id(1) });
     let before = s.channel(2).len();
     s.run(1000);
     assert!(

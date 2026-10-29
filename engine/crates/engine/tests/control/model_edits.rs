@@ -800,7 +800,7 @@ fn removing_a_patch_a_playing_cue_uses_is_still_refused_as_used() {
 /// M5.6b: a Wait's duration and a Load cue's time edited through the control loop (as the
 /// inspector sends them) reach clients as `model_changed`, a bad value or a cue without the
 /// field is refused with nothing sent, undo restores, and a running Wait whose duration is
-/// edited ends on the end it started with.
+/// edited takes the new duration (QLab 5).
 #[test]
 fn duration_and_load_time_edits_go_through_the_engine_and_undo() {
     let wait = cue(1, CueKind::Wait { duration: 1.0 });
@@ -843,19 +843,19 @@ fn duration_and_load_time_edits_go_through_the_engine_and_undo() {
     assert_eq!(mirror.catch_up(&mut s), 2);
     assert_eq!(s.control().workspace(), &before);
 
-    // The Wait (1 s) is running when it is made 10 s long: it still ends after 1 s (the idle
-    // state is seen at block granularity, so within a block of it).
+    // The Wait (1 s) is running when it is made 3 s long: it ends after 3 s (the idle state is
+    // seen at block granularity, so within a block of it).
     let started = go(&mut s);
     s.step();
     assert_eq!(
         s.control().engine().state(id(1)),
         openlab_core::CueState::Running
     );
-    command(&mut s, set(1, CueProperty::Duration { value: 10.0 }));
+    command(&mut s, set(1, CueProperty::Duration { value: 3.0 }));
     let idle = run_until_idle(&mut s, id(1), u64::from(RATE) * 5);
     let ran = idle.abs_diff(started);
     assert!(
-        ran.abs_diff(u64::from(RATE)) <= u64::from(RATE) / 10,
+        ran.abs_diff(u64::from(RATE) * 3) <= u64::from(RATE) / 10,
         "ran {ran} frames"
     );
 }
