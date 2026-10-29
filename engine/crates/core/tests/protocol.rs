@@ -435,6 +435,29 @@ fn fixtures() -> Vec<(String, Sample)> {
             }),
         );
     }
+    // A Group's mode, every variant (the Mac app's encoding is checked against these).
+    for mode in [
+        GroupMode::Timeline,
+        GroupMode::StartFirstAndEnter,
+        GroupMode::StartFirstAndGoToNext,
+        GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        GroupMode::StartRandom,
+    ] {
+        add(
+            &format!("command_set_group_mode_{}", tag(&mode)),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property: CueProperty::GroupMode { value: mode },
+                }),
+                coalesce: None,
+            }),
+        );
+    }
     for (name, command) in model_commands() {
         add(
             &format!("command_{name}"),

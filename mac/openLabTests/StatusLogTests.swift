@@ -324,6 +324,83 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(tails(), 2)
     }
 
+    private func pushEntry(_ rig: Rig, _ seq: Int, _ message: String, level: String = "info") {
+        rig.engine.push(
+            #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"\#(level)","kind":"cue_fail","message":"\#(message)"}}"#
+        )
+    }
+
+    private func pushStatus(_ rig: Rig, logSeq: Int) {
+        rig.engine.push(
+            #"{"type":"status","status":{"cpu_percent":1,"engine_load":0.1,"xruns":0,"disk":{"streams":0,"underrun_frames":0,"healthy":true},"device":{"name":"d","state":"ok","sample_rate":48000,"block_frames":256,"channels":2,"latency_ms":9},"log_dropped":0,"log_seq":\#(logSeq),"network_output_disabled":false}}"#
+        )
+    }
+
+    /// #312: an engine record pushed as `log_entry` shows in an open window without a refresh,
+    /// once (a replay at or below a number already shown adds nothing).
+    func testAPushedLogEntryAppearsInAnOpenLogWindow() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        log.showWindow(nil)
+        defer { log.close() }
+        await settle()
+        pushEntry(rig, 1, "cue 3 broke")
+        await assertEventually { log.rows.contains { $0.message == "cue 3 broke" } }
+        XCTAssertEqual(log.rows.last?.kind, "cue_fail")
+        XCTAssertFalse(try XCTUnwrap(log.rows.last).time.isEmpty)
+        pushEntry(rig, 1, "cue 3 broke")
+        pushEntry(rig, 2, "cue 4 broke")
+        await assertEventually { log.rows.contains { $0.message == "cue 4 broke" } }
+        XCTAssertEqual(log.rows.filter { $0.message == "cue 3 broke" }.count, 1)
+        // The engine also sends the same record as a `log` notice: shown once, in either order.
+        rig.store.receive(.log(.info, "cue 4 broke"))
+        rig.store.receive(.log(.info, "later notice"))
+        pushEntry(rig, 3, "later notice")
+        await assertEventually { log.rows.filter { $0.message == "later notice" }.count == 1 }
+        XCTAssertEqual(log.rows.filter { $0.message == "cue 4 broke" }.count, 1)
+    }
+
+    /// #312: a push the hub dropped is noticed from `status.log_seq` alone (nothing follows it),
+    /// and the re-read is one tail read.
+    func testStatusLogSeqAboveTheLastHeardRereadsTheTailOnce() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        log.showWindow(nil)
+        defer { log.close() }
+        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
+        pushEntry(rig, 4, "heard")
+        await settle()
+        let before = tails()
+        pushStatus(rig, logSeq: 4)
+        await settle()
+        XCTAssertEqual(tails(), before, "status agrees with what was heard")
+        pushStatus(rig, logSeq: 5)
+        await assertEventually { tails() == before + 1 }
+        await settle()
+        XCTAssertEqual(tails(), before + 1)
+    }
+
+    /// #312: a same-run resync keeps the record number (a gap after it still shows); a new
+    /// connection starts over.
+    func testLogSeqSurvivesASnapshotButNotAWelcome() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        pushEntry(rig, 7, "m")
+        await assertEventually { rig.store.logSeq == 7 }
+        guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
+            return XCTFail("welcome fixture")
+        }
+        rig.store.receive(.snapshot(snapshot))
+        XCTAssertEqual(rig.store.logSeq, 7)
+        rig.store.receive(.welcome(protocolVersion: 1, snapshot: snapshot))
+        XCTAssertEqual(rig.store.logSeq, 0)
+    }
+
     func testDroppedRecordsAreMentioned() async throws {
         let rig = try Rig()
         let log = LogWindowController(store: rig.store)

@@ -52,6 +52,11 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private var tailMark = 0
     private var sub: AnyCancellable?
     private var gapSub: AnyCancellable?
+    private var pushSub: AnyCancellable?
+    /// Records pushed (`log_entry`) above the tail's `seq`, oldest first; `tailSeq`: the newest
+    /// record number the tail held.
+    private var pushed: [(seq: UInt64, row: Row)] = []
+    private var tailSeq: UInt64 = 0
     /// A gap re-read is out; `gapAgain`: another gap came meanwhile (one more re-read follows).
     private var gapRefreshing = false
     private var gapAgain = false
@@ -85,6 +90,9 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
                 self?.storeEntries = entries
                 self?.rebuild()
             }
+        }
+        pushSub = store.logPushes.sink { [weak self] push in
+            MainActor.assumeIsolated { self?.append(seq: push.seq, entry: push.entry) }
         }
         // Records the engine made but did not push: an open window reads the tail again.
         gapSub = store.logGaps.sink { [weak self] in
@@ -124,7 +132,8 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         // those from before it can be.
         let mark = store.logCount
         switch await store.logTail(max: UInt32(Self.maxRows)) {
-        case .success(let result): apply(tail: result.entries, dropped: result.dropped, mark: mark)
+        case .success(let result):
+            apply(tail: result.entries, dropped: result.dropped, mark: mark, seq: result.seq)
         case .failure:
             tailFailed = true
             rebuild()
@@ -132,15 +141,27 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     }
 
     /// `mark`: the store's `logCount` when the tail was asked for.
-    func apply(tail entries: [ShowLogEntry], dropped: UInt64, mark: Int? = nil) {
+    func apply(tail entries: [ShowLogEntry], dropped: UInt64, mark: Int? = nil, seq: UInt64 = 0) {
         tailMark = mark ?? store.logCount
-        tail = entries.map { e in
-            Row(
-                time: timeFormatter.string(from: Date(timeIntervalSince1970: Double(e.timeMs) / 1000)),
-                level: e.level, kind: e.kind.raw, message: e.message)
-        }
+        tail = entries.map(row)
+        tailSeq = seq
+        pushed.removeAll { $0.seq <= seq }
         self.dropped = dropped
         tailFailed = false
+        rebuild()
+    }
+
+    private func row(_ e: ShowLogEntry) -> Row {
+        Row(
+            time: timeFormatter.string(from: Date(timeIntervalSince1970: Double(e.timeMs) / 1000)),
+            level: e.level, kind: e.kind.raw, message: e.message)
+    }
+
+    /// A pushed record: one at or below the tail's (or an earlier push's) number is already shown.
+    private func append(seq: UInt64, entry: ShowLogEntry) {
+        guard seq > tailSeq, seq > (pushed.last?.seq ?? 0) else { return }
+        pushed.append((seq, row(entry)))
+        if pushed.count > Self.maxRows { pushed.removeFirst(pushed.count - Self.maxRows) }
         rebuild()
     }
 
@@ -151,16 +172,24 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private func rebuild() {
         var held: [String: Int] = [:]
         for r in tail { held["\(r.level.rawValue)\u{0}\(r.message)", default: 0] += 1 }
+        // A pushed record may come before or after its `log` notice: it cancels one of any age.
+        var pushedHeld: [String: Int] = [:]
+        for p in pushed { pushedHeld["\(p.row.level.rawValue)\u{0}\(p.row.message)", default: 0] += 1 }
         let first = store.logCount - storeEntries.count
         let extra = storeEntries.enumerated().filter { i, e in
-            guard first + i < tailMark else { return true }
             let key = "\(e.level.rawValue)\u{0}\(e.message)"
+            if let n = pushedHeld[key], n > 0 {
+                pushedHeld[key] = n - 1
+                return false
+            }
+            guard first + i < tailMark else { return true }
             guard let n = held[key], n > 0 else { return true }
             held[key] = n - 1
             return false
         }.map(\.element)
         rows = Array(
-            (tail + extra.map { Row(time: "", level: $0.level, kind: "", message: $0.message) }).suffix(Self.maxRows))
+            (tail + pushed.map(\.row) + extra.map { Row(time: "", level: $0.level, kind: "", message: $0.message) })
+                .suffix(Self.maxRows))
         let wasAtBottom = isAtBottom
         visible = rows.filter { $0.level.severity >= minimumLevel.severity }
         guard isViewLoaded else { return }

@@ -60,6 +60,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// A `log_entry` arrived more than one past the last: records were not pushed, so a live view
     /// reads `log_tail` again (docs/protocol.md "Show log entries and status").
     let logGaps = PassthroughSubject<Void, Never>()
+    /// Every `log_entry` heard, in arrival order: an open log window appends those above the tail's `seq`.
+    let logPushes = PassthroughSubject<(seq: UInt64, entry: ShowLogEntry), Never>()
     @Published private(set) var connectionState: ConnectionState = .idle
     /// This workspace's Show Mode (SM-01), as its window shows it. The engine is told so it can
     /// hold off sleep (SM-07); its `document.show_mode` is read back and wins when it changes.
@@ -148,12 +150,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .request(id: $0, .relink(folder: folder)) }
     }
     /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
-    func logTail(max: UInt32? = nil) async -> Result<(entries: [ShowLogEntry], dropped: UInt64), EngineError> {
+    func logTail(max: UInt32? = nil) async -> Result<
+        (entries: [ShowLogEntry], dropped: UInt64, seq: UInt64), EngineError
+    > {
         switch await client.send({ .request(id: $0, .logTail(max: max)) }) {
         case .success(let ok):
             if case .logTail(let entries, let dropped, let seq)? = ok.data {
                 logSeq = Swift.max(logSeq, seq)
-                return .success((entries, dropped))
+                return .success((entries, dropped, seq))
             }
             return .failure(.encoding("log_tail result has no log_tail data"))
         case .failure(let e): return .failure(e)
@@ -219,7 +223,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @discardableResult
     func receive(_ message: ServerMessage) -> ApplyOutcome {
         switch message {
-        case .welcome(_, let snapshot), .snapshot(let snapshot):
+        case .welcome(_, let snapshot):
+            // A new connection may be a new engine run, whose records count from 1 again; a same-run
+            // resync (`snapshot`) keeps the number, or the first entry after it could not show a gap.
+            logSeq = 0
+            replace(with: snapshot)
+        case .snapshot(let snapshot):
             replace(with: snapshot)
         case .modelChanged(let rev, let upserts, let deletes):
             return applyModelChange(revision: rev, upserts: upserts, deletes: deletes)
@@ -250,10 +259,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
             status = s
+            // The hub drops a push for a slow client without telling it: the newest record's number
+            // in `status` is how a trailing loss is noticed (docs/protocol.md "Show log entries and status").
+            if s.logSeq > logSeq { logGaps.send() }
         case .closed(let doc):
             if doc == client.workspace { onClosed?() }
-        case .logEntry(let seq, _):
-            // The record itself is shown from `log_tail`; its number tells whether any were lost.
+        case .logEntry(let seq, let entry):
+            // A live view appends the record; its number tells whether any were lost.
+            logPushes.send((seq, entry))
             if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send() }  // no `+ 1`: a hostile u64::MAX
             logSeq = Swift.max(logSeq, seq)
         case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
@@ -277,8 +290,6 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         warnings = s.warnings
         progress = [:]
         waits = [:]
-        // A new connection may be a new engine run, whose records count from 1 again.
-        logSeq = 0
         runtimeWarnings = []
         // A new connection's health is unknown until its first `status`.
         status = nil
