@@ -200,6 +200,7 @@ fn a_raw_clipboard_becomes_a_paste_of_fresh_ids_with_converted_media() {
     let command = Command::PasteClipboard {
         at: pos(),
         cues: vec![audio_at(1, "/Show/a.wav"), cue(2, CueKind::Memo)],
+        source_dir: None,
     };
     let Command::Paste { cues, .. } = prepared(command, Some("/Show"), POSIX) else {
         panic!("paste");
@@ -217,6 +218,7 @@ fn a_prepared_paste_applies_and_an_unprepared_one_is_refused() {
     let raw = Command::PasteClipboard {
         at: pos(),
         cues: vec![cue(1, CueKind::Memo)],
+        source_dir: None,
     };
     assert_eq!(ws.apply(raw.clone()), Err(CommandError::NotPrepared));
     assert!(ws.cue_lists[0].cues.is_empty());
@@ -269,6 +271,7 @@ fn a_nested_clipboard_from_another_workspace_is_repaired_for_this_one() {
     let command = Command::PasteClipboard {
         at: pos(),
         cues: clipboard,
+        source_dir: None,
     };
     let mut next = 1000;
     let Command::Paste { cues, .. } = command
@@ -321,6 +324,7 @@ fn a_relative_path_leaving_the_show_folder_is_kept_when_pasted_or_edited() {
     let paste = Command::PasteClipboard {
         at: pos(),
         cues: vec![audio_at(1, "../Audio/x.wav")],
+        source_dir: None,
     };
     let Command::Paste { cues, .. } = prepared(paste, Some("/Show"), POSIX) else {
         panic!("paste");
@@ -356,4 +360,101 @@ fn a_path_not_literally_under_the_show_folder_stays_absolute_as_sent() {
         added_media(add("/Vol/Show/a/x.wav"), Some("/Vol/Show"), POSIX),
         "a/x.wav"
     );
+}
+
+fn paste_from(source: Option<&str>, media: &str, dest: Option<&str>, style: PathStyle) -> String {
+    let command = Command::PasteClipboard {
+        at: pos(),
+        cues: vec![audio_at(1, media)],
+        source_dir: source.map(str::to_owned),
+    };
+    let Command::Paste { cues, .. } = prepared(command, dest, style) else {
+        panic!("paste");
+    };
+    self::media(&cues[0]).to_owned()
+}
+
+#[test]
+fn a_relative_path_pasted_into_a_show_in_another_folder_keeps_naming_its_file() {
+    // Show A's "media/a.wav" is /A/media/a.wav; B lives elsewhere, so it must go absolute.
+    assert_eq!(
+        paste_from(Some("/A"), "media/a.wav", Some("/B"), POSIX),
+        "/A/media/a.wav"
+    );
+    // Climbing out of the source folder resolves lexically.
+    assert_eq!(
+        paste_from(Some("/A/show"), "../lib/a.wav", Some("/B"), POSIX),
+        "/A/lib/a.wav"
+    );
+}
+
+#[test]
+fn a_pasted_file_inside_the_destination_folder_is_stored_relative_again() {
+    // Source folder is a sub-folder of the destination.
+    assert_eq!(
+        paste_from(Some("/B/sub"), "a.wav", Some("/B"), POSIX),
+        "sub/a.wav"
+    );
+    // Same folder: the path is untouched, `..` and all.
+    assert_eq!(
+        paste_from(Some("/B"), "../lib/a.wav", Some("/B"), POSIX),
+        "../lib/a.wav"
+    );
+}
+
+#[test]
+fn pasting_into_an_untitled_show_keeps_the_resolved_absolute_path() {
+    assert_eq!(
+        paste_from(Some("/A"), "media/a.wav", None, POSIX),
+        "/A/media/a.wav"
+    );
+}
+
+#[test]
+fn a_clipboard_from_an_untitled_show_is_left_as_it_is() {
+    // Absolute paths stay absolute outside the destination, relative inside it.
+    assert_eq!(
+        paste_from(None, "/Lib/a.wav", Some("/B"), POSIX),
+        "/Lib/a.wav"
+    );
+    assert_eq!(paste_from(None, "/B/a.wav", Some("/B"), POSIX), "a.wav");
+    // Nothing to resolve against: relative stays as written.
+    assert_eq!(
+        paste_from(None, "media/a.wav", Some("/B"), POSIX),
+        "media/a.wav"
+    );
+    // A relative source folder is no folder.
+    assert_eq!(
+        paste_from(Some("A"), "media/a.wav", Some("/B"), POSIX),
+        "media/a.wav"
+    );
+}
+
+#[test]
+fn windows_source_folders_and_case_variants() {
+    let w = PathStyle::Windows;
+    assert_eq!(
+        paste_from(Some(r"C:\Show A"), r"media\a.wav", Some(r"D:\Show B"), w),
+        "C:/Show A/media/a.wav"
+    );
+    // No case folding: a differently-cased destination folder is not "inside".
+    assert_eq!(
+        paste_from(Some(r"C:\Show A"), "a.wav", Some(r"c:\show a\x"), w),
+        "C:/Show A/a.wav"
+    );
+}
+
+#[test]
+fn nfd_names_and_backslashes_in_a_posix_source_are_kept_as_names() {
+    // NFD "e" + acute in the source folder becomes NFC in the stored absolute path; a backslash
+    // is a file-name character on macOS.
+    assert_eq!(
+        paste_from(Some("/A/Cafe\u{301}"), "Door\\Slam.wav", Some("/B"), POSIX),
+        "/A/Caf\u{e9}/Door\\Slam.wav"
+    );
+}
+
+#[test]
+fn an_empty_media_path_is_left_alone_when_pasting_from_a_folder() {
+    assert_eq!(paste_from(Some("/A"), "", Some("/B"), POSIX), "");
 }

@@ -252,6 +252,7 @@ fn raw_paste_gives_fresh_ids_follows_targets_and_repairs_what_the_show_lacks() {
         Command::PasteClipboard {
             at: at(1),
             cues: clipboard(),
+            source_dir: None,
         },
     ));
     let ws = s.control().workspace();
@@ -281,6 +282,7 @@ fn pasting_the_same_clipboard_twice_never_repeats_an_id() {
             Command::PasteClipboard {
                 at: at(0),
                 cues: clipboard(),
+                source_dir: None,
             },
         ));
     }
@@ -301,6 +303,7 @@ fn raw_paste_stores_absolute_media_inside_the_show_folder_relative() {
         Command::PasteClipboard {
             at: at(0),
             cues: vec![audio(500, &inside, 0)],
+            source_dir: None,
         },
     ));
     let pasted = &s.control().workspace().cue_lists[0].cues[0];
@@ -328,6 +331,7 @@ fn a_clipboard_nested_too_deep_is_refused_and_changes_nothing() {
         Command::PasteClipboard {
             at: at(0),
             cues: vec![deepest],
+            source_dir: None,
         },
     );
     assert_eq!(error_code(&replies), ErrorCode::CommandRefused);
@@ -341,7 +345,92 @@ fn a_paste_clipboard_that_reaches_apply_unprepared_is_refused_not_a_panic() {
         .apply(Command::PasteClipboard {
             at: at(0),
             cues: clipboard(),
+            source_dir: None,
         })
         .unwrap_err();
     assert!(matches!(error, openlab_core::CommandError::NotPrepared));
+}
+
+fn portable(p: &Path) -> String {
+    openlab_core::to_portable(p.to_str().unwrap(), openlab_core::PathStyle::host())
+}
+
+fn paste_media(s: &mut OfflineShow, media: &str, source_dir: Option<&Path>) {
+    let mut c = audio(500, Path::new("x.wav"), 0);
+    if let CueKind::Audio { media: m, .. } = &mut c.kind {
+        *m = Some(MediaRef::new(media));
+    }
+    ok(&send(
+        s,
+        Command::PasteClipboard {
+            at: at(0),
+            cues: vec![c],
+            source_dir: source_dir.map(portable),
+        },
+    ));
+}
+
+fn first_media(s: &OfflineShow) -> String {
+    match &s.control().workspace().cue_lists[0].cues[0].kind {
+        CueKind::Audio { media, .. } => media.as_ref().unwrap().as_str().to_owned(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_cue_pasted_from_a_show_in_another_folder_keeps_playing_its_file() {
+    let env = common::env();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(source.path().join("media")).unwrap();
+    let file = source.path().join("media").join("a.wav");
+    std::fs::write(&file, b"x").unwrap();
+    let mut s = saved_show(&env);
+    paste_media(&mut s, "media/a.wav", Some(source.path()));
+    let stored = first_media(&s);
+    assert_eq!(
+        stored,
+        portable(&file),
+        "absolute: the destination is elsewhere"
+    );
+    assert!(Path::new(&stored).exists());
+
+    // Undo removes the paste in one step.
+    let undo_id = s.request_id();
+    ok(&s.send(ClientMessage::Undo { id: undo_id }));
+    assert_eq!(s.control().workspace().cue_lists[0].cues.len(), 1);
+}
+
+#[test]
+fn a_cue_pasted_back_into_a_show_whose_folder_holds_the_file_goes_relative() {
+    let env = common::env();
+    let mut s = saved_show(&env);
+    // The source show is a sub-folder of this show's folder.
+    let source = env.show_dir().join("sub");
+    paste_media(&mut s, "a.wav", Some(&source));
+    assert_eq!(first_media(&s), "sub/a.wav");
+}
+
+#[test]
+fn pasting_between_untitled_shows_keeps_the_absolute_path_() {
+    let env = common::env();
+    let inside = env.show_dir().join("media").join("a.wav");
+    let outside = env.root.path().join("elsewhere").join("b.wav");
+    let mut s = show(workspace(vec![]));
+    paste_media(&mut s, &portable(&inside), None);
+    assert_eq!(first_media(&s), portable(&inside));
+    paste_media(&mut s, &portable(&outside), None);
+    assert_eq!(first_media(&s), portable(&outside));
+}
+
+#[test]
+fn a_hostile_source_folder_is_ignored_not_trusted() {
+    let env = common::env();
+    let mut s = saved_show(&env);
+    // Relative, empty, and a bare root: none may crash or send a relative path outside.
+    paste_media(&mut s, "a.wav", Some(Path::new("")));
+    assert_eq!(first_media(&s), "a.wav");
+    paste_media(&mut s, "a.wav", Some(Path::new("not/absolute")));
+    assert_eq!(first_media(&s), "a.wav");
+    paste_media(&mut s, "../../x.wav", Some(Path::new("/")));
+    assert_eq!(first_media(&s), "/x.wav");
 }

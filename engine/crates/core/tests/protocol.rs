@@ -404,6 +404,23 @@ fn fixtures() -> Vec<(String, Sample)> {
                     index: 2,
                 },
                 cues: vec![sample_cue()],
+                source_dir: None,
+            }),
+            coalesce: None,
+        }),
+    );
+    add(
+        "command_paste_clipboard_from_folder",
+        client(ClientMessage::Command {
+            id: rid(5),
+            command: Box::new(Command::PasteClipboard {
+                at: Position {
+                    list: list(),
+                    parent: Some(cue_id(10)),
+                    index: 2,
+                },
+                cues: vec![sample_cue()],
+                source_dir: Some("/Volumes/Show A".to_owned()),
             }),
             coalesce: None,
         }),

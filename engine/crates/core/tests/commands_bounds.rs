@@ -106,6 +106,7 @@ fn an_oversize_network_message_is_refused_on_every_path_that_makes_one() {
             Command::PasteClipboard {
                 at: at_end(),
                 cues: vec![new.clone()],
+                source_dir: None,
             },
         );
         // Inside a pasted group too.
@@ -149,6 +150,7 @@ fn an_oversize_name_or_notes_is_refused_on_every_path() {
             Command::PasteClipboard {
                 at: at_end(),
                 cues: vec![new.clone()],
+                source_dir: None,
             },
         ] {
             assert_refused(&w, command);
