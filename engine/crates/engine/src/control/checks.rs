@@ -408,20 +408,9 @@ fn audio_spec(c: &Cue) -> Option<(&str, PlanSpec<'_>)> {
     ))
 }
 
-/// Every cue in `cues`, depth first. Iterative, so nesting depth cannot overflow the stack.
+/// Every cue in `cues`, depth first ([`openlab_core::descendants`]).
 fn each_cue<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
-    let mut stack: Vec<std::slice::Iter<'a, Cue>> = vec![cues.iter()];
-    while let Some(level) = stack.last_mut() {
-        match level.next() {
-            Some(cue) => {
-                f(cue);
-                stack.push(cue.children().iter());
-            }
-            None => {
-                stack.pop();
-            }
-        }
-    }
+    openlab_core::descendants(cues).for_each(f);
 }
 
 fn marks(slices: &[SliceMarker]) -> Vec<(u64, u32)> {

@@ -27,7 +27,7 @@ impl CueEngine {
         for list in &cx.ws.cue_lists {
             for top in &list.cues {
                 let mut tree = Vec::new();
-                super::each_cue(std::slice::from_ref(top), |c| {
+                crate::tree::descendants(std::slice::from_ref(top)).for_each(|c| {
                     if seen.insert(c.id) {
                         tree.push(c.id);
                     }
