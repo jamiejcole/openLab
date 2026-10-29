@@ -156,9 +156,19 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     func undo() async -> Result<OkBody, EngineError> { await client.send { .undo(id: $0) } }
     func redo() async -> Result<OkBody, EngineError> { await client.send { .redo(id: $0) } }
-    func save() async -> Result<OkBody, EngineError> { await client.send { .request(id: $0, .save) } }
+    func save() async -> Result<OkBody, EngineError> {
+        saved(await client.send { .request(id: $0, .save) })
+    }
     func saveAs(path: String) async -> Result<OkBody, EngineError> {
-        await client.send { .request(id: $0, .saveAs(path: path)) }
+        saved(await client.send { .request(id: $0, .saveAs(path: path)) })
+    }
+    /// The autosaves this window's show is known to be as new as (EngineSession keeps it up).
+    var autosaveCover = AutosaveCover()
+    /// A saved show holds everything autosaved before now: no set-aside autosave of it from
+    /// before is offered again.
+    private func saved(_ result: Result<OkBody, EngineError>) -> Result<OkBody, EngineError> {
+        if case .success = result { autosaveCover.coverOwn(upTo: Int64(Date().timeIntervalSince1970 * 1000)) }
+        return result
     }
     func relink(folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder)) }

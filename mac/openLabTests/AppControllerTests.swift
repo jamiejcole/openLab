@@ -56,8 +56,8 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     var restoreAutosaves = true
-    func offerAutosave(name: String, modifiedMs: Int64?) -> Bool {
-        log.append("autosave:\(name)")
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+        log.append(setAside ? "setAsideAutosave:\(name)" : "autosave:\(name)")
         return restoreAutosaves
     }
 }
