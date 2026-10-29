@@ -7,7 +7,7 @@ use crate::cue::{CueKind, GroupMode};
 use crate::model::{CueId, Workspace};
 
 use super::group;
-use super::run::{DevampWait, Exit, Phase, Slot, Voice};
+use super::run::{BrokePaused, DevampWait, Exit, Phase, Slot, Voice};
 use super::time::SampleTime;
 use super::types::{BrokenReason, RunId};
 use super::{Ctx, CueEngine, release};
@@ -208,12 +208,19 @@ impl CueEngine {
                 // Paused: a paused show starts nothing, so the action's end is held until the
                 // resume (as a deadline on the pause sample, which the resume moves to the
                 // resume sample), and with it what that end starts: a skipped cue's follow, or
-                // the next child of a playlist it was started in on its own (which has no run to
-                // hold it, as a running playlist does: `GroupRun::advance`). A stop or panic
-                // cancels it.
+                // the next child of a playlist it is in. A playlist child shows `paused` until
+                // then (QLab 5.5.3) and its playlist hears of the failure on the resume: a
+                // running one halts there, as for a child that broke while playing. A stop or
+                // panic cancels it.
+                let playlist = in_playlist(cx.ws, cue);
                 if let (Some(paused), Phase::Action { start, .. }) = (run.paused_at, run.phase)
-                    && (follow || in_runless_playlist(self, cue, cx.ws))
+                    && (follow || playlist)
                 {
+                    if playlist {
+                        run.broke_paused = Some(BrokePaused {
+                            halt: halt.map(|end| end.map(|e| e.saturating_sub(paused))),
+                        });
+                    }
                     run.follow = follow;
                     run.phase = Phase::Action {
                         start,
@@ -252,13 +259,23 @@ impl CueEngine {
 /// carries on (`follow_through`).
 fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
     group::ancestors(ws, cue).first().is_some_and(|parent| {
-        !matches!(engine.slots.get(parent), Some(Slot::Active(_)))
-            && matches!(
-                ws.find_cue(*parent).map(|g| &g.kind),
-                Some(CueKind::Group {
-                    mode: GroupMode::Playlist { .. },
-                    ..
-                })
-            )
+        !matches!(engine.slots.get(parent), Some(Slot::Active(_))) && is_playlist(ws, *parent)
     })
+}
+
+/// Whether `cue` is a child of a playlist group (running or not).
+fn in_playlist(ws: &Workspace, cue: CueId) -> bool {
+    group::ancestors(ws, cue)
+        .first()
+        .is_some_and(|parent| is_playlist(ws, *parent))
+}
+
+fn is_playlist(ws: &Workspace, group: CueId) -> bool {
+    matches!(
+        ws.find_cue(group).map(|g| &g.kind),
+        Some(CueKind::Group {
+            mode: GroupMode::Playlist { .. },
+            ..
+        })
+    )
 }

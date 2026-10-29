@@ -104,6 +104,8 @@ impl CueEngine {
             run.length = None;
             let follow = run.follow;
             let seq = run.seq;
+            // A playlist child that broke while paused: its playlist hears of it now.
+            let halt = run.broke_paused.take().and_then(|b| b.halt);
             if run.fade.is_some() {
                 self.fade_finish(cue, at, cx);
                 // Stopping its target stopped the Fade cue too (it is inside the group); that
@@ -116,6 +118,9 @@ impl CueEngine {
             self.report(cue, before, at, cx);
             if follow {
                 self.continue_after(cue, at, cx);
+            }
+            if let Some(rest) = halt {
+                self.halt_playlist(cue, seq, rest.map(|r| at.saturating_add(r)), cx);
             }
             self.child_action_done(cue, seq, at, cx);
         }

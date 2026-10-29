@@ -119,6 +119,9 @@ pub(super) struct Run {
     /// Broke (`broken`) before its voice produced any audio (`Input::StartFailed`): skipped,
     /// as a cue with static problems is, so it still follows and its group is not failed.
     pub unplayed: bool,
+    /// A playlist child that broke while paused (QLab 5.5.3): it reports `paused` until it
+    /// resumes, then `broken`; its end, held for the resume, carries out the failure there.
+    pub broke_paused: Option<BrokePaused>,
     /// Stopping because of a Panic. Such a cue is no longer active for the second-trigger rule:
     /// a trigger hard-stops it and starts it afresh (the operator recovering from a panic).
     pub panicked: bool,
@@ -153,6 +156,15 @@ pub(super) struct Given {
     pub model: CueLevels,
     /// Per parameter, the gain and mute the voice was given (missing: silent).
     pub played: BTreeMap<LevelParam, Played>,
+}
+
+/// What a playlist child that broke while paused still owes its playlist on the resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BrokePaused {
+    /// It broke while playing: a running playlist around it halts on the resume, its action
+    /// ending this many samples after the resume (the child's nominal end, moved on by the
+    /// pause; `None`: not known, so it ends then). `None` for a child skipped before it played.
+    pub halt: Option<Option<SampleTime>>,
 }
 
 /// A devamp sent to a cue's voice by a Devamp cue.
@@ -294,6 +306,7 @@ impl Run {
             broken: None,
             static_broken: false,
             unplayed: false,
+            broke_paused: None,
             panicked: false,
             started: 0,
             group,
@@ -307,9 +320,10 @@ impl Run {
     }
 
     pub fn state(&self) -> CueState {
-        if self.is_broken() {
+        let paused = self.paused_at.is_some();
+        if self.is_broken() && !(paused && self.broke_paused.is_some()) {
             CueState::Broken
-        } else if self.paused_at.is_some() {
+        } else if paused {
             CueState::Paused
         } else if self.stop_end.is_some() || self.is_group_stopping() {
             CueState::Stopping

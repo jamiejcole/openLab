@@ -1065,7 +1065,8 @@ fn a_device_lost_failure_during_the_panic_fade_starts_nothing() {
 
 /// Under Pause All, a child that was started on its own in a playlist fails (a read error of its
 /// paused stream). A paused show starts nothing: the playlist has no run to hold its step, so the
-/// failed child holds it, broken and paused, and the next child starts on the resume sample.
+/// failed child holds it, paused, and the next child starts on the resume sample. Until then it
+/// shows `paused` (QLab 5.5.3), and `broken` from the resume.
 #[test]
 fn a_failure_while_paused_holds_a_playlist_step_until_the_resume() {
     for (loop_, unplayed) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -1076,7 +1077,8 @@ fn a_failure_while_paused_holds_a_playlist_step_until_the_resume() {
         let case = format!("loop {loop_}, unplayed {unplayed}: {failed:?}");
         assert!(starts(&failed).is_empty(), "{case}");
         assert!(voice_starts(&failed).is_empty(), "{case}");
-        assert_eq!(rig.state(2), CueState::Broken, "{case}");
+        assert!(changes(&failed, 2).is_empty(), "{case}");
+        assert_eq!(rig.state(2), CueState::Paused, "{case}");
         assert!(rig.engine.is_paused(id(2)), "{case}");
         assert_eq!(rig.state(3), CueState::Idle, "{case}");
         let idle = rig.tick(5000);
@@ -1084,8 +1086,67 @@ fn a_failure_while_paused_holds_a_playlist_step_until_the_resume() {
         let resumed = rig.at(6000, Input::ResumeAll);
         assert_eq!(starts(&resumed), vec![(id(3), 6000)], "{case}");
         assert_eq!(voice_starts(&resumed), vec![(id(3), 6000)], "{case}");
+        assert_eq!(
+            changes(&resumed, 2),
+            vec![(CueState::Broken, 6000)],
+            "{case}"
+        );
         assert_eq!(rig.state(2), CueState::Broken, "{case}");
         assert!(!rig.engine.is_paused(id(2)), "{case}");
+    }
+}
+
+/// QLab 5.5.3: in a running playlist, a child whose file fails while it is held paused (Pause
+/// All, or its own pause) shows `paused`, and so does the paused playlist, until the resume. On
+/// the resume it shows `broken` and the playlist does what it does for a child that broke while
+/// playing: it halts (starts no further child) and ends on the child's nominal end.
+#[test]
+fn a_running_playlist_child_failing_while_paused_shows_paused_until_the_resume() {
+    for pause_all in [true, false] {
+        let case = format!("pause all {pause_all}");
+        let mut rig = Rig::panicking(vec![playlist_of(1, false, vec![sound(2), sound(3)])]);
+        let lengths = vec![(id(2), Some(3000)), (id(3), Some(3000))];
+        rig.at(0, Input::CueLengths { lengths });
+        rig.start(0, 1);
+        if pause_all {
+            rig.at(1000, Input::PauseAll);
+        } else {
+            rig.at(1000, Input::Pause { cue: id(2) });
+        }
+        let failed = fail(&mut rig, 1100, 2);
+        assert!(changes(&failed, 2).is_empty(), "{case}: {failed:?}");
+        assert!(changes(&failed, 1).is_empty(), "{case}: {failed:?}");
+        assert_eq!(rig.state(2), CueState::Paused, "{case}");
+        let group = if pause_all {
+            CueState::Paused
+        } else {
+            CueState::Running
+        };
+        assert_eq!(rig.state(1), group, "{case}");
+        assert!(starts(&rig.tick(4000)).is_empty(), "{case}");
+        assert_eq!(rig.state(2), CueState::Paused, "{case}");
+        assert_eq!(rig.state(1), group, "{case}");
+
+        let resume = if pause_all {
+            Input::ResumeAll
+        } else {
+            Input::Resume { cue: id(2) }
+        };
+        let resumed = rig.at(5000, resume);
+        assert_eq!(
+            changes(&resumed, 2),
+            vec![(CueState::Broken, 5000)],
+            "{case}"
+        );
+        assert!(starts(&resumed).is_empty(), "{case}: {resumed:?}");
+        assert_eq!(rig.state(1), CueState::Running, "{case}");
+        // Child 2 had 2000 samples left at the pause: the halted playlist ends 2000 after
+        // the resume, and child 3 never starts.
+        assert!(changes(&rig.tick(6999), 1).is_empty(), "{case}");
+        let end = rig.tick(7000);
+        assert_eq!(changes(&end, 1), vec![(CueState::Idle, 7000)], "{case}");
+        assert!(starts(&end).is_empty(), "{case}");
+        assert_eq!(rig.state(3), CueState::Idle, "{case}");
     }
 }
 
@@ -1127,6 +1188,22 @@ fn a_held_playlist_step_is_cancelled_by_a_stop_or_panic_and_kept_by_a_resume() {
     assert!(starts(&failed).is_empty(), "{failed:?}");
     let resumed = rig.at(300, Input::Resume { cue: id(2) });
     assert_eq!(voice_starts(&resumed), vec![(id(3), 300)]);
+}
+
+/// A child of a running playlist paused on its own whose stream fails before it played is
+/// skipped on its resume, not before: the playlist goes on to its next child then.
+#[test]
+fn a_paused_child_skipped_before_it_played_moves_its_playlist_on_at_its_resume() {
+    let mut rig = Rig::panicking(vec![playlist_of(1, false, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.at(100, Input::Pause { cue: id(2) });
+    let failed = fail_as(&mut rig, 200, 2, true);
+    assert!(starts(&failed).is_empty(), "{failed:?}");
+    assert_eq!(rig.state(2), CueState::Paused);
+    assert!(starts(&rig.tick(3000)).is_empty());
+    let resumed = rig.at(4000, Input::Resume { cue: id(2) });
+    assert_eq!(voice_starts(&resumed), vec![(id(3), 4000)]);
+    assert_eq!(rig.state(2), CueState::Broken);
 }
 
 /// A running playlist holds the step itself (`advance`), as before: on the resume it moves on.
