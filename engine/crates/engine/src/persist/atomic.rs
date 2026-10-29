@@ -127,39 +127,108 @@ fn resolve_destination(path: &Path) -> io::Result<PathBuf> {
 pub(crate) fn write_atomic_inner(
     path: &Path,
     bytes: &[u8],
-    mut checkpoint: impl FnMut(Stage) -> io::Result<()>,
+    checkpoint: impl FnMut(Stage) -> io::Result<()>,
     rename: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
     sleep: &mut dyn FnMut(Duration),
     retry: RenameRetry,
 ) -> Result<(), PersistError> {
-    let path = &resolve_destination(path).map_err(PersistError::io("replace", path))?;
+    replace(
+        path,
+        bytes,
+        Owner::User,
+        |_| {},
+        checkpoint,
+        rename,
+        sleep,
+        retry,
+    )
+    .map(drop)
+}
+
+/// Whose file [`replace`] writes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// A document the operator may have linked, protected or given a mode: a symlink is written
+    /// through, a read-only file refused, the old mode kept.
+    User,
+    /// A file only the engine writes and that may hold a secret: whatever is at the path is
+    /// replaced, and the new file is readable by the user only (mode 0600 on Unix).
+    Engine,
+}
+
+/// [`write_atomic`] for a file the engine owns outright (`engine.json`, run markers): replaced
+/// as a whole, mode 0600 on Unix, stale temp files of a crashed run removed. `prepare` runs on
+/// the temp file before anything is written to it (a run marker takes its lock there, so it is
+/// never seen unlocked under its name); the open file is returned.
+pub(crate) fn write_engine_file(
+    path: &Path,
+    bytes: &[u8],
+    prepare: impl FnOnce(&File),
+) -> Result<File, PersistError> {
+    let file = replace(
+        path,
+        bytes,
+        Owner::Engine,
+        prepare,
+        |_| Ok(()),
+        &mut |from, to| fs::rename(from, to),
+        &mut thread::sleep,
+        RenameRetry::HOST,
+    )?;
+    remove_stale_tmp(path);
+    Ok(file)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replace(
+    path: &Path,
+    bytes: &[u8],
+    owner: Owner,
+    prepare: impl FnOnce(&File),
+    mut checkpoint: impl FnMut(Stage) -> io::Result<()>,
+    rename: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
+    sleep: &mut dyn FnMut(Duration),
+    retry: RenameRetry,
+) -> Result<File, PersistError> {
+    let resolved;
+    let path = if owner == Owner::User {
+        resolved = resolve_destination(path).map_err(PersistError::io("replace", path))?;
+        &resolved
+    } else {
+        path
+    };
     let Some(name) = path.file_name() else {
         return Err(PersistError::io("write", path)(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path has no file name",
         )));
     };
-    // The replacement keeps the old file's mode. A read-only file is the operator's way of
-    // saying "do not change this", and a rename would silently override it.
+    // A user's replacement keeps the old file's mode. A read-only file is the operator's way
+    // of saying "do not change this", and a rename would silently override it.
     #[cfg(unix)]
-    let old_permissions = match fs::metadata(path) {
-        Ok(meta) if meta.permissions().readonly() => {
+    let new_permissions = match (owner, fs::metadata(path)) {
+        (Owner::Engine, _) => {
+            use std::os::unix::fs::PermissionsExt as _;
+            Some(fs::Permissions::from_mode(0o600))
+        }
+        (Owner::User, Ok(meta)) if meta.permissions().readonly() => {
             return Err(PersistError::io("replace", path)(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "the file is read-only",
             )));
         }
-        Ok(meta) => Some(meta.permissions()),
-        Err(_) => None,
+        (Owner::User, Ok(meta)) => Some(meta.permissions()),
+        (Owner::User, Err(_)) => None,
     };
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let (tmp, mut file) = create_tmp(path, name, &COUNTER)?;
     let staged = (|| {
         #[cfg(unix)]
-        if let Some(permissions) = old_permissions {
+        if let Some(permissions) = new_permissions {
             file.set_permissions(permissions)?;
         }
+        prepare(&file);
         file.write_all(bytes)?;
         checkpoint(Stage::TmpWritten)?;
         file.sync_all()?;
@@ -167,15 +236,17 @@ pub(crate) fn write_atomic_inner(
         Ok::<(), io::Error>(())
     })();
     if let Err(source) = staged {
+        drop(file);
         let _ = fs::remove_file(&tmp);
         return Err(PersistError::io("write", &tmp)(source));
     }
     if let Err(source) = rename_with_retry(&tmp, path, rename, sleep, retry) {
+        drop(file);
         let _ = fs::remove_file(&tmp);
         return Err(PersistError::io("replace", path)(source));
     }
     sync_parent(path);
-    Ok(())
+    Ok(file)
 }
 
 /// Writes `bytes` to the first of `candidates` that does not exist, never replacing a file:

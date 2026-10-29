@@ -11,11 +11,12 @@
 //! start replaces it. A start refuses to run while the file names a live engine: one engine per
 //! user (one device, one OSC port), and the app attaches to that one.
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read as _, Write as _};
+use std::fs;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use crate::diag::run_marker;
+use crate::persist;
 
 /// The file is a few hundred bytes; more is not ours and is not read.
 const MAX_BYTES: u64 = 4096;
@@ -108,13 +109,8 @@ impl EngineFile {
             .parent()
             .ok_or_else(|| io::Error::other("engine.json has no folder"))?;
         fs::create_dir_all(dir)?;
-        let temp = dir.join(format!("engine.json.{}.tmp", std::process::id()));
-        let written =
-            write_private(&temp, info.to_json().as_bytes()).and_then(|()| fs::rename(&temp, path));
-        if let Err(e) = written {
-            let _ = fs::remove_file(&temp);
-            return Err(e);
-        }
+        persist::write_engine_file(path, info.to_json().as_bytes(), |_| {})
+            .map_err(io::Error::other)?;
         Ok(Self {
             path: path.to_path_buf(),
             info,
@@ -130,29 +126,11 @@ impl EngineFile {
     }
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    // A leftover temp file of a reused pid may have kept a wider mode.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diag::run_marker::{RunInfo, RunMarker};
+    use std::fs::OpenOptions;
 
     fn info(pid: u32) -> EngineInfo {
         EngineInfo {
@@ -217,6 +195,29 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_crashed_runs_temp_file_is_removed_and_a_fresh_one_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("engine.json");
+        let (stale, fresh) = (
+            root.path().join("engine.json.99999-0.tmp"),
+            root.path().join("engine.json.99998-0.tmp"),
+        );
+        for name in [&stale, &fresh] {
+            fs::write(name, "{").unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let _file = EngineFile::write(&path, info(3)).unwrap();
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "may be another start's write in progress");
     }
 
     #[test]
