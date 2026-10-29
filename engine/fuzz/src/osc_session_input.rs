@@ -222,12 +222,15 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                 let Ok(body) = serde_json::from_str::<Value>(text) else {
                     continue;
                 };
-                // A wrong passcode is an `ok` reply that says `badpass` (QLab's).
-                if body["status"] == "ok"
-                    && body["data"] != "badpass"
-                    && docs
-                        .iter()
-                        .any(|d| sealed(d) && body["workspace_id"] == upper(d.show.workspace_id()))
+                // A wrong passcode is an `ok` reply that says `badpass` (QLab's), and a `/connect` with none
+                // on a locked doc one that grants no rights (`ok:`): neither uses a right.
+                let field = |name: &str| body.get(name).and_then(Value::as_str);
+                if field("status") == Some("ok")
+                    && !matches!(field("data"), Some("badpass" | "ok:"))
+                    && docs.iter().any(|d| {
+                        sealed(d)
+                            && field("workspace_id") == Some(upper(d.show.workspace_id()).as_str())
+                    })
                 {
                     return Err(format!(
                         "an ok reply for a doc without its passcode: {text}"
