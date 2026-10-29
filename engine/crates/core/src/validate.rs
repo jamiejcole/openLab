@@ -85,8 +85,8 @@ pub const MAX_DELAY_MS: f64 = 1000.0;
 pub const MAX_AUTO_NUMBER: f64 = 1_000_000.0;
 /// Shortest slice of an Audio cue, seconds: between its trim points and slice markers, every
 /// slice (and so every loop) is at least this long. QLab 5 refuses a shorter slice or trim in its
-/// editor, and plays a loop of exactly this length (M2.24, QLab check D6).
-pub const MIN_SLICE_SECONDS: f64 = 0.051;
+/// editor (nothing under 0.05 s), and plays a loop of exactly this length (M2.24, QLab check D6).
+pub const MIN_SLICE_SECONDS: f64 = 0.05;
 
 /// Whether a slice of `seconds` is shorter than [`MIN_SLICE_SECONDS`]. With a margin far below
 /// one sample, so that times typed in milliseconds (`1.051 - 1.0`) are not refused for the

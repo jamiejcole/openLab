@@ -287,3 +287,65 @@ fn a_loaded_over_limit_value_cannot_be_replaced_by_a_longer_one() {
         w.apply(set(property)).unwrap();
     }
 }
+
+/// An Audio cue whose trim or first slice is `seconds` long.
+fn short_region(seconds: f64, as_trim: bool) -> Cue {
+    let mut kind = audio();
+    if let CueKind::Audio {
+        end_time, slices, ..
+    } = &mut kind
+    {
+        *end_time = Some(if as_trim { seconds } else { 2.0 });
+        if !as_trim {
+            slices.push(SliceMarker {
+                time: seconds,
+                play_count: 0,
+            });
+        }
+    }
+    cue(5, kind)
+}
+
+#[test]
+fn a_trim_or_slice_under_50_ms_is_refused_on_every_path_and_50_ms_is_accepted() {
+    let w = ws();
+    for as_trim in [true, false] {
+        let bad = short_region(0.04, as_trim);
+        for command in [
+            Command::AddCue {
+                at: at_end(),
+                cue: bad.clone(),
+                auto_number: false,
+            },
+            Command::Paste {
+                at: at_end(),
+                cues: vec![bad.clone()],
+            },
+            Command::PasteClipboard {
+                at: at_end(),
+                cues: vec![bad.clone()],
+                source_dir: None,
+            },
+            Command::SetCueProperty {
+                id: cue_id(1),
+                property: CueProperty::Kind {
+                    value: bad.kind.clone(),
+                },
+            },
+        ] {
+            assert_refused(&w, command);
+        }
+        let ok = short_region(0.05, as_trim);
+        let mut work = w.clone();
+        History::new()
+            .execute(
+                &mut work,
+                Command::AddCue {
+                    at: at_end(),
+                    cue: ok,
+                    auto_number: false,
+                },
+            )
+            .unwrap();
+    }
+}
