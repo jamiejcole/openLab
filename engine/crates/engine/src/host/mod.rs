@@ -684,6 +684,25 @@ mod tests {
             open_outcome("/s.openlab", &failed),
             "could not open /s.openlab: no such file"
         );
+        // An autosave newer than the file: nothing is opened, and the line says why.
+        let offer = Outcome::Ok(OkBody {
+            revision: None,
+            data: Some(ResultData::RecoveryOffer {
+                path: "/s.openlab".into(),
+                workspace_name: "Show".into(),
+                modified_ms: 5,
+            }),
+        });
+        assert_eq!(
+            open_outcome("/s.openlab", &offer),
+            "not opened /s.openlab: an autosave newer than the file exists; open it from the app to restore or ignore it"
+        );
+        // Any other success body is still reported as opened.
+        let bare = Outcome::Ok(OkBody {
+            revision: None,
+            data: None,
+        });
+        assert_eq!(open_outcome("/s.openlab", &bare), "opened /s.openlab");
     }
 
     #[test]
