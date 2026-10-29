@@ -76,12 +76,10 @@ impl EngineInfo {
 
 /// Reads `path`; `None` when it is missing, not a regular file, too big or not an engine file.
 pub fn read(path: &Path) -> Option<EngineInfo> {
-    // Not a FIFO or a device: opening one could hang the start.
-    if !fs::symlink_metadata(path).ok()?.is_file() {
-        return None;
-    }
+    // Not a FIFO or a device: opening one could hang the start. The type is checked on the
+    // opened handle, so one swapped in after a check of the path is refused too.
     let mut text = String::new();
-    fs::File::open(path)
+    openlab_audio::open_regular(path)
         .ok()?
         .take(MAX_BYTES)
         .read_to_string(&mut text)
@@ -251,6 +249,38 @@ mod tests {
         assert_eq!(read(&path), None);
         assert_eq!(read(&root.path().join("missing.json")), None);
         assert_eq!(read(root.path()), None, "a folder");
+    }
+
+    /// A FIFO at the path (also one swapped in after any look at it) is refused without
+    /// waiting for a writer, so a start is not blocked.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_not_an_engine_and_is_not_waited_on() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("engine.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let link = root.path().join("link.json");
+        std::os::unix::fs::symlink(&fifo, &link).unwrap();
+        for path in [fifo.clone(), link] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let reading = path.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(read(&reading));
+            });
+            // A hang guard, not a timing assertion.
+            let out = rx.recv_timeout(std::time::Duration::from_secs(20));
+            if out.is_err() {
+                // Give the blocked open its writer so the thread can end.
+                let _ = OpenOptions::new().write(true).open(&fifo);
+                panic!("reading a FIFO blocked: {}", path.display());
+            }
+            assert_eq!(out, Ok(None), "{}", path.display());
+        }
     }
 
     #[test]
