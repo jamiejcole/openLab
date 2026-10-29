@@ -146,6 +146,56 @@ fn setting_a_mapping_stores_it_and_moves_a_playing_cue() {
     );
 }
 
+/// #174: clearing the mapping under a playing cue makes the patch `Unmapped`. The cue is not
+/// stopped or broken (it is running, as after any device edit); its slot ramps to silence on
+/// every output, and mapping the patch again brings the sound back to the same running cue.
+#[test]
+fn clearing_a_mapping_while_a_cue_plays_silences_it_and_keeps_it_running() {
+    let env = env();
+    let path = wav(&dc(40_000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Offline", 4)]));
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(500);
+    assert!(last_nonzero(&s.channel(0)).is_some_and(|f| f > 400));
+
+    assert_eq!(set(&mut s, patch_id(), None), Ok(()));
+    assert_eq!(stored(&s, &ws), None);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    // Past the de-zipper ramp: silent on every output while the cue is still running.
+    s.run(2000);
+    let after_ramp = s.channel(0).len();
+    s.run(500);
+    for ch in 0..4 {
+        let out = s.channel(ch);
+        assert!(
+            out[after_ramp..].iter().all(|&x| x == 0.0),
+            "output {ch} still sounds after the ramp"
+        );
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    let p = preshow(&mut s)
+        .patches
+        .into_iter()
+        .find(|p| p.patch == patch_id())
+        .unwrap();
+    assert!(!p.mapped);
+    assert_eq!(p.resolution, Some(WireResolution::Unmapped));
+
+    // Mapping it again brings the same running cue back on the new outputs.
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[2, 3]))),
+        Ok(())
+    );
+    let before = s.channel(2).len();
+    s.run(1000);
+    assert!(
+        s.channel(2)[before..].iter().any(|&x| x != 0.0),
+        "sounds again on output 3"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
 #[test]
 fn a_cleared_mapping_stays_cleared_across_syncs_and_a_restart() {
     let env = env();
