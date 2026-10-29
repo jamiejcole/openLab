@@ -132,15 +132,12 @@ impl Outcome {
 /// The workspaces the messages of one packet (a datagram or a SLIP frame) name with a
 /// `/workspace/{id}` prefix, in order, as written; `None` when one of them can reach every open
 /// doc: it has no prefix, or it is `/version` or `/workspaces`, which are answered from every
-/// doc whatever the prefix. A packet that does not decode, and a message with an unusable
-/// address, reach no doc. Lets the runtime tell which docs a packet needs before it handles it.
+/// doc whatever the prefix, or the packet does not decode (fail safe: what it reaches is not
+/// known). A message with an unusable address reaches no doc. Lets the runtime tell which docs a
+/// packet needs before it handles it. No size cut of its own: a TCP frame may be larger than a
+/// datagram, and the frame limit already bounds it.
 pub fn named_workspaces(packet: &[u8]) -> Option<Vec<String>> {
-    if packet.len() > MAX_PACKET_BYTES {
-        return Some(Vec::new());
-    }
-    let Ok(messages) = decode_packet(packet) else {
-        return Some(Vec::new());
-    };
+    let messages = decode_packet(packet).ok()?;
     let mut named = Vec::new();
     for message in &messages {
         let Some(parsed) = parse_address(&message.addr) else {

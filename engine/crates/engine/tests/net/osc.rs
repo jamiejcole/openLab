@@ -3003,6 +3003,36 @@ async fn a_tcp_read_that_waits_for_an_opening_doc_gets_that_docs_frame_limit() {
     assert_eq!(f.stats().osc.oversize_frames, 0);
 }
 
+/// A TCP frame larger than a datagram (frames may be up to 1 MiB) for the opening doc waits for
+/// its copy like any other: answered now it would be a wrong-workspace error and lost.
+#[tokio::test]
+async fn a_frame_larger_than_a_datagram_for_an_opening_doc_waits() {
+    let f = fixture(test_workspace()).await;
+    f.control
+        .hold_second
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.open_second().await;
+    f.control
+        .wait_for("the second doc's snapshot request", |c| {
+            !c.held.lock().unwrap().is_empty()
+        })
+        .await;
+    let tcp = f.tcp().await;
+    let long = "x".repeat(70_000);
+    tcp.send(&msg("/workspace/other/cue/1/name", vec![text(&long)]))
+        .await;
+    f.wait_stats("the frame to wait", |s| s.held_inputs >= 1)
+        .await;
+    f.control.release();
+    f.control
+        .wait_seen("the rename", |seen| {
+            seen.iter()
+                .any(|m| matches!(m, ClientMessage::Command { .. }))
+        })
+        .await;
+    assert_eq!(f.stats().osc.wrong_workspace, 0);
+}
+
 /// Input that waits for an opening doc is handled even when its TCP connection closes
 /// meanwhile: the close waits behind it.
 #[tokio::test]
@@ -3035,7 +3065,11 @@ async fn a_close_waits_behind_its_connections_held_input() {
 /// what does not fit, counted. Once the copy is in, what was held goes.
 #[tokio::test]
 async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
-    let f = fixture_held(test_workspace(), true, |_| {}).await;
+    // No input ages out while the test runs, however slow the machine.
+    let f = fixture_held(test_workspace(), true, |c| {
+        c.max_input_age = Duration::from_secs(3600);
+    })
+    .await;
     f.control
         .wait_for("the first snapshot request", |c| c.snapshot_requests() == 1)
         .await;
