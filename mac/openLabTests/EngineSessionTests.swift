@@ -234,8 +234,24 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertEqual(requests(engine) { if case .open = $0 { return true } else { return false } }, 0)
     }
 
-    /// A new engine run (another token): every window's show is reopened by its file, the store
-    /// objects survive under new doc ids, and none is made twice.
+    /// A reopen whose path the engine holds under another spelling (case, Unicode form) takes
+    /// that doc, as the engine compares paths: the window does not fail.
+    func testAReattachTakesADocOpenUnderAnotherSpellingOfThePath() async throws {
+        let (s, engine) = try await started()
+        _ = await s.open(path: "/Shows/A.openlab")
+        await assertEventually { s.stores.count == 2 }
+        var events: [SessionEvent] = []
+        let sub = s.events.sink { events.append($0) }
+        defer { sub.cancel() }
+        engine.restart()
+        _ = engine.addDoc(FakeEngine.emptySnapshot(name: "A"), path: "/shows/a.OPENLAB")
+        let ok = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
+        XCTAssertTrue(ok)
+        guard case .reattached(let failures, _, _, _)? = events.last else { return XCTFail() }
+        XCTAssertEqual(failures, [])
+        XCTAssertEqual(s.stores.count, 2)
+    }
+
     /// File > Open of a show a waiting window holds, during the reattach: the engine answers
     /// before it lists the doc, yet no second store is made (the window takes the doc, #262).
     func testOpeningAWaitingWindowsShowDuringAReattachLeavesItsWindowTheDoc() async throws {
@@ -264,6 +280,8 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertTrue(before.allSatisfy { b in s.stores.values.contains { $0 === b } })
     }
 
+    /// A new engine run (another token): every window's show is reopened by its file, the store
+    /// objects survive under new doc ids, and none is made twice.
     func testNewEngineRunReopensEveryFileAndKeepsTheStores() async throws {
         let (s, engine) = try await started()
         _ = await s.open(path: "/Shows/A.openlab")

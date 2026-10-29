@@ -150,7 +150,12 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
+    /// The "not responding" alarm is up: it tells the operator the engine may still be playing, so
+    /// it goes away when that engine answers (no other alarm is taken down by a connection).
+    private var notRespondingShown = false
+
     private func alarm(_ alarm: EngineSupervisor.Alarm) {
+        notRespondingShown = false
         switch alarm {
         case .engineStopped(let crashed):
             presenter.show(
@@ -159,6 +164,7 @@ final class EngineAlarmController {
         case .cannotStart(let reason):
             presenter.show(title: loc("engine.alarm.cannotStart"), message: reason)
         case .notResponding:
+            notRespondingShown = true
             presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
         }
         presenter.setRestoreAction(nil)
@@ -168,6 +174,10 @@ final class EngineAlarmController {
 
     /// A reattach is reported when it ends; with nothing to reattach the offer comes now.
     private func engineReady() {
+        if notRespondingShown {
+            notRespondingShown = false
+            presenter.dismiss()
+        }
         if !session.isReattaching { checkRecovery() }
     }
 

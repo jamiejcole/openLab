@@ -166,6 +166,10 @@ final class EngineSupervisorTests: XCTestCase {
         processes.info = .success(engine.info)
         processes.alive = [engine.pid]
         engine.welcomeFault = .silent
+        let presenter = RecordingPresenter()
+        let alerts = ScriptedAlerts()
+        let controller = EngineAlarmController(
+            session: session, supervisor: supervisor, presenter: presenter, alerts: { alerts })
         supervisor.start()
         var timeouts = 0
         for _ in 0..<(supervisor.probeAttempts * 3) {
@@ -181,10 +185,15 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(processes.signals.isEmpty, "a slow welcome never ends the engine")
         XCTAssertEqual(processes.spawns, 0)
         XCTAssertEqual(alarms, [.notResponding], "the operator is told once, the engine is left alone")
-        // It answers in the end: attached, nothing was lost.
+        XCTAssertTrue(presenter.isVisible, "the alarm is up")
+        XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.notResponding"))
+        // It answers in the end: attached, nothing was lost, and the alarm (which says to quit the
+        // engine) goes away.
         engine.welcomeFault = .none
         let ok = await pump { self.session.connectionState == .connected }
         XCTAssertTrue(ok)
+        await assertEventually { !presenter.isVisible }
+        _ = controller
     }
 
     func testASilentEngineThatIgnoresSigtermGetsSigkill() async throws {

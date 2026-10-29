@@ -255,7 +255,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     /// The engine's path equality, close enough: NFC and case-insensitive. A false "same" only
     /// defers a store to the end of the reattach.
-    private static func samePath(_ a: String, _ b: String) -> Bool {
+    static func samePath(_ a: String, _ b: String) -> Bool {
         a.precomposedStringWithCanonicalMapping.lowercased() == b.precomposedStringWithCanonicalMapping.lowercased()
     }
 
@@ -422,7 +422,9 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
                 // Opened in this run already (a reattach cut short, or another client): take it.
                 // A restored autosave opens dirty, the saved file clean: a window with unsaved
                 // changes bound to a clean doc lost them (#337).
-                if let listed = workspaces.first(where: { $0.path == path }), stores[listed.doc] == nil {
+                if let listed = workspaces.first(where: { $0.path.map { Self.samePath($0, path) } ?? false }),
+                    stores[listed.doc] == nil
+                {
                     let source: Source = !info.dirty ? .file : listed.dirty ? .autosave : .fileEditsLost
                     return .bound(listed.doc, source)
                 }

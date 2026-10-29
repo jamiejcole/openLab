@@ -659,7 +659,9 @@ final class FakeEngine: EngineTransport {
                 id, snapshot: Self.emptySnapshot(name: "Untitled \(nextDoc)", workspaceID: workspaceID(nextDoc)),
                 path: nil, from: c)
         case .open(let path, let recovery):
-            if let existing = docOrder.first(where: { docs[$0]?["document"]?["path"]?.stringValue == path }) {
+            if let existing = docOrder.first(where: {
+                docs[$0]?["document"]?["path"]?.stringValue.map { EngineSession.samePath($0, path) } ?? false
+            }) {
                 return result(c, id, error: (.alreadyOpen, "already open as \(existing)"))
             }
             if let code = openFailures[path] { return result(c, id, error: (code, "cannot open \(path)")) }
