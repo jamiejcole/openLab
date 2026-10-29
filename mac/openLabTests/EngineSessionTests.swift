@@ -370,7 +370,7 @@ final class EngineSessionTests: XCTestCase {
         engine.restart()
         engine.recoveryEntries = [.object(["workspace_id": .string(dirtyID.raw), "stale": .bool(false)])]
         _ = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
-        guard case .reattached(let failures, let restored, _)? = events.last else { return XCTFail() }
+        guard case .reattached(let failures, let restored, _, _)? = events.last else { return XCTFail() }
         XCTAssertEqual(failures.map(\.name), [lostName])
         XCTAssertEqual(restored.count, 1)
         XCTAssertEqual(s.stores.count, 3, "Hamlet, the clean one (new) and the recovered one")
