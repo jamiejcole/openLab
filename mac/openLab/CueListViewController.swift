@@ -686,7 +686,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         else { return false }
         if let pending = takeDurationEdit() { onEditDuration?(pending.id, pending.text) }
         editingDuration = id
-        durationEditor.stringValue = InspectorTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+        durationEditor.stringValue = CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         placeDurationEditor()
         outlineView.addSubview(durationEditor)
         view.window?.makeFirstResponder(durationEditor)
@@ -821,11 +821,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
-                text(CueTimeFormat.clock(wait.remaining))
+                text(CueTime.running(wait.remaining))
                 break
             }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
-            text(CueTimeFormat.clock(seconds))
+            text(CueTime.format(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
         case "duration": text(durationText(node))
         case "continue":
@@ -849,9 +849,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func durationText(_ node: CueNode) -> String {
-        if let p = store.progress[node.id] { return CueTimeFormat.progress(elapsed: p.elapsed, remaining: p.remaining) }
+        if let p = store.progress[node.id] { return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining) }
         switch node.cue.kindType {
-        case "fade", "wait": return CueTimeFormat.clock(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+        case "fade", "wait": return CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         default: return ""
         }
     }

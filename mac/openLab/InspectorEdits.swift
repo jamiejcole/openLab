@@ -60,15 +60,15 @@ enum InspectorEdit {
         // unchanged sends nothing (below), so the derived name is never written back.
         case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
-        case .preWait: return InspectorTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
-        case .postWait: return InspectorTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
+        case .preWait: return CueTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
+        case .postWait: return CueTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
         case .osc: return cue.raw["triggers"]?["osc"]?.stringValue ?? ""
         case .duration:
             guard durationKinds.contains(cue.kindType) else { return "" }
-            return InspectorTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+            return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
             guard cue.kindType == "load" else { return "" }
-            return InspectorTime.format(cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0)
+            return CueTime.format(cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0)
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
             guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
@@ -132,12 +132,12 @@ enum InspectorEdit {
 }
 
 extension InspectorEdit {
-    /// Seconds from what the user typed (`InspectorTime.parse`), or why not: a decimal comma has
+    /// Seconds from what the user typed (`CueTime.parse`), or why not: a decimal comma has
     /// its own message, since it is the likeliest slip.
     static func time(_ text: String) -> Result<Double, Rejection> {
-        if let seconds = InspectorTime.parse(text) { return .success(seconds) }
+        if let seconds = CueTime.parse(text) { return .success(seconds) }
         let dotted = text.replacingOccurrences(of: ",", with: ".")
-        return .failure(text.contains(",") && InspectorTime.parse(dotted) != nil ? .decimalComma : .invalidTime)
+        return .failure(text.contains(",") && CueTime.parse(dotted) != nil ? .decimalComma : .invalidTime)
     }
 
     /// A Wait or Fade cue's duration from typed text, for the inspector and the cue list's Duration

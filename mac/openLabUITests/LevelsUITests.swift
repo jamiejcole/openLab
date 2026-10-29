@@ -83,7 +83,7 @@ final class LevelsUITests: XCTestCase {
         let curve = app.popUpButtons["fade-curve"]
         XCTAssertTrue(curve.waitForExistence(timeout: 5))
         let duration = app.textFields["fade-duration"]
-        XCTAssertEqual(duration.value as? String, "00:05.000")
+        XCTAssertEqual(duration.value as? String, "00:05.00")
 
         let matrix = app.groups["fade-matrix"]
         XCTAssertTrue(matrix.waitForExistence(timeout: 5))
@@ -96,6 +96,6 @@ final class LevelsUITests: XCTestCase {
         wait(active, "value == 1", "which makes it active")
 
         type("3", into: duration)
-        wait(duration, "value == '00:03.000'", "the duration is stored")
+        wait(duration, "value == '00:03.00'", "the duration is stored")
     }
 }

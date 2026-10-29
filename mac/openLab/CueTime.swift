@@ -2,16 +2,38 @@
 
 import Foundation
 
-/// The inspector's time fields: `mm:ss.sss` (QLab 5's inspector), `h:mm:ss.sss` from an hour.
-enum InspectorTime {
+/// Cue times as text, for the cue list, the inspector and the active-cues panel alike. QLab 5 shows
+/// hundredths (manual pp. 126, 131: 100 s shows as `01:40.00`) but keeps milliseconds, so a stored
+/// time with a millisecond digit shows it: an edit field must give back exactly what it shows.
+/// `mm:ss.cc`, `h:mm:ss.cc` from an hour.
+enum CueTime {
     /// Core's `MAX_TIME`: 24 hours.
     static let maxSeconds: Double = 24 * 60 * 60
 
+    /// A stored time: hundredths, or milliseconds when the third digit is not zero.
     static func format(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "" }
-        let ms = Int(min(seconds, maxSeconds * 2) * 1000 + 0.5)
-        let (h, m, s, f) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
-        return h > 0 ? String(format: "%d:%02d:%02d.%03d", h, m, s, f) : String(format: "%02d:%02d.%03d", m, s, f)
+        let ms = Int(min(seconds, 1e9) * 1000 + 0.5)
+        return ms % 10 == 0 ? text(ms / 10, perSecond: 100) : text(ms, perSecond: 1000)
+    }
+
+    /// A running time (elapsed, remaining): always hundredths, so the width does not flicker.
+    static func running(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "" }
+        return text(Int(min(seconds, 1e9) * 100 + 0.5), perSecond: 100)
+    }
+
+    /// A running cue: `elapsed / total` when the end is known, else `elapsed`.
+    static func progress(elapsed: Double, remaining: Double?) -> String {
+        guard let remaining else { return running(elapsed) }
+        return "\(running(elapsed)) / \(running(elapsed + remaining))"
+    }
+
+    private static func text(_ units: Int, perSecond: Int) -> String {
+        let s = units / perSecond
+        let (h, m, sec) = (s / 3600, s / 60 % 60, s % 60)
+        let fraction = String(format: perSecond == 100 ? "%02d" : "%03d", units % perSecond)
+        return (h > 0 ? String(format: "%d:%02d:%02d.", h, m, sec) : String(format: "%02d:%02d.", m, sec)) + fraction
     }
 
     /// Seconds from `s.sss`, `m:ss.sss` or `h:mm:ss.sss` (rounded to a millisecond), or nil for

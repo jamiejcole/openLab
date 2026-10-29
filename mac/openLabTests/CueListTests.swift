@@ -204,15 +204,18 @@ final class CueListTests: XCTestCase {
     }
 
     func testTimeFormat() {
-        XCTAssertEqual(CueTimeFormat.clock(0), "00:00.00")
-        XCTAssertEqual(CueTimeFormat.clock(1), "00:01.00")
-        XCTAssertEqual(CueTimeFormat.clock(60), "01:00.00")
-        XCTAssertEqual(CueTimeFormat.clock(65.254), "01:05.25")
-        XCTAssertEqual(CueTimeFormat.clock(3661.5), "1:01:01.50")
-        XCTAssertEqual(CueTimeFormat.clock(.nan), "")
-        XCTAssertEqual(CueTimeFormat.clock(-1), "")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: 3), "00:02.00 / 00:05.00")
-        XCTAssertEqual(CueTimeFormat.progress(elapsed: 2, remaining: nil), "00:02.00")
+        XCTAssertEqual(CueTime.running(0), "00:00.00")
+        XCTAssertEqual(CueTime.running(1), "00:01.00")
+        XCTAssertEqual(CueTime.running(60), "01:00.00")
+        XCTAssertEqual(CueTime.running(65.254), "01:05.25")
+        // A stored time keeps its millisecond, so an edit field opened and closed changes nothing.
+        XCTAssertEqual(CueTime.format(65.254), "01:05.254")
+        XCTAssertEqual(CueTime.format(65.25), "01:05.25")
+        XCTAssertEqual(CueTime.running(3661.5), "1:01:01.50")
+        XCTAssertEqual(CueTime.running(.nan), "")
+        XCTAssertEqual(CueTime.running(-1), "")
+        XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: 3), "00:02.00 / 00:05.00")
+        XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: nil), "00:02.00")
     }
 
     func testColourFlagAndContinueAreShownWithShapesAndLabels() async throws {
@@ -628,7 +631,7 @@ final class CueListTests: XCTestCase {
         XCTAssertNil(h.vc.store.waits[H.intro])
         XCTAssertEqual(
             h.cell("preWait", H.intro)?.label.stringValue,
-            CueTimeFormat.clock(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
+            CueTime.format(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
     }
 
     // MARK: Playhead marker across model changes

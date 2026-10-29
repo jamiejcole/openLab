@@ -4,25 +4,25 @@ import XCTest
 
 @testable import openLab
 
-final class InspectorTimeTests: XCTestCase {
+final class CueTimeTests: XCTestCase {
     func testFormat() {
-        XCTAssertEqual(InspectorTime.format(0), "00:00.000")
-        XCTAssertEqual(InspectorTime.format(60), "01:00.000")
-        XCTAssertEqual(InspectorTime.format(1.2345), "00:01.235")
-        XCTAssertEqual(InspectorTime.format(3599.9994), "59:59.999")
-        XCTAssertEqual(InspectorTime.format(3600), "1:00:00.000")
-        XCTAssertEqual(InspectorTime.format(86400), "24:00:00.000")
-        XCTAssertEqual(InspectorTime.format(-1), "")
-        XCTAssertEqual(InspectorTime.format(.nan), "")
-        XCTAssertEqual(InspectorTime.format(.infinity), "")
+        XCTAssertEqual(CueTime.format(0), "00:00.00")
+        XCTAssertEqual(CueTime.format(60), "01:00.00")
+        XCTAssertEqual(CueTime.format(1.2345), "00:01.235")
+        XCTAssertEqual(CueTime.format(3599.9994), "59:59.999")
+        XCTAssertEqual(CueTime.format(3600), "1:00:00.00")
+        XCTAssertEqual(CueTime.format(86400), "24:00:00.00")
+        XCTAssertEqual(CueTime.format(-1), "")
+        XCTAssertEqual(CueTime.format(.nan), "")
+        XCTAssertEqual(CueTime.format(.infinity), "")
     }
 
     func testParseAcceptedForms() {
         let cases: [(String, Double)] = [
-            ("0", 0), ("5", 5), ("5.5", 5.5), ("90", 90), ("01:00.000", 60), ("1:30", 90), ("1:30.25", 90.25),
-            ("00:00.001", 0.001), ("1:00:00", 3600), ("24:00:00.000", 86400), ("  2.5 ", 2.5), ("0.0004", 0),
+            ("0", 0), ("5", 5), ("5.5", 5.5), ("90", 90), ("01:00.00", 60), ("1:30", 90), ("1:30.25", 90.25),
+            ("00:00.001", 0.001), ("1:00:00", 3600), ("24:00:00.00", 86400), ("  2.5 ", 2.5), ("0.0004", 0),
         ]
-        for (text, seconds) in cases { XCTAssertEqual(InspectorTime.parse(text), seconds, text) }
+        for (text, seconds) in cases { XCTAssertEqual(CueTime.parse(text), seconds, text) }
     }
 
     func testParseRejects() {
@@ -30,13 +30,13 @@ final class InspectorTimeTests: XCTestCase {
             "", " ", "abc", "-1", "+1", "1e3", "nan", "inf", "1.", ".5", "1..2", "1:60", "1:2:3:4", ":30", "1::30",
             "60:00:00", "1:60:00", "24:00:00.001", "99999999999999999999", "1,5", "٣",
         ] {
-            XCTAssertNil(InspectorTime.parse(text), text)
+            XCTAssertNil(CueTime.parse(text), text)
         }
     }
 
     func testRoundTrip() {
         for s in [0, 0.001, 1, 59.999, 60, 61.5, 3599.999, 3600, 7322.25, 86400] as [Double] {
-            XCTAssertEqual(InspectorTime.parse(InspectorTime.format(s)), s, "\(s)")
+            XCTAssertEqual(CueTime.parse(CueTime.format(s)), s, "\(s)")
         }
     }
 }
@@ -159,7 +159,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.intro])
         XCTAssertEqual(vc.numberField.stringValue, "1")
         XCTAssertEqual(vc.nameField.stringValue, "Intro")
-        XCTAssertEqual(vc.preWaitField.stringValue, "00:00.000")
+        XCTAssertEqual(vc.preWaitField.stringValue, "00:00.00")
         XCTAssertEqual(vc.continuePopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.colourPopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.armedCheck.state, .on)
@@ -185,7 +185,7 @@ final class InspectorTests: XCTestCase {
         edit(.preWait, "90")
         await assertEventually { self.commands.count == 3 }
         XCTAssertEqual(commands.last, property("pre_wait", "90"))
-        await assertEventually("the field shows what was stored") { self.vc.preWaitField.stringValue == "01:30.000" }
+        await assertEventually("the field shows what was stored") { self.vc.preWaitField.stringValue == "01:30.00" }
         edit(.postWait, "0:02.5")
         await assertEventually { self.commands.count == 4 }
         XCTAssertEqual(commands.last, property("post_wait", "2.5"))
@@ -348,7 +348,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.fade])
         for text in ["abc", "-1", "25:00:00", "1:75", ""] {
             edit(.preWait, text)
-            XCTAssertEqual(vc.preWaitField.stringValue, "00:00.000", text)
+            XCTAssertEqual(vc.preWaitField.stringValue, "00:00.00", text)
             XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"), text)
         }
         edit(.target, "99")
@@ -384,7 +384,7 @@ final class InspectorTests: XCTestCase {
         await assertEventually { self.vc.nameField.stringValue == "Intro" }
         XCTAssertTrue(vc.messageLabel.stringValue.contains("refused"))
         edit(.preWait, "5")
-        await assertEventually { self.vc.preWaitField.stringValue == "00:00.000" }
+        await assertEventually { self.vc.preWaitField.stringValue == "00:00.00" }
     }
 
     func testExternalChangeUpdatesFieldsButNotTheOneBeingEdited() async throws {
@@ -406,7 +406,7 @@ final class InspectorTests: XCTestCase {
                 )), .applied)
         XCTAssertEqual(vc.nameField.currentEditor()?.string, "half typed")
         XCTAssertEqual(vc.notesView.string, "from another client")
-        XCTAssertEqual(vc.preWaitField.stringValue, "00:02.000")
+        XCTAssertEqual(vc.preWaitField.stringValue, "00:02.00")
         window.makeFirstResponder(nil)  // focus loss commits the typed name
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property("name", #""half typed""#))

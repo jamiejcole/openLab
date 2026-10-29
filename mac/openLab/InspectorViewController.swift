@@ -543,9 +543,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .success(let command?):
             messageLabel.stringValue = ""
             send(command, cue: cue.id, key: "\(f)", revert: [f])
-            // Show what will be stored (`90` becomes `01:30.000`) until the model answers.
-            if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = InspectorTime.parse(text) {
-                field(f)?.stringValue = InspectorTime.format(s)
+            // Show what will be stored (`90` becomes `01:30.00`) until the model answers.
+            if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = CueTime.parse(text) {
+                field(f)?.stringValue = CueTime.format(s)
             }
         }
         return true

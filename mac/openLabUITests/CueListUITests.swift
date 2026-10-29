@@ -72,7 +72,7 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["01:30.00"].waitForExistence(timeout: 10), "the cell shows the stored duration")
         let inspector = app.textFields["inspector-duration"]
         let stored = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == '01:30.000'"), object: inspector)
+            predicate: NSPredicate(format: "value == '01:30.00'"), object: inspector)
         XCTAssertEqual(XCTWaiter().wait(for: [stored], timeout: 5), .completed, "the inspector follows")
     }
 }

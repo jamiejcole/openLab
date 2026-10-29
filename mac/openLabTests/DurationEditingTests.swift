@@ -51,12 +51,12 @@ final class DurationEditingTests: XCTestCase {
 
     /// QLab's own examples (manual pp. 131-132): 100 s shows as 01:40, 65:02.5 as 1:05:02.5.
     func testTimeEntryFollowsQLabsExamples() {
-        XCTAssertEqual(InspectorTime.parse("100"), 100)
-        XCTAssertEqual(InspectorTime.format(100), "01:40.000")
-        XCTAssertEqual(InspectorTime.parse("65:02.5"), 3902.5)
-        XCTAssertEqual(InspectorTime.format(3902.5), "1:05:02.500")
-        XCTAssertEqual(InspectorTime.parse("1:05:02.5"), 3902.5)
-        XCTAssertEqual(InspectorTime.parse("0.0015"), 0.002, "rounded to the millisecond")
+        XCTAssertEqual(CueTime.parse("100"), 100)
+        XCTAssertEqual(CueTime.format(100), "01:40.00")
+        XCTAssertEqual(CueTime.parse("65:02.5"), 3902.5)
+        XCTAssertEqual(CueTime.format(3902.5), "1:05:02.50")
+        XCTAssertEqual(CueTime.parse("1:05:02.5"), 3902.5)
+        XCTAssertEqual(CueTime.parse("0.0015"), 0.002, "rounded to the millisecond")
     }
 
     func testDurationCommandForWaitAndFade() throws {
@@ -69,7 +69,7 @@ final class DurationEditingTests: XCTestCase {
             XCTAssertEqual(wire(made), property("c", "duration", seconds), text)
         }
         XCTAssertNil(try InspectorEdit.durationCommand(text: "2", cue: wait).get(), "the same duration sends nothing")
-        XCTAssertNil(try InspectorEdit.durationCommand(text: "00:05.000", cue: fade).get())
+        XCTAssertNil(try InspectorEdit.durationCommand(text: "00:05.00", cue: fade).get())
     }
 
     func testDurationRejects() {
@@ -105,9 +105,9 @@ final class DurationEditingTests: XCTestCase {
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "2,5", cue: load, model: model), .failure(.decimalComma))
         let wait = try XCTUnwrap(model.cue(Self.wait))
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "1", cue: wait, model: model), .failure(.noLoadTime))
-        XCTAssertEqual(InspectorEdit.display(.loadTime, cue: load, model: model), "00:01.500")
+        XCTAssertEqual(InspectorEdit.display(.loadTime, cue: load, model: model), "00:01.50")
         XCTAssertEqual(InspectorEdit.display(.loadTime, cue: wait, model: model), "")
-        XCTAssertEqual(InspectorEdit.display(.duration, cue: wait, model: model), "00:02.000")
+        XCTAssertEqual(InspectorEdit.display(.duration, cue: wait, model: model), "00:02.00")
         XCTAssertEqual(InspectorEdit.display(.duration, cue: load, model: model), "")
     }
 
@@ -161,15 +161,15 @@ final class InspectorDurationTests: XCTestCase {
     func testWaitDurationIsEditedInTheBasicsTab() async {
         vc.setSelection([DurationEditingTests.wait])
         XCTAssertTrue(vc.durationField.isEnabled)
-        XCTAssertEqual(vc.durationField.stringValue, "00:02.000")
+        XCTAssertEqual(vc.durationField.stringValue, "00:02.00")
         edit(.duration, "90")
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property(DurationEditingTests.wait, "duration", "90"))
-        XCTAssertEqual(vc.durationField.stringValue, "01:30.000", "what will be stored, at once")
+        XCTAssertEqual(vc.durationField.stringValue, "01:30.00", "what will be stored, at once")
         await assertEventually("the engine's echo") {
             self.kind(DurationEditingTests.wait)?["duration"]?.doubleValue == 90
         }
-        XCTAssertEqual(vc.durationField.stringValue, "01:30.000")
+        XCTAssertEqual(vc.durationField.stringValue, "01:30.00")
         XCTAssertFalse(tabs().contains("loadTime"))
     }
 
@@ -179,7 +179,7 @@ final class InspectorDurationTests: XCTestCase {
         edit(.duration, "0:03")
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property(CueListHarness.fade, "duration", "3"))
-        await assertEventually("the Fade tab follows") { self.vc.fadeSettings.durationField.stringValue == "00:03.000" }
+        await assertEventually("the Fade tab follows") { self.vc.fadeSettings.durationField.stringValue == "00:03.00" }
     }
 
     func testOtherCuesHaveNoDurationToType() async {
@@ -204,7 +204,7 @@ final class InspectorDurationTests: XCTestCase {
             ("1,5", "inspector.invalid.decimalComma"),
         ] {
             edit(.duration, text)
-            XCTAssertEqual(vc.durationField.stringValue, "00:02.000", text)
+            XCTAssertEqual(vc.durationField.stringValue, "00:02.00", text)
             XCTAssertEqual(vc.messageLabel.stringValue, loc(key), text)
         }
         await settle()
@@ -214,14 +214,14 @@ final class InspectorDurationTests: XCTestCase {
     func testLoadTimeTabForLoadCuesOnly() async {
         vc.setSelection([DurationEditingTests.load])
         XCTAssertTrue(tabs().contains("loadTime"))
-        XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.500")
+        XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.50")
         edit(.loadTime, "1:30")
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property(DurationEditingTests.load, "load_to_time", "90"))
         await assertEventually { self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == 90 }
         edit(.loadTime, "-10")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.negativeLoadTime"))
-        XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.000")
+        XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.00")
         await settle()
         XCTAssertEqual(commands.count, 1, "the negative time was not sent")
         vc.setSelection([DurationEditingTests.wait])
@@ -233,7 +233,7 @@ final class InspectorDurationTests: XCTestCase {
         vc.setSelection([DurationEditingTests.wait])
         edit(.duration, "7")
         await assertEventually { self.vc.messageLabel.stringValue.contains("refused by the fake") }
-        XCTAssertEqual(vc.durationField.stringValue, "00:02.000")
+        XCTAssertEqual(vc.durationField.stringValue, "00:02.00")
     }
 
     func testShowModeLocksBothFields() async {
@@ -302,7 +302,7 @@ final class CueListDurationTests: XCTestCase {
         XCTAssertFalse(h.vc.beginDurationEdit(H.group))
         XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
         XCTAssertEqual(h.vc.editingDuration, DurationEditingTests.wait)
-        XCTAssertEqual(h.vc.durationEditor.stringValue, "00:02.000")
+        XCTAssertEqual(h.vc.durationEditor.stringValue, "00:02.00")
         XCTAssertTrue(h.vc.durationEditor.superview === h.vc.outlineView)
         let row = h.spy.row(forItem: h.vc.node(DurationEditingTests.wait))
         let column = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
