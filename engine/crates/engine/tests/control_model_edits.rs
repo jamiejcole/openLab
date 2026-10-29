@@ -19,8 +19,9 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, ServerMessage, TransportAction, WireProblem,
 };
 use openlab_core::{
-    Command, CueKind, NetworkPatch, NetworkPatchProperty, NetworkProtocol, OutputPatch, PatchId,
-    PatchMapping, PatchOutput, PatchProperty, TransportKey, Workspace, WorkspaceSetting,
+    Command, CueKind, CueProperty, NetworkPatch, NetworkPatchProperty, NetworkProtocol,
+    OutputPatch, PatchId, PatchMapping, PatchOutput, PatchProperty, TransportKey, Workspace,
+    WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
@@ -796,4 +797,67 @@ fn removing_a_patch_a_playing_cue_uses_is_still_refused_as_used() {
     );
     let message = refusal(&replies).expect("refused");
     assert!(message.contains("is used by cue"), "{message}");
+}
+
+/// M5.6b: a Wait's duration and a Load cue's time edited through the control loop (as the
+/// inspector sends them) reach clients as `model_changed`, a bad value or a cue without the
+/// field is refused with nothing sent, undo restores, and a running Wait whose duration is
+/// edited ends on the end it started with.
+#[test]
+fn duration_and_load_time_edits_go_through_the_engine_and_undo() {
+    let wait = cue(1, CueKind::Wait { duration: 1.0 });
+    let load = cue(
+        2,
+        CueKind::Load {
+            target: Some(id(1)),
+            load_to_time: 0.0,
+        },
+    );
+    let mut s = show(workspace(vec![wait, load]));
+    let before = s.control().workspace().clone();
+    let mut mirror = Mirror::new(&s);
+    let set = |n: u128, property: CueProperty| Command::SetCueProperty {
+        id: id(n),
+        property,
+    };
+    command(&mut s, set(1, CueProperty::Duration { value: 2.5 }));
+    command(&mut s, set(2, CueProperty::LoadToTime { value: 0.75 }));
+    assert_eq!(mirror.catch_up(&mut s), 2);
+    for (n, bad, field) in [
+        (1, CueProperty::Duration { value: -1.0 }, "duration"),
+        (1, CueProperty::Duration { value: 1e9 }, "duration"),
+        (2, CueProperty::LoadToTime { value: -0.5 }, "load_to_time"),
+    ] {
+        let message = refusal(&send(&mut s, set(n, bad), None)).expect("refused");
+        assert!(message.contains(field), "{message}");
+    }
+    assert!(
+        refusal(&send(
+            &mut s,
+            set(2, CueProperty::Duration { value: 1.0 }),
+            None
+        ))
+        .is_some()
+    );
+    assert_eq!(mirror.catch_up(&mut s), 0);
+    undo(&mut s);
+    undo(&mut s);
+    assert_eq!(mirror.catch_up(&mut s), 2);
+    assert_eq!(s.control().workspace(), &before);
+
+    // The Wait (1 s) is running when it is made 10 s long: it still ends after 1 s (the idle
+    // state is seen at block granularity, so within a block of it).
+    let started = go(&mut s);
+    s.step();
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Running
+    );
+    command(&mut s, set(1, CueProperty::Duration { value: 10.0 }));
+    let idle = run_until_idle(&mut s, id(1), u64::from(RATE) * 5);
+    let ran = idle.abs_diff(started);
+    assert!(
+        ran.abs_diff(u64::from(RATE)) <= u64::from(RATE) / 10,
+        "ran {ran} frames"
+    );
 }

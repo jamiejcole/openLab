@@ -48,7 +48,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
     ]
-    let durationLabel = NSTextField(labelWithString: "")
+    /// A Wait or Fade cue's duration (QLab's Basics tab); empty and disabled for other cues.
+    let durationField = NSTextField()
+    /// The Load Time tab's one field, in the tab view only while a Load cue is selected (CT-14).
+    let loadTimeField = NSTextField()
+    var loadTimeItem: NSTabViewItem?
     let kindIcon = NSImageView()
     let notesView = NSTextView()
     let colourPopup = NSPopUpButton()
@@ -116,6 +120,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .postWait: return postWaitField
         case .target: return targetField
         case .osc: return oscField
+        case .duration: return durationField
+        case .loadTime: return loadTimeField
         case .notes: return nil
         }
     }
@@ -131,13 +137,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         for (f, id) in [
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget), (oscField, AX.inspectorOSC),
+            (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
         ] {
             f.setAX(id)
             f.delegate = self
             f.lineBreakMode = .byTruncatingTail
             f.usesSingleLineMode = true
         }
-        durationLabel.setAX(AX.inspectorDuration)
         notesView.setAX(AX.inspectorNotes)
         notesView.delegate = self
         notesView.isRichText = false
@@ -192,7 +198,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             if let width { s.widthAnchor.constraint(equalToConstant: width).isActive = true }
             return s
         }
-        for f in [numberField, preWaitField, postWaitField] {
+        for f in [numberField, preWaitField, postWaitField, durationField, loadTimeField] {
             f.widthAnchor.constraint(equalToConstant: 130).isActive = true
         }
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
@@ -201,7 +207,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let left = column(
             [
-                row(loc("cuelist.col.number"), numberField), row(loc("cuelist.col.duration"), durationLabel),
+                row(loc("cuelist.col.number"), numberField), row(loc("cuelist.col.duration"), durationField),
                 row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField),
                 row(loc("inspector.continue"), continuePopup),
             ], width: 150)
@@ -227,6 +233,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         tabView.addTabViewItem(item)
         tabView.addTabViewItem(triggersTab(row: row, column: column))
         modeItem = modeTab(row: row, column: column)
+        loadTimeItem = loadTimeTab(row: row, column: column)
         buildLevelsTabs()
         tabView.setAX(AX.inspectorTabs)
 
@@ -330,6 +337,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let item = NSTabViewItem(identifier: "mode")
         item.label = loc("inspector.tab.mode")
         item.view = columns
+        return item
+    }
+
+    /// The Load Time tab of a Load cue (QLab 5, manual pp. 680-681): the time its target is loaded to.
+    private func loadTimeTab(
+        row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
+    ) -> NSTabViewItem {
+        let content = column([row(loc("inspector.loadTime"), loadTimeField)], nil)
+        content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let item = NSTabViewItem(identifier: "loadTime")
+        item.label = loc("inspector.tab.loadTime")
+        item.view = content
         return item
     }
 
@@ -443,10 +462,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             targetField.stringValue = ""
         }
         targetField.isEnabled = isTarget
-        // Duration comes from content (read-only here): Fade and Wait carry theirs in the model.
-        let hasDuration = kind == "fade" || kind == "wait"
-        durationLabel.stringValue =
-            hasDuration ? InspectorTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0) : ""
+        // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
+        durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
+        syncTab(loadTimeItem, present: kind == "load")
         let colour = cue.raw["color"]?.stringValue ?? "none"
         colourPopup.selectItem(at: Self.colours.firstIndex(of: colour) ?? 0)
         let mode = cue.raw["continue_mode"]?.stringValue ?? "do_not_continue"
@@ -483,7 +501,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     private var lockedControls: [NSControl] {
         [
-            numberField, nameField, preWaitField, postWaitField, targetField, oscField, hotkeyField, hotkeyClear,
+            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
+            hotkeyField, hotkeyClear,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]
@@ -525,7 +544,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             messageLabel.stringValue = ""
             send(command, cue: cue.id, key: "\(f)", revert: [f])
             // Show what will be stored (`90` becomes `01:30.000`) until the model answers.
-            if f == .preWait || f == .postWait, let s = InspectorTime.parse(text) {
+            if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = InspectorTime.parse(text) {
                 field(f)?.stringValue = InspectorTime.format(s)
             }
         }
@@ -561,7 +580,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let property = command.json["property"]
         let sentTriggers = property?["type"]?.stringValue == "triggers" ? property?["value"] : nil
         if let sentTriggers { pendingTriggers[cue] = sentTriggers }
-        let sentKind = property?["type"]?.stringValue == "kind" ? property?["value"] : nil
+        let sentKind = property.flatMap { pendingKind(cue, after: $0) }
         if let sentKind { pendingKinds[cue] = sentKind }
         inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -593,17 +612,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     private func show(rejection: InspectorEdit.Rejection) {
-        let key: String
-        switch rejection {
-        case .invalidTime: key = "inspector.invalid.time"
-        case .duplicateNumber: key = "inspector.invalid.duplicateNumber"
-        case .unknownTarget: key = "inspector.invalid.unknownTarget"
-        case .selfTarget: key = "inspector.invalid.selfTarget"
-        case .notApplicable: key = "inspector.invalid.notApplicable"
-        case .decimalComma: key = "inspector.invalid.decimalComma"
-        case .invalidOSC: key = "inspector.invalid.osc"
-        }
-        messageLabel.stringValue = loc(key)
+        messageLabel.stringValue = loc(rejection.messageKey)
+    }
+
+    /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
+    /// field inside it (`duration`, `load_to_time`): a kind edit sent before the answer must keep it.
+    private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
+        let type = property["type"]?.stringValue
+        if type == "kind" { return property["value"] }
+        guard let type, type == "duration" || type == "load_to_time", let value = property["value"],
+            let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
+        else { return nil }
+        kind.set(type, value)
+        return kind
     }
 
     private func inspectorField(of control: Any?) -> InspectorField? {

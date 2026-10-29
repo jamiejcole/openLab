@@ -371,7 +371,7 @@ final class FakeEngine: EngineTransport {
                         switch type {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
-                        case "media": cue["kind"]?.set("media", value)
+                        case "media", "duration", "load_to_time": cue["kind"]?.set(type, value)
                         default: cue.set(type, value)
                         }
                     }

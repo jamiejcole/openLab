@@ -65,6 +65,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
         }
+        cueList.onEditDuration = { [weak self] id, text in
+            Task { await self?.editor.setDuration(of: id, text: text) }
+        }
         cueList.onFileDrop = { [weak self] drop in
             Task {
                 switch drop {
@@ -224,7 +227,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    func commitPendingEdits() async -> Bool { await inspector.commitPendingEdits() }
+    /// Commits what is typed in the inspector and in the cue list's Duration cell, and waits for the
+    /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
+    func commitPendingEdits() async -> Bool {
+        var ok = true
+        if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        return await inspector.commitPendingEdits() && ok
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onCloseRequest?()

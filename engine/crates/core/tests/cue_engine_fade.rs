@@ -306,6 +306,55 @@ fn stop_target_when_done_stops_it_on_the_fades_last_sample() {
     assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 2500));
 }
 
+/// A Fade's duration edited while it runs (M5.6b, the inspector's `Duration` command): the
+/// running fade keeps the ramps and the end it started with, so its target stops and its
+/// auto-follow fires on the original end; the next run takes the edit. QLab does not document
+/// it (open question in docs/todo/open-qlab-questions.md).
+#[test]
+fn a_running_fade_keeps_its_end_when_its_duration_is_edited() {
+    for edited in [0.0, 0.5, 30.0] {
+        let mut rig = Rig::new(vec![
+            sound(1),
+            timed(
+                fade_to(2, 1, 2.0, FadeCurve::Linear, master(SILENCE_DB), true),
+                0.0,
+                0.0,
+                AF,
+            ),
+            memo(3),
+        ]);
+        rig.start(0, 1);
+        rig.start(500, 2);
+        rig.ws
+            .apply(Command::SetCueProperty {
+                id: id(2),
+                property: CueProperty::Duration { value: edited },
+            })
+            .unwrap();
+        let mid = rig.tick(1000);
+        assert!(ramps(&mid).is_empty(), "{edited}: {mid:?}");
+        assert!(voice_stops(&mid).is_empty(), "{edited}");
+        assert_eq!(rig.state(1), CueState::Fading, "{edited}");
+        assert!(voice_stops(&rig.tick(2499)).is_empty(), "{edited}");
+        let end = rig.tick(2500);
+        assert_eq!(voice_stops(&end), vec![(id(1), 2500, None)], "{edited}");
+        assert_eq!(
+            changes(&end, 3)[0],
+            (CueState::PreWaiting, 2500),
+            "{edited}"
+        );
+        // The next run fades over the edited duration.
+        rig.start(3000, 1);
+        let again = rig.start(4000, 2);
+        let frames = (edited * 1000.0) as SampleTime;
+        let again = ramps(&again);
+        assert!(
+            !again.is_empty() && again.iter().all(|r| r.frames == frames),
+            "{edited}: {again:?}"
+        );
+    }
+}
+
 #[test]
 fn stop_target_in_the_lookahead_window_lands_on_the_exact_sample() {
     let mut rig = Rig::with_lookahead(

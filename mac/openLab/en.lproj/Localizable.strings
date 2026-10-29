@@ -157,6 +157,8 @@
 "inspector.tab.basics" = "Basics";
 "inspector.tab.triggers" = "Triggers";
 "inspector.tab.mode" = "Mode";
+"inspector.tab.loadTime" = "Load Time";
+"inspector.loadTime" = "Load target to time";
 "inspector.groupMode" = "Group mode";
 "inspector.groupMode.timeline" = "Timeline - start all children at once";
 "inspector.groupMode.playlist" = "Playlist - one child at a time";
@@ -212,6 +214,9 @@
 "inspector.invalid.unknownTarget" = "No cue has that number.";
 "inspector.invalid.selfTarget" = "A cue cannot target itself.";
 "inspector.invalid.notApplicable" = "This cue has no target.";
+"inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
+"inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
+"inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 

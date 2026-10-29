@@ -315,8 +315,9 @@ final class InspectorLevelsTests: XCTestCase {
         f.durationField.stringValue = "0:02.5"
         endEditing(f.durationField, f)
         await assertEventually { self.sent.count == 1 }
-        XCTAssertEqual(lastKind?["duration"], .double(2.5))
-        XCTAssertEqual(lastKind?["target"], .string(Self.intro.raw), "the rest of the kind is untouched")
+        // The duration has its own property (M5.6b): the rest of the kind is not resent.
+        XCTAssertEqual(sent.last?.command["property"]?["type"], .string("duration"))
+        XCTAssertEqual(sent.last?.command["property"]?["value"], .double(2.5))
         XCTAssertEqual(f.durationField.stringValue, "00:02.500")
 
         for (i, curve) in FadeSettingsPanel.curves.enumerated() {

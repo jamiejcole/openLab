@@ -57,4 +57,22 @@ final class CueListUITests: XCTestCase {
         let hidden = XCTNSPredicateExpectation(predicate: gone, object: app.staticTexts["Door slam"])
         XCTAssertEqual(XCTWaiter().wait(for: [hidden], timeout: 5), .completed)
     }
+
+    /// M5.6b: double-clicking a Fade cue's Duration cell edits it in place (QLab 5, manual pp. 94-95);
+    /// the engine stores it and the cell and the inspector show the new duration.
+    func testFadeDurationIsEditedInTheDurationColumn() {
+        let app = launch()
+        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
+        let cell = app.staticTexts["00:05.00"]  // the Fade cue's duration
+        XCTAssertTrue(cell.waitForExistence(timeout: 5))
+        cell.doubleClick()
+        // The field opens focused with its text selected, so typing replaces it. It is laid over the
+        // outline, which lists only its rows to accessibility, so it is reached by keyboard focus.
+        app.typeText("1:30\r")
+        XCTAssertTrue(app.staticTexts["01:30.00"].waitForExistence(timeout: 10), "the cell shows the stored duration")
+        let inspector = app.textFields["inspector-duration"]
+        let stored = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == '01:30.000'"), object: inspector)
+        XCTAssertEqual(XCTWaiter().wait(for: [stored], timeout: 5), .completed, "the inspector follows")
+    }
 }

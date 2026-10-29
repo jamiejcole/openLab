@@ -632,6 +632,33 @@ fn load_cue_loads_its_target_to_its_time() {
     )));
 }
 
+/// The load time edited with the inspector's `LoadToTime` command (M5.6b) is read when the Load
+/// cue's action starts, so an edit during its pre-wait applies.
+#[test]
+fn load_cue_uses_its_time_as_edited_up_to_its_action_start() {
+    let mut rig = Rig::new(vec![
+        timed(load_cue(1, 3, 2.5), 1.0, 0.0, DNC),
+        memo(2),
+        timed(sound(3), 1.0, 0.0, DNC),
+    ]);
+    rig.go(0);
+    rig.ws
+        .apply(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::LoadToTime { value: 3.0 },
+        })
+        .unwrap();
+    rig.tick(500);
+    let action = rig.tick(1000);
+    assert!(
+        action.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2000, .. } if *cue == id(3)
+        )),
+        "{action:?}"
+    );
+}
+
 #[test]
 fn load_cue_on_an_active_or_broken_target_warns() {
     let mut rig = Rig::new(vec![load_cue(1, 3, 0.0), memo(2), sound(3)]);

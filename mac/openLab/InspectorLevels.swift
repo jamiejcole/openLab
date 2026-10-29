@@ -3,10 +3,10 @@
 import AppKit
 
 /// The Levels tab of an Audio cue (AUD-06, AUD-08) and the Fade tab of a Fade cue (CT-10, AUD-09).
-/// Levels, routing and fade settings are edited by sending the cue's whole `kind` (core's
+/// Levels, routing, curve and stop flag are edited by sending the cue's whole `kind` (core's
 /// `CueProperty::Kind`; there is no finer command, docs/commands.md), built from the model's kind with
-/// only the edited fields changed. Dragging a fader or a matrix cell sends every move with one
-/// `coalesce` key, so the whole drag is one undo step.
+/// only the edited fields changed; the Fade's duration has its own `duration` property. Dragging a
+/// fader or a matrix cell sends every move with one `coalesce` key, so the whole drag is one undo step.
 extension InspectorViewController {
     /// How many file channels the matrix shows when the cue's routing mentions fewer. The engine does
     /// not tell the UI a file's channel count yet, so a stereo file is assumed.
@@ -52,7 +52,8 @@ extension InspectorViewController {
         return box
     }
 
-    private func sync(_ item: NSTabViewItem?, present wanted: Bool) {
+    /// Puts `item` in the tab view or takes it out.
+    func syncTab(_ item: NSTabViewItem?, present wanted: Bool) {
         guard let item else { return }
         let present = tabView.tabViewItems.contains { $0 === item }
         if wanted, !present {
@@ -67,8 +68,8 @@ extension InspectorViewController {
         let kind = cue.raw["kind"] ?? .null
         let audio = cue.kindType == "audio"
         let fade = cue.kindType == "fade"
-        sync(levelsItem, present: audio)
-        sync(fadeItem, present: fade)
+        syncTab(levelsItem, present: audio)
+        syncTab(fadeItem, present: fade)
         let set = LevelSet(kind: kind)
         if audio, let set {
             audioLevels.show(set, inputs: max(Self.defaultInputs, set.inputExtent), outputs: set.outputs.count)
@@ -125,11 +126,18 @@ extension InspectorViewController {
     }
 
     func sendFade(_ change: FadeSettingsPanel.Change) {
+        // The duration has its own property (M5.6b): the rest of the kind is not resent.
+        if case .duration(let seconds) = change {
+            guard !isLocked, let cue = cueForEdit else { return }
+            messageLabel.stringValue = ""
+            send(.setProperty(cue.id, .duration(seconds)), cue: cue.id, key: "duration", revert: [.duration])
+            return
+        }
         sendKind(
             { kind in
                 var kind = kind
                 switch change {
-                case .duration(let seconds): kind.set("duration", .double(seconds))
+                case .duration: break  // sent above
                 case .curve(let curve): kind.set("curve", .string(curve))
                 case .stopTarget(let stop): kind.set("stop_target_when_done", .bool(stop))
                 }

@@ -169,6 +169,8 @@ M2.28 additions (also optional for the client, `PROTOCOL_VERSION` stayed 1 (it w
 
 M5.10e additions (`PROTOCOL_VERSION` stays 2): the `command` message takes `paste_clipboard { at, cues }` (the raw clipboard; the engine makes fresh ids, fixture `client/command_paste_clipboard.json`) and the cue property `media` (`{ "type": "media", "value": path | null }`, an Audio cue's file alone, fixture `client/command_set_cue_media.json`). The engine stores a media path inside the show folder relative to it, for `add_cue`, `paste`, `paste_clipboard`, `set_cue_property` (`kind` or `media`) and `batch_set`; a client sends absolute paths (docs/commands.md, "Preparing a command"). The new pasted cues' ids are not in the result: read them from the `model_changed` that precedes it.
 
+M5.6b additions (`PROTOCOL_VERSION` stays 2): the cue properties `duration` (`{ "type": "duration", "value": seconds }`, Wait and Fade cues only, fixture `client/command_set_cue_duration.json`) and `load_to_time` (Load cues only, fixture `client/command_set_cue_load_to_time.json`), for `set_cue_property` and `batch_set`. The value is 0 to 86400 seconds; anything else, or a cue without that field, is a `result` error (docs/commands.md). An older engine refuses the unknown property type, so it changes nothing.
+
 M5.4d additions (`PROTOCOL_VERSION` stays 2): the snapshot's optional `media_durations` and the `media_duration` runtime change (fixtures `server/snapshot.json`, `server/runtime_media_duration.json`). A client ignores a runtime change `type` it does not know (the Swift client logs it), so an older client is unaffected.
 
 ### Media durations
