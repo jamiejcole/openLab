@@ -12,8 +12,8 @@
 //! log is flushed, the run marker goes and `engine.json` goes last, so a start meanwhile is
 //! refused naming this engine. As soon as the shutdown begins (whichever of those started it)
 //! the engine is "stopping" ([`Stopping`]): an app connection that ends is not relaunched, and
-//! `engine.json` says `stopping: true`, so a client that finds it waits for this engine to exit
-//! instead of attaching to it. A signal while starting, a second one while stopping, or an exit
+//! `engine.json` says `stopping: true`, which tells a client that finds it to wait for this
+//! engine to exit instead of attaching to it. A signal while starting, a second one while stopping, or an exit
 //! that overruns its bound ends the process at once ([`stop`]).
 //!
 //! The stream is opened, closed and reopened on the device thread (`control::devices`), which
