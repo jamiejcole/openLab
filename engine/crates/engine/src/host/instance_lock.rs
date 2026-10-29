@@ -83,6 +83,7 @@ mod tests {
 
     #[test]
     fn a_second_lock_is_refused_with_the_holders_pid_until_the_first_goes() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("openLab").join("engine.lock");
         // The lock belongs to the open file, so a second open in this process stands for a
@@ -103,6 +104,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_named_like_the_lock_does_not_hang_the_start() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("engine.lock");
         let made = std::process::Command::new("mkfifo")
