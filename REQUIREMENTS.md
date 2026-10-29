@@ -71,10 +71,11 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 
 ## 3. Cue Lists & Carts
 - [ ] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
-- [ ] **CL-02** `v0.0.1` Cue list shows: number, name, type icon, target, pre-wait, duration, post-wait, continue mode, colour, state; columns configurable.
+- [ ] **CL-02** `v0.0.1` Cue list shows, in QLab 5's fixed column order: status, type icon, number, name, target, pre-wait, duration, post-wait, continue mode; cue colour tints the row, a flag shows in the status column; column widths are remembered. *(Column show/hide/reorder dropped 2026-10-29: QLab 5 has none.)*
 - [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
 - [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
 - [x] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
+- [ ] **CL-07** `v0.0.1` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
 - [ ] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
 
 ---
@@ -134,11 +135,11 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **PB-04** `v0.0.1` Pause All / Resume All.
 - [ ] **PB-05** `v0.0.1` Playhead navigation (next/previous, jump to cue by number) without firing.
 - [ ] **PB-06** Load-to-time: start the show (or a cue) from an arbitrary point with correct state, including what should already be playing (for rehearsal pick-ups).
-- [ ] **PB-07** `v0.0.1` Active Cues panel: running cues with elapsed/remaining time, progress, level, and per-cue stop/pause/fade-out controls.
+- [ ] **PB-07** `v0.0.1` Active Cues panel: running cues with elapsed/remaining time, progress, and per-cue stop/pause/fade-out controls. No meters here (QLab 5 has none).
 - [ ] **PB-08** Per-cue live level adjustment while running (temporary, not saved unless chosen).
 - [ ] **PB-09** Audition / preview: play a cue to a separate audition output without affecting show outputs or triggering follow-ons.
 - [ ] **PB-10** `v0.0.1` Global output overrides: independently disable MIDI, OSC/network, timecode output (for rehearsal/editing), with clear on-screen indication.
-- [ ] **PB-11** `v0.0.1` Master level per output and global master.
+- [ ] **PB-11** `v0.0.1` Per-patch main level and per-output level in the patch editor, within the workspace's output dB limits. *(Global master dropped 2026-10-29: QLab 5 has none.)*
 - [x] **PB-12** `v0.0.1` Wall clock and per-show countdown/elapsed timers visible.
 
 ---
@@ -162,9 +163,9 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **AUD-16** Built-in effects per cue and per output: parametric EQ, compressor/limiter, delay, reverb, high/low-pass.
 - ~~**AUD-17** Third-party plugin hosting: Audio Unit (macOS), VST3 (both). Plugins run in a way that a plugin crash cannot take down playback.~~ *(retired: not required)*
 - ~~**AUD-18** Output protection: optional brick-wall limiter per output.~~ *(retired: not required)*
-- [ ] **AUD-19** `v0.0.1` Metering: per-cue and per-output peak meters.
+- [ ] **AUD-19** `v0.0.1` Metering: peak meters beside the faders in the cue's levels and trim tabs and in the patch editor, as QLab 5; none in the Active Cues panel or the cue list.
 - [ ] **AUD-20** Live input (Mic cues) with selectable input device/channels and low-latency monitoring.
-- [ ] **AUD-21** `v0.0.1` Configurable buffer size and sample rate, with clear latency readout.
+- [ ] **AUD-21** `v0.0.1` Configurable audio buffer size per machine (app preferences, Hardware). ~~Sample-rate chooser and latency readout~~ *(dropped 2026-10-29: QLab 5 has no equivalent; the rate comes from the device.)*
 
 ---
 
@@ -205,6 +206,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **TRG-04** Timecode input (LTC via audio, MTC via MIDI) triggering cues at specific timecode values; chase/freewheel handling for dropouts.
 - [ ] **TRG-05** Wall-clock triggers (time of day, with day-of-week).
 - [ ] **TRG-06** Generic USB/HID controllers (foot pedals, Stream Deck via Companion) through MIDI/OSC/hotkey mapping.
+- [ ] **TRG-07** `v0.0.1` The key map includes QLab 5's cue-editing keys column: edit number, name, notes, target, cycle target type, pre-wait, action duration, post-wait, cycle continue mode, flag/unflag; plus Preview Selected as remappable; Esc and double-Esc shown read-only.
 
 ---
 
@@ -240,16 +242,17 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **ED-06** Paste properties (selectively) from one cue to others.
 - [ ] **ED-07** `v0.0.1` Unlimited undo/redo covering every edit, including routing and settings.
 - [ ] **ED-08** `v0.0.1` Auto-numbering on cue creation (configurable start/increment) and bulk renumber.
-- [ ] **ED-09** `v0.0.1` Find (by name, number, notes, type, file) and find-and-replace.
-- [ ] **ED-10** `v0.0.1` Create fade/stop cues for selected cue in one action ("fade this out").
+- [ ] **ED-09** `v0.0.1` Find bar (by name, number, notes, type, file): found count, previous/next, select found. ~~Find-and-replace~~ *(dropped 2026-10-29: QLab 5 has none.)*
+- ~~**ED-10** Create fade/stop cues for selected cue in one action ("fade this out").~~ *(dropped 2026-10-29: QLab 5 has no built-in command; the Cues menu only creates an empty Fade cue.)*
 - [ ] **ED-11** Timeline view for group cues showing child timing graphically, with drag editing.
 - [ ] **ED-12** `v0.0.1` Fully keyboard-operable editing (create cue types, navigate, edit fields).
-- [ ] **ED-13** `v0.0.1` Cue colours and flags; filter/highlight by colour/flag/state.
+- [ ] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
+- [ ] **ED-13** `v0.0.1` Cue colours and flags (set per cue and per selection). ~~Filter/highlight by colour/flag/state~~ *(dropped 2026-10-29: QLab 5 has none; Find covers lookup.)*
 
 ---
 
 ## 15. Show Mode & Operator Safety
-- [ ] **SM-01** `v0.0.1` Edit Mode vs Show Mode. Show Mode locks editing, enlarges GO/standby display, and disables destructive actions.
+- [ ] **SM-01** `v0.0.1` Edit Mode vs Show Mode. Show Mode hides the cue-type toolbar and the inspector (as QLab 5), enlarges the GO button and standby display, and disables destructive actions.
 - ~~**SM-02** Optional password to leave Show Mode.~~ *(retired: not required)*
 - [ ] **SM-03** `v0.0.1` Large, high-contrast standby/GO display usable at a distance in a dark booth.
 - [ ] **SM-04** `v0.0.1` Dark UI by default; brightness-appropriate for blacked-out booths.
@@ -260,7 +263,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ---
 
 ## 16. Diagnostics & Logging
-- [ ] **DX-01** `v0.0.1` Warnings panel listing every broken cue and system problem, click-through to the cue.
+- [ ] **DX-01** `v0.0.1` Warnings listing every broken cue and system problem, click-through to the cue: a footer popover plus the status window (as QLab 5); no sidebar Warnings tab.
 - [ ] **DX-02** `v0.0.1` Show log: timestamped record of every GO, cue start/stop, trigger received, error — viewable in-app and written to disk.
 - [x] **DX-03** `v0.0.1` System status: CPU, audio engine load, disk read health, xrun count, device status.
 - [ ] **DX-04** `v0.0.1` Crash reports captured locally (with workspace path and last log lines); sending is opt-in.
@@ -269,7 +272,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ---
 
 ## 17. Preferences & UI
-- [ ] **UI-01** `v0.0.1` Application preferences: audio/MIDI devices, autosave, backups, theme, GO protection, Panic time.
+- [ ] **UI-01** `v0.0.1` Settings split as in QLab 5. Application preferences (per machine): launch behaviour, autosave interval, audio devices and buffer size, MIDI devices. Workspace settings (travel with the show file, WS-06): GO protection, Panic time, backups, output patches and dB limits, hotkeys. ~~Theme~~ *(dropped 2026-10-29: QLab 5 has no theme control.)*
 - [ ] **UI-02** `v0.0.1` Resizable, dockable panels; layouts saved per machine.
 - [ ] **UI-03** `v0.0.1` UI scaling / font size for small laptop screens and high-DPI displays.
 - [ ] **UI-04** `v0.0.1` Cue state is never conveyed by colour alone (icon/shape too) — colour-blind safe.
@@ -327,7 +330,6 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **AUD-04** OGG optional.
 - **AUD-09** standard curves; custom curves later.
 - **NET-01** core subset: GO, stop, panic, pause/resume, playhead, select, start/stop/pause cue by number/ID, basic cue properties (name, number, notes, levels, times).
-- **ED-09** find only; replace later.
 - **UI-02** fixed QLab-like layout; docking later.
 - **DST-01** macOS `.dmg` only.
 - **DOC-01** getting-started guide only.
