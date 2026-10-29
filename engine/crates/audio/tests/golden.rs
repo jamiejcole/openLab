@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-//! A golden checksum of the mixer's output over a varied workload (M3.19 L1): the speed-ups of
+//! A golden checksum of the mixer's output over a varied workload: the speed-ups of
 //! the mix loop are meant to be bit-identical, and this pins that down across platforms. Only
 //! Linear curves and plain linear gains are used: curved knots and `db_to_linear` go through the
 //! platform's libm, which differs between operating systems in the last bit.

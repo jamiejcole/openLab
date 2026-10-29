@@ -7,7 +7,7 @@
 )]
 
 //! Commands for settings, output patches, network patches and cue lists, and undo coalescing
-//! (M1.12, ED-07). The randomised version is in `commands_prop.rs`.
+//! (ED-07). The randomised version is in `commands_prop.rs`.
 
 mod common;
 
@@ -151,7 +151,7 @@ fn a_setting_lands_in_its_field_and_nowhere_else() {
     assert_eq!(changed, expected);
 }
 
-// ---- Key map (M5.11c, TRG-01) ----
+// ---- Key map (TRG-01) ----
 
 fn plain(key: &str) -> Hotkey {
     Hotkey {
@@ -695,7 +695,7 @@ fn setting_the_value_it_already_has_is_not_an_edit() {
     assert!(!history.can_redo());
 }
 
-// ---- No-op edits are not undo steps (M1-B Low) ----
+// ---- No-op edits are not undo steps ----
 
 #[test]
 fn cue_edits_that_change_nothing_are_not_undo_steps() {

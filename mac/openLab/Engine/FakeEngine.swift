@@ -30,6 +30,8 @@ final class FakeEngine: EngineTransport {
     var refuseCommands = false
     /// The records `log_tail` answers with (show-log JSON objects), and the `relink` result data.
     var logTailEntries: [JSONValue] = []
+    /// The `seq` `log_tail` answers with (the newest record's number; 0: unnumbered); `max` keeps the newest.
+    var logTailSeq: Int64 = 0
     var relinkData: JSONValue = .object([
         "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
         "truncated": .bool(false), "skipped": .int(0),
@@ -46,10 +48,11 @@ final class FakeEngine: EngineTransport {
     ])
 
     /// One cue with a missing file and one lost device: `total` is 2 (the cue and the system entry).
+    /// The cue is the demo show's Radio (2.3, inside the collapsed group Act One).
     private static let sampleReportWithProblems: JSONValue = {
-        let cue = "00000000-0000-0000-0000-00000000000a"
-        let list = "00000000-0000-0000-0000-000000000001"
-        let path = "/Shows/storm.wav"
+        let cue = "00000000-0000-0000-0000-000000000023"
+        let list = demoListID
+        let path = "media/o.wav"
         return .object([
             "type": .string("preshow_check"), "ok": .bool(false),
             "summary": .object([
@@ -58,7 +61,7 @@ final class FakeEngine: EngineTransport {
             ]),
             "broken_cues": .array([
                 .object([
-                    "cue": .string(cue), "list": .string(list), "number": .string("3"), "name": .string("Storm"),
+                    "cue": .string(cue), "list": .string(list), "number": .string("2.3"), "name": .string("Radio"),
                     "problems": .array([.object(["type": .string("media_missing"), "media": .string(path)])]),
                 ])
             ]),
@@ -371,7 +374,7 @@ final class FakeEngine: EngineTransport {
                         switch type {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
-                        case "media": cue["kind"]?.set("media", value)
+                        case "media", "duration", "load_to_time": cue["kind"]?.set(type, value)
                         default: cue.set(type, value)
                         }
                     }
@@ -698,12 +701,14 @@ final class FakeEngine: EngineTransport {
             result(
                 c, id,
                 ok: .object(["data": relinkData]))
-        case .logTail:
+        case .logTail(let max):
+            let sent = max.map { Array(logTailEntries.suffix(Int($0))) } ?? logTailEntries
             result(
                 c, id,
                 ok: .object([
                     "data": .object([
-                        "type": .string("log_tail"), "entries": .array(logTailEntries), "dropped": .int(0),
+                        "type": .string("log_tail"), "entries": .array(sent), "dropped": .int(0),
+                        "seq": .int(logTailSeq),
                     ])
                 ]))
         case .preshowCheck:

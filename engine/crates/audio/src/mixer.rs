@@ -1311,12 +1311,8 @@ impl Voice {
                 let first = done.saturating_add(from);
                 got = e.frames.saturating_sub(first).min(want);
                 if let Some(src) = e.samples.get(first * ch..(first + got) * ch) {
-                    for (f, frame) in src.chunks_exact(ch).enumerate() {
-                        for (c, &x) in frame.iter().enumerate() {
-                            if let Some(s) = input.as_mut().and_then(|i| i.get_mut(c * block + f)) {
-                                *s = x;
-                            }
-                        }
+                    if let Some(input) = input.as_mut() {
+                        deinterleave(src, &[], ch, input, block, 0);
                     }
                 } else {
                     got = 0;
@@ -1337,13 +1333,11 @@ impl Voice {
                 && let Ok(chunk) = src.read_chunk((first + got) * ch)
             {
                 let (a, b) = chunk.as_slices();
-                for (k, &x) in a.iter().chain(b).skip(first * ch).enumerate() {
-                    if let Some(s) = input
-                        .as_mut()
-                        .and_then(|i| i.get_mut((k % ch) * block + k / ch))
-                    {
-                        *s = x;
-                    }
+                let skip = first * ch;
+                if let Some(input) = input.as_mut() {
+                    let b = b.get(skip.saturating_sub(a.len())..).unwrap_or_default();
+                    let a = a.get(skip..).unwrap_or_default();
+                    deinterleave(a, b, ch, input, block, 0);
                 }
                 // Dropped without a commit: nothing is consumed.
             } else {
@@ -1522,38 +1516,7 @@ impl Voice {
                 && let Ok(chunk) = src.read_chunk(want * ch)
             {
                 let (a, b) = chunk.as_slices();
-                if a.len().is_multiple_of(ch) {
-                    // Whole frames on both sides of the wrap: one channel at a time.
-                    let fa = a.len() / ch;
-                    for c in 0..ch {
-                        let Some(dst) = self.input.get_mut(c * block + got..c * block + got + want)
-                        else {
-                            continue;
-                        };
-                        let (da, db) = dst.split_at_mut(fa.min(dst.len()));
-                        for (d, fr) in da
-                            .iter_mut()
-                            .zip(a.chunks_exact(ch))
-                            .chain(db.iter_mut().zip(b.chunks_exact(ch)))
-                        {
-                            if let Some(x) = fr.get(c) {
-                                *d = *x;
-                            }
-                        }
-                    }
-                } else {
-                    let (mut f, mut c) = (got, 0);
-                    for &x in a.iter().chain(b) {
-                        if let Some(s) = self.input.get_mut(c * block + f) {
-                            *s = x;
-                        }
-                        c += 1;
-                        if c == ch {
-                            c = 0;
-                            f += 1;
-                        }
-                    }
-                }
+                deinterleave(a, b, ch, &mut self.input, block, got);
                 chunk.commit_all();
                 got += want;
                 self.pos += want as u64;
@@ -1636,13 +1599,7 @@ impl Voice {
         let Some(src) = exit.samples.get(done * ch..(done + n) * ch) else {
             return 0;
         };
-        for (f, frame) in src.chunks_exact(ch).enumerate() {
-            for (c, &x) in frame.iter().enumerate() {
-                if let Some(s) = input.get_mut(c * block + got + f) {
-                    *s = x;
-                }
-            }
-        }
+        deinterleave(src, &[], ch, input, block, got);
         n
     }
 
@@ -2513,9 +2470,7 @@ impl Mixer {
             };
             if !p.live {
                 p.live = true;
-                for b in p.bus.chunks_exact_mut(block) {
-                    b.iter_mut().take(len).for_each(|s| *s = 0.0);
-                }
+                clear(&mut p.bus, block, len);
             }
             if v.paused.is_some() {
                 render_tail(v, len, block, &mut p.bus, scratch);
@@ -2528,9 +2483,7 @@ impl Mixer {
         let Some(tmp) = scratch.tmp.get_mut(..len) else {
             return;
         };
-        for dv in dev.chunks_exact_mut(block) {
-            dv.iter_mut().take(len).for_each(|s| *s = 0.0);
-        }
+        clear(dev, block, len);
         // A disabled patch is not mixed: its voices play on into a bus nobody hears.
         for (k, p) in patches
             .iter_mut()
@@ -2638,9 +2591,7 @@ fn render_moving(
     s: &mut Scratch,
     outbox: &mut Outbox,
 ) {
-    for b in move_bus.chunks_exact_mut(block) {
-        b.iter_mut().take(len).for_each(|x| *x = 0.0);
-    }
+    clear(move_bus, block, len);
     if v.paused.is_some() {
         render_tail(v, len, block, move_bus, s);
     } else {
@@ -2652,9 +2603,7 @@ fn render_moving(
         };
         if !p.live {
             p.live = true;
-            for b in p.bus.chunks_exact_mut(block) {
-                b.iter_mut().take(len).for_each(|x| *x = 0.0);
-            }
+            clear(&mut p.bus, block, len);
         }
         for (bo, vo) in p
             .bus
@@ -2772,44 +2721,19 @@ fn render_voice(
         let Some(bo) = bus.get_mut(o * block..o * block + len) else {
             continue;
         };
-        acc.fill(0.0);
-        for i in 0..ch {
-            let Some(p) = xp.get_mut(i * outs + o) else {
-                continue;
+        let inputs = input.chunks(block).take(ch);
+        mix_output(bo, acc, tmp, inputs, og, meter.get_mut(o), |i, tmp| {
+            let Some(p) = xp.get_mut(i * outs + o).filter(|p| !p.is_silent()) else {
+                return XGain::Skip;
             };
-            if p.is_silent() {
-                continue;
-            }
-            let steady = p.steady();
-            if steady.is_none() {
-                p.fill(tmp);
-            }
-            let Some(inp) = input.get(i * block..i * block + len) else {
-                continue;
-            };
-            if let Some(g) = steady {
-                for (((b, a), x), h) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(og.iter()) {
-                    let y = x * g * h;
-                    *b += y;
-                    *a += y;
+            match p.steady() {
+                Some(g) => XGain::Steady(g),
+                None => {
+                    p.fill(tmp);
+                    XGain::Frames
                 }
-                continue;
             }
-            for ((((b, a), x), g), h) in bo
-                .iter_mut()
-                .zip(acc.iter_mut())
-                .zip(inp)
-                .zip(tmp.iter())
-                .zip(og.iter())
-            {
-                let y = x * g * h;
-                *b += y;
-                *a += y;
-            }
-        }
-        if let Some(m) = meter.get_mut(o) {
-            track_all(m, acc);
-        }
+        });
         #[cfg(test)]
         {
             s.metered += acc.len() as u64;
@@ -2893,24 +2817,15 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         let Some(bo) = bus.get_mut(o * block..o * block + got) else {
             continue;
         };
-        acc.fill(0.0);
-        for i in 0..ch {
+        let inputs = input.chunks(block).take(ch);
+        mix_output(bo, acc, &mut [], inputs, vg, meter.get_mut(o), |i, _| {
             let g = xp.get(i * outs + o).map_or(0.0, |x| x.current()) * co;
-            let Some(inp) = input.get(i * block..i * block + got) else {
-                continue;
-            };
             if g == 0.0 {
-                continue;
+                XGain::Skip
+            } else {
+                XGain::Steady(g)
             }
-            for (((b, a), x), h) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(vg.iter()) {
-                let y = x * g * h;
-                *b += y;
-                *a += y;
-            }
-        }
-        if let Some(m) = meter.get_mut(o) {
-            track_all(m, acc);
-        }
+        });
         #[cfg(test)]
         {
             s.metered += acc.len() as u64;
@@ -2918,6 +2833,98 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
     }
     if let Some(p) = v.paused.as_mut() {
         p.done += n as u64;
+    }
+}
+
+/// Zeroes the first `len` frames of each `block`-frame channel of `bus`.
+fn clear(bus: &mut [f32], block: usize, len: usize) {
+    for b in bus.chunks_exact_mut(block) {
+        b.iter_mut().take(len).for_each(|x| *x = 0.0);
+    }
+}
+
+/// Copies interleaved `ch`-channel frames, `a` then `b` (one run, split anywhere: an `rtrb`
+/// chunk wraps mid-frame when the ring's size is not a whole number of frames), into planar
+/// `out`: channel `c` of frame `f` goes to `out[c * stride + at + f]`.
+#[inline]
+fn deinterleave(a: &[f32], b: &[f32], ch: usize, out: &mut [f32], stride: usize, at: usize) {
+    let Some(frames) = (a.len() + b.len()).checked_div(ch) else {
+        return;
+    };
+    // Frame `fa` may be split by the wrap: the last `cut` samples of `a`, then `head`.
+    let (fa, cut) = (a.len() / ch, a.len() % ch);
+    let (head, rest) = b.split_at(if cut == 0 { 0 } else { (ch - cut).min(b.len()) });
+    let split = a.get(fa * ch..).unwrap_or_default().iter().chain(head);
+    for (c, x) in split.enumerate() {
+        if let Some(d) = out.get_mut(c * stride + at + fa) {
+            *d = *x;
+        }
+    }
+    for c in 0..ch {
+        let Some(dst) = out.get_mut(c * stride + at..c * stride + at + frames) else {
+            continue;
+        };
+        let (da, db) = dst.split_at_mut(fa.min(dst.len()));
+        let db = db.get_mut(usize::from(cut > 0)..).unwrap_or_default();
+        let src = a
+            .chunks_exact(ch)
+            .zip(da)
+            .chain(rest.chunks_exact(ch).zip(db));
+        for (fr, d) in src {
+            if let Some(x) = fr.get(c) {
+                *d = *x;
+            }
+        }
+    }
+}
+
+/// A crosspoint's gain over a segment: none (the input is not mixed), one value, or one per
+/// frame, written to `tmp`.
+enum XGain {
+    Skip,
+    Steady(f32),
+    Frames,
+}
+
+/// Mixes a voice's input channels into one output's bus segment `bo`: input `i` times
+/// `gain(i, tmp)` times the per-frame gain `h`. What it adds is summed in `acc` for the meter.
+#[inline]
+fn mix_output<'a>(
+    bo: &mut [f32],
+    acc: &mut [f32],
+    tmp: &mut [f32],
+    inputs: impl Iterator<Item = &'a [f32]>,
+    h: &[f32],
+    meter: Option<&mut f32>,
+    mut gain: impl FnMut(usize, &mut [f32]) -> XGain,
+) {
+    acc.fill(0.0);
+    for (i, inp) in inputs.enumerate() {
+        let g = gain(i, tmp);
+        let Some(inp) = inp.get(..bo.len()) else {
+            continue;
+        };
+        match g {
+            XGain::Skip => {}
+            XGain::Steady(g) => {
+                for (((b, a), x), h) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(h) {
+                    let y = x * g * h;
+                    *b += y;
+                    *a += y;
+                }
+            }
+            XGain::Frames => {
+                let gh = tmp.iter().zip(h);
+                for (((b, a), x), (g, h)) in bo.iter_mut().zip(acc.iter_mut()).zip(inp).zip(gh) {
+                    let y = x * g * h;
+                    *b += y;
+                    *a += y;
+                }
+            }
+        }
+    }
+    if let Some(m) = meter {
+        track_all(m, acc);
     }
 }
 

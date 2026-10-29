@@ -182,7 +182,7 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
                 cue: c,
             },
         ),
-        // Start/Pause Selected (M5.11g): items in selection order, one scheduling time.
+        // Start/Pause Selected: items in selection order, one scheduling time.
         (
             "batch",
             TransportAction::Batch {
@@ -375,7 +375,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
-    // A Devamp cue's settings, `devamp_mode` included (M2.28), travel as its kind.
+    // A Devamp cue's settings, `devamp_mode` included, travel as its kind.
     add(
         "command_set_devamp_kind",
         client(ClientMessage::Command {
@@ -394,7 +394,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
-    // An Audio cue's file alone, and a raw clipboard to paste (M5.10e).
+    // An Audio cue's file alone, and a raw clipboard to paste.
     add(
         "command_set_cue_media",
         client(ClientMessage::Command {
@@ -408,6 +408,23 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A Wait or Fade cue's duration and a Load cue's time, alone (M5.6b).
+    for (name, property) in [
+        ("duration", CueProperty::Duration { value: 12.5 }),
+        ("load_to_time", CueProperty::LoadToTime { value: 90.25 }),
+    ] {
+        add(
+            &format!("command_set_cue_{name}"),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property,
+                }),
+                coalesce: None,
+            }),
+        );
+    }
     add(
         "command_paste_clipboard",
         client(ClientMessage::Command {
@@ -419,11 +436,28 @@ fn fixtures() -> Vec<(String, Sample)> {
                     index: 2,
                 },
                 cues: vec![sample_cue()],
+                source_dir: None,
             }),
             coalesce: None,
         }),
     );
-    // A Network cue's destination, address and arguments (M4.6a).
+    add(
+        "command_paste_clipboard_from_folder",
+        client(ClientMessage::Command {
+            id: rid(5),
+            command: Box::new(Command::PasteClipboard {
+                at: Position {
+                    list: list(),
+                    parent: Some(cue_id(10)),
+                    index: 2,
+                },
+                cues: vec![sample_cue()],
+                source_dir: Some("/Volumes/Show A".to_owned()),
+            }),
+            coalesce: None,
+        }),
+    );
+    // A Network cue's destination, address and arguments.
     for property in [
         CueProperty::Destination { value: net_id(4) },
         CueProperty::Address {
@@ -445,6 +479,29 @@ fn fixtures() -> Vec<(String, Sample)> {
                 command: Box::new(Command::SetCueProperty {
                     id: cue_id(12),
                     property,
+                }),
+                coalesce: None,
+            }),
+        );
+    }
+    // A Group's mode, every variant (the Mac app's encoding is checked against these).
+    for mode in [
+        GroupMode::Timeline,
+        GroupMode::StartFirstAndEnter,
+        GroupMode::StartFirstAndGoToNext,
+        GroupMode::Playlist {
+            loop_: true,
+            shuffle: false,
+        },
+        GroupMode::StartRandom,
+    ] {
+        add(
+            &format!("command_set_group_mode_{}", tag(&mode)),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property: CueProperty::GroupMode { value: mode },
                 }),
                 coalesce: None,
             }),
@@ -681,7 +738,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             ],
         }),
     );
-    // M5.4d: a probed cue whose last slice loops for ever (no `duration`), and a cue whose file
+    // A probed cue whose last slice loops for ever (no `duration`), and a cue whose file
     // went missing (every field absent: not known).
     add(
         "runtime_media_duration",
@@ -721,7 +778,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             waits: vec![],
         }),
     );
-    // M4.2e: pre-wait and post-wait countdowns; cue 12's Wait action runs beside its post-wait.
+    // Pre-wait and post-wait countdowns; cue 12's Wait action runs beside its post-wait.
     add(
         "progress_waits",
         server(ServerMessage::Progress {
@@ -1100,7 +1157,7 @@ fn drift_is_detected_by_comparison() {
     assert!(check_fixture("x", Some("{}"), "{}\n").is_err());
 }
 
-/// M4.15f: `revert` is gone; `new` is a bare object, and a `discard_changes` an older client
+/// `revert` is gone; `new` is a bare object, and a `discard_changes` an older client
 /// still sends is an unknown field, ignored.
 #[test]
 fn revert_is_gone_and_new_is_bare() {
@@ -1153,7 +1210,7 @@ fn a_hello_without_a_workspace_is_the_app_connection() {
     }
 }
 
-/// #168: the app says its process id in hello, so the engine can tell a slow reconnect from a
+/// The app says its process id in hello, so the engine can tell a slow reconnect from a
 /// crash; a client that does not say it still connects.
 #[test]
 fn a_hello_may_carry_the_client_pid() {
@@ -1486,7 +1543,7 @@ fn malformed_input_is_an_error_never_a_panic() {
     );
 }
 
-/// M5.11g: a `batch` is refused whole when it is empty, too long, names a cue twice, carries
+/// A `batch` is refused whole when it is empty, too long, names a cue twice, carries
 /// an action that is not per-cue (a nested batch among them) or an item out of range.
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
@@ -1661,7 +1718,7 @@ fn a_log_entry_with_a_bad_show_time_is_sent_without_it() {
 
 #[test]
 fn a_log_tail_result_without_seq_still_decodes() {
-    // Additive field: an answer from before M4.7c reads as seq 0.
+    // Additive field: an answer from before reads as seq 0.
     let text =
         r#"{"type":"result","id":1,"ok":{"data":{"type":"log_tail","entries":[],"dropped":0}}}"#;
     let ServerMessage::Result { outcome, .. } = decode_server(text).unwrap() else {
@@ -1770,7 +1827,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
 
 #[test]
 fn progress_waits_are_optional_and_strict() {
-    // An engine before M4.2e sends no `waits`: it reads as none, and none is not written.
+    // An engine before sends no `waits`: it reads as none, and none is not written.
     let bare = r#"{"type":"progress","items":[]}"#;
     assert_eq!(
         decode_server(bare).unwrap(),
@@ -2775,7 +2832,7 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
     }
 }
 
-/// One sample of every command that edits more than the cue tree (M1.12), named for its
+/// One sample of every command that edits more than the cue tree, named for its
 /// fixture.
 fn model_commands() -> Vec<(String, Command)> {
     let net = NetworkPatch {
@@ -3570,7 +3627,7 @@ proptest! {
 
 #[test]
 fn a_snapshot_without_media_durations_reads_as_none_known() {
-    // M5.4d: the field is optional, so a snapshot with none known leaves it out and decodes.
+    // The field is optional, so a snapshot with none known leaves it out and decodes.
     let mut snap = snapshot();
     snap.media_durations.clear();
     let text = encode_server(&ServerMessage::Snapshot {

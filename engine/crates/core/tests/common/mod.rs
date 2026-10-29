@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    dead_code
+)]
 
 //! Builders for small test workspaces.
 
@@ -162,7 +168,7 @@ pub fn show_text(workspace: &Workspace) -> String {
     )
 }
 
-/// Calls `handle` as the binary must (M4.2 contract): `model_changed` before the first call
+/// Calls `handle` as the binary must: `model_changed` before the first call
 /// after any change to the workspace. Checks that the engine never caught an unsignalled change.
 pub fn handle_as_binary(
     engine: &mut CueEngine,
@@ -178,4 +184,277 @@ pub fn handle_as_binary(
     let out = engine.handle(ws, input, now);
     assert_eq!(engine.unsignalled_model_changes(), 0);
     out
+}
+
+// ---- Cue-engine rig, shared by the `cue_engine*` test files ----
+
+/// Sample rate of every cue-engine test: one frame is one millisecond.
+pub const RATE: u32 = 1000;
+
+pub fn id(n: u128) -> CueId {
+    cue_id(n)
+}
+
+/// The cue list [`workspace`] builds.
+pub fn list() -> CueListId {
+    list_id(1)
+}
+
+pub fn memo(n: u128) -> Cue {
+    cue(n, CueKind::Memo)
+}
+
+pub fn wait(n: u128, seconds: f64) -> Cue {
+    cue(n, CueKind::Wait { duration: seconds })
+}
+
+pub fn sound(n: u128) -> Cue {
+    cue(n, audio())
+}
+
+/// Sets pre-wait, post-wait and continue mode.
+pub fn timed(mut c: Cue, pre: f64, post: f64, mode: ContinueMode) -> Cue {
+    c.pre_wait = pre;
+    c.post_wait = post;
+    c.continue_mode = mode;
+    c
+}
+
+pub fn changes(actions: &[Action], n: u128) -> Vec<(CueState, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StateChanged { cue, state, at } if *cue == id(n) => Some((*state, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn warnings(actions: &[Action]) -> Vec<EngineWarning> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Warning(w) => Some(w.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StateChanged {
+                cue,
+                state: CueState::PreWaiting,
+                at,
+            } => Some((*cue, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn voice_starts(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StartVoice { cue, at, .. } => Some((*cue, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn voice_stops(actions: &[Action]) -> Vec<(CueId, SampleTime, Option<StopFade>)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::StopVoice { cue, at, fade, .. } => Some((*cue, *at, *fade)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A workspace and a `CueEngine` driven the way the binary drives them (`handle_as_binary`),
+/// with a helper per input. Files add their own helpers in an `impl Rig` block.
+pub struct Rig {
+    pub ws: Workspace,
+    pub engine: CueEngine,
+    /// The workspace as the engine last saw it (see `handle_as_binary`).
+    pub last: Option<Workspace>,
+    /// Also check the engine's problem cache against a rebuild after every input.
+    pub check_cache: bool,
+}
+
+impl Rig {
+    /// One list holding `cues`, no lookahead, seed 1, a tick at 0.
+    pub fn new(cues: Vec<Cue>) -> Self {
+        Self::with_lookahead(cues, 0)
+    }
+
+    pub fn with_lookahead(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
+        Self::with_config(cues, EngineConfig::new(RATE, lookahead, 1).unwrap())
+    }
+
+    pub fn seeded(cues: Vec<Cue>, seed: u64) -> Self {
+        Self::with_config(cues, EngineConfig::new(RATE, 0, seed).unwrap())
+    }
+
+    pub fn with_config(cues: Vec<Cue>, config: EngineConfig) -> Self {
+        Self::on(workspace(cues), config)
+    }
+
+    /// Like `new`, and the problem cache is checked after every input.
+    pub fn checked(cues: Vec<Cue>) -> Self {
+        let mut rig = Self::new(cues);
+        rig.check_cache = true;
+        rig
+    }
+
+    /// Like `new`, with a one-second panic fade (the default is five).
+    pub fn panicking(cues: Vec<Cue>) -> Self {
+        Self::panicking_with(cues, 0)
+    }
+
+    pub fn panicking_with(cues: Vec<Cue>, lookahead: SampleTime) -> Self {
+        let mut ws = workspace(cues);
+        ws.settings.panic_duration = 1.0;
+        Self::on(ws, EngineConfig::new(RATE, lookahead, 1).unwrap())
+    }
+
+    pub fn on(ws: Workspace, config: EngineConfig) -> Self {
+        let mut rig = Self {
+            ws,
+            engine: CueEngine::new(config),
+            last: None,
+            check_cache: false,
+        };
+        rig.tick(0);
+        rig
+    }
+
+    pub fn at(&mut self, now: SampleTime, input: Input) -> Vec<Action> {
+        let out = handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now);
+        if self.check_cache {
+            self.engine.verify_problem_cache(&self.ws).unwrap();
+        }
+        out
+    }
+
+    pub fn tick(&mut self, now: SampleTime) -> Vec<Action> {
+        self.at(now, Input::Tick)
+    }
+
+    pub fn go(&mut self, now: SampleTime) -> Vec<Action> {
+        self.at(now, Input::Go { list: list() })
+    }
+
+    pub fn start(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Start { cue: id(n) })
+    }
+
+    pub fn pause(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Pause { cue: id(n) })
+    }
+
+    pub fn resume(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Resume { cue: id(n) })
+    }
+
+    pub fn stop(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(
+            now,
+            Input::Stop {
+                cue: id(n),
+                fade_out: None,
+            },
+        )
+    }
+
+    pub fn ended(&mut self, now: SampleTime, n: u128, at: SampleTime) -> Vec<Action> {
+        let run = self.run(n);
+        self.at(
+            now,
+            Input::ActionEnded {
+                cue: id(n),
+                run,
+                at,
+            },
+        )
+    }
+
+    pub fn failed(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        let run = self.run(n);
+        self.at(
+            now,
+            Input::ActionFailed {
+                cue: id(n),
+                run,
+                reason: BrokenReason::StreamFailed,
+            },
+        )
+    }
+
+    pub fn set_playhead(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(
+            now,
+            Input::SetPlayhead {
+                list: list(),
+                cue: Some(id(n)),
+            },
+        )
+    }
+
+    pub fn run(&self, n: u128) -> RunId {
+        self.engine.run_of(id(n)).unwrap()
+    }
+
+    pub fn state(&self, n: u128) -> CueState {
+        self.engine.state(id(n))
+    }
+
+    pub fn playhead(&self) -> Option<CueId> {
+        self.engine.playhead(list())
+    }
+
+    pub fn release(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::TriggerReleased { cue: id(n) })
+    }
+
+    pub fn preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Preview { cue: id(n) })
+    }
+
+    pub fn stop_preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::StopPreview { cue: Some(id(n)) })
+    }
+
+    pub fn problems(&self, n: u128) -> Vec<CueProblem> {
+        self.engine.problems(id(n)).to_vec()
+    }
+
+    pub fn level(&self, n: u128, param: LevelParam, at: SampleTime) -> Option<f32> {
+        self.engine.fade_level(id(n), param, at)
+    }
+
+    pub fn cues_mut(&mut self) -> &mut Vec<Cue> {
+        &mut self.ws.cue_lists[0].cues
+    }
+
+    /// A cue (or group child) of the first list, to edit in place.
+    pub fn find_mut(&mut self, n: u128) -> &mut Cue {
+        fn find(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
+            for c in cues {
+                if c.id == id {
+                    return Some(c);
+                }
+                if let CueKind::Group { children, .. } = &mut c.kind
+                    && let Some(found) = find(children, id)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&mut self.ws.cue_lists[0].cues, id(n)).unwrap()
+    }
 }

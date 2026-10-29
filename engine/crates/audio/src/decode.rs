@@ -436,9 +436,49 @@ const SAMPLE_BYTES: u64 = std::mem::size_of::<f32>() as u64;
 fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
     let mut d = match open_media(media)? {
         Opened::Sym(d) => *d,
-        Opened::Pcm(p) => return decode_all_pcm(p, max_bytes),
+        Opened::Pcm(mut p) => {
+            // Its length is known: the budget is checked up front, and reads stop there.
+            let info = p.info();
+            let samples = read_all(&mut p, Some(info.frames), max_bytes)?;
+            if samples.len() as u64 != info.frames.saturating_mul(u64::from(info.channels)) {
+                return Err(MediaError::Changed);
+            }
+            return Ok(Arc::new(Preloaded {
+                info,
+                samples,
+                warnings: p.warnings().to_vec(),
+            }));
+        }
     };
-    let ch = d.channels;
+    let (ch, declared) = (d.channels, d.declared);
+    let samples = read_all(&mut d, declared, max_bytes)?;
+    let frames = (samples.len() / ch) as u64;
+    if let Some(expected) = declared.filter(|&e| e > frames) {
+        d.warn(MediaWarning {
+            kind: WarningKind::Truncated,
+            at: frames,
+            frames: expected - frames,
+        });
+    }
+    if frames == 0 {
+        return Err(MediaError::Corrupt("no audio frames".into()));
+    }
+    let channels = u16::try_from(ch).unwrap_or(0);
+    Ok(Arc::new(Preloaded {
+        info: MediaInfo::new(channels, d.rate, frames),
+        samples,
+        warnings: std::mem::take(&mut d.warnings),
+    }))
+}
+
+/// Every interleaved sample of `src`, within `max_bytes`: a `declared` length over the budget
+/// is refused up front, and going over it while reading is a [`MediaError::TooLarge`].
+fn read_all(
+    src: &mut dyn FrameSource,
+    declared: Option<u64>,
+    max_bytes: u64,
+) -> Result<Vec<f32>, MediaError> {
+    let ch = src.channels();
     let limit = max_bytes;
     let too_large = |samples: u64| MediaError::TooLarge {
         bytes: samples.saturating_mul(SAMPLE_BYTES),
@@ -446,7 +486,7 @@ fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError
     };
     let max_samples = usize::try_from(max_bytes / SAMPLE_BYTES).unwrap_or(usize::MAX);
     let mut samples: Vec<f32> = Vec::new();
-    if let Some(declared) = d.declared {
+    if let Some(declared) = declared {
         let want = declared.saturating_mul(ch as u64);
         if want > max_samples as u64 {
             return Err(too_large(want));
@@ -458,7 +498,7 @@ fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError
     }
     let mut chunk = vec![0.0; 4096 * ch];
     loop {
-        let n = d.read(&mut chunk)?;
+        let n = src.read(&mut chunk)?;
         if n == 0 {
             break;
         }
@@ -480,23 +520,7 @@ fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError
         samples.extend_from_slice(chunk.get(..n * ch).unwrap_or_default());
     }
     samples.shrink_to_fit();
-    let frames = (samples.len() / ch) as u64;
-    if let Some(expected) = d.declared.filter(|&e| e > frames) {
-        d.warn(MediaWarning {
-            kind: WarningKind::Truncated,
-            at: frames,
-            frames: expected - frames,
-        });
-    }
-    if frames == 0 {
-        return Err(MediaError::Corrupt("no audio frames".into()));
-    }
-    let channels = u16::try_from(ch).unwrap_or(0);
-    Ok(Arc::new(Preloaded {
-        info: MediaInfo::new(channels, d.rate, frames),
-        samples,
-        warnings: std::mem::take(&mut d.warnings),
-    }))
+    Ok(samples)
 }
 
 /// File-rate interleaved frames with exact seeking. Implemented by the symphonia decoder and by
@@ -598,43 +622,6 @@ fn is_wide_pcm<R: Read + Seek + ?Sized>(r: &mut R) -> Result<bool, MediaError> {
             && bits <= 64
             // A-law, mu-law, ADPCM and the like stay symphonia's to read or refuse.
             && matches!(tag, 0 | 1 | 3 | 0xFFFE)))
-}
-
-/// [`decode_all`] for a [`PcmSource`]: its length is known, so the budget is checked up front.
-fn decode_all_pcm(mut p: PcmSource, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
-    let info = p.info();
-    let ch = usize::from(info.channels);
-    let want = info.frames.saturating_mul(ch as u64);
-    if want.saturating_mul(SAMPLE_BYTES) > max_bytes {
-        return Err(MediaError::TooLarge {
-            bytes: want.saturating_mul(SAMPLE_BYTES),
-            limit: max_bytes,
-        });
-    }
-    let want = usize::try_from(want).unwrap_or(usize::MAX);
-    let mut samples: Vec<f32> = Vec::new();
-    samples
-        .try_reserve_exact(want)
-        .map_err(|_| MediaError::TooLarge {
-            bytes: (want as u64).saturating_mul(SAMPLE_BYTES),
-            limit: max_bytes,
-        })?;
-    let mut chunk = vec![0.0; 4096 * ch];
-    loop {
-        let n = p.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        samples.extend_from_slice(chunk.get(..n * ch).unwrap_or_default());
-    }
-    if samples.len() != want {
-        return Err(MediaError::Changed);
-    }
-    Ok(Arc::new(Preloaded {
-        info,
-        samples,
-        warnings: p.warnings().to_vec(),
-    }))
 }
 
 struct MemorySource {

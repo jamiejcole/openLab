@@ -7,7 +7,7 @@
     dead_code
 )]
 
-//! Many-channel PCM writers (M3.23): WAV (plain and WAVE_FORMAT_EXTENSIBLE) and AIFF/AIFF-C in
+//! Many-channel PCM writers: WAV (plain and WAVE_FORMAT_EXTENSIBLE) and AIFF/AIFF-C in
 //! every sample format the reader supports. Samples are generated as exact `f64` values (whole
 //! multiples of the format's step), so a decode must reproduce them bit for bit.
 

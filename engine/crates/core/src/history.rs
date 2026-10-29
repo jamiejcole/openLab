@@ -240,6 +240,8 @@ fn replaced_by_kind(property: &CueProperty) -> bool {
             | CueProperty::Destination { .. }
             | CueProperty::Address { .. }
             | CueProperty::Args { .. }
+            | CueProperty::Duration { .. }
+            | CueProperty::LoadToTime { .. }
     )
 }
 

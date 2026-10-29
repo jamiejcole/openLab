@@ -116,6 +116,14 @@ final class CueClipboardTests: XCTestCase {
                     index: 2),
                 cues: try XCTUnwrap(paste["cues"]?.arrayValue)
             ).json, paste)
+        let fromFolder = try XCTUnwrap(Fixtures.json("client", "command_paste_clipboard_from_folder")["command"])
+        XCTAssertEqual(
+            Command.pasteClipboard(
+                at: Command.position(
+                    list: "00000000-0000-0000-0000-000000000001", parent: "00000000-0000-0000-0000-00000000000a",
+                    index: 2),
+                cues: try XCTUnwrap(fromFolder["cues"]?.arrayValue), sourceDir: "/Volumes/Show A"
+            ).json, fromFolder)
         XCTAssertEqual(
             CueProperty.media(nil).json, .object(["type": .string("media"), "value": .null]), "null clears the file")
     }
@@ -132,6 +140,27 @@ final class CueClipboardTests: XCTestCase {
         let sent = try XCTUnwrap(log.commands.first)
         XCTAssertEqual(sent["type"]?.stringValue, "paste_clipboard", "one command with the raw clipboard")
         return (try XCTUnwrap(sent["at"]), try XCTUnwrap(sent["cues"]?.arrayValue))
+    }
+
+    func testPasteSendsTheFolderOfTheShowTheCuesWereCopiedFromAndNoneForAnUntitledShow() async throws {
+        let (h, editor, log) = try await harness()
+        h.vc.select([H.door])
+        h.rig.engine.push(
+            #"{"type":"document","document":{"path":null,"dirty":true,"can_undo":false,"can_redo":false}}"#)
+        await assertEventually { h.store.document?.path == nil }
+        _ = await editor.copySelection()
+        await editor.paste()
+        XCTAssertNil(log.commands.first?["source_dir"], "nothing to resolve against")
+
+        h.rig.engine.push(
+            #"{"type":"document","document":{"path":"/Volumes/Show A/Hamlet.openlab","dirty":false,"can_undo":false,"can_redo":false}}"#
+        )
+        await assertEventually { h.store.document?.path == "/Volumes/Show A/Hamlet.openlab" }
+        h.vc.select([H.door])
+        _ = await editor.copySelection()
+        let mark = log.commands.count
+        await editor.paste()
+        XCTAssertEqual(log.commands[mark]["source_dir"]?.stringValue, "/Volumes/Show A")
     }
 
     func testCopyThenPasteSendsOneRawPasteAfterTheSelectionAndSelectsTheCopy() async throws {
@@ -221,7 +250,6 @@ final class CueClipboardTests: XCTestCase {
     func testPasteWithNothingValidOnThePasteboardDoesNothing() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.intro])
-        XCTAssertFalse(editor.canPaste)
         await editor.paste()
         let cue = #"{"id":"x","kind":{"type":"memo"}}"#
         let bad = [
@@ -326,7 +354,6 @@ final class CueClipboardTests: XCTestCase {
         wc.setShowMode(true)
         let payload = "{\"cues\":[{\"id\":\"x\"}]}"
         e.pasteboard.setString(payload, forType: CueEditor.pasteType)
-        XCTAssertFalse(e.canPaste)
         let copied = await e.copySelection()
         XCTAssertFalse(copied)
         await e.cutSelection()

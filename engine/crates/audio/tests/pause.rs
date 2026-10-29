@@ -451,6 +451,42 @@ fn resume_during_the_declick_fade_out_never_jumps_the_gain() {
     );
 }
 
+/// The declick tail and the resume crossfade peek frames ahead without consuming them; in a
+/// ring whose size is not a whole number of frames those frames wrap mid-frame, at any offset.
+/// The render equals that of the same voice from a ring that never wraps.
+#[test]
+fn paused_tail_from_a_ring_that_wraps_mid_frame_plays_the_same_frames() {
+    const CH: usize = 3;
+    // Every sample differs, so a frame or channel out of place shows.
+    let data: Vec<f32> = (0..4000 * CH).map(|i| (i as f32 * 0.618).sin()).collect();
+    let run = |capacity: usize| {
+        let (mut ctl, mut r) = setup(config(CH));
+        let (mut tx, rx) = rtrb::RingBuffer::new(capacity);
+        start(&mut ctl, 0, 1, rx, CH as u16);
+        for (at, cmd) in [
+            (700, pause(1)),
+            (1100, resume(1, 2)),
+            (1300, pause(2)),
+            (1400, resume(2, 3)),
+        ] {
+            ctl.send(at, cmd);
+        }
+        let (mut fed, mut out) = (0, Vec::new());
+        for frames in [64, 1, 200, 37].into_iter().cycle().take(48) {
+            let n = tx.slots().min(data.len() - fed);
+            tx.push_entire_slice(&data[fed..fed + n]).unwrap();
+            fed += n;
+            out.extend(render(&mut r, frames, &[frames]));
+        }
+        assert_eq!(ctl.underrun_frames(), 0);
+        out
+    };
+    let reference = run(data.len());
+    for capacity in [3 * 500 + 1, 3 * 500 + 2] {
+        assert!(run(capacity) == reference, "capacity {capacity}");
+    }
+}
+
 #[test]
 fn ramp_and_devamp_on_a_paused_voice_take_effect_on_resume() {
     let data = ramp_signal(3000);

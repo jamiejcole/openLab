@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Names and hosts (M1.20): the workspace rename, and the length and character rule for the
+//! Names and hosts: the workspace rename, and the length and character rule for the
 //! names of the workspace, cue lists, patches and network patches and for network hosts. A new
 //! value is checked; a loaded one is kept with a warning and can always be undone back to.
 

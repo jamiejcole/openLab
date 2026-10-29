@@ -423,7 +423,7 @@ fn full_pending_set_is_reported_and_nothing_is_lost() {
     );
 }
 
-/// Review M1: a full burst of 1024 equal-time commands lands in one block without allocating,
+/// a full burst of 1024 equal-time commands lands in one block without allocating,
 /// and every one of them applies (the last, in send order, sets the final gain).
 #[test]
 fn a_full_command_burst_applies_in_one_block_without_allocating() {
@@ -502,7 +502,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
 
 #[test]
 fn a_fader_drag_of_retargeted_short_ramps_allocates_nothing_and_never_jumps() {
-    // M5.9b: a level edit on a playing cue is a 10 ms ramp from wherever the gain is; a drag
+    // a level edit on a playing cue is a 10 ms ramp from wherever the gain is; a drag
     // retargets one every few milliseconds, on the master, a cue output and a crosspoint.
     let (mut ctl, mut r) = setup(config(1));
     start(&mut ctl, 0, 1, source(&[1.0; 60_000]), 1);

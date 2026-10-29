@@ -344,8 +344,25 @@ final class EngineSessionTests: XCTestCase {
         let sub = s.events.sink { events.append($0) }
         defer { sub.cancel() }
         _ = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
-        XCTAssertEqual(events.last, .reattached(failures: [], restored: []))
+        // #337: Hamlet's window had unsaved changes and the doc it took is the clean file.
+        XCTAssertEqual(events.last, .reattached(failures: [], restored: [], editsLost: ["Test"]))
         XCTAssertEqual(s.stores.count, 2, "already_open bound the window to the open doc, no second store")
         XCTAssertEqual(s.orderedStores.map(\.doc), ["1", "2"])
+        let hamlet = try XCTUnwrap(s.orderedStores.first?.store)
+        await assertEventually { hamlet.logEntries.contains { $0.message == loc("engine.reattach.editsLost") } }
+    }
+
+    /// The cut-short reopen had restored the autosave (the doc is dirty): reported as restored.
+    func testAReattachCutShortAfterARestoreReportsTheAutosave() async throws {
+        let (s, engine) = try await started()  // Hamlet is dirty
+        engine.restart()
+        var restored = FakeEngine.emptySnapshot(name: "Test")
+        restored["document"]?.set("dirty", .bool(true))
+        _ = engine.addDoc(restored, path: "/Users/sam/Shows/Hamlet.openlab")
+        var events: [SessionEvent] = []
+        let sub = s.events.sink { events.append($0) }
+        defer { sub.cancel() }
+        _ = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
+        XCTAssertEqual(events.last, .reattached(failures: [], restored: ["Test"], editsLost: []))
     }
 }

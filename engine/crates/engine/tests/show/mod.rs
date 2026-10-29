@@ -409,7 +409,7 @@ pub fn gated_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::
 
 /// A disk-stream open (`StreamerConfig::before_open`) that blocks while the file is gated: a
 /// stalled volume under a disk worker (a FIFO no longer stalls one: media opens never wait on
-/// it, #323).
+/// it).
 pub fn gated_open(path: &Path) {
     let mut gated = GATED.lock().unwrap_or_else(PoisonError::into_inner);
     while gated.iter().any(|g| g == path) {
@@ -506,4 +506,13 @@ pub fn wait_probed(paths: &[PathBuf], n: usize) {
             .unwrap_or_else(PoisonError::into_inner)
             .0;
     }
+}
+
+pub fn statuses(msgs: Vec<ServerMessage>) -> Vec<openlab_core::protocol::SystemStatus> {
+    msgs.into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Status { status } => Some(*status),
+            _ => None,
+        })
+        .collect()
 }

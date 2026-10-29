@@ -128,6 +128,17 @@ pub enum CueProperty {
     Args {
         value: Vec<OscArg>,
     },
+    /// Only for Wait and Fade cues: how long the action lasts, in seconds (CUE-02, CT-20, CT-10).
+    /// Finite, from 0 to `MAX_TIME`. A running cue keeps the end it had when its action started
+    /// (docs/cue-engine.md, Model edits).
+    Duration {
+        value: f64,
+    },
+    /// Only for Load cues: the time it loads its target to, in seconds (CT-14). Finite, from 0 to
+    /// `MAX_TIME`; read when the Load cue's action starts.
+    LoadToTime {
+        value: f64,
+    },
 }
 
 /// A cue's number. `None` clears it.
@@ -159,6 +170,11 @@ pub enum Command {
     PasteClipboard {
         at: Position,
         cues: Vec<Cue>,
+        /// The folder of the show the cues were copied from, absolute, as the client knows it;
+        /// absent for a show never saved. The cues' relative media paths are read against it, so
+        /// the files still play when pasted into a show in another folder (ED-05, WS-03).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_dir: Option<String>,
     },
     /// Removes a cue and its children.
     RemoveCue {
@@ -877,6 +893,18 @@ impl CueProperty {
                 },
                 _ => return None,
             },
+            Self::Duration { .. } => match &cue.kind {
+                CueKind::Wait { duration } | CueKind::Fade { duration, .. } => {
+                    Self::Duration { value: *duration }
+                }
+                _ => return None,
+            },
+            Self::LoadToTime { .. } => match &cue.kind {
+                CueKind::Load { load_to_time, .. } => Self::LoadToTime {
+                    value: *load_to_time,
+                },
+                _ => return None,
+            },
         })
     }
 
@@ -919,6 +947,14 @@ impl CueProperty {
             },
             Self::Args { value } => match &mut cue.kind {
                 CueKind::Network { args, .. } => args.clone_from(value),
+                _ => return false,
+            },
+            Self::Duration { value } => match &mut cue.kind {
+                CueKind::Wait { duration } | CueKind::Fade { duration, .. } => *duration = *value,
+                _ => return false,
+            },
+            Self::LoadToTime { value } => match &mut cue.kind {
+                CueKind::Load { load_to_time, .. } => *load_to_time = *value,
                 _ => return false,
             },
         }
@@ -993,20 +1029,34 @@ fn set_property(
 
     // The new value has to be valid by itself. Judging it inside the cue would excuse a bad
     // value whenever the cue already had a problem in the same field.
-    let mut probe = blank_cue(id);
-    if matches!(
+    // A value inside the kind is judged in a copy of the cue's kind, so the probe has the field.
+    let in_kind = matches!(
         property,
-        CueProperty::Kind { .. }
-            | CueProperty::Name { .. }
-            | CueProperty::Notes { .. }
-            | CueProperty::PreWait { .. }
-            | CueProperty::PostWait { .. }
-            | CueProperty::Triggers { .. }
-    ) {
+        CueProperty::Duration { .. } | CueProperty::LoadToTime { .. }
+    );
+    let blank = || {
+        let mut c = blank_cue(id);
+        if in_kind {
+            c.kind = cue.kind.clone();
+        }
+        c
+    };
+    let mut probe = blank();
+    if in_kind
+        || matches!(
+            property,
+            CueProperty::Kind { .. }
+                | CueProperty::Name { .. }
+                | CueProperty::Notes { .. }
+                | CueProperty::PreWait { .. }
+                | CueProperty::PostWait { .. }
+                | CueProperty::Triggers { .. }
+        )
+    {
         property.write(&mut probe);
         if !restoring {
             // Only what the new value introduces: the old one may carry a warning from load.
-            let mut was = blank_cue(id);
+            let mut was = blank();
             old.write(&mut was);
             let was = [was];
             let probe = [probe];
