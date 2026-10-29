@@ -29,7 +29,9 @@ use openlab_engine::control::{
     Backend, Control, Inbox, OUTBOUND_CAPACITY, OutboundTx, Outgoing, ReplyTx, outbound_channel,
     runner,
 };
-use openlab_engine::net::{OscConfig, OscListenerStats, ServerConfig, TAP_QUEUE, WsServer};
+use openlab_engine::net::{
+    MAX_HELD_INPUTS, OscConfig, OscListenerStats, ServerConfig, TAP_QUEUE, WsServer,
+};
 use openlab_engine::osc::{SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode};
 use rosc::{OscMessage, OscType};
 use serde_json::Value;
@@ -58,6 +60,8 @@ struct Stand {
     /// While set, snapshot answers wait for [`Stand::release`].
     hold: std::sync::atomic::AtomicBool,
     held: Mutex<Vec<(ReplyTx, Vec<ServerMessage>)>>,
+    /// While set, the second doc's snapshot answers wait for [`Stand::release`] too.
+    hold_second: std::sync::atomic::AtomicBool,
     /// A second open doc ([`DOC2`]), for the multi-doc tests; `None` while it is closed.
     second: Mutex<Option<Workspace>>,
     changed: Notify,
@@ -103,6 +107,8 @@ impl Stand {
     /// Answers the held snapshot requests, and the ones after them at once.
     fn release(&self) {
         self.hold.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.hold_second
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         for (reply, answer) in self.held.lock().unwrap().drain(..) {
             for m in answer {
                 let _ = reply.send(m);
@@ -226,8 +232,12 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                         )),
                     }],
                 };
-                for m in answer {
-                    let _ = reply.send(m);
+                if c.hold_second.load(std::sync::atomic::Ordering::SeqCst) {
+                    c.held.lock().unwrap().push((reply, answer));
+                } else {
+                    for m in answer {
+                        let _ = reply.send(m);
+                    }
                 }
                 c.changed.notify_one();
             }
@@ -698,7 +708,10 @@ async fn an_osc_input_is_announced_to_control_with_its_source_before_the_input()
     // Sent just before the input on the same channel: already there when the input is.
     assert_eq!(
         *f.control.triggers.lock().unwrap(),
-        vec![("osc 127.0.0.1".to_owned(), "transport go".to_owned())]
+        vec![(
+            "osc 127.0.0.1".to_owned(),
+            "transport go, workspace \"test\" (doc 0)".to_owned()
+        )]
     );
 }
 
@@ -715,7 +728,10 @@ async fn an_osc_edit_is_not_announced_as_a_trigger() {
     // Only the transport is a trigger; the edit would otherwise fill the log (DX-02).
     assert_eq!(
         *f.control.triggers.lock().unwrap(),
-        vec![("osc 127.0.0.1".to_owned(), "transport go".to_owned())]
+        vec![(
+            "osc 127.0.0.1".to_owned(),
+            "transport go, workspace \"test\" (doc 0)".to_owned()
+        )]
     );
 }
 
@@ -1674,11 +1690,8 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
     .await;
 }
 
-/// A doc closes while the tap overflows, so its `closed` is lost. The rebuild's own list
-/// answer must drop its copy: it answers nothing, takes no input and is not listed.
-#[tokio::test]
-async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
-    let f = fixture(test_workspace()).await;
+/// The second doc, "other": one cue, numbered 1 and named "Other".
+fn other_workspace() -> Workspace {
     let mut other = workspace(vec![cue(
         21,
         CueKind::Group {
@@ -1690,27 +1703,146 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
     other.name = "other".into();
     other.cue_lists[0].cues[0].number = Some("1".into());
     other.cue_lists[0].cues[0].name = "Other".into();
-    *f.control.second.lock().unwrap() = Some(other.clone());
-    // The second doc opens: the tap's list names it and the actor takes its snapshot.
-    let both = ServerMessage::Workspaces {
-        workspaces: vec![
-            openlab_core::protocol::WorkspaceInfo {
-                doc: DOC,
-                workspace_id: workspace(vec![]).id,
-                name: "test".into(),
-                path: None,
-                dirty: false,
-            },
-            openlab_core::protocol::WorkspaceInfo {
-                doc: DOC2,
-                workspace_id: other.id,
-                name: "other".into(),
-                path: None,
-                dirty: false,
-            },
-        ],
-    };
-    f.out.0.send(Outgoing::all(both)).await.unwrap();
+    other
+}
+
+impl Fix {
+    /// The second doc ([`other_workspace`]) opens: the tap's list names it and the actor asks
+    /// for its snapshot.
+    async fn open_second(&self) {
+        let other = other_workspace();
+        *self.control.second.lock().unwrap() = Some(other.clone());
+        let both = ServerMessage::Workspaces {
+            workspaces: vec![
+                openlab_core::protocol::WorkspaceInfo {
+                    doc: DOC,
+                    workspace_id: workspace(vec![]).id,
+                    name: "test".into(),
+                    path: None,
+                    dirty: false,
+                },
+                openlab_core::protocol::WorkspaceInfo {
+                    doc: DOC2,
+                    workspace_id: other.id,
+                    name: "other".into(),
+                    path: None,
+                    dirty: false,
+                },
+            ],
+        };
+        self.out.0.send(Outgoing::all(both)).await.unwrap();
+    }
+}
+
+/// While a doc opens (its snapshot is out), only input that may reach it waits: a console
+/// working the other doc by its id is answered and its GO goes at once, and that doc's own
+/// broadcasts are applied; input for the opening doc, and un-prefixed input (it reaches every
+/// doc), wait for its copy.
+#[tokio::test]
+async fn only_input_that_may_reach_an_opening_doc_waits_for_its_snapshot() {
+    let f = fixture(test_workspace()).await;
+    f.udp_subscribe().await;
+    f.control
+        .hold_second
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.open_second().await;
+    f.control
+        .wait_for("the second doc's snapshot request", |c| {
+            !c.held.lock().unwrap().is_empty()
+        })
+        .await;
+    // Another peer asks the opening doc by name. Answered now (from no copy) it would be an
+    // error; it must wait.
+    let mut tcp = f.tcp().await;
+    tcp.send(&msg("/workspace/other/cue/1/name", vec![])).await;
+
+    // The ready doc's broadcast is applied, and its own input goes, while the snapshot is out.
+    let mut edited = test_workspace().cue_lists[0].cues[0].clone();
+    edited.name = "Renamed".into();
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 1,
+            upserts: vec![Upsert::Cue {
+                list: list_id(),
+                parent: None,
+                index: 0,
+                cue: Box::new(edited),
+            }],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    next_update(&f).await;
+    let ready = format!("/workspace/{}", ws_id());
+    f.udp_send(&msg(&format!("{ready}/cue/1/name"), vec![]))
+        .await;
+    assert_eq!(body(&f.udp_recv().await)["data"], "Renamed");
+    f.udp_send(&msg(&format!("{ready}/go"), vec![])).await;
+    f.control
+        .wait_seen("the ready doc's GO", |seen| seen.iter().any(is_input))
+        .await;
+
+    // Un-prefixed: it reaches the opening doc too.
+    f.udp_send(&msg("/cue/1/name", vec![])).await;
+    assert!(
+        !f.control.held.lock().unwrap().is_empty(),
+        "the second doc's snapshot is still out"
+    );
+    f.control.release();
+    let r = body(&tcp.recv().await.unwrap());
+    assert_eq!(
+        (r["status"].as_str(), r["data"].as_str()),
+        (Some("ok"), Some("Other"))
+    );
+    // Both docs answer the un-prefixed read: it waited for the second doc's copy.
+    f.udp_send(&msg("/version", vec![])).await;
+    let mut names = Vec::new();
+    loop {
+        let m = f.udp_recv().await;
+        if m.addr == "/reply/version" {
+            break;
+        }
+        names.push(body(&m)["data"].clone());
+    }
+    assert_eq!(names, vec!["Renamed", "Other"]);
+}
+
+/// The show log's trigger for an un-prefixed GO, one per open doc, says which doc each was for.
+#[tokio::test]
+async fn an_osc_trigger_names_the_doc_it_was_for() {
+    let f = fixture(test_workspace()).await;
+    f.open_second().await;
+    guard("both docs to answer", async {
+        while f.udp_ask(&msg("/cue/1/name", vec![])).await.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_for("both triggers", |c| c.triggers.lock().unwrap().len() == 2)
+        .await;
+    assert_eq!(
+        *f.control.triggers.lock().unwrap(),
+        vec![
+            (
+                "osc 127.0.0.1".to_owned(),
+                "transport go, workspace \"test\" (doc 0)".to_owned()
+            ),
+            (
+                "osc 127.0.0.1".to_owned(),
+                "transport go, workspace \"other\" (doc 1)".to_owned()
+            ),
+        ]
+    );
+}
+
+/// A doc closes while the tap overflows, so its `closed` is lost. The rebuild's own list
+/// answer must drop its copy: it answers nothing, takes no input and is not listed.
+#[tokio::test]
+async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
+    let f = fixture(test_workspace()).await;
+    f.open_second().await;
     // One reply per doc while both are open.
     guard("both docs to answer", async {
         loop {
@@ -1738,8 +1870,10 @@ async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
         })
         .await
         .unwrap();
+    // Its own answer is the one held: a late request of the second doc's (the actor's first
+    // list and the tap's can both name it) must not pass for it.
     f.control
-        .wait_for("the resync request", |c| c.snapshot_requests() > before)
+        .wait_for("the resync request", |c| !c.held.lock().unwrap().is_empty())
         .await;
     let flood = async |extra: u64| {
         for seq in 1..=extra {
@@ -2836,4 +2970,87 @@ async fn a_closed_doc_is_not_answered_from_and_a_list_never_drops_a_doc() {
         }
     })
     .await;
+}
+
+/// A TCP peer that may ask in no ready doc (the open one is locked) sends a frame larger than a
+/// stranger's limit to the doc that is opening, where it may ask: the read waits whole and is
+/// decoded once that doc is ready, with the limit that doc gives it.
+#[tokio::test]
+async fn a_tcp_read_that_waits_for_an_opening_doc_gets_that_docs_frame_limit() {
+    let f = fixture(with_passcode("sesame")).await;
+    f.control
+        .hold_second
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.open_second().await;
+    f.control
+        .wait_for("the second doc's snapshot request", |c| {
+            !c.held.lock().unwrap().is_empty()
+        })
+        .await;
+    let tcp = f.tcp().await;
+    let long = "x".repeat(10_000);
+    tcp.send(&msg("/workspace/other/cue/1/name", vec![text(&long)]))
+        .await;
+    f.wait_stats("the read to wait", |s| s.held_inputs >= 1)
+        .await;
+    f.control.release();
+    f.control
+        .wait_seen("the rename", |seen| {
+            seen.iter()
+                .any(|m| matches!(m, ClientMessage::Command { .. }))
+        })
+        .await;
+    assert_eq!(f.stats().osc.oversize_frames, 0);
+}
+
+/// Input that waits for an opening doc is handled even when its TCP connection closes
+/// meanwhile: the close waits behind it.
+#[tokio::test]
+async fn a_close_waits_behind_its_connections_held_input() {
+    let f = fixture(test_workspace()).await;
+    f.control
+        .hold_second
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.open_second().await;
+    f.control
+        .wait_for("the second doc's snapshot request", |c| {
+            !c.held.lock().unwrap().is_empty()
+        })
+        .await;
+    let tcp = f.tcp().await;
+    tcp.send(&msg("/workspace/other/go", vec![])).await;
+    drop(tcp);
+    f.wait_stats("the GO and the close to wait", |s| s.held_inputs >= 2)
+        .await;
+    assert_eq!(f.stats().tcp_connections, 1, "the close waits");
+    f.control.release();
+    f.control
+        .wait_seen("the GO", |seen| seen.iter().any(is_input))
+        .await;
+    f.wait_stats("the connection to go", |s| s.tcp_connections == 0)
+        .await;
+}
+
+/// Held input is bounded: past [`MAX_HELD_INPUTS`] it stays in the queue, and the queue drops
+/// what does not fit, counted. Once the copy is in, what was held goes.
+#[tokio::test]
+async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
+    let f = fixture_held(test_workspace(), true, |_| {}).await;
+    f.control
+        .wait_for("the first snapshot request", |c| c.snapshot_requests() == 1)
+        .await;
+    for _ in 0..(MAX_HELD_INPUTS * 3) {
+        f.udp_send(&msg("/go", vec![])).await;
+    }
+    f.wait_stats("held input to fill and the queue to overflow", |s| {
+        s.held_inputs == MAX_HELD_INPUTS && s.udp_dropped > 0
+    })
+    .await;
+    f.control.release();
+    f.control
+        .wait_seen("the held GOs", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() >= MAX_HELD_INPUTS
+        })
+        .await;
+    assert_eq!(f.stats().held_inputs, 0);
 }

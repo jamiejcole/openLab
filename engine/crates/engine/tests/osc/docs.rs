@@ -650,7 +650,12 @@ fn the_subscribers_of_every_doc_are_each_listed_once() {
     };
     let mut osc = quiet();
     let subscribe = |osc: &mut Osc, peer| {
-        send(osc, &docs(&a, &b), peer, &msg("/updates", vec![OscType::Int(1)]));
+        send(
+            osc,
+            &docs(&a, &b),
+            peer,
+            &msg("/updates", vec![OscType::Int(1)]),
+        );
     };
     // In both docs.
     subscribe(&mut osc, udp());
