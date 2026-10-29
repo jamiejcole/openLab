@@ -45,11 +45,11 @@ final class TransportUITests: XCTestCase {
         let loaded = states.matching(NSPredicate(format: "label == 'Loaded'"))
         XCTAssertTrue(loaded.firstMatch.waitForExistence(timeout: 10))
 
-        app.typeKey("l", modifierFlags: [.command])  // Window > Show Log
-        let log = app.windows.matching(identifier: "log-window").firstMatch
+        app.typeKey("l", modifierFlags: [.command, .option])  // Window > Show Log
+        let log = app.descendants(matching: .any).matching(identifier: "log-window").firstMatch
         XCTAssertTrue(log.waitForExistence(timeout: 10))
         // The table's own area, not a label: a table view asks for key on a click.
-        log.tables.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).click()
+        app.tables.matching(identifier: "log-table").firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
 
         let gone = NSPredicate(format: "count == 0")
