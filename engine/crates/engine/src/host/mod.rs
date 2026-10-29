@@ -28,8 +28,8 @@ use std::thread;
 use std::time::Duration;
 
 use openlab_audio::{
-    DeviceError, MAX_PATCHES, Mixer, MixerConfig, OpenRequest, default_output_device_id,
-    output_devices,
+    DeviceError, MAX_OUTPUT_CHANNELS, MAX_PATCHES, Mixer, MixerConfig, OpenRequest,
+    default_output_device_id, output_devices,
 };
 use openlab_core::protocol::{
     ClientMessage, LogLevel, OkBody, Outcome, PROTOCOL_VERSION, Request, RequestId, ResultData,
@@ -303,7 +303,7 @@ fn run_with(
         })
         .or_else(|| device.configs.first().map(|c| c.max_rate))
         .ok_or(HostError::NoDevice)?;
-    let outputs = usize::from(device.max_channels().clamp(1, 64));
+    let outputs = usize::from(device.max_channels()).clamp(1, MAX_OUTPUT_CHANNELS);
     let mixer_config = MixerConfig {
         sample_rate: rate,
         output_channels: outputs,
