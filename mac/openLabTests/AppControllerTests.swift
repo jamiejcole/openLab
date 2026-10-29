@@ -713,16 +713,15 @@ final class AppControllerTests: XCTestCase {
         XCTAssertNotEqual(loc("menu.cues.selectNext"), "menu.cues.selectNext", "string exists")
         let wc = try XCTUnwrap(app.windows["1"])
         let outline = wc.cueList.outlineView
-        outline.selectRowIndexes([1], byExtendingSelection: false)
-        let selected = wc.cueList.selectedIDs()
+        XCTAssertGreaterThanOrEqual(outline.numberOfRows, 2)
+        outline.selectRowIndexes([0], byExtendingSelection: false)
         app.selectAdjacentCue(by: 1)
-        XCTAssertEqual(outline.selectedRow, 2)
-        app.selectAdjacentCue(by: -1)
+        XCTAssertEqual(outline.selectedRow, 1)
+        XCTAssertEqual(wc.cueList.selectedIDs().count, 1)
         app.selectAdjacentCue(by: -1)
         XCTAssertEqual(outline.selectedRow, 0)
         app.selectAdjacentCue(by: -1)
         XCTAssertEqual(outline.selectedRow, 0, "no wrap at the top")
-        XCTAssertEqual(selected.count, 1)
         // The playhead follows the selection (the new cue is sent to the engine).
         let list: ModelID = "00000000-0000-0000-0000-000000000001"
         let target = try XCTUnwrap(wc.cueList.selectedIDs().first)

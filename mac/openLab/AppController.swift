@@ -218,7 +218,8 @@ final class AppController {
     /// path separators, and short enough for a file name with the extension (a name can be 1024
     /// characters and span lines; file names are at most 255 bytes).
     static func suggestedFileName(_ name: String) -> String {
-        let line = name.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let line =
+            name.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).first.map(String.init) ?? ""
         var out = line.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         while out.utf8.count > 200 { out.removeLast() }
