@@ -355,6 +355,9 @@ final class EngineSessionTests: XCTestCase {
         guard case .success(let clean) = await s.newWorkspace() else { return XCTFail() }
         guard case .success(let dirty) = await s.newWorkspace() else { return XCTFail() }
         guard case .success(let lost) = await s.newWorkspace() else { return XCTFail() }
+        // The engine answers before it lists the doc; a frame pushed before the store's own
+        // connection is bound would be lost.
+        await assertEventually { s.stores.values.allSatisfy { $0.model != nil && $0.connectionState == .connected } }
         for doc in [dirty, lost] {
             engine.push(
                 #"{"type":"document","document":{"path":null,"dirty":true,"can_undo":true,"can_redo":false}}"#, doc: doc
