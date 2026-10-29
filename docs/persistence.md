@@ -184,11 +184,16 @@ Settings that travel with the show (hotkeys, autosave interval, passcode, …) s
 Show files store forward-slash paths, relative to the show folder when the media is inside it and
 absolute otherwise. `portable_ref(native, show_dir, style)` builds the stored `MediaRef` from what the
 OS gives: Windows backslashes become forward slashes (relative paths too; a backslash on macOS is a file
-name character and is kept), the text is made NFC, `.` and `..` are resolved lexically, and the path is
-made relative if it lies inside the show folder. `resolve(media, show_dir)` is the way back.
+name character and is kept) and the text is made NFC. An absolute path is made relative only when it is
+literally under the show folder: the same components byte for byte, no case folding, and no `.` or `..`
+anywhere in it. Anything else (a different case, which on a case-sensitive volume is another folder; a `..`,
+which may pass through a symlink) stays absolute exactly as sent, because deciding it needs the file system
+and the control thread that stores the path never touches it. A path that is already relative is kept as
+written (`../Audio/x.wav` stays), so copying a cue never changes how a hand-written path reads.
+`resolve(media, show_dir)` is the way back.
 
 `comparison_key` (lexical normalisation, NFC, lower case) decides whether two paths name the same file
-on macOS or Windows; folder membership is judged the same way. Case folding is `to_lowercase`, not
+on macOS or Windows (find-in-folder and relink matching); storing a path relative does not use it. Case folding is `to_lowercase`, not
 full Unicode folding.
 
 Path parsing rules: exactly two leading slashes are a network share root (`//server/share`); three or

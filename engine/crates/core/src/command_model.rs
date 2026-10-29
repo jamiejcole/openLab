@@ -85,6 +85,7 @@ pub enum WorkspaceSetting {
     /// The whole key map at once (TRG-01): a swap of two keys, or a reset to the defaults, which
     /// one key at a time would refuse halfway as a duplicate.
     Hotkeys {
+        #[serde(deserialize_with = "strict_hotkeys")]
         value: Box<TransportHotkeys>,
     },
     AutoNumberStart {
@@ -93,6 +94,62 @@ pub enum WorkspaceSetting {
     AutoNumberIncrement {
         value: f64,
     },
+}
+
+/// The wire form of [`WorkspaceSetting::Hotkeys`]: every key present (`null` = no key) and no
+/// other field. [`TransportHotkeys`] itself fills a missing key with "no key" and ignores
+/// unknown fields, which the show-file loader wants but a command must not: a client that
+/// leaves out `load_selected` (or misspells it) would silently clear it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictHotkeys {
+    #[serde(deserialize_with = "required")]
+    go: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    stop_all: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    pause_all: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    resume_all: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    playhead_next: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    playhead_previous: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    load_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    pause_resume_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    start_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    stop_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    reset_selected: Option<Hotkey>,
+}
+
+/// A key that must be in the map, as a value or `null`. (Serde treats a missing `Option` field
+/// as `None` unless the field has its own deserializer.)
+fn required<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::Error> {
+    Option::<Hotkey>::deserialize(d)
+}
+
+fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Box<TransportHotkeys>, D::Error> {
+    let w = StrictHotkeys::deserialize(d)?;
+    Ok(Box::new(TransportHotkeys {
+        go: w.go,
+        stop_all: w.stop_all,
+        pause_all: w.pause_all,
+        resume_all: w.resume_all,
+        playhead_next: w.playhead_next,
+        playhead_previous: w.playhead_previous,
+        load_selected: w.load_selected,
+        pause_resume_selected: w.pause_resume_selected,
+        start_selected: w.start_selected,
+        stop_selected: w.stop_selected,
+        reset_selected: w.reset_selected,
+    }))
 }
 
 impl WorkspaceSetting {
