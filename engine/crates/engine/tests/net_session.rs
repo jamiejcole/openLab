@@ -16,7 +16,7 @@
 //! timeouts below are hang guards only.
 //!
 //! Coverage, against the other net tests: `net_ws` and `net_osc` use a stand-in control thread
-//! (framing, limits, resync, refusals); `net_control` and `net_osc::go_over_the_wire...` run the
+//! (framing, limits, resync, refusals); `net_osc::go_over_the_wire...` runs the
 //! real loop but without time passing. Here: a full session per protocol (edits, undo/redo, GO,
 //! runtime and progress, pause, resume, panic, save as, save and an app connection opening and
 //! closing another doc, shutdown), and both protocols and several clients

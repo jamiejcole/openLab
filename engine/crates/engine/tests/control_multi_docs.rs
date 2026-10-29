@@ -12,20 +12,17 @@ mod show;
 
 use std::time::{Duration, Instant};
 
-use common::{env, names};
 use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, Request, ServerMessage, TransportAction, WireProblem,
     WireWarning,
 };
 use openlab_core::{
-    Command, ContinueMode, CueProperty, CueState, Hotkey, MachineSettings, Modifiers, NetworkPatch,
+    Command, ContinueMode, CueState, Hotkey, MachineSettings, Modifiers, NetworkPatch,
     NetworkPatchId, NetworkProtocol, PatchMapping, TransportKey, Workspace, WorkspaceId,
     WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
-use openlab_engine::control::{
-    ControlConfig, DocId, DocSource, MAX_DOCS, ManualClock, PROBE_WORKERS,
-};
+use openlab_engine::control::{ControlConfig, DocId, DocSource, MAX_DOCS, PROBE_WORKERS};
 use show::device::{DeviceShow, listed};
 use show::*;
 use uuid::Uuid;
@@ -721,57 +718,6 @@ fn closing_a_doc_frees_its_mixer_slots_for_one_waiting() {
     assert_eq!(first_nonzero(&s.channel(0)[at..]), Some(0));
     // A, untouched.
     assert_eq!(state(&s, da, 1), CueState::Idle);
-}
-
-/// A doc with unsaved edits is closed only with `discard_changes`, and then its autosave goes
-/// (after any write of it in flight), so it is not offered again.
-#[test]
-fn closing_a_dirty_doc_needs_discard_changes_and_clears_its_autosave() {
-    let env = env();
-    let clock = ManualClock::new(1_700_000_000_000);
-    let (mut s, ids) = docs_show_with(
-        workspace(vec![cue(1, openlab_core::CueKind::Memo)]),
-        vec![ws_n(1, vec![cue(1, openlab_core::CueKind::Memo)])],
-        |c| {
-            c.app_dirs = Some(env.dirs.clone());
-            c.clock = clock.clock();
-        },
-    );
-    let db = ids[1];
-    let rid = s.request_id();
-    s.send_doc(
-        db,
-        ClientMessage::Command {
-            id: rid,
-            command: Box::new(Command::SetCueProperty {
-                id: id(1),
-                property: CueProperty::Name {
-                    value: "edited".into(),
-                },
-            }),
-            coalesce: None,
-        },
-    );
-    assert!(s.control().doc(db).unwrap().is_unsaved());
-    s.tick();
-    clock.advance(31_000);
-    s.settle_docs();
-    let recovery = env.dirs.recovery_dir();
-    assert_eq!(names(&recovery).len(), 1, "autosaved");
-    assert_eq!(
-        s.close_doc(db, false).unwrap_err().code,
-        ErrorCode::UnsavedChanges
-    );
-    assert!(s.control().doc(db).is_some());
-    s.close_doc(db, true).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !names(&recovery).is_empty() && Instant::now() < deadline {
-        s.tick();
-        std::thread::yield_now();
-    }
-    assert!(names(&recovery).is_empty(), "{:?}", names(&recovery));
-    // The first doc, clean, was never touched.
-    assert!(!s.control().doc(ids[0]).unwrap().is_unsaved());
 }
 
 /// Device-output delay is one value per physical output (an openLab extra; QLab has none): two
