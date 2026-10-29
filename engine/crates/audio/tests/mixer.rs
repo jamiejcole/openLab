@@ -646,6 +646,71 @@ fn far_future_commands_wait_on_the_control_thread_and_never_delay_a_stop() {
     assert_eq!(ctl.held(), 5000);
 }
 
+/// #291: a stop sent just after a whole-matrix edit of a 64x64 cue (1 + 64 + 4096 ramps, more
+/// than four queues' worth) is not released behind the ramps: it cuts on its own sample, and
+/// the ramps still all apply.
+#[test]
+fn a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, mono_dc(20_000), 1);
+    start(&mut ctl, 0, 2, mono_dc(20_000), 1);
+    r.render(64, &[64]);
+    let mut left = 1 + 64 + 4096;
+    while left > 0 {
+        let n = left.min(openlab_audio::COMMAND_CAPACITY);
+        let batch = (0..n)
+            .map(|_| (64, ramp(2, GainTarget::Master, 0.5, Fade::NONE)))
+            .collect();
+        ctl.send_batch(batch).unwrap();
+        left -= n;
+    }
+    ctl.send(192, stop(1, Fade::NONE));
+    let mut out = Vec::new();
+    for _ in 0..10 {
+        ctl.pump();
+        out.extend(r.render(64, &[64]));
+    }
+    assert_eq!(events(&mut ctl), [finished(1, 192, FinishReason::Stopped)]);
+    assert_eq!(ctl.held(), 0);
+    assert!(out[640 - 64..].iter().all(|s| (*s - 0.5).abs() < 1e-6));
+}
+
+/// Only ramps are overtaken: a stop queued behind its voice's start (behind ramps too) still
+/// reaches the mixer after it, so the voice does not play on.
+#[test]
+fn a_stop_never_overtakes_the_start_of_its_voice() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 2, mono_dc(20_000), 1);
+    r.render(64, &[64]);
+    for _ in 0..2 {
+        let batch = (0..openlab_audio::COMMAND_CAPACITY)
+            .map(|_| (64, ramp(2, GainTarget::Master, 0.5, Fade::NONE)))
+            .collect();
+        ctl.send_batch(batch).unwrap();
+    }
+    start(&mut ctl, 64, 3, mono_dc(20_000), 1);
+    ctl.send(128, stop(3, Fade::NONE));
+    for _ in 0..6 {
+        ctl.pump();
+        r.render(64, &[64]);
+    }
+    let stopped: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::VoiceFinished {
+                    voice: VoiceId(3),
+                    reason: FinishReason::Stopped,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(stopped.len(), 1);
+    assert_eq!(ctl.held(), 0);
+}
+
 #[test]
 fn held_commands_land_on_their_exact_sample_when_pumped() {
     let cfg = MixerConfig {

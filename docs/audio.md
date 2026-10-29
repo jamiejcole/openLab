@@ -39,7 +39,7 @@ The mixer notes the stage it is in (`Stage`: a plain field write, no allocation)
 
 ### Scheduling horizon
 
-Every command goes through a hold queue on the control thread, ordered by `(at, send order)`. `MixerController::pump()` releases commands whose `at` is within `lookahead_ms` (default 500 ms) of `samples_rendered`, in that order. It stops at the first batch that does not fit in the command queue.
+Every command goes through a hold queue on the control thread, ordered by `(at, send order)`. `MixerController::pump()` releases commands whose `at` is within `lookahead_ms` (default 500 ms) of `samples_rendered`, in that order. It stops at the first batch that does not fit in the command queue. One exception: a batch of only stops (`StopVoice`) goes first past the batches of only ramps ahead of it, never past anything else (a start, a move, a mixed batch). A ramp neither starts, resumes nor ends a voice, so the overtaken ramps just apply later, to a voice fading out or gone (ignored); without it a stop or Panic sent after a whole-matrix edit of a 64x64 cue (4161 ramps, one queue's worth released per block) would wait about five blocks (`tests/mixer.rs::a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it`). Other commands for the voice still wait behind the ramps.
 
 - **The engine's control loop calls `pump()` on every tick** (ARCHITECTURE §3.2, at most 5 ms apart). `send` and `send_batch` pump too.
 - `send` never drops a command. If the command is beyond the horizon, or the queue is full, it waits on the control thread. `held()` reports how many are waiting.
