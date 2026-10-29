@@ -521,7 +521,11 @@ fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
         (&[(1.93, 1), (1.98, 0)], vec![(1.93, 1)], 0),
         // A short loop next to single plays with little room: the single plays win and the
         // loop is not spread over them (the remaining marker is moved to leave 50 ms).
-        (&[(1.9, 1), (1.92, 4), (1.96, 1)], vec![(1.9, 1), (1.95, 1)], 1),
+        (
+            &[(1.9, 1), (1.92, 4), (1.96, 1)],
+            vec![(1.9, 1), (1.95, 1)],
+            1,
+        ),
     ];
     for (marks, kept, last) in cases {
         let mut ws = workspace(vec![cue(1, sliced(0.0, 2.0, marks))]);
