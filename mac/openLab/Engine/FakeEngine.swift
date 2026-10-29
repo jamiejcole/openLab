@@ -322,6 +322,7 @@ final class FakeEngine: EngineTransport {
         case .stop(cue, _), .hardStop(cue), .panicCue(cue): fakeState(.idle, cue, doc: doc)
         case .preview(let c): fakePreview(c, active: true, doc: doc)
         case .stopPreview(let c?): fakePreview(c, active: false, doc: doc)
+        case .batch(let items): for item in items { fakeEffect(of: item, doc: doc) }
         default: break
         }
     }

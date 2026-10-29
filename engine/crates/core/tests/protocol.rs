@@ -182,6 +182,18 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
                 cue: c,
             },
         ),
+        // Start/Pause Selected (M5.11g): items in selection order, one scheduling time.
+        (
+            "batch",
+            TransportAction::Batch {
+                actions: vec![
+                    TransportAction::Start { cue: c },
+                    TransportAction::Start { cue: cue_id(11) },
+                    TransportAction::Pause { cue: cue_id(12) },
+                    TransportAction::Resume { cue: cue_id(13) },
+                ],
+            },
+        ),
     ]
 }
 
@@ -296,6 +308,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS 0.0.1".into(),
             workspace: Some(DocId(3)),
+            pid: Some(4242),
         }),
     );
     add(
@@ -305,6 +318,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS 0.0.1".into(),
             workspace: None,
+            pid: Some(4242),
         }),
     );
     add(
@@ -314,6 +328,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS from the future".into(),
             workspace: None,
+            pid: None,
         }),
     );
     add(
@@ -1161,6 +1176,33 @@ fn a_hello_without_a_workspace_is_the_app_connection() {
     }
 }
 
+/// #168: the app says its process id in hello, so the engine can tell a slow reconnect from a
+/// crash; a client that does not say it still connects.
+#[test]
+fn a_hello_may_carry_the_client_pid() {
+    let with = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","pid":812}}"#
+    );
+    assert!(matches!(
+        decode_hello(&with),
+        Ok(ClientMessage::Hello { pid: Some(812), .. })
+    ));
+    let without = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c"}}"#
+    );
+    assert!(matches!(
+        decode_hello(&without),
+        Ok(ClientMessage::Hello { pid: None, .. })
+    ));
+    // A pid is a non-negative 32-bit number.
+    for bad in [r#""812""#, "-1", "4294967296", "1.5"] {
+        let text = format!(
+            r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","pid":{bad}}}"#
+        );
+        assert!(decode_hello(&text).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn a_hotkey_key_is_bounded() {
     let frame = |key: &str| decode_client(&format!(r#"{{"type":"hotkey","id":1,"key":"{key}"}}"#));
@@ -1298,10 +1340,11 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Reset { .. }
             | TransportAction::TriggerReleased { .. }
             | TransportAction::Preview { .. }
-            | TransportAction::StopPreview { .. } => {}
+            | TransportAction::StopPreview { .. }
+            | TransportAction::Batch { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 22);
+    assert_eq!(all_actions().len(), 23);
     assert_eq!(all_requests().len(), 14);
 }
 
@@ -1466,6 +1509,91 @@ fn malformed_input_is_an_error_never_a_panic() {
     );
 }
 
+/// M5.11g: a `batch` is refused whole when it is empty, too long, names a cue twice, carries
+/// an action that is not per-cue (a nested batch among them) or an item out of range.
+#[test]
+fn a_batch_is_refused_whole_unless_well_formed() {
+    let batch = |actions: Vec<TransportAction>| {
+        // Written past `encode_client`, which refuses a bad batch too: a hostile peer would.
+        let text =
+            serde_json::to_string(&transport(1, TransportAction::Batch { actions })).unwrap();
+        decode_client(&text)
+    };
+    let field = |field| Err(ProtocolError::OutOfRange { field });
+    let start = |n| TransportAction::Start { cue: cue_id(n) };
+    assert_eq!(batch(vec![]), field("transport.batch.actions"));
+    assert_eq!(
+        batch((0..=MAX_BATCH_ACTIONS as u128).map(start).collect()),
+        field("transport.batch.actions")
+    );
+    assert_eq!(
+        batch(vec![start(1), start(2), start(1)]),
+        field("transport.batch.actions.cue")
+    );
+    // One cue paused and resumed in the same breath is a duplicate too.
+    assert_eq!(
+        batch(vec![
+            TransportAction::Pause { cue: cue_id(1) },
+            TransportAction::Resume { cue: cue_id(1) }
+        ]),
+        field("transport.batch.actions.cue")
+    );
+    for not_per_cue in [
+        TransportAction::Go { list: list() },
+        TransportAction::Panic,
+        TransportAction::StopAll,
+        TransportAction::PauseAll,
+        TransportAction::TriggerReleased { cue: cue_id(2) },
+        TransportAction::StopPreview { cue: None },
+        TransportAction::Batch {
+            actions: vec![start(2)],
+        },
+    ] {
+        assert_eq!(
+            batch(vec![start(1), not_per_cue.clone()]),
+            field("transport.batch.actions.type"),
+            "{not_per_cue:?}"
+        );
+    }
+    assert_eq!(
+        batch(vec![
+            start(1),
+            TransportAction::Load {
+                cue: cue_id(2),
+                at: -1.0
+            }
+        ]),
+        field("transport.load.at")
+    );
+    // The largest batch fits a frame and decodes; every per-cue kind is accepted.
+    let most: Vec<_> = (0..MAX_BATCH_ACTIONS as u128).map(start).collect();
+    assert!(batch(most).is_ok());
+    let kinds = vec![
+        start(1),
+        TransportAction::Stop {
+            cue: cue_id(2),
+            fade_out: None,
+        },
+        TransportAction::HardStop { cue: cue_id(3) },
+        TransportAction::PanicCue { cue: cue_id(4) },
+        TransportAction::Pause { cue: cue_id(5) },
+        TransportAction::Resume { cue: cue_id(6) },
+        TransportAction::Load {
+            cue: cue_id(7),
+            at: 0.0,
+        },
+        TransportAction::Reset { cue: cue_id(8) },
+        TransportAction::Preview { cue: cue_id(9) },
+        TransportAction::StopPreview {
+            cue: Some(cue_id(10)),
+        },
+    ];
+    assert_eq!(
+        batch(kinds.clone()),
+        Ok(transport(1, TransportAction::Batch { actions: kinds }))
+    );
+}
+
 #[test]
 fn oversized_frames_are_refused_before_parsing() {
     // Just over each limit: refused on length alone (the content is not even valid JSON).
@@ -1517,6 +1645,7 @@ fn oversized_frames_are_refused_before_parsing() {
         token: "t".into(),
         client_name: "n".repeat(MAX_CLIENT_FRAME_BYTES),
         workspace: None,
+        pid: None,
     };
     assert!(matches!(
         encode_client(&big),
@@ -3252,6 +3381,21 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
         arb_cue().prop_map(|cue| TransportAction::TriggerReleased { cue }),
         arb_cue().prop_map(|cue| TransportAction::Preview { cue }),
         proptest::option::of(arb_cue()).prop_map(|cue| TransportAction::StopPreview { cue }),
+        // Distinct cues: a batch naming one twice is refused by design.
+        (
+            proptest::collection::btree_set(any::<u128>(), 1..8),
+            arb_time()
+        )
+            .prop_map(|(cues, at)| TransportAction::Batch {
+                actions: cues
+                    .into_iter()
+                    .map(|n| match n % 3 {
+                        0 => TransportAction::Start { cue: cue_id(n) },
+                        1 => TransportAction::Load { cue: cue_id(n), at },
+                        _ => TransportAction::HardStop { cue: cue_id(n) },
+                    })
+                    .collect(),
+            }),
     ]
 }
 
@@ -3355,14 +3499,16 @@ fn arb_client() -> impl Strategy<Value = ClientMessage> {
             any::<u32>(),
             arb_text(),
             arb_text(),
-            proptest::option::of(any::<u64>())
+            proptest::option::of(any::<u64>()),
+            proptest::option::of(any::<u32>())
         )
-            .prop_map(|(protocol_version, token, client_name, workspace)| {
+            .prop_map(|(protocol_version, token, client_name, workspace, pid)| {
                 ClientMessage::Hello {
                     protocol_version,
                     token,
                     client_name,
                     workspace: workspace.map(DocId),
+                    pid,
                 }
             }),
         (

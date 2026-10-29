@@ -126,6 +126,73 @@ struct Failures {
     last: Duration,
 }
 
+/// Wrong-passcode tracking: failures per remote IP and in all, shared by every open doc. A
+/// guesser must not get a fresh budget per doc (eight docs would be eight times the guesses),
+/// and the address is the same whichever doc it tries.
+#[derive(Debug, Default)]
+pub struct Lockouts {
+    failures: HashMap<IpAddr, Failures>,
+    global_start: Duration,
+    global_count: u32,
+}
+
+impl Lockouts {
+    /// Drops failure records that no longer matter.
+    pub fn expire(&mut self, now: Duration) {
+        self.failures.retain(|_, f| {
+            f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
+        });
+    }
+
+    fn global_locked(&self, now: Duration) -> bool {
+        self.global_count >= GLOBAL_MAX_FAILURES
+            && now.saturating_sub(self.global_start) < GLOBAL_WINDOW
+    }
+
+    fn own_locked(&self, ip: IpAddr, now: Duration) -> bool {
+        self.failures
+            .get(&ip)
+            .and_then(|f| f.locked_until)
+            .is_some_and(|until| now < until)
+    }
+
+    fn record_failure(&mut self, ip: IpAddr, now: Duration) {
+        if self.global_count == 0 || now.saturating_sub(self.global_start) >= GLOBAL_WINDOW {
+            self.global_start = now;
+            self.global_count = 0;
+        }
+        self.global_count = self.global_count.saturating_add(1);
+
+        if !self.failures.contains_key(&ip) && self.failures.len() >= MAX_TRACKED_IPS {
+            // Forget expired records first, then the oldest.
+            self.failures
+                .retain(|_, f| f.locked_until.is_some_and(|u| now < u));
+            if self.failures.len() >= MAX_TRACKED_IPS {
+                let oldest = self
+                    .failures
+                    .iter()
+                    .min_by_key(|(_, f)| f.last)
+                    .map(|(k, _)| *k);
+                if let Some(oldest) = oldest {
+                    self.failures.remove(&oldest);
+                }
+            }
+        }
+        let entry = self.failures.entry(ip).or_default();
+        entry.last = now;
+        // A finished lockout starts the count again.
+        if entry.locked_until.is_some_and(|until| now >= until) {
+            entry.locked_until = None;
+            entry.count = 0;
+        }
+        entry.count = entry.count.saturating_add(1);
+        if entry.count >= MAX_BAD_PASSCODES {
+            entry.count = 0;
+            entry.locked_until = Some(now.saturating_add(LOCKOUT));
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Bucket {
     tokens: u64,
@@ -135,9 +202,6 @@ struct Bucket {
 #[derive(Debug, Default)]
 pub struct Sessions {
     peers: HashMap<Peer, Session>,
-    failures: HashMap<IpAddr, Failures>,
-    global_start: Duration,
-    global_count: u32,
     /// Addresses that completed a `/connect`, oldest first, until [`Sessions::clear`].
     known: Vec<IpAddr>,
     /// Whether a peer that has not connected may view (No Passcode has View): then sessions
@@ -204,30 +268,38 @@ impl Sessions {
     /// without limit. A correct passcode can raise or lower its rights to that row's.
     pub fn connect(
         &mut self,
+        lockouts: &mut Lockouts,
         peer: Peer,
         now: Duration,
         access: &OscAccess,
         given: Option<&str>,
     ) -> ConnectResult {
-        self.connect_counting(peer, now, access, given, true)
+        self.connect_counting(lockouts, peer, now, access, given, true)
+            .0
     }
 
     /// As [`Sessions::connect`]; with `count_failure` false a passcode not in this table is
     /// answered `BadPasscode` without counting towards the lockouts. For an un-prefixed
-    /// `/connect` that another open doc's table accepted: a console connecting to two docs with
-    /// their two passcodes is not guessing, and must not lock itself out of either.
+    /// `/connect` that another open doc's table accepted (a console connecting to two docs with
+    /// their two passcodes is not guessing, and must not lock itself out of either), and for
+    /// the second and later docs of one un-prefixed guess (the lockouts are shared by all docs,
+    /// so one guess is one failure). The bool says whether a failure was counted.
     pub fn connect_counting(
         &mut self,
+        lockouts: &mut Lockouts,
         peer: Peer,
         now: Duration,
         access: &OscAccess,
         given: Option<&str>,
         count_failure: bool,
-    ) -> ConnectResult {
+    ) -> (ConnectResult, bool) {
         let current = self.rights(peer);
         let guess = given.filter(|_| !access.passcodes.is_empty());
         let Some(guess) = guess else {
-            return ConnectResult::Accepted(current.unwrap_or(access.no_passcode));
+            return (
+                ConnectResult::Accepted(current.unwrap_or(access.no_passcode)),
+                false,
+            );
         };
         // Every row is compared, the matching one included, so the time does not tell which row
         // (or whether any) matched.
@@ -241,36 +313,37 @@ impl Sessions {
         // (rotating forged sources must not keep the operator out after a dropped link), but
         // never past its own address's lockout: that would let a peer sharing the address keep
         // guessing for free. Not for a peer that is connected already: it needs no way back in.
-        let own_locked = self.own_locked(peer.ip(), now);
+        let own_locked = lockouts.own_locked(peer.ip(), now);
         let known_and_right =
             current.is_none() && matched.is_some() && self.known.contains(&peer.ip());
-        let locked = own_locked || (self.global_locked(now) && !known_and_right);
+        let locked = own_locked || (lockouts.global_locked(now) && !known_and_right);
         let Some(rights) = matched else {
             // A wrong guess counts even during a lockout, and a connected peer's counts too (it
             // stays connected): otherwise it could search the table for more rights for free.
             if count_failure {
-                self.record_failure(peer.ip(), now);
+                lockouts.record_failure(peer.ip(), now);
             }
             if current.is_some() {
                 self.touch(peer, now);
             }
-            return if locked {
+            let result = if locked {
                 ConnectResult::LockedOut
             } else {
                 ConnectResult::BadPasscode
             };
+            return (result, count_failure);
         };
         if locked {
-            return ConnectResult::LockedOut;
+            return (ConnectResult::LockedOut, false);
         }
         if !self.ensure(peer, now) {
-            return ConnectResult::TableFull;
+            return (ConnectResult::TableFull, false);
         }
         self.remember(peer.ip());
         if let Some(session) = self.peers.get_mut(&peer) {
             session.rights = Some(rights);
         }
-        ConnectResult::Accepted(rights)
+        (ConnectResult::Accepted(rights), false)
     }
 
     /// Notes that `ip` completed a `/connect`; the oldest is forgotten past [`MAX_KNOWN_IPS`].
@@ -280,54 +353,6 @@ impl Sessions {
             self.known.remove(0);
         }
         self.known.push(ip);
-    }
-
-    fn global_locked(&self, now: Duration) -> bool {
-        self.global_count >= GLOBAL_MAX_FAILURES
-            && now.saturating_sub(self.global_start) < GLOBAL_WINDOW
-    }
-
-    fn own_locked(&self, ip: IpAddr, now: Duration) -> bool {
-        self.failures
-            .get(&ip)
-            .and_then(|f| f.locked_until)
-            .is_some_and(|until| now < until)
-    }
-
-    fn record_failure(&mut self, ip: IpAddr, now: Duration) {
-        if self.global_count == 0 || now.saturating_sub(self.global_start) >= GLOBAL_WINDOW {
-            self.global_start = now;
-            self.global_count = 0;
-        }
-        self.global_count = self.global_count.saturating_add(1);
-
-        if !self.failures.contains_key(&ip) && self.failures.len() >= MAX_TRACKED_IPS {
-            // Forget expired records first, then the oldest.
-            self.failures
-                .retain(|_, f| f.locked_until.is_some_and(|u| now < u));
-            if self.failures.len() >= MAX_TRACKED_IPS {
-                let oldest = self
-                    .failures
-                    .iter()
-                    .min_by_key(|(_, f)| f.last)
-                    .map(|(k, _)| *k);
-                if let Some(oldest) = oldest {
-                    self.failures.remove(&oldest);
-                }
-            }
-        }
-        let entry = self.failures.entry(ip).or_default();
-        entry.last = now;
-        // A finished lockout starts the count again.
-        if entry.locked_until.is_some_and(|until| now >= until) {
-            entry.locked_until = None;
-            entry.count = 0;
-        }
-        entry.count = entry.count.saturating_add(1);
-        if entry.count >= MAX_BAD_PASSCODES {
-            entry.count = 0;
-            entry.locked_until = Some(now.saturating_add(LOCKOUT));
-        }
     }
 
     /// `/updates`. Returns false if the peer could not be given state (table full).
@@ -410,14 +435,10 @@ impl Sessions {
         self.known.len()
     }
 
-    /// Drops UDP peers silent for [`UDP_IDLE`], and failure and budget records that no longer
-    /// matter.
+    /// Drops UDP peers silent for [`UDP_IDLE`].
     pub fn expire(&mut self, now: Duration) {
         self.peers.retain(|peer, session| {
             matches!(peer, Peer::Tcp { .. }) || now.saturating_sub(session.last_seen) < UDP_IDLE
-        });
-        self.failures.retain(|_, f| {
-            f.locked_until.is_some_and(|u| now < u) || now.saturating_sub(f.last) < LOCKOUT
         });
     }
 

@@ -17,7 +17,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 Low and low-medium review findings are GitHub issues labelled `low`, not PROGRESS lines. Niche QLab-parity features are deferred to v0.0.2 (section at the end).
 
 ## In flight (orchestrator handoff — updated 2026-10-27)
-If the session was cut off, resume with the `orchestrate` skill (up to 3 agents in parallel, at most 2 on Opus; every batch lands through a PR into `main` that only the orchestrator merges, after CI is green).
+If the session was cut off, resume with the `orchestrate` skill (up to 3 Opus and 1–2 Sonnet agents in parallel; every batch lands through a PR into `main` that only the orchestrator merges, after CI is green).
 
 - **M1-A** (M1.1–M1.3, M1.9) — MERGED (3 review rounds). Core model, validation/repair (idempotent, linear SCC cycle check), show-file load/save in core.
 - **M3-A** — MERGED. Engine-facing API: boxed `VoiceStart` carries full routing; `send_batch` takes (time, command) pairs; control loop must call `MixerController::pump()` every tick (500 ms horizon); never schedule voice starts beyond the next block.

@@ -113,6 +113,22 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         changes.send(.runtime(cues: old, playheads: []))
     }
 
+    /// The engine run this store mirrors is gone: none of its cues plays any more, so no window
+    /// may show one as running while it waits to be reopened. Loaded and broken states stay (the
+    /// next snapshot replaces them; they claim nothing is playing).
+    func clearRuntime() {
+        let live = Set(cueStates.filter { $0.value.state.isActive }.keys).union(previewing)
+        let ticking = Set(progress.keys)
+        let waiting = Set(waits.keys)
+        cueStates = cueStates.filter { !$0.value.state.isActive }
+        previewing = []
+        progress = [:]
+        waits = [:]
+        if !live.isEmpty { changes.send(.runtime(cues: live, playheads: [])) }
+        if !ticking.isEmpty { changes.send(.progress(ticking)) }
+        if !waiting.isEmpty { changes.send(.waits(waiting)) }
+    }
+
     // MARK: Intents (all go through the client)
 
     @discardableResult

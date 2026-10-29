@@ -275,6 +275,7 @@ fn hello_text(token: &str, version: u32, name: &str) -> String {
         token: token.into(),
         client_name: name.into(),
         workspace: Some(DOC),
+        pid: None,
     })
     .unwrap()
 }
@@ -1350,12 +1351,18 @@ async fn refusals_after_the_first_log_are_logged_once_the_interval_has_passed() 
 impl Fix {
     /// An app connection (`hello` without a workspace), welcomed.
     async fn app_client(&self) -> Client {
+        self.app_client_with_pid(None).await
+    }
+
+    /// An app connection whose `hello` gives `pid`.
+    async fn app_client_with_pid(&self, pid: Option<u32>) -> Client {
         let mut c = self.raw().await;
         let hello = ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
             token: self.server.token().to_owned(),
             client_name: "app".into(),
             workspace: None,
+            pid,
         };
         send(&mut c, &hello).await;
         match next(&mut c).await {
@@ -1427,5 +1434,60 @@ async fn an_app_connection_lost_without_goodbye_relaunches_the_app() {
     .unwrap();
     fix.sync().await;
     assert_eq!(fix.logs_with(LOST), 1);
+    assert_eq!(fix.logs_with("relaunching the app"), 1);
+}
+
+/// #168: an app connection lost while the app's process still runs (reconnecting slowly, or
+/// hung) does not relaunch it: `open -b` would only bring it to the front mid-show. Once the
+/// process is gone the app is relaunched.
+#[tokio::test]
+async fn an_app_that_still_runs_is_not_relaunched_until_it_is_gone() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const PID: u32 = 812;
+    let (launched_tx, launched) = std::sync::mpsc::channel::<()>();
+    let launched_tx = Mutex::new(launched_tx);
+    let action: openlab_engine::net::RelaunchFn = Arc::new(move || {
+        launched_tx.lock().unwrap().send(()).unwrap();
+        Ok(())
+    });
+    let alive = Arc::new(AtomicBool::new(true));
+    let (probed_tx, probed) = std::sync::mpsc::channel::<()>();
+    let probed_tx = Mutex::new(probed_tx);
+    let still = alive.clone();
+    let mut relaunch = openlab_engine::net::Relaunch::new(action);
+    relaunch.delay = Duration::from_millis(5);
+    relaunch.process_name = Arc::new(move |pid| {
+        let _ = probed_tx.lock().unwrap().send(());
+        (pid == PID && still.load(Ordering::SeqCst)).then(|| "openLab".to_owned())
+    });
+    let fix = fixture_with(ServerConfig {
+        relaunch: Some(relaunch),
+        ..ServerConfig::default()
+    });
+
+    drop(fix.app_client_with_pid(Some(PID)).await);
+    // One probe at hello, then two checks after the loss that found the app running.
+    let (probed, launched) = tokio::task::spawn_blocking(move || {
+        for _ in 0..3 {
+            probed.recv_timeout(GUARD).expect("probed");
+        }
+        assert!(launched.try_recv().is_err(), "a running app was relaunched");
+        (probed, launched)
+    })
+    .await
+    .unwrap();
+    fix.sync().await;
+    assert_eq!(fix.logs_with("is still running"), 1, "said once");
+    assert_eq!(fix.logs_with("relaunching the app"), 0);
+
+    // The app's process goes away (it was hung and was force-quit): now it is relaunched.
+    alive.store(false, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || {
+        launched.recv_timeout(GUARD).expect("relaunched");
+        drop(probed);
+    })
+    .await
+    .unwrap();
+    fix.sync().await;
     assert_eq!(fix.logs_with("relaunching the app"), 1);
 }

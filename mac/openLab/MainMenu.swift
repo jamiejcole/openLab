@@ -63,6 +63,7 @@ enum MainMenu {
             [
                 item("menu.file.new", #selector(AppDelegate.newWorkspace(_:)), "n"),
                 item("menu.file.open", #selector(AppDelegate.openWorkspace(_:)), "o"),
+                item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
                 item("menu.file.relink", #selector(AppDelegate.relinkMedia(_:))),
                 .separator(),

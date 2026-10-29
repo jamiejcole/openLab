@@ -19,6 +19,7 @@ protocol WorkspaceAlerts {
     func confirmQuitDisconnected() -> Bool
     func unsavedChanges(workspace: String) -> SaveChoice
     func showError(_ message: String)
+    func showInfo(_ message: String)
     /// `open` found an autosave newer than the show file (NFR-05). nil: Cancel, nothing opens.
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice?
     /// After an unclean engine exit: open this autosave as an untitled workspace? True: open it.
@@ -64,6 +65,14 @@ struct AppKitAlerts: WorkspaceAlerts {
     func showError(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
+        alert.messageText = message
+        alert.addButton(withTitle: loc("alert.ok"))
+        alert.runModal()
+    }
+
+    func showInfo(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
         alert.messageText = message
         alert.addButton(withTitle: loc("alert.ok"))
         alert.runModal()

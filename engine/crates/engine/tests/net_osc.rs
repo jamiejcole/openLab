@@ -58,6 +58,8 @@ struct Stand {
     /// While set, snapshot answers wait for [`Stand::release`].
     hold: std::sync::atomic::AtomicBool,
     held: Mutex<Vec<(ReplyTx, Vec<ServerMessage>)>>,
+    /// A second open doc ([`DOC2`]), for the multi-doc tests; `None` while it is closed.
+    second: Mutex<Option<Workspace>>,
     changed: Notify,
 }
 
@@ -179,16 +181,54 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                 reply,
             } => {
                 let ws = c.workspace.lock().unwrap().clone().unwrap();
-                let _ = reply.send(ServerMessage::Workspaces {
-                    workspaces: vec![openlab_core::protocol::WorkspaceInfo {
-                        doc: DOC,
-                        workspace_id: ws.id,
-                        name: ws.name.clone(),
-                        path: None,
-                        dirty: false,
-                    }],
-                });
+                let info = |doc, ws: &Workspace| openlab_core::protocol::WorkspaceInfo {
+                    doc,
+                    workspace_id: ws.id,
+                    name: ws.name.clone(),
+                    path: None,
+                    dirty: false,
+                };
+                let mut workspaces = vec![info(DOC, &ws)];
+                if let Some(second) = c.second.lock().unwrap().as_ref() {
+                    workspaces.push(info(DOC2, second));
+                }
+                let _ = reply.send(ServerMessage::Workspaces { workspaces });
                 let _ = reply.send(ok(id));
+                c.changed.notify_one();
+            }
+            // The second doc's snapshot: its workspace, or `no_workspace` once it is closed.
+            Inbox::Conn {
+                doc: Some(DOC2),
+                message:
+                    ClientMessage::Request {
+                        id,
+                        request: Request::Snapshot,
+                    },
+                reply,
+            } => {
+                c.seen.lock().unwrap().push(ClientMessage::Request {
+                    id,
+                    request: Request::Snapshot,
+                });
+                let second = c.second.lock().unwrap().clone();
+                let answer = match second {
+                    Some(ws) => vec![
+                        ServerMessage::Snapshot {
+                            snapshot: Box::new(snapshot(&ws, 0)),
+                        },
+                        ok(id),
+                    ],
+                    None => vec![ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Error(openlab_core::protocol::ErrorBody::new(
+                            openlab_core::protocol::ErrorCode::NoWorkspace,
+                            "closed",
+                        )),
+                    }],
+                };
+                for m in answer {
+                    let _ = reply.send(m);
+                }
                 c.changed.notify_one();
             }
             Inbox::Client { message, reply } | Inbox::Conn { message, reply, .. } => {
@@ -237,6 +277,8 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
 
 /// The one doc the stand-in plays.
 const DOC: openlab_core::protocol::DocId = openlab_core::protocol::DocId(0);
+/// The second doc some tests open beside it.
+const DOC2: openlab_core::protocol::DocId = openlab_core::protocol::DocId(1);
 
 /// The control loop's outbound channel as the stand-in uses it: every message is about [`DOC`].
 struct Out(OutboundTx);
@@ -447,6 +489,20 @@ impl Fix {
 
     fn stats(&self) -> OscListenerStats {
         self.server.osc_stats().unwrap()
+    }
+
+    /// Sends `m` then `/version` (answered in turn) and returns the JSON replies to `m`.
+    async fn udp_ask(&self, m: &OscMessage) -> Vec<Value> {
+        self.udp_send(m).await;
+        self.udp_send(&msg("/version", vec![])).await;
+        let mut replies = Vec::new();
+        loop {
+            let r = self.udp_recv().await;
+            if r.addr == "/reply/version" {
+                return replies;
+            }
+            replies.push(body(&r));
+        }
     }
 
     /// A round trip that proves what was sent before it was handled: the server answers
@@ -1620,6 +1676,136 @@ async fn a_tap_overflow_rebuilds_the_copy_after_the_held_snapshot() {
         }
     })
     .await;
+}
+
+/// #183: a doc closes while the tap overflows, so its `closed` is lost. The rebuild's own list
+/// answer must drop its copy: it answers nothing, takes no input and is not listed.
+#[tokio::test]
+async fn a_lag_rebuild_drops_a_doc_whose_closed_was_lost() {
+    let f = fixture(test_workspace()).await;
+    let mut other = workspace(vec![cue(
+        21,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![],
+        },
+    )]);
+    other.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(2));
+    other.name = "other".into();
+    other.cue_lists[0].cues[0].number = Some("1".into());
+    other.cue_lists[0].cues[0].name = "Other".into();
+    *f.control.second.lock().unwrap() = Some(other.clone());
+    // The second doc opens: the tap's list names it and the actor takes its snapshot.
+    let both = ServerMessage::Workspaces {
+        workspaces: vec![
+            openlab_core::protocol::WorkspaceInfo {
+                doc: DOC,
+                workspace_id: workspace(vec![]).id,
+                name: "test".into(),
+                path: None,
+                dirty: false,
+            },
+            openlab_core::protocol::WorkspaceInfo {
+                doc: DOC2,
+                workspace_id: other.id,
+                name: "other".into(),
+                path: None,
+                dirty: false,
+            },
+        ],
+    };
+    f.out.0.send(Outgoing::all(both)).await.unwrap();
+    // One reply per doc while both are open.
+    guard("both docs to answer", async {
+        loop {
+            let replies = f.udp_ask(&msg("/cue/1/name", vec![])).await;
+            if replies.len() == 2 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+
+    // A resync is out (its answer held), so the actor reads no broadcasts: more than the tap
+    // holds overflow it, and the second doc's `closed` is among those lost.
+    f.control
+        .hold
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.control.set_name("Changed");
+    let before = f.control.snapshot_requests();
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 5,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    f.control
+        .wait_for("the resync request", |c| c.snapshot_requests() > before)
+        .await;
+    let flood = async |extra: u64| {
+        for seq in 1..=extra {
+            f.out
+                .send(ServerMessage::Runtime {
+                    seq,
+                    changes: vec![],
+                })
+                .await
+                .unwrap();
+        }
+        while f.out.0.capacity() < f.out.0.max_capacity() {
+            tokio::task::yield_now().await;
+        }
+    };
+    guard("the broadcasts to be fanned out", async {
+        flood(1100).await;
+        flood(1).await;
+    })
+    .await;
+    *f.control.second.lock().unwrap() = None;
+    f.out
+        .0
+        .send(Outgoing::doc(DOC2, ServerMessage::Closed { doc: DOC2 }))
+        .await
+        .unwrap();
+    guard("the broadcasts to be fanned out", flood(1)).await;
+    f.control.release();
+
+    // The rebuild's list names one doc: the other's copy is gone (nothing answers for it, the
+    // list omits it, and an un-prefixed GO reaches one doc only).
+    guard("the rebuilt copies", async {
+        loop {
+            let replies = f.udp_ask(&msg("/cue/1/name", vec![])).await;
+            if replies.len() == 1 {
+                assert_eq!(replies[0]["data"], "Changed");
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let listed = f.udp_ask(&msg("/workspaces", vec![])).await;
+    let names: Vec<&str> = listed[0]["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["displayName"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["test"]);
+    let inputs_before = f.control.inputs().len();
+    f.udp_send(&msg("/go", vec![])).await;
+    f.udp_sync().await;
+    f.control
+        .wait_seen("the GO", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() > inputs_before
+        })
+        .await;
+    assert_eq!(f.control.inputs().len(), inputs_before + 1);
+    // The closed doc is not addressable any more.
+    let replies = f.udp_ask(&msg("/workspace/other/cue/1/name", vec![])).await;
+    assert_eq!(replies[0]["status"], "error");
 }
 
 #[tokio::test]

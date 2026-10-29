@@ -260,6 +260,44 @@ final class EngineSupervisorTests: XCTestCase {
         await assertEventually { self.session.stores.count == 2 }
     }
 
+    /// A quit while the engine this app just started is still coming up ends it: no app would
+    /// ever connect, so it would run on in the background holding the audio device.
+    func testQuitBeforeAStartedEngineIsReachedEndsIt() async throws {
+        processes.onSpawn = { [unowned self] in
+            processes.alive.insert(engine.pid)
+            return engine.pid  // up, but engine.json not written yet
+        }
+        engine.connectFailure = true
+        supervisor.start()
+        _ = await pump { self.supervisor.engineNotReached != nil }
+        let app = AppController(session: session, supervisor: supervisor, scheduler: ManualScheduler())
+        let alerts = ScriptedAlerts()
+        app.alerts = alerts
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertTrue(alerts.log.isEmpty, "nothing plays on it: no prompt")
+        XCTAssertEqual(processes.signals.map(\.pid), [engine.pid])
+        XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
+        for _ in 0..<5 { await scheduler.fire() }
+        await settle()
+        XCTAssertEqual(processes.spawns, 1, "no engine is started after the quit")
+    }
+
+    /// The quit's other side: an engine this run reached gets `goodbye`, never a signal.
+    func testQuitNeverSignalsAnEngineThisRunReached() async throws {
+        spawnsTheFake()
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        let app = AppController(session: session, supervisor: supervisor, scheduler: ManualScheduler())
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]  // the fixture's show has unsaved changes
+        app.alerts = alerts
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertTrue(engine.received.contains { $0 == .goodbye(shutdown: true) })
+        XCTAssertTrue(processes.signals.isEmpty)
+    }
+
     func testAShutdownIsNotACrash() async throws {
         processes.info = .success(engine.info)
         processes.alive = [engine.pid]
@@ -345,6 +383,9 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(app.windows.count, 2)
         XCTAssertEqual(Set(app.session.stores.values.compactMap { $0.model?.name }), ["Hamlet", "A"])
         XCTAssertTrue(presenter.detail.contains(loc("engine.alarm.back")))
+        XCTAssertTrue(
+            presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "Test")),
+            "the dirty show had no newer autosave: its lost edits are listed")
         XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 1)))
         XCTAssertTrue(presenter.isVisible)
 
@@ -358,6 +399,34 @@ final class EngineCrashFlowTests: XCTestCase {
                 if case .openRecovery("00000000-0000-0000-0000-0000000000ff", _, _) = $0 { return true }
                 return false
             }, 1)
+    }
+
+    /// An autosave the operator dismissed with the alarm (an untitled workspace's: no file to
+    /// reopen it from) is still offered from File > Recover Autosaves… later.
+    func testADismissedAutosaveCanStillBeRecoveredFromTheMenu() async throws {
+        engine.recoveryEntries = [
+            .object([
+                "workspace_id": .string("00000000-0000-0000-0000-0000000000ee"), "stale": .bool(false),
+            ])
+        ]
+        processes.crash()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["autosave:" + loc("engine.alarm.untitled")])
+        await assertEventually { self.app.allWindows.count == 3 }
+        // Now a window holds it: nothing more to recover.
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
+    }
+
+    func testRecoverAutosavesIsInTheFileMenuAndWaitsForTheEngine() throws {
+        let file = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }
+        let item = try XCTUnwrap(file?.items.first { $0.action == #selector(AppDelegate.recoverAutosaves(_:)) })
+        let delegate = AppDelegate()  // its engine is never started here
+        XCTAssertFalse(delegate.validateMenuItem(item), "nothing to ask while no engine is connected")
     }
 
     /// SM-07 after a crash: the new engine run opened the show afresh (not in Show Mode); the
@@ -374,6 +443,24 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(wc.isShowMode)
         let doc = try XCTUnwrap(app.session.doc(of: wc.store))
         XCTAssertEqual(engine.docs[doc]?["document"]?["show_mode"], .bool(true))
+    }
+
+    /// The crashed run's cues stopped with it: a window waiting to be reopened shows none playing.
+    func testAWindowWaitingForItsShowShowsNoCuePlaying() async throws {
+        let store = try XCTUnwrap(app.session.orderedStores.first?.store)
+        XCTAssertTrue(store.cueStates.values.contains { $0.state.isActive }, "the fixture has live cues")
+        engine.holdResults = true  // the new engine does not answer the reopen yet
+        processes.crash()
+        let alarmed = await pump { !self.presenter.shown.isEmpty }
+        XCTAssertTrue(alarmed)
+        XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive })
+        XCTAssertTrue(store.progress.isEmpty)
+        let waiting = await pump { self.app.session.detached.count == 2 }
+        XCTAssertTrue(waiting)
+        XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive })
+        engine.holdResults = false
+        engine.releaseResults()
+        await assertEventually { !self.app.session.isReattaching }
     }
 
     func testTransportStillWorksWhileTheAlarmIsUp() async throws {
@@ -436,6 +523,27 @@ final class SystemEngineProcessesTests: XCTestCase {
         p.signal(getpid(), .terminate)
     }
 
+    /// A live process whose program is named `openlab-engine` (a copy of sleep) reads as an engine,
+    /// and once it has exited it does not.
+    @MainActor
+    func testALiveProcessNamedOpenLabEngineIsAnEngine() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let program = dir.appendingPathComponent(SystemEngineProcesses.engineName)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: program)
+        let child = Process()
+        child.executableURL = program
+        child.arguments = ["30"]
+        try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        let p = SystemEngineProcesses(executable: nil, bundleID: "x", infoURL: URL(fileURLWithPath: "/nonexistent"))
+        XCTAssertTrue(p.isEngine(child.processIdentifier))
+        child.terminate()
+        child.waitUntilExit()
+        XCTAssertFalse(p.isEngine(child.processIdentifier), "gone once it exited")
+    }
+
     @MainActor
     func testAMissingProgramIsAnErrorNotACrash() {
         let missing = URL(fileURLWithPath: "/nonexistent/openlab-engine")
@@ -444,5 +552,21 @@ final class SystemEngineProcessesTests: XCTestCase {
             XCTAssertEqual(error as? EngineSpawnError, .missingExecutable(missing.path))
         }
         guard case .failure(.missing) = p.readInfo() else { return XCTFail() }
+    }
+}
+
+final class SingleInstanceTests: XCTestCase {
+    /// A second copy hands over to the one already running; two started at once agree on one.
+    func testOnlyTheFirstLaunchedCopyStays() {
+        let early = SingleInstance.Instance(pid: 900, launched: Date(timeIntervalSince1970: 100))
+        let late = SingleInstance.Instance(pid: 300, launched: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(SingleInstance.handOver(me: late, others: [early, late]), early)
+        XCTAssertNil(SingleInstance.handOver(me: early, others: [early, late]))
+        XCTAssertNil(SingleInstance.handOver(me: early, others: [early]), "alone: it runs")
+        // Same or unknown launch date: the lower pid stays, as both copies see it.
+        let a = SingleInstance.Instance(pid: 10, launched: nil)
+        let b = SingleInstance.Instance(pid: 20, launched: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(SingleInstance.handOver(me: b, others: [a, b]), a)
+        XCTAssertNil(SingleInstance.handOver(me: a, others: [a, b]))
     }
 }

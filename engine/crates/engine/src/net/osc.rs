@@ -1509,6 +1509,8 @@ impl Actor {
         else {
             return;
         };
+        // A doc no packet has reached yet still has subscribers: those who asked before it opened.
+        self.osc.open_doc(doc, now, mirror.access());
         // Updates carry cue data, so only subscribers that may view this doc get them (judged
         // now, so a table edit takes effect at once).
         let subscribers: Vec<_> = self

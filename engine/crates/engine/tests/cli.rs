@@ -2,6 +2,8 @@
 
 use std::process::Command;
 
+mod common;
+
 const ENGINE: &str = env!("CARGO_BIN_EXE_openlab-engine");
 
 #[test]
@@ -124,6 +126,76 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
         .map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).collect())
         .unwrap_or_default();
     assert!(running.is_empty(), "run marker removed: {running:?}");
+}
+
+/// #164 (M4.4e): `--open` keeps the recovery offer. A show with an autosave newer than the file
+/// is not opened (the operator decides in the app) and the engine says so and keeps running.
+/// Needs an audio output device, like the test above; without one it says so and stops.
+#[test]
+fn open_of_a_show_with_a_newer_autosave_says_not_opened_and_keeps_running() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let root = tempfile::tempdir().unwrap();
+    let dirs = openlab_engine::persist::AppDirs::new(root.path());
+    let ws = common::example();
+    let show = root.path().join("shows").join("offer.openlab");
+    std::fs::create_dir_all(show.parent().unwrap()).unwrap();
+    std::fs::write(&show, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let recovery = openlab_engine::persist::write_recovery(&dirs, &ws, Some(&show)).unwrap();
+    common::set_mtime(&show, 1_000_000);
+    common::set_mtime(&recovery, 2_000_000);
+
+    let mut child = Command::new(ENGINE)
+        .args(["--app-support".as_ref(), root.path().as_os_str()])
+        .args(["--open".as_ref(), show.as_os_str()])
+        .args(if cfg!(target_os = "macos") {
+            &[][..]
+        } else {
+            &["--watch-stdin"][..]
+        })
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap())
+        .lines()
+        .map_while(Result::ok);
+    let mut seen = Vec::new();
+    if !wait_for(&mut lines, &mut seen, "listening on") {
+        let status = child.wait().unwrap();
+        assert_ne!(status.code(), Some(101), "engine panicked: {seen:?}");
+        assert!(
+            seen.iter().any(|l| l.contains("audio")),
+            "the engine did not start: {seen:?}"
+        );
+        eprintln!("no audio device here, skipped: {seen:?}");
+        return;
+    }
+    assert!(wait_for(&mut lines, &mut seen, "not opened"), "{seen:?}");
+    let said = seen.last().unwrap();
+    assert!(
+        said.contains(show.to_str().unwrap()) && said.contains("autosave newer"),
+        "{said}"
+    );
+    assert!(
+        !seen.iter().any(|l| l.starts_with("openlab-engine: opened")),
+        "{seen:?}"
+    );
+    // The offer opened nothing and changed nothing: the autosave is still there for the app.
+    assert!(recovery.exists());
+    if cfg!(target_os = "macos") {
+        let sent = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    } else {
+        drop(child.stdin.take());
+    }
+    seen.extend(lines);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status}: {seen:?}");
 }
 
 /// M8: one engine per user. While another process holds `engine.lock` (here the test itself,

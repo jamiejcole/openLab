@@ -67,6 +67,74 @@ fn a_group_starts_its_children_on_the_same_sample() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// M5.11g: Start Selected on several cues is one `batch`: every cue starts on the same sample
+/// (NFR-21), and Stop Selected likewise ends them all on one sample.
+#[test]
+fn a_batch_starts_and_stops_its_cues_on_the_same_sample() {
+    let a = wav(&dc(8000, 0.25));
+    let b = wav(&dc(8000, 0.75));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    s.run(BLOCK * 3 + 17);
+    let at = s.now() as usize;
+    let starts = [2, 1].map(|n| TransportAction::Start { cue: id(n) });
+    s.transport(TransportAction::Batch {
+        actions: starts.to_vec(),
+    });
+    s.run(BLOCK * 5 + 3);
+    let stops = [1, 2].map(|n| TransportAction::HardStop { cue: id(n) });
+    s.transport(TransportAction::Batch {
+        actions: stops.to_vec(),
+    });
+    s.run(BLOCK * 4);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    let end = last_nonzero(&s.channel(0));
+    assert!(end.is_some_and(|e| e < at + 8000 - 1), "stopped early");
+    assert_eq!(last_nonzero(&s.channel(1)), end);
+    for n in [1, 2] {
+        assert_eq!(
+            s.control().engine().state(id(n)),
+            openlab_core::CueState::Idle
+        );
+    }
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A cue the batch names that is not in this workspace (deleted meanwhile, or another doc's)
+/// gets the `unknown_cue` warning, as a lone `start` does; the others still start together.
+#[test]
+fn a_batch_with_an_unknown_cue_warns_and_starts_the_rest() {
+    let a = wav(&dc(800, 0.5));
+    let b = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    s.run(BLOCK);
+    s.take_outbound();
+    let at = s.now() as usize;
+    let replies = s.transport(TransportAction::Batch {
+        actions: [1, 99, 2]
+            .map(|n| TransportAction::Start { cue: id(n) })
+            .to_vec(),
+    });
+    assert!(
+        matches!(
+            replies.as_slice(),
+            [openlab_core::protocol::ServerMessage::Result {
+                outcome: openlab_core::protocol::Outcome::Ok { .. },
+                ..
+            }]
+        ),
+        "{replies:?}"
+    );
+    s.run(1000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert_eq!(
+        warnings(&s.take_outbound()),
+        vec![WireWarning::UnknownCue { cue: id(99) }]
+    );
+}
+
 #[test]
 fn a_pre_wait_lands_on_its_exact_sample() {
     let path = wav(&dc(200, 0.5));

@@ -981,3 +981,72 @@ fn extreme_aiff_rates_and_sizes_are_typed_errors() {
         assert_eq!(openlab_audio::fuzz_decode(&big), Ok(()));
     }
 }
+
+/// #323: a FIFO or a device chosen as media is refused at once with a typed error by the
+/// probe, a preload and a disk stream, never waited on (a FIFO opened for reading waits for a
+/// writer, for ever if none comes, and would take the probe or disk worker with it). The guard
+/// is a hang detector, not a timing assertion: with the non-blocking open removed the probe
+/// blocks and the test fails here instead of hanging.
+#[cfg(unix)]
+#[test]
+fn a_fifo_or_device_as_media_is_refused_without_blocking() {
+    use std::time::Duration;
+
+    use openlab_audio::{
+        DiskStreamer, MediaInfo, Plays, Seeking, Slice, StreamRequest, StreamerConfig,
+    };
+
+    let fifo = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("media-fifo-{}", std::process::id()))
+        .join("pipe.wav");
+    std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&fifo);
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let probed = probe(&path);
+        let preloaded = preload(Media::Path(path.clone())).map(|_| ());
+        let device = probe(Path::new("/dev/zero"));
+        let mut d = DiskStreamer::new(StreamerConfig::new(48_000)).unwrap();
+        let p = d
+            .prepare(StreamRequest {
+                media: Media::Path(path.clone()),
+                info: MediaInfo {
+                    channels: 1,
+                    sample_rate: 48_000,
+                    frames: 100,
+                    duration: Duration::from_millis(2),
+                },
+                seeking: Seeking::Direct,
+                slices: vec![Slice {
+                    index: 0,
+                    start: 0,
+                    frames: 100,
+                    plays: Plays::Times(1),
+                }],
+            })
+            .unwrap();
+        let streamed = p.handle.wait_primed(Duration::from_secs(20));
+        let _ = tx.send((probed, preloaded, device, streamed));
+    });
+    let Ok((probed, preloaded, device, streamed)) = rx.recv_timeout(Duration::from_secs(30)) else {
+        // Give a blocked open its writer so the thread can end (non-blocking: no reader, no wait).
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(openlab_audio::O_NONBLOCK)
+            .open(&fifo);
+        panic!("opening a FIFO as media blocked");
+    };
+    assert_eq!(probed, Err(MediaError::NotAFile(fifo.clone())));
+    assert_eq!(preloaded, Err(MediaError::NotAFile(fifo.clone())));
+    assert_eq!(device, Err(MediaError::NotAFile("/dev/zero".into())));
+    assert_eq!(streamed, Err(MediaError::NotAFile(fifo.clone())));
+    let _ = std::fs::remove_file(&fifo);
+}

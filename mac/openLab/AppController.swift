@@ -70,8 +70,15 @@ final class AppController {
     private var closing: Set<ModelID> = []
     private(set) var quitting = false
 
-    init(session: EngineSession, scheduler: Scheduler = SystemScheduler(), timeout: Double = 5) {
+    /// Ends, at quit, an engine it started that was never reached (nil in tests of the windows).
+    private let supervisor: EngineSupervisor?
+
+    init(
+        session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
+        timeout: Double = 5
+    ) {
         self.session = session
+        self.supervisor = supervisor
         self.scheduler = scheduler
         self.timeout = timeout
         // A key released while the app is inactive never reaches the monitor: forget held keys.
@@ -386,10 +393,22 @@ final class AppController {
         }
     }
 
-    /// The selected cues act together: every action goes out before any result is awaited (one
-    /// round trip apart, cues meant to start as one would not). Each failure is logged; one beep.
+    /// The selected cues act together: one `batch`, which the engine carries out at one scheduling
+    /// time, so cues started together start on the same sample (NFR-21). A selection past the
+    /// engine's batch limit goes as several batches, all out before any result is awaited. A
+    /// repeated action is dropped (the engine refuses a batch naming a cue twice). Each failure is
+    /// logged; one beep.
     private func runAll(_ actions: [TransportAction], on store: WorkspaceStore) async {
-        let failures = await store.transport(actions).compactMap { r -> EngineError? in
+        var seen = Set<TransportAction>()
+        let actions = actions.filter { seen.insert($0).inserted }
+        guard actions.count > 1 else {
+            if let only = actions.first { await run(only, on: store) }
+            return
+        }
+        let batches = stride(from: 0, to: actions.count, by: TransportAction.maxBatch).map {
+            TransportAction.batch(actions: Array(actions[$0..<min($0 + TransportAction.maxBatch, actions.count)]))
+        }
+        let failures = await store.transport(batches).compactMap { r -> EngineError? in
             if case .failure(let e) = r { return e } else { return nil }
         }
         guard !failures.isEmpty else { return }
@@ -573,7 +592,12 @@ final class AppController {
         }
         quitting = true
         defer { quitting = false }
-        if engineUnreachable { return alerts.confirmQuitDisconnected() }
+        if engineUnreachable {
+            // An engine still coming up plays nothing and is ended at quit: nothing to warn about.
+            if supervisor?.engineNotReached == nil, !alerts.confirmQuitDisconnected() { return false }
+            supervisor?.appWillQuit()
+            return true
+        }
         for doc in session.order {
             if await !commitEdits(doc) { return false }
         }
@@ -588,6 +612,7 @@ final class AppController {
         }
         // A stalled flush must not trap the app; the engine still sees the socket drop.
         _ = await bounded { await self.session.shutdown() }
+        supervisor?.appWillQuit()
         return true
     }
 

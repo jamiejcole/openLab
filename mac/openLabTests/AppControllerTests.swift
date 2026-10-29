@@ -46,6 +46,7 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     func showError(_ message: String) { errors.append(message) }
+    func showInfo(_ message: String) { log.append("info:\(message)") }
 
     /// nil: Cancel.
     var recoveryChoice: RecoveryChoice?
@@ -206,7 +207,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "w"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "w"])
     }
 
     // MARK: Front-window routing
@@ -421,28 +422,52 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.start(cue: running)).count, 1)
     }
 
-    /// Start Selected on N cues sends all N before any result is back (not one round trip apart),
-    /// in selection order; a refused one is still reported on its own.
-    func testSelectedCuesAreSentTogetherNotOneRoundTripApart() async throws {
+    /// M5.11g: Start, Stop and Reset Selected on N cues send one `batch` transport with every cue
+    /// in selection order (the engine starts them on one sample, NFR-21), not N transports.
+    func testSelectedCuesGoAsOneBatchInSelectionOrder() async throws {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         wc.cueList.select(wc.cueList.roots.map(\.id))
         let selected = wc.cueList.selectedIDs()
         XCTAssertGreaterThanOrEqual(selected.count, 2)
-        engine.holdResults = true
         var beeps = 0
         app.beep = { beeps += 1 }
-        let task = Task { await app.perform(.startSelected) }
-        await assertEventually { self.startedInOrder().count == selected.count }
-        XCTAssertEqual(startedInOrder(), selected, "every start out while no result has come back")
-        engine.holdResults = false
-        engine.releaseResults()
-        await task.value
+        let before = engine.received.count
+        await app.perform(.startSelected)
+        await app.perform(.stopSelected)
+        await app.perform(.resetSelected)
+        let sent = engine.received[before...].compactMap { m -> TransportAction? in
+            if case .transport(_, let a) = m { return a } else { return nil }
+        }
+        XCTAssertEqual(
+            sent,
+            [
+                .batch(actions: selected.map { .start(cue: $0) }),
+                .batch(actions: selected.map { .hardStop(cue: $0) }),
+                .batch(actions: selected.map { .reset(cue: $0) }),
+            ])
+        XCTAssertEqual(transports(.batch(actions: selected.map { .start(cue: $0) })), ["1"])
         XCTAssertEqual(beeps, 0)
     }
 
-    private func startedInOrder() -> [ModelID] {
-        engine.received.compactMap { if case .transport(_, .start(let cue)) = $0 { return cue } else { return nil } }
+    /// Pause/Resume Selected on a running and a paused cue is one batch too: each cue's own toggle.
+    func testPauseResumeSelectedGoesAsOneBatchOfEachCuesToggle() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let ids = wc.cueList.roots.map(\.id)
+        XCTAssertGreaterThanOrEqual(ids.count, 2)
+        let (a, b) = (ids[0], ids[1])
+        let seq = store.runtimeSeq
+        engine.push(
+            #"{"type":"runtime","seq":\#(seq + 1),"changes":[{"type":"cue_state","cue":"\#(a)","state":"running"},{"type":"cue_state","cue":"\#(b)","state":"paused"}]}"#,
+            doc: "1")
+        await assertEventually { store.cueStates[b]?.state == .paused && store.cueStates[a]?.state == .running }
+        wc.cueList.select([b, a])
+        let order = wc.cueList.selectedIDs()
+        await app.perform(.pauseResumeSelected)
+        let toggles = order.map { $0 == a ? TransportAction.pause(cue: a) : .resume(cue: b) }
+        XCTAssertEqual(transports(.batch(actions: toggles)), ["1"])
     }
 
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {

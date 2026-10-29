@@ -13,8 +13,8 @@ use std::time::Duration;
 use openlab_core::protocol::{DocId, TransportAction};
 use openlab_core::{CueId, CueListId, OscAccess, OscPasscode, OscRights, WorkspaceId};
 use openlab_engine::osc::{
-    CueField, CuePattern, DocShow, LOCKOUT, MATCH_BUDGET, MAX_BAD_PASSCODES, MAX_REPLIES_PER_CALL,
-    Osc, OscInput, OscShow, Outcome, Peer, Target, encode_message, upper,
+    CueField, CuePattern, DocShow, GLOBAL_MAX_FAILURES, LOCKOUT, MATCH_BUDGET, MAX_BAD_PASSCODES,
+    MAX_REPLIES_PER_CALL, Osc, OscInput, OscShow, Outcome, Peer, Target, encode_message, upper,
 };
 use rosc::{OscMessage, OscType};
 use serde_json::{Value, json};
@@ -27,17 +27,17 @@ const T0: Duration = Duration::from_secs(100);
 /// A doc with `cues` cues numbered 1..=cues in one list, its own id, name and passcode table.
 struct Show {
     id: WorkspaceId,
-    name: &'static str,
+    name: String,
     access: OscAccess,
     list: CueListId,
     cues: u128,
 }
 
 impl Show {
-    fn new(n: u128, name: &'static str, cues: u128) -> Self {
+    fn new(n: u128, name: &str, cues: u128) -> Self {
         Self {
             id: WorkspaceId(Uuid::from_u128(n)),
-            name,
+            name: name.to_string(),
             access: OscAccess::default(),
             list: CueListId(Uuid::from_u128(n << 16)),
             cues,
@@ -70,7 +70,7 @@ impl OscShow for Show {
         self.id
     }
     fn workspace_name(&self) -> &str {
-        self.name
+        &self.name
     }
     fn access(&self) -> &OscAccess {
         &self.access
@@ -254,7 +254,8 @@ fn an_id_another_doc_has_as_its_name_picks_the_doc_with_that_id() {
     let a = hamlet();
     let mut b = lear();
     let id = ws(&a);
-    b.name = Box::leak(id.clone().into_boxed_str());
+    // An owned name, not a leaked one: LeakSanitizer fails the binary on a `Box::leak`.
+    b.name = id.clone();
     let mut osc = quiet();
     let out = send(
         &mut osc,
@@ -365,6 +366,44 @@ fn connect_to_one_doc_leaves_the_other_locked() {
     assert_eq!(replies[0]["workspace_id"], ws(&b));
 }
 
+/// A pattern address over a connected doc A and a locked doc B (#188): A's matching cues start,
+/// B is denied once and contributes no input, whichever way the pattern is addressed.
+#[test]
+fn a_cue_pattern_over_a_connected_and_a_locked_doc_starts_only_the_connected_one() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let d = docs(&a, &b);
+    for (address, addresses_b) in [
+        ("/cue/*/start".to_string(), true),
+        (format!("/workspace/{}/cue/*/start", ws(&a)), false),
+        (format!("/workspace/{}/cue/*/start", ws(&b)), true),
+    ] {
+        let mut osc = quiet();
+        send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&format!("/workspace/{}/connect", ws(&a)), vec![s("1111")]),
+        );
+        let out = send(&mut osc, &d, udp(), &msg(&address, vec![]));
+        let to_a = !address.contains(&ws(&b));
+        assert!(
+            out.input_docs.iter().all(|&doc| doc == A),
+            "{address}: a locked doc got an input: {:?}",
+            out.input_docs
+        );
+        // Cues 1..=3 of A start when A is addressed.
+        assert_eq!(out.input_docs.len(), if to_a { 3 } else { 0 }, "{address}");
+        let replies = bodies(&out);
+        let denied: Vec<&Value> = replies.iter().filter(|r| r["status"] == "denied").collect();
+        if addresses_b {
+            assert_eq!(denied.len(), 1, "{address}: {replies:?}");
+            assert_eq!(denied[0]["workspace_id"], ws(&b), "{address}");
+        } else {
+            assert!(denied.is_empty(), "{address}: {replies:?}");
+        }
+    }
+}
+
 #[test]
 fn an_unprefixed_connect_is_answered_by_every_doc() {
     let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
@@ -385,34 +424,134 @@ fn an_unprefixed_connect_is_answered_by_every_doc() {
     assert!(osc.is_connected_in(B, udp()));
 }
 
+/// Wrong guesses are counted per address across docs: trying the docs in turn is no fresh budget.
 #[test]
-fn lockouts_are_per_doc() {
+fn a_peers_wrong_passcodes_lock_it_out_of_every_doc_together() {
     let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
     let mut osc = quiet();
     let d = docs(&a, &b);
-    let prefix = format!("/workspace/{}/connect", ws(&a));
-    for _ in 0..MAX_BAD_PASSCODES {
-        send(&mut osc, &d, udp(), &msg(&prefix, vec![s("0000")]));
+    let to = |show: &Show, verb: &str| format!("/workspace/{}/{verb}", ws(show));
+    for i in 0..MAX_BAD_PASSCODES {
+        let show = if i % 2 == 0 { &a } else { &b };
+        send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&to(show, "connect"), vec![s("0000")]),
+        );
     }
-    let out = send(&mut osc, &d, udp(), &msg(&prefix, vec![s("1111")]));
-    assert_eq!(bodies(&out)[0]["status"], "denied", "A is locked out");
-    let out = send(
-        &mut osc,
-        &d,
-        udp(),
-        &msg(&format!("/workspace/{}/connect", ws(&b)), vec![s("2222")]),
-    );
-    assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control", "B is not");
-    // A's lockout ends on its own clock.
+    // Locked at both, though neither doc saw five guesses.
+    for (show, code) in [(&a, "1111"), (&b, "2222")] {
+        let out = send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&to(show, "connect"), vec![s(code)]),
+        );
+        assert_eq!(bodies(&out)[0]["status"], "denied", "{}", show.name);
+    }
+    // The lockout ends on its own clock, for both.
     let later = T0 + LOCKOUT;
     let out = osc.handle_datagram_docs(
         udp(),
         later,
         later,
-        &encode_message(&msg(&prefix, vec![s("1111")])).unwrap(),
+        &encode_message(&msg(&to(&b, "connect"), vec![s("2222")])).unwrap(),
         &d,
     );
     assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control");
+}
+
+/// The engine-wide failure window is not one per doc: guesses from many addresses at several
+/// docs add up.
+#[test]
+fn the_global_failure_budget_is_shared_by_every_doc() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let mut osc = quiet();
+    let d = docs(&a, &b);
+    let from = |n: usize| {
+        Peer::Udp(IpAddr::V4(Ipv4Addr::new(
+            10,
+            1,
+            (n / 200) as u8,
+            (n % 200) as u8,
+        )))
+    };
+    for n in 0..GLOBAL_MAX_FAILURES as usize {
+        let show = if n % 2 == 0 { &a } else { &b };
+        let addr = format!("/workspace/{}/connect", ws(show));
+        send(&mut osc, &d, from(n), &msg(&addr, vec![s("0000")]));
+    }
+    // A stranger with the right passcode is refused at the doc that saw only half the guesses.
+    let addr = format!("/workspace/{}/connect", ws(&a));
+    let out = send(&mut osc, &d, from(999), &msg(&addr, vec![s("1111")]));
+    assert_eq!(bodies(&out)[0]["status"], "denied", "{out:?}");
+}
+
+/// One un-prefixed guess goes to every doc but is one failure.
+#[test]
+fn an_unprefixed_wrong_guess_counts_once_however_many_docs_answer() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let mut osc = quiet();
+    let d = docs(&a, &b);
+    for _ in 0..MAX_BAD_PASSCODES - 1 {
+        send(&mut osc, &d, udp(), &msg("/connect", vec![s("0000")]));
+    }
+    let out = send(
+        &mut osc,
+        &d,
+        udp(),
+        &msg(&format!("/workspace/{}/connect", ws(&a)), vec![s("1111")]),
+    );
+    assert_eq!(bodies(&out)[0]["data"], "ok:view|edit|control", "{out:?}");
+}
+
+/// `/updates` and `/udpReplyPort` are the peer's, not a doc's: a doc opened after them, or after
+/// the doc that was open then closed, has them too.
+#[test]
+fn updates_and_the_reply_port_follow_the_peer_to_docs_opened_later() {
+    let (a, b) = (hamlet(), lear());
+    let mut osc = quiet();
+    send(
+        &mut osc,
+        &[DocShow { doc: A, show: &a }],
+        udp(),
+        &msg("/updates", vec![OscType::Int(1)]),
+    );
+    send(
+        &mut osc,
+        &[DocShow { doc: A, show: &a }],
+        udp(),
+        &msg("/udpReplyPort", vec![OscType::Int(54329)]),
+    );
+    // B opens: before any packet reaches it, its updates have the subscriber.
+    osc.open_doc(B, T0, b.access());
+    assert_eq!(osc.update_subscribers_in(B, T0), vec![udp()]);
+    // A closes; the port is still the peer's.
+    osc.close_doc(A);
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
+    // A third doc whose first sight is a packet.
+    let c = Show::new(0xC3, "Macbeth", 1);
+    send(
+        &mut osc,
+        &[DocShow {
+            doc: DocId(7),
+            show: &c,
+        }],
+        udp(),
+        &msg("/version", vec![]),
+    );
+    assert_eq!(osc.update_subscribers_in(DocId(7), T0), vec![udp()]);
+    // Unsubscribing reaches docs opened later too.
+    send(
+        &mut osc,
+        &[DocShow { doc: B, show: &b }],
+        udp(),
+        &msg("/updates", vec![OscType::Int(0)]),
+    );
+    osc.open_doc(DocId(8), T0, c.access());
+    assert!(osc.update_subscribers_in(DocId(8), T0).is_empty());
+    assert_eq!(osc.reply_port(udp(), T0), Some(54329));
 }
 
 #[test]
@@ -670,7 +809,7 @@ fn a_passcode_another_doc_accepts_is_no_failed_guess() {
 fn a_name_several_docs_share_is_refused_with_one_warning() {
     let a = hamlet();
     let mut b = lear();
-    b.name = "Hamlet";
+    b.name = "Hamlet".into();
     let mut osc = quiet();
     let out = send(
         &mut osc,

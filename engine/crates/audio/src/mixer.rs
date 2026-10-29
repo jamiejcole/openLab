@@ -220,6 +220,16 @@ pub enum CommandKind {
     SnapPatch {
         patch: u16,
     },
+    /// Moves a voice to patch matrix `patch` (its cue's patch changed while it plays): for the
+    /// de-zipper length it plays into both patches, crossfading linearly from the old one to the
+    /// new, so neither set of outputs clicks. A voice not heard yet (started on this sample, or
+    /// paused past its declick tail) moves at once. A move during a move's crossfade waits for
+    /// it to end and starts with the next segment the mixer renders, at most a block later (the
+    /// latest one wins). Ignored for an unknown voice, an unknown patch or the patch it is on.
+    MoveVoice {
+        voice: VoiceId,
+        patch: u16,
+    },
     SetOutput {
         output: u16,
         settings: OutputSettings,
@@ -395,6 +405,7 @@ impl Stage {
             CommandKind::StopVoice { voice, .. }
             | CommandKind::Ramp { voice, .. }
             | CommandKind::Devamp { voice, .. }
+            | CommandKind::MoveVoice { voice, .. }
             | CommandKind::PauseVoice { voice } => on(*voice, *voice, false),
             CommandKind::ResumeVoice { voice, new_id } => on(*voice, *new_id, false),
             CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
@@ -591,10 +602,26 @@ impl Outbox {
         if let Err(PushError::Full(start)) = self.returns.push(start) {
             // The return queue is sized so this cannot happen while the controller drains it;
             // leaking is the RT-safe fallback to freeing here.
-            std::mem::forget(start);
+            leak_start(start);
             self.shared.leaked_starts.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The start `leak_start` last gave up on, so a test can free it: LeakSanitizer fails the
+    /// whole test binary on a deliberate leak.
+    static LEAKED_START: std::cell::Cell<*mut VoiceStart> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Gives up on `start` without freeing it (the audio thread must not).
+fn leak_start(start: Box<VoiceStart>) {
+    // Same as `mem::forget`; the raw pointer is only kept for the test above.
+    #[cfg_attr(not(test), allow(unused_variables))]
+    let raw = Box::into_raw(start);
+    #[cfg(test)]
+    LEAKED_START.with(|c| c.set(raw));
 }
 
 /// A command in the pending set, ordered so the heap's top is the earliest `(at, seq)`.
@@ -682,6 +709,27 @@ struct Remaining {
 struct Refade {
     from: f32,
     len: u64,
+}
+
+/// A voice moving to another patch ([`CommandKind::MoveVoice`]): it plays into `from` and into
+/// its new patch for `len` frames, `done` of them so far, crossfading from the one to the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Move {
+    from: usize,
+    done: u64,
+    len: u64,
+}
+
+impl Move {
+    /// The new patch's share on frame `j` of the current segment (the old one's is `1 - g`).
+    fn gain(&self, j: usize) -> f32 {
+        let k = self.done.saturating_add(j as u64);
+        if k >= self.len {
+            1.0
+        } else {
+            k as f32 / self.len as f32
+        }
+    }
 }
 
 /// A paused voice (CUE-05). The fade-out tail plays the frames that follow the pause point
@@ -845,6 +893,10 @@ struct Voice {
     declick: Param,
     /// See [`Xfade`].
     xfade: Option<Xfade>,
+    /// See [`Move`].
+    moving: Option<Move>,
+    /// A move asked for during `moving`'s crossfade: made when it ends.
+    next_patch: Option<usize>,
     /// Devamp requests arrived while paused; the resume answers them.
     devamp_due: bool,
     /// Planar `[channel][frame]`, the de-zipper length per channel: the crossfaded tail.
@@ -895,6 +947,8 @@ impl Voice {
             paused: None,
             declick: Param::new(1.0),
             xfade: None,
+            moving: None,
+            next_patch: None,
             devamp_due: false,
             xbuf: vec![0.0; max_channels * dezip],
             xstride: dezip,
@@ -1005,6 +1059,8 @@ impl Voice {
         self.paused = None;
         self.declick.set(1.0);
         self.xfade = None;
+        self.moving = None;
+        self.next_patch = None;
         self.devamp_due = false;
         self.start = Some(s);
         self.enter(0);
@@ -1130,6 +1186,44 @@ impl Voice {
             len,
             heard: !self.fresh,
         });
+    }
+
+    /// Moves to patch `to`, crossfading over `len` frames unless nothing of the voice is heard
+    /// now (see [`CommandKind::MoveVoice`]).
+    fn move_to(&mut self, to: usize, len: u64) {
+        if self.moving.is_some() {
+            self.next_patch = (to != self.patch).then_some(to);
+            return;
+        }
+        if to == self.patch {
+            return;
+        }
+        let silent = self.fresh || self.paused.is_some_and(|p| p.done >= p.len);
+        if !silent && len > 0 {
+            self.moving = Some(Move {
+                from: self.patch,
+                done: 0,
+                len,
+            });
+        }
+        self.patch = to;
+    }
+
+    /// The move's crossfade has played `n` more frames: once it is over, the move that waited
+    /// for it starts.
+    fn advance_move(&mut self, n: usize) {
+        let Some(m) = self.moving.as_mut() else {
+            return;
+        };
+        m.done = m.done.saturating_add(n as u64);
+        if m.done < m.len {
+            return;
+        }
+        let len = m.len;
+        self.moving = None;
+        if let Some(next) = self.next_patch.take() {
+            self.move_to(next, len);
+        }
     }
 
     /// Resumes on sample `t` as `id` (nothing if not paused). Everything timed in samples (the
@@ -1785,6 +1879,9 @@ pub struct Mixer {
     unblamed: FaultWindow,
     /// Planar `[device output][frame]`.
     dev: Vec<f32>,
+    /// Planar `[cue output][frame]`: a moving voice's output, before it is shared out between
+    /// its old and new patch ([`Move`]).
+    move_bus: Vec<f32>,
     /// Peak per device output since the last meter flush.
     out_peak: Vec<f32>,
     scratch: Scratch,
@@ -1905,6 +2002,7 @@ impl Mixer {
             meter_health: Health::OK,
             unblamed: FaultWindow::EMPTY,
             dev: vec![0.0; outs * block],
+            move_bus: vec![0.0; outs * block],
             out_peak: vec![0.0; outs],
             scratch: Scratch {
                 vgain: vec![0.0; block],
@@ -2249,6 +2347,14 @@ impl Mixer {
                     p.dirty = true;
                 }
             }
+            CommandKind::MoveVoice { voice, patch } => {
+                let to = usize::from(patch);
+                if to < self.patches.len()
+                    && let Some(v) = self.voice_mut(voice)
+                {
+                    v.move_to(to, dezip);
+                }
+            }
             CommandKind::SetOutput { output, settings } => {
                 let o = usize::from(output);
                 if self.out_health.get(o).is_none_or(|h| h.disabled) {
@@ -2376,6 +2482,7 @@ impl Mixer {
             master,
             master_health,
             dev,
+            move_bus,
             out_peak,
             scratch,
             stage,
@@ -2391,8 +2498,14 @@ impl Mixer {
             if *panic_voice == Some(v.id) {
                 panic!("injected voice fault");
             }
-            // A paused voice past its declick tail contributes nothing and is not visited.
+            // A paused voice past its declick tail contributes nothing and is not visited; a
+            // move it was making is over, there is nothing left to crossfade.
             if v.paused.is_some_and(|p| p.done >= p.len) {
+                v.advance_move(usize::MAX);
+                continue;
+            }
+            if let Some(m) = v.moving {
+                render_moving(v, m, len, t0, block, patches, move_bus, scratch, outbox);
                 continue;
             }
             let Some(p) = patches.get_mut(v.patch) else {
@@ -2509,6 +2622,52 @@ impl Mixer {
             }
         }
     }
+}
+
+/// Renders a moving voice ([`Move`]) into `move_bus`, then shares it out: `1 - g` of it to the
+/// patch it leaves, `g` to the one it moves to.
+#[allow(clippy::too_many_arguments)]
+fn render_moving(
+    v: &mut Voice,
+    m: Move,
+    len: usize,
+    t0: SampleTime,
+    block: usize,
+    patches: &mut [Patch],
+    move_bus: &mut [f32],
+    s: &mut Scratch,
+    outbox: &mut Outbox,
+) {
+    for b in move_bus.chunks_exact_mut(block) {
+        b.iter_mut().take(len).for_each(|x| *x = 0.0);
+    }
+    if v.paused.is_some() {
+        render_tail(v, len, block, move_bus, s);
+    } else {
+        render_voice(v, len, t0, block, move_bus, s, outbox);
+    }
+    for (k, leaving) in [(m.from, true), (v.patch, false)] {
+        let Some(p) = patches.get_mut(k) else {
+            continue;
+        };
+        if !p.live {
+            p.live = true;
+            for b in p.bus.chunks_exact_mut(block) {
+                b.iter_mut().take(len).for_each(|x| *x = 0.0);
+            }
+        }
+        for (bo, vo) in p
+            .bus
+            .chunks_exact_mut(block)
+            .zip(move_bus.chunks_exact(block))
+        {
+            for (j, (y, x)) in bo.iter_mut().zip(vo).take(len).enumerate() {
+                let g = m.gain(j);
+                *y += x * if leaving { 1.0 - g } else { g };
+            }
+        }
+    }
+    v.advance_move(len);
 }
 
 fn render_voice(
@@ -3291,6 +3450,11 @@ mod tests {
         assert_eq!(shared.leaked_starts.load(Ordering::Relaxed), 1);
         assert_eq!(shared.dropped_events.load(Ordering::Relaxed), 1);
         assert!(rx.pop().is_ok());
+        let raw = LEAKED_START.with(|c| c.replace(std::ptr::null_mut()));
+        assert!(!raw.is_null());
+        // SAFETY: `raw` came from `Box::into_raw` in `leak_start` on this thread and nothing else
+        // has freed or aliased it.
+        drop(unsafe { Box::from_raw(raw) });
     }
 
     #[test]

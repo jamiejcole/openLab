@@ -54,6 +54,8 @@ final class EngineSupervisor {
     private var silentAttempts = 0
     private var terminating = false
     private var spawnLimitReported = false
+    /// The app is quitting: no engine is started any more.
+    private var quitting = false
 
     init(
         processes: EngineProcesses, session: EngineSession, scheduler: Scheduler = SystemScheduler(),
@@ -116,7 +118,7 @@ final class EngineSupervisor {
     /// Called on each failed connection attempt: decides whether to wait, end a silent engine
     /// (launch only) or start a new one.
     private func evaluate(_ failure: ConnectionFailure) {
-        guard !session.isShuttingDown, !terminating else { return }
+        guard !session.isShuttingDown, !terminating, !quitting else { return }
         let info = try? processes.readInfo().get()
         let filed = info.flatMap { processes.isEngine($0.pid) ? $0 : nil }
 
@@ -147,6 +149,7 @@ final class EngineSupervisor {
             handled.insert(run.pid)
             let crashed = info?.pid == run.pid
             recoveryPending = true
+            session.engineRunEnded()
             engineLog.error(
                 "engine pid \(run.pid, privacy: .public) is gone (\(crashed ? "crashed" : "exited", privacy: .public)): starting a new one"
             )
@@ -158,6 +161,7 @@ final class EngineSupervisor {
     }
 
     private func spawnIfAllowed() {
+        guard !quitting else { return }
         let t = now()
         spawnTimes = spawnTimes.filter { t - $0 < spawnWindow }
         guard spawnTimes.count < maxSpawns else {
@@ -177,6 +181,27 @@ final class EngineSupervisor {
             engineLog.error("could not start the engine: \(String(describing: error), privacy: .public)")
             alarms.send(.cannotStart(Self.describe(error)))
         }
+    }
+
+    // MARK: Quit
+
+    /// The engine this app run started that no connection has reached yet (it is still coming
+    /// up), if it is alive. Nothing plays on it: no workspace was opened there.
+    var engineNotReached: Int32? {
+        guard let spawned, spawned != lastRun?.pid, processes.isEngine(spawned) else { return nil }
+        return spawned
+    }
+
+    /// The quit is decided: start no other engine, and end the one this run started and never
+    /// reached (it would otherwise run on with the audio device open and no app, since only an
+    /// app connection that ends makes it relaunch the app). An engine this run talked to is told
+    /// by `goodbye`, never signalled; one it did not start is never touched.
+    func appWillQuit() {
+        quitting = true
+        guard let pid = engineNotReached else { return }
+        handled.insert(pid)
+        engineLog.notice("quitting before the engine pid \(pid, privacy: .public) was reached: sending SIGTERM")
+        processes.signal(pid, .terminate)
     }
 
     /// Launch only: the engine named in `engine.json` is alive but never answered. A second

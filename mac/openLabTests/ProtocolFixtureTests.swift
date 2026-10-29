@@ -57,6 +57,21 @@ final class ProtocolFixtureTests: XCTestCase {
         }
     }
 
+    /// M5.11g: a `batch` transport decodes to its items in order.
+    func testBatchTransportDecodesItsItemsInOrder() throws {
+        let m = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "transport_batch").utf8))
+        guard case .transport(_, .batch(let items)) = m else { return XCTFail("batch") }
+        XCTAssertEqual(
+            items,
+            [
+                .start(cue: "00000000-0000-0000-0000-00000000000a"),
+                .start(cue: "00000000-0000-0000-0000-00000000000b"),
+                .pause(cue: "00000000-0000-0000-0000-00000000000c"),
+                .resume(cue: "00000000-0000-0000-0000-00000000000d"),
+            ])
+    }
+
     func testSetPatchMappingSetsAndClears() throws {
         let set = try JSONDecoder().decode(
             ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_patch_mapping").utf8))
@@ -211,6 +226,9 @@ final class ProtocolFixtureTests: XCTestCase {
     func testHelloOmitsWorkspaceWhenNilAndSendsItWhenBound() throws {
         let plain = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c")).text()
         XCTAssertFalse(plain.contains("workspace"))
+        XCTAssertFalse(plain.contains("pid"), "no pid: omitted, as the engine expects")
+        let withPID = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", pid: 812)).text()
+        XCTAssertEqual(JSONValue.parse(withPID)?["pid"], .int(812))
         let bound = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", workspace: "1"))
             .text()
         XCTAssertEqual(JSONValue.parse(bound)?["workspace"], .int(1), "a doc id is a number on the wire")
