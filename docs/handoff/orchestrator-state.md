@@ -1,10 +1,17 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# Orchestrator state (2026-10-28)
+# Orchestrator state (2026-10-29)
 
 M1–M4 are complete: every engine-service issue is closed and ticked in `PROGRESS.md`. Work now is M5
 (macOS app), then M6 (release v0.0.1). Open work lives in GitHub issues by milestone
 (`gh issue list --milestone "M5 macOS app" --label task --state open`); each `PROGRESS.md` line names its
 issue. Every task issue carries a Checklist of its requirement IDs, ticked by the implementer as parts land.
+
+## 2026-10-29 session
+- Closed the post-review groundwork: about 55 issues fixed or closed (PRs #375, #380, #382, #390 and the QLab-parity PR). Remaining Lows were filed during reviews.
+- Every QLab answer is in `docs/todo/open-qlab-questions.md`. Search it before asking the user anything.
+- A local map of QLab 5's UI is in `~/qlab-ref/ui` (see CLAUDE.md). It is never copied into the repo or issues.
+- Scope now matches QLab 5 (CLAUDE.md, REQUIREMENTS edits). The open M5 issues carry a layout section and the new scope. #391-#395 list gaps in the UI already built.
+- Next: start M5 feature work.
 
 ## Start of a session
 1. `git fetch origin`; check open PRs and the last CI run on `main`.
