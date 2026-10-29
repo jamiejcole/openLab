@@ -204,6 +204,12 @@ fn render_moving(
         }
     }
     v.advance_move(len);
+    // A voice that ended meanwhile was reported finished instead.
+    if v.moving.is_none() && v.is_active() {
+        let at = t0.saturating_add(len as u64);
+        let (voice, moves) = (v.id, v.moves);
+        outbox.emit(Event::MoveEnded { voice, at, moves });
+    }
 }
 
 fn render_voice(

@@ -1112,7 +1112,20 @@ fn a_move_to_nowhere_or_of_nobody_is_ignored() {
     let out = r.render(2000, &[64]);
     assert!(channel(&out, 2, 0).iter().all(|s| *s == 1.0));
     assert!(channel(&out, 2, 1).iter().all(|s| *s == 0.0));
-    assert!(events(&mut ctl).is_empty());
+    // The voice's moves are counted and it is reported settled on each (nothing to wait for).
+    assert_eq!(
+        events(&mut ctl),
+        [moved(1, 600, 1), moved(1, 700, 2)],
+        "none for a voice it does not have"
+    );
+}
+
+fn moved(voice: u64, at: u64, moves: u32) -> Event {
+    Event::MoveEnded {
+        voice: VoiceId(voice),
+        at,
+        moves,
+    }
 }
 
 /// A voice not heard yet (moved on its start sample) or paused past its declick tail moves at
@@ -1140,6 +1153,12 @@ fn a_voice_not_heard_moves_at_once() {
     // Paused, then resumed on patch 0 with the resume's declick only.
     assert!(b[2500..].iter().all(|s| *s == 0.0));
     assert_eq!(a[3240], 1.0);
+    // Each move is reported settled on its own sample; the resumed voice's count goes on.
+    let ev: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| matches!(e, Event::MoveEnded { .. }))
+        .collect();
+    assert_eq!(ev, [moved(1, 1000, 1), moved(1, 2500, 2)]);
 }
 
 /// A move asked for during a move's crossfade waits for it (to the end of the block it ends
@@ -1164,6 +1183,16 @@ fn a_move_during_a_move_waits_for_it() {
     }
     assert!(max_step(&a) <= 1.0 / 240.0 + 1e-6);
     assert!(max_step(&b) <= 1.0 / 240.0 + 1e-6);
+    // #346: one report, after both moves, from the end of the block the second crossfade ends
+    // in: the voice is wholly on patch 0 from then on, so the control thread may reuse patch 1.
+    let ev = events(&mut ctl);
+    let [Event::MoveEnded { voice, at, moves }] = ev[..] else {
+        panic!("{ev:?}");
+    };
+    assert_eq!((voice, moves), (VoiceId(1), 2));
+    let at = usize::try_from(at).unwrap();
+    assert!(b[at - 100] > 0.0, "reported a block late at most");
+    assert!(a[at..].iter().all(|s| *s == 1.0), "reported before it ended");
 }
 
 /// Moving voices renders without allocating (the real-time rule).

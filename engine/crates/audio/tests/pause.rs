@@ -86,6 +86,7 @@ fn event_at(e: &Event) -> u64 {
         | Event::SliceEnded { at, .. }
         | Event::DevampScheduled { at, .. }
         | Event::DevampIgnored { at, .. }
+        | Event::MoveEnded { at, .. }
         | Event::StageFaulted { at, .. } => at,
     }
 }
