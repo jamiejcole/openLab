@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Show safety: an engine this app run has talked to is never signalled. Ending an engine that
 /// is alive but does not answer (SIGTERM, then SIGKILL) happens only at launch, before any
-/// connection, after `probeAttempts` failed attempts. Later a dropped connection is retried for
+/// connection, after `probeAttempts` refused or reset attempts (a slow `welcome` is busy, not silence). Later a dropped connection is retried for
 /// as long as the engine's pid lives; only once it is gone is it an alarm and a new engine.
 @MainActor
 final class EngineSupervisor {
@@ -18,6 +18,9 @@ final class EngineSupervisor {
         case engineStopped(crashed: Bool)
         /// No engine could be started (or several in a row died at once).
         case cannotStart(String)
+        /// A live engine accepts connections but sends no `welcome`, `probeAttempts` times in a
+        /// row at launch. It is not signalled (its audio may be playing): the operator is told.
+        case notResponding
     }
 
     let alarms = PassthroughSubject<Alarm, Never>()
@@ -52,6 +55,7 @@ final class EngineSupervisor {
     private var spawned: Int32?
     private var spawnTimes: [Double] = []
     private var silentAttempts = 0
+    private var busyAttempts = 0
     private var terminating = false
     private var spawnLimitReported = false
     /// The app is quitting: no engine is started any more.
@@ -103,6 +107,7 @@ final class EngineSupervisor {
             everConnected = true
             lastRun = run
             silentAttempts = 0
+            busyAttempts = 0
             spawnLimitReported = false
             if newRun { ready.send() }
         case .retrying(let failure):
@@ -126,10 +131,19 @@ final class EngineSupervisor {
             // Launch: nothing is bound yet.
             if let live = filed {
                 if live.pid == spawned { return }  // still starting
-                // Only silence counts (refused, dropped, no welcome): an engine that answers with
-                // an error is talking, and is never ended for it.
+                // Only silence counts (refused or reset connections): an engine that answers with
+                // an error is talking, and one that accepts the socket but is slow to send its
+                // `welcome` is busy (its control loop may be stalled while the audio thread plays),
+                // so neither is ever ended for it.
                 switch failure {
                 case .transport, .lost: break
+                case .noWelcome:
+                    engineLog.error(
+                        "engine pid \(live.pid, privacy: .public) accepted the connection but sent no welcome: busy, waiting"
+                    )
+                    busyAttempts += 1
+                    if busyAttempts == probeAttempts { alarms.send(.notResponding) }
+                    return
                 default: return
                 }
                 silentAttempts += 1

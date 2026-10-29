@@ -133,6 +133,7 @@ final class EngineAlarmController {
     private var isShown: Bool { presenter.isVisible }
     /// What the last reattach reported (kept when the autosave line is added).
     private var summary = ""
+    private var reattach: (failures: [ReattachFailure], restored: [String], editsLost: [String], ids: [ModelID])?
     /// The latest offer check (tests await it).
     private(set) var offerTask: Task<Void, Never>?
 
@@ -149,7 +150,12 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
+    /// The "not responding" alarm is up: it tells the operator the engine may still be playing, so
+    /// it goes away when that engine answers (no other alarm is taken down by a connection).
+    private var notRespondingShown = false
+
     private func alarm(_ alarm: EngineSupervisor.Alarm) {
+        notRespondingShown = false
         switch alarm {
         case .engineStopped(let crashed):
             presenter.show(
@@ -157,28 +163,49 @@ final class EngineAlarmController {
                 message: loc("engine.alarm.restarting"))
         case .cannotStart(let reason):
             presenter.show(title: loc("engine.alarm.cannotStart"), message: reason)
+        case .notResponding:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
         }
         presenter.setRestoreAction(nil)
         summary = ""
+        reattach = nil
     }
 
     /// A reattach is reported when it ends; with nothing to reattach the offer comes now.
     private func engineReady() {
+        if notRespondingShown {
+            notRespondingShown = false
+            presenter.dismiss()
+        }
         if !session.isReattaching { checkRecovery() }
     }
 
     private func sessionEvent(_ event: SessionEvent) {
-        guard case .reattached(let failures, let restored, let editsLost) = event else { return }
-        var lines = [loc("engine.alarm.back")]
-        for name in restored { lines.append(String(format: loc("engine.alarm.restoredOne"), name)) }
-        for name in editsLost { lines.append(String(format: loc("engine.alarm.editsLostOne"), name)) }
-        for f in failures { lines.append(String(format: loc("engine.alarm.failedOne"), f.name, f.reason)) }
+        guard case .reattached(let failures, let restored, let editsLost, let editsLostIDs) = event else { return }
+        reattach = (failures, restored, editsLost, editsLostIDs)
+        summary = reattachSummary(setAside: [])
         if !isShown {
             presenter.show(title: loc("engine.alarm.restarted"), message: loc("engine.alarm.restartedMessage"))
         }
-        summary = lines.joined(separator: "\n")
         presenter.setDetail(summary)
         checkRecovery()
+    }
+
+    /// What the reattach reported. A workspace reopened from its file that lost its unsaved edits
+    /// has the earlier autosave set aside when one is offered (`setAside`, by workspace id): saying
+    /// the edits are lost then would keep the operator from pressing Restore (#360).
+    private func reattachSummary(setAside: Set<ModelID>) -> String {
+        guard let r = reattach else { return "" }
+        var lines = [loc("engine.alarm.back")]
+        for name in r.restored { lines.append(String(format: loc("engine.alarm.restoredOne"), name)) }
+        for (i, name) in r.editsLost.enumerated() {
+            let set = i < r.ids.count && setAside.contains(r.ids[i])
+            let key = set ? "engine.alarm.editsLostSetAside" : "engine.alarm.editsLostOne"
+            lines.append(String(format: loc(key), name))
+        }
+        for f in r.failures { lines.append(String(format: loc("engine.alarm.failedOne"), f.name, f.reason)) }
+        return lines.joined(separator: "\n")
     }
 
     /// After an unclean exit: the autosaves no open window holds, behind the alarm's button.
@@ -199,6 +226,7 @@ final class EngineAlarmController {
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
+            self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
             let line = String(format: loc("engine.alarm.autosaves"), offer.count)
             self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
             self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }

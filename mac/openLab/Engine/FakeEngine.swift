@@ -78,9 +78,9 @@ final class FakeEngine: EngineTransport {
         ])
     }()
 
-    /// `preshow_check` answers a sample report with problems (a broken cue, its missing file, a lost
-    /// device) instead of the all-clear.
-    var preshowProblems = false
+    /// `preshow_check` on one of these docs answers a sample report with problems (a broken cue,
+    /// its missing file, a lost device) instead of the all-clear; other docs answer the all-clear.
+    var preshowProblemDocs: Set<ModelID> = []
     /// `scan_recovery` lists these (`recovery_entries` entry objects).
     var recoveryEntries: [JSONValue] = []
     /// `open` of one of these paths without a `recovery` choice answers `recovery_offer`.
@@ -659,7 +659,9 @@ final class FakeEngine: EngineTransport {
                 id, snapshot: Self.emptySnapshot(name: "Untitled \(nextDoc)", workspaceID: workspaceID(nextDoc)),
                 path: nil, from: c)
         case .open(let path, let recovery):
-            if let existing = docOrder.first(where: { docs[$0]?["document"]?["path"]?.stringValue == path }) {
+            if let existing = docOrder.first(where: {
+                docs[$0]?["document"]?["path"]?.stringValue.map { EngineSession.samePath($0, path) } ?? false
+            }) {
                 return result(c, id, error: (.alreadyOpen, "already open as \(existing)"))
             }
             if let code = openFailures[path] { return result(c, id, error: (code, "cannot open \(path)")) }
@@ -712,7 +714,8 @@ final class FakeEngine: EngineTransport {
                     ])
                 ]))
         case .preshowCheck:
-            result(c, id, ok: .object(["data": preshowProblems ? Self.sampleReportWithProblems : Self.allClearReport]))
+            let problems = c.doc.map(preshowProblemDocs.contains) ?? false
+            result(c, id, ok: .object(["data": problems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
@@ -721,11 +724,12 @@ final class FakeEngine: EngineTransport {
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }
 
-    /// `new` / `open` / `open_recovery`: another document; the list goes out before the result.
+    /// `new` / `open` / `open_recovery`: another document; the result goes out before the list, as
+    /// the engine does (control/docs.rs publishes the workspaces after answering).
     private func open(_ id: UInt64, snapshot: JSONValue, path: String?, from c: FakeConnection) {
         let doc = addDoc(snapshot, path: path)
-        broadcastWorkspaces()
         result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": Self.docJSON(doc)])]))
+        broadcastWorkspaces()
     }
 
     private func handleClose(_ id: UInt64, doc: ModelID?, discard: Bool, from c: FakeConnection) {

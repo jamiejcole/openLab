@@ -307,7 +307,7 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(clean.summary.total, 0)
         XCTAssertTrue(rig.engine.received.contains { $0.isPreshowCheck })
 
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         guard case .success(let bad) = await rig.store.preshowCheck() else { return XCTFail("sample") }
         XCTAssertFalse(bad.ok)
         XCTAssertEqual(bad.summary.total, 2)
