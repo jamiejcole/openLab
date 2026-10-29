@@ -36,6 +36,8 @@ enum AX {
     static let inspectorPreWait = "inspector-pre-wait"
     static let inspectorPostWait = "inspector-post-wait"
     static let inspectorDuration = "inspector-duration"
+    static let inspectorLoadTime = "inspector-load-time"
+    static let cueDurationEditor = "cue-duration-editor"
     static let inspectorTarget = "inspector-target"
     static let inspectorColour = "inspector-colour"
     static let inspectorContinue = "inspector-continue"
