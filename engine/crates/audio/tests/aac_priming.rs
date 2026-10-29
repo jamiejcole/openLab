@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-//! AAC encoder priming in MP4 (M3.14, AUD-04): the edit list (preferred) or the iTunSMPB tag
+//! AAC encoder priming in MP4 (AUD-04): the edit list (preferred) or the iTunSMPB tag
 //! (fallback) says how many frames of encoder delay the file starts with; probe, preload and
 //! streaming all start at the first real frame, and damaged values are ignored with a warning.
 //!

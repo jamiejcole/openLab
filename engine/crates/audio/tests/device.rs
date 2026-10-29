@@ -323,7 +323,7 @@ fn no_allocation_on_any_callback_path() {
     assert_eq!(m.alloc_violations(), 0);
     assert_eq!(m.callback_faults(), 0);
     assert_eq!(m.leaked_mixers(), 0);
-    // The callbacks were timed (M4.7a). An allocation in the timing itself is caught by the
+    // The callbacks were timed. An allocation in the timing itself is caught by the
     // unit test `an_allocation_in_the_timing_is_counted_in_debug`.
     let load = m.take_engine_load().expect("the callbacks were timed");
     assert!(load.is_finite() && load >= 0.0, "{load}");
@@ -331,7 +331,7 @@ fn no_allocation_on_any_callback_path() {
 
 /// Manual: plays 0.5 s of silence on the default output device and gets the mixer back.
 /// `cargo test -p openlab-audio --test device -- --ignored`. Uses a real sleep (it needs the
-/// device clock). Unplugging during a longer run is checked by hand (PROGRESS M3.8).
+/// device clock). Unplugging during a longer run is checked by hand.
 #[cfg(feature = "device")]
 #[test]
 #[ignore = "needs an audio output device"]

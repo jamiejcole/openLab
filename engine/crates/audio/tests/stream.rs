@@ -283,7 +283,7 @@ fn infinite_loop_without_drift(frames: usize) {
         ctl.pump();
     }
     assert_eq!(loops, (t as u64 - 200) / 100);
-    // Every play after the first came from the loop cache (M3.13), not a seek.
+    // Every play after the first came from the loop cache, not a seek.
     assert!(h.cached_frames() >= t as u64 - 300);
     assert_eq!(ctl.underrun_frames(), 0);
     assert_eq!(ctl.dropped_events(), 0);
@@ -863,7 +863,7 @@ fn damaged_files_stream_and_loop_on_the_probe_timeline() {
     }
 }
 
-/// Review M1: a devamp that leaves less audio than the integrated fade-out restarts the fade
+/// a devamp that leaves less audio than the integrated fade-out restarts the fade
 /// from the gain the voice had, so the gain never jumps, and it still ends exactly at silence on
 /// the last frame.
 #[test]

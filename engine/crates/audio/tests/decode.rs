@@ -982,7 +982,7 @@ fn extreme_aiff_rates_and_sizes_are_typed_errors() {
     }
 }
 
-/// #323: a FIFO or a device chosen as media is refused at once with a typed error by the
+/// a FIFO or a device chosen as media is refused at once with a typed error by the
 /// probe, a preload and a disk stream, never waited on (a FIFO opened for reading waits for a
 /// writer, for ever if none comes, and would take the probe or disk worker with it). The guard
 /// is a hang detector, not a timing assertion: with the non-blocking open removed the probe

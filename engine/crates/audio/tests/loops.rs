@@ -2,7 +2,7 @@
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The loop cache (M3.13), bounded loop exit buffers (L-R2) and devamps while a loop exit is
+//! The loop cache, bounded loop exit buffers (L-R2) and devamps while a loop exit is
 //! still playing (L-R5), end to end through disk streams and the offline renderer (AUD-12,
 //! CT-16). Tests wait on stream signals, never on timers; every render runs with allocation
 //! forbidden.
@@ -114,7 +114,7 @@ fn noise(samples: usize) -> Vec<f32> {
         .collect()
 }
 
-/// M3.13: for lossless sources, later plays from the loop cache are the very frames a seek back
+/// for lossless sources, later plays from the loop cache are the very frames a seek back
 /// would decode, so the output is bit-identical to the uncached path, also resampled (FLAC
 /// 44.1 kHz on a 48 kHz device). Covers
 /// a loop split by a start offset (its first cached play comes after a seek), a short loop
@@ -174,7 +174,7 @@ fn loop_cache_output_equals_the_uncached_path_bit_for_bit() {
     }
 }
 
-/// M3.13: a looped AAC slice plays the same frames every time (a seek back would restart the
+/// a looped AAC slice plays the same frames every time (a seek back would restart the
 /// decoder, whose output after a seek differs slightly).
 #[test]
 fn looped_aac_plays_are_identical() {
@@ -208,7 +208,7 @@ fn looped_aac_plays_are_identical() {
     }
 }
 
-/// M3.13 bounds: a loop longer than `loop_cache_bytes`, or one the global budget cannot hold,
+/// a loop longer than `loop_cache_bytes`, or one the global budget cannot hold,
 /// seeks back for every play as before and plays the same; the memory is given back when the
 /// stream ends.
 #[test]

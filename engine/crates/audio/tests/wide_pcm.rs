@@ -2,7 +2,7 @@
 // Helpers outside #[test] fns are test code too; clippy's in-test allowances miss them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Many-channel PCM (M3.23, AUD-03, AUD-04): uncompressed WAV and AIFF of up to 64 channels decode
+//! Many-channel PCM (AUD-03, AUD-04): uncompressed WAV and AIFF of up to 64 channels decode
 //! sample-exactly, seek anywhere, stream into a 64-output mixer and give a waveform. symphonia
 //! cannot read these files; the in-house reader does. Bad headers are `Corrupt`, never a panic.
 
