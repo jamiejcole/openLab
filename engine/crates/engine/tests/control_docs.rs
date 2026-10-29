@@ -1975,3 +1975,31 @@ fn an_odd_file_name_is_made_relative_composed_and_a_backslash_is_a_name_on_posix
         assert_eq!(media_of(r.s.control().workspace(), 2), "Door\\Slam.wav");
     }
 }
+
+#[test]
+fn save_as_from_one_folder_to_another_drops_history_that_names_relative_paths_of_the_old_one() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let in_b = portable(&b.path().join("b.wav"));
+    // Saved in A with a relative file; the edit replaces it with a file that lies inside B, so
+    // the Save As to B only turns an absolute path relative, yet the undo step holds "old.wav".
+    let ws = workspace(vec![media_cue(1, "old.wav")]);
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    set_media(&mut r.s, 1, &in_b);
+    save_as(&mut r.s, &b.path().join("copy.openlab"));
+    assert_eq!(media_of(r.s.control().workspace(), 1), "b.wav");
+    let snap =
+        r.s.take_outbound()
+            .into_iter()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("snapshot");
+    assert!(!snap.document.can_undo, "no step may bring back old.wav");
+    let undo_id = r.s.request_id();
+    let _ = r.s.send(ClientMessage::Undo { id: undo_id });
+    assert_eq!(media_of(r.s.control().workspace(), 1), "b.wav");
+}

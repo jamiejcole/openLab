@@ -1287,9 +1287,10 @@ impl DocCx<'_> {
         }
         self.doc.media.reset(self.show_dir(), &self.doc.ws);
         if changed {
-            // Absolute references made relative still name their files when an undo restores
-            // the old spelling, so history stays unless a relative one was re-spelled.
-            if respelled {
+            // An undo can restore an old relative spelling that now resolves against the new
+            // folder, so history goes on any move from a known folder. Only the first save of an
+            // untitled show keeps it: its references were all absolute and still name their files.
+            if respelled || old_dir.is_some() {
                 self.doc.history = History::new();
             }
             self.doc.revision += 1;
