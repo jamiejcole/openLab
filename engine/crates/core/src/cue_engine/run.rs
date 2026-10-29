@@ -139,6 +139,9 @@ pub(super) struct Run {
     pub devamp: Option<DevampWait>,
     /// Fade cues, from their action start: what the fade is doing.
     pub fade: Option<FadeRun>,
+    /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
+    /// an edit of a running cue's duration re-times it (`follow_duration_edits`).
+    pub duration: Option<SampleTime>,
 }
 
 /// The levels an audio cue's voice has been given: the model's at its start, and each edit
@@ -166,13 +169,35 @@ pub(super) struct DevampWait {
     pub at: Option<SampleTime>,
 }
 
-/// One gain a Fade cue ramps: on `cue`'s run `seq`, towards `gain`.
+/// One gain a Fade cue ramps: on `cue`'s run `seq`, towards `gain`. Its curve as planned at
+/// the action start (from `from`, `lead` samples into the action, over `frames`) says where it
+/// is at any point of the action, for a Fade whose duration is edited while it runs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FadeRamp {
     pub cue: CueId,
     pub seq: u64,
     pub param: LevelParam,
     pub gain: f32,
+    pub from: f32,
+    pub lead: SampleTime,
+    pub frames: SampleTime,
+}
+
+impl FadeRamp {
+    /// The gain the planned curve reaches `length` samples into the fade's action: where a
+    /// fade that keeps its rate ends when its action is `length` long (QLab 5).
+    pub fn gain_at(&self, length: SampleTime, curve: FadeCurve) -> f32 {
+        if self.frames == 0 {
+            return self.gain;
+        }
+        super::level::ramp_gain(
+            self.from,
+            self.gain,
+            length.saturating_sub(self.lead),
+            self.frames,
+            curve,
+        )
+    }
 }
 
 /// A Fade cue's part of its run.
@@ -184,6 +209,9 @@ pub(super) struct FadeRun {
     /// Stop this cue (the Fade's target) when the fade completes.
     pub stop_target: Option<CueId>,
     pub curve: FadeCurve,
+    /// Its duration was edited while it ran: it ends on the new end, at the levels its curve
+    /// reaches there, and lets go of them then.
+    pub retimed: bool,
 }
 
 /// How a cue's runtime ended, as its group sees it.
@@ -275,6 +303,7 @@ impl Run {
             given: None,
             devamp: None,
             fade: None,
+            duration: None,
         }
     }
 

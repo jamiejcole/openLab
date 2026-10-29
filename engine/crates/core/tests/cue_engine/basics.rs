@@ -1354,23 +1354,53 @@ fn set_duration(ws: &mut Workspace, n: u128, value: f64) {
     .unwrap();
 }
 
+/// QLab 5.5.3: a running Wait takes its edited duration. It ends at the new length from its
+/// start (its auto-follow fires then), or at once when it is already past it.
 #[test]
-fn a_running_wait_keeps_the_end_it_started_with_when_its_duration_is_edited() {
-    // QLab does not document this; the duration is fixed when the action starts (Model edits).
-    for edited in [10.0, 0.5, 0.0] {
+fn a_running_wait_takes_its_edited_duration() {
+    // (edited at, new duration, where it ends)
+    for (at, edited, end) in [(500, 1.0, 1000), (500, 3.0, 3000), (1500, 0.5, 1500)] {
+        let case = format!("{edited} s at {at}");
         let mut rig = Rig::new(vec![timed(wait(1, 2.0), 0.0, 0.0, AF), memo(2)]);
         rig.go(0);
+        rig.tick(at - 1);
         set_duration(&mut rig.ws, 1, edited);
-        rig.tick(1000);
-        assert_eq!(rig.state(1), CueState::Running, "{edited}");
-        assert_eq!(running_at(&rig.tick(2000), 2), Some(2000), "{edited}");
-        assert_eq!(rig.state(1), CueState::Idle);
-        // The next run takes the edit.
-        let started = rig.start(3000, 1);
-        let end = 3000 + (edited * 1000.0) as SampleTime;
-        let ended = if end == 3000 { started } else { rig.tick(end) };
-        assert_eq!(running_at(&ended, 2), Some(end), "{edited}");
+        let edit = rig.tick(at);
+        if end > at {
+            assert_eq!(running_at(&edit, 2), None, "{case}");
+            assert!(running_at(&rig.tick(end - 1), 2).is_none(), "{case}");
+            assert_eq!(running_at(&rig.tick(end), 2), Some(end), "{case}");
+        } else {
+            assert_eq!(running_at(&edit, 2), Some(end), "{case}");
+        }
+        assert_eq!(rig.state(1), CueState::Idle, "{case}");
+        // The next run takes the edit too.
+        rig.start(5000, 1);
+        let next = 5000 + (edited * 1000.0) as SampleTime;
+        assert_eq!(running_at(&rig.tick(next), 2), Some(next), "{case}");
     }
+}
+
+/// A paused Wait shortened to less than it had run ends on the resume, not while paused.
+#[test]
+fn a_paused_wait_shortened_past_its_elapsed_time_ends_on_the_resume() {
+    let mut rig = Rig::new(vec![timed(wait(1, 2.0), 0.0, 0.0, AF), memo(2)]);
+    rig.go(0);
+    rig.at(1500, Input::Pause { cue: id(1) });
+    set_duration(&mut rig.ws, 1, 0.5);
+    assert_eq!(running_at(&rig.tick(1600), 2), None);
+    assert_eq!(rig.state(1), CueState::Paused);
+    let resumed = rig.at(4000, Input::Resume { cue: id(1) });
+    assert_eq!(running_at(&resumed, 2), Some(4000));
+    // Paused at 1500, lengthened to 3 s: 1.5 s are left after the resume.
+    let mut rig = Rig::new(vec![timed(wait(1, 2.0), 0.0, 0.0, AF), memo(2)]);
+    rig.go(0);
+    rig.at(1500, Input::Pause { cue: id(1) });
+    set_duration(&mut rig.ws, 1, 3.0);
+    rig.tick(1600);
+    rig.at(4000, Input::Resume { cue: id(1) });
+    assert!(running_at(&rig.tick(5499), 2).is_none());
+    assert_eq!(running_at(&rig.tick(5500), 2), Some(5500));
 }
 
 #[test]

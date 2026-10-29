@@ -66,6 +66,11 @@ impl CueEngine {
             targets: Vec::new(),
             stop_target: stop_target_when_done.then_some(target),
             curve: *curve,
+            retimed: false,
+        };
+        let offset = match self.slots.get(&cue) {
+            Some(Slot::Active(run)) => run.action_offset,
+            _ => 0,
         };
         let now = cx.now;
         let mut seen = BTreeSet::new();
@@ -149,6 +154,10 @@ impl CueEngine {
                     seq: run.seq,
                     param,
                     gain,
+                    from,
+                    // In action time: a load to time starts the action `offset` samples in.
+                    lead: start.saturating_sub(at).saturating_add(offset),
+                    frames,
                 });
             }
             if frames > 0 && moved {
@@ -176,6 +185,12 @@ impl CueEngine {
         let seq = run.seq;
         if let Some(target) = fade.stop_target {
             self.as_of(at, cx, |e, cx| e.stop_tree(target, None, cx));
+        }
+        if fade.retimed {
+            // Shortened while it ran (QLab 5 keeps the rate): a level still on its way stays
+            // where its curve has got to now.
+            let when = at.max(cx.now);
+            return self.hold_fade(cue, seq, &fade, when, false, cx);
         }
         for r in &fade.ramps {
             if let Some(level) = self.level_mut(r.cue, r.seq, r.param)
@@ -245,11 +260,20 @@ impl CueEngine {
         let Some(Slot::Active(run)) = self.slots.get(&cue) else {
             return;
         };
-        let (Some(fade), Phase::Action { end: Some(end), .. }) = (run.fade.clone(), run.phase)
+        let (
+            Some(fade),
+            Phase::Action {
+                start,
+                end: Some(end),
+            },
+        ) = (run.fade.clone(), run.phase)
         else {
             return;
         };
         let seq = run.seq;
+        // The action's length (as `begin_action` timed it): a re-timed fade goes to where its
+        // planned curve is at its new end, not to the fade's levels.
+        let length = end.saturating_sub(start).saturating_add(run.action_offset);
         let rate = self.config.sample_rate().get();
         let mut moving = BTreeSet::new();
         for r in &fade.ramps {
@@ -279,10 +303,15 @@ impl CueEngine {
             };
             let (heard_frames, heard_curve) =
                 level::heard(start, frames, fade.curve, voice_start, rate);
+            let gain = if fade.retimed {
+                r.gain_at(length, fade.curve)
+            } else {
+                r.gain
+            };
             *level = Level {
                 owner: Some((cue, seq)),
                 from: level.value(start),
-                to: r.gain,
+                to: gain,
                 start,
                 frames: heard_frames,
                 curve: heard_curve,
@@ -292,7 +321,7 @@ impl CueEngine {
                 run: voice,
                 at: start,
                 param: r.param,
-                gain: r.gain,
+                gain,
                 frames,
                 curve: fade.curve,
             });

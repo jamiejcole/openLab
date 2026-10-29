@@ -192,49 +192,106 @@ fn stop_target_when_done_stops_it_on_the_fades_last_sample() {
 /// running fade keeps the ramps and the end it started with, so its target stops and its
 /// auto-follow fires on the original end; the next run takes the edit. QLab does not document
 /// it (open question in docs/todo/open-qlab-questions.md).
+fn set_duration(rig: &mut Rig, n: u128, value: f64) {
+    rig.ws
+        .apply(Command::SetCueProperty {
+            id: id(n),
+            property: CueProperty::Duration { value },
+        })
+        .unwrap();
+}
+
+/// A linear 2 s fade of cue 1 from 0 dB to silence, started on 500 (its gain at `t` samples into
+/// it is `1 − t / 2000`), auto-following into memo 3.
+fn running_fade(stop: bool) -> Rig {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(
+            fade_to(2, 1, 2.0, FadeCurve::Linear, master(SILENCE_DB), stop),
+            0.0,
+            0.0,
+            AF,
+        ),
+        memo(3),
+    ]);
+    rig.start(0, 1);
+    rig.start(500, 2);
+    rig
+}
+
+/// QLab 5.5.3: a running Fade takes its edited duration but keeps its rate. Shortened, it ends
+/// at the new end (auto-follow then) where its original curve has got to; the level is held
+/// there. Shortened to less than it has run, it ends at once, where it is.
 #[test]
-fn a_running_fade_keeps_its_end_when_its_duration_is_edited() {
-    for edited in [0.0, 0.5, 30.0] {
-        let mut rig = Rig::new(vec![
-            sound(1),
-            timed(
-                fade_to(2, 1, 2.0, FadeCurve::Linear, master(SILENCE_DB), true),
-                0.0,
-                0.0,
-                AF,
-            ),
-            memo(3),
-        ]);
-        rig.start(0, 1);
-        rig.start(500, 2);
-        rig.ws
-            .apply(Command::SetCueProperty {
-                id: id(2),
-                property: CueProperty::Duration { value: edited },
-            })
-            .unwrap();
-        let mid = rig.tick(1000);
-        assert!(ramps(&mid).is_empty(), "{edited}: {mid:?}");
-        assert!(voice_stops(&mid).is_empty(), "{edited}");
-        assert_eq!(rig.state(1), CueState::Fading, "{edited}");
-        assert!(voice_stops(&rig.tick(2499)).is_empty(), "{edited}");
-        let end = rig.tick(2500);
-        assert_eq!(voice_stops(&end), vec![(id(1), 2500, None)], "{edited}");
-        assert_eq!(
-            changes(&end, 3)[0],
-            (CueState::PreWaiting, 2500),
-            "{edited}"
-        );
-        // The next run fades over the edited duration.
-        rig.start(3000, 1);
-        let again = rig.start(4000, 2);
-        let frames = (edited * 1000.0) as SampleTime;
-        let again = ramps(&again);
-        assert!(
-            !again.is_empty() && again.iter().all(|r| r.frames == frames),
-            "{edited}: {again:?}"
-        );
+fn a_shortened_running_fade_ends_early_where_its_curve_is() {
+    // (edited at, new duration, end, level there)
+    for (at, edited, end, gain) in [
+        (1000, 1.0, 1500, 0.5),
+        (1000, 1.5, 2000, 0.25),
+        (1500, 0.5, 1500, 0.5),
+    ] {
+        let case = format!("{edited} s at {at}");
+        let mut rig = running_fade(false);
+        rig.tick(at - 1);
+        set_duration(&mut rig, 2, edited);
+        let edit = rig.tick(at);
+        let mut out = edit.clone();
+        if end > at {
+            // The ramp the mixer has goes on as planned until the new end.
+            assert!(ramps(&edit).is_empty(), "{case}: {edit:?}");
+            assert_eq!(changes(&edit, 3), vec![], "{case}");
+            out = rig.tick(end - 1);
+            assert!(ramps(&out).is_empty(), "{case}: {out:?}");
+            out = rig.tick(end);
+        }
+        assert_eq!(ramps(&out), vec![ramp(1, end, M, gain, 0)], "{case}");
+        assert_eq!(changes(&out, 3)[0], (CueState::PreWaiting, end), "{case}");
+        assert_eq!(rig.state(1), CueState::Running, "{case}");
+        assert_eq!(rig.engine.fade_level(id(1), M, end + 5000), Some(gain));
     }
+}
+
+/// Lengthened, it keeps its rate too: the levels arrive when they would have, and the cue
+/// completes (auto-follow) on the new end without moving them again.
+#[test]
+fn a_lengthened_running_fade_keeps_its_ramps_and_completes_later() {
+    let mut rig = running_fade(false);
+    set_duration(&mut rig, 2, 4.0);
+    assert!(ramps(&rig.tick(1000)).is_empty());
+    assert_eq!(rig.engine.fade_level(id(1), M, 2500), Some(0.0));
+    assert!(changes(&rig.tick(4499), 3).is_empty());
+    let end = rig.tick(4500);
+    assert!(ramps(&end).is_empty(), "{end:?}");
+    assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 4500));
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+/// "Stop target when done" stops the target on the new end.
+#[test]
+fn a_shortened_fade_stops_its_target_on_the_new_end() {
+    let mut rig = running_fade(true);
+    set_duration(&mut rig, 2, 1.0);
+    rig.tick(1000);
+    assert!(voice_stops(&rig.tick(1499)).is_empty());
+    assert_eq!(voice_stops(&rig.tick(1500)), vec![(id(1), 1500, None)]);
+}
+
+/// Paused, then shortened: the resume ramps from the held level to where the original curve is
+/// at the new length, ending on the new end moved on by the pause.
+#[test]
+fn a_paused_fade_shortened_resumes_to_where_its_curve_ends() {
+    let mut rig = running_fade(false);
+    let paused = rig.at(1000, Input::Pause { cue: id(2) });
+    assert_eq!(ramps(&paused), vec![ramp(1, 1000, M, 0.75, 0)]);
+    set_duration(&mut rig, 2, 1.5);
+    rig.tick(1200);
+    // Paused 500 samples in: 1000 of the 1500 are left after the resume.
+    let resumed = rig.at(2000, Input::Resume { cue: id(2) });
+    assert_eq!(ramps(&resumed), vec![ramp(1, 2000, M, 0.25, 1000)]);
+    assert!(changes(&rig.tick(2999), 3).is_empty());
+    let end = rig.tick(3000);
+    assert!(ramps(&end).is_empty(), "{end:?}");
+    assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 3000));
 }
 
 #[test]

@@ -315,6 +315,7 @@ impl CueEngine {
                 self.note_unsignalled();
             }
             self.shape.record(ws, self.unsignalled_model_changes());
+            self.follow_duration_edits(&mut cx);
         }
         self.advance(&mut cx);
         // After the deadlines due in this call: a fade ending in it has let go of its levels,
