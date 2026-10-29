@@ -1958,6 +1958,17 @@ impl DocCx<'_> {
         // One batch (split only past the queue's size), so a master move changes every patch
         // on the same sample.
         self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
+        // After the routing: a voice whose cue now names another patch follows it (#293).
+        let moves = self.doc.voices.follow_patches(
+            self.doc.id,
+            &self.doc.ws,
+            &self.eng.patches,
+            &self.doc.engine,
+            now,
+        );
+        if !moves.is_empty() {
+            self.send_commands(moves);
+        }
         self.doc.warnings_dirty = true;
         let patches = if all {
             self.eng.patches.resolutions(self.doc.id)
