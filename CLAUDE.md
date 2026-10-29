@@ -61,6 +61,7 @@ make prepush     # pre-push gate: lint, Windows clippy, Rust tests, app build, a
 
 ## Behaviour decisions
 - Functional behaviour is grounded in QLab 5. When the brief doesn't settle it, follow QLab 5 and say so in your report. If `~/qlab-ref` exists, search it first (`~/qlab-ref/qlab-ref search "<words>"`, then `show <page>`; paraphrase and cite pages, never copy text into the repo), then https://qlab.app/docs/v5/. If still unsettled, implement the likeliest behaviour and add an `assumed` row to [`docs/todo/open-qlab-questions.md`](docs/todo/open-qlab-questions.md) (assumption, what you searched). Never block on the user. Before adding a row, search that file: every answer the user has given is recorded there, and a question is never asked twice.
+- Scope matches QLab 5 (user decision 2026-10-29): openLab builds what QLab has and drops what it doesn't, even when a requirement once asked for it. Where QLab's behaviour is known, copy it without asking. Ask only when QLab is unknown or show safety is at stake.
 - UI layout follows QLab 5: before building or changing a screen, look it up in `~/qlab-ref/ui` if it exists (`README.md`, then `surfaces.json`, `menus.json`, `cue-types.json` and `shots/`). Cite its surface ids. It is a local reference only: never copy its text, label lists, tooltips or screenshots into the repo, issues or PRs. Describe layouts in your own words, and give openLab's controls our own similar names.
 
 ## Style
