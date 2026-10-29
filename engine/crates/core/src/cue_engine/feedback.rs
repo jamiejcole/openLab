@@ -212,7 +212,7 @@ impl CueEngine {
                 // then (QLab 5.5.3) and its playlist hears of the failure on the resume: a
                 // running one halts there, as for a child that broke while playing. A stop or
                 // panic cancels it.
-                let playlist = in_playlist(cx.ws, cue);
+                let playlist = run.paused_at.is_some() && in_playlist(cx.ws, cue);
                 if let (Some(paused), Phase::Action { start, .. }) = (run.paused_at, run.phase)
                     && (follow || playlist)
                 {
