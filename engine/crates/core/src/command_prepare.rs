@@ -9,7 +9,9 @@
 
 use crate::command::{Command, CommandError, CueProperty, prepare_paste};
 use crate::cue::{Cue, CueKind, MediaRef};
-use crate::media_path::{PathStyle, portable_ref};
+use crate::media_path::{
+    PathStyle, is_absolute, lexical_normalize, normalize_nfc, portable_ref, resolve, to_portable,
+};
 use crate::model::{CueId, Workspace};
 use crate::tree::walk_mut;
 
@@ -31,6 +33,37 @@ impl MediaPaths<'_> {
             return media.clone();
         }
         portable_ref(media.as_str(), self.show_dir, self.style)
+    }
+
+    /// Relative media paths of cues copied from the show in `source_dir` made absolute, so
+    /// [`Self::store`] then keeps them relative only if they lie inside this show's folder. Skipped
+    /// when the source folder is this one (the path already means what it should, `..` and all),
+    /// when it is missing or not absolute (nothing to resolve against), and for absolute paths.
+    fn resolve_from_source(&self, source_dir: Option<&str>, cues: &mut [Cue]) {
+        let Some(source) = source_dir
+            .map(|d| normalize_nfc(&to_portable(d, self.style)))
+            .filter(|d| is_absolute(d))
+        else {
+            return;
+        };
+        let same_folder = self.show_dir.is_some_and(|d| {
+            lexical_normalize(&normalize_nfc(&to_portable(d, self.style)))
+                == lexical_normalize(&source)
+        });
+        if same_folder {
+            return;
+        }
+        walk_mut(cues, &mut |cue| {
+            if let CueKind::Audio {
+                media: Some(media), ..
+            } = &mut cue.kind
+            {
+                let text = normalize_nfc(&to_portable(media.as_str(), self.style));
+                if !text.is_empty() && !is_absolute(&text) {
+                    *media = MediaRef::new(resolve(&text, &source));
+                }
+            }
+        });
     }
 
     fn store_cues(&self, cues: &mut [Cue]) {
@@ -86,8 +119,13 @@ impl Command {
                 paths.store_cues(&mut cues);
                 Self::Paste { at, cues }
             }
-            Self::PasteClipboard { at, cues } => {
+            Self::PasteClipboard {
+                at,
+                cues,
+                source_dir,
+            } => {
                 let mut cues = prepare_paste(workspace, &cues, &mut *new_id)?;
+                paths.resolve_from_source(source_dir.as_deref(), &mut cues);
                 paths.store_cues(&mut cues);
                 Self::Paste { at, cues }
             }

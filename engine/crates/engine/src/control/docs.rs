@@ -342,6 +342,8 @@ struct PendingSave {
     path: PathBuf,
     /// A save-as to another folder: relative media references were rebased in the copy saved.
     rebase: bool,
+    /// Some of those were relative references (older history entries then name wrong paths).
+    respelled: bool,
     waiters: Vec<(RequestId, ReplyTx)>,
 }
 
@@ -862,20 +864,32 @@ pub(crate) fn new_workspace(
     workspace
 }
 
-/// Relative media references of `ws` re-spelled so they name the same files from `new_dir`.
-fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> Vec<Relink> {
+/// Media references of `ws` re-spelled for the folder `new_dir` (WS-03): relative ones so they
+/// still name the same files from there, and absolute ones made relative when they lie literally
+/// inside `new_dir` (the rule of `portable_ref`; a show saved for the first time holds absolute
+/// paths, `docs/file-format.md` section 4.3). An absolute path outside `new_dir` is never touched.
+/// The flag is true when a relative reference was re-spelled: only those make older history
+/// entries wrong (an absolute reference still names its file when an undo puts it back).
+fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> (Vec<Relink>, bool) {
     let Some(new_dir) = new_dir.to_str() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
-    audio_media(ws)
+    let mut respelled = false;
+    let relinks = audio_media(ws)
         .into_iter()
-        .filter(|(_, media)| !is_absolute(media.as_str()))
         .filter_map(|(cue, media)| {
+            if is_absolute(media.as_str()) {
+                let new = portable_ref(media.as_str(), Some(new_dir), PathStyle::host());
+                return (!is_absolute(new.as_str()) && new != media).then_some(Relink { cue, new });
+            }
             let file = media_path(&media, old_dir)?;
             let new: MediaRef = portable_ref(file.to_str()?, Some(new_dir), PathStyle::host());
-            (new != media).then_some(Relink { cue, new })
+            let changed = new != media;
+            respelled |= changed;
+            changed.then_some(Relink { cue, new })
         })
-        .collect()
+        .collect();
+    (relinks, respelled)
 }
 
 /// Whether two paths name the same file, compared like media paths (case, NFC and `..`
@@ -1086,13 +1100,15 @@ impl DocCx<'_> {
             && new_dir != old_dir;
         let mut copy = self.doc.ws.clone();
         let mut rebased = false;
+        let mut respelled_relative = false;
         let mut relink_failure = None;
         if moved && let Some(new_dir) = &new_dir {
-            let relinks = rebase(&copy, old_dir.as_deref(), new_dir);
+            let (relinks, respelled) = rebase(&copy, old_dir.as_deref(), new_dir);
             if !relinks.is_empty() {
                 let command = relink_command(&copy, &relinks);
                 let result = copy.apply(command);
                 rebased = result.is_ok();
+                respelled_relative = rebased && respelled;
                 if let Err(e @ openlab_core::CommandError::RollbackFailed { .. }) = &result {
                     relink_failure = Some(format!("relink of the copy being saved: {e}"));
                 }
@@ -1119,6 +1135,7 @@ impl DocCx<'_> {
             revision: self.doc.revision,
             path,
             rebase: rebased,
+            respelled: respelled_relative,
             waiters: vec![(id, to.clone())],
         });
     }
@@ -1225,7 +1242,12 @@ impl DocCx<'_> {
             let old_dir = self.show_dir();
             self.doc.show_path = Some(save.path.clone());
             if self.show_dir() != old_dir {
-                self.moved_folder(old_dir.as_deref(), save.rebase, clean_before);
+                self.moved_folder(
+                    old_dir.as_deref(),
+                    save.rebase,
+                    save.respelled,
+                    clean_before,
+                );
             }
         }
         if !self.doc.is_dirty() {
@@ -1238,10 +1260,18 @@ impl DocCx<'_> {
     /// they still name the same files (as in the copy just saved), and the files are probed
     /// again from the new place. That is not an edit the operator made, so history is cleared
     /// (an undo would bring back a reference that is now wrong) and every client gets a snapshot.
-    fn moved_folder(&mut self, old_dir: Option<&Path>, rebase_refs: bool, clean_before: bool) {
+    fn moved_folder(
+        &mut self,
+        old_dir: Option<&Path>,
+        rebase_refs: bool,
+        respelled: bool,
+        clean_before: bool,
+    ) {
         let mut changed = false;
+        let mut respelled = respelled;
         if rebase_refs && let Some(new_dir) = self.show_dir() {
-            let relinks = rebase(&self.doc.ws, old_dir, &new_dir);
+            let (relinks, now_respelled) = rebase(&self.doc.ws, old_dir, &new_dir);
+            respelled |= now_respelled;
             if !relinks.is_empty() {
                 let command = relink_command(&self.doc.ws, &relinks);
                 let result = self.doc.ws.apply(command);
@@ -1257,7 +1287,12 @@ impl DocCx<'_> {
         }
         self.doc.media.reset(self.show_dir(), &self.doc.ws);
         if changed {
-            self.doc.history = History::new();
+            // An undo can restore an old relative spelling that now resolves against the new
+            // folder, so history goes on any move from a known folder. Only the first save of an
+            // untitled show keeps it: its references were all absolute and still name their files.
+            if respelled || old_dir.is_some() {
+                self.doc.history = History::new();
+            }
             self.doc.revision += 1;
             // The copy on disk has the same references; it lacks only edits made meanwhile.
             if clean_before {

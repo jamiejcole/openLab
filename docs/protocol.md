@@ -223,3 +223,5 @@ The `model_changed` for revision N is always sent before the `result` that repor
 M4.6a additions (`PROTOCOL_VERSION` stayed 1 (it was 1 until M4.15f)): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).
 
 The `set_workspace_setting` `hotkeys` value must list all 11 keys (`null` = no key) and no other field; a partial or misspelt map is `bad_request` (docs/commands.md).
+
+M5.10f addition (`PROTOCOL_VERSION` stays 2): `paste_clipboard` takes an optional `source_dir` (absolute folder of the show the cues were copied from; omitted for a show never saved; fixture `client/command_paste_clipboard_from_folder.json`). The engine resolves the clipboard's relative media paths against it before storing them for the destination show.

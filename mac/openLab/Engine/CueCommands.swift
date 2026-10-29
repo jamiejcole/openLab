@@ -85,8 +85,12 @@ extension Command {
 
     /// `PasteClipboard`: the raw copied cues, in order, one undo step. The engine makes the fresh ids
     /// and repairs targets, numbers and patches for this workspace (core's `prepare_paste`).
-    static func pasteClipboard(at: JSONValue, cues: [JSONValue]) -> Command {
-        Command(.object(["type": .string("paste_clipboard"), "at": at, "cues": .array(cues)]))
+    /// `sourceDir` is the folder of the show the cues were copied from (nil for a show never saved): the
+    /// engine reads their relative media paths against it so the files still play here.
+    static func pasteClipboard(at: JSONValue, cues: [JSONValue], sourceDir: String? = nil) -> Command {
+        var json: JSONValue = .object(["type": .string("paste_clipboard"), "at": at, "cues": .array(cues)])
+        if let sourceDir { json.set("source_dir", .string(sourceDir)) }
+        return Command(json)
     }
 
     static func removeCue(_ id: ModelID) -> Command {

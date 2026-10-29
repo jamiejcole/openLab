@@ -159,6 +159,11 @@ pub enum Command {
     PasteClipboard {
         at: Position,
         cues: Vec<Cue>,
+        /// The folder of the show the cues were copied from, absolute, as the client knows it;
+        /// absent for a show never saved. The cues' relative media paths are read against it, so
+        /// the files still play when pasted into a show in another folder (ED-05, WS-03).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_dir: Option<String>,
     },
     /// Removes a cue and its children.
     RemoveCue {
