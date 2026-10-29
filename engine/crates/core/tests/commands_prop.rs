@@ -477,7 +477,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::StartSelected,
         TransportKey::StopSelected,
         TransportKey::ResetSelected,
-    ][p.c as usize % 11];
+    ][p.c as usize % 9];
     match p.b % 8 {
         0 => WorkspaceSetting::MinGoInterval {
             value: time(p.c) / 10.0,
