@@ -152,11 +152,8 @@ pub fn db_to_gain(db: f64) -> f32 {
 const EXP_K: f64 = 6.907_755_278_982_137;
 
 fn exp_shape(t: f64) -> f64 {
-    // The ends are exact whatever the platform's `exp_m1` does: the quotient is 1 only if both
+    // The top end is exact whatever the platform's `exp_m1` does: the quotient is 1 only if both
     // calls round alike, and Miri (like a hostile libm) is allowed to differ between calls.
-    if t <= 0.0 {
-        return 0.0;
-    }
     if t >= 1.0 {
         return 1.0;
     }
