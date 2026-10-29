@@ -234,6 +234,17 @@ fn a_final_write_on_a_hung_disk_is_bounded_and_logged() {
     assert_eq!(names(&env.dirs.recovery_dir()).len(), 1);
 }
 
+/// Makes every recovery write fail: a file where the recovery folder goes. Called once the doc
+/// is settled (no write or removal in flight), just before the shutdown.
+fn block_recovery_folder(env: &Env) {
+    let folder = env.dirs.recovery_dir();
+    if folder.is_dir() {
+        fs::remove_dir_all(&folder).unwrap();
+    }
+    fs::create_dir_all(folder.parent().unwrap()).unwrap();
+    fs::write(&folder, b"not a folder").unwrap();
+}
+
 /// A final write that fails once (a transient disk error: here the recovery folder is briefly a
 /// file) is tried once more while the wait lasts, so the last edit still reaches the disk.
 #[test]
@@ -248,16 +259,15 @@ fn a_final_write_that_fails_once_is_retried() {
         }
         let mut tries = counted.lock().unwrap();
         *tries += 1;
-        if *tries == 1 {
-            let _ = fs::remove_dir_all(&folder);
-            fs::write(&folder, b"not a folder").unwrap();
-        } else {
+        if *tries == 2 {
             fs::remove_file(&folder).unwrap();
         }
     }));
     let (mut s, _clock) = launch(&env, |c| c.save_hook = Some(hook));
     let doc = opened(&app_request(&mut s, Request::New {}));
     rename(&mut s, doc, "Flaky");
+    s.settle_docs();
+    block_recovery_folder(&env);
     assert_eq!(
         s.shutdown(),
         FinalWrites {
@@ -275,19 +285,18 @@ fn a_final_write_that_fails_once_is_retried() {
 #[test]
 fn a_final_write_that_fails_twice_is_given_up_and_logged() {
     let env = env();
-    let folder = env.dirs.recovery_dir();
     let tries = Arc::new(Mutex::new(0));
     let counted = Arc::clone(&tries);
     let hook = SaveHook(Arc::new(move |kind: JobKind| {
         if kind == JobKind::Autosave {
             *counted.lock().unwrap() += 1;
-            let _ = fs::remove_dir_all(&folder);
-            let _ = fs::write(&folder, b"not a folder");
         }
     }));
     let (mut s, _clock) = launch(&env, |c| c.save_hook = Some(hook));
     let doc = opened(&app_request(&mut s, Request::New {}));
     rename(&mut s, doc, "Broken");
+    s.settle_docs();
+    block_recovery_folder(&env);
     assert_eq!(
         s.shutdown(),
         FinalWrites {
