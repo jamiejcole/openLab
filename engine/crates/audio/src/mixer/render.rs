@@ -45,7 +45,15 @@ impl Mixer {
             // A paused voice past its declick tail contributes nothing and is not visited; a
             // move it was making is over, there is nothing left to crossfade.
             if v.paused.is_some_and(|p| p.done >= p.len) {
-                v.advance_move(usize::MAX);
+                if v.moving.is_some() {
+                    v.advance_move(usize::MAX);
+                    let (voice, moves) = (v.id, v.moves);
+                    outbox.emit(Event::MoveEnded {
+                        voice,
+                        at: t0,
+                        moves,
+                    });
+                }
                 continue;
             }
             if let Some(m) = v.moving {
@@ -204,6 +212,12 @@ fn render_moving(
         }
     }
     v.advance_move(len);
+    // A voice that ended meanwhile was reported finished instead.
+    if v.moving.is_none() && v.is_active() {
+        let at = t0.saturating_add(len as u64);
+        let (voice, moves) = (v.id, v.moves);
+        outbox.emit(Event::MoveEnded { voice, at, moves });
+    }
 }
 
 fn render_voice(

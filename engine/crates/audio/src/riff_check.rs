@@ -344,6 +344,38 @@ impl<'a, R: Read + Seek + ?Sized> Cursor<'a, R> {
 mod tests {
     use super::*;
 
+    /// The symphonia release this walk was checked against (module docs).
+    const MIRRORED_SYMPHONIA: &str = "0.6.1";
+
+    /// The `version` of package `name` in a `Cargo.lock`.
+    fn locked_version<'a>(lock: &'a str, name: &str) -> Option<&'a str> {
+        // `lines` also strips a `\r`, as a Windows checkout may have.
+        let header = format!("name = \"{name}\"");
+        let mut lines = lock.lines();
+        lines.find(|l| *l == header)?;
+        lines
+            .next()?
+            .strip_prefix("version = \"")?
+            .strip_suffix('"')
+    }
+
+    /// A symphonia upgrade can change the chunk walk this module mirrors, letting a hostile
+    /// header past the check: the upgrade must re-check this file first.
+    #[test]
+    fn the_locked_symphonia_is_the_one_this_walk_mirrors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+        let lock = std::fs::read_to_string(&path).expect("read the workspace Cargo.lock");
+        for name in ["symphonia-core", "symphonia-format-riff"] {
+            assert_eq!(
+                locked_version(&lock, name),
+                Some(MIRRORED_SYMPHONIA),
+                "{name} changed in Cargo.lock: re-check engine/crates/audio/src/riff_check.rs \
+                 against symphonia's ChunksReader and chunk parsers, then update \
+                 MIRRORED_SYMPHONIA and the module docs"
+            );
+        }
+    }
+
     fn be_chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = tag.to_vec();
         v.extend_from_slice(&(body.len() as u32).to_be_bytes());

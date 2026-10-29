@@ -354,6 +354,16 @@ pub enum Event {
     /// carried out.)
     /// The same devamp again is not ignored: it is answered with another `DevampScheduled`.
     DevampIgnored { voice: VoiceId, at: SampleTime },
+    /// The voice plays through its current patch only, from `at` on: the crossfade of its last
+    /// move ended, or the move took no crossfade. `moves` counts the [`CommandKind::MoveVoice`]s
+    /// it has taken since its start (wrapping; one for an unknown patch too), so the control
+    /// thread can tell whether a move it sent since is still on its way. Not sent while another
+    /// move waits for the crossfade (the one that starts then is reported when it ends).
+    MoveEnded {
+        voice: VoiceId,
+        at: SampleTime,
+        moves: u32,
+    },
     /// A block panicked in `stage` (or, for [`FaultStage::Mixer`], faults no unit could be
     /// blamed for kept repeating). The stage was reset (a patch to silence, an output or the
     /// master to unity); the control thread re-sends its settings. `disabled`: it faulted [`FAULT_LIMIT`] times within [`FAULT_WINDOW`] and

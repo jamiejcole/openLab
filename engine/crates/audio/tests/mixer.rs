@@ -646,6 +646,71 @@ fn far_future_commands_wait_on_the_control_thread_and_never_delay_a_stop() {
     assert_eq!(ctl.held(), 5000);
 }
 
+/// #291: a stop sent just after a whole-matrix edit of a 64x64 cue (1 + 64 + 4096 ramps, more
+/// than four queues' worth) is not released behind the ramps: it cuts on its own sample, and
+/// the ramps still all apply.
+#[test]
+fn a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, mono_dc(20_000), 1);
+    start(&mut ctl, 0, 2, mono_dc(20_000), 1);
+    r.render(64, &[64]);
+    let mut left = 1 + 64 + 4096;
+    while left > 0 {
+        let n = left.min(openlab_audio::COMMAND_CAPACITY);
+        let batch = (0..n)
+            .map(|_| (64, ramp(2, GainTarget::Master, 0.5, Fade::NONE)))
+            .collect();
+        ctl.send_batch(batch).unwrap();
+        left -= n;
+    }
+    ctl.send(192, stop(1, Fade::NONE));
+    let mut out = Vec::new();
+    for _ in 0..10 {
+        ctl.pump();
+        out.extend(r.render(64, &[64]));
+    }
+    assert_eq!(events(&mut ctl), [finished(1, 192, FinishReason::Stopped)]);
+    assert_eq!(ctl.held(), 0);
+    assert!(out[640 - 64..].iter().all(|s| (*s - 0.5).abs() < 1e-6));
+}
+
+/// Only ramps are overtaken: a stop queued behind its voice's start (behind ramps too) still
+/// reaches the mixer after it, so the voice does not play on.
+#[test]
+fn a_stop_never_overtakes_the_start_of_its_voice() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 2, mono_dc(20_000), 1);
+    r.render(64, &[64]);
+    for _ in 0..2 {
+        let batch = (0..openlab_audio::COMMAND_CAPACITY)
+            .map(|_| (64, ramp(2, GainTarget::Master, 0.5, Fade::NONE)))
+            .collect();
+        ctl.send_batch(batch).unwrap();
+    }
+    start(&mut ctl, 64, 3, mono_dc(20_000), 1);
+    ctl.send(128, stop(3, Fade::NONE));
+    for _ in 0..6 {
+        ctl.pump();
+        r.render(64, &[64]);
+    }
+    let stopped: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::VoiceFinished {
+                    voice: VoiceId(3),
+                    reason: FinishReason::Stopped,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(stopped.len(), 1);
+    assert_eq!(ctl.held(), 0);
+}
+
 #[test]
 fn held_commands_land_on_their_exact_sample_when_pumped() {
     let cfg = MixerConfig {
@@ -1047,7 +1112,20 @@ fn a_move_to_nowhere_or_of_nobody_is_ignored() {
     let out = r.render(2000, &[64]);
     assert!(channel(&out, 2, 0).iter().all(|s| *s == 1.0));
     assert!(channel(&out, 2, 1).iter().all(|s| *s == 0.0));
-    assert!(events(&mut ctl).is_empty());
+    // The voice's moves are counted and it is reported settled on each (nothing to wait for).
+    assert_eq!(
+        events(&mut ctl),
+        [moved(1, 600, 1), moved(1, 700, 2)],
+        "none for a voice it does not have"
+    );
+}
+
+fn moved(voice: u64, at: u64, moves: u32) -> Event {
+    Event::MoveEnded {
+        voice: VoiceId(voice),
+        at,
+        moves,
+    }
 }
 
 /// A voice not heard yet (moved on its start sample) or paused past its declick tail moves at
@@ -1075,6 +1153,27 @@ fn a_voice_not_heard_moves_at_once() {
     // Paused, then resumed on patch 0 with the resume's declick only.
     assert!(b[2500..].iter().all(|s| *s == 0.0));
     assert_eq!(a[3240], 1.0);
+    // Each move is reported settled on its own sample; the resumed voice's count goes on.
+    let ev: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| matches!(e, Event::MoveEnded { .. }))
+        .collect();
+    assert_eq!(ev, [moved(1, 1000, 1), moved(1, 2500, 2)]);
+
+    // A move made during a pause's declick tail is over when the tail ends (nothing left to
+    // crossfade): reported settled on the first block after it.
+    let (mut ctl, mut r) = setup(config(2));
+    ctl.send(0, patch(1, 0, 0, 0.0));
+    ctl.send(0, patch(1, 0, 1, 1.0));
+    start(&mut ctl, 0, 1, mono_dc(4000), 1);
+    ctl.send(2000, CommandKind::PauseVoice { voice: VoiceId(1) });
+    ctl.send(2100, move_voice(1, 1));
+    r.render(3000, &[64]);
+    let ev: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| matches!(e, Event::MoveEnded { .. }))
+        .collect();
+    assert_eq!(ev, [moved(1, 2240, 1)]);
 }
 
 /// A move asked for during a move's crossfade waits for it (to the end of the block it ends
@@ -1099,6 +1198,19 @@ fn a_move_during_a_move_waits_for_it() {
     }
     assert!(max_step(&a) <= 1.0 / 240.0 + 1e-6);
     assert!(max_step(&b) <= 1.0 / 240.0 + 1e-6);
+    // #346: one report, after both moves, from the end of the block the second crossfade ends
+    // in: the voice is wholly on patch 0 from then on, so the control thread may reuse patch 1.
+    let ev = events(&mut ctl);
+    let [Event::MoveEnded { voice, at, moves }] = ev[..] else {
+        panic!("{ev:?}");
+    };
+    assert_eq!((voice, moves), (VoiceId(1), 2));
+    let at = usize::try_from(at).unwrap();
+    assert!(b[at - 100] > 0.0, "reported a block late at most");
+    assert!(
+        a[at..].iter().all(|s| *s == 1.0),
+        "reported before it ended"
+    );
 }
 
 /// Moving voices renders without allocating (the real-time rule).
