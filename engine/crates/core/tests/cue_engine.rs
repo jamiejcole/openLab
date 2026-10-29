@@ -1431,6 +1431,61 @@ fn an_edit_would_stop_the_cues_the_engine_then_stops() {
     assert_eq!(rig.state(3), CueState::Running);
 }
 
+/// #250: the group branches of the undo guard. A previewed group that an edit removes or
+/// turns into a non-group would be cut (`sync_previews`), so the guard names it.
+#[test]
+fn an_edit_would_stop_a_previewed_group_it_removes_or_turns_into_a_non_group() {
+    let grouped = |children| cue(1, group(children));
+    let mut rig = Rig::new(vec![grouped(vec![sound(11)]), memo(2)]);
+    let out = rig.at(10, Input::Preview { cue: id(1) });
+    assert!(rig.engine.is_previewing(id(1)), "{out:?}");
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+
+    // Removed (an undo of the add that created it).
+    let mut removed = rig.ws.clone();
+    removed.cue_lists[0].cues.retain(|c| c.id != id(1));
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&removed), Some(id(1)));
+
+    // The same id as a plain cue.
+    let mut plain = rig.ws.clone();
+    plain.cue_lists[0].cues[0] = memo(1);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&plain), Some(id(1)));
+
+    // Still a group, but moved and with other children: the preview goes on.
+    let mut moved = rig.ws.clone();
+    let g = moved.cue_lists[0].cues.remove(0);
+    moved.cue_lists[0].cues.push(g);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&moved), None);
+    // What the engine does matches the guard: following the removal ends the preview.
+    rig.ws = removed;
+    rig.tick(20);
+    assert!(!rig.engine.is_previewing(id(1)));
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+}
+
+/// #250: a running group whose cue an edit turns into a non-group is stopped by the engine, so
+/// the guard names it (core's other test covers the opposite turn).
+#[test]
+fn an_edit_would_stop_a_running_group_turned_into_a_non_group() {
+    let g = cue(1, group(vec![timed(wait(11, 5.0), 0.0, 0.0, DNC)]));
+    let mut rig = Rig::new(vec![g, memo(2)]);
+    rig.start(0, 1);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&rig.ws), None);
+    let mut plain = rig.ws.clone();
+    plain.cue_lists[0].cues[0] = memo(1);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&plain), Some(id(1)));
+    let mut removed = rig.ws.clone();
+    removed.cue_lists[0].cues.remove(0);
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&removed), Some(id(1)));
+    // Removing its running child names the child, not the group.
+    let mut child_gone = rig.ws.clone();
+    if let CueKind::Group { children, .. } = &mut child_gone.cue_lists[0].cues[0].kind {
+        children.clear();
+    }
+    assert_eq!(rig.engine.cue_an_edit_would_stop(&child_gone), Some(id(11)));
+}
+
 #[test]
 fn deleting_a_loaded_cue_unloads_it() {
     let mut rig = Rig::new(vec![sound(1)]);
