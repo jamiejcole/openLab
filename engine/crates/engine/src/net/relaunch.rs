@@ -175,7 +175,11 @@ mod tests {
             assert_eq!(next(true, false, false, alive), Next::Done);
             assert_eq!(next(false, true, false, alive), Next::Done);
             assert_eq!(next(false, false, true, alive), Next::Stopping);
-            assert_eq!(next(true, false, true, alive), Next::Done, "the app is back");
+            assert_eq!(
+                next(true, false, true, alive),
+                Next::Done,
+                "the app is back"
+            );
         }
     }
 
