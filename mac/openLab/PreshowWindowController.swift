@@ -10,7 +10,7 @@ import Combine
 @MainActor
 final class PreshowWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     let store: WorkspaceStore
-    let table = NSTableView()
+    let table: NSTableView = NonKeyTableView()
     let checkButton = NSButton(title: loc("preshow.checkAgain"), target: nil, action: nil)
     let summaryLabel = NSTextField(labelWithString: "")
     /// A cue entry was chosen: the cue and the inspector tab that holds what to fix.
@@ -35,8 +35,9 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
             defer: false)
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = true
-        // Clicks in the list leave the workspace window key, so GO and the transport keys keep
-        // reaching it while the operator works through the report.
+        // No view in it needs the panel to be key (the list included: NonKeyTableView), so a click
+        // anywhere leaves the workspace window key and GO, the transport keys and cue hotkeys
+        // keep reaching it.
         panel.becomesKeyOnlyIfNeeded = true
         panel.title = loc("preshow.title")
         panel.identifier = NSUserInterfaceItemIdentifier(AX.preshowWindow)
@@ -243,4 +244,12 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
         field.setAccessibilityLabel(r.detail.isEmpty ? r.title : r.title + ". " + r.detail)
         return field
     }
+}
+
+/// A list that does not need its panel to be key. An NSTableView does whenever it accepts first
+/// responder (with keyboard navigation turned on in System Settings), so a click on its empty area
+/// made the panel key and GO stopped reaching the workspace window. (A panel that
+/// can never become key is not used: it drops out of the accessibility window list.)
+final class NonKeyTableView: NSTableView {
+    override var needsPanelToBecomeKey: Bool { false }
 }

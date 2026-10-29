@@ -243,6 +243,25 @@ final class PreshowTests: XCTestCase {
         XCTAssertEqual(inspected, [radio], "a new report reveals nothing by itself")
     }
 
+    /// A click on any view that needs its panel to be key (an NSTableView does by default) would
+    /// make the report key, and GO would stop reaching the workspace window.
+    func testNothingInThePanelMakesItKey() async throws {
+        let rig = try await demoRig()
+        rig.engine.preshowProblems = true
+        let pc = PreshowWindowController(store: rig.store)
+        await pc.runCheck()
+        let panel = try XCTUnwrap(pc.window as? NSPanel)
+        XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
+        func walk(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(walk) }
+        let views = walk(try XCTUnwrap(panel.contentView))
+        XCTAssertTrue(views.contains { $0 === pc.table })
+        for v in views { XCTAssertFalse(v.needsPanelToBecomeKey, "\(type(of: v))") }
+        // A plain NSTableView needs a key panel only while it accepts first responder, which
+        // follows the Mac's keyboard-navigation setting: off on the test machine, so the walk
+        // alone would pass with a plain table. The list must be the subclass that never needs it.
+        XCTAssertTrue(pc.table is NonKeyTableView)
+    }
+
     func testWindowMenuHasThePreshowCheck() {
         let item = MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showPreshowCheck(_:)) }
         XCTAssertEqual(item?.title, loc("menu.window.preshowCheck"))

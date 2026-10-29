@@ -151,7 +151,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// shows the inspector on the tab that holds what to fix, as QLab's "Inspect Cue" does.
     func inspect(cue id: ModelID, tab: String?) {
         reveal(cue: id)
-        window?.orderFront(nil)
+        // Key, not only in front: GO goes to the key window, and with two workspaces the other
+        // one may hold the keys while this one's report is used.
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
         guard !isShowMode else { return }
         setVisible(.inspector, true)
         if let tab, inspector.tabView.indexOfTabViewItem(withIdentifier: tab) != NSNotFound {
