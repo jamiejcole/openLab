@@ -7,10 +7,8 @@ use crate::gain::{Curve, CurveRamp, Fade, Param, ramp_value, sanitize_gain};
 use crate::meter::{Meters, next_epoch};
 use crate::plan::{Plays, Slice, StreamLink};
 
-use super::{
-    Event, FaultLog, FinishReason, GainTarget, Outbox, SampleTime, VoiceId, VoiceStart,
-    deinterleave,
-};
+use super::render::deinterleave;
+use super::{Event, FaultLog, FinishReason, GainTarget, Outbox, SampleTime, VoiceId, VoiceStart};
 
 pub(super) enum ReadOutcome {
     Full,
