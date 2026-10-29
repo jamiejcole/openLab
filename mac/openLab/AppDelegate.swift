@@ -162,45 +162,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Task { await appController.perform(command, isRepeat: isRepeat) }
     }
 
+    /// A workspace window is in front and not in Show Mode: the cue-editing items work.
+    @MainActor private var canEditFront: Bool { appController.frontController.map { !$0.isShowMode } ?? false }
+
     @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(enterShowMode(_:)) || item.action == #selector(enterEditMode(_:)) {
+        switch item.action {
+        case #selector(enterShowMode(_:))?, #selector(enterEditMode(_:))?:
             guard let front = appController.frontController else { return false }
             return front.isShowMode == (item.action == #selector(enterEditMode(_:)))
-        }
-        if item.action == #selector(newCue(_:)) || item.action == #selector(renumberCues(_:))
-            || item.action == #selector(moveCuesUp(_:)) || item.action == #selector(moveCuesDown(_:))
-        {
-            return appController.frontController.map { !$0.isShowMode } ?? false
-        }
-        if item.action == #selector(copyCues(_:)) || item.action == #selector(cutCues(_:)) {
-            return anyText != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
-        }
-        if item.action == #selector(pasteCues(_:)) {
-            return anyText != nil || (appController.frontController.map { !$0.isShowMode } ?? false)
-        }
-        if item.action == #selector(deleteNumbers(_:)) {
-            return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
-        }
-        if item.action == #selector(deleteCues(_:)) {
-            return textEditor == nil && (appController.frontController.map { !$0.isShowMode } ?? false)
-        }
-        if item.action == #selector(undoEdit(_:)) {
-            return textEditor != nil || (editor?.canUndo ?? false)
-        }
-        if item.action == #selector(redoEdit(_:)) {
-            return textEditor != nil || (editor?.canRedo ?? false)
-        }
-        if item.action == #selector(relinkMedia(_:)) {
-            return appController.frontController.map { !$0.isShowMode } ?? false
-        }
-        if item.action == #selector(recoverAutosaves(_:)) {
-            return engineSession.connectionState == .connected
-        }
-        if item.action == #selector(showLog(_:)) {
-            return appController.frontController != nil
-        }
-        if item.action == #selector(showPreshowCheck(_:)) {
-            return appController.frontController?.canRunPreshowCheck ?? false
+        case #selector(newCue(_:))?, #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?,
+            #selector(moveCuesDown(_:))?, #selector(relinkMedia(_:))?:
+            return canEditFront
+        case #selector(copyCues(_:))?, #selector(cutCues(_:))?, #selector(pasteCues(_:))?:
+            return anyText != nil || canEditFront
+        case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
+            return textEditor == nil && canEditFront
+        case #selector(undoEdit(_:))?: return textEditor != nil || (editor?.canUndo ?? false)
+        case #selector(redoEdit(_:))?: return textEditor != nil || (editor?.canRedo ?? false)
+        case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
+        case #selector(showLog(_:))?: return appController.frontController != nil
+        case #selector(showPreshowCheck(_:))?: return appController.frontController?.canRunPreshowCheck ?? false
+        default: break
         }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return true
