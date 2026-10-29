@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The `relink` request (M1.17; WS-03, NFR-04): the folder is walked on the document worker, the
+//! The `relink` request (M1.17; WS-03, NFR-04): the folder is walked on a thread of its own, the
 //! matches are applied as one undoable edit, and a scan limit is reported as `truncated`.
 
 mod common;
@@ -347,17 +347,45 @@ fn a_slow_folder_does_not_block_the_control_thread_and_a_stalled_walk_times_out(
 }
 
 #[test]
-fn a_walk_that_returns_applies_even_when_slow() {
+fn a_slow_walk_holds_up_no_open_or_scan_and_applies_when_it_returns() {
     let (hook, entered, release) = hold_first_job();
     let mut r = rig_with(&["a.wav"], |c| c.doc_hook = Some(hook));
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
     entered.recv_timeout(HANG).unwrap();
-    // Another document request is refused while the worker is busy.
-    let (_, mut other) = deliver(&mut r, Request::ScanRecovery);
+    // The walk has a slot and a thread of its own: a recovery scan (like an `open`) is not
+    // refused or held up behind it; only a second relink waits its turn.
+    let (_, mut scan) = deliver(&mut r, Request::ScanRecovery);
     assert!(matches!(
-        other.try_recv().unwrap(),
+        tick_until_answer(&mut r, &mut scan),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(OkBody {
+                data: Some(ResultData::RecoveryEntries { .. }),
+                ..
+            }),
+            ..
+        }
+    ));
+    let nowhere = r.gone.join("show.openlab").to_string_lossy().into_owned();
+    let (_, mut open) = deliver(
+        &mut r,
+        Request::Open {
+            path: nowhere,
+            recovery: None,
+        },
+    );
+    match tick_until_answer(&mut r, &mut open) {
+        ServerMessage::Result {
+            outcome: Outcome::Error(e),
+            ..
+        } => assert_ne!(e.code, ErrorCode::CommandRefused, "{e:?}"),
+        other => panic!("{other:?}"),
+    }
+    let folder = r.lib.to_string_lossy().into_owned();
+    let (_, mut second) = deliver(&mut r, Request::Relink { folder });
+    assert!(matches!(
+        second.try_recv().unwrap(),
         ServerMessage::Result { outcome: Outcome::Error(ref e), .. } if e.code == ErrorCode::CommandRefused
     ));
     release.send(()).unwrap();

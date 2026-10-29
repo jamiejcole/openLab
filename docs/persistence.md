@@ -233,4 +233,4 @@ Design: path first, no file watcher, no bookmarks (opaque per-OS blobs in a cros
 - `relink_command(workspace, relinks)` turns chosen relinks (a plan's matches, or one the operator picked
   from `ambiguous`, or a single cue) into one `Command::Transaction` of `SetCueProperty` edits, so the
   relink is a single undo step through `History`.
-- The `relink` request (M1.17) runs `find_in_folder` on the document worker and applies the matches with `relink_command`; see [control.md](control.md) "Relink". Its `truncated` flag is the scan's.
+- The `relink` request (M1.17) runs `find_in_folder` on a thread of its own and applies the matches with `relink_command`; see [control.md](control.md) "Relink". Its `truncated` flag is the scan's.

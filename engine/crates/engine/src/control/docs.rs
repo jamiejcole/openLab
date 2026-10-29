@@ -17,7 +17,9 @@
 //! (Panic twice, a hard stop), frees its mixer slots, clears its autosave when its edits are
 //! discarded, and hands the doc to the worker to be dropped there (its preloaded media can be
 //! hundreds of megabytes). One read runs at a time engine-wide, and at most [`MAX_DOCS`] docs
-//! are open; either limit is `command_refused`.
+//! are open; either limit is `command_refused`. A `relink` folder walk runs on a thread of its
+//! own with a slot of its own (one walk at a time), so a walk that takes its whole time budget
+//! never holds up an `open` or a `scan_recovery`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -128,8 +130,8 @@ impl fmt::Debug for SaveHook {
     }
 }
 
-/// Called on the document worker at the start of each read (tests hold it to simulate a stalled
-/// volume).
+/// Called on the document worker at the start of each read, and on the relink thread before its
+/// walk (tests hold it to simulate a stalled volume).
 #[derive(Clone)]
 pub struct DocHook(pub Arc<dyn Fn() + Send + Sync>);
 
@@ -300,14 +302,22 @@ enum DocJob {
     Scan {
         ticket: u64,
     },
-    /// The folder walk of a `relink`, on a copy of the workspace.
-    Relink {
-        ticket: u64,
-        workspace: Box<Workspace>,
-        show_dir: Option<PathBuf>,
-        folder: PathBuf,
-        limits: ScanLimits,
-    },
+}
+
+/// The folder walk of a `relink`, on a copy of the workspace (its own thread: [`RelinkWalk`]).
+struct RelinkJob {
+    ticket: u64,
+    workspace: Box<Workspace>,
+    show_dir: Option<PathBuf>,
+    folder: PathBuf,
+    limits: ScanLimits,
+}
+
+/// A `relink` walk under way, on its own thread: the request it answers and that thread's
+/// flags (the stall check abandons it like a stuck document worker).
+struct RelinkWalk {
+    pending: PendingDoc,
+    flags: Arc<WorkerFlags>,
 }
 
 /// What a document request is for.
@@ -380,6 +390,8 @@ pub(super) struct Docs {
     timeout_ms: i64,
     ticket: u64,
     pending: Option<PendingDoc>,
+    /// The `relink` folder walk under way (one at a time, beside `pending`).
+    relink: Option<RelinkWalk>,
     /// Autosave removals in flight: they outlive the workspace they were for.
     clears: Vec<ClearRx>,
     /// Saves of docs closed while they were being written: answered when they finish.
@@ -448,6 +460,7 @@ impl Docs {
             timeout_ms: i64::try_from(config.doc_timeout.as_millis()).unwrap_or(i64::MAX),
             ticket: 0,
             pending: None,
+            relink: None,
             clears: Vec::new(),
             orphans: Vec::new(),
         };
@@ -485,10 +498,46 @@ impl Docs {
             .map(|_| ())
     }
 
-    /// The read, the autosave removals and closed docs' saves in flight (a doc's saves:
-    /// [`DocFile::busy`]).
+    /// The read, the relink walk, the autosave removals and closed docs' saves in flight (a
+    /// doc's saves: [`DocFile::busy`]).
     pub(super) fn busy(&self) -> usize {
-        usize::from(self.pending.is_some()) + self.clears.len() + self.orphans.len()
+        usize::from(self.pending.is_some())
+            + usize::from(self.relink.is_some())
+            + self.clears.len()
+            + self.orphans.len()
+    }
+
+    /// Starts the folder walk of a `relink` on a thread of its own. Never joined, like a
+    /// worker: a walk stuck on a stalled volume ends when its read returns, and its answer (a
+    /// stale ticket by then) is ignored.
+    fn spawn_relink(&self, job: RelinkJob, flags: &Arc<WorkerFlags>) -> std::io::Result<()> {
+        let (inbox, hook, stuck, answered, flags) = (
+            self.inbox.clone(),
+            self.hook.clone(),
+            Arc::clone(&self.stuck),
+            Arc::clone(&self.answered),
+            Arc::clone(flags),
+        );
+        // Busy from the start: the stall check must not take a walk not yet begun for one
+        // whose answer is on its way.
+        flags.busy.store(true, Ordering::SeqCst);
+        thread::Builder::new()
+            .name("openlab-relink".into())
+            .spawn(move || {
+                if let Some(hook) = &hook {
+                    (hook.0)();
+                }
+                let RelinkJob {
+                    ticket,
+                    workspace,
+                    show_dir,
+                    folder,
+                    limits,
+                } = job;
+                let answer = relink_scan(ticket, &workspace, show_dir.as_deref(), &folder, limits);
+                post(answer, &inbox, &flags, &stuck, &answered);
+            })
+            .map(|_| ())
     }
 
     /// Hands a closed doc to the worker to be dropped there; dropped here if it is gone.
@@ -567,30 +616,34 @@ fn work(
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
-            DocJob::Relink {
-                ticket,
-                workspace,
-                show_dir,
-                folder,
-                limits,
-            } => relink_scan(ticket, &workspace, show_dir.as_deref(), &folder, limits),
         };
-        // The control loop gave up on the request while this was reading: its answer is stale
-        // (it has another ticket), and this thread leaves the work to the replacement.
-        let gone = flags.abandoned.load(Ordering::SeqCst);
-        let sent = inbox.send(Inbox::Doc(answer)).is_ok();
-        // Not busy before the answer counts: whoever sees the count can rely on `busy` being
-        // false already (the answer itself is in the inbox from the send above).
-        flags.busy.store(false, Ordering::SeqCst);
-        answered.fetch_add(1, Ordering::SeqCst);
-        if gone {
-            // After the send: a count of zero means the stale answer is already in the inbox.
-            stuck.fetch_sub(1, Ordering::SeqCst);
-        }
-        if !sent || gone {
+        if !post(answer, inbox, flags, stuck, answered) {
             break;
         }
     }
+}
+
+/// Puts a worker's (or a relink walk's) answer in the inbox; `false` when the thread is done:
+/// the control loop is gone, or it gave up on the request while this was reading (the answer
+/// is stale, with another ticket, and a worker leaves the work to its replacement).
+fn post(
+    answer: DocAnswer,
+    inbox: &Sender<Inbox>,
+    flags: &WorkerFlags,
+    stuck: &AtomicUsize,
+    answered: &AtomicU64,
+) -> bool {
+    let gone = flags.abandoned.load(Ordering::SeqCst);
+    let sent = inbox.send(Inbox::Doc(answer)).is_ok();
+    // Not busy before the answer counts: whoever sees the count can rely on `busy` being
+    // false already (the answer itself is in the inbox from the send above).
+    flags.busy.store(false, Ordering::SeqCst);
+    answered.fetch_add(1, Ordering::SeqCst);
+    if gone {
+        // After the send: a count of zero means the stale answer is already in the inbox.
+        stuck.fetch_sub(1, Ordering::SeqCst);
+    }
+    sent && !gone
 }
 
 fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
@@ -742,7 +795,7 @@ fn open_recovery(
     }
 }
 
-/// Walks `folder` for the files `workspace` lacks (on the document worker: it can take as long as
+/// Walks `folder` for the files `workspace` lacks (on the relink thread: it can take as long as
 /// `limits` allow, and a volume that stops answering is the stall check's business). A folder
 /// that is not a folder is `not_found`.
 fn relink_scan(
@@ -1329,22 +1382,13 @@ impl Engine {
     /// never does, it is one leaked thread, bounded by [`MAX_STUCK_WORKERS`]) and a fresh one
     /// takes over the shared queue.
     pub(super) fn check_stalled_read(&mut self) {
-        let Some(pending) = &self.docs.pending else {
-            return;
-        };
-        let elapsed = self
-            .config
-            .clock
-            .now_ms()
-            .saturating_sub(pending.started_ms);
-        let timeout_ms = self.docs.timeout_ms.saturating_add(pending.extra_ms);
-        if elapsed < timeout_ms {
-            return;
-        }
-        // The worker has answered and the answer is in the inbox, not yet applied: it is not
-        // stuck. Leave the request to that answer.
-        // (If no answer comes for twice the timeout either, the worker is gone: fail it.)
-        if !self.docs.worker.busy.load(Ordering::SeqCst) && elapsed < timeout_ms.saturating_mul(2) {
+        self.check_stalled_walk();
+        let stalled = self
+            .docs
+            .pending
+            .as_ref()
+            .is_some_and(|p| self.stalled(p, &self.docs.worker));
+        if !stalled {
             return;
         }
         let Some(pending) = self.docs.pending.take() else {
@@ -1370,6 +1414,55 @@ impl Engine {
         self.log(
             LogLevel::Error,
             "a document read stalled; its worker was abandoned".to_owned(),
+        );
+    }
+
+    /// Whether `pending`, worked on by the thread with `flags`, has outlived the timeout (plus
+    /// its own allowance). A thread that has answered (the answer is in the inbox, not yet
+    /// applied) is not stuck: the request is left to that answer, unless no answer comes for
+    /// twice the timeout either (then the thread is gone).
+    fn stalled(&self, pending: &PendingDoc, flags: &WorkerFlags) -> bool {
+        let elapsed = self
+            .config
+            .clock
+            .now_ms()
+            .saturating_sub(pending.started_ms);
+        let timeout_ms = self.docs.timeout_ms.saturating_add(pending.extra_ms);
+        if elapsed < timeout_ms {
+            return false;
+        }
+        flags.busy.load(Ordering::SeqCst) || elapsed >= timeout_ms.saturating_mul(2)
+    }
+
+    /// [`Self::check_stalled_read`] for the relink walk: it fails with `io` and its thread is
+    /// abandoned (counted as a stuck reader, so requests that read are refused once too many
+    /// are stuck). No replacement is needed: each walk has a thread of its own.
+    fn check_stalled_walk(&mut self) {
+        let stalled = self
+            .docs
+            .relink
+            .as_ref()
+            .is_some_and(|w| self.stalled(&w.pending, &w.flags));
+        if !stalled {
+            return;
+        }
+        let Some(walk) = self.docs.relink.take() else {
+            return;
+        };
+        fail(
+            &walk.pending.reply,
+            walk.pending.id,
+            ErrorCode::Io,
+            format!(
+                "walking the folder did not finish within {} s; its volume may have stopped answering",
+                walk.pending.extra_ms.saturating_add(self.docs.timeout_ms) / 1000
+            ),
+        );
+        walk.flags.abandoned.store(true, Ordering::SeqCst);
+        self.docs.stuck.fetch_add(1, Ordering::SeqCst);
+        self.log(
+            LogLevel::Error,
+            "a relink folder walk stalled; its thread was abandoned".to_owned(),
         );
     }
 
@@ -1415,7 +1508,27 @@ impl Engine {
             );
             return false;
         }
-        if reads && self.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
+        !reads || self.stuck_gate(id, to)
+    }
+
+    /// Whether a `relink` walk may start: one at a time engine-wide (beside the document
+    /// requests, which it never holds up), and not while reading is stuck.
+    fn relink_gate(&self, id: RequestId, to: &ReplyTx) -> bool {
+        if self.docs.relink.is_some() {
+            fail(
+                to,
+                id,
+                ErrorCode::CommandRefused,
+                "another relink is still walking a folder",
+            );
+            return false;
+        }
+        self.stuck_gate(id, to)
+    }
+
+    /// `false` (answered `io`) while [`MAX_STUCK_WORKERS`] readers are stuck.
+    fn stuck_gate(&self, id: RequestId, to: &ReplyTx) -> bool {
+        if self.docs.stuck.load(Ordering::SeqCst) >= MAX_STUCK_WORKERS {
             fail(
                 to,
                 id,
@@ -1428,8 +1541,17 @@ impl Engine {
     }
 
     fn next_ticket(&mut self, target: Target, id: RequestId, to: &ReplyTx) -> u64 {
+        let pending = self.new_pending(target, id, to);
+        let ticket = pending.ticket;
+        self.docs.pending = Some(pending);
+        ticket
+    }
+
+    /// A request with a fresh ticket (one counter for the document worker and the relink walk,
+    /// so an answer is never taken for the other's).
+    fn new_pending(&mut self, target: Target, id: RequestId, to: &ReplyTx) -> PendingDoc {
         self.docs.ticket += 1;
-        self.docs.pending = Some(PendingDoc {
+        PendingDoc {
             target,
             ticket: self.docs.ticket,
             id,
@@ -1437,8 +1559,7 @@ impl Engine {
             path: None,
             started_ms: self.config.clock.now_ms(),
             extra_ms: 0,
-        });
-        self.docs.ticket
+        }
     }
 
     fn send_job(&mut self, job: DocJob, id: RequestId, to: &ReplyTx) {
@@ -1645,13 +1766,13 @@ impl Control {
         super::Flow::Continue
     }
 
-    /// `relink` of doc `doc` (WS-03, NFR-04): the folder is walked on the document worker, on a
+    /// `relink` of doc `doc` (WS-03, NFR-04): the folder is walked on a thread of its own, on a
     /// copy of the workspace, so the control thread does no disk I/O and a slow volume holds up
-    /// nothing but this answer. The matches are applied as one undoable edit when the walk is
-    /// done ([`Self::relinked`]). Refused (`command_refused`) while another document request is
-    /// being handled.
+    /// nothing but this answer: `open`, `scan_recovery` and saves go on meanwhile. The matches
+    /// are applied as one undoable edit when the walk is done ([`Self::relinked`]). Refused
+    /// (`command_refused`) while another relink is walking.
     pub(super) fn relink(&mut self, doc: DocId, id: RequestId, folder: String, to: &ReplyTx) {
-        if !self.eng.read_gate(id, to, true) {
+        if !self.eng.relink_gate(id, to) {
             return;
         }
         let Some(d) = self.docs.iter().find(|d| d.id == doc) else {
@@ -1663,22 +1784,25 @@ impl Control {
             d.show_path.as_deref().and_then(folder_of),
         );
         let limits = self.eng.config.relink_limits;
-        let ticket = self.eng.next_ticket(Target::Relink(doc), id, to);
-        let wait_ms = i64::try_from(limits.max_duration.as_millis()).unwrap_or(i64::MAX);
-        if let Some(pending) = &mut self.eng.docs.pending {
-            pending.extra_ms = wait_ms;
+        let mut pending = self.eng.new_pending(Target::Relink(doc), id, to);
+        pending.extra_ms = i64::try_from(limits.max_duration.as_millis()).unwrap_or(i64::MAX);
+        let job = RelinkJob {
+            ticket: pending.ticket,
+            workspace,
+            show_dir,
+            folder: PathBuf::from(folder),
+            limits,
+        };
+        let flags = Arc::new(WorkerFlags::default());
+        match self.eng.docs.spawn_relink(job, &flags) {
+            Ok(()) => self.eng.docs.relink = Some(RelinkWalk { pending, flags }),
+            Err(e) => fail(
+                to,
+                id,
+                ErrorCode::Internal,
+                format!("could not start the folder walk: {e}"),
+            ),
         }
-        self.eng.send_job(
-            DocJob::Relink {
-                ticket,
-                workspace,
-                show_dir,
-                folder: PathBuf::from(folder),
-                limits,
-            },
-            id,
-            to,
-        );
     }
 
     /// The walk is done: apply what it found to the doc, if it is still open.
@@ -1698,14 +1822,16 @@ impl Control {
         self.eng.send_job(DocJob::Scan { ticket }, id, to);
     }
 
-    /// The document worker's answer, for the request it is for (a doc being added, or a scan).
+    /// The document worker's (or the relink walk's) answer, for the request it is for (a doc
+    /// being added, a scan, a relink).
     pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
-        let Some(pending) = self
-            .eng
-            .docs
-            .pending
-            .take_if(|p| p.ticket == answer.ticket())
-        else {
+        let ticket = answer.ticket();
+        let docs = &mut self.eng.docs;
+        let Some(pending) = docs.pending.take_if(|p| p.ticket == ticket).or_else(|| {
+            docs.relink
+                .take_if(|w| w.pending.ticket == ticket)
+                .map(|w| w.pending)
+        }) else {
             // A stale answer (its request timed out): a doc built for it is dropped off the
             // control thread like a closed one.
             if let DocAnswer::Built { parts, .. } = answer {
