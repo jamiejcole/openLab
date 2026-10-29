@@ -366,6 +366,44 @@ fn connect_to_one_doc_leaves_the_other_locked() {
     assert_eq!(replies[0]["workspace_id"], ws(&b));
 }
 
+/// A pattern address over a connected doc A and a locked doc B (#188): A's matching cues start,
+/// B is denied once and contributes no input, whichever way the pattern is addressed.
+#[test]
+fn a_cue_pattern_over_a_connected_and_a_locked_doc_starts_only_the_connected_one() {
+    let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));
+    let d = docs(&a, &b);
+    for (address, addresses_b) in [
+        ("/cue/*/start".to_string(), true),
+        (format!("/workspace/{}/cue/*/start", ws(&a)), false),
+        (format!("/workspace/{}/cue/*/start", ws(&b)), true),
+    ] {
+        let mut osc = quiet();
+        send(
+            &mut osc,
+            &d,
+            udp(),
+            &msg(&format!("/workspace/{}/connect", ws(&a)), vec![s("1111")]),
+        );
+        let out = send(&mut osc, &d, udp(), &msg(&address, vec![]));
+        let to_a = !address.contains(&ws(&b));
+        assert!(
+            out.input_docs.iter().all(|&doc| doc == A),
+            "{address}: a locked doc got an input: {:?}",
+            out.input_docs
+        );
+        // Cues 1..=3 of A start when A is addressed.
+        assert_eq!(out.input_docs.len(), if to_a { 3 } else { 0 }, "{address}");
+        let replies = bodies(&out);
+        let denied: Vec<&Value> = replies.iter().filter(|r| r["status"] == "denied").collect();
+        if addresses_b {
+            assert_eq!(denied.len(), 1, "{address}: {replies:?}");
+            assert_eq!(denied[0]["workspace_id"], ws(&b), "{address}");
+        } else {
+            assert!(denied.is_empty(), "{address}: {replies:?}");
+        }
+    }
+}
+
 #[test]
 fn an_unprefixed_connect_is_answered_by_every_doc() {
     let (a, b) = (hamlet().locked("1111"), lear().locked("2222"));

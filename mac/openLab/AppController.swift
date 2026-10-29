@@ -393,10 +393,22 @@ final class AppController {
         }
     }
 
-    /// The selected cues act together: every action goes out before any result is awaited (one
-    /// round trip apart, cues meant to start as one would not). Each failure is logged; one beep.
+    /// The selected cues act together: one `batch`, which the engine carries out at one scheduling
+    /// time, so cues started together start on the same sample (NFR-21). A selection past the
+    /// engine's batch limit goes as several batches, all out before any result is awaited. A
+    /// repeated action is dropped (the engine refuses a batch naming a cue twice). Each failure is
+    /// logged; one beep.
     private func runAll(_ actions: [TransportAction], on store: WorkspaceStore) async {
-        let failures = await store.transport(actions).compactMap { r -> EngineError? in
+        var seen = Set<TransportAction>()
+        let actions = actions.filter { seen.insert($0).inserted }
+        guard actions.count > 1 else {
+            if let only = actions.first { await run(only, on: store) }
+            return
+        }
+        let batches = stride(from: 0, to: actions.count, by: TransportAction.maxBatch).map {
+            TransportAction.batch(actions: Array(actions[$0..<min($0 + TransportAction.maxBatch, actions.count)]))
+        }
+        let failures = await store.transport(batches).compactMap { r -> EngineError? in
             if case .failure(let e) = r { return e } else { return nil }
         }
         guard !failures.isEmpty else { return }

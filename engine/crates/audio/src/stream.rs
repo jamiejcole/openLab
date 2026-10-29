@@ -10,6 +10,7 @@
 //! [`DiskStreamer::prepare`] does no I/O on the caller's thread: the file is opened by a worker,
 //! and failures arrive through [`StreamHandle::error`].
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -57,7 +58,7 @@ const MAX_STREAM_WARNINGS: usize = 256;
 /// How often a worker with streams wakes to top up rings and look for devamp cuts.
 const POLL: Duration = Duration::from_millis(5);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct StreamerConfig {
     /// Rate every stream is resampled to.
     pub device_rate: u32,
@@ -83,6 +84,10 @@ pub struct StreamerConfig {
     pub cache_budget_bytes: usize,
     /// Most bytes all streams' loop exit buffers hold together.
     pub exit_budget_bytes: usize,
+    /// Called by a worker with a file's path just before it opens it. A no-op, except in tests,
+    /// which stand in a volume that stalls there (a FIFO no longer can: media opens never block
+    /// on one, #323).
+    pub before_open: fn(&Path),
 }
 
 impl StreamerConfig {
@@ -98,6 +103,7 @@ impl StreamerConfig {
             loop_cache_bytes: DEFAULT_LOOP_CACHE_BYTES,
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             exit_budget_bytes: DEFAULT_EXIT_BUDGET_BYTES,
+            before_open: |_| {},
         }
     }
 }
@@ -480,6 +486,7 @@ impl DiskStreamer {
             seeking,
             info,
             device_rate: self.config.device_rate,
+            before_open: self.config.before_open,
             slices: slices.clone(),
             pipe: None,
             entry: 0,
@@ -652,6 +659,8 @@ struct Task {
     seeking: Seeking,
     info: MediaInfo,
     device_rate: u32,
+    /// [`StreamerConfig::before_open`].
+    before_open: fn(&Path),
     slices: Vec<Slice>,
     pipe: Option<Pipeline>,
     /// Write cursor: slice-table entry, plays of it done, frames into the current play.
@@ -705,6 +714,9 @@ impl Task {
     fn fill(&mut self) -> Result<Progress, MediaError> {
         if self.pipe.is_none() {
             let media = self.media.take().ok_or(MediaError::Worker)?;
+            if let Media::Path(path) = &media {
+                (self.before_open)(path);
+            }
             let src = open_source(media, self.seeking.clone())?;
             if src.channels() != usize::from(self.info.channels)
                 || src.sample_rate() != self.info.sample_rate

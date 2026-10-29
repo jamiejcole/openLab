@@ -310,22 +310,6 @@ fn prune_old_process_dirs(own: &Path) {
     }
 }
 
-/// Opens the named pipe `path` for writing, which returns once a reader has it open; fails the
-/// test, rather than hang it, if no reader comes within 30 s. The waiting thread is left behind
-/// then (it ends with the process).
-#[cfg(unix)]
-pub fn open_pipe_writer(path: &Path) -> std::fs::File {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let path = path.to_path_buf();
-    std::thread::spawn(move || {
-        let _ = tx.send(std::fs::OpenOptions::new().write(true).open(&path));
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-        Ok(f) => f.unwrap(),
-        Err(_) => panic!("no reader opened the pipe"),
-    }
-}
-
 /// `frames` samples of `value`.
 pub fn dc(frames: usize, value: f32) -> Vec<f32> {
     vec![value; frames]
@@ -421,6 +405,18 @@ pub fn gated_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::
     }
     drop(gated);
     openlab_audio::probe(path)
+}
+
+/// A disk-stream open (`StreamerConfig::before_open`) that blocks while the file is gated: a
+/// stalled volume under a disk worker (a FIFO no longer stalls one: media opens never wait on
+/// it, #323).
+pub fn gated_open(path: &Path) {
+    let mut gated = GATED.lock().unwrap_or_else(PoisonError::into_inner);
+    while gated.iter().any(|g| g == path) {
+        gated = GATE_CHANGED
+            .wait(gated)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
 }
 
 pub fn gate(path: &Path) {

@@ -10,7 +10,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 ## Budgets
 **Tokens** (correctness comes first, see CLAUDE.md; within that, spend tokens on review and save them on re-runs, re-reads and long reports):
 - Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work (the issue's `model:opus` label): the mixer/audio-thread code, lock-free queues, the cue-engine state machine, engine process lifecycle, and reviews of those. Everything else stays on Sonnet.
-- At most 3 subagents in parallel, of which at most 2 on Opus. Parallel implementers must touch disjoint files.
+- By default up to 5 subagents in parallel: at most 3 on Opus and 1–2 on Sonnet. Parallel implementers must touch disjoint files.
 - Review once per batch. Re-review the fix commits after any High or Medium fix. Max 3 rounds, then escalate.
 - Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs. Read report files with `head`/`grep`, not in full.
 
@@ -18,6 +18,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - Push a branch **once**, after the local review and fixes. Every push is a full CI run.
 - Do not merge `main` into a PR just because `main` moved: CI already tested the PR merged with `main` as it was, and `main`'s own run after each merge (plus the `ci-red` alert) catches two PRs that clash. Merge `main` in only when GitHub reports a conflict, or when `main` changed the same files in a way you judge risky.
 - When several PRs are green, merge them back to back: pending runs on `main` collapse into one.
+- Combine related reviewed batches into one PR (merge their branches into one combined branch, prepush once, list every `Closes #N`) instead of one PR per batch.
 - The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A `.github/` or `Makefile` change runs everything.
 
 ## 0. Re-orient (every session start or after a reset)

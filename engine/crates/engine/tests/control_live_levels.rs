@@ -17,7 +17,7 @@ mod show;
 use openlab_core::protocol::{ClientMessage, Outcome, ServerMessage, TransportAction};
 use openlab_core::{
     Command, Crosspoint, CueKind, CueLevels, CueProperty, FadeCurve, FadeLevels, GroupMode,
-    db_to_gain,
+    OutputPatch, PatchId, PatchMapping, PatchOutput, db_to_gain,
 };
 use openlab_engine::control::offline::OfflineShow;
 use show::*;
@@ -29,6 +29,11 @@ const LEVEL: f32 = 0.5;
 /// Sends `SetCueProperty Kind` for cue `n` with its levels changed by `f`, as the Levels tab
 /// does (a drag's edits share one coalesce key). Returns the sample the edit is dated on.
 fn set_levels(s: &mut OfflineShow, n: u128, f: impl FnOnce(&mut CueLevels)) -> usize {
+    set_audio(s, n, |_, levels| f(levels))
+}
+
+/// As [`set_levels`], with the cue's patch to change too.
+fn set_audio(s: &mut OfflineShow, n: u128, f: impl FnOnce(&mut PatchId, &mut CueLevels)) -> usize {
     let mut kind = s
         .control()
         .workspace()
@@ -36,10 +41,10 @@ fn set_levels(s: &mut OfflineShow, n: u128, f: impl FnOnce(&mut CueLevels)) -> u
         .unwrap()
         .kind
         .clone();
-    let CueKind::Audio { levels, .. } = &mut kind else {
+    let CueKind::Audio { patch, levels, .. } = &mut kind else {
         panic!("not audio");
     };
-    f(levels);
+    f(patch, levels);
     let at = s.now() as usize;
     let rid = s.request_id();
     let replies = s.send(ClientMessage::Command {
@@ -297,4 +302,145 @@ fn an_edit_to_an_idle_cue_changes_nothing_until_it_starts_with_it() {
     // It starts at the edited level on its first sample, with no ramp.
     let x = s.channel(0);
     assert!(x[at..].iter().all(|&v| near(v, LEVEL * db_to_gain(-6.0))));
+}
+
+// ----- a patch change of a playing cue (#293) -----
+
+/// The mixer's de-zipper at [`RATE`] (5 ms): a moved voice crossfades over it.
+const MOVE: usize = 40;
+
+/// A second patch, "Side": one output, mapped to device output 1.
+fn side() -> PatchId {
+    PatchId(uuid::Uuid::from_u128(902))
+}
+
+/// [`long_show`] with the "Side" patch as well, cue 1 on `patch` routed to cue output `out`.
+fn two_patch_show(patch: PatchId, out: u32, extra: Vec<openlab_core::Cue>) -> OfflineShow {
+    let a = wav(&dc(RATE as usize * 10, LEVEL));
+    let mut c = audio(1, &a, out);
+    if let CueKind::Audio { patch: p, .. } = &mut c.kind {
+        *p = patch;
+    }
+    let mut cues = vec![c];
+    cues.extend(extra);
+    let mut ws = workspace(cues);
+    ws.patches.push(OutputPatch {
+        id: side(),
+        name: "Side".into(),
+        master_db: 0.0,
+        outputs: vec![
+            PatchOutput {
+                level_db: 0.0,
+                mute: false,
+                delay_ms: 0.0,
+                polarity_inverted: false,
+            };
+            1
+        ],
+    });
+    let mut c = config(&ws);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            side(),
+            PatchMapping {
+                device: "Offline".into(),
+                channels: vec![1],
+            },
+        )
+        .unwrap();
+    show_with(ws, c)
+}
+
+/// Asserts the sound moves from device output `from` to `to` at `at`: whole on `from` before,
+/// a crossfade over the de-zipper that always adds up to the signal, whole on `to` after.
+fn heard_move(s: &OfflineShow, from: usize, to: usize, at: usize, until: usize) {
+    let (a, b) = (s.channel(from), s.channel(to));
+    assert!(a[at - 100..at].iter().all(|&v| near(v, LEVEL)), "before");
+    assert!(b[at - 100..at].iter().all(|&v| v == 0.0), "before");
+    for (x, y) in a[at - 100..until].iter().zip(&b[at - 100..until]) {
+        assert!(near(x + y, LEVEL), "{x} + {y}");
+    }
+    assert!(a[at + MOVE..until].iter().all(|&v| v == 0.0), "after");
+    assert!(b[at + MOVE..until].iter().all(|&v| near(v, LEVEL)), "after");
+    for x in [&a, &b] {
+        let jump = max_jump(&x[at - 100..until]);
+        assert!(jump <= LEVEL / MOVE as f32 * 1.5 + 1e-6, "jump {jump}");
+    }
+}
+
+/// #293: an operator switches a playing cue to another patch: it is heard on the new patch's
+/// outputs at once (a 5 ms crossfade, no click), with no restart, no new voice and no state
+/// change, and back again.
+#[test]
+fn a_playing_cue_follows_its_patch_change_without_a_click() {
+    let mut s = two_patch_show(patch_id(), 0, vec![]);
+    go(&mut s);
+    s.run(800);
+    s.take_outbound();
+    let at = set_audio(&mut s, 1, |p, _| *p = side());
+    s.run(400);
+    heard_move(&s, 0, 1, at, at + 300);
+    let at = set_audio(&mut s, 1, |p, _| *p = patch_id());
+    s.run(400);
+    heard_move(&s, 1, 0, at, at + 300);
+    assert_eq!(s.control().live_voices(), 1);
+    assert!(states(&s.take_outbound(), id(1)).is_empty());
+}
+
+/// A cue started on a one-output patch, routed to cue output 2 (silent there), moved to a
+/// two-output patch: cue output 2 comes up at its level from the move.
+#[test]
+fn outputs_the_new_patch_adds_are_heard_at_their_levels() {
+    let mut s = two_patch_show(side(), 1, vec![]);
+    go(&mut s);
+    s.run(800);
+    assert!(s.channel(0).iter().chain(&s.channel(1)).all(|&v| v == 0.0));
+    let at = set_audio(&mut s, 1, |p, _| *p = patch_id());
+    s.run(400);
+    let x = s.channel(1);
+    assert!(
+        x[at + MOVE..].iter().all(|&v| near(v, LEVEL)),
+        "{}",
+        x[at + MOVE]
+    );
+    // The cue output's level and its crosspoint come up over the de-zipper under the crossfade
+    // (all three 5 ms from 0, so at most three times a crossfade's step): no click.
+    let jump = max_jump(&x);
+    assert!(jump <= 3.0 * LEVEL / MOVE as f32 * 1.1, "jump {jump}");
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+}
+
+/// A level a Fade cue set on an output the old patch did not have is kept by the move: the
+/// voice already had the fade's value, the model's level does not replace it.
+#[test]
+fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
+    let fade = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs(400),
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: None,
+                output_db: vec![None, Some(-6.0)],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+        },
+    );
+    let mut s = two_patch_show(side(), 1, vec![fade]);
+    start(&mut s, 1);
+    s.run(400);
+    start(&mut s, 2);
+    s.run(800);
+    let at = set_audio(&mut s, 1, |p, _| *p = patch_id());
+    s.run(400);
+    let x = s.channel(1);
+    let faded = LEVEL * db_to_gain(-6.0);
+    assert!(
+        x[at + MOVE..].iter().all(|&v| near(v, faded)),
+        "{}",
+        x[at + MOVE]
+    );
 }

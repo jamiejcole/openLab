@@ -36,56 +36,15 @@ pub(crate) fn read_bytes(path: &Path, limit: usize) -> Result<Vec<u8>, PersistEr
 }
 
 /// Opens `path` for reading only if it is a regular file, without ever blocking on what was
-/// opened. Opening a FIFO for reading waits for a writer, for ever if none comes, and the
-/// worker doing it would stop serving every later save or open. On Unix the open is
-/// non-blocking (a FIFO then opens at once); on Windows opening never waits (a named pipe with
-/// no free instance fails at once). Either way the type is then checked through the opened
-/// handle, so a FIFO, device or folder swapped in after any earlier look at the path is
-/// refused before a byte is read.
+/// opened (a FIFO would wait for a writer, for ever if none comes, and the worker would stop
+/// serving every later save or open). [`openlab_audio::open_regular`], shared with media opens
+/// (#323); a FIFO, device or folder is an `InvalidInput` "not a regular file" error.
 pub(crate) fn open_regular(path: &Path) -> Result<File, PersistError> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(O_NONBLOCK);
-    }
-    let file = options.open(path).map_err(PersistError::io("open", path))?;
-    let opened = file.metadata().map_err(PersistError::io("open", path))?;
-    if !opened.is_file() {
-        return Err(PersistError::io("open", path)(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        )));
-    }
-    // O_NONBLOCK does not change reads of a regular file, so the flag can stay set.
-    Ok(file)
+    openlab_audio::open_regular(path).map_err(PersistError::io("open", path))
 }
 
-/// `O_NONBLOCK` from the C headers (std has no constant for it, and it differs by platform).
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
-pub(super) const O_NONBLOCK: i32 = 0x0004;
-#[cfg(all(
-    any(target_os = "linux", target_os = "android"),
-    any(
-        target_arch = "x86",
-        target_arch = "x86_64",
-        target_arch = "arm",
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "powerpc64",
-        target_arch = "loongarch64",
-        target_arch = "s390x"
-    )
-))]
-pub(super) const O_NONBLOCK: i32 = 0o4000;
+#[cfg(unix)]
+pub(super) use openlab_audio::O_NONBLOCK;
 
 /// Whether `path` is a regular file: `Ok(true)`, absent (`Ok(false)`), or something else (a FIFO,
 /// socket, device or directory, also through a symlink), which is an error. Never opens the path
