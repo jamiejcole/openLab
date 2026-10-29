@@ -133,8 +133,11 @@ impl Hub {
                 seq: snapshot.runtime_seq,
             },
             ServerMessage::Closed { .. } => Kind::Closed,
+            // A `log` notice is also a show-log record (`log_tail` has it): a burst of them must
+            // not mark every client lagged and cost a snapshot each.
             ServerMessage::Progress { .. }
             | ServerMessage::Meters { .. }
+            | ServerMessage::Log { .. }
             | ServerMessage::LogEntry { .. }
             | ServerMessage::Status { .. } => Kind::Lossy,
             _ => Kind::State,
@@ -239,6 +242,15 @@ mod tests {
         }
     }
 
+    /// A state message: one that must reach the client or mark it lagged.
+    fn state(n: usize) -> ServerMessage {
+        ServerMessage::Error {
+            code: openlab_core::protocol::ErrorCode::Internal,
+            message: format!("{n}"),
+            protocol_version: 1,
+        }
+    }
+
     fn meters() -> ServerMessage {
         ServerMessage::Meters {
             outputs: vec![],
@@ -257,7 +269,7 @@ mod tests {
         // One under half: the meters still go in, and fill it to half; the progress after them
         // does not.
         for n in 0..CLIENT_QUEUE / 2 - 1 {
-            hub.deliver(&Outgoing::all(log(n)));
+            hub.deliver(&Outgoing::all(state(n)));
         }
         hub.deliver(&Outgoing::all(meters()));
         hub.deliver(&Outgoing::all(ServerMessage::Progress {
@@ -269,14 +281,14 @@ mod tests {
         assert_eq!(kinds.iter().filter(|k| **k == Kind::Lossy).count(), 1);
         // Exactly half full: dropped, while state messages still go in.
         for n in 0..CLIENT_QUEUE / 2 {
-            hub.deliver(&Outgoing::all(log(n)));
+            hub.deliver(&Outgoing::all(state(n)));
         }
         hub.deliver(&Outgoing::all(meters()));
         hub.deliver(&Outgoing::all(ServerMessage::Progress {
             items: vec![],
             waits: vec![],
         }));
-        hub.deliver(&Outgoing::all(log(0)));
+        hub.deliver(&Outgoing::all(state(0)));
         let kinds = drain(&mut r.rx);
         assert_eq!(kinds.len(), CLIENT_QUEUE / 2 + 1);
         assert!(kinds.iter().all(|k| *k == Kind::State));
@@ -289,7 +301,7 @@ mod tests {
         let hub = Hub::default();
         let mut r = hub.register(None);
         for n in 0..CLIENT_QUEUE / 2 {
-            hub.deliver(&Outgoing::all(log(n)));
+            hub.deliver(&Outgoing::all(state(n)));
         }
         hub.deliver(&Outgoing::all(ServerMessage::LogEntry {
             seq: 1,
@@ -311,13 +323,27 @@ mod tests {
         );
     }
 
+    /// A burst of `log` notices fills no queue past half and marks no client lagged.
+    #[test]
+    fn log_notices_are_lossy_and_never_mark_a_client_lagged() {
+        let hub = Hub::default();
+        let mut r = hub.register(None);
+        for n in 0..CLIENT_QUEUE * 2 {
+            hub.deliver(&Outgoing::all(log(n)));
+        }
+        assert!(!r.lagged.load(Ordering::Acquire));
+        let kinds = drain(&mut r.rx);
+        assert_eq!(kinds.len(), CLIENT_QUEUE / 2);
+        assert!(kinds.iter().all(|k| *k == Kind::Lossy));
+    }
+
     #[test]
     fn a_state_message_that_does_not_fit_marks_only_that_client_lagged() {
         let hub = Hub::default();
         let mut slow = hub.register(None);
         let mut fast = hub.register(None);
         for n in 0..CLIENT_QUEUE {
-            hub.deliver(&Outgoing::all(log(n)));
+            hub.deliver(&Outgoing::all(state(n)));
             // The fast client keeps up.
             assert_eq!(drain(&mut fast.rx).len(), 1);
         }
@@ -331,10 +357,10 @@ mod tests {
         assert_eq!(drain(&mut fast.rx), vec![Kind::Seq(1)]);
         // A lagged client is skipped until it resyncs (it clears the flag).
         assert_eq!(drain(&mut slow.rx).len(), CLIENT_QUEUE);
-        hub.deliver(&Outgoing::all(log(0)));
+        hub.deliver(&Outgoing::all(state(0)));
         assert!(drain(&mut slow.rx).is_empty());
         slow.lagged.store(false, Ordering::Release);
-        hub.deliver(&Outgoing::all(log(1)));
+        hub.deliver(&Outgoing::all(state(1)));
         assert_eq!(drain(&mut slow.rx), vec![Kind::State]);
     }
 
@@ -404,7 +430,7 @@ mod tests {
             changes: vec![],
         };
         hub.deliver(&Outgoing::doc(DocId(1), runtime));
-        hub.deliver(&Outgoing::all(log(0)));
+        hub.deliver(&Outgoing::all(state(0)));
         hub.deliver(&Outgoing::all(ServerMessage::Workspaces {
             workspaces: vec![WorkspaceInfo {
                 doc: DocId(0),
@@ -428,7 +454,7 @@ mod tests {
         let hub = Hub::default();
         let mut r = hub.register(None);
         hub.unregister(r.id);
-        hub.deliver(&Outgoing::all(log(0)));
+        hub.deliver(&Outgoing::all(state(0)));
         assert!(r.rx.try_recv().is_err());
     }
 }

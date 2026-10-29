@@ -8,8 +8,10 @@
 //!
 //! The run ends on `goodbye { shutdown: true }`, `SIGTERM`, `SIGINT` or `SIGHUP` (macOS), or,
 //! with `--watch-stdin`, when stdin closes: the control loop stops the show and writes a
-//! recovery file for every workspace with unsaved changes (bounded), then the server stops,
-//! `engine.json` and the run marker go and the log is flushed.
+//! recovery file for every workspace with unsaved changes (bounded), then the server stops, the
+//! log is flushed, the run marker goes and `engine.json` goes last, so a start meanwhile is
+//! refused naming this engine. A signal while starting, a second one while stopping, or an exit
+//! that overruns its bound ends the process at once ([`stop`]).
 //!
 //! The stream is opened, closed and reopened on the device thread (`control::devices`), which
 //! keeps it (a cpal stream is not `Send` on every platform); the control thread gets the mixer
@@ -17,9 +19,11 @@
 
 pub mod engine_file;
 mod instance_lock;
+mod stop;
 
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -42,8 +46,9 @@ use crate::diag::run_marker::{self, RunInfo};
 use crate::diag::{LogLimits, LogWriter, ShowLog, StatusConfig};
 use crate::net::{NetError, OscConfig, Relaunch, RelaunchFn, ServerConfig, WsServer};
 use crate::persist::{AppDirs, load_machine_settings_checked};
-use crate::platform::{power, relaunch, signals};
+use crate::platform::{exit, power, relaunch, signals};
 use engine_file::{EngineFile, EngineInfo};
+use stop::Stop;
 
 /// Frames per device callback asked for: about 5 ms at 48 kHz.
 const BUFFER_FRAMES: u32 = 256;
@@ -116,9 +121,36 @@ pub fn run(options: Options) -> Result<(), HostError> {
         Some(dirs) => lock_instance(dirs)?,
         None => None,
     };
-    supervise(dirs.clone(), CrashHook::Install, |show_log| {
-        run_with(&options, dirs.as_ref(), signals, show_log)
+    // Next, so a start stuck in the audio system still answers a signal.
+    let stop = Stop::new(dirs.as_ref().map(AppDirs::engine_file_path), |code| {
+        exit::exit_now(code)
+    });
+    if signals {
+        let on_signal = Arc::clone(&stop);
+        signals::spawn_waiter(move |signal| on_signal.signal(signal)).map_err(HostError::Thread)?;
+    }
+    supervised(dirs.clone(), CrashHook::Install, |show_log, engine_file| {
+        run_with(&options, dirs.as_ref(), &stop, show_log, engine_file)
     })
+}
+
+/// [`supervise`], then this run's `engine.json` (which `run` leaves in the slot) is removed,
+/// last of all: after the log flush and the run marker, so a start until then is refused
+/// naming this engine, not "starting". A crash leaves the file (stale: its run marker is no
+/// longer held).
+fn supervised(
+    dirs: Option<AppDirs>,
+    hook: CrashHook,
+    run: impl FnOnce(ShowLog, &mut Option<EngineFile>) -> Result<(), HostError>,
+) -> Result<(), HostError> {
+    let mut engine_file = None;
+    let result = supervise(dirs, hook, |show_log| run(show_log, &mut engine_file));
+    if !matches!(result, Err(HostError::ControlPanicked))
+        && let Some(file) = engine_file
+    {
+        let _ = file.remove();
+    }
+    result
 }
 /// The diagnostics around a run (`run`): the show log and its writer, the panic hook and the
 /// run marker. A controlled end, with or without an error, removes the marker; a panic on the
@@ -226,8 +258,8 @@ fn lock_instance(dirs: &AppDirs) -> Result<Option<instance_lock::InstanceLock>, 
 fn other_engine(pid: Option<u32>, port: Option<u16>) -> String {
     match (pid, port) {
         (Some(pid), Some(port)) => format!("pid {pid}, port {port}"),
-        (Some(pid), None) => format!("pid {pid}, still starting"),
-        (None, _) => "still starting".to_owned(),
+        (Some(pid), None) => format!("pid {pid}, starting or stopping"),
+        (None, _) => "starting or stopping".to_owned(),
     }
 }
 
@@ -242,11 +274,14 @@ fn check_single_instance(dirs: &AppDirs) -> Result<(), HostError> {
     }
 }
 
+/// The run itself. This run's `engine.json`, once written, is left in `engine_file` for the
+/// caller to remove last.
 fn run_with(
     options: &Options,
     dirs: Option<&AppDirs>,
-    signals: bool,
+    stop: &Arc<Stop>,
     show_log: ShowLog,
+    engine_file: &mut Option<EngineFile>,
 ) -> Result<(), HostError> {
     if let Some(dirs) = dirs {
         check_single_instance(dirs)?;
@@ -336,17 +371,8 @@ fn run_with(
         out_tx,
     )?;
     open_at_start(&options.open, &inbox_tx)?;
-    if signals {
-        let signal_inbox = inbox_tx.clone();
-        signals::spawn_waiter(move |signal| {
-            let _ = signal_inbox.send(Inbox::Log {
-                level: LogLevel::Info,
-                message: format!("{}: shutting down", signal.name()),
-            });
-            let _ = signal_inbox.send(Inbox::Shutdown);
-        })
-        .map_err(HostError::Thread)?;
-    }
+    // From here a signal is a graceful shutdown through the loop.
+    stop.running(inbox_tx.clone());
     if options.watch_stdin {
         let stdin_inbox = inbox_tx.clone();
         thread::Builder::new()
@@ -358,7 +384,7 @@ fn run_with(
             .map_err(HostError::Thread)?;
     }
     // Last before the loop: a client that finds the file finds an engine about to serve it.
-    let engine_file = match dirs {
+    *engine_file = match dirs {
         Some(dirs) => {
             let path = dirs.engine_file_path();
             let info = EngineInfo {
@@ -384,28 +410,15 @@ fn run_with(
         }
     };
     say(&format!("listening on 127.0.0.1:{}", server.port()));
-    let worker = match thread::Builder::new()
+    let worker = thread::Builder::new()
         .name("openlab-control".into())
         .spawn(move || runner::run(control, &inbox))
-    {
-        Ok(worker) => worker,
-        Err(e) => {
-            if let Some(file) = engine_file {
-                let _ = file.remove();
-            }
-            return Err(HostError::Thread(e));
-        }
-    };
+        .map_err(HostError::Thread)?;
     // The control loop stops the show and writes the recovery files; dropping it ends the
     // device thread, which drops the stream (and the mixer) there.
     let joined = join_control(worker);
+    stop.loop_ended();
     server.stop();
-    // A crash leaves the file (stale: its run marker is no longer held).
-    if joined.is_ok()
-        && let Some(file) = engine_file
-    {
-        let _ = file.remove();
-    }
     joined
 }
 
@@ -535,8 +548,9 @@ mod tests {
             started_ms: 0,
         };
         let _file = EngineFile::write(&dirs.engine_file_path(), info.clone()).unwrap();
-        let result = supervise(Some(dirs.clone()), CrashHook::Skip, |log| {
-            run_with(&Options::default(), Some(&dirs), false, log)
+        let stop = Stop::new(None, |_| {});
+        let result = supervised(Some(dirs.clone()), CrashHook::Skip, |log, file| {
+            run_with(&Options::default(), Some(&dirs), &stop, log, file)
         });
         assert!(
             matches!(
@@ -594,6 +608,60 @@ mod tests {
         assert!(markers(&dirs).is_empty());
         drop(first);
         assert!(lock_instance(&dirs).unwrap().is_some());
+    }
+
+    /// `engine.json` outlives the run marker and the log flush: a start while this engine is
+    /// still stopping is refused naming it (not "starting"), and the app's supervisor sees an
+    /// engine to wait for instead of spawning into the lock. A crash leaves it.
+    #[test]
+    fn engine_json_is_removed_last_and_left_by_a_crash() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::new(root.path());
+        let info = EngineInfo {
+            pid: std::process::id(),
+            port: 50_002,
+            token: "t".into(),
+            version: "0.0.1".into(),
+            protocol_version: PROTOCOL_VERSION,
+            started_ms: 0,
+        };
+        let path = dirs.engine_file_path();
+        let write = |slot: &mut Option<EngineFile>| {
+            *slot = Some(EngineFile::write(&path, info.clone()).unwrap());
+        };
+        let result = supervised(Some(dirs.clone()), CrashHook::Skip, |_, slot| {
+            write(slot);
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(!path.exists());
+        assert!(markers(&dirs).is_empty());
+
+        let result = supervised(Some(dirs.clone()), CrashHook::Skip, |_, slot| {
+            write(slot);
+            Err(HostError::NoDevice)
+        });
+        assert!(result.is_err());
+        assert!(!path.exists(), "a failed start removes it too");
+
+        let result = supervised(Some(dirs.clone()), CrashHook::Skip, |_, slot| {
+            write(slot);
+            Err(HostError::ControlPanicked)
+        });
+        assert!(matches!(result, Err(HostError::ControlPanicked)));
+        assert!(path.exists(), "a crash leaves engine.json");
+    }
+
+    #[test]
+    fn a_refusal_without_engine_json_says_starting_or_stopping() {
+        assert_eq!(
+            HostError::AlreadyRunning {
+                pid: Some(7),
+                port: None
+            }
+            .to_string(),
+            "another openLab engine is running (pid 7, starting or stopping)"
+        );
     }
 
     #[test]

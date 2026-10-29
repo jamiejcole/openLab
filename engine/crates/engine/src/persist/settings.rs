@@ -10,6 +10,7 @@ use openlab_core::{
     LoadedSettings, MAX_SETTINGS_BYTES, MachineSettings, load_settings, save_settings,
 };
 
+use super::threads::BoundedThreads;
 use super::writer::DROP_WAIT;
 use super::{AppDirs, PersistError, read_text, write_atomic};
 
@@ -77,9 +78,7 @@ pub fn save_machine_settings(
 pub struct SettingsWriter {
     tx: Option<crossbeam_channel::Sender<MachineSettings>>,
     errors: crossbeam_channel::Receiver<String>,
-    thread: Option<std::thread::JoinHandle<()>>,
-    /// Disconnected when the thread ends.
-    ended: crossbeam_channel::Receiver<()>,
+    threads: BoundedThreads,
     drop_wait: Duration,
 }
 
@@ -99,28 +98,24 @@ impl SettingsWriter {
     fn spawn_inner(dirs: AppDirs, hook: Option<Hook>) -> io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded::<MachineSettings>();
         let (etx, errors) = crossbeam_channel::unbounded();
-        let (ending, ended) = crossbeam_channel::bounded::<()>(0);
-        let thread = std::thread::Builder::new()
-            .name("openlab-settings".into())
-            .spawn(move || {
-                let _ending = ending;
-                while let Ok(mut latest) = rx.recv() {
-                    while let Ok(newer) = rx.try_recv() {
-                        latest = newer;
-                    }
-                    if let Some(hook) = &hook {
-                        hook();
-                    }
-                    if let Err(e) = save_machine_settings(&dirs, &latest) {
-                        let _ = etx.send(e.to_string());
-                    }
+        let mut threads = BoundedThreads::new();
+        threads.spawn("openlab-settings", move || {
+            while let Ok(mut latest) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    latest = newer;
                 }
-            })?;
+                if let Some(hook) = &hook {
+                    hook();
+                }
+                if let Err(e) = save_machine_settings(&dirs, &latest) {
+                    let _ = etx.send(e.to_string());
+                }
+            }
+        })?;
         Ok(Self {
             tx: Some(tx),
             errors,
-            thread: Some(thread),
-            ended,
+            threads,
             drop_wait: DROP_WAIT,
         })
     }
@@ -139,15 +134,7 @@ impl SettingsWriter {
 impl Drop for SettingsWriter {
     fn drop(&mut self) {
         self.tx = None;
-        let ended = matches!(
-            self.ended.recv_timeout(self.drop_wait),
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected)
-        );
-        if let Some(thread) = self.thread.take()
-            && ended
-        {
-            let _ = thread.join();
-        }
+        self.threads.finish(self.drop_wait);
     }
 }
 

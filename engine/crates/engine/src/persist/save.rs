@@ -52,6 +52,22 @@ pub fn save_workspace_with(
     keep: u32,
     checkpoint: impl FnMut(Stage) -> io::Result<()>,
 ) -> Result<SaveReport, PersistError> {
+    save_workspace_inner(dirs, path, workspace, now_ms, keep, checkpoint, &|| true)
+}
+
+/// [`save_workspace_with`], removing the recovery files at the end only if `may_clear` says so
+/// then. The writer says no for a save it has given up on (answered `Stalled`): an autosave of
+/// the same workspace may have run since, and its recovery file holds newer edits than this
+/// late save.
+pub(crate) fn save_workspace_inner(
+    dirs: &AppDirs,
+    path: &Path,
+    workspace: &Workspace,
+    now_ms: i64,
+    keep: u32,
+    checkpoint: impl FnMut(Stage) -> io::Result<()>,
+    may_clear: &dyn Fn() -> bool,
+) -> Result<SaveReport, PersistError> {
     // A workspace that would not load back writes nothing at all, not even a backup.
     let text = save_show(workspace)?;
     // A FIFO, device, socket or directory at the target is refused up front, before anything is
@@ -92,6 +108,9 @@ pub fn save_workspace_with(
     // The saved file now holds everything the recovery files did (the one for this show path,
     // and the one from before the workspace had a path). Only now, after the rename and folder
     // sync, is it safe to drop them.
+    if !may_clear() {
+        return Ok(report);
+    }
     for show in [Some(path), None] {
         if let Err(e) = clear_recovery(dirs, workspace.id, show) {
             report

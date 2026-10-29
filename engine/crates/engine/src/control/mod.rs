@@ -201,6 +201,9 @@ pub struct ControlConfig {
     pub probe_timeout: Duration,
     /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
     pub probe_clock: media::ProbeClock,
+    /// The monotonic clock the save watchdog measures `doc_timeout` on (a wall-clock step must
+    /// not fail a save or postpone the watchdog; tests inject one).
+    pub stall_clock: media::ProbeClock,
     /// Which volume a media path is on, for probe scheduling (tests inject one; the media
     /// watch's `bucket_of` by default).
     pub probe_volume: Option<fn(&std::path::Path) -> String>,
@@ -249,6 +252,7 @@ impl ControlConfig {
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
             probe_clock: media::ProbeClock::system(),
+            stall_clock: media::ProbeClock::system(),
             probe_volume: None,
             show_log: crate::diag::ShowLog::default(),
             status: None,
@@ -1010,6 +1014,7 @@ impl Control {
         self.probe_watchdog();
         self.hand_out_freed_slots();
         self.eng.check_stalled_read();
+        self.eng.check_stalled_save();
         self.eng.poll_clears();
         self.poll_orphan_saves();
         self.eng.resend_closed();
