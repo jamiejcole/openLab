@@ -640,6 +640,34 @@ fn updates_subscribe_in_every_doc_and_each_doc_sends_only_where_the_peer_may_vie
     assert!(osc.update_subscribers(T0).is_empty());
 }
 
+/// The subscribers of every doc together: each peer once, however many docs it subscribed in.
+#[test]
+fn the_subscribers_of_every_doc_are_each_listed_once() {
+    let (a, b) = (hamlet(), lear());
+    let tcp = |conn| Peer::Tcp {
+        conn,
+        ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)),
+    };
+    let mut osc = quiet();
+    let subscribe = |osc: &mut Osc, peer| {
+        send(osc, &docs(&a, &b), peer, &msg("/updates", vec![OscType::Int(1)]));
+    };
+    // In both docs.
+    subscribe(&mut osc, udp());
+    subscribe(&mut osc, tcp(1));
+    subscribe(&mut osc, tcp(2));
+    // B's sessions end (its passcode table changed); one of them subscribes again there.
+    osc.end_doc_sessions(B);
+    subscribe(&mut osc, tcp(2));
+    assert_eq!(osc.update_subscribers_in(A, T0).len(), 3);
+    assert_eq!(osc.update_subscribers_in(B, T0), vec![tcp(2)]);
+    let mut all = osc.update_subscribers(T0);
+    all.sort_by_key(|p| format!("{p:?}"));
+    let mut want = vec![udp(), tcp(1), tcp(2)];
+    want.sort_by_key(|p| format!("{p:?}"));
+    assert_eq!(all, want);
+}
+
 #[test]
 fn a_prefixed_updates_is_an_error_and_subscribes_nothing() {
     let (a, b) = (hamlet(), lear());
