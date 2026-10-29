@@ -491,8 +491,6 @@ impl Fix {
         self.server.osc_stats().unwrap()
     }
 
-    /// A round trip that proves what was sent before it was handled: the server answers
-    /// `/version` in turn with everything else (QLab sends no reply to `/updates` or to actions).
     /// Sends `m` then `/version` (answered in turn) and returns the JSON replies to `m`.
     async fn udp_ask(&self, m: &OscMessage) -> Vec<Value> {
         self.udp_send(m).await;
@@ -507,6 +505,8 @@ impl Fix {
         }
     }
 
+    /// A round trip that proves what was sent before it was handled: the server answers
+    /// `/version` in turn with everything else (QLab sends no reply to `/updates` or to actions).
     async fn udp_sync(&self) {
         self.udp_send(&msg("/version", vec![])).await;
         assert_eq!(self.udp_recv().await.addr, "/reply/version");
