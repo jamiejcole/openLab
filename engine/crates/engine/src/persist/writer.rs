@@ -86,10 +86,11 @@ pub const MAX_FORCED_TARGETS: usize = 32;
 /// How long dropping the writer waits for its thread to finish the running job and the pending
 /// manual saves.
 pub const DROP_WAIT: Duration = Duration::from_secs(5);
-/// Writer threads at most, stalled ones included: the one serving the queue and up to four
-/// left stuck on hung volumes. With all of them stuck, saves and autosaves are refused with
-/// [`PersistError::Stalled`] until one returns.
-pub const MAX_WRITERS: usize = 5;
+/// Writer threads at most, stalled ones included: the one serving the queue and up to sixteen
+/// left stuck on hung volumes, so every open show (`control::MAX_DOCS`, 8) can have both its
+/// show file and its recovery file stuck and the other shows still save. With all of them
+/// stuck, saves and autosaves are refused with [`PersistError::Stalled`] until one returns.
+pub const MAX_WRITERS: usize = 17;
 
 /// The files a job writes, as far as keeping two threads apart goes: the show file (and its
 /// backups, which are kept per workspace and show file) and recovery files, by their names'

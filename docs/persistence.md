@@ -88,7 +88,7 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
   threads ever write the same show file or recovery file at once), removes that target's file, and cancels
   only that target's pending autosave;
 - a job stuck on a hung volume for the document timeout is answered `Stalled` and its thread abandoned; a
-  fresh thread serves the queue (at most `MAX_WRITERS`, 5, threads in all). Threads never write the same
+  fresh thread serves the queue (at most `MAX_WRITERS`, 17, threads in all: room for every open show's show file and recovery file to be stuck with one thread left for the rest). Threads never write the same
   show file or recovery file at once; the files a stalled write holds are refused at once until it returns,
   and a stalled save holds only its show file (it skips its recovery-file removal), so the workspace can
   still be saved elsewhere and autosaved (`SaveWriter::check_stalled`; docs/control.md "A save that stalls");
