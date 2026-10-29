@@ -393,6 +393,23 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A Wait or Fade cue's duration and a Load cue's time, alone (M5.6b).
+    for (name, property) in [
+        ("duration", CueProperty::Duration { value: 12.5 }),
+        ("load_to_time", CueProperty::LoadToTime { value: 90.25 }),
+    ] {
+        add(
+            &format!("command_set_cue_{name}"),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(12),
+                    property,
+                }),
+                coalesce: None,
+            }),
+        );
+    }
     add(
         "command_paste_clipboard",
         client(ClientMessage::Command {

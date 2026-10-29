@@ -80,6 +80,16 @@ final class EditCommandTests: XCTestCase {
             try shape(.setNumber(id, nil)),
             JSONValue.parse(#"{"type":"set_cue_numbers","numbers":[{"id":"\#(id)","number":null}]}"#))
     }
+
+    /// The Wait/Fade duration and Load time properties (M5.6b) encode as the engine's golden fixtures.
+    func testDurationAndLoadTimeMatchTheFixtures() throws {
+        let id: ModelID = "00000000-0000-0000-0000-00000000000c"
+        let cases: [(String, CueProperty)] = [("duration", .duration(12.5)), ("load_to_time", .loadToTime(90.25))]
+        for (name, property) in cases {
+            let fixture = try Fixtures.json("client", "command_set_cue_\(name)")["command"]
+            XCTAssertEqual(try shape(.setProperty(id, property)), fixture, name)
+        }
+    }
 }
 
 /// The inspector against the fake engine: the demo show (Intro #1, a fade cue targeting it, a

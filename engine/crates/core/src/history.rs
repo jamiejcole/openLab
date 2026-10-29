@@ -186,7 +186,7 @@ fn merge(older: Inverse, newer: Inverse) -> Inverse {
 }
 
 /// Whether every command only sets a value, no two set the same one, and none sets both the
-/// `Kind` and the target or group mode of one cue (a `Kind` replaces those).
+/// `Kind` and the target, group mode, duration or load time of one cue (a `Kind` replaces those).
 fn only_value_sets(commands: &[Command]) -> bool {
     let mut keys = std::collections::HashSet::new();
     let mut kinds = std::collections::HashSet::new();
@@ -208,14 +208,18 @@ fn only_value_sets(commands: &[Command]) -> bool {
             c,
             Command::SetCueProperty {
                 id,
-                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
+                property: CueProperty::Target { .. }
+                    | CueProperty::GroupMode { .. }
+                    | CueProperty::Duration { .. }
+                    | CueProperty::LoadToTime { .. },
             } if kinds.contains(id)
         )
     })
 }
 
-/// A `Kind` replaces a cue's target and group mode too: it may only be dropped if the older
-/// chain, which then runs on the state before it, sets neither on that cue.
+/// A `Kind` replaces a cue's target, group mode, duration and load time too: it may only be
+/// dropped if the older chain, which then runs on the state before it, sets none of them on that
+/// cue.
 fn kind_is_safe(step: &Command, older: &[Command]) -> bool {
     let Command::SetCueProperty {
         id,
@@ -229,7 +233,10 @@ fn kind_is_safe(step: &Command, older: &[Command]) -> bool {
             c,
             Command::SetCueProperty {
                 id: other,
-                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
+                property: CueProperty::Target { .. }
+                    | CueProperty::GroupMode { .. }
+                    | CueProperty::Duration { .. }
+                    | CueProperty::LoadToTime { .. },
             } if other == id
         )
     })
