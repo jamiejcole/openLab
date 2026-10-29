@@ -3,13 +3,19 @@
 //! `engine.json` (M4.9; ARCHITECTURE §6, §8): how a client finds the running engine.
 //!
 //! `<app-support>/openLab/engine.json` holds
-//! `{"pid", "port", "token", "version", "protocol_version", "started_ms"}`, readable by the
-//! user only (mode 0600 on Unix: the token lets a local process drive the show). It is written
+//! `{"pid", "port", "token", "version", "protocol_version", "started_ms", "stopping"}`, readable
+//! by the user only (mode 0600 on Unix: the token lets a local process drive the show). It is written
 //! whole under a temporary name and renamed into place, so a reader never sees half a file,
 //! and removed on a graceful exit only while it is still this run's. A file left by a run that
 //! crashed is stale: its process holds no run marker any more ([`run_marker::is_live`]); a
 //! start replaces it. A start refuses to run while the file names a live engine: one engine per
 //! user (one device, one OSC port), and the app attaches to that one.
+//!
+//! `stopping` turns true when the engine's shutdown begins ([`EngineFile::mark_stopping`]): the
+//! file stays until the very end (so no second engine is started into the lock meanwhile), and
+//! a client that finds it stopping should wait for that pid to exit, then start or find the
+//! next engine, instead of attaching to one about to exit. A file without the field (an older
+//! engine's) is read as not stopping.
 
 use std::fs;
 use std::io::{self, Read as _};
@@ -33,6 +39,8 @@ pub struct EngineInfo {
     pub protocol_version: u32,
     /// Wall clock, milliseconds since the Unix epoch (UTC).
     pub started_ms: i64,
+    /// The engine's shutdown has begun (module docs).
+    pub stopping: bool,
 }
 
 impl std::fmt::Debug for EngineInfo {
@@ -42,6 +50,7 @@ impl std::fmt::Debug for EngineInfo {
             .field("pid", &self.pid)
             .field("port", &self.port)
             .field("version", &self.version)
+            .field("stopping", &self.stopping)
             .finish_non_exhaustive()
     }
 }
@@ -55,11 +64,13 @@ impl EngineInfo {
             "version": self.version,
             "protocol_version": self.protocol_version,
             "started_ms": self.started_ms,
+            "stopping": self.stopping,
         })
         .to_string()
     }
 
-    /// `None` unless every field is there with its type (and a port that is not 0).
+    /// `None` unless every field is there with its type (and a port that is not 0); `stopping`
+    /// may be missing (false).
     fn from_json(text: &str) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(text).ok()?;
         let port = u16::try_from(v.get("port")?.as_u64()?).ok()?;
@@ -71,6 +82,10 @@ impl EngineInfo {
             version: v.get("version")?.as_str()?.chars().take(64).collect(),
             protocol_version: u32::try_from(v.get("protocol_version")?.as_u64()?).ok()?,
             started_ms: v.get("started_ms")?.as_i64()?,
+            stopping: v
+                .get("stopping")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         })
     }
 }
@@ -117,6 +132,22 @@ impl EngineFile {
         })
     }
 
+    /// Rewrites the file (atomically, as [`EngineFile::write`]) with `stopping: true`, if it is
+    /// still this run's; another run's is left. Idempotent.
+    pub fn mark_stopping(&mut self) -> io::Result<()> {
+        if self.info.stopping || read(&self.path).is_none_or(|on_disk| on_disk != self.info) {
+            return Ok(());
+        }
+        let info = EngineInfo {
+            stopping: true,
+            ..self.info.clone()
+        };
+        persist::write_engine_file(&self.path, info.to_json().as_bytes(), |_| {})
+            .map_err(io::Error::other)?;
+        self.info = info;
+        Ok(())
+    }
+
     /// Removes the file if it is still this run's (same pid and token); another run's is left.
     pub fn remove(self) -> io::Result<()> {
         if read(&self.path).is_some_and(|on_disk| on_disk == self.info) {
@@ -139,6 +170,7 @@ mod tests {
             version: "0.0.1".into(),
             protocol_version: 2,
             started_ms: 1_700_000_000_000,
+            stopping: false,
         }
     }
 
@@ -157,6 +189,7 @@ mod tests {
             "version",
             "protocol_version",
             "started_ms",
+            "stopping",
         ] {
             assert!(v.get(key).is_some(), "{key}");
         }
@@ -217,6 +250,44 @@ mod tests {
         let _file = EngineFile::write(&path, info(3)).unwrap();
         assert!(!stale.exists());
         assert!(fresh.exists(), "may be another start's write in progress");
+    }
+
+    /// The shutdown marks the file stopping in place (the rest kept, still private, still this
+    /// run's to remove); a file another run has written since is left alone. A file without the
+    /// field (an older engine's) reads as not stopping.
+    #[test]
+    fn mark_stopping_rewrites_only_this_runs_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("engine.json");
+        let mut mine = EngineFile::write(&path, info(1)).unwrap();
+        mine.mark_stopping().unwrap();
+        let stopping = EngineInfo {
+            stopping: true,
+            ..info(1)
+        };
+        assert_eq!(read(&path), Some(stopping.clone()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        mine.mark_stopping().unwrap();
+        assert_eq!(read(&path), Some(stopping));
+        mine.remove().unwrap();
+        assert!(!path.exists(), "removed after the mark");
+
+        let mut mine = EngineFile::write(&path, info(1)).unwrap();
+        let _theirs = EngineFile::write(&path, info(2)).unwrap();
+        mine.mark_stopping().unwrap();
+        assert_eq!(read(&path), Some(info(2)));
+
+        fs::write(
+            &path,
+            r#"{"pid":5,"port":6,"token":"t","version":"v","protocol_version":2,"started_ms":0}"#,
+        )
+        .unwrap();
+        assert_eq!(read(&path).map(|i| i.stopping), Some(false));
     }
 
     #[test]

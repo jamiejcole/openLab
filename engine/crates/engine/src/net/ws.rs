@@ -32,6 +32,7 @@ use super::hub::{self, Broadcast, Hub, Kind};
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
 use super::relaunch::{AppProcess, Budget, Next, Relaunch, next};
+use super::stopping::Stopping;
 use super::token::{constant_time_eq, generate_token};
 use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
 
@@ -78,6 +79,9 @@ pub struct ServerConfig {
     /// What to do when an app connection ends without `goodbye` (the UI crashed; M4.9).
     /// `None`: only log it.
     pub relaunch: Option<Relaunch>,
+    /// Set when the engine's shutdown begins (by a `goodbye { shutdown: true }` here, or by the
+    /// host): an app connection that ends after it is not relaunched.
+    pub stopping: Stopping,
 }
 
 impl Default for ServerConfig {
@@ -96,6 +100,7 @@ impl Default for ServerConfig {
             refusal_log_interval: Duration::from_secs(10),
             osc: None,
             relaunch: None,
+            stopping: Stopping::default(),
         }
     }
 }
@@ -490,8 +495,13 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
     let _ = timeout(conn.shared.config.write_timeout, conn.ws.close(None)).await;
 }
 
+/// Logged instead of a relaunch once the engine's shutdown has begun.
+const NOT_RELAUNCHED_STOPPING: &str =
+    "the app's connection closed while the engine shuts down; the app is not relaunched";
+
 /// An app connection ended without `goodbye` (relaunch.rs): log it, and relaunch the app after
-/// the delay unless one is back by then.
+/// the delay unless one is back by then or the engine has begun to shut down (relaunching the
+/// app onto an engine about to exit would only leave it to find the engine gone).
 fn app_lost(shared: &Arc<Shared>) {
     let log = |shared: &Shared, level, message: &str| {
         let _ = shared.inbox.send(Inbox::Log {
@@ -499,6 +509,10 @@ fn app_lost(shared: &Arc<Shared>) {
             message: message.to_owned(),
         });
     };
+    if shared.config.stopping.is_set() {
+        log(shared, LogLevel::Info, NOT_RELAUNCHED_STOPPING);
+        return;
+    }
     log(
         shared,
         LogLevel::Warn,
@@ -517,10 +531,20 @@ fn app_lost(shared: &Arc<Shared>) {
             tokio::time::sleep(relaunch.delay).await;
             let app = lock(&shared.app).clone();
             let alive = app.as_ref().is_some_and(|a| relaunch.alive(a));
-            let stopping = *shared.shutdown.borrow();
-            match next(shared.hub.app_connections() > 0, stopping, alive) {
+            let decision = next(
+                shared.hub.app_connections() > 0,
+                *shared.shutdown.borrow(),
+                shared.config.stopping.is_set(),
+                alive,
+            );
+            match decision {
                 Next::Done => {
                     lock(&shared.relaunches).end();
+                    return;
+                }
+                Next::Stopping => {
+                    lock(&shared.relaunches).end();
+                    log(&shared, LogLevel::Info, NOT_RELAUNCHED_STOPPING);
                     return;
                 }
                 Next::Wait => {
@@ -944,6 +968,8 @@ impl Conn {
             ClientMessage::Goodbye { shutdown } => {
                 self.said_goodbye = true;
                 if shutdown {
+                    // First, so the app connections that end from here on are no crash.
+                    self.shared.config.stopping.begin();
                     // The control loop stops the show and ends (docs/network.md); the process
                     // exit is the host's.
                     let _ = self.to_control(ClientMessage::Goodbye { shutdown: true });

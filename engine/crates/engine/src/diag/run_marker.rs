@@ -117,6 +117,7 @@ impl RunMarker {
         crash_dir: &Path,
         me: &RunInfo,
     ) -> (Option<RunMarker>, Vec<PreviousRun>) {
+        remove_dead_temps(dir);
         let leftovers = take_leftovers(dir)
             .into_iter()
             .map(|info| PreviousRun {
@@ -205,6 +206,64 @@ fn create(dir: &Path, me: &RunInfo) -> io::Result<RunMarker> {
     })
     .map_err(io::Error::other)?;
     Ok(RunMarker { path, file })
+}
+
+/// Removes the temp files of marker writes whose process died mid-write
+/// (`running-<pid>.json.<pid>-<n>.tmp`, [`create`]). `persist::write_engine_file` only cleans
+/// temps of its own marker's name written by another pid, and a marker's temp always carries
+/// its own pid, so that never matches one. A temp is removed when no live process holds its lock
+/// (the writer locks it before writing anything) and it is at least
+/// [`persist::STALE_TMP_AGE`] old (between its creation and its lock it is unlocked for a
+/// moment). Where locks are unsupported the age alone decides. Best effort, at most
+/// [`MAX_LEFTOVERS`] per start; returns how many were removed.
+fn remove_dead_temps(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.take(MAX_SCAN).filter_map(Result::ok) {
+        if removed >= MAX_LEFTOVERS {
+            break;
+        }
+        let name = entry.file_name();
+        let is_marker_temp = name
+            .to_str()
+            .and_then(persist::split_tmp_name)
+            .is_some_and(|(base, _)| base.starts_with(PREFIX) && base.ends_with(SUFFIX));
+        if !is_marker_temp {
+            continue;
+        }
+        let path = entry.path();
+        // As in `take_one`: only a regular file, checked before opening and on the handle.
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let old_enough = meta
+            .modified()
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age >= persist::STALE_TMP_AGE);
+        if !meta.is_file() || !old_enough {
+            continue;
+        }
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+            continue;
+        };
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        if let Err(TryLockError::WouldBlock) = file.try_lock() {
+            // A live process is writing it.
+            continue;
+        }
+        // Closed first: Windows refuses to remove an open, locked file.
+        drop(file);
+        if fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Leftover markers in `dir`: read, then removed. A marker some live process still holds is
@@ -493,18 +552,48 @@ pub(crate) mod tests {
         second.unwrap().finish().unwrap();
     }
 
+    /// A temp file at `dir/name`, last written ten minutes ago.
+    fn aged_temp(dir: &Path, name: &str) -> File {
+        let file = File::create(dir.join(name)).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+            .unwrap();
+        file
+    }
+
+    /// A marker temp a live process holds (an engine writing its marker) is left, as is one too
+    /// young to tell from a write that has not taken its lock yet; a dead one goes.
+    #[test]
+    fn only_marker_temps_nobody_holds_and_old_enough_are_removed() {
+        let _serial = serialize_spawn_and_lock_release();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("Running");
+        fs::create_dir_all(&dir).unwrap();
+        let held = aged_temp(&dir, "running-8.json.8-0.tmp");
+        held.try_lock().unwrap();
+        File::create(dir.join("running-9.json.9-0.tmp")).unwrap();
+        drop(aged_temp(&dir, "running-10.json.10-3.tmp"));
+        // Not a marker's temp: someone else's file is never touched.
+        drop(aged_temp(&dir, "notes.json.10-3.tmp"));
+        assert_eq!(remove_dead_temps(&dir), 1);
+        assert_eq!(
+            markers(&dir),
+            [
+                "notes.json.10-3.tmp",
+                "running-8.json.8-0.tmp",
+                "running-9.json.9-0.tmp"
+            ]
+        );
+        drop(held);
+    }
+
     #[test]
     fn the_marker_appears_complete_under_its_name_and_no_temporary_file_is_left() {
         let root = tempfile::tempdir().unwrap();
         let (dir, crashes) = (root.path().join("Running"), root.path().join("Crashes"));
         fs::create_dir_all(&dir).unwrap();
-        // A temporary file from a start that died while writing is not a marker, and is
-        // cleaned up once it is clearly older than this write.
-        let leftover = File::create(dir.join("running-3.json.99999-0.tmp")).unwrap();
-        leftover
-            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
-            .unwrap();
-        drop(leftover);
+        // The temporary file of a start (pid 7) that died while writing its marker, named as
+        // `create` names it: not a marker, and cleaned up once nobody holds it and it is old.
+        aged_temp(&dir, "running-7.json.7-0.tmp");
         let (marker, previous) = RunMarker::start(&dir, &crashes, &info(3, T0));
         assert!(previous.is_empty(), "{previous:?}");
         let marker = marker.unwrap();
