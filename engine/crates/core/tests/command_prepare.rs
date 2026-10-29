@@ -371,7 +371,7 @@ fn paste_from(source: Option<&str>, media: &str, dest: Option<&str>, style: Path
     let Command::Paste { cues, .. } = prepared(command, dest, style) else {
         panic!("paste");
     };
-    self::media(&cues[0]).to_owned()
+    media(cues.first().unwrap()).to_owned()
 }
 
 #[test]
