@@ -274,17 +274,73 @@ fn an_edit_of_a_level_a_fade_is_moving_ends_the_fade_and_wins() {
     assert_eq!(rig.engine.fade_level(id(1), O0, 1200), None);
 }
 
-/// A mute is a level edit too, and the Fade completes by its normal rules: "stop target when
-/// done" stops the target on the edit sample.
+/// A fade-out-and-stop whose master the operator edits mid-fade: the edit takes the cue over.
+/// The Fade completes (its auto-follow fires) but its "stop target when done" does not apply:
+/// the target plays on at the edited level, now and past the fade's old end. A mute is an edit
+/// too and takes over the same way.
 #[test]
-fn a_mute_during_a_fade_completes_it_and_stops_its_target_when_set() {
-    let mut rig = Rig::new(two_level_fade(true));
+fn an_edit_during_a_fade_out_and_stop_keeps_the_target_playing() {
+    for mute in [false, true] {
+        let mut rig = Rig::new(two_level_fade(true));
+        rig.start(0, 1);
+        rig.start(100, 2);
+        let out = if mute {
+            rig.edit(400, 1, |l| l.outputs[0].mute = true)
+        } else {
+            rig.edit(400, 1, |l| l.master_db = -6.0)
+        };
+        assert!(voice_stops(&out).is_empty(), "mute {mute}: {out:?}");
+        if !mute {
+            assert!(ramps(&out).contains(&edit(400, M, -6.0)));
+            assert_eq!(rig.engine.fade_level(id(1), M, 400), None);
+        }
+        assert_eq!(changes(&out, 2), vec![(CueState::Idle, 400)], "mute {mute}");
+        assert_eq!(
+            changes(&out, 3)[0],
+            (CueState::PreWaiting, 400),
+            "mute {mute}"
+        );
+        assert_eq!(rig.engine.state(id(1)), CueState::Running, "mute {mute}");
+        let later = rig.tick(2000);
+        assert!(voice_stops(&later).is_empty(), "mute {mute}: {later:?}");
+        assert_eq!(rig.engine.state(id(1)), CueState::Running, "mute {mute}");
+    }
+}
+
+/// A group Fade-out-and-stop taken over by an edit of one child: no child is stopped.
+#[test]
+fn an_edit_during_a_group_fade_out_and_stop_stops_no_child() {
+    let group = cue(
+        1,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![sound(4), sound(5)],
+        },
+    );
+    let fade = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: Some(-20.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: true,
+        },
+    );
+    let mut rig = Rig::new(vec![group, fade]);
     rig.start(0, 1);
     rig.start(100, 2);
-    let out = rig.edit(400, 1, |l| l.outputs[0].mute = true);
-    assert_eq!(voice_stops(&out), vec![(id(1), 400, None)]);
+    let out = rig.edit(400, 4, |l| l.master_db = -6.0);
+    assert!(voice_stops(&out).is_empty(), "{out:?}");
     assert_eq!(changes(&out, 2), vec![(CueState::Idle, 400)]);
-    assert_eq!(changes(&out, 3)[0], (CueState::PreWaiting, 400));
+    assert!(voice_stops(&rig.tick(2000)).is_empty());
+    for n in [1, 4, 5] {
+        assert_eq!(rig.engine.state(id(n)), CueState::Running, "cue {n}");
+    }
 }
 
 /// A paused Fade starts nothing: the edited level leaves it (the edit is heard) but the Fade

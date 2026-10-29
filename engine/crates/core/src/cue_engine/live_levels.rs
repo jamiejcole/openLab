@@ -88,8 +88,9 @@ impl CueEngine {
     }
 
     /// Each Fade cue in `fades` (cue, run) that is running and not paused completes now, as on
-    /// its end (auto-follow, "stop target when done"), except that the levels it is still moving
-    /// are held where they are, as for a Fade whose duration was shortened to now.
+    /// its end (its auto-follow fires), except that the levels it is still moving are held where
+    /// they are, as for a Fade whose duration was shortened to now, and its "stop target when
+    /// done" does not apply: an operator nudging a fader during a fade-out must not cut the sound.
     fn complete_fades_now(&mut self, fades: &BTreeSet<(CueId, u64)>, cx: &mut Ctx) {
         let mut any = false;
         for (cue, seq) in fades {
@@ -106,6 +107,8 @@ impl CueEngine {
                 ) = (run.fade.as_mut(), run.phase)
             {
                 fade.retimed = true;
+                // The edit is the operator taking the level over: the target plays on.
+                fade.stop_target = None;
                 run.phase = Phase::Action {
                     start,
                     end: Some(start.max(cx.now)),
