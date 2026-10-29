@@ -99,9 +99,21 @@ impl Workspace {
 
     /// Finds a cue by id in any list, at any group depth.
     pub fn find_cue(&self, id: CueId) -> Option<&Cue> {
+        self.cues().find(|cue| cue.id == id)
+    }
+
+    /// [`Workspace::find_cue`], for changing the cue.
+    pub fn find_cue_mut(&mut self, id: CueId) -> Option<&mut Cue> {
+        let path = crate::tree::find_path(self, id)?;
+        crate::tree::cue_at_mut(self, &path)
+    }
+
+    /// Every cue of every list, lists in order, each list depth-first
+    /// ([`crate::descendants`]).
+    pub fn cues(&self) -> impl Iterator<Item = &Cue> {
         self.cue_lists
             .iter()
-            .find_map(|list| find_in(&list.cues, id))
+            .flat_map(|list| crate::tree::descendants(&list.cues))
     }
 
     /// Every cue whose hotkey is `hotkey` (same key and modifiers), in workspace order (lists in
@@ -115,29 +127,13 @@ impl Workspace {
         if self.settings.hotkeys.action_of(hotkey).is_some() {
             return out;
         }
-        for list in &self.cue_lists {
-            let mut stack: Vec<std::slice::Iter<'_, Cue>> = vec![list.cues.iter()];
-            while let Some(level) = stack.last_mut() {
-                let Some(cue) = level.next() else {
-                    stack.pop();
-                    continue;
-                };
-                if cue.triggers.hotkey.as_ref() == Some(hotkey) {
-                    out.push(cue.id);
-                }
-                stack.push(cue.children().iter());
-            }
-        }
+        out.extend(
+            self.cues()
+                .filter(|cue| cue.triggers.hotkey.as_ref() == Some(hotkey))
+                .map(|cue| cue.id),
+        );
         out
     }
-}
-
-fn find_in(cues: &[Cue], id: CueId) -> Option<&Cue> {
-    cues.iter().find_map(|cue| {
-        (cue.id == id)
-            .then_some(cue)
-            .or_else(|| find_in(cue.children(), id))
-    })
 }
 
 /// A cue list with its own playhead (CL-01).

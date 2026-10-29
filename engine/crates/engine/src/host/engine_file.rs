@@ -130,7 +130,6 @@ impl EngineFile {
 mod tests {
     use super::*;
     use crate::diag::run_marker::{RunInfo, RunMarker};
-    use std::fs::OpenOptions;
 
     fn info(pid: u32) -> EngineInfo {
         EngineInfo {
@@ -277,7 +276,7 @@ mod tests {
             let out = rx.recv_timeout(std::time::Duration::from_secs(20));
             if out.is_err() {
                 // Give the blocked open its writer so the thread can end.
-                let _ = OpenOptions::new().write(true).open(&fifo);
+                let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
                 panic!("reading a FIFO blocked: {}", path.display());
             }
             assert_eq!(out, Ok(None), "{}", path.display());
