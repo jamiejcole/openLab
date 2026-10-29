@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 /// Version a peer sends in `hello` and the engine answers in `welcome`. The engine accepts a
 /// client only on an equal version.
 /// 2: connections bind to one of several open workspaces (M4.15f).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: the key map lost `playhead_next` and `playhead_previous` (show-file format 6).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Longest frame the engine reads from a client. Commands and requests are small; a big paste is
 /// well under this. Decoding buffers a frame several times over, so the limit bounds the memory

@@ -1,6 +1,6 @@
 {
   "type": "welcome",
-  "protocol_version": 2,
+  "protocol_version": 3,
   "doc": 3,
   "snapshot": {
     "revision": 7,
