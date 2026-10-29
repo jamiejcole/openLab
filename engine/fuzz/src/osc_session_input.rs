@@ -229,7 +229,9 @@ pub fn run(data: &[u8]) -> Result<(), String> {
                         .iter()
                         .any(|d| sealed(d) && body["workspace_id"] == upper(d.show.workspace_id()))
                 {
-                    return Err(format!("an ok reply for a doc without its passcode: {text}"));
+                    return Err(format!(
+                        "an ok reply for a doc without its passcode: {text}"
+                    ));
                 }
             }
             Ok(())
@@ -305,9 +307,8 @@ pub fn run(data: &[u8]) -> Result<(), String> {
         for &doc in &closed_docs {
             if !osc.update_subscribers_in(doc, now).is_empty()
                 || osc.known_ips_in(doc) != 0
-                || (0..PEERS).any(|n| {
-                    osc.is_connected_in(doc, udp(n)) || osc.is_connected_in(doc, tcp(n))
-                })
+                || (0..PEERS)
+                    .any(|n| osc.is_connected_in(doc, udp(n)) || osc.is_connected_in(doc, tcp(n)))
             {
                 return Err("a closed doc kept a session".into());
             }
