@@ -281,14 +281,14 @@ final class EngineSupervisor {
         awaitingStop = nil
         guard !quitting, !session.isShuttingDown else { return }
         engineLog.notice("engine pid \(pid, privacy: .public) has exited")
-        if let info = try? processes.readInfo().get() {
-            if processes.isEngine(info.pid) {
-                // Another engine is up (started by someone else): attach to it, or wait for it too.
-                if info.stopping { awaitStop(info.pid) }
-                return
-            }
-            // Left behind: the exit was forced (a hung disk), so its autosaves are worth offering.
-            recoveryPending = true
+        // Its shutdown wrote the recovery files of its unsaved workspaces, or was forced out at its
+        // deadline before it could (a forced exit removes engine.json too, so the file says
+        // nothing): offer the autosaves either way. With none, the offer shows nothing (#388).
+        recoveryPending = true
+        if let info = try? processes.readInfo().get(), processes.isEngine(info.pid) {
+            // Another engine is up (started by someone else): attach to it, or wait for it too.
+            if info.stopping { awaitStop(info.pid) }
+            return
         }
         if let spawned, spawned != pid, processes.isEngine(spawned) { return }
         spawnIfAllowed()

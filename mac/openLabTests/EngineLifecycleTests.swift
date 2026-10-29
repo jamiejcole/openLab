@@ -224,7 +224,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(processes.spawns, 1)
         XCTAssertTrue(processes.signals.isEmpty)
         XCTAssertTrue(alarms.isEmpty)
-        XCTAssertFalse(supervisor.recoveryPending, "it exited cleanly")
+        XCTAssertTrue(supervisor.recoveryPending, "its shutdown autosaved whatever was unsaved")
     }
 
     /// One still stopping past its own exit deadline is reported, still never signalled, and
@@ -244,8 +244,10 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.stillStopping"))
         XCTAssertTrue(processes.signals.isEmpty)
         XCTAssertEqual(processes.spawns, 0)
-        // It leaves its file behind (a forced exit on a hung disk): stale, so its autosaves count.
+        // It is forced out at its deadline, which removes its file too: its final writes may not
+        // have finished, so the autosaves are still offered (#388).
         processes.alive = []
+        processes.info = .failure(.missing)
         let ok = await pump { self.session.connectionState == .connected }
         XCTAssertTrue(ok)
         XCTAssertEqual(processes.spawns, 1)
@@ -255,8 +257,8 @@ final class EngineSupervisorTests: XCTestCase {
         _ = controller
     }
 
-    /// The engine this app was connected to began its shutdown and left its file (forced exit on
-    /// a hung disk): it stopped, it did not crash.
+    /// The engine this app was connected to began its shutdown and left its file (killed, or its
+    /// removal blocked on a hung disk): it stopped, it did not crash.
     func testAnEngineThatLeftAStoppingFileStoppedRatherThanCrashed() async throws {
         processes.info = .success(engine.info)
         processes.alive = [engine.pid]
