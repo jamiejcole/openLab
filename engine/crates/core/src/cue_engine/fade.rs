@@ -263,7 +263,7 @@ impl CueEngine {
         let (
             Some(fade),
             Phase::Action {
-                start,
+                start: action_start,
                 end: Some(end),
             },
         ) = (run.fade.clone(), run.phase)
@@ -271,9 +271,10 @@ impl CueEngine {
             return;
         };
         let seq = run.seq;
+        let offset = run.action_offset;
         // The action's length (as `begin_action` timed it): a re-timed fade goes to where its
         // planned curve is at its new end, not to the fade's levels.
-        let length = end.saturating_sub(start).saturating_add(run.action_offset);
+        let length = end.saturating_sub(action_start).saturating_add(offset);
         let rate = self.config.sample_rate().get();
         let mut moving = BTreeSet::new();
         for r in &fade.ramps {
@@ -296,7 +297,12 @@ impl CueEngine {
                 .max(after_restart(level.start, cx.horizon))
                 .max(committed);
             target.committed = start;
-            let frames = end.saturating_sub(start);
+            // Each ramp keeps its planned rate: it ends where its plan ends (moved on by the
+            // pauses, as the action start is), or with the action if that is earlier (a fade
+            // shortened while it ran). Unedited, the two are the same sample.
+            let planned =
+                action_start.saturating_add(r.lead.saturating_add(r.frames).saturating_sub(offset));
+            let frames = end.min(planned).saturating_sub(start);
             let voice_start = match target.voice {
                 Voice::Started { first, .. } => first,
                 Voice::None | Voice::Loaded => 0,

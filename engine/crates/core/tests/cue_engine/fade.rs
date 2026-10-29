@@ -842,3 +842,31 @@ fn a_zero_length_fade_on_the_voices_start_sample_is_immediate() {
     assert_eq!(ramps(&tick), vec![ramp(1, 1000, M, db_to_gain(-6.0), 0)]);
     assert_eq!(rig.level(1, M, 1000), Some(db_to_gain(-6.0)));
 }
+
+/// A lengthened Fade keeps its rate across a pause too: lengthened while paused, or lengthened
+/// while running and then paused, the resume ramps to the Fade's level over what its own curve
+/// had left (1 s of the 2 s fade), not over the longer action; the cue completes on the new end.
+#[test]
+fn a_lengthened_fade_resumed_after_a_pause_keeps_its_rate() {
+    for edit_while_paused in [true, false] {
+        let case = format!("edited while paused {edit_while_paused}");
+        let mut rig = running_fade(false);
+        if !edit_while_paused {
+            set_duration(&mut rig, 2, 4.0);
+            rig.tick(1000);
+        }
+        let paused = rig.at(1500, Input::Pause { cue: id(2) });
+        assert_eq!(ramps(&paused), vec![ramp(1, 1500, M, 0.5, 0)], "{case}");
+        if edit_while_paused {
+            set_duration(&mut rig, 2, 4.0);
+            rig.tick(1600);
+        }
+        let resumed = rig.at(3000, Input::Resume { cue: id(2) });
+        assert_eq!(ramps(&resumed), vec![ramp(1, 3000, M, 0.0, 1000)], "{case}");
+        assert_eq!(rig.engine.fade_level(id(1), M, 4000), Some(0.0), "{case}");
+        assert!(changes(&rig.tick(5999), 3).is_empty(), "{case}");
+        let end = rig.tick(6000);
+        assert!(ramps(&end).is_empty(), "{case}: {end:?}");
+        assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 6000), "{case}");
+    }
+}
