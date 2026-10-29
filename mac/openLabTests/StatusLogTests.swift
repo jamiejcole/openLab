@@ -429,6 +429,44 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(log.note.stringValue, String(format: loc("log.dropped"), 7))
     }
 
+    /// App-made notes (relink results, key warnings, the edits-lost line) are local rows: shown
+    /// where they happened, kept over a tail re-read and a new run; the engine's own `log`
+    /// notices are not (they are records, shown from `log_entry`).
+    func testAppNotesShowAndSurviveARereadAndANewRun() async throws {
+        let rig = try Rig()
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        let log = LogWindowController(store: rig.store)
+        log.showWindow(nil)
+        defer { log.close() }
+        let lost = "Edits lost: the workspace was reopened"
+        rig.store.receive(.log(.warn, lost))  // the app's own note
+        XCTAssertEqual(log.rows.map(\.message), [lost])
+        rig.engine.push(#"{"type":"log","level":"warn","message":"engine notice"}"#)
+        await settle()
+        XCTAssertEqual(log.rows.map(\.message), [lost], "an engine notice is a record, not a note")
+        pushEntry(rig, 1, "record 1")
+        await assertEventually { log.rows.count == 2 }
+        rig.store.receive(.log(.info, "after record 1"))
+        XCTAssertEqual(log.rows.map(\.message), [lost, "record 1", "after record 1"])
+        // A full tail re-read replaces the records, not the notes.
+        rig.engine.logTailEntries = [tailEntry(1)]
+        rig.engine.logTailSeq = 1
+        await log.refresh()
+        XCTAssertEqual(log.rows.map(\.message), [lost, "record 1", "after record 1"])
+        // A note made before the window existed is there too.
+        let late = LogWindowController(store: rig.store)
+        XCTAssertTrue(late.rows.map(\.message).contains(lost))
+        // A new run drops the old records and keeps the notes.
+        guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
+            return XCTFail("welcome fixture")
+        }
+        rig.engine.logTailEntries = []
+        rig.engine.logTailSeq = 0
+        rig.store.receive(.welcome(protocolVersion: 1, snapshot: snapshot))
+        XCTAssertEqual(log.rows.map(\.message), [lost, "after record 1"])
+    }
+
     /// The log window must never take the keys from the workspace (GO, transport keys).
     func testLogWindowCanNeverBecomeKey() throws {
         let log = LogWindowController(store: try Rig().store)

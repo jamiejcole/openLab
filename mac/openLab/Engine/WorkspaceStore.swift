@@ -62,6 +62,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     let logGaps = PassthroughSubject<UInt64, Never>()
     /// A new connection (`welcome`): the engine may be a new run whose records count from 1 again.
     let logRuns = PassthroughSubject<Void, Never>()
+    /// Notes the app itself made (`receive(.log)` from the app, not from the engine): relink
+    /// results, key warnings, lifecycle warnings. They have no record number, so a log window
+    /// shows them as local rows; `logNotes` announces each, `appNotes` holds the recent ones.
+    let logNotes = PassthroughSubject<LogEntry, Never>()
+    private(set) var appNotes: [LogEntry] = []
+    private var applyingEngineMessage = false
     /// Every `log_entry` heard, in arrival order: an open log window appends those above the tail's `seq`.
     let logPushes = PassthroughSubject<(seq: UInt64, entry: ShowLogEntry), Never>()
     @Published private(set) var connectionState: ConnectionState = .idle
@@ -218,7 +224,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     // MARK: Applying server messages
 
     func engineClient(_ client: EngineClient, didReceive message: ServerMessage) -> ApplyOutcome {
-        receive(message)
+        applyingEngineMessage = true
+        defer { applyingEngineMessage = false }
+        return receive(message)
     }
 
     /// Applies one server message. `.gap` means the caller must request a snapshot.
@@ -259,6 +267,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .log(let level, let text):
             logCount += 1
             logEntries.append(LogEntry(level: level, message: text))
+            if !applyingEngineMessage {
+                let note = LogEntry(level: level, message: text)
+                appNotes.append(note)
+                if appNotes.count > Self.maxLogEntries { appNotes.removeFirst(appNotes.count - Self.maxLogEntries) }
+                logNotes.send(note)
+            }
             if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(logEntries.count - Self.maxLogEntries) }
         case .status(let s):
             status = s

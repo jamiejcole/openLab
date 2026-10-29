@@ -59,10 +59,14 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
     private var gapSub: AnyCancellable?
     private var pushSub: AnyCancellable?
     private var runSub: AnyCancellable?
+    private var noteSub: AnyCancellable?
     /// The engine's records held, oldest first, by record number (`seq`; 0: a tail from an engine
     /// that numbers none). Only `log_tail` and `log_entry` feed it: `log` notices are the same
     /// records again (docs/protocol.md "Show log entries and status").
     private var records: [(seq: UInt64, row: Row)] = []
+    /// Notes the app made (no record number): `after` is the newest record number held when each
+    /// was made, so it shows where it happened and survives a re-read or a new run.
+    private var notes: [(after: UInt64, row: Row)] = []
     /// Every record up to this number is in `records` (or was dropped from the ring): a gap
     /// re-read starts above it. 0: nothing known, the next read is the whole tail.
     private var contiguous: UInt64 = 0
@@ -97,6 +101,11 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         super.init(window: window)
         window.contentView = buildContent()
         rebuild()
+        notes = store.appNotes.map { (0, Row(time: "", level: $0.level, kind: "", message: $0.message)) }
+        rebuild()
+        noteSub = store.logNotes.sink { [weak self] note in
+            MainActor.assumeIsolated { self?.addNote(note) }
+        }
         pushSub = store.logPushes.sink { [weak self] push in
             MainActor.assumeIsolated { self?.append(seq: push.seq, entry: push.entry) }
         }
@@ -123,6 +132,8 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         epoch += 1
         records = []
         contiguous = 0
+        // The old run's numbers mean nothing now; the notes stay, before the new run's records.
+        notes = notes.map { (0, $0.row) }
         dropped = 0
         tailFailed = false
         rebuild()
@@ -221,8 +232,25 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         rebuild()
     }
 
+    private func addNote(_ note: LogEntry) {
+        notes.append((records.last?.seq ?? 0, Row(time: "", level: note.level, kind: "", message: note.message)))
+        if notes.count > Self.maxRows { notes.removeFirst(notes.count - Self.maxRows) }
+        rebuild()
+    }
+
     private func rebuild() {
-        rows = records.map(\.row)
+        // A note goes before the first record made after it.
+        var merged: [Row] = []
+        var next = 0
+        for r in records {
+            while next < notes.count, notes[next].after < r.seq {
+                merged.append(notes[next].row)
+                next += 1
+            }
+            merged.append(r.row)
+        }
+        merged += notes[next...].map(\.row)
+        rows = Array(merged.suffix(Self.maxRows))
         let wasAtBottom = isAtBottom
         visible = rows.filter { $0.level.severity >= minimumLevel.severity }
         guard isViewLoaded else { return }
