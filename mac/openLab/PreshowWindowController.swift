@@ -28,10 +28,11 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     init(store: WorkspaceStore) {
         self.store = store
-        // A floating panel stays above the workspace window while its cues are revealed.
+        // A floating panel stays above the workspace window while its cues are revealed. It cannot
+        // be minimised: restoring it from the Dock could make it key.
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow], backing: .buffered,
+            styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered,
             defer: false)
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = true
@@ -246,9 +247,10 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
     }
 }
 
-/// A list that does not need its panel to be key. An NSTableView does whenever it accepts first
-/// responder (with keyboard navigation turned on in System Settings), so a click on its empty area
-/// made the panel key and GO stopped reaching the workspace window. (A panel that
+/// A list that does not need its panel to be key. A plain NSTableView can report that it does
+/// (its answer follows AppKit state such as first-responder acceptance, so it cannot be relied
+/// on), and then a click on its empty area made the panel key and GO stopped reaching the
+/// workspace window. (A panel that
 /// can never become key is not used: it drops out of the accessibility window list.)
 final class NonKeyTableView: NSTableView {
     override var needsPanelToBecomeKey: Bool { false }

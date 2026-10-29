@@ -256,9 +256,9 @@ final class PreshowTests: XCTestCase {
         let views = walk(try XCTUnwrap(panel.contentView))
         XCTAssertTrue(views.contains { $0 === pc.table })
         for v in views { XCTAssertFalse(v.needsPanelToBecomeKey, "\(type(of: v))") }
-        // A plain NSTableView needs a key panel only while it accepts first responder, which
-        // follows the Mac's keyboard-navigation setting: off on the test machine, so the walk
-        // alone would pass with a plain table. The list must be the subclass that never needs it.
+        // A plain NSTableView's answer follows AppKit state, so the walk alone can pass with one
+        // here and still fail on a show machine: the list must be the subclass that never needs it.
+        XCTAssertFalse(panel.styleMask.contains(.miniaturizable), "restoring from the Dock could make it key")
         XCTAssertTrue(pc.table is NonKeyTableView)
     }
 
