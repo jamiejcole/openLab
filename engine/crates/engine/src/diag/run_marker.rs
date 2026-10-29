@@ -320,12 +320,13 @@ fn crash_reports_of(crash_dir: &Path, info: &RunInfo) -> Vec<String> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Tests that drop a marker and then expect its lock to be free, and the test that spawns a
-    /// child process, hold this. A child created by `fork`/`posix_spawn` shares every open file
+    /// Tests that drop a marker or the instance lock and then expect its lock to be free, and
+    /// every test in this crate that spawns a child process (`mkfifo`, `open`), hold this. A child created by `fork`/`posix_spawn` shares every open file
     /// description of the process until its `exec` closes the close-on-exec ones, so a spawn
     /// that overlaps a dropped marker keeps the `flock` held for a moment and the next start sees
     /// `WouldBlock` (seen on CI macOS arm64; ~1% of overlaps when reproduced). The engine itself
-    /// spawns no children, so this is only a test-process hazard.
+    /// spawns no child while it relies on a lock being released (its only child, the app relaunch,
+    /// runs while this run's marker is held anyway), so this is only a test-process hazard.
     pub(crate) fn serialize_spawn_and_lock_release() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock()

@@ -29,6 +29,8 @@ The engine holds up to 8 open workspaces ("docs", ARCHITECTURE section 6). A doc
 
 A client that sees a gap in `revision` or in `seq` (section 4) sends `request: snapshot` and replaces its state.
 
+The macOS client (`EngineClient`) gives each live message (`transport`, `command`, `undo`, `redo`, `panic`, `hotkey`, and the requests the control thread answers at once) 10 s for its `result`; past that the call fails with a timeout (beep and show-log line), and two timeouts in a row with no `result` between close the connection, which then reconnects. Document requests (`new`, `open`, `open_recovery`, `scan_recovery`, `save`, `save_as`, `relink`, `close`) have no client deadline: the engine bounds its reads, and the app bounds saves and closes in its own flows.
+
 `PROTOCOL_VERSION` is **2** since M4.15f: `welcome` has two shapes, `new`/`open`/`open_recovery` open another doc instead of replacing the one open and lose `discard_changes`, and `revert` is gone (QLab 5 has none). An engine refuses a client of protocol 1 at `hello`.
 
 ## 3. Client -> engine
@@ -120,7 +122,7 @@ Saving: `save` and `save_as` write on a separate thread. The `result` comes when
 | `runtime` | `seq`, `changes` | cue state changes, event-driven; applied in order |
 | `progress` | `items [{cue, elapsed, remaining}]`, `waits? [{cue, wait, elapsed, remaining}]` | seconds; at most 30 Hz, only while a cue runs or waits. Below; fixtures `server/progress.json`, `server/progress_waits.json` |
 | `meters` | `outputs [{patch, peaks}]`, `cues [{cue, peaks}]` | linear peak per channel since the previous message; at most 30 Hz, only while audio plays |
-| `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | engine notices as they happen, with no time stamp; the timed, structured record of everything (GO, cue starts and stops, triggers, document events) is the show log, fetched with `log_tail` (below) |
+| `log` | `level` (`error`, `warn`, `info`, `debug`), `message` | engine notices as they happen, with no time stamp; lossy like `meters` (a client whose queue is half full misses some); the timed, structured record of everything (GO, cue starts and stops, triggers, document events) is the show log, fetched with `log_tail` (below) |
 | `log_entry` | `seq`, `entry` (a show-log entry, below) | each new show-log record as the engine makes it (M4.7c), for a live log view; lossy and rate-limited, below |
 | `status` | `status {cpu_percent, engine_load, xruns, disk, device, log_dropped, log_seq, network_output_disabled}` | system health (DX-03), about once a second and early (not faster than every 250 ms) when `xruns`, the disk's health, the device's state or `network_output_disabled` change; droppable like `meters`. Below |
 | `workspaces` | `workspaces [{doc, workspace_id, name, path, dirty}]` | to app connections only: the open docs in open order; `path` null for a doc never saved; **replaces** the previous list. Sent when a doc opens or closes and when one's name, path or unsaved state changes (checked once per control-loop wake) |
@@ -218,3 +220,5 @@ The `model_changed` for revision N is always sent before the `result` that repor
 `protocol_version_mismatch`, `bad_token`, `bad_request` (unreadable frame), `unknown_message`, `command_refused`, `not_found`, `no_workspace` (no doc to act on: none open, a closed doc, an app connection; or a save with no path yet), `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`, `already_open` (M4.15f: `open` of a show that is open).
 
 M4.6a additions (`PROTOCOL_VERSION` stayed 1 (it was 1 until M4.15f)): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).
+
+The `set_workspace_setting` `hotkeys` value must list all 11 keys (`null` = no key) and no other field; a partial or misspelt map is `bad_request` (docs/commands.md).

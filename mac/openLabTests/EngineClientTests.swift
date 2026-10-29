@@ -88,6 +88,61 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(later, .failure(.notConnected))
     }
 
+    /// M15: an engine that keeps its socket open but stops answering must not leave GO waiting
+    /// for ever. A live request fails with `timeout`; a document request (a slow save) has no
+    /// deadline; two timeouts in a row close the connection, which then reconnects.
+    func testALiveRequestTimesOutAndRepeatedTimeoutsReconnect() async throws {
+        let rig = try Rig()
+        _ = await rig.connect()
+        rig.engine.holdResults = true
+        let go = Task { await rig.store.go(list: "00000000-0000-0000-0000-000000000001") }
+        let save = Task { await rig.store.save() }
+        await assertEventually { await rig.requestScheduler.waitingCount == 1 }  // GO only
+        await rig.requestScheduler.fire()
+        let first = await go.value
+        XCTAssertEqual(first, .failure(.timeout))
+        XCTAssertEqual(rig.client.state, .connected, "one timeout is not a dead engine")
+
+        let stop = Task { await rig.store.stopAll() }
+        await assertEventually { await rig.requestScheduler.waitingCount == 1 }
+        await rig.requestScheduler.fire()
+        let second = await stop.value
+        XCTAssertEqual(second, .failure(.timeout))
+        // The second in a row closes the connection: the save in flight fails and it reconnects.
+        let saved = await save.value
+        XCTAssertEqual(saved, .failure(.disconnected))
+        await assertEventually { rig.client.state != .connected }
+        rig.engine.holdResults = false
+        await assertEventually {
+            await rig.scheduler.fire()
+            return rig.client.state == .connected
+        }
+    }
+
+    /// A result in between resets the count: a slow engine is not a dead one.
+    func testAResultBetweenTimeoutsKeepsTheConnection() async throws {
+        let rig = try Rig()
+        _ = await rig.connect()
+        rig.engine.holdResults = true
+        let go = Task { await rig.store.stopAll() }
+        await assertEventually { await rig.requestScheduler.waitingCount == 1 }
+        await rig.requestScheduler.fire()
+        _ = await go.value
+        rig.engine.releaseResults()  // the late answer
+        rig.engine.holdResults = false
+        let undo = await rig.store.undo()
+        if case .failure(let e) = undo { XCTFail("\(e)") }
+        rig.engine.holdResults = true
+        let again = Task { await rig.store.stopAll() }
+        // The answered undo's timer is cancelled but still parked in the manual scheduler.
+        await assertEventually { await rig.requestScheduler.waitingCount == 2 }
+        await rig.requestScheduler.fire()
+        let result = await again.value
+        XCTAssertEqual(result, .failure(.timeout))
+        await settle()
+        XCTAssertEqual(rig.client.state, .connected)
+    }
+
     func testAtMostOneSnapshotRequestIsOutstanding() async throws {
         let rig = try Rig()
         _ = await rig.connect()

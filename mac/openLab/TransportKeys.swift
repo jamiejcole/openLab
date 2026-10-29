@@ -120,23 +120,30 @@ struct TransportKeys: Equatable {
                     chord = nil
                 } else {
                     chord = KeyChord(hotkey: value)
-                    if chord == nil { warnings.append("hotkeys.\(field): key not supported, no key bound") }
+                    if chord == nil {
+                        warnings.append(
+                            String(
+                                format: loc("hotkeys.warn.unusable"), loc(command.titleKey),
+                                loc("hotkeys.reason.unsupported")))
+                    }
                 }
             }
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
             if command == .playheadNext || command == .playheadPrevious, Self.isBareArrow(chord) { continue }
             if let error = Self.validate(chord, for: command, in: chords) {
-                warnings.append("hotkeys.\(field): \(Self.describe(error)), no key bound")
+                warnings.append(
+                    String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
                 continue
             }
             chords[command] = chord
         }
         for (command, chord) in Self.fixed {
             if cueChords.contains(chord) {
-                warnings.append("\(command.rawValue) key: yields to a cue hotkey, no key bound")
+                warnings.append(String(format: loc("hotkeys.warn.yields"), loc(command.titleKey), chord.display))
             } else if let error = Self.validate(chord, for: command, in: chords) {
-                warnings.append("\(command.rawValue) key: \(Self.describe(error)), no key bound")
+                warnings.append(
+                    String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
             } else {
                 chords[command] = chord
             }
@@ -167,11 +174,11 @@ struct TransportKeys: Equatable {
 
     private static func describe(_ error: KeyBindError) -> String {
         switch error {
-        case .reserved: return "reserved key"
-        case .duplicate(let other): return "same key as \(other.rawValue)"
-        case .cueHotkey: return "same key as a cue hotkey"
-        case .menuKey: return "same key as a menu command"
-        case .unsupported: return "unsupported key"
+        case .reserved: return loc("hotkeys.reason.reserved")
+        case .duplicate(let other): return String(format: loc("hotkeys.reason.duplicate"), loc(other.titleKey))
+        case .cueHotkey: return loc("hotkeys.reason.cueHotkey")
+        case .menuKey: return loc("hotkeys.reason.menuKey")
+        case .unsupported: return loc("hotkeys.reason.unsupported")
         }
     }
 }

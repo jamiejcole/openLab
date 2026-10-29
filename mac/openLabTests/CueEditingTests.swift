@@ -31,7 +31,15 @@ final class CueEditingTests: XCTestCase {
         var commands: [JSONValue] {
             messages.compactMap { if case .command(_, let c, _) = $0 { return c.json } else { return nil } }
         }
-        var edits: Int { messages.filter { if case .transport = $0 { return false } else { return true } }.count }
+        /// Everything but transport and the Show Mode switch itself.
+        var edits: Int {
+            messages.filter {
+                switch $0 {
+                case .transport, .request(_, .setShowMode): return false
+                default: return true
+                }
+            }.count
+        }
     }
 
     /// What goes over the wire: encoded and parsed back, so 1.0 and 1 compare as the engine sees them.

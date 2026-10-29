@@ -290,12 +290,13 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertTrue(rig.engine.received.contains { $0.isLogTail(max: 50) })
         // The fixture's result decodes to entries.
         guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_log_tail")),
-            case .logTail(let entries, let dropped)? = ok.data
+            case .logTail(let entries, let dropped, let seq)? = ok.data
         else { return XCTFail("fixture") }
         XCTAssertEqual(entries.count, 9)
         XCTAssertEqual(entries.first?.kind, .go)
         XCTAssertNil(entries[7].showTime)
         XCTAssertEqual(dropped, 2)
+        XCTAssertEqual(seq, 1009, "the newest record number is kept (gap detection)")
     }
 
     func testPreshowCheckReturnsTheReportAndFixturesDecode() async throws {

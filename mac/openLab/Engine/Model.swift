@@ -134,10 +134,22 @@ struct DocumentState: Hashable, Sendable, Decodable {
     var dirty: Bool
     var canUndo: Bool
     var canRedo: Bool
+    /// The engine holds this workspace in Show Mode (SM-07 sleep hold); absent means false.
+    var showMode: Bool
     enum CodingKeys: String, CodingKey {
         case path, dirty
         case canUndo = "can_undo"
         case canRedo = "can_redo"
+        case showMode = "show_mode"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+        dirty = try c.decode(Bool.self, forKey: .dirty)
+        canUndo = try c.decode(Bool.self, forKey: .canUndo)
+        canRedo = try c.decode(Bool.self, forKey: .canRedo)
+        showMode = try c.decodeIfPresent(Bool.self, forKey: .showMode) ?? false
     }
 }
 

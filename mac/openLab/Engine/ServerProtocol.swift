@@ -31,6 +31,15 @@ enum WireCueState: String, Hashable, Sendable, Codable, CaseIterable {
     case idle, loaded, running, paused, fading, stopping, broken
     case preWaiting = "pre_waiting"
     case postWaiting = "post_waiting"
+
+    /// A live cue: the Active Cues panel lists it and closing or quitting asks first. QLab shows a
+    /// cue as active while it plays or is paused; waiting and stopping cues are live too.
+    var isActive: Bool {
+        switch self {
+        case .running, .paused, .fading, .preWaiting, .postWaiting, .stopping: return true
+        case .idle, .loaded, .broken: return false
+        }
+    }
 }
 
 enum WireBrokenReason: String, Hashable, Sendable, Codable, CaseIterable {
@@ -398,7 +407,8 @@ enum ResultData: Sendable, Equatable, Decodable {
         relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
-    case logTail(entries: [ShowLogEntry], dropped: UInt64)
+    /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
+    case logTail(entries: [ShowLogEntry], dropped: UInt64, seq: UInt64)
     case preshowCheck(PreshowReport)
     /// The doc a `new` / `open` / `open_recovery` opened.
     case opened(doc: ModelID)
@@ -426,7 +436,8 @@ enum ResultData: Sendable, Equatable, Decodable {
         case "log_tail":
             self = .logTail(
                 entries: try c.decode([ShowLogEntry].self, forKey: "entries"),
-                dropped: try c.decode(UInt64.self, forKey: "dropped"))
+                dropped: try c.decode(UInt64.self, forKey: "dropped"),
+                seq: try c.decodeIfPresent(UInt64.self, forKey: "seq") ?? 0)
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
         case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
