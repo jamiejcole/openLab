@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class LevelsUITests: XCTestCase {
     private func open(_ tab: String, in app: XCUIApplication) {
-        tabButton(tab, in: app, within: "inspector-tabs").click()
+        tabButton(tab, in: app).click()
     }
 
     /// Clicks the matrix cell at `row` (0 is the cue outputs' row) and `column` (-1 is the master's).
