@@ -416,6 +416,22 @@ impl Rig {
         self.engine.playhead(list())
     }
 
+    pub fn release(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::TriggerReleased { cue: id(n) })
+    }
+
+    pub fn preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::Preview { cue: id(n) })
+    }
+
+    pub fn stop_preview(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        self.at(now, Input::StopPreview { cue: Some(id(n)) })
+    }
+
+    pub fn problems(&self, n: u128) -> Vec<CueProblem> {
+        self.engine.problems(id(n)).to_vec()
+    }
+
     pub fn level(&self, n: u128, param: LevelParam, at: SampleTime) -> Option<f32> {
         self.engine.fade_level(id(n), param, at)
     }
