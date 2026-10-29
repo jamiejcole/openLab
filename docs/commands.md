@@ -1,6 +1,6 @@
 # Editing commands
 
-Every change to a workspace is a `Command` (`openlab-core`, `command.rs`, and `command_model.rs` for everything but the cue tree): cues, workspace settings, output and network patches, cue lists (ED-07). The UI sends them, OSC edits become them, and mirroring (RED-01) will replay them. Commands are serialisable (`serde`, internally tagged by `type`) and travel inside the UI protocol's `command` message ([protocol.md](protocol.md)).
+Every change to a workspace is a `Command` (`openlab-core`, `command.rs` with `command/` (structure, properties, numbers), and `command_model.rs` for everything but the cue tree): cues, workspace settings, output and network patches, cue lists (ED-07). The UI sends them, OSC edits become them, and mirroring (RED-01) will replay them. Commands are serialisable (`serde`, internally tagged by `type`) and travel inside the UI protocol's `command` message ([protocol.md](protocol.md)).
 
 ```rust
 let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>

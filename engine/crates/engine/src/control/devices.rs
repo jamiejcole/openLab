@@ -11,7 +11,7 @@
 //! thread never calls the device layer. [`Device`] is the control thread's side: it decides
 //! when to list, close and reopen, and watches for jobs that never finish, from a wall clock
 //! that tests inject ([`WallClock`]). What the show does when the device goes (stopping the cues
-//! that play on it, M4.2g) is the control loop's (`control/mod.rs`).
+//! that play on it, M4.2g) is the control loop's (`control/device_events.rs`).
 
 use std::collections::VecDeque;
 use std::fmt;

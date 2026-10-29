@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use super::*;
-use crate::cue::{CueColor, FadeCurve, FadeLevels, SecondTrigger, Triggers};
+use crate::cue::{ContinueMode, CueColor, FadeCurve, FadeLevels, SecondTrigger, Triggers};
 use crate::model::{CueList, WorkspaceId, WorkspaceSettings};
 
 fn id(n: u128) -> CueId {
