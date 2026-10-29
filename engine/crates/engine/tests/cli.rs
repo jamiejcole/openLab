@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use std::io::{BufRead as _, BufReader};
 use std::process::{Child, Command, ExitStatus, Stdio};

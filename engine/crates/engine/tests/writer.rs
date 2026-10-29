@@ -630,7 +630,11 @@ fn every_open_show_stuck_still_leaves_a_thread_for_the_others() {
         let reply = writer.save(w, p.unwrap(), 1, 20, 1);
         assert!(reply.try_recv().is_err(), "save {n} refused at once");
         entered.recv_timeout(hang_guard).unwrap();
-        assert!(writer.check_stalled(t0 + TIMEOUT * clock, TIMEOUT).is_empty());
+        assert!(
+            writer
+                .check_stalled(t0 + TIMEOUT * clock, TIMEOUT)
+                .is_empty()
+        );
         clock += 1;
         writer.check_stalled(t0 + TIMEOUT * clock, TIMEOUT);
         assert!(matches!(
@@ -667,7 +671,10 @@ fn every_open_show_stuck_still_leaves_a_thread_for_the_others() {
     assert_eq!(writer.stalled_threads(), MAX_WRITERS);
     let (late, late_path) = target(&env, 101);
     assert!(matches!(
-        writer.save(late, late_path.unwrap(), 1, 20, 4).try_recv().unwrap(),
+        writer
+            .save(late, late_path.unwrap(), 1, 20, 4)
+            .try_recv()
+            .unwrap(),
         Err(PersistError::Stalled { .. })
     ));
     for _ in 0..MAX_WRITERS {

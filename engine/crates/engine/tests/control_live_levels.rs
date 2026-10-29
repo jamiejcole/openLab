@@ -417,7 +417,13 @@ fn a_slot_a_move_left_keeps_its_routing_until_the_crossfade_ends() {
     let mut s = two_patch_show_with(patch_id(), 0, vec![], |_, c| c.block_frames = 16);
     go(&mut s);
     s.run(800);
-    let mut kind = s.control().workspace().find_cue(id(1)).unwrap().kind.clone();
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
     if let CueKind::Audio { patch, .. } = &mut kind {
         *patch = side();
     }
@@ -451,7 +457,10 @@ fn a_preview_keeps_its_patch_when_the_cue_changes_patch() {
     let at = set_audio(&mut s, 1, |p, _| *p = side());
     s.run(400);
     let (main, side_out) = (s.channel(0), s.channel(1));
-    assert!(main[at - 100..].iter().all(|&v| near(v, LEVEL)), "moved off");
+    assert!(
+        main[at - 100..].iter().all(|&v| near(v, LEVEL)),
+        "moved off"
+    );
     assert!(side_out.iter().all(|&v| v == 0.0), "heard on the new patch");
 }
 

@@ -279,7 +279,10 @@ fn tick_until_answer(r: &mut Rig, rx: &mut openlab_engine::control::ReplyRx) -> 
         if let Ok(answer) = rx.try_recv() {
             return answer;
         }
-        assert!(std::time::Instant::now() < deadline, "no answer within {HANG:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no answer within {HANG:?}"
+        );
         std::thread::yield_now();
     }
 }
