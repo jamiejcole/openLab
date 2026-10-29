@@ -390,41 +390,30 @@ fn fresh_paths_never_land_on_an_earlier_runs_files() {
     let _ = std::fs::remove_dir_all(&old);
 }
 
-/// The probe of a named pipe blocks until a writer opens it: the control loop must keep running
-/// (the probe is on a worker) and a GO in the meantime must not block either.
-#[cfg(unix)]
+/// A probe on a stalled volume (gated) does not stop the control loop (the probe is on a
+/// worker), and a GO meanwhile does not block either.
 #[test]
 fn the_control_loop_never_waits_for_the_disk() {
-    let fifo = fresh_path("wav");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let ws = workspace(vec![audio(1, &fifo, 0)]);
-    let config = config(&ws);
+    let junk = file(
+        "wav",
+        b"not audio, but long enough to be read as a header at all",
+    );
+    let ws = workspace(vec![audio(1, &junk, 0)]);
+    let mut config = config(&ws);
+    config.probe = gated_probe;
+    gate(&junk);
     let mut s =
         openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), config).unwrap();
     s.run(BLOCK * 10);
     assert_eq!(s.control().probes_pending(), 1);
-    // Not known to be missing yet: no problem.
+    // Not known to be unplayable yet: no problem.
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     go(&mut s);
     s.run(BLOCK * 10);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // A writer releases the probe with something unplayable: the waiting start fails. Opening
-    // the pipe is the hand-over (it returns once the probe's read end is open). The probe
-    // refuses a pipe at its first seek and closes it without reading, so the bytes below race
-    // with that close and may hit EPIPE: they are only there to be unplayable if read, and the
-    // outcome does not depend on them, so a broken pipe is fine.
-    let mut writer = open_pipe_writer(&fifo);
-    match std::io::Write::write_all(&mut writer, b"not audio") {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-        Err(e) => panic!("writing the pipe: {e}"),
-    }
-    drop(writer);
+    // The volume answers, with something unplayable: the waiting start fails.
+    release(&junk);
     s.settle_media();
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
@@ -433,6 +422,33 @@ fn the_control_loop_never_waits_for_the_disk() {
         [CueProblem::MediaUnsupported { .. }]
     ));
     assert_eq!(s.control().live_voices(), 0);
+}
+
+/// #323: a named pipe (or a device) chosen as media is refused by its probe at once, without
+/// waiting for a writer: the cue is broken before it is triggered, as for any unplayable file,
+/// and a GO plays nothing.
+#[cfg(unix)]
+#[test]
+fn a_fifo_as_media_breaks_its_cue_at_once() {
+    let fifo = fresh_path("wav");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let ok = wav(&dc(400, 0.5));
+    let mut s = show(workspace(vec![audio(1, &fifo, 0), audio(2, &ok, 1)]));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let problems = s.control().engine().problems(id(1));
+    assert!(
+        matches!(problems, [CueProblem::MediaUnsupported { reason, .. }] if reason.contains("not a regular file")),
+        "{problems:?}"
+    );
+    go(&mut s);
+    s.run(BLOCK * 10);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().live_voices(), 0);
+    let _ = std::fs::remove_file(&fifo);
 }
 
 /// A start the probe held up plays as soon as the probe answers, from its head.
@@ -889,33 +905,27 @@ fn slow_probes_on_another_volume_delay_a_short_file_on_it() {
 
 /// A cue whose stream stalls underruns for its whole planned length, so the engine completes
 /// it on its planned end; then its audio arrives and the voice sounds on as a tail its cue no
-/// longer owns. The stall: one disk worker, held by another cue's stream opening a pipe nobody
-/// writes yet. Returns the show with the tail sounding.
-#[cfg(unix)]
+/// longer owns. The stall: one disk worker, held by another cue's stream whose file is on a
+/// stalled volume (its open is gated), until the volume answers. Returns the show with the tail
+/// sounding.
 #[allow(clippy::unwrap_used, clippy::panic)]
 fn stalled_tail() -> openlab_engine::control::offline::OfflineShow {
     let path = wav(&dc(4000, 0.5));
-    let pipe = wav(&dc(100, 0.5));
-    let ws = workspace(vec![audio(1, &path, 0), audio(2, &pipe, 1)]);
+    let stalled = wav(&dc(100, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0), audio(2, &stalled, 1)]);
     let mut c = config(&ws);
     c.prime_cues = 0;
     c.streamer.workers = 1;
+    c.streamer.before_open = gated_open;
     let mut s = show_with(ws, c);
-    std::fs::remove_file(&pipe).unwrap();
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&pipe)
-            .status()
-            .unwrap()
-            .success()
-    );
+    gate(&stalled);
     start(&mut s, 2);
     start(&mut s, 1);
     s.run_unsettled(4000 + 1000);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // A writer opens the pipe and closes it: the worker goes on, and cue 1's audio comes.
-    drop(open_pipe_writer(&pipe));
+    // The volume answers: the worker goes on, and cue 1's audio comes.
+    release(&stalled);
     s.run(BLOCK * 4);
     let from = s.channel(0).len() - BLOCK as usize;
     assert!(s.channel(0)[from..].iter().all(|&v| v == 0.5));
@@ -923,7 +933,6 @@ fn stalled_tail() -> openlab_engine::control::offline::OfflineShow {
     s
 }
 
-#[cfg(unix)]
 #[test]
 fn a_panic_silences_a_stalled_tail_within_its_fade() {
     let mut s = stalled_tail();
@@ -937,7 +946,6 @@ fn a_panic_silences_a_stalled_tail_within_its_fade() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hard_stop_silences_a_stalled_tail_at_once() {
     let mut s = stalled_tail();
@@ -948,7 +956,6 @@ fn a_hard_stop_silences_a_stalled_tail_at_once() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_reset_silences_a_stalled_tail_at_once() {
     let mut s = stalled_tail();

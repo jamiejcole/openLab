@@ -214,6 +214,9 @@ fn fnv(mut h: u64, samples: &[f32]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MediaError {
     NotFound(PathBuf),
+    /// The path names a FIFO, socket, device or folder, not a file (#323). Refused without
+    /// waiting on it.
+    NotAFile(PathBuf),
     Io(String),
     /// Unknown container or codec, or a parameter outside what openLab plays (channels 1–64,
     /// sample rate 1–384000).
@@ -245,6 +248,7 @@ impl fmt::Display for MediaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MediaError::NotFound(p) => write!(f, "file not found: {}", p.display()),
+            MediaError::NotAFile(p) => write!(f, "not a regular file: {}", p.display()),
             MediaError::Io(e) => write!(f, "read error: {e}"),
             MediaError::Unsupported(e) => write!(f, "unsupported media: {e}"),
             MediaError::Corrupt(e) => write!(f, "corrupt media: {e}"),
@@ -538,6 +542,21 @@ pub(crate) fn open_source(
 /// speaker positions, not the plain indexed channels of a 64-output show.
 pub(crate) const NATIVE_MAX_CHANNELS: usize = 8;
 
+/// Opens a media file for reading. A FIFO, device or folder at the path is refused at once
+/// ([`MediaError::NotAFile`]) instead of being waited on, so a probe or disk-stream worker can
+/// never hang on one (#323).
+fn open_file(path: &Path) -> Result<File, MediaError> {
+    crate::regular_file::open_regular(path).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            MediaError::NotFound(path.to_path_buf())
+        } else if crate::regular_file::is_not_regular(&e) {
+            MediaError::NotAFile(path.to_path_buf())
+        } else {
+            MediaError::Io(e.to_string())
+        }
+    })
+}
+
 enum Opened {
     Sym(Box<Decoder>),
     Pcm(PcmSource),
@@ -548,13 +567,7 @@ enum Opened {
 fn open_media(media: Media) -> Result<Opened, MediaError> {
     match media {
         Media::Path(path) => {
-            let mut f = match File::open(&path) {
-                Ok(f) => f,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    return Err(MediaError::NotFound(path));
-                }
-                Err(e) => return Err(MediaError::Io(e.to_string())),
-            };
+            let mut f = open_file(&path)?;
             if is_wide_pcm(&mut f)? {
                 PcmSource::open(Box::new(f)).map(Opened::Pcm)
             } else {
@@ -998,18 +1011,11 @@ impl Decoder {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     hint.with_extension(ext);
                 }
-                match File::open(&path) {
-                    Ok(mut f) => {
-                        check_pcm_header(&mut f)?;
-                        crate::mp4_check::check_mp4_stts(&mut f)?;
-                        gapless = crate::mp4_priming::scan_mp4_gapless(&mut f);
-                        Box::new(f)
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        return Err(MediaError::NotFound(path));
-                    }
-                    Err(e) => return Err(MediaError::Io(e.to_string())),
-                }
+                let mut f = open_file(&path)?;
+                check_pcm_header(&mut f)?;
+                crate::mp4_check::check_mp4_stts(&mut f)?;
+                gapless = crate::mp4_priming::scan_mp4_gapless(&mut f);
+                Box::new(f)
             }
             Media::Reader(mut inner, ext) => {
                 if let Some(ext) = &ext {

@@ -18,8 +18,8 @@ use openlab_audio::{
     Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam, RunId,
-    SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
+    Action, BrokenReason, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
+    PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, Probe};
@@ -128,8 +128,17 @@ pub struct VoiceRec {
     /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
     /// the voice never played (any other rejection is of a resume).
     start_id: Option<VoiceId>,
-    /// The mixer patch slot its start was routed through (it keeps it until it ends).
+    /// The mixer patch slot it plays through: the one its start was routed through, or the one
+    /// it was moved to when its cue's patch changed ([`Voices::follow_patches`]).
     slot: Option<u16>,
+    /// The workspace patch `slot` belongs to.
+    patch: Option<PatchId>,
+    /// Slots it was moved off: its crossfade out of them may still be playing, so they count as
+    /// in use until it ends (at most one per patch slot).
+    former: Vec<u16>,
+    /// Its cue outputs below this have their levels; those from here on were silenced at its
+    /// start, beyond the outputs of the patch it started on ([`voice_start`]).
+    levelled: usize,
 }
 
 impl VoiceRec {
@@ -486,6 +495,10 @@ impl Voices {
                 let held = r.held.take().is_some();
                 r.start_id = Some(id);
                 r.slot = Some(vs.patch);
+                if let Some(CueKind::Audio { patch, .. }) = env.ws.find_cue(cue).map(|c| &c.kind) {
+                    r.patch = Some(*patch);
+                    r.levelled = env.patches.outputs(env.doc, *patch);
+                }
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
                     fx.commands.push((t.max(at), queued(id, q)));
@@ -1156,8 +1169,99 @@ impl Voices {
         self.recs
             .values()
             .filter(|r| matches!(r.phase, Phase::Playing))
-            .filter_map(|r| r.slot)
+            .flat_map(|r| r.slot.iter().chain(&r.former).copied())
             .collect()
+    }
+
+    /// Moves every show voice whose cue now names another patch onto that patch's mixer slot,
+    /// crossfading (`MoveVoice`; #293, docs/control.md "Patch slots"). Outputs the voice was
+    /// started without (beyond the outputs of the patch it started on) that the new patch has
+    /// get their levels first, with their crosspoints: the model's, except a level a Fade cue
+    /// has set, which the voice already has (the fade's ramps reached it). A voice whose new
+    /// patch has no slot (none free) stays where it is; a later sync moves it once it has one.
+    /// Previews keep the patch they started on, as they keep their levels.
+    pub fn follow_patches(
+        &mut self,
+        doc: super::DocId,
+        ws: &Workspace,
+        patches: &Patches,
+        engine: &CueEngine,
+        now: SampleTime,
+    ) -> Vec<(SampleTime, CommandKind)> {
+        let mut commands = Vec::new();
+        for (&id, r) in &mut self.recs {
+            if r.preview || !matches!(r.phase, Phase::Playing) {
+                continue;
+            }
+            let Some(CueKind::Audio { patch, levels, .. }) = ws.find_cue(r.cue).map(|c| &c.kind)
+            else {
+                continue;
+            };
+            if r.patch == Some(*patch) {
+                continue;
+            }
+            let Some(slot) = patches.mixer_patch(doc, *patch) else {
+                continue;
+            };
+            // Not before the voice's own (re)start, which may still be queued in the mixer.
+            let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
+            let outputs = patches.outputs(doc, *patch);
+            if outputs > r.levelled {
+                let faded: BTreeSet<LevelParam> = engine
+                    .fade_ramps(r.cue, at)
+                    .iter()
+                    .map(|l| l.param)
+                    .collect();
+                let new = r.levelled..outputs;
+                let mut give = |param: LevelParam, gain: f32| {
+                    if gain != 0.0 && !faded.contains(&param) {
+                        let target = target(param);
+                        let fade = Fade::NONE;
+                        commands.push((
+                            at,
+                            CommandKind::Ramp {
+                                voice: id,
+                                target,
+                                gain,
+                                fade,
+                            },
+                        ));
+                    }
+                };
+                for (o, out) in levels.outputs.iter().enumerate() {
+                    if new.contains(&o) && !out.mute {
+                        let o = u32::try_from(o).unwrap_or(u32::MAX);
+                        give(LevelParam::Output(o), db_to_gain(out.db));
+                    }
+                }
+                for xp in &levels.crosspoints {
+                    let output = usize::try_from(xp.output).unwrap_or(usize::MAX);
+                    if new.contains(&output) && !xp.mute {
+                        let param = LevelParam::Crosspoint {
+                            input: xp.input,
+                            output: xp.output,
+                        };
+                        give(param, db_to_gain(xp.db));
+                    }
+                }
+                r.levelled = outputs;
+            }
+            if let Some(old) = r.slot.filter(|&s| s != slot)
+                && !r.former.contains(&old)
+            {
+                r.former.push(old);
+            }
+            r.slot = Some(slot);
+            r.patch = Some(*patch);
+            commands.push((
+                at,
+                CommandKind::MoveVoice {
+                    voice: id,
+                    patch: slot,
+                },
+            ));
+        }
+        commands
     }
 
     /// Every voice started in the mixer (previews included).
@@ -1363,6 +1467,9 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         delay: 0,
         start_id: None,
         slot: None,
+        patch: None,
+        former: Vec::new(),
+        levelled: 0,
     }
 }
 
@@ -1653,6 +1760,18 @@ mod tests {
         ));
         assert_eq!(fx.notices[0].0, "audio_fault");
         assert_eq!(v.slots_in_use(), BTreeSet::from([4]));
+    }
+
+    /// A voice moved to another patch (#293) keeps the slot it left in use: its crossfade out
+    /// of it may still be playing, so the slot must not be zeroed or handed out under it.
+    #[test]
+    fn a_moved_voice_keeps_the_slot_it_left_in_use() {
+        let mut v = Voices::new();
+        let mut moved = rec(CueId(uuid::Uuid::from_u128(1)), RunId(1), false);
+        moved.slot = Some(3);
+        moved.former = vec![1];
+        v.insert(VoiceId(1), moved);
+        assert_eq!(v.slots_in_use(), BTreeSet::from([1, 3]));
     }
 
     /// Regression (#302): a voice dropped under its old id while the resume that re-keyed it

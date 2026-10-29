@@ -18,6 +18,7 @@ mod offline;
 mod output;
 mod pcm;
 mod plan;
+mod regular_file;
 mod resample;
 mod riff_check;
 mod stream;
@@ -60,6 +61,9 @@ pub use plan::{
     MAX_SLICES, MIN_LOOP_MS, PlanError, Plays, Slice, StreamLink, check_loop_lengths,
     min_loop_frames, plan, plan_at_rate, total_frames,
 };
+#[cfg(unix)]
+pub use regular_file::O_NONBLOCK;
+pub use regular_file::{NotRegularFile, is_not_regular, open_regular};
 pub use stream::{
     DEFAULT_BUFFER_MS, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_EXIT_BUDGET_BYTES, DEFAULT_EXIT_BYTES,
     DEFAULT_EXIT_MS, DEFAULT_LOOP_CACHE_BYTES, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES,
