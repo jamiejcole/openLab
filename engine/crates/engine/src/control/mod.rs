@@ -1786,10 +1786,23 @@ impl DocCx<'_> {
 
     /// A transport action on this doc (from its client, or an app-scope panic or hotkey).
     fn transport(&mut self, action: TransportAction, now: SampleTime) {
+        // Every item at this one `now`, in order, before anything else is handled: cues started
+        // together start on the same sample (NFR-21). The codec refused any item `batch_cue`
+        // does not accept (a nested batch among them); a batch from elsewhere is held to it too.
+        if let TransportAction::Batch { actions } = action {
+            for item in actions {
+                if item.batch_cue().is_some() {
+                    self.transport(item, now);
+                }
+            }
+            return;
+        }
         let scope = orphan_scope(&action);
         let panic = matches!(action, TransportAction::Panic);
         self.observe_transport(&action);
-        self.feed(transport_input(action), now);
+        if let Some(input) = transport_input(action) {
+            self.feed(input, now);
+        }
         // During an outage a panic fade could only play once the device is back, so it stops
         // everything at once: a second Panic within the fade is a hard stop (unless this one
         // already was).
@@ -3644,9 +3657,11 @@ fn request_name(r: &Request) -> &'static str {
     }
 }
 
-/// The cue-engine input for a transport action (docs/protocol.md, Transport actions).
-pub fn transport_input(action: TransportAction) -> Input {
-    match action {
+/// The cue-engine input for a transport action (docs/protocol.md, Transport actions); `None`
+/// for a `batch`, which is one input per item.
+pub fn transport_input(action: TransportAction) -> Option<Input> {
+    Some(match action {
+        TransportAction::Batch { .. } => return None,
         TransportAction::Go { list } => Input::Go { list },
         TransportAction::Panic => Input::Panic,
         TransportAction::GoFrom { list, cue } => Input::GoFrom { list, cue },
@@ -3673,7 +3688,7 @@ pub fn transport_input(action: TransportAction) -> Input {
         TransportAction::TriggerReleased { cue } => Input::TriggerReleased { cue },
         TransportAction::Preview { cue } => Input::Preview { cue },
         TransportAction::StopPreview { cue } => Input::StopPreview { cue },
-    }
+    })
 }
 
 /// Which voices a transport action must silence besides what the engine stops.

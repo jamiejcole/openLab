@@ -2,6 +2,8 @@
 
 //! Client -> engine messages.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -196,6 +198,84 @@ pub enum TransportAction {
         #[serde(default)]
         cue: Option<CueId>,
     },
+    /// Several per-cue actions in one message, carried out in order at one scheduling time, so
+    /// cues started together start on the same sample (Start/Stop/Pause/Reset Selected, NFR-21).
+    /// 1 to [`MAX_BATCH_ACTIONS`] items, each one [`TransportAction::batch_cue`] accepts, no cue
+    /// named twice; anything else refuses the whole frame (`bad_request`).
+    Batch {
+        actions: Vec<TransportAction>,
+    },
+}
+
+/// Most actions one `batch` carries: far above any real selection, and every item fits well
+/// inside [`MAX_CLIENT_FRAME_BYTES`] at this count.
+pub const MAX_BATCH_ACTIONS: usize = 4096;
+
+impl TransportAction {
+    /// The cue a `batch` item acts on, or `None` for an action a batch may not carry (list,
+    /// workspace and release actions, a `stop_preview` of every preview, a nested batch).
+    pub fn batch_cue(&self) -> Option<CueId> {
+        match self {
+            Self::Start { cue }
+            | Self::Stop { cue, .. }
+            | Self::HardStop { cue }
+            | Self::PanicCue { cue }
+            | Self::Pause { cue }
+            | Self::Resume { cue }
+            | Self::Load { cue, .. }
+            | Self::Reset { cue }
+            | Self::Preview { cue }
+            | Self::StopPreview { cue: Some(cue) } => Some(*cue),
+            Self::Go { .. }
+            | Self::Panic
+            | Self::GoFrom { .. }
+            | Self::StopAll
+            | Self::HardStopAll
+            | Self::PauseAll
+            | Self::ResumeAll
+            | Self::SetPlayhead { .. }
+            | Self::SetPlayheadByNumber { .. }
+            | Self::PlayheadNext { .. }
+            | Self::PlayheadPrevious { .. }
+            | Self::TriggerReleased { .. }
+            | Self::StopPreview { cue: None }
+            | Self::Batch { .. } => None,
+        }
+    }
+
+    /// What serde cannot check: numbers in range, and a batch's shape.
+    fn validate(&self) -> Result<(), ProtocolError> {
+        match self {
+            Self::Load { at, .. } => non_negative("transport.load.at", *at),
+            Self::Stop {
+                fade_out: Some(fade),
+                ..
+            } => non_negative("transport.stop.fade_out.duration", fade.duration),
+            Self::Batch { actions } => {
+                if actions.is_empty() || actions.len() > MAX_BATCH_ACTIONS {
+                    return Err(ProtocolError::OutOfRange {
+                        field: "transport.batch.actions",
+                    });
+                }
+                let mut seen = HashSet::with_capacity(actions.len());
+                for action in actions {
+                    let Some(cue) = action.batch_cue() else {
+                        return Err(ProtocolError::OutOfRange {
+                            field: "transport.batch.actions.type",
+                        });
+                    };
+                    if !seen.insert(cue) {
+                        return Err(ProtocolError::OutOfRange {
+                            field: "transport.batch.actions.cue",
+                        });
+                    }
+                    action.validate()?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Document and device requests. The reply is a `result` with the same id; `snapshot` also
@@ -312,14 +392,7 @@ impl ClientMessage {
     /// Checks what serde cannot: numbers that must be finite and in range, paths not empty.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         match self {
-            Self::Transport { action, .. } => match action {
-                TransportAction::Load { at, .. } => non_negative("transport.load.at", *at),
-                TransportAction::Stop {
-                    fade_out: Some(fade),
-                    ..
-                } => non_negative("transport.stop.fade_out.duration", fade.duration),
-                _ => Ok(()),
-            },
+            Self::Transport { action, .. } => action.validate(),
             Self::Request {
                 request:
                     Request::Open { path, .. }
