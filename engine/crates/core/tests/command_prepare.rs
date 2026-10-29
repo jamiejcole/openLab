@@ -362,10 +362,10 @@ fn a_path_not_literally_under_the_show_folder_stays_absolute_as_sent() {
     );
 }
 
-fn paste_from(source: Option<&str>, media: &str, dest: Option<&str>, style: PathStyle) -> String {
+fn paste_from(source: Option<&str>, file: &str, dest: Option<&str>, style: PathStyle) -> String {
     let command = Command::PasteClipboard {
         at: pos(),
-        cues: vec![audio_at(1, media)],
+        cues: vec![audio_at(1, file)],
         source_dir: source.map(str::to_owned),
     };
     let Command::Paste { cues, .. } = prepared(command, dest, style) else {
