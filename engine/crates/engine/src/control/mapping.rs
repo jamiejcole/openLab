@@ -5,13 +5,11 @@
 //! on the device the mixer uses, each patch on the device's first outputs, as QLab does. An
 //! operator's mapping is never touched.
 
-use openlab_core::protocol::{
-    DeviceEntry, ErrorBody, ErrorCode, LogLevel, Outcome, RequestId, ServerMessage,
-};
+use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
 use openlab_core::{DeviceInfo, PatchId, PatchMapping};
 
 use super::inbox::reply;
-use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, ok};
+use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
 
 impl Control {
     /// `set_patch_mapping` (M4.4g, WS-07): sets or clears where doc `doc`'s `patch` plays on
@@ -35,13 +33,7 @@ impl Control {
             None => Err(ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace")),
         };
         match outcome {
-            Err(error) => reply(
-                to,
-                ServerMessage::Result {
-                    id,
-                    outcome: Outcome::Error(error),
-                },
-            ),
+            Err(error) => reply(to, failed(id, error)),
             Ok(()) => {
                 self.each_doc(|cx| {
                     let now = cx.now();

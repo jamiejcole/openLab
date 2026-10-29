@@ -943,16 +943,11 @@ impl Control {
                     Addr::App => None,
                 };
                 let Some(doc) = doc.or(own) else {
-                    let e = ErrorBody::new(
+                    fail(
+                        to,
+                        id,
                         ErrorCode::NoWorkspace,
                         "close names no workspace and this connection is bound to none",
-                    );
-                    reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(e),
-                        },
                     );
                     return Ok(Flow::Continue);
                 };
@@ -961,13 +956,7 @@ impl Control {
                         reply(to, ok(id, None));
                         self.closed(doc);
                     }
-                    Err(e) => reply(
-                        to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(e),
-                        },
-                    ),
+                    Err(e) => reply(to, failed(id, e)),
                 }
             }
             ClientMessage::Panic { id } => {
@@ -1320,16 +1309,7 @@ fn no_doc(message: ClientMessage, to: &ReplyTx) -> Flow {
         | ClientMessage::Panic { id }
         | ClientMessage::Hotkey { id, .. } => id,
     };
-    reply(
-        to,
-        ServerMessage::Result {
-            id,
-            outcome: Outcome::Error(ErrorBody::new(
-                ErrorCode::NoWorkspace,
-                "no workspace is open",
-            )),
-        },
-    );
+    fail(to, id, ErrorCode::NoWorkspace, "no workspace is open");
     Flow::Continue
 }
 
@@ -1637,15 +1617,11 @@ impl DocCx<'_> {
                     .as_ref()
                     .is_some_and(|k| k.len() > MAX_COALESCE_KEY)
                 {
-                    reply(
+                    fail(
                         to,
-                        ServerMessage::Result {
-                            id,
-                            outcome: Outcome::Error(ErrorBody::new(
-                                ErrorCode::BadRequest,
-                                format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
-                            )),
-                        },
+                        id,
+                        ErrorCode::BadRequest,
+                        format!("coalesce key longer than {MAX_COALESCE_KEY} bytes"),
                     );
                     return Flow::Continue;
                 }
@@ -1717,16 +1693,7 @@ impl DocCx<'_> {
                             Some(cue),
                             None,
                         );
-                        reply(
-                            to,
-                            ServerMessage::Result {
-                                id,
-                                outcome: Outcome::Error(ErrorBody::new(
-                                    ErrorCode::CommandRefused,
-                                    message,
-                                )),
-                            },
-                        );
+                        fail(to, id, ErrorCode::CommandRefused, message);
                     }
                     Err(e) => {
                         self.partly_changed(now, &e);
@@ -1773,15 +1740,11 @@ impl DocCx<'_> {
             // App-scope: [`Control::app_scope`] takes them before any doc does.
             ClientMessage::Close { id, .. }
             | ClientMessage::Panic { id }
-            | ClientMessage::Hotkey { id, .. } => reply(
+            | ClientMessage::Hotkey { id, .. } => fail(
                 to,
-                ServerMessage::Result {
-                    id,
-                    outcome: Outcome::Error(ErrorBody::new(
-                        ErrorCode::Internal,
-                        "an app-scope message reached a workspace",
-                    )),
-                },
+                id,
+                ErrorCode::Internal,
+                "an app-scope message reached a workspace",
             ),
         }
         Flow::Continue
@@ -3637,11 +3600,25 @@ fn ok(id: openlab_core::protocol::RequestId, revision: Option<u64>) -> ServerMes
     }
 }
 
-fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMessage {
+/// The one way an error reply is built.
+fn failed(id: openlab_core::protocol::RequestId, error: ErrorBody) -> ServerMessage {
     ServerMessage::Result {
         id,
-        outcome: Outcome::Error(ErrorBody::from(e)),
+        outcome: Outcome::Error(error),
     }
+}
+
+fn fail(
+    to: &ReplyTx,
+    id: openlab_core::protocol::RequestId,
+    code: ErrorCode,
+    message: impl Into<String>,
+) {
+    reply(to, failed(id, ErrorBody::new(code, message)));
+}
+
+fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMessage {
+    failed(id, ErrorBody::from(e))
 }
 
 fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
