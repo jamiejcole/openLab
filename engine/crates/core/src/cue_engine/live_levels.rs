@@ -9,19 +9,25 @@
 //! model's, so the binary carries out `Ramp` actions without knowing why they came; which
 //! levels a running fade owns is the engine's knowledge too.
 
+use std::collections::BTreeSet;
+
 use crate::cue::{CueKind, FadeCurve};
+use crate::model::CueId;
 
 use super::level::{self, LevelEdit};
-use super::run::{Slot, Voice};
+use super::run::{Phase, Slot, Voice};
 use super::types::Action;
 use super::{Ctx, CueEngine};
 
 impl CueEngine {
     /// Sends every playing audio cue's voice the gains an edit changed since it was last given
-    /// its levels. A gain a fade is moving (or holds, paused) stays the fade's, unless the edit
-    /// mutes it; any other gain follows the edit and is the model's again. Work per call is one
-    /// comparison per started audio voice, plus the changed gains.
+    /// its levels; each follows the edit and is the model's again. An edit of a gain a running
+    /// Fade cue is moving ends that Fade (QLab 5.5.3): it completes at once, holding the other
+    /// levels it moves where they are (`complete_fades_now`); a paused Fade only loses the
+    /// edited gain. Work per call is one comparison per started audio voice, plus the changed
+    /// gains.
     pub(super) fn follow_level_edits(&mut self, cx: &mut Ctx) {
+        let mut ended: BTreeSet<(CueId, u64)> = BTreeSet::new();
         let ws = cx.ws;
         let frames = level::edit_frames(self.config.sample_rate().get());
         let tree = self.problems.tree();
@@ -56,15 +62,11 @@ impl CueEngine {
             }
             given.model = levels.clone();
             let edits = level::level_edits(&given.played, &level::played(levels));
-            for LevelEdit { param, to, muted } in edits {
-                if let Some(held) = run.levels.get(&param) {
-                    if held.owner.is_some() && !muted {
-                        // The fade keeps it; the voice was not given the edit, which stays owed.
-                        continue;
-                    }
-                    // A fade set it (and is done with it) or a mute takes it from a fade: the
-                    // model rules it again, as an untouched level.
-                    run.levels.remove(&param);
+            for LevelEdit { param, to } in edits {
+                // A fade set it or is moving it: the edit wins, and the model rules it again,
+                // as an untouched level.
+                if let Some(held) = run.levels.remove(&param) {
+                    ended.extend(held.owner);
                 }
                 if let Some(given) = run.given.as_mut() {
                     given.played.insert(param, to);
@@ -81,6 +83,38 @@ impl CueEngine {
                     curve: FadeCurve::Linear,
                 });
             }
+        }
+        self.complete_fades_now(&ended, cx);
+    }
+
+    /// Each Fade cue in `fades` (cue, run) that is running and not paused completes now, as on
+    /// its end (auto-follow, "stop target when done"), except that the levels it is still moving
+    /// are held where they are, as for a Fade whose duration was shortened to now.
+    fn complete_fades_now(&mut self, fades: &BTreeSet<(CueId, u64)>, cx: &mut Ctx) {
+        let mut any = false;
+        for (cue, seq) in fades {
+            if let Some(Slot::Active(run)) = self.slots.get_mut(cue)
+                && run.seq == *seq
+                && run.paused_at.is_none()
+                && run.stop_end.is_none()
+                && let (
+                    Some(fade),
+                    Phase::Action {
+                        start,
+                        end: Some(_),
+                    },
+                ) = (run.fade.as_mut(), run.phase)
+            {
+                fade.retimed = true;
+                run.phase = Phase::Action {
+                    start,
+                    end: Some(start.max(cx.now)),
+                };
+                any = true;
+            }
+        }
+        if any {
+            self.advance(cx);
         }
     }
 }

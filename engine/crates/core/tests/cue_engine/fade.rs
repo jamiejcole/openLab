@@ -188,10 +188,7 @@ fn stop_target_when_done_stops_it_on_the_fades_last_sample() {
     assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 2500));
 }
 
-/// A Fade's duration edited while it runs (M5.6b, the inspector's `Duration` command): the
-/// running fade keeps the ramps and the end it started with, so its target stops and its
-/// auto-follow fires on the original end; the next run takes the edit. QLab does not document
-/// it (open question in docs/todo/open-qlab-questions.md).
+/// Edits a Fade's duration as the inspector's `Duration` command does.
 fn set_duration(rig: &mut Rig, n: u128, value: f64) {
     rig.ws
         .apply(Command::SetCueProperty {

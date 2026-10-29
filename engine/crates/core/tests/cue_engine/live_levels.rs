@@ -205,58 +205,129 @@ fn a_drag_sends_one_ramp_per_call_however_many_edits_it_merged() {
     assert_eq!(ramps(&rig.tick(2000)), vec![edit(2000, M, -3.0)]);
 }
 
-#[test]
-fn a_running_fade_keeps_its_levels_but_a_mute_takes_one_from_it() {
-    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
-    rig.start(0, 1);
-    rig.start(100, 2);
-    // The fade owns the master: the edit is in the model, not heard while the fade runs.
-    assert!(ramps(&rig.edit(200, 1, |l| l.master_db = -6.0)).is_empty());
-    // An output no fade touches follows the edit.
-    assert_eq!(
-        ramps(&rig.edit(300, 1, |l| l.outputs[1].db = -3.0)),
-        vec![edit(300, LevelParam::Output(1), -3.0)]
-    );
-    assert_eq!(rig.engine.state(id(1)), CueState::Fading);
-    // The fade ends on its level.
-    rig.tick(1100);
-    assert_eq!(
-        rig.engine.fade_level(id(1), M, 1100),
-        Some(db_to_gain(-20.0))
-    );
-    // A later edit of the master takes it back from the finished fade: the model rules it.
-    assert_eq!(
-        ramps(&rig.edit(1200, 1, |l| l.master_db = -8.0)),
-        vec![edit(1200, M, -8.0)]
-    );
-    assert_eq!(rig.engine.fade_level(id(1), M, 1200), None);
-
-    // A mute is always heard, also on an output a fade is moving.
-    let fade_out = cue(
-        3,
+/// A linear 1 s Fade of cue 1's master to −20 dB and output 0 to −12 dB, auto-following into
+/// memo 3.
+fn two_level_fade(stop: bool) -> Vec<Cue> {
+    let fade = cue(
+        2,
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
             curve: FadeCurve::Linear,
             levels: FadeLevels {
-                master_db: None,
-                output_db: vec![Some(6.0)],
+                master_db: Some(-20.0),
+                output_db: vec![Some(-12.0)],
                 crosspoints: vec![],
             },
-            stop_target_when_done: false,
+            stop_target_when_done: stop,
         },
     );
-    rig.ws.cue_lists[0].cues.push(fade_out);
-    rig.start(1300, 3);
-    assert!(rig.engine.fade_level(id(1), O0, 1300).is_some());
+    vec![
+        sound(1),
+        timed(fade, 0.0, 0.0, ContinueMode::AutoFollow),
+        memo(3),
+    ]
+}
+
+/// QLab 5.5.3: an edit of a level a running Fade is moving wins and ends the Fade at once. Here
+/// the Fade moves two levels and only the master is edited: the master takes the edit, output
+/// 0 is held where the fade had got it, and the Fade completes (its auto-follow fires). An
+/// edit of a level the Fade does not move leaves it running.
+#[test]
+fn an_edit_of_a_level_a_fade_is_moving_ends_the_fade_and_wins() {
+    let mut rig = Rig::new(two_level_fade(false));
+    rig.start(0, 1);
+    rig.start(100, 2);
+    // Output 1 is not the fade's: followed, and the fade goes on.
+    let other = rig.edit(300, 1, |l| l.outputs[1].db = -3.0);
+    assert_eq!(ramps(&other), vec![edit(300, LevelParam::Output(1), -3.0)]);
+    assert!(changes(&other, 2).is_empty());
+    assert_eq!(rig.engine.state(id(1)), CueState::Fading);
+
+    rig.tick(599);
+    let halfway = rig.engine.fade_level(id(1), O0, 600).unwrap();
+    assert!(halfway < 1.0 && halfway > db_to_gain(-12.0), "{halfway}");
+    let out = rig.edit(600, 1, |l| l.master_db = -6.0);
     assert_eq!(
-        ramps(&rig.edit(1400, 1, |l| l.outputs[0].mute = true)),
-        vec![edit(1400, O0, SILENCE_DB)]
+        ramps(&out),
+        vec![
+            edit(600, M, -6.0),
+            R {
+                gain: halfway,
+                frames: 0,
+                ..edit(600, O0, 0.0)
+            },
+        ]
     );
-    assert_eq!(rig.engine.fade_level(id(1), O0, 1400), None);
-    // The fade lets go of it: its end changes nothing for that output.
-    rig.tick(2300);
-    assert_eq!(rig.engine.fade_level(id(1), O0, 2300), None);
+    assert_eq!(changes(&out, 2), vec![(CueState::Idle, 600)]);
+    assert_eq!(changes(&out, 3)[0], (CueState::PreWaiting, 600));
+    assert_eq!(rig.engine.state(id(1)), CueState::Running);
+    assert_eq!(rig.engine.fade_level(id(1), M, 600), None);
+    // Nothing moves on the fade's old end.
+    assert!(ramps(&rig.tick(1100)).is_empty());
+    assert_eq!(rig.engine.fade_level(id(1), O0, 2000), Some(halfway));
+    // The held output is the fade's value until it is edited too.
+    assert_eq!(
+        ramps(&rig.edit(1200, 1, |l| l.outputs[0].db = -8.0)),
+        vec![edit(1200, O0, -8.0)]
+    );
+    assert_eq!(rig.engine.fade_level(id(1), O0, 1200), None);
+}
+
+/// A mute is a level edit too, and the Fade completes by its normal rules: "stop target when
+/// done" stops the target on the edit sample.
+#[test]
+fn a_mute_during_a_fade_completes_it_and_stops_its_target_when_set() {
+    let mut rig = Rig::new(two_level_fade(true));
+    rig.start(0, 1);
+    rig.start(100, 2);
+    let out = rig.edit(400, 1, |l| l.outputs[0].mute = true);
+    assert_eq!(voice_stops(&out), vec![(id(1), 400, None)]);
+    assert_eq!(changes(&out, 2), vec![(CueState::Idle, 400)]);
+    assert_eq!(changes(&out, 3)[0], (CueState::PreWaiting, 400));
+}
+
+/// A paused Fade starts nothing: the edited level leaves it (the edit is heard) but the Fade
+/// stays paused, and its resume moves only the levels it still has, on its shifted end.
+#[test]
+fn an_edit_of_a_level_a_paused_fade_holds_takes_it_without_ending_the_fade() {
+    let mut rig = Rig::new(two_level_fade(false));
+    rig.start(0, 1);
+    rig.start(100, 2);
+    rig.at(600, Input::Pause { cue: id(2) });
+    let out = rig.edit(700, 1, |l| l.master_db = -6.0);
+    assert_eq!(ramps(&out), vec![edit(700, M, -6.0)]);
+    assert!(changes(&out, 3).is_empty());
+    assert_eq!(rig.engine.state(id(2)), CueState::Paused);
+    let resumed = rig.at(1000, Input::Resume { cue: id(2) });
+    let moved: Vec<LevelParam> = resumed
+        .iter()
+        .filter_map(|a| match a {
+            Action::Ramp { param, .. } => Some(*param),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(moved, vec![O0]);
+    assert!(changes(&rig.tick(1499), 3).is_empty());
+    assert_eq!(changes(&rig.tick(1500), 3)[0], (CueState::PreWaiting, 1500));
+}
+
+/// An edit of a level a finished Fade set takes it back: the model rules it again.
+#[test]
+fn an_edit_after_a_fade_finished_replaces_the_level_it_set() {
+    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
+    rig.start(0, 1);
+    rig.start(100, 2);
+    rig.tick(1100);
+    assert_eq!(
+        rig.engine.fade_level(id(1), M, 1100),
+        Some(db_to_gain(-20.0))
+    );
+    assert_eq!(
+        ramps(&rig.edit(1200, 1, |l| l.master_db = -8.0)),
+        vec![edit(1200, M, -8.0)]
+    );
+    assert_eq!(rig.engine.fade_level(id(1), M, 1200), None);
 }
 
 #[test]
@@ -317,21 +388,6 @@ fn an_edit_in_the_call_that_ends_the_fade_owning_the_level_is_heard() {
         vec![edit(1105, M, -6.0)]
     );
     assert_eq!(rig.engine.fade_level(id(1), M, 1105), None);
-}
-
-#[test]
-fn an_edit_held_back_by_a_fade_is_sent_with_the_next_edit_after_it() {
-    // An edit of a level the fade owns is not given to the voice, so it is still owed: the
-    // next edit of the cue once the fade has let go sends it.
-    let mut rig = Rig::new(vec![sound(1), fade_master(2, 1, 1.0, -20.0)]);
-    rig.start(0, 1);
-    rig.start(100, 2);
-    assert!(ramps(&rig.edit(200, 1, |l| l.master_db = -6.0)).is_empty());
-    rig.tick(1100);
-    assert_eq!(
-        ramps(&rig.edit(1200, 1, |l| l.outputs[1].db = -3.0)),
-        vec![edit(1200, M, -6.0), edit(1200, LevelParam::Output(1), -3.0)]
-    );
 }
 
 #[test]

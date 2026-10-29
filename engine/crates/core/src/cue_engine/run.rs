@@ -145,8 +145,7 @@ pub(super) struct Run {
 }
 
 /// The levels an audio cue's voice has been given: the model's at its start, and each edit
-/// sent to it since. A level an edit left to a fade keeps what the voice was given before,
-/// so the edit is still owed and goes out with the next edit after the fade lets go.
+/// sent to it since (every edit is sent; one of a level a fade moves ends that fade).
 #[derive(Clone, Debug)]
 pub(super) struct Given {
     /// The model's levels as of the last comparison (a call with the same levels compares
