@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#[cfg(unix)]
 use super::super::super::gate::tests::DEAD;
+#[cfg(unix)]
+use super::super::super::{MAX_ABANDONED_WORKERS, PROBE_WORKERS};
 use super::*;
+#[cfg(unix)]
+use std::sync::Mutex;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
+#[cfg(unix)]
+use std::time::Instant;
 
 #[cfg(unix)]
 struct Hang(Mutex<(usize, bool)>, std::sync::Condvar);

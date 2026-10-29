@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::super::gate::*;
-use super::super::{MAX_ABANDONED_WORKERS, PROBE_WORKERS};
 use super::super::{ProbeClock, ProbeFn};
 use super::*;
 use crate::control::DocId;
@@ -12,9 +11,8 @@ use crossbeam_channel::Receiver;
 use openlab_audio::{Media, MediaError, Probed};
 use openlab_audio::{MediaInfo, Seeking};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 fn fake(_: &Path) -> Result<Probed, MediaError> {
     Ok(Probed {
