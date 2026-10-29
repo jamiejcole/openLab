@@ -89,7 +89,8 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape, .shift), for: .go, in: [:]), .reserved)
         XCTAssertNil(TransportKeys.validate(KeyChord(KeyChord.left, .command), for: .go, in: [:]))
         XCTAssertNil(
-            TransportKeys.validate(KeyChord(KeyChord.down, [.command, .shift]), for: .playheadNext, in: [:], loading: true))
+            TransportKeys.validate(
+                KeyChord(KeyChord.down, [.command, .shift]), for: .playheadNext, in: [:], loading: true))
         XCTAssertEqual(
             TransportKeys.validate(KeyChord("x"), for: .go, in: [:], isCueHotkey: { _ in true }), .cueHotkey)
     }

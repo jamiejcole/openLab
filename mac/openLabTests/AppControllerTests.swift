@@ -410,14 +410,19 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testPlayheadTargetIsTheLastAddedCue() {
-        let a: ModelID = "a", b: ModelID = "b", c: ModelID = "c"
-        XCTAssertEqual(CueListViewController.playheadTarget(selected: [a, b], previous: [b], latest: b), a, "one added")
+        let a: ModelID = "a"
+        let b: ModelID = "b"
+        let c: ModelID = "c"
         XCTAssertEqual(
-            CueListViewController.playheadTarget(selected: [a, b, c], previous: [a], latest: c), c, "range ends at the click")
+            CueListViewController.playheadTarget(selected: [a, b], previous: [b], latest: b), a, "one added")
+        XCTAssertEqual(
+            CueListViewController.playheadTarget(selected: [a, b, c], previous: [a], latest: c), c,
+            "range ends at the click")
         XCTAssertEqual(
             CueListViewController.playheadTarget(selected: [a, b, c], previous: [a], latest: b), b, "range from below")
         XCTAssertEqual(
-            CueListViewController.playheadTarget(selected: [b], previous: [a, b], latest: b), b, "click on one of several")
+            CueListViewController.playheadTarget(selected: [b], previous: [a, b], latest: b), b,
+            "click on one of several")
         XCTAssertEqual(CueListViewController.playheadTarget(selected: [a, b], previous: [], latest: nil), b)
         XCTAssertNil(CueListViewController.playheadTarget(selected: [], previous: [a], latest: nil))
     }
