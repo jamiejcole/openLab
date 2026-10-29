@@ -448,6 +448,8 @@
 "engine.alarm.restartedMessage" = "A new engine is running. Cues that were playing have stopped.";
 "engine.alarm.back" = "A new engine is running and your workspaces were reopened.";
 "engine.alarm.restoredOne" = "%@ was reopened from its autosave: edits after the last autosave are lost.";
+"engine.alarm.notResponding" = "The engine is not responding";
+"engine.alarm.notRespondingMessage" = "An engine is running but has not answered. It was not stopped, because it may still be playing. Wait for it; if it is stuck, quit openlab-engine in Activity Monitor and open openLab again.";
 "engine.alarm.editsLostOne" = "%@ was reopened from its file: its unsaved edits had no autosave and are lost.";
 "engine.alarm.editsLostSetAside" = "%@ was reopened from its file; an earlier autosave was set aside and can be restored.";
 "engine.alarm.failedOne" = "%@ could not be reopened: %@";
@@ -464,7 +466,7 @@
 "engine.alarm.spawnFailed" = "The engine program could not be started (error %@).";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";
 "engine.reattach.restored" = "The engine was restarted: this workspace was reopened from its autosave. Edits after the last autosave are lost.";
-"engine.reattach.editsLost" = "The engine was restarted: this workspace was reopened from its file. Its unsaved edits had no autosave and are lost.";
+"engine.reattach.editsLost" = "The engine was restarted: this workspace was reopened from its file. Its unsaved edits were not in that file. An earlier autosave of it, if one was kept, is offered by the engine alarm and in File > Recover Autosaves.";
 "engine.reattach.noDoc" = "The engine did not open it.";
 "engine.reattach.noAutosave" = "it was never saved and has no autosave.";
 "alert.recoveryOffer.title" = "“%@” has newer autosaved changes.";

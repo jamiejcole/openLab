@@ -124,7 +124,9 @@ extension AppController {
         for doc in discarded {
             let closed = await bounded { await self.session.close(doc: doc, discardChanges: true) }
             if case .success? = closed { continue }
+            // A stalled engine would make each remaining close wait out its own bound.
             engineLog.error("could not discard the unsaved edits of doc \(doc.raw, privacy: .public) at quit")
+            break
         }
         // A stalled flush must not trap the app; the engine still sees the socket drop.
         _ = await bounded { await self.session.shutdown() }

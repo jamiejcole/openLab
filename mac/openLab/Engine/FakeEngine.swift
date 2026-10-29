@@ -722,11 +722,12 @@ final class FakeEngine: EngineTransport {
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }
 
-    /// `new` / `open` / `open_recovery`: another document; the list goes out before the result.
+    /// `new` / `open` / `open_recovery`: another document; the result goes out before the list, as
+    /// the engine does (control/docs.rs publishes the workspaces after answering).
     private func open(_ id: UInt64, snapshot: JSONValue, path: String?, from c: FakeConnection) {
         let doc = addDoc(snapshot, path: path)
-        broadcastWorkspaces()
         result(c, id, ok: .object(["data": .object(["type": .string("opened"), "doc": Self.docJSON(doc)])]))
+        broadcastWorkspaces()
     }
 
     private func handleClose(_ id: UInt64, doc: ModelID?, discard: Bool, from c: FakeConnection) {

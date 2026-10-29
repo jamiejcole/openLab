@@ -236,6 +236,34 @@ final class EngineSessionTests: XCTestCase {
 
     /// A new engine run (another token): every window's show is reopened by its file, the store
     /// objects survive under new doc ids, and none is made twice.
+    /// File > Open of a show a waiting window holds, during the reattach: the engine answers
+    /// before it lists the doc, yet no second store is made (the window takes the doc, #262).
+    func testOpeningAWaitingWindowsShowDuringAReattachLeavesItsWindowTheDoc() async throws {
+        let (s, engine) = try await started()
+        _ = await s.open(path: "/Shows/A.openlab")
+        _ = await s.open(path: "/Shows/B.openlab")
+        await assertEventually { s.stores.count == 3 && s.stores.values.allSatisfy { $0.model != nil } }
+        let before = s.orderedStores.map(\.store)
+        var events: [SessionEvent] = []
+        let sub = s.events.sink { events.append($0) }
+        defer { sub.cancel() }
+
+        engine.holdResults = true  // the first reopen's answer is held: the reattach is under way
+        engine.restart()
+        let waiting = await pump { s.detached.count == 3 }
+        XCTAssertTrue(waiting)
+        engine.holdResults = false
+        guard case .success = await s.open(path: "/Shows/B.openlab") else { return XCTFail("open") }
+        XCTAssertTrue(s.stores.isEmpty, "B's window will claim it: no store of its own")
+        engine.releaseResults()
+        let ok = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
+        XCTAssertTrue(ok, "\(events)")
+        guard case .reattached(let failures, _, _, _)? = events.last else { return XCTFail() }
+        XCTAssertEqual(failures, [], "no window failed")
+        XCTAssertEqual(s.stores.count, 3)
+        XCTAssertTrue(before.allSatisfy { b in s.stores.values.contains { $0 === b } })
+    }
+
     func testNewEngineRunReopensEveryFileAndKeepsTheStores() async throws {
         let (s, engine) = try await started()
         _ = await s.open(path: "/Shows/A.openlab")
@@ -255,7 +283,11 @@ final class EngineSessionTests: XCTestCase {
 
         XCTAssertEqual(events.first, .newEngineRun)
         // Hamlet had unsaved changes and no autosave newer than its file: they are lost, and said so.
-        XCTAssertEqual(events.last, .reattached(failures: [], restored: [], editsLost: ["Test"]))
+        XCTAssertEqual(
+            events.last,
+            .reattached(
+                failures: [], restored: [], editsLost: ["Test"],
+                editsLostWorkspaces: [ModelID("00000000-0000-0000-0000-000000000001")]))
         XCTAssertTrue(
             before[0].logEntries.contains { $0 == LogEntry(level: .warn, message: loc("engine.reattach.editsLost")) })
         // The same three stores, plus one for the other client's show; none made twice.
@@ -358,7 +390,11 @@ final class EngineSessionTests: XCTestCase {
         defer { sub.cancel() }
         _ = await pump { events.contains { if case .reattached = $0 { return true } else { return false } } }
         // #337: Hamlet's window had unsaved changes and the doc it took is the clean file.
-        XCTAssertEqual(events.last, .reattached(failures: [], restored: [], editsLost: ["Test"]))
+        XCTAssertEqual(
+            events.last,
+            .reattached(
+                failures: [], restored: [], editsLost: ["Test"],
+                editsLostWorkspaces: [ModelID("00000000-0000-0000-0000-000000000001")]))
         XCTAssertEqual(s.stores.count, 2, "already_open bound the window to the open doc, no second store")
         XCTAssertEqual(s.orderedStores.map(\.doc), ["1", "2"])
         let hamlet = try XCTUnwrap(s.orderedStores.first?.store)

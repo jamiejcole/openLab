@@ -18,6 +18,9 @@ final class EngineSupervisor {
         case engineStopped(crashed: Bool)
         /// No engine could be started (or several in a row died at once).
         case cannotStart(String)
+        /// A live engine accepts connections but sends no `welcome`, `probeAttempts` times in a
+        /// row at launch. It is not signalled (its audio may be playing): the operator is told.
+        case notResponding
     }
 
     let alarms = PassthroughSubject<Alarm, Never>()
@@ -52,6 +55,7 @@ final class EngineSupervisor {
     private var spawned: Int32?
     private var spawnTimes: [Double] = []
     private var silentAttempts = 0
+    private var busyAttempts = 0
     private var terminating = false
     private var spawnLimitReported = false
     /// The app is quitting: no engine is started any more.
@@ -103,6 +107,7 @@ final class EngineSupervisor {
             everConnected = true
             lastRun = run
             silentAttempts = 0
+            busyAttempts = 0
             spawnLimitReported = false
             if newRun { ready.send() }
         case .retrying(let failure):
@@ -136,6 +141,8 @@ final class EngineSupervisor {
                     engineLog.error(
                         "engine pid \(live.pid, privacy: .public) accepted the connection but sent no welcome: busy, waiting"
                     )
+                    busyAttempts += 1
+                    if busyAttempts == probeAttempts { alarms.send(.notResponding) }
                     return
                 default: return
                 }

@@ -1132,6 +1132,20 @@ final class AppControllerTests: XCTestCase {
         XCTAssertLessThan(closes.first?.0 ?? .max, goodbye ?? 0)
     }
 
+    /// A close that fails ends the discarding: each further one would wait out its own bound on a
+    /// stalled engine, and the quit still says goodbye.
+    func testQuitStopsDiscardingAfterTheFirstCloseFails() async throws {
+        let b = try await addWorkspace()
+        await makeDirty(b)
+        alerts.saveChoices = [.dontSave, .dontSave]
+        engine.garbleResults = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let closes = engine.received.filter { if case .close = $0 { return true } else { return false } }
+        XCTAssertEqual(closes.count, 1)
+        XCTAssertTrue(engine.received.contains { if case .goodbye(true) = $0 { return true } else { return false } })
+    }
+
     func testQuitCancelOnASecondWorkspaceAbortsAndSendsNoGoodbye() async throws {
         let b = try await addWorkspace()
         await makeDirty(b)
