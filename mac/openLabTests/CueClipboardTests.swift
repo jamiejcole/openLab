@@ -250,7 +250,6 @@ final class CueClipboardTests: XCTestCase {
     func testPasteWithNothingValidOnThePasteboardDoesNothing() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.intro])
-        XCTAssertFalse(editor.canPaste)
         await editor.paste()
         let cue = #"{"id":"x","kind":{"type":"memo"}}"#
         let bad = [
@@ -355,7 +354,6 @@ final class CueClipboardTests: XCTestCase {
         wc.setShowMode(true)
         let payload = "{\"cues\":[{\"id\":\"x\"}]}"
         e.pasteboard.setString(payload, forType: CueEditor.pasteType)
-        XCTAssertFalse(e.canPaste)
         let copied = await e.copySelection()
         XCTAssertFalse(copied)
         await e.cutSelection()

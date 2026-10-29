@@ -296,19 +296,6 @@ final class AppController {
         return controllers.values.first { $0.window === key }
     }
 
-    /// GO on the list shown in the key window (the sidebar's selection).
-    @discardableResult
-    func goFront() async -> Result<OkBody, EngineError>? {
-        guard let store = frontController?.store else { return nil }
-        return await go(store)
-    }
-
-    @discardableResult
-    func pauseAllFront() async -> Result<OkBody, EngineError>? {
-        guard let store = frontController?.store else { return nil }
-        return await run(.pauseAll, on: store)
-    }
-
     // MARK: Transport commands (menu items and keys)
 
     /// The transport keys of `store`'s workspace. A show file whose hotkeys conflict or are

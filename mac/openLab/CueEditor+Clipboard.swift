@@ -150,8 +150,6 @@ extension CueEditor {
         await deleteSelection()
     }
 
-    var canPaste: Bool { !isLocked() && pasteboard.string(forType: Self.pasteType) != nil }
-
     /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
     func paste() async {
         guard await begin(), let list = cueList?.listID else { return }

@@ -122,7 +122,6 @@
 "cuelist.col.duration" = "Duration";
 "cuelist.col.postWait" = "Post-Wait";
 
-"cuelist.col.status" = "Status";
 "cue.target.missing" = "Missing target";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
