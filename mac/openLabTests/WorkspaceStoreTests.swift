@@ -311,7 +311,7 @@ final class WorkspaceStoreTests: XCTestCase {
         guard case .success(let bad) = await rig.store.preshowCheck() else { return XCTFail("sample") }
         XCTAssertFalse(bad.ok)
         XCTAssertEqual(bad.summary.total, 2)
-        XCTAssertEqual(bad.brokenCues.map(\.name), ["Storm"])
+        XCTAssertEqual(bad.brokenCues.map(\.name), ["Radio"])
         XCTAssertEqual(bad.media.map(\.status), [.missing])
         XCTAssertEqual(bad.system.count, 1)
 

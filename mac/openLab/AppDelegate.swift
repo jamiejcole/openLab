@@ -145,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
+    @MainActor @objc func showPreshowCheck(_ sender: Any?) { appController.frontController?.showPreshowCheck() }
 
     @MainActor @objc func relinkMedia(_ sender: Any?) {
         guard let store = appController.frontController?.store else { return }
@@ -197,6 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         if item.action == #selector(showLog(_:)) {
             return appController.frontController != nil
+        }
+        if item.action == #selector(showPreshowCheck(_:)) {
+            return appController.frontController?.canRunPreshowCheck ?? false
         }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return true

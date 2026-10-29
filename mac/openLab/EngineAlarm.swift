@@ -19,7 +19,7 @@ protocol EngineAlarmPresenting: AnyObject {
 /// Esc keep working in the workspace windows while it is up.
 @MainActor
 final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private let titleLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
@@ -78,6 +78,10 @@ final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
         titleLabel.textColor = .systemRed
         titleLabel.setAX(AX.engineAlarmTitle)
         messageLabel.setAX(AX.engineAlarmMessage)
+        // Selectable text needs its panel to be key: a click on the message would take the keys
+        // from the workspace window and GO would stop working while the engine is down.
+        messageLabel.isSelectable = false
+        detailLabel.isSelectable = false
         detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.setAX(AX.engineAlarmDetail)

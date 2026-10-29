@@ -363,6 +363,34 @@
 "log.column.message" = "Message";
 "log.tailFailed" = "The engine's log history could not be loaded.";
 "log.dropped" = "%d records were dropped by the engine.";
+"menu.window.preshowCheck" = "Pre-Show Check";
+"preshow.title" = "Pre-Show Check";
+"preshow.title.workspace" = "Pre-Show Check: %@";
+"preshow.checkAgain" = "Check Again";
+"preshow.checking" = "Checking…";
+"preshow.failed" = "The check could not be run. Try again.";
+"preshow.disconnected" = "The engine is not connected: nothing has been checked.";
+"preshow.summary.ok" = "No problems found.";
+"preshow.summary.one" = "1 problem found.";
+"preshow.summary.many" = "%d problems found.";
+"preshow.summary.problems" = "Problems found.";
+"preshow.section.brokenCues" = "Broken cues (%d)";
+"preshow.section.media" = "Media files (%d)";
+"preshow.section.devices" = "Audio patches without a device (%d)";
+"preshow.section.network" = "Network destinations (%d)";
+"preshow.section.system" = "Engine warnings (%d)";
+"preshow.cue.deleted" = "%@ (deleted)";
+"preshow.usedBy" = "Used by: %@";
+"preshow.usedBy.more" = "%@ and %d more";
+"preshow.media.missing" = "File not found.";
+"preshow.media.unsupported" = "Cannot be played: %@";
+"preshow.patch.unknown" = "Patch %@";
+"preshow.patch.missing" = "Cues use this patch, but the workspace does not have it.";
+"preshow.patch.noDevice" = "No audio device to play on.";
+"preshow.patch.unused" = "No cue uses this patch.";
+"preshow.network.unknown" = "Network patch %@";
+"preshow.network.missing" = "Cues use this destination, but the workspace does not have it.";
+"preshow.network.notChecked" = "%@: not checked (reachability is not tested).";
 
 /* Relink missing media (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";

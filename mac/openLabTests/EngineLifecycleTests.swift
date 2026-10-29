@@ -781,3 +781,22 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNil(AppLaunch.live.runningFirst(), "the unit-test host shares no engine with anyone")
     }
 }
+
+/// #368: a click anywhere on the engine alarm must leave the workspace window key, so GO and the
+/// transport keys keep working while the engine is down.
+@MainActor
+final class EngineAlarmPanelTests: XCTestCase {
+    func testNothingInTheAlarmMakesItKey() throws {
+        let alarm = EngineAlarmPanel()
+        alarm.show(title: "Engine stopped", message: "The engine stopped.")
+        alarm.setDetail("detail")
+        alarm.setRestoreAction {}
+        defer { alarm.dismiss() }
+        let panel = try XCTUnwrap(alarm.panel)
+        XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
+        func walk(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(walk) }
+        let views = walk(try XCTUnwrap(panel.contentView))
+        XCTAssertTrue(views.contains { ($0 as? NSTextField)?.stringValue == "The engine stopped." })
+        for v in views { XCTAssertFalse(v.needsPanelToBecomeKey, "\(type(of: v))") }
+    }
+}
