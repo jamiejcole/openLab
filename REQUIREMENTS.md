@@ -75,8 +75,8 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
 - [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
 - [x] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
-- [ ] **CL-07** `v0.0.1` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
 - [ ] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
+- [ ] **CL-07** `v0.0.1` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
 
 ---
 
@@ -246,8 +246,8 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - ~~**ED-10** Create fade/stop cues for selected cue in one action ("fade this out").~~ *(dropped 2026-10-29: QLab 5 has no built-in command; the Cues menu only creates an empty Fade cue.)*
 - [ ] **ED-11** Timeline view for group cues showing child timing graphically, with drag editing.
 - [ ] **ED-12** `v0.0.1` Fully keyboard-operable editing (create cue types, navigate, edit fields).
-- [ ] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
 - [ ] **ED-13** `v0.0.1` Cue colours and flags (set per cue and per selection). ~~Filter/highlight by colour/flag/state~~ *(dropped 2026-10-29: QLab 5 has none; Find covers lookup.)*
+- [ ] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
 
 ---
 
