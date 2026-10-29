@@ -475,12 +475,11 @@ final class CueListTests: XCTestCase {
 
     func testEveryBrokenReasonHasAString() {
         for reason in WireBrokenReason.allCases {
-            let key = CueStateStyle.brokenReasonKey(reason)
-            XCTAssertNotEqual(loc(key), key, "\(reason)")
+            XCTAssertNotEqual(ProblemText.reason(reason), "broken.\(reason.rawValue)", "\(reason)")
         }
         XCTAssertEqual(
             CueStateStyle.brokenDetail(reason: .deviceLost, problems: [], groupWarning: true, label: \.raw),
-            loc("cue.broken.deviceLost"))
+            loc("broken.device_lost"))
         XCTAssertEqual(
             CueStateStyle.brokenDetail(reason: nil, problems: [], groupWarning: true, label: \.raw),
             loc("cue.broken.group"))
@@ -496,7 +495,7 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(try icon(H.door).accessibilityLabel(), loc("cue.state.loaded"))
         XCTAssertEqual(try icon(H.rain).accessibilityLabel(), loc("cue.state.paused"))
         XCTAssertEqual(try icon(H.radio).accessibilityLabel(), loc("cue.state.broken"))
-        XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("cue.broken.deviceLost"))")
+        XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("broken.device_lost"))")
         // Static problems break a cue even without a state entry (the fixture's fade cue).
         XCTAssertEqual(try icon(H.fade).accessibilityLabel(), loc("cue.state.broken"))
         // The tooltip reads as the Warnings tab does: fields filled in, never a raw `{target}`.

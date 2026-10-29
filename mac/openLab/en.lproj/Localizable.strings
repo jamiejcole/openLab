@@ -137,9 +137,6 @@
 "cue.state.fading" = "Fading";
 "cue.state.stopping" = "Stopping";
 "cue.state.broken" = "Broken";
-"cue.broken.voiceRejected" = "The audio engine rejected the cue";
-"cue.broken.streamFailed" = "The audio file could not be read while playing";
-"cue.broken.deviceLost" = "The audio device was lost";
 "cue.broken.group" = "A cue inside this group is broken";
 
 "cue.colour.none" = "None";

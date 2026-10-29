@@ -31,21 +31,13 @@ struct CueStateStyle: Equatable {
         }
     }
 
-    static func brokenReasonKey(_ reason: WireBrokenReason) -> String {
-        switch reason {
-        case .voiceRejected: return "cue.broken.voiceRejected"
-        case .streamFailed: return "cue.broken.streamFailed"
-        case .deviceLost: return "cue.broken.deviceLost"
-        }
-    }
-
     /// Why a cue is broken, for the tooltip: a run-time reason, else its static problems, else a
     /// group's warning about a descendant.
     /// Problems read as the Warnings tab words them, fields filled in (`label` names ids).
     static func brokenDetail(
         reason: WireBrokenReason?, problems: [WireProblem], groupWarning: Bool, label: ProblemText.Label
     ) -> String? {
-        if let reason { return loc(brokenReasonKey(reason)) }
+        if let reason { return ProblemText.reason(reason) }
         if !problems.isEmpty {
             return problems.map { ProblemText.problem($0, label: label) }.joined(separator: "\n")
         }
