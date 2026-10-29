@@ -74,6 +74,8 @@ final class AppControllerTests: XCTestCase {
 
     private let sessionScheduler = ManualScheduler()
     private let quitScheduler = ManualScheduler()
+    /// What `engine.json` says of the engine's shutdown.
+    private var engineStopping = false
 
     override func setUp() async throws { try await build() }
 
@@ -83,7 +85,12 @@ final class AppControllerTests: XCTestCase {
         let engine = engine!
         // Read afresh each attempt, as engine.json is (a new engine run has a new token).
         let session = EngineSession(
-            transport: engine, infoProvider: { .success(engine.info) }, scheduler: sessionScheduler)
+            transport: engine,
+            infoProvider: { [unowned self] in
+                var info = engine.info
+                info.stopping = engineStopping
+                return .success(info)
+            }, scheduler: sessionScheduler)
         app = AppController(
             session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
@@ -1221,6 +1228,25 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
+    }
+
+    /// #386: the engine began its shutdown (a SIGTERM, a logout) and dropped the app. No save or
+    /// commit can reach it and it autosaves the dirty workspace itself: the quit asks nothing and
+    /// sends nothing.
+    func testQuitWhileTheEngineIsShuttingDownAsksNoSavePrompts() async throws {
+        let doc = try XCTUnwrap(app.session.order.first)
+        await makeDirty(doc)
+        engineStopping = true
+        engine.dropConnections()
+        let refused = await eventually {
+            await self.sessionScheduler.fire()  // the reconnect backoff
+            return self.app.session.connectionState == .retrying(.engineStopping)
+        }
+        XCTAssertTrue(refused)
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertEqual(alerts.log, [])
+        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
     }
 
     // MARK: Re-entrancy, single-workspace engine, reconnect
