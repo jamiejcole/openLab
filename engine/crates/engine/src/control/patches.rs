@@ -635,8 +635,8 @@ impl Patches {
     }
 
     /// The mixer rebuilt its non-voice state after repeated faults (every slot silent and
-    /// enabled, every device output silent with no delay, the master silent): the commands
-    /// that bring all of it back to what was last sent. Quarantined slots are free again.
+    /// enabled, every device output and the master at unity, each output keeping its delay):
+    /// the commands that bring all of it back to what was last sent. Quarantined slots are free again.
     pub fn rebuilt(&mut self) -> Vec<CommandKind> {
         let back = std::mem::take(&mut self.quarantined);
         if !back.is_empty() {
@@ -663,8 +663,8 @@ impl Patches {
         commands
     }
 
-    /// The mixer reset device output `output` (silent, no delay) after a fault: its settings
-    /// as last sent.
+    /// The mixer reset device output `output` (to unity, keeping its delay) after a fault: its
+    /// settings as last sent.
     pub fn resend_output(&self, output: u16) -> Option<CommandKind> {
         let &delay_frames = self.delays.get(usize::from(output))?;
         Some(CommandKind::SetOutput {

@@ -6,7 +6,10 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{CommandKind, DelayLine, Event, FinishReason, Mixer, SampleTime, Voice, VoiceId};
+use super::{
+    CommandKind, DelayLine, Event, FinishReason, MAX_OUTPUT_CHANNELS, MAX_PATCHES, Mixer,
+    SampleTime, Voice, VoiceId,
+};
 
 /// Faulted blocks, each blamed on the same unit (a voice, a patch, a device output, the master
 /// or the meters), within [`FAULT_WINDOW`] blocks, after which a voice is dropped and any other
@@ -168,6 +171,9 @@ pub(crate) struct DisabledFlags {
     meters: AtomicBool,
 }
 
+// A unit past bit 63 would never be published, so a lost report of it would go unfound.
+const _: () = assert!(MAX_PATCHES <= 64 && MAX_OUTPUT_CHANNELS <= 64);
+
 impl DisabledFlags {
     fn note(&self, stage: FaultStage) {
         let bit = |k: u16| 1u64.checked_shl(u32::from(k)).unwrap_or(0);
@@ -274,7 +280,8 @@ impl Mixer {
     ///   applied) and the voice, in whatever state the command left it, is dropped at once; a
     ///   start that never reached the pool is reported finished the same way;
     /// - a patch: reset to silence; a device output or the master: reset to unity (the only
-    ///   value the control thread gives them) with no delay. Reported ([`Event::StageFaulted`])
+    ///   value the control thread gives them), an output keeping its delay with nothing stored
+    ///   ([`DelayLine::reset`]). Reported ([`Event::StageFaulted`])
     ///   for the control thread to re-send its settings; disabled at the limit (also published
     ///   in [`DisabledUnits`], so a lost report is found);
     /// - the meters: reported; disabled at the limit;
@@ -368,7 +375,8 @@ impl Mixer {
     }
 
     /// The last resort for faults no unit can be blamed for: every patch back to silence, every
-    /// device output and the master to unity with no delay, all enabled, to be set again from
+    /// device output and the master to unity (each output keeping its delay, nothing stored),
+    /// all enabled, to be set again from
     /// the control thread's copy. Voices and pending commands are kept (they are the show; a
     /// fault in one is blamed on it).
     fn rebuild(&mut self) {
@@ -649,6 +657,32 @@ mod tests {
         assert_eq!(play(&mut r, 1), [0.0, 0.5]);
         route(&mut ctl, 0, 0, 1.0);
         assert_eq!(play(&mut r, 8), [0.5, 0.5]);
+    }
+
+    /// Regression (#317): an output reset after a fault keeps its delay, so a delay-compensated
+    /// output is heard late again, never early (undelayed) while its settings come back.
+    #[test]
+    fn an_output_fault_keeps_the_output_delayed() {
+        let (mut ctl, mut r) = two_voices();
+        let settings = OutputSettings {
+            delay_frames: 100,
+            ..OutputSettings::default()
+        };
+        let at = ctl.samples_rendered();
+        ctl.send(at, CommandKind::SetOutput { output: 0, settings });
+        assert_eq!(play(&mut r, 8), [0.5, 0.5]);
+        r.mixer_mut().stage.panic_at = Some(Stage::Output(0));
+        fault(&mut r);
+        r.mixer_mut().stage.panic_at = None;
+        assert_eq!(stage_events(&mut ctl), [(FaultStage::Output(0), false)]);
+        let mut buf = [0.0; 256];
+        for half in buf.as_chunks_mut::<128>().0 {
+            assert!(r.mixer_mut().process_guarded(half, 64));
+        }
+        let out0: Vec<f32> = buf.chunks(2).map(|f| f[0]).collect();
+        assert!(out0[..100].iter().all(|&s| s == 0.0), "{out0:?}");
+        assert!(out0[100..].iter().all(|&s| s == 0.5), "{out0:?}");
+        assert!(buf.chunks(2).all(|f| f[1] == 0.5));
     }
 
     #[test]

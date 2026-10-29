@@ -187,7 +187,7 @@ A mixer panic outside any voice's render is blamed on its stage and reported as 
 | Stage | Reset (`disabled: false`) | Disabled |
 |---|---|---|
 | `Patch(slot)` | the slot's non-zero gains as last sent (`Patches::resend`); an `audio_fault` notice in the doc that owns the slot, naming the patch | the slot is quarantined (`Patches::quarantine`: taken from its patch, never freed or handed out); every voice on it stops (no fade, dated no earlier than its start or resume) and its cue breaks as a faulted voice does (`Voices::fail_slot`); the doc syncs, so the patch takes another free slot or, with none free, is `mixer_patches_exhausted` and its cues cannot start; an `audio_fault` notice |
-| `Output(o)` | (the mixer reset it to unity with no delay) `SetOutput` with the output's delay (`Patches::resend_output`); a notice in every doc | an `audio_fault` warning in force in every doc (the output is silent) |
+| `Output(o)` | (the mixer reset it to unity, its delay kept) `SetOutput` with the output's delay (`Patches::resend_output`); a notice in every doc | an `audio_fault` warning in force in every doc (the output is silent) |
 | `Master` | `SetMaster { 1.0 }` (the mixer's master is always unity, and the mixer resets it to unity); a notice in every doc | a warning in force (bypassed at unity: levels are unaffected) |
 | `Meters` | logged only | a warning in force (meters stop) |
 | `Mixer` (rebuild) | every slot's gains, every output, the master (`Patches::rebuilt`); quarantined slots are free again and the warnings in force are cleared; a notice in every doc | — |

@@ -11,6 +11,9 @@ pub(super) struct DelayLine {
     xfade_len: u64,
     /// A change requested mid-crossfade; starts when the running crossfade ends.
     next: Option<usize>,
+    /// Samples stored since the line last held nothing usable (new or reset), up to its length:
+    /// a tap further back than this reads silence, so a reset need not clear the buffer.
+    fresh: usize,
 }
 
 impl DelayLine {
@@ -23,18 +26,21 @@ impl DelayLine {
             xfade: xfade_len,
             xfade_len,
             next: None,
+            fresh: 0,
         }
     }
 
-    /// As new: no delay, no crossfade, silence stored. Clears the whole line (at most
-    /// [`MAX_DELAY_SECONDS`] of samples), which only a fault does.
+    /// After a fault: silence stored, no crossfade, the delay kept (the latest one asked for),
+    /// so a delay-compensated output is never heard undelayed. O(1): what was stored is
+    /// disowned (`fresh`), not cleared, since clearing up to
+    /// [`MAX_DELAY_SECONDS`](super::MAX_DELAY_SECONDS) of samples per output can overrun the
+    /// callback.
     pub(super) fn reset(&mut self) {
-        self.buf.fill(0.0);
-        self.write = 0;
-        self.delay = 0;
-        self.old_delay = 0;
+        let d = self.next.take().unwrap_or(self.delay);
+        self.delay = d;
+        self.old_delay = d;
         self.xfade = self.xfade_len;
-        self.next = None;
+        self.fresh = 0;
     }
 
     pub(super) fn set_delay(&mut self, frames: usize) {
@@ -53,6 +59,9 @@ impl DelayLine {
     }
 
     fn tap(&self, d: usize) -> f32 {
+        if d >= self.fresh {
+            return 0.0;
+        }
         let i = if self.write >= d {
             self.write - d
         } else {
@@ -70,6 +79,7 @@ impl DelayLine {
             return;
         }
         self.next = None;
+        self.fresh = self.fresh.saturating_add(xs.len()).min(self.buf.len());
         let mut src: &[f32] = xs;
         while !src.is_empty() {
             let room = self.buf.len().saturating_sub(self.write);
@@ -101,6 +111,7 @@ impl DelayLine {
         if let Some(s) = self.buf.get_mut(self.write) {
             *s = x;
         }
+        self.fresh = self.fresh.saturating_add(1).min(self.buf.len());
         let mut y = self.tap(self.delay);
         if self.xfade < self.xfade_len {
             let a = self.xfade as f32 / self.xfade_len as f32;
@@ -133,6 +144,31 @@ mod tests {
         }
         d.tick(1.0);
         assert_eq!((d.old_delay, d.delay, d.next), (20, 40, None));
+    }
+
+    /// #317: a reset keeps the delay it was moving to (no crossfade from an undelayed tap) and
+    /// reads silence until a delay's worth of new samples is stored, without clearing the line:
+    /// what was stored before never comes out.
+    #[test]
+    fn a_reset_keeps_the_delay_and_plays_nothing_stored_before_it() {
+        let mut d = DelayLine::new(100, 10);
+        d.set_delay(20);
+        for _ in 0..200 {
+            d.tick(9.0);
+        }
+        d.set_delay(30);
+        d.tick(9.0);
+        d.reset();
+        assert_eq!((d.delay, d.old_delay, d.next, d.xfade), (30, 30, None, 10));
+        let out: Vec<f32> = (1..=60).map(|k| d.tick(k as f32)).collect();
+        assert!(out[..30].iter().all(|&y| y == 0.0), "{out:?}");
+        let want: Vec<f32> = (1..=30).map(|k| k as f32).collect();
+        assert_eq!(out[30..], want[..]);
+        // A retarget after the reset crossfades between taps that both read only new samples.
+        d.reset();
+        d.set_delay(50);
+        let out: Vec<f32> = (0..30).map(|_| d.tick(9.0)).collect();
+        assert!(out.iter().all(|&y| y == 0.0), "{out:?}");
     }
 
     /// Review 2 M2: a change on the exact sample a crossfade ends supersedes the queued one.
@@ -201,8 +237,8 @@ mod tests {
                 want.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
             );
             assert_eq!(
-                (a.write, a.delay, a.old_delay, a.xfade, a.next),
-                (b.write, b.delay, b.old_delay, b.xfade, b.next)
+                (a.write, a.delay, a.old_delay, a.xfade, a.next, a.fresh),
+                (b.write, b.delay, b.old_delay, b.xfade, b.next, b.fresh)
             );
         }
     }
