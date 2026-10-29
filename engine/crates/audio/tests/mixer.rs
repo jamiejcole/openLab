@@ -1192,7 +1192,10 @@ fn a_move_during_a_move_waits_for_it() {
     assert_eq!((voice, moves), (VoiceId(1), 2));
     let at = usize::try_from(at).unwrap();
     assert!(b[at - 100] > 0.0, "reported a block late at most");
-    assert!(a[at..].iter().all(|s| *s == 1.0), "reported before it ended");
+    assert!(
+        a[at..].iter().all(|s| *s == 1.0),
+        "reported before it ended"
+    );
 }
 
 /// Moving voices renders without allocating (the real-time rule).
