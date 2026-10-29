@@ -438,6 +438,7 @@ mod tests {
                 name: "A".into(),
                 path: None,
                 dirty: false,
+                path_hash: None,
             }],
         }));
         hub.deliver(&Outgoing::doc(
@@ -585,6 +586,7 @@ mod tap_tests {
                 name: "A".into(),
                 path: None,
                 dirty: false,
+                path_hash: None,
             }],
         }));
         // An engine-wide message that is not the list changes no copy.

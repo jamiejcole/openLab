@@ -244,6 +244,10 @@ final class ProtocolFixtureTests: XCTestCase {
         )
         guard case .appWelcome(_, let list) = app else { return XCTFail() }
         XCTAssertEqual(list.first?.doc, "4")
+        XCTAssertNil(list.first?.pathHash, "an engine before path_hash: no hash")
+        guard case .workspaces(let listed) = try ServerMessage.decode(try Fixtures.text("server", "workspaces"))
+        else { return XCTFail("workspaces") }
+        XCTAssertEqual(listed.map(\.pathHash), ["0123456789abcdef", nil])
         let closed = try ServerMessage.decode(#"{"type":"closed","doc":4}"#)
         guard case .closed(let d) = closed else { return XCTFail() }
         XCTAssertEqual(d, "4")

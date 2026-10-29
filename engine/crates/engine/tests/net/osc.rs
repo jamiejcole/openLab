@@ -193,6 +193,7 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                     name: ws.name.clone(),
                     path: None,
                     dirty: false,
+                    path_hash: None,
                 };
                 let mut workspaces = vec![info(DOC, &ws)];
                 if let Some(second) = c.second.lock().unwrap().as_ref() {
@@ -303,6 +304,7 @@ impl Out {
                 name: ws.name.clone(),
                 path: None,
                 dirty: false,
+                path_hash: None,
             }],
         };
         tx.try_send(Outgoing::all(list)).unwrap();
@@ -1720,6 +1722,7 @@ impl Fix {
                     name: "test".into(),
                     path: None,
                     dirty: false,
+                    path_hash: None,
                 },
                 openlab_core::protocol::WorkspaceInfo {
                     doc: DOC2,
@@ -1727,6 +1730,7 @@ impl Fix {
                     name: "other".into(),
                     path: None,
                     dirty: false,
+                    path_hash: None,
                 },
             ],
         };

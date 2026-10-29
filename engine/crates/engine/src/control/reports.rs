@@ -71,6 +71,7 @@ impl Control {
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
                 dirty: d.is_dirty(),
+                path_hash: d.show_path.as_deref().map(crate::persist::path_key),
             })
             .collect()
     }

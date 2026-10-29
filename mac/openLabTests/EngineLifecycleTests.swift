@@ -637,6 +637,51 @@ final class EngineCrashFlowTests: XCTestCase {
         await alarm.recoverAutosaves()
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("setAside") }, ["setAsideAutosave:Older"])
     }
+
+    // MARK: Current autosaves of another copy of an open workspace (#359)
+
+    private func current(_ workspace: ModelID, name: String, hash: String?) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "workspace_id": .string(workspace.raw), "show_name": .string(name),
+            "modified_ms": .int(1_700_000_000_000), "stale": .bool(false),
+        ]
+        if let hash { entry["path_hash"] = .string(hash) }
+        return .object(entry)
+    }
+
+    /// B and a Finder copy of it share a workspace id; the copy's autosave (another path hash)
+    /// is offered from File > Recover Autosaves… while B is open, and B's own is not.
+    func testAnotherCopysAutosaveIsOfferedWhileThatWorkspaceIsOpenAndItsOwnIsNot() async throws {
+        engine.pathHashes["/Shows/B.openlab"] = "00000000000000b1"
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/B.openlab"))
+        await assertEventually {
+            self.app.windows.count == 3 && self.app.session.workspaces.contains { $0.pathHash == "00000000000000b1" }
+        }
+        let b = try XCTUnwrap(app.session.workspaces.first { $0.path == "/Shows/B.openlab" }?.workspaceId)
+        engine.recoveryEntries = [
+            current(b, name: "Copy", hash: "00000000000000b2"), current(b, name: "Own", hash: "00000000000000b1"),
+        ]
+        alerts.restoreAutosaves = false
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("autosave") }, ["autosave:Copy"])
+    }
+
+    /// No hash to compare (A is listed without one, as by an engine before the field; the new
+    /// workspace has no path): the workspace id alone holds its autosaves, as before.
+    func testWithoutAListedHashAnOpenWorkspaceHoldsItsAutosavesByIdAlone() async throws {
+        await app.newWorkspace()
+        await assertEventually { self.app.windows.count == 3 }
+        let a = try XCTUnwrap(app.session.workspaces.first { $0.path == "/Shows/A.openlab" })
+        let untitled = try XCTUnwrap(app.session.workspaces.first { $0.path == nil }?.workspaceId)
+        XCTAssertNil(a.pathHash)
+        engine.recoveryEntries = [
+            current(a.workspaceId, name: "A copy", hash: "00000000000000a2"),
+            current(untitled, name: "Other", hash: "00000000000000c1"),
+            current(untitled, name: "Own", hash: nil),
+        ]
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["info:" + loc("recover.none")])
+    }
 }
 
 /// Which autosaves are offered (#332), on the scan data alone.
@@ -650,11 +695,49 @@ final class AutosaveOfferTests: XCTestCase {
         RecoveryEntryInfo(workspaceId: id, pathHash: hash, showName: nil, modifiedMs: ms, stale: stale)
     }
 
+    private func holder(_ id: ModelID, _ hash: String? = "00000000000000aa") -> AutosaveOffer.Holder {
+        AutosaveOffer.Holder(workspace: id, pathHash: hash)
+    }
+
     func testACurrentAutosaveIsOfferedOnlyWhenNoWindowHoldsItsWorkspace() {
         let mine = entry(w, ms: 5, stale: false)
         let lost = entry(other, ms: 5, stale: false)
         let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
-        XCTAssertEqual(AutosaveOffer.offerable([mine, lost], held: [w], windows: [window]), [lost])
+        XCTAssertEqual(AutosaveOffer.offerable([mine, lost], held: [holder(w)], windows: [window]), [lost])
+    }
+
+    /// #359: a copy of the open show (same workspace id, other path) left a current autosave; it
+    /// is nobody's, so it is offered, and the open copy's own is not.
+    func testAnotherCopysCurrentAutosaveIsOfferedWhileItsWorkspaceIsOpen() {
+        let mine = entry(w, ms: 5, stale: false)
+        let copy = entry(w, ms: 6, stale: false, hash: "00000000000000bb")
+        let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([mine, copy], held: [holder(w)], windows: [window]), [copy])
+    }
+
+    /// Without a hash on either side (an untitled window, an engine that does not send it, an
+    /// untitled workspace's autosave) the workspace id alone decides, as before.
+    func testWithoutAHashOnEitherSideTheWorkspaceIdDecides() {
+        let copy = entry(w, ms: 6, stale: false, hash: "00000000000000bb")
+        let untitled = entry(w, ms: 7, stale: false, hash: nil)
+        let window = AutosaveOffer.Window(workspace: w, cover: AutosaveCover())
+        XCTAssertEqual(AutosaveOffer.offerable([copy, untitled], held: [holder(w, nil)], windows: [window]), [])
+        XCTAssertEqual(AutosaveOffer.offerable([untitled], held: [holder(w)], windows: [window]), [])
+        XCTAssertEqual(AutosaveOffer.offerable([untitled], held: [holder(other, nil)], windows: []), [untitled])
+    }
+
+    /// Another copy's autosave restored into a window (which got a fresh workspace id) is that
+    /// window's: not offered again.
+    func testACurrentAutosaveLoadedIntoAWindowIsNotOfferedAgain() {
+        let copy = entry(w, ms: 6, stale: false, hash: "00000000000000bb")
+        var cover = AutosaveCover()
+        cover.load(copy)
+        let windows = [
+            AutosaveOffer.Window(workspace: w, cover: AutosaveCover()),
+            AutosaveOffer.Window(workspace: other, cover: cover),
+        ]
+        XCTAssertEqual(
+            AutosaveOffer.offerable([copy], held: [holder(w), holder(other, nil)], windows: windows), [])
     }
 
     /// A restore by `open` covers the exact offer time of the window's own workspace only.
@@ -662,21 +745,22 @@ final class AutosaveOfferTests: XCTestCase {
         let stale = entry(w, ms: 1_000, stale: true)
         var cover = AutosaveCover()
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], held: [holder(w)], windows: [.init(workspace: w, cover: cover)]), [stale],
             "opened from its file: the file's time says nothing reliable")
         cover.loadOwn(modifiedMs: 2_000)
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], held: [holder(w)], windows: [.init(workspace: w, cover: cover)]), [stale],
             "a later autosave was restored: it need not contain this one")
         cover.loadOwn(modifiedMs: 1_000)
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: w, cover: cover)]), [])
+            AutosaveOffer.offerable([stale], held: [holder(w)], windows: [.init(workspace: w, cover: cover)]), [])
         XCTAssertEqual(
-            AutosaveOffer.offerable([stale], held: [w], windows: [.init(workspace: other, cover: cover)]), [stale],
+            AutosaveOffer.offerable([stale], held: [holder(w)], windows: [.init(workspace: other, cover: cover)]),
+            [stale],
             "another workspace's window covers nothing of this one")
         XCTAssertEqual(
             AutosaveOffer.offerable(
-                [entry(w, ms: nil, stale: true)], held: [w], windows: [.init(workspace: w, cover: cover)]),
+                [entry(w, ms: nil, stale: true)], held: [holder(w)], windows: [.init(workspace: w, cover: cover)]),
             [entry(w, ms: nil, stale: true)], "no time: never matched")
     }
 
@@ -686,12 +770,13 @@ final class AutosaveOfferTests: XCTestCase {
         var cover = AutosaveCover()
         cover.load(entry(w, ms: 1_000, stale: true))
         let windows = [AutosaveOffer.Window(workspace: other, cover: cover)]
-        XCTAssertEqual(AutosaveOffer.offerable([entry(w, ms: 1_000, stale: true)], held: [w], windows: windows), [])
+        XCTAssertEqual(
+            AutosaveOffer.offerable([entry(w, ms: 1_000, stale: true)], held: [holder(w)], windows: windows), [])
         for different in [
             entry(w, ms: 999, stale: true), entry(w, ms: 1_001, stale: true),
             entry(w, ms: 1_000, stale: true, hash: "00000000000000bb"),
         ] {
-            XCTAssertEqual(AutosaveOffer.offerable([different], held: [w], windows: windows), [different])
+            XCTAssertEqual(AutosaveOffer.offerable([different], held: [holder(w)], windows: windows), [different])
         }
     }
 }

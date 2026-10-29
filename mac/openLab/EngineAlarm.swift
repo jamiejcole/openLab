@@ -249,13 +249,17 @@ final class EngineAlarmController {
 
     /// The entries no window holds: see `AutosaveOffer.offerable`.
     private func unheld(_ entries: [RecoveryEntryInfo]) -> [RecoveryEntryInfo] {
+        let listed = Dictionary(session.workspaces.map { ($0.doc, $0) }, uniquingKeysWith: { a, _ in a })
+        let shown = session.stores.compactMap { doc, store in
+            store.model?.id != nil || listed[doc] != nil ? session.info(of: store, doc: doc) : nil
+        }
         let held = Set(
-            session.stores.values.compactMap { $0.model?.id } + session.workspaces.map(\.workspaceId)
-                + session.detached.map(\.info.workspaceId))
-        let listed = Dictionary(session.workspaces.map { ($0.doc, $0.workspaceId) }, uniquingKeysWith: { a, _ in a })
+            (shown + session.workspaces + session.detached.map(\.info)).map {
+                AutosaveOffer.Holder(workspace: $0.workspaceId, pathHash: $0.pathHash)
+            })
         let windows =
             session.stores.map { doc, store in
-                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc], cover: store.autosaveCover)
+                AutosaveOffer.Window(workspace: store.model?.id ?? listed[doc]?.workspaceId, cover: store.autosaveCover)
             }
             + session.detached.map {
                 AutosaveOffer.Window(workspace: $0.info.workspaceId, cover: $0.store.autosaveCover)

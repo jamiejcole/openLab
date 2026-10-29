@@ -17,7 +17,7 @@ struct AutosaveCover: Equatable, Sendable {
     /// since the engine gives a copy of an open workspace a fresh id).
     private(set) var loaded: Set<Loaded> = []
     /// Restored with `open` + `restore`, by the offer's time: the window's own workspace and show
-    /// path (the app is not told that path's hash).
+    /// path (the offer does not carry that path's hash).
     private(set) var ownLoaded: Set<Int64> = []
 
     mutating func load(_ entry: RecoveryEntryInfo) {
@@ -51,17 +51,34 @@ enum AutosaveOffer {
         var cover: AutosaveCover
     }
 
+    /// A workspace a window shows or waits to reopen, with the hash the engine names its autosave
+    /// by (`workspaces`' `path_hash`). nil: never saved, or not known (an engine that does not send
+    /// it, or a path the engine has not listed yet).
+    struct Holder: Hashable {
+        var workspace: ModelID
+        var pathHash: String?
+
+        /// A copy of a show has its workspace id, so the id alone does not say whose autosave it
+        /// is: the hash does, when both sides have one (#359).
+        func holds(_ entry: RecoveryEntryInfo) -> Bool {
+            guard entry.workspaceId == workspace else { return false }
+            guard let pathHash, let other = entry.pathHash else { return true }
+            return pathHash == other
+        }
+    }
+
     /// The `scan_recovery` entries to offer (NFR-05). A current autosave is offered when no
-    /// window shows its workspace or waits to reopen it (`held`): an open one belongs to that
-    /// window. One set aside as stale (not newer than its file when opened) is offered even when
-    /// its workspace is open, since file times are unreliable and it may hold the newest work
-    /// (#332), unless that very autosave was loaded into a window.
-    static func offerable(_ entries: [RecoveryEntryInfo], held: Set<ModelID>, windows: [Window])
+    /// window shows or waits to reopen its workspace at its path (`held`): an open one belongs to
+    /// that window, and another copy's (same workspace id, other path) is nobody's. One set aside
+    /// as stale (not newer than its file when opened) is offered even when its workspace is open,
+    /// since file times are unreliable and it may hold the newest work (#332). Neither is offered
+    /// once that very autosave was loaded into a window.
+    static func offerable(_ entries: [RecoveryEntryInfo], held: Set<Holder>, windows: [Window])
         -> [RecoveryEntryInfo]
     {
         entries.filter { entry in
-            guard entry.stale else { return !held.contains(entry.workspaceId) }
-            return !windows.contains { $0.cover.covers(entry, workspace: $0.workspace) }
+            if windows.contains(where: { $0.cover.covers(entry, workspace: $0.workspace) }) { return false }
+            return entry.stale || !held.contains { $0.holds(entry) }
         }
     }
 }

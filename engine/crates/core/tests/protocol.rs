@@ -1055,6 +1055,7 @@ fn workspace_list() -> Vec<WorkspaceInfo> {
             name: "Hamlet".into(),
             path: Some("/Users/sam/Shows/Hamlet.openlab".into()),
             dirty: true,
+            path_hash: Some("0123456789abcdef".into()),
         },
         WorkspaceInfo {
             doc: DocId(3),
@@ -1062,6 +1063,7 @@ fn workspace_list() -> Vec<WorkspaceInfo> {
             name: "Untitled".into(),
             path: None,
             dirty: false,
+            path_hash: None,
         },
     ]
 }
@@ -1740,6 +1742,24 @@ fn a_log_tail_result_without_seq_still_decodes() {
         panic!("not a log_tail");
     };
     assert_eq!(seq, 0);
+}
+
+#[test]
+fn a_workspace_list_without_path_hash_still_decodes() {
+    // Additive field: a list from an engine before it reads as no hash.
+    let mut json = serde_json::to_value(ServerMessage::Workspaces {
+        workspaces: workspace_list(),
+    })
+    .unwrap();
+    json["workspaces"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("path_hash");
+    let ServerMessage::Workspaces { workspaces } = decode_server(&json.to_string()).unwrap() else {
+        panic!("not a workspaces list");
+    };
+    assert_eq!(workspaces[0].path_hash, None);
+    assert_eq!(workspaces[0].path, workspace_list()[0].path);
 }
 
 #[test]
