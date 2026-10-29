@@ -167,7 +167,10 @@ final class StatusLogTests: XCTestCase {
     func testLogShowsEngineTailAndIgnoresLogNotices() async throws {
         let rig = try Rig()
         let log = LogWindowController(store: rig.store)
-        rig.store.receive(.log(.warn, "a notice, also a record"))
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        rig.engine.push(#"{"type":"log","level":"warn","message":"a notice, also a record"}"#)
+        await settle()
         let entries = try tail()
         log.apply(tail: entries, dropped: 0)
         XCTAssertEqual(log.rows.count, entries.count, "`log` notices are the same records as log_entry")
