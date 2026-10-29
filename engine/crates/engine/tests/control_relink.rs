@@ -266,6 +266,27 @@ fn hold_first_job() -> (DocHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
     (hook, entered, release_tx)
 }
 
+/// A hang guard for waits on the document worker, not a timing assertion: generous for a slow
+/// host, so a regression that never answers fails instead of hanging the run.
+const HANG: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ticks the show until `rx` answers; panics if no answer comes within [`HANG`]. The answer
+/// comes from worker threads, so the bound is wall time, not a tick count.
+fn tick_until_answer(r: &mut Rig, rx: &mut openlab_engine::control::ReplyRx) -> ServerMessage {
+    let deadline = std::time::Instant::now() + HANG;
+    loop {
+        r.s.tick();
+        if let Ok(answer) = rx.try_recv() {
+            return answer;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no answer within {HANG:?}"
+        );
+        std::thread::yield_now();
+    }
+}
+
 fn deliver(r: &mut Rig, request: Request) -> (RequestId, openlab_engine::control::ReplyRx) {
     let id = r.s.request_id();
     let (tx, rx) = reply_channel();
@@ -287,7 +308,7 @@ fn a_slow_folder_does_not_block_the_control_thread_and_a_stalled_walk_times_out(
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
-    entered.recv().unwrap();
+    entered.recv_timeout(HANG).unwrap();
     // The worker is stuck in the folder; the control thread still edits and plays.
     let cid = r.s.request_id();
     let (tx, mut edit) = reply_channel();
@@ -332,7 +353,7 @@ fn a_walk_that_returns_applies_even_when_slow() {
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
-    entered.recv().unwrap();
+    entered.recv_timeout(HANG).unwrap();
     // Another document request is refused while the worker is busy.
     let (_, mut other) = deliver(&mut r, Request::ScanRecovery);
     assert!(matches!(
@@ -340,10 +361,7 @@ fn a_walk_that_returns_applies_even_when_slow() {
         ServerMessage::Result { outcome: Outcome::Error(ref e), .. } if e.code == ErrorCode::CommandRefused
     ));
     release.send(()).unwrap();
-    while rx.try_recv().is_err() {
-        r.s.tick();
-        std::thread::yield_now();
-    }
+    tick_until_answer(&mut r, &mut rx);
     assert!(!media(&r.s, 1).starts_with(&portable(&r.gone)));
 }
 
@@ -355,7 +373,7 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
     touch(&r.lib.join("b.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
-    entered.recv().unwrap();
+    entered.recv_timeout(HANG).unwrap();
     // The operator points cue 1 elsewhere while the folder is walked.
     let chosen = portable(&r.lib.join("elsewhere/chose.wav"));
     let cid = r.s.request_id();
@@ -383,15 +401,10 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
     });
     assert!(edit.try_recv().is_ok());
     release.send(()).unwrap();
-    let mut got = None;
-    while got.is_none() {
-        r.s.tick();
-        got = rx.try_recv().ok();
-        std::thread::yield_now();
-    }
+    let got = tick_until_answer(&mut r, &mut rx);
     assert_eq!(media(&r.s, 1), chosen);
     assert!(!media(&r.s, 2).starts_with(&portable(&r.gone)));
-    assert_eq!(counts(&[got.unwrap()]).0, 1);
+    assert_eq!(counts(&[got]).0, 1);
 }
 
 #[test]
@@ -400,17 +413,12 @@ fn a_doc_closed_during_the_walk_answers_no_workspace() {
     let mut r = rig_with(&["a.wav"], |c| c.doc_hook = Some(hook));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
-    entered.recv().unwrap();
+    entered.recv_timeout(HANG).unwrap();
     let doc = r.s.control().doc_ids()[0];
     r.s.control_mut().close_doc(doc, true).unwrap();
     release.send(()).unwrap();
-    let mut got = None;
-    while got.is_none() {
-        r.s.tick();
-        got = rx.try_recv().ok();
-        std::thread::yield_now();
-    }
-    assert_eq!(error_code(&[got.unwrap()]), ErrorCode::NoWorkspace);
+    let got = tick_until_answer(&mut r, &mut rx);
+    assert_eq!(error_code(&[got]), ErrorCode::NoWorkspace);
 }
 
 /// Half a second at [`RATE`] for any file that is there.
@@ -465,22 +473,17 @@ fn save_works_while_a_relink_walk_is_pending_and_saves_the_model_as_it_is() {
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
     let (_, mut walk) = deliver(&mut r, Request::Relink { folder });
-    entered.recv().unwrap();
+    entered.recv_timeout(HANG).unwrap();
     let gone_ref = media(&r.s, 1);
     let (_, mut save) = deliver(&mut r, Request::Save);
-    let mut answer = None;
-    while answer.is_none() {
-        r.s.tick();
-        answer = save.try_recv().ok();
-        std::thread::yield_now();
-    }
+    let answer = tick_until_answer(&mut r, &mut save);
     assert!(
         matches!(
             answer,
-            Some(ServerMessage::Result {
+            ServerMessage::Result {
                 outcome: Outcome::Ok(_),
                 ..
-            })
+            }
         ),
         "{answer:?}"
     );
@@ -497,13 +500,8 @@ fn save_works_while_a_relink_walk_is_pending_and_saves_the_model_as_it_is() {
     );
     // The walk then lands as an edit after the save: relinked, and the show is dirty again.
     release.send(()).unwrap();
-    let mut got = None;
-    while got.is_none() {
-        r.s.tick();
-        got = walk.try_recv().ok();
-        std::thread::yield_now();
-    }
-    assert_eq!(counts(&[got.unwrap()]).0, 1);
+    let got = tick_until_answer(&mut r, &mut walk);
+    assert_eq!(counts(&[got]).0, 1);
     assert!(r.s.control().is_unsaved());
 }
 

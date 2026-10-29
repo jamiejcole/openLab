@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
-use std::process::Command;
+use std::io::{BufRead as _, BufReader};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -41,16 +50,103 @@ fn a_positional_show_file_is_a_usage_error_not_a_run() {
     assert!(String::from_utf8(out.stdout).unwrap().starts_with("usage"));
 }
 
-/// Reads stderr lines until one contains `want`; `None` when stderr ends first.
-fn wait_for(lines: &mut impl Iterator<Item = String>, seen: &mut Vec<String>, want: &str) -> bool {
-    for line in lines.by_ref() {
-        let hit = line.contains(want);
-        seen.push(line);
-        if hit {
-            return true;
+/// A hang guard for waits on a spawned engine, not a timing assertion: generous for a slow
+/// host, so an expected line that never comes fails the test instead of hanging it.
+const HANG: Duration = Duration::from_secs(30);
+
+/// A spawned engine whose stderr lines arrive on a channel (read on a thread, so a wait is
+/// bounded), killed and reaped on drop: a failed assertion does not leave it running.
+struct Engine {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+    seen: Vec<String>,
+}
+
+impl Engine {
+    /// Spawns `command` with stdin and stderr piped.
+    fn spawn(command: &mut Command) -> Self {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            lines,
+            seen: Vec::new(),
         }
     }
-    false
+
+    /// Reads stderr lines until one contains `want`; `false` when stderr ends first. Panics
+    /// if neither happens within [`HANG`].
+    fn wait_for(&mut self, want: &str) -> bool {
+        let deadline = Instant::now() + HANG;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => {
+                    let hit = line.contains(want);
+                    self.seen.push(line);
+                    if hit {
+                        return true;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("no {want:?} within {HANG:?}: {:?}", self.seen)
+                }
+            }
+        }
+    }
+
+    /// Asks the engine to end gracefully (SIGTERM on macOS; stdin closing with
+    /// `--watch-stdin` elsewhere) and returns its exit status, reading stderr to its end.
+    /// Panics if it is still running after [`HANG`].
+    fn stop(&mut self) -> ExitStatus {
+        if cfg!(target_os = "macos") {
+            let sent = Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(sent.success());
+        } else {
+            drop(self.child.stdin.take());
+        }
+        self.exit_status()
+    }
+
+    /// Reads stderr to its end (the engine has exited, or is exiting) and reaps it. Panics if
+    /// stderr is still open after [`HANG`].
+    fn exit_status(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + HANG;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => self.seen.push(line),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return self.child.wait().unwrap(),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("still running after {HANG:?}: {:?}", self.seen)
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Already reaped after a clean stop: kill then fails harmlessly.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// M4.9: `engine.json` is written at start (private, this pid) and removed on a graceful
@@ -60,41 +156,26 @@ fn wait_for(lines: &mut impl Iterator<Item = String>, seen: &mut Vec<String>, wa
 /// test says so and stops there.
 #[test]
 fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
-    use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
-
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("missing.openlab");
-    let mut child = Command::new(ENGINE)
-        .args(["--app-support".as_ref(), root.path().as_os_str()])
-        .args(["--open".as_ref(), missing.as_os_str()])
-        .args(if cfg!(target_os = "macos") {
-            &[][..]
-        } else {
-            &["--watch-stdin"][..]
-        })
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(child.stderr.take().unwrap())
-        .lines()
-        .map_while(Result::ok);
-    let mut seen = Vec::new();
-    if !wait_for(&mut lines, &mut seen, "listening on") {
-        let status = child.wait().unwrap();
-        assert_ne!(status.code(), Some(101), "engine panicked: {seen:?}");
-        assert!(
-            seen.iter().any(|l| l.contains("audio")),
-            "the engine did not start: {seen:?}"
-        );
-        eprintln!("no audio device here, skipped: {seen:?}");
+    let mut engine = Engine::spawn(
+        Command::new(ENGINE)
+            .args(["--app-support".as_ref(), root.path().as_os_str()])
+            .args(["--open".as_ref(), missing.as_os_str()])
+            .args(if cfg!(target_os = "macos") {
+                &[][..]
+            } else {
+                &["--watch-stdin"][..]
+            }),
+    );
+    if !engine.wait_for("listening on") {
+        skip_without_audio(&mut engine);
         return;
     }
     let file = root.path().join("openLab").join("engine.json");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(v["pid"].as_u64(), Some(u64::from(child.id())));
+    assert_eq!(v["pid"].as_u64(), Some(u64::from(engine.child.id())));
     assert!(v["port"].as_u64().unwrap() > 0);
     assert_eq!(v["token"].as_str().unwrap().len(), 64);
     #[cfg(unix)]
@@ -105,22 +186,9 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
             0o600
         );
     }
-    assert!(
-        wait_for(&mut lines, &mut seen, "could not open"),
-        "{seen:?}"
-    );
-    if cfg!(target_os = "macos") {
-        let sent = Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(sent.success());
-    } else {
-        drop(child.stdin.take());
-    }
-    seen.extend(lines);
-    let status = child.wait().unwrap();
-    assert!(status.success(), "{status}: {seen:?}");
+    assert!(engine.wait_for("could not open"), "{:?}", engine.seen);
+    let status = engine.stop();
+    assert!(status.success(), "{status}: {:?}", engine.seen);
     assert!(!file.exists(), "engine.json removed");
     let running: Vec<_> = std::fs::read_dir(root.path().join("openLab").join("Running"))
         .map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).collect())
@@ -128,14 +196,24 @@ fn engine_json_lives_as_long_as_the_engine_and_a_signal_ends_it_cleanly() {
     assert!(running.is_empty(), "run marker removed: {running:?}");
 }
 
+/// An engine whose stderr ended before it was listening: it must have refused to start for
+/// want of an audio device (not panicked), and the test that needed one stops there.
+fn skip_without_audio(engine: &mut Engine) {
+    let status = engine.exit_status();
+    let seen = &engine.seen;
+    assert_ne!(status.code(), Some(101), "engine panicked: {seen:?}");
+    assert!(
+        seen.iter().any(|l| l.contains("audio")),
+        "the engine did not start: {seen:?}"
+    );
+    eprintln!("no audio device here, skipped: {seen:?}");
+}
+
 /// #164 (M4.4e): `--open` keeps the recovery offer. A show with an autosave newer than the file
 /// is not opened (the operator decides in the app) and the engine says so and keeps running.
 /// Needs an audio output device, like the test above; without one it says so and stops.
 #[test]
 fn open_of_a_show_with_a_newer_autosave_says_not_opened_and_keeps_running() {
-    use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
-
     let root = tempfile::tempdir().unwrap();
     let dirs = openlab_engine::persist::AppDirs::new(root.path());
     let ws = common::example();
@@ -146,56 +224,38 @@ fn open_of_a_show_with_a_newer_autosave_says_not_opened_and_keeps_running() {
     common::set_mtime(&show, 1_000_000);
     common::set_mtime(&recovery, 2_000_000);
 
-    let mut child = Command::new(ENGINE)
-        .args(["--app-support".as_ref(), root.path().as_os_str()])
-        .args(["--open".as_ref(), show.as_os_str()])
-        .args(if cfg!(target_os = "macos") {
-            &[][..]
-        } else {
-            &["--watch-stdin"][..]
-        })
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(child.stderr.take().unwrap())
-        .lines()
-        .map_while(Result::ok);
-    let mut seen = Vec::new();
-    if !wait_for(&mut lines, &mut seen, "listening on") {
-        let status = child.wait().unwrap();
-        assert_ne!(status.code(), Some(101), "engine panicked: {seen:?}");
-        assert!(
-            seen.iter().any(|l| l.contains("audio")),
-            "the engine did not start: {seen:?}"
-        );
-        eprintln!("no audio device here, skipped: {seen:?}");
+    let mut engine = Engine::spawn(
+        Command::new(ENGINE)
+            .args(["--app-support".as_ref(), root.path().as_os_str()])
+            .args(["--open".as_ref(), show.as_os_str()])
+            .args(if cfg!(target_os = "macos") {
+                &[][..]
+            } else {
+                &["--watch-stdin"][..]
+            }),
+    );
+    if !engine.wait_for("listening on") {
+        skip_without_audio(&mut engine);
         return;
     }
-    assert!(wait_for(&mut lines, &mut seen, "not opened"), "{seen:?}");
-    let said = seen.last().unwrap();
+    assert!(engine.wait_for("not opened"), "{:?}", engine.seen);
+    let said = engine.seen.last().unwrap();
     assert!(
         said.contains(show.to_str().unwrap()) && said.contains("autosave newer"),
         "{said}"
     );
     assert!(
-        !seen.iter().any(|l| l.starts_with("openlab-engine: opened")),
-        "{seen:?}"
+        !engine
+            .seen
+            .iter()
+            .any(|l| l.starts_with("openlab-engine: opened")),
+        "{:?}",
+        engine.seen
     );
     // The offer opened nothing and changed nothing: the autosave is still there for the app.
     assert!(recovery.exists());
-    if cfg!(target_os = "macos") {
-        let sent = Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(sent.success());
-    } else {
-        drop(child.stdin.take());
-    }
-    seen.extend(lines);
-    let status = child.wait().unwrap();
-    assert!(status.success(), "{status}: {seen:?}");
+    let status = engine.stop();
+    assert!(status.success(), "{status}: {:?}", engine.seen);
 }
 
 /// M8: one engine per user. While another process holds `engine.lock` (here the test itself,

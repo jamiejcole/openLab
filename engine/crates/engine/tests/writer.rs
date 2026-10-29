@@ -12,8 +12,10 @@ use std::thread;
 
 use common::*;
 use openlab_core::Workspace;
+use openlab_engine::control::MAX_DOCS;
 use openlab_engine::persist::{
-    JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, PersistError, SaveReport, SaveWriter,
+    JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS, PersistError, SaveReport,
+    SaveWriter,
 };
 
 struct Gate {
@@ -595,4 +597,87 @@ fn a_stalled_save_still_lets_its_workspace_be_saved_elsewhere_and_autosaved() {
             .contains("\"newest\""),
         "the late stale save removed a newer recovery file"
     );
+}
+
+/// #327: writes stuck on as many distinct files as every open show has (its show file and its
+/// recovery file each) still leave a thread for everything else: a save and an autosave of
+/// another show go through. Past that the thread count stays bounded: with every thread stuck,
+/// saves are refused at once.
+#[test]
+fn every_open_show_stuck_still_leaves_a_thread_for_the_others() {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    let hang_guard = std::time::Duration::from_secs(20);
+    let stuck_targets = 2 * MAX_DOCS;
+    let env = env();
+    // While `hang` is set, jobs block until released (writes on volumes that stopped
+    // answering); otherwise they go through.
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let hang = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let hanging = Arc::clone(&hang);
+    let mut writer = SaveWriter::spawn_with_hook(env.dirs.clone(), move |kind| {
+        if hanging.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.send(kind);
+            let _ = release_rx.lock().unwrap().recv();
+        }
+    })
+    .unwrap();
+    let t0 = std::time::Instant::now();
+    let mut clock = 0;
+    let mut stall = |writer: &mut SaveWriter, n: u64| {
+        let (w, p) = target(&env, n);
+        let reply = writer.save(w, p.unwrap(), 1, 20, 1);
+        assert!(reply.try_recv().is_err(), "save {n} refused at once");
+        entered.recv_timeout(hang_guard).unwrap();
+        assert!(
+            writer
+                .check_stalled(t0 + TIMEOUT * clock, TIMEOUT)
+                .is_empty()
+        );
+        clock += 1;
+        writer.check_stalled(t0 + TIMEOUT * clock, TIMEOUT);
+        assert!(matches!(
+            reply.try_recv().unwrap(),
+            Err(PersistError::Stalled { .. })
+        ));
+    };
+    for n in 1..=stuck_targets as u64 {
+        stall(&mut writer, n);
+    }
+    assert_eq!(writer.stalled_threads(), stuck_targets);
+    hang.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (other, other_path) = target(&env, 100);
+    let other_path = other_path.unwrap();
+    writer
+        .save(other.clone(), other_path.clone(), 1, 20, 2)
+        .recv_timeout(hang_guard)
+        .unwrap()
+        .unwrap();
+    assert!(other_path.exists());
+    assert!(
+        writer
+            .autosave(other, Some(other_path), 3)
+            .recv_timeout(hang_guard)
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
+    // The last thread sticks too: the bound holds and saves are refused at once.
+    hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    for n in stuck_targets as u64 + 1..=MAX_WRITERS as u64 {
+        stall(&mut writer, n);
+    }
+    assert_eq!(writer.stalled_threads(), MAX_WRITERS);
+    let (late, late_path) = target(&env, 101);
+    assert!(matches!(
+        writer
+            .save(late, late_path.unwrap(), 1, 20, 4)
+            .try_recv()
+            .unwrap(),
+        Err(PersistError::Stalled { .. })
+    ));
+    for _ in 0..MAX_WRITERS {
+        release.send(()).unwrap();
+    }
 }

@@ -118,6 +118,9 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const FEEDBACK_LIMIT: usize = 4096;
 /// Workspaces open at once (REQUIREMENTS §21); one more is `command_refused`.
 pub const MAX_DOCS: usize = 8;
+// Every open show's show file and recovery file may be stuck on a hung volume with a writer
+// thread still serving the others (#327).
+const _: () = assert!(crate::persist::MAX_WRITERS > 2 * MAX_DOCS);
 
 /// An open doc (workspace) in this engine run: the protocol's (ids never reused).
 pub use openlab_core::protocol::DocId;

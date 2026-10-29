@@ -2223,6 +2223,38 @@ fn a_kind_a_later_command_of_the_same_step_needs_is_not_dropped() {
 }
 
 #[test]
+fn a_kind_a_coalesced_media_set_needs_is_not_dropped() {
+    // A Media set applies only to Audio cues, so the merged step must keep the Kind that made
+    // the cue Audio again before it, or undo is refused as not applicable.
+    let mut ws = workspace(vec![audio_on(1, 1)]);
+    let before = ws.clone();
+    let mut history = History::new();
+    let kind = |k: CueKind| Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Kind { value: k },
+    };
+    let audio = audio_on(1, 1).kind;
+    let steps = [
+        kind(CueKind::Memo),
+        kind(audio),
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: CueProperty::Media {
+                value: Some(MediaRef::new("b.wav")),
+            },
+        },
+        kind(CueKind::Memo),
+    ];
+    for step in steps {
+        history
+            .execute_coalescing(&mut ws, step, Some("g"))
+            .unwrap();
+    }
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+}
+
+#[test]
 fn a_ganged_drag_stays_bounded() {
     let mut ws = workspace(vec![]);
     let before = ws.clone();

@@ -186,7 +186,7 @@ fn merge(older: Inverse, newer: Inverse) -> Inverse {
 }
 
 /// Whether every command only sets a value, no two set the same one, and none sets both the
-/// `Kind` and the target or group mode of one cue (a `Kind` replaces those).
+/// `Kind` and a field inside the kind of one cue ([`replaced_by_kind`]).
 fn only_value_sets(commands: &[Command]) -> bool {
     let mut keys = std::collections::HashSet::new();
     let mut kinds = std::collections::HashSet::new();
@@ -206,16 +206,13 @@ fn only_value_sets(commands: &[Command]) -> bool {
     !commands.iter().any(|c| {
         matches!(
             c,
-            Command::SetCueProperty {
-                id,
-                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
-            } if kinds.contains(id)
+            Command::SetCueProperty { id, property } if kinds.contains(id) && replaced_by_kind(property)
         )
     })
 }
 
-/// A `Kind` replaces a cue's target and group mode too: it may only be dropped if the older
-/// chain, which then runs on the state before it, sets neither on that cue.
+/// A `Kind` replaces the fields inside a cue's kind too ([`replaced_by_kind`]): it may only be
+/// dropped if the older chain, which then runs on the state before it, sets none on that cue.
 fn kind_is_safe(step: &Command, older: &[Command]) -> bool {
     let Command::SetCueProperty {
         id,
@@ -227,12 +224,23 @@ fn kind_is_safe(step: &Command, older: &[Command]) -> bool {
     !older.iter().any(|c| {
         matches!(
             c,
-            Command::SetCueProperty {
-                id: other,
-                property: CueProperty::Target { .. } | CueProperty::GroupMode { .. },
-            } if other == id
+            Command::SetCueProperty { id: other, property } if other == id && replaced_by_kind(property)
         )
     })
+}
+
+/// Fields that live inside a cue's kind, so a `Kind` overwrites them and a set of one only
+/// applies to some kinds: a merge must keep the `Kind` steps they are ordered against.
+fn replaced_by_kind(property: &CueProperty) -> bool {
+    matches!(
+        property,
+        CueProperty::Target { .. }
+            | CueProperty::GroupMode { .. }
+            | CueProperty::Media { .. }
+            | CueProperty::Destination { .. }
+            | CueProperty::Address { .. }
+            | CueProperty::Args { .. }
+    )
 }
 
 fn is_empty_transaction(command: &Command) -> bool {

@@ -61,8 +61,9 @@ const EVICT_QUEUE: usize = 8;
 /// 10 s apart, 8 to 10 of them), and its connection closed, so it does not hold its slot.
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(30);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-/// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt.
-const TAP_QUEUE: usize = 1024;
+/// Broadcasts waiting for the actor; more marks the copy lagged and it is rebuilt. Public so a
+/// test can overflow it whatever its size.
+pub const TAP_QUEUE: usize = 1024;
 /// Messages waiting to be written to one TCP connection.
 const TCP_WRITE_QUEUE: usize = 256;
 /// Bytes waiting to be written to one TCP connection, and to all of them together. A reply may
