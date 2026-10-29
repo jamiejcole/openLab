@@ -47,6 +47,12 @@ enum TransportAction: Hashable, Sendable, Codable {
     case stopAll
     case hardStopAll
     case panicCue(cue: ModelID)
+    /// Per-cue actions the engine carries out together, at one scheduling time (Start Selected
+    /// and the like, NFR-21): 1 to `maxBatch`, no cue twice.
+    indirect case batch(actions: [TransportAction])
+
+    /// The engine's `MAX_BATCH_ACTIONS`: a longer batch is refused whole.
+    static let maxBatch = 4096
 
     private var wire: (String, Fields) {
         switch self {
@@ -72,6 +78,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case .stopAll: return ("stop_all", [])
         case .hardStopAll: return ("hard_stop_all", [])
         case .panicCue(let c): return ("panic_cue", [("cue", c)])
+        case .batch(let a): return ("batch", [("actions", a)])
         }
     }
 
@@ -106,6 +113,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case "stop_all": self = .stopAll
         case "hard_stop_all": self = .hardStopAll
         case "panic_cue": self = .panicCue(cue: try cue())
+        case "batch": self = .batch(actions: try c.decode([TransportAction].self, forKey: "actions"))
         case let other:
             throw DecodingError.dataCorrupted(
                 .init(codingPath: c.codingPath, debugDescription: "transport action \(other)"))
