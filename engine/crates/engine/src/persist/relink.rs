@@ -147,7 +147,9 @@ pub struct FoundRelinks {
 }
 
 /// Batch "find in folder": scans `folder` and matches every missing file in `workspace` by
-/// file name. Proposals only; nothing is changed. Apply with `relink_command`.
+/// file name. Proposals only; nothing is changed. Apply with `relink_command`. With nothing
+/// missing the folder is not walked at all (a huge folder would cost its whole time budget for
+/// nothing).
 pub fn find_in_folder(
     workspace: &Workspace,
     show_dir: Option<&Path>,
@@ -155,6 +157,13 @@ pub fn find_in_folder(
     limits: ScanLimits,
 ) -> FoundRelinks {
     let missing = missing_media(workspace, show_dir);
+    if missing.is_empty() {
+        return FoundRelinks {
+            plan: plan_relinks(&missing, &[]),
+            truncated: false,
+            skipped: 0,
+        };
+    }
     let wanted: BTreeSet<String> = missing
         .iter()
         .map(|m| file_name_key(m.media.as_str()))

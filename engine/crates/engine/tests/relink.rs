@@ -187,6 +187,32 @@ fn non_utf8_names_are_skipped_not_fatal() {
     assert_eq!(found.plan.matches.len(), 1);
 }
 
+/// #198: with no media missing the folder is not walked: a limit that would stop any walk at
+/// once (no folder may be read) is never reached, and nothing is skipped or proposed.
+#[test]
+fn find_in_folder_with_nothing_missing_does_not_walk_the_folder() {
+    let env = env();
+    let mut ws = example();
+    let count = audio_media(&ws).len();
+    let names: Vec<String> = (0..count).map(|n| format!("media/here{n}.wav")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    set_media(&mut ws, &names);
+    for name in &names {
+        touch(&env.show_dir().join(name));
+    }
+    assert!(missing_media(&ws, Some(&env.show_dir())).is_empty());
+    let lib = env.root.path().join("lib");
+    touch(&lib.join("here0.wav"));
+    let no_walk = ScanLimits {
+        max_dirs: 0,
+        ..ScanLimits::default()
+    };
+    let found = find_in_folder(&ws, Some(&env.show_dir()), &lib, no_walk);
+    assert!(!found.truncated, "the folder was walked");
+    assert_eq!(found.skipped, 0);
+    assert!(found.plan.matches.is_empty() && found.plan.ambiguous.is_empty());
+}
+
 #[test]
 fn find_in_folder_proposes_relinks_and_undo_restores() {
     let env = env();
