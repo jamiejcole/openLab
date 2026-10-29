@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -1432,7 +1432,7 @@ mod fake {
                     .0
                     .changed
                     .wait_timeout(s, left)
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
             }
         }
@@ -1454,7 +1454,7 @@ mod fake {
                     .0
                     .changed
                     .wait_timeout(s, left)
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
             }
         }
@@ -1477,7 +1477,7 @@ mod fake {
                         .0
                         .changed
                         .wait(s)
-                        .unwrap_or_else(PoisonError::into_inner);
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
                 if let Some(n) = s.hanging.get_mut(path) {
                     *n = n.saturating_sub(1);
