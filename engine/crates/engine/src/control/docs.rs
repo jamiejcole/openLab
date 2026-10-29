@@ -21,6 +21,7 @@
 //! own with a slot of its own (one walk at a time), so a walk that takes its whole time budget
 //! never holds up an `open` or a `scan_recovery`.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2192,13 +2193,16 @@ impl Control {
     /// Writes the recovery file of every doc with unsaved changes whose last edit no autosave
     /// holds yet, and waits for them (and for an autosave of the last edit already under way),
     /// in all at most `wait`. The writer discards autosaves still queued when it is dropped,
-    /// so this must run before the docs go. Each failure is logged; a doc whose file was not
-    /// written in time is logged too, so the next start's recovery offer is not a surprise.
+    /// so this must run before the docs go. A write that fails (a transient disk error) is
+    /// tried once more while the wait lasts, since the previous autosave lacks the last edits.
+    /// Each failure is logged; a doc whose file was not written in time is logged too, so the
+    /// next start's recovery offer is not a surprise.
     pub(super) fn final_recovery_writes(&mut self, wait: Duration) -> FinalWrites {
         let mut counts = FinalWrites::default();
-        let mut waiting: Vec<(String, AutosaveRx)> = Vec::new();
+        // Doc index, name, the write's answer, whether it is the second try.
+        let mut waiting: VecDeque<(usize, String, AutosaveRx, bool)> = VecDeque::new();
         let mut logs_early: Vec<String> = Vec::new();
-        for doc in &mut self.docs {
+        for (index, doc) in self.docs.iter_mut().enumerate() {
             if !doc.is_dirty() {
                 continue;
             }
@@ -2206,14 +2210,14 @@ impl Control {
             let file = &mut doc.file;
             let current = file.autosaved_revision == Some(doc.revision);
             match (file.autosave.take(), current) {
-                (Some(rx), true) => waiting.push((name, rx)),
+                (Some(rx), true) => waiting.push_back((index, name, rx, false)),
                 (None, true) => counts.written += 1,
                 (_, false) => match &self.eng.docs.writer {
                     Some(writer) => {
                         let rx =
                             writer.autosave(doc.ws.clone(), doc.show_path.clone(), doc.revision);
                         file.autosaved_revision = Some(doc.revision);
-                        waiting.push((name, rx));
+                        waiting.push_back((index, name, rx, false));
                     }
                     None => {
                         counts.failed += 1;
@@ -2238,11 +2242,26 @@ impl Control {
                 )
             })
             .collect();
-        for (name, rx) in waiting {
+        while let Some((index, name, rx, retried)) = waiting.pop_front() {
             let left = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(left) {
                 // `None`: a manual save of that revision or a later one made it durable.
                 Ok(Ok(_)) => counts.written += 1,
+                Ok(Err(e))
+                    if !retried
+                        && Instant::now() < deadline
+                        && let (Some(writer), Some(doc)) =
+                            (&self.eng.docs.writer, self.docs.get(index)) =>
+                {
+                    logs.push((
+                        LogLevel::Warn,
+                        format!(
+                            "could not write the recovery file of \"{name}\" at shutdown: {e}; trying once more"
+                        ),
+                    ));
+                    let rx = writer.autosave(doc.ws.clone(), doc.show_path.clone(), doc.revision);
+                    waiting.push_back((index, name, rx, true));
+                }
                 Ok(Err(e)) => {
                     counts.failed += 1;
                     logs.push((

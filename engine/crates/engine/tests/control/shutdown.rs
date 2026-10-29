@@ -234,6 +234,77 @@ fn a_final_write_on_a_hung_disk_is_bounded_and_logged() {
     assert_eq!(names(&env.dirs.recovery_dir()).len(), 1);
 }
 
+/// A final write that fails once (a transient disk error: here the recovery folder is briefly a
+/// file) is tried once more while the wait lasts, so the last edit still reaches the disk.
+#[test]
+fn a_final_write_that_fails_once_is_retried() {
+    let env = env();
+    let folder = env.dirs.recovery_dir();
+    let tries = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&tries);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind != JobKind::Autosave {
+            return;
+        }
+        let mut tries = counted.lock().unwrap();
+        *tries += 1;
+        if *tries == 1 {
+            let _ = fs::remove_dir_all(&folder);
+            fs::write(&folder, b"not a folder").unwrap();
+        } else {
+            fs::remove_file(&folder).unwrap();
+        }
+    }));
+    let (mut s, _clock) = launch(&env, |c| c.save_hook = Some(hook));
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    rename(&mut s, doc, "Flaky");
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            written: 1,
+            ..FinalWrites::default()
+        }
+    );
+    assert_eq!(*tries.lock().unwrap(), 2);
+    assert_eq!(recovery_name(&env), "Flaky");
+    let errors = errors(&mut s);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// A final write that fails again is tried no more: it is counted failed and logged.
+#[test]
+fn a_final_write_that_fails_twice_is_given_up_and_logged() {
+    let env = env();
+    let folder = env.dirs.recovery_dir();
+    let tries = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&tries);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Autosave {
+            *counted.lock().unwrap() += 1;
+            let _ = fs::remove_dir_all(&folder);
+            let _ = fs::write(&folder, b"not a folder");
+        }
+    }));
+    let (mut s, _clock) = launch(&env, |c| c.save_hook = Some(hook));
+    let doc = opened(&app_request(&mut s, Request::New {}));
+    rename(&mut s, doc, "Broken");
+    assert_eq!(
+        s.shutdown(),
+        FinalWrites {
+            failed: 1,
+            ..FinalWrites::default()
+        }
+    );
+    assert_eq!(*tries.lock().unwrap(), 2);
+    let errors = errors(&mut s);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("\"Broken\"") && e.contains("could not write")),
+        "{errors:?}"
+    );
+}
+
 /// An autosave of the last edit already on disk is not written again.
 #[test]
 fn a_doc_whose_last_edit_is_autosaved_is_not_written_again() {
