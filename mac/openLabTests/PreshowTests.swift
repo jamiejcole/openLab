@@ -123,7 +123,7 @@ final class PreshowTests: XCTestCase {
 
     func testCheckClickThroughRevealsTheCueAndOpensTheBasicsTab() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let wc = WorkspaceWindowController(store: rig.store)
         wc.setVisible(.inspector, false)
         let playheads = rig.store.playheads
@@ -144,7 +144,7 @@ final class PreshowTests: XCTestCase {
 
     func testClickThroughInShowModeSelectsButLeavesTheInspector() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let wc = WorkspaceWindowController(store: rig.store)
         wc.setVisible(.inspector, false)
         wc.setShowMode(true)
@@ -159,7 +159,7 @@ final class PreshowTests: XCTestCase {
 
     func testDisconnectedEngineGreysTheItemAndClearsTheReport() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let wc = WorkspaceWindowController(store: rig.store)
         let pc = wc.preshowWindow
         await pc.runCheck()
@@ -182,7 +182,7 @@ final class PreshowTests: XCTestCase {
 
     func testAReplyThatDoesNotDecodeShowsAFailureNotAnOldReport() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let pc = PreshowWindowController(store: rig.store)
         await pc.runCheck()
         XCTAssertFalse(pc.rows.isEmpty)
@@ -196,12 +196,12 @@ final class PreshowTests: XCTestCase {
         let rig = try await demoRig()
         let pc = PreshowWindowController(store: rig.store)
         rig.engine.holdResults = true
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let first = Task { await pc.runCheck() }
         await settle()
         XCTAssertTrue(pc.checking)
         XCTAssertFalse(pc.checkButton.isEnabled)
-        rig.engine.preshowProblems = false
+        rig.engine.preshowProblemDocs = []
         let second = Task { await pc.runCheck() }
         await settle()
         rig.engine.holdResults = false
@@ -230,7 +230,7 @@ final class PreshowTests: XCTestCase {
 
     func testCheckAgainClearsTheSelectionAndRevealsNothing() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let pc = PreshowWindowController(store: rig.store)
         var inspected: [ModelID] = []
         pc.onInspect = { id, _ in inspected.append(id) }
@@ -247,7 +247,7 @@ final class PreshowTests: XCTestCase {
     /// make the report key, and GO would stop reaching the workspace window.
     func testNothingInThePanelMakesItKey() async throws {
         let rig = try await demoRig()
-        rig.engine.preshowProblems = true
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
         let pc = PreshowWindowController(store: rig.store)
         await pc.runCheck()
         let panel = try XCTUnwrap(pc.window as? NSPanel)

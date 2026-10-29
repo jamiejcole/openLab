@@ -56,6 +56,19 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertEqual(engine.connections(of: "1").count, 1)
     }
 
+    /// The fake's problems switch is per doc: another workspace answers the all-clear (#352).
+    func testThePreshowProblemSwitchOfTheFakeEngineIsPerDoc() async throws {
+        let (s, engine) = try await started()
+        guard case .success(let second) = await s.newWorkspace() else { return XCTFail("new") }
+        await assertEventually { s.stores[second]?.model != nil }
+        engine.preshowProblemDocs = ["1"]
+        guard case .success(let withProblems)? = await s.stores["1"]?.preshowCheck(),
+            case .success(let clear)? = await s.stores[second]?.preshowCheck()
+        else { return XCTFail("preshow_check") }
+        XCTAssertFalse(withProblems.ok)
+        XCTAssertTrue(clear.ok)
+    }
+
     func testNewAndOpenProduceSeparateStoresThatDoNotLeakIntoEachOther() async throws {
         let (s, engine) = try await started()
         guard case .success(let second) = await s.newWorkspace() else { return XCTFail("new") }

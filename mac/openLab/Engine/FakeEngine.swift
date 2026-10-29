@@ -78,9 +78,9 @@ final class FakeEngine: EngineTransport {
         ])
     }()
 
-    /// `preshow_check` answers a sample report with problems (a broken cue, its missing file, a lost
-    /// device) instead of the all-clear.
-    var preshowProblems = false
+    /// `preshow_check` on one of these docs answers a sample report with problems (a broken cue,
+    /// its missing file, a lost device) instead of the all-clear; other docs answer the all-clear.
+    var preshowProblemDocs: Set<ModelID> = []
     /// `scan_recovery` lists these (`recovery_entries` entry objects).
     var recoveryEntries: [JSONValue] = []
     /// `open` of one of these paths without a `recovery` choice answers `recovery_offer`.
@@ -712,7 +712,8 @@ final class FakeEngine: EngineTransport {
                     ])
                 ]))
         case .preshowCheck:
-            result(c, id, ok: .object(["data": preshowProblems ? Self.sampleReportWithProblems : Self.allClearReport]))
+            let problems = c.doc.map(preshowProblemDocs.contains) ?? false
+            result(c, id, ok: .object(["data": problems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
