@@ -285,6 +285,7 @@ impl Ws {
             token: show.server.token().to_owned(),
             client_name: "session test".into(),
             workspace: Some(DocId(0)),
+            pid: None,
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await
@@ -462,6 +463,7 @@ impl App {
             token: show.server.token().to_owned(),
             client_name: "app".into(),
             workspace: None,
+            pid: None,
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await

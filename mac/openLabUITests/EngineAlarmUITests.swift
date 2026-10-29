@@ -24,9 +24,14 @@ final class EngineAlarmUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 15), .completed)
         XCTAssertEqual(windows.count, 2)
 
-        // Not modal: the workspace windows still take keys while it is up; it goes when dismissed.
+        // Not modal: the workspace windows still take keys while it is up (a key that acts on
+        // the key window's workspace adds a cue there); it goes when dismissed.
+        let cues = app.outlines.matching(identifier: "cue-list").outlineRows
+        XCTAssertEqual(cues.count, 0, "the reopened workspaces are empty")
         windows.element(boundBy: 0).click()
-        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        app.typeKey("9", modifierFlags: .command)  // New Group Cue
+        XCTAssertTrue(cues.firstMatch.waitForExistence(timeout: 5), "the key reached the workspace window")
+        XCTAssertTrue(title.exists, "the alarm is still up")
         app.buttons["engine-alarm-dismiss"].click()
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: title)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed)

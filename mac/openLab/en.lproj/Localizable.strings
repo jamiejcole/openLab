@@ -360,6 +360,9 @@
 "log.dropped" = "%d records were dropped by the engine.";
 
 /* Relink missing media (WS-03) */
+"menu.file.recover" = "Recover Autosaves…";
+"recover.none" = "There are no autosaves to recover.";
+"error.recoverFailed" = "The autosaves could not be listed: %@";
 "menu.file.relink" = "Relink Missing Media…";
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
 "relink.panel.prompt" = "Relink";
@@ -416,6 +419,7 @@
 "engine.alarm.restartedMessage" = "A new engine is running. Cues that were playing have stopped.";
 "engine.alarm.back" = "A new engine is running and your workspaces were reopened.";
 "engine.alarm.restoredOne" = "%@ was reopened from its autosave: edits after the last autosave are lost.";
+"engine.alarm.editsLostOne" = "%@ was reopened from its file: its unsaved edits had no autosave and are lost.";
 "engine.alarm.failedOne" = "%@ could not be reopened: %@";
 "engine.alarm.unclean" = "openLab did not quit cleanly";
 "engine.alarm.uncleanMessage" = "Autosaved work from the last session was found.";
@@ -430,6 +434,7 @@
 "engine.alarm.spawnFailed" = "The engine program could not be started (error %@).";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";
 "engine.reattach.restored" = "The engine was restarted: this workspace was reopened from its autosave. Edits after the last autosave are lost.";
+"engine.reattach.editsLost" = "The engine was restarted: this workspace was reopened from its file. Its unsaved edits had no autosave and are lost.";
 "engine.reattach.noDoc" = "The engine did not open it.";
 "engine.reattach.noAutosave" = "it was never saved and has no autosave.";
 "alert.recoveryOffer.title" = "“%@” has newer autosaved changes.";

@@ -60,6 +60,7 @@ async fn commands_and_transport_over_the_wire() {
             token: server.token().to_owned(),
             client_name: "test".into(),
             workspace: Some(openlab_core::protocol::DocId(0)),
+            pid: None,
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await

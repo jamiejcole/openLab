@@ -46,6 +46,7 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     func showError(_ message: String) { errors.append(message) }
+    func showInfo(_ message: String) { log.append("info:\(message)") }
 
     /// nil: Cancel.
     var recoveryChoice: RecoveryChoice?
@@ -206,7 +207,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "w"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "w"])
     }
 
     // MARK: Front-window routing

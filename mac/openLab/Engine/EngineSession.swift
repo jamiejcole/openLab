@@ -14,8 +14,9 @@ enum SessionEvent: Equatable, Sendable {
     /// The app connection reached an engine run other than the one the windows were bound in.
     case newEngineRun
     /// Every window waiting for the new engine run was reopened, or failed (its window closed).
-    /// `restored`: the workspaces whose newer autosave was opened.
-    case reattached(failures: [ReattachFailure], restored: [String])
+    /// `restored`: the workspaces whose newer autosave was opened. `editsLost`: windows that had
+    /// unsaved changes and were reopened from their file (no autosave newer than it was left).
+    case reattached(failures: [ReattachFailure], restored: [String], editsLost: [String] = [])
 }
 
 /// The app-level engine session: the unbound app connection, the list of open workspaces, and one
@@ -247,12 +248,18 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     // MARK: Reattach after an engine restart
 
+    /// The engine the stores were bound in is gone (its pid ended): every cue it played stopped.
+    func engineRunEnded() {
+        for s in stores.values { s.clearRuntime() }
+    }
+
     /// Every store leaves its doc id (it means nothing in the new run) and waits to be rebound.
     private func detachAll() {
         reattachTask?.cancel()
         reattachTask = nil
         for (doc, store) in orderedStores {
             store.client.stop()
+            store.clearRuntime()
             detached.append((info(of: store, doc: doc), store))
         }
         stores = [:]
@@ -276,8 +283,15 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         reattachTask = Task { [weak self] in await self?.reattach() }
     }
 
+    /// Where a rebound window's show came from.
+    private enum Source {
+        case file, autosave
+        /// The saved file, although the window had unsaved changes: they are gone.
+        case fileEditsLost
+    }
+
     private enum Rebind {
-        case bound(ModelID, restored: Bool)
+        case bound(ModelID, Source)
         case failed(String)
         /// The app connection dropped: try again at the next `welcome`.
         case interrupted
@@ -285,6 +299,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     private var reattachFailures: [ReattachFailure] = []
     private var reattachRestored: [String] = []
+    private var reattachEditsLost: [String] = []
 
     /// Reopens one window's show at a time (the engine takes one document request at a time).
     private func reattach() async {
@@ -296,13 +311,22 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             case .interrupted:
                 reattachTask = nil
                 return
-            case .bound(let doc, let restored):
+            case .bound(let doc, let source):
                 detached.removeFirst()
                 attach(next.store, as: doc)
                 next.store.client.rebind(workspace: doc, runToken: runToken)
-                let key = restored ? "engine.reattach.restored" : "engine.reattach.reopened"
-                _ = next.store.receive(.log(restored ? .warn : .info, loc(key)))
-                if restored { reattachRestored.append(next.info.name) }
+                switch source {
+                case .file:
+                    _ = next.store.receive(.log(.info, loc("engine.reattach.reopened")))
+                case .autosave:
+                    _ = next.store.receive(.log(.warn, loc("engine.reattach.restored")))
+                    reattachRestored.append(next.info.name)
+                case .fileEditsLost:
+                    _ = next.store.receive(.log(.warn, loc("engine.reattach.editsLost")))
+                    reattachEditsLost.append(next.info.name)
+                    engineLog.error(
+                        "reopened \(next.info.name, privacy: .public) from its file: its unsaved edits had no autosave")
+                }
             case .failed(let reason):
                 detached.removeFirst()
                 next.store.client.stop()
@@ -316,29 +340,32 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         setWorkspaces(workspaces)  // the docs no window claimed (opened by another client) get theirs
         let failures = reattachFailures
         let restored = reattachRestored
+        let editsLost = reattachEditsLost
         reattachFailures = []
         reattachRestored = []
-        events.send(.reattached(failures: failures, restored: restored))
+        reattachEditsLost = []
+        events.send(.reattached(failures: failures, restored: restored, editsLost: editsLost))
     }
 
     private func rebind(_ info: WorkspaceInfo, recovery: inout [RecoveryEntryInfo]?) async -> Rebind {
         if let path = info.path {
-            var restored = false
+            // With no autosave newer than the file, a window with unsaved changes loses them.
+            var source: Source = info.dirty ? .fileEditsLost : .file
             var result = await openForRebind(.open(path: path, recovery: nil))
             if case .success(let ok) = result, case .recoveryOffer? = ok.data {
                 // An autosave newer than the file: the window showed it if it had unsaved changes
                 // (the engine stopped before they were saved); otherwise it showed the saved file.
-                restored = info.dirty
+                source = info.dirty ? .autosave : .file
                 result = await openForRebind(.open(path: path, recovery: info.dirty ? .restore : .ignore))
             }
             switch result {
             case .success(let ok):
-                if let doc = ok.data?.openedDoc, stores[doc] == nil { return .bound(doc, restored: restored) }
+                if let doc = ok.data?.openedDoc, stores[doc] == nil { return .bound(doc, source) }
                 return .failed(loc("engine.reattach.noDoc"))
             case .failure(.engine(.alreadyOpen, let message)):
                 // Opened in this run already (a reattach cut short, or another client): take it.
                 if let doc = workspaces.first(where: { $0.path == path })?.doc, stores[doc] == nil {
-                    return .bound(doc, restored: false)
+                    return .bound(doc, .file)
                 }
                 return .failed(message)
             case .failure(.notConnected), .failure(.disconnected): return .interrupted
@@ -365,7 +392,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         switch await openForRebind(request) {
         case .success(let ok):
             if let doc = ok.data?.openedDoc, stores[doc] == nil {
-                return .bound(doc, restored: request != .new)
+                return .bound(doc, request == .new ? .file : .autosave)
             }
             return .failed(loc("engine.reattach.noDoc"))
         case .failure(.notConnected), .failure(.disconnected): return .interrupted

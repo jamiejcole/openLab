@@ -321,8 +321,10 @@ final class EngineClient: ObservableObject {
                 failPending(.disconnected)
             }
         }
+        // The pid lets the engine tell a slow reconnect from a crash (it relaunches only a gone app).
         let hello = Hello(
-            protocolVersion: protocolVersion, token: info.token, clientName: clientName, workspace: workspace)
+            protocolVersion: protocolVersion, token: info.token, clientName: clientName, workspace: workspace,
+            pid: UInt32(clamping: ProcessInfo.processInfo.processIdentifier))
         guard let helloText = try? ClientMessage.hello(hello).text() else { return (.transport("hello"), false) }
         conn.send(helloText)
 

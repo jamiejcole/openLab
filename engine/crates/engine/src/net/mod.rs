@@ -14,7 +14,7 @@ mod token;
 mod ws;
 
 pub use osc::{OscConfig, OscListenerStats, OscPorts};
-pub use relaunch::{Relaunch, RelaunchFn};
+pub use relaunch::{AppProcess, ProcessNameFn, Relaunch, RelaunchFn};
 pub use token::{constant_time_eq, generate_token};
 pub use ws::{ServerConfig, WsServer};
 

@@ -70,8 +70,15 @@ final class AppController {
     private var closing: Set<ModelID> = []
     private(set) var quitting = false
 
-    init(session: EngineSession, scheduler: Scheduler = SystemScheduler(), timeout: Double = 5) {
+    /// Ends, at quit, an engine it started that was never reached (nil in tests of the windows).
+    private let supervisor: EngineSupervisor?
+
+    init(
+        session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
+        timeout: Double = 5
+    ) {
         self.session = session
+        self.supervisor = supervisor
         self.scheduler = scheduler
         self.timeout = timeout
         // A key released while the app is inactive never reaches the monitor: forget held keys.
@@ -573,7 +580,12 @@ final class AppController {
         }
         quitting = true
         defer { quitting = false }
-        if engineUnreachable { return alerts.confirmQuitDisconnected() }
+        if engineUnreachable {
+            // An engine still coming up plays nothing and is ended at quit: nothing to warn about.
+            if supervisor?.engineNotReached == nil, !alerts.confirmQuitDisconnected() { return false }
+            supervisor?.appWillQuit()
+            return true
+        }
         for doc in session.order {
             if await !commitEdits(doc) { return false }
         }
@@ -588,6 +600,7 @@ final class AppController {
         }
         // A stalled flush must not trap the app; the engine still sees the socket drop.
         _ = await bounded { await self.session.shutdown() }
+        supervisor?.appWillQuit()
         return true
     }
 
