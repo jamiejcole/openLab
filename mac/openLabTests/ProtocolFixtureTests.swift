@@ -211,6 +211,9 @@ final class ProtocolFixtureTests: XCTestCase {
     func testHelloOmitsWorkspaceWhenNilAndSendsItWhenBound() throws {
         let plain = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c")).text()
         XCTAssertFalse(plain.contains("workspace"))
+        XCTAssertFalse(plain.contains("pid"), "no pid: omitted, as the engine expects")
+        let withPID = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", pid: 812)).text()
+        XCTAssertEqual(JSONValue.parse(withPID)?["pid"], .int(812))
         let bound = try ClientMessage.hello(Hello(protocolVersion: 1, token: "t", clientName: "c", workspace: "1"))
             .text()
         XCTAssertEqual(JSONValue.parse(bound)?["workspace"], .int(1), "a doc id is a number on the wire")

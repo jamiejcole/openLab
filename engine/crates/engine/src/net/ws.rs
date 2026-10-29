@@ -30,7 +30,7 @@ use super::NetError;
 use super::hub::{self, Broadcast, Hub, Kind};
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
-use super::relaunch::{Budget, Relaunch};
+use super::relaunch::{AppProcess, Budget, Next, Relaunch, next};
 use super::token::{constant_time_eq, generate_token};
 use crate::control::{Inbox, OutboundRx, ReplyRx, ReplyTx, reply_channel};
 
@@ -108,6 +108,9 @@ struct Shared {
     connections: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
     relaunches: Mutex<Budget>,
+    /// The app process the latest app connection's `hello` named (relaunch.rs); `None`: it
+    /// named none, or no relaunch is configured.
+    app: Mutex<Option<AppProcess>>,
 }
 
 /// The running server. Dropping it (or [`WsServer::stop`]) closes every connection.
@@ -186,6 +189,7 @@ impl WsServer {
             config,
             shutdown: shutdown_rx,
             relaunches: Mutex::new(Budget::default()),
+            app: Mutex::new(None),
         });
         runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap));
         let accept_shared = shared.clone();
@@ -341,12 +345,17 @@ fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
 
 /// Checks the first frame: the workspace the connection binds to (`None`: an app connection).
 /// `Err` is the refusal to send before closing.
-fn authenticate(shared: &Shared, text: &str) -> Result<Option<DocId>, ServerMessage> {
+/// The doc the connection is bound to and the pid the client gave.
+fn authenticate(
+    shared: &Shared,
+    text: &str,
+) -> Result<(Option<DocId>, Option<u32>), ServerMessage> {
     match decode_hello(text) {
         Ok(ClientMessage::Hello {
             protocol_version,
             token,
             workspace,
+            pid,
             ..
         }) => {
             if !constant_time_eq(token.as_bytes(), shared.token.as_bytes()) {
@@ -357,7 +366,7 @@ fn authenticate(shared: &Shared, text: &str) -> Result<Option<DocId>, ServerMess
                     &format!("the engine speaks protocol {PROTOCOL_VERSION}"),
                 ))
             } else {
-                Ok(workspace)
+                Ok((workspace, pid))
             }
         }
         // Any other message first (docs/protocol.md section 2).
@@ -391,7 +400,14 @@ async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermi
         _ => return,
     };
     let doc = match authenticate(&shared, hello.as_str()) {
-        Ok(doc) => doc,
+        Ok((doc, pid)) => {
+            if doc.is_none()
+                && let Some(relaunch) = &shared.config.relaunch
+            {
+                *lock(&shared.app) = relaunch.identify(pid);
+            }
+            doc
+        }
         Err(refusal) => {
             if let Ok(text) = encode_server(&refusal) {
                 let _ = timeout(shared.config.write_timeout, ws.send(Message::text(text))).await;
@@ -499,13 +515,36 @@ fn app_lost(shared: &Arc<Shared>) {
     }
     let shared = Arc::clone(shared);
     tokio::spawn(async move {
-        tokio::time::sleep(relaunch.delay).await;
-        let back = shared.hub.app_connections() > 0 || *shared.shutdown.borrow();
-        let allowed = !back && lock(&shared.relaunches).take(Instant::now());
-        lock(&shared.relaunches).end();
-        if back {
-            return;
+        let mut said_waiting = false;
+        loop {
+            tokio::time::sleep(relaunch.delay).await;
+            let app = lock(&shared.app).clone();
+            let alive = app.as_ref().is_some_and(|a| relaunch.alive(a));
+            let stopping = *shared.shutdown.borrow();
+            match next(shared.hub.app_connections() > 0, stopping, alive) {
+                Next::Done => {
+                    lock(&shared.relaunches).end();
+                    return;
+                }
+                Next::Wait => {
+                    if !said_waiting {
+                        said_waiting = true;
+                        let pid = app.map_or(0, |a| a.pid);
+                        log(
+                            &shared,
+                            LogLevel::Warn,
+                            &format!(
+                                "the app (pid {pid}) is still running: waiting for it to \
+                                 reconnect; it is relaunched if it quits"
+                            ),
+                        );
+                    }
+                }
+                Next::Relaunch => break,
+            }
         }
+        let allowed = lock(&shared.relaunches).take(Instant::now());
+        lock(&shared.relaunches).end();
         if !allowed {
             log(
                 &shared,
@@ -528,8 +567,8 @@ fn app_lost(shared: &Arc<Shared>) {
     });
 }
 
-fn lock(budget: &Mutex<Budget>) -> std::sync::MutexGuard<'_, Budget> {
-    budget.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn request_id(message: &ClientMessage) -> Option<RequestId> {

@@ -296,6 +296,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS 0.0.1".into(),
             workspace: Some(DocId(3)),
+            pid: Some(4242),
         }),
     );
     add(
@@ -305,6 +306,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS 0.0.1".into(),
             workspace: None,
+            pid: Some(4242),
         }),
     );
     add(
@@ -314,6 +316,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             token: "3f9a1c0e5b7d42a8".into(),
             client_name: "openLab for macOS from the future".into(),
             workspace: None,
+            pid: None,
         }),
     );
     add(
@@ -1138,6 +1141,33 @@ fn a_hello_without_a_workspace_is_the_app_connection() {
     }
 }
 
+/// #168: the app says its process id in hello, so the engine can tell a slow reconnect from a
+/// crash; a client that does not say it still connects.
+#[test]
+fn a_hello_may_carry_the_client_pid() {
+    let with = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","pid":812}}"#
+    );
+    assert!(matches!(
+        decode_hello(&with),
+        Ok(ClientMessage::Hello { pid: Some(812), .. })
+    ));
+    let without = format!(
+        r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c"}}"#
+    );
+    assert!(matches!(
+        decode_hello(&without),
+        Ok(ClientMessage::Hello { pid: None, .. })
+    ));
+    // A pid is a non-negative 32-bit number.
+    for bad in [r#""812""#, "-1", "4294967296", "1.5"] {
+        let text = format!(
+            r#"{{"type":"hello","protocol_version":{PROTOCOL_VERSION},"token":"t","client_name":"c","pid":{bad}}}"#
+        );
+        assert!(decode_hello(&text).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn a_hotkey_key_is_bounded() {
     let frame = |key: &str| decode_client(&format!(r#"{{"type":"hotkey","id":1,"key":"{key}"}}"#));
@@ -1494,6 +1524,7 @@ fn oversized_frames_are_refused_before_parsing() {
         token: "t".into(),
         client_name: "n".repeat(MAX_CLIENT_FRAME_BYTES),
         workspace: None,
+        pid: None,
     };
     assert!(matches!(
         encode_client(&big),
@@ -3332,14 +3363,16 @@ fn arb_client() -> impl Strategy<Value = ClientMessage> {
             any::<u32>(),
             arb_text(),
             arb_text(),
-            proptest::option::of(any::<u64>())
+            proptest::option::of(any::<u64>()),
+            proptest::option::of(any::<u32>())
         )
-            .prop_map(|(protocol_version, token, client_name, workspace)| {
+            .prop_map(|(protocol_version, token, client_name, workspace, pid)| {
                 ClientMessage::Hello {
                     protocol_version,
                     token,
                     client_name,
                     workspace: workspace.map(DocId),
+                    pid,
                 }
             }),
         (

@@ -60,6 +60,7 @@ async fn hello(server: &WsServer, workspace: Option<DocId>) -> Client {
         token: server.token().to_owned(),
         client_name: "test".into(),
         workspace,
+        pid: None,
     };
     send(&mut c, hello).await;
     c

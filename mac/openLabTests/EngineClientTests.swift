@@ -28,6 +28,7 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(h.protocolVersion, protocolVersion)
         XCTAssertEqual(h.token, rig.engine.token)
         XCTAssertEqual(h.workspace, "1")
+        XCTAssertEqual(h.pid, UInt32(ProcessInfo.processInfo.processIdentifier), "#168: the engine checks it")
         XCTAssertEqual(rig.client.runToken, rig.engine.token, "the doc id is pinned to this engine run")
         XCTAssertEqual(rig.store.model?.name, "Test")
         XCTAssertEqual(rig.store.revision, 7)

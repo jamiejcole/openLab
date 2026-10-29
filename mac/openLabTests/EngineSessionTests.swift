@@ -50,6 +50,9 @@ final class EngineSessionTests: XCTestCase {
         // The app connection is unbound; the store's is bound to its doc.
         guard case .hello(let appHello)? = engine.received.first else { return XCTFail() }
         XCTAssertNil(appHello.workspace)
+        // #168: the app connection says this process's pid, so the engine does not relaunch a
+        // running app that is slow to reconnect.
+        XCTAssertEqual(appHello.pid, UInt32(ProcessInfo.processInfo.processIdentifier))
         XCTAssertEqual(engine.connections(of: "1").count, 1)
     }
 
