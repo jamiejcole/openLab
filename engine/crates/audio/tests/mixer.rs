@@ -1159,6 +1159,21 @@ fn a_voice_not_heard_moves_at_once() {
         .filter(|e| matches!(e, Event::MoveEnded { .. }))
         .collect();
     assert_eq!(ev, [moved(1, 1000, 1), moved(1, 2500, 2)]);
+
+    // A move made during a pause's declick tail is over when the tail ends (nothing left to
+    // crossfade): reported settled on the first block after it.
+    let (mut ctl, mut r) = setup(config(2));
+    ctl.send(0, patch(1, 0, 0, 0.0));
+    ctl.send(0, patch(1, 0, 1, 1.0));
+    start(&mut ctl, 0, 1, mono_dc(4000), 1);
+    ctl.send(2000, CommandKind::PauseVoice { voice: VoiceId(1) });
+    ctl.send(2100, move_voice(1, 1));
+    r.render(3000, &[64]);
+    let ev: Vec<_> = events(&mut ctl)
+        .into_iter()
+        .filter(|e| matches!(e, Event::MoveEnded { .. }))
+        .collect();
+    assert_eq!(ev, [moved(1, 2240, 1)]);
 }
 
 /// A move asked for during a move's crossfade waits for it (to the end of the block it ends
