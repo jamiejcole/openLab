@@ -318,7 +318,52 @@ struct RelinkJob {
 /// flags (the stall check abandons it like a stuck document worker).
 struct RelinkWalk {
     pending: PendingDoc,
-    flags: Arc<WorkerFlags>,
+    flags: Arc<WalkFlags>,
+}
+
+/// What the control loop and a relink walk's thread tell each other. Whether the walk finished
+/// or was given up is decided once, by whichever side swaps `handover` first, so exactly one
+/// side owns the walk's place in the stuck-reader count: a walk that finishes at the instant
+/// its timeout passes is either answered or counted stuck and un-counted by its thread, never
+/// counted for ever (the thread ends after its walk; nothing else would take it back).
+#[derive(Default)]
+struct WalkFlags {
+    /// `busy` only (a walk has its own thread, so `abandoned` is not used).
+    worker: WorkerFlags,
+    handover: std::sync::atomic::AtomicU8,
+}
+
+const WALKING: u8 = 0;
+const WALK_DONE: u8 = 1;
+const WALK_ABANDONED: u8 = 2;
+
+impl WalkFlags {
+    /// The walk's thread, once its answer is in the inbox: if the stall check gave up on it
+    /// first, it counted the walk stuck, and the thread takes that back now.
+    fn finish(&self, stuck: &AtomicUsize) {
+        if self
+            .handover
+            .compare_exchange(WALKING, WALK_DONE, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            stuck.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The stall check gives up on the walk: `true` and the walk counted stuck, or `false`
+    /// when the walk has just finished (its answer is in the inbox) and nothing is counted. The
+    /// count goes up before the swap, so the thread's take-back can never come first.
+    fn abandon(&self, stuck: &AtomicUsize) -> bool {
+        stuck.fetch_add(1, Ordering::SeqCst);
+        let abandoned = self
+            .handover
+            .compare_exchange(WALKING, WALK_ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        if !abandoned {
+            stuck.fetch_sub(1, Ordering::SeqCst);
+        }
+        abandoned
+    }
 }
 
 /// What a document request is for.
@@ -511,7 +556,7 @@ impl Docs {
     /// Starts the folder walk of a `relink` on a thread of its own. Never joined, like a
     /// worker: a walk stuck on a stalled volume ends when its read returns, and its answer (a
     /// stale ticket by then) is ignored.
-    fn spawn_relink(&self, job: RelinkJob, flags: &Arc<WorkerFlags>) -> std::io::Result<()> {
+    fn spawn_relink(&self, job: RelinkJob, flags: &Arc<WalkFlags>) -> std::io::Result<()> {
         let (inbox, hook, stuck, answered, flags) = (
             self.inbox.clone(),
             self.hook.clone(),
@@ -521,7 +566,7 @@ impl Docs {
         );
         // Busy from the start: the stall check must not take a walk not yet begun for one
         // whose answer is on its way.
-        flags.busy.store(true, Ordering::SeqCst);
+        flags.worker.busy.store(true, Ordering::SeqCst);
         thread::Builder::new()
             .name("openlab-relink".into())
             .spawn(move || {
@@ -536,7 +581,8 @@ impl Docs {
                     limits,
                 } = job;
                 let answer = relink_scan(ticket, &workspace, show_dir.as_deref(), &folder, limits);
-                post(answer, &inbox, &flags, &stuck, &answered);
+                deliver(answer, &inbox, &flags.worker, &answered);
+                flags.finish(&stuck);
             })
             .map(|_| ())
     }
@@ -624,9 +670,9 @@ fn work(
     }
 }
 
-/// Puts a worker's (or a relink walk's) answer in the inbox; `false` when the thread is done:
-/// the control loop is gone, or it gave up on the request while this was reading (the answer
-/// is stale, with another ticket, and a worker leaves the work to its replacement).
+/// Puts a worker's answer in the inbox; `false` when the thread is done: the control loop is
+/// gone, or it gave up on the request while this was reading (the answer is stale, with another
+/// ticket, and the worker leaves the work to its replacement).
 fn post(
     answer: DocAnswer,
     inbox: &Sender<Inbox>,
@@ -635,16 +681,28 @@ fn post(
     answered: &AtomicU64,
 ) -> bool {
     let gone = flags.abandoned.load(Ordering::SeqCst);
-    let sent = inbox.send(Inbox::Doc(answer)).is_ok();
-    // Not busy before the answer counts: whoever sees the count can rely on `busy` being
-    // false already (the answer itself is in the inbox from the send above).
-    flags.busy.store(false, Ordering::SeqCst);
-    answered.fetch_add(1, Ordering::SeqCst);
+    let sent = deliver(answer, inbox, flags, answered);
     if gone {
         // After the send: a count of zero means the stale answer is already in the inbox.
         stuck.fetch_sub(1, Ordering::SeqCst);
     }
     sent && !gone
+}
+
+/// Puts a worker's or a relink walk's answer in the inbox and counts it; `false` when the
+/// control loop is gone.
+fn deliver(
+    answer: DocAnswer,
+    inbox: &Sender<Inbox>,
+    flags: &WorkerFlags,
+    answered: &AtomicU64,
+) -> bool {
+    let sent = inbox.send(Inbox::Doc(answer)).is_ok();
+    // Not busy before the answer counts: whoever sees the count can rely on `busy` being
+    // false already (the answer itself is in the inbox from the send above).
+    flags.busy.store(false, Ordering::SeqCst);
+    answered.fetch_add(1, Ordering::SeqCst);
+    sent
 }
 
 fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
@@ -1443,8 +1501,18 @@ impl Engine {
             .docs
             .relink
             .as_ref()
-            .is_some_and(|w| self.stalled(&w.pending, &w.flags));
+            .is_some_and(|w| self.stalled(&w.pending, &w.flags.worker));
         if !stalled {
+            return;
+        }
+        // The walk may have finished this instant: then its answer is in the inbox and the
+        // request is left to it.
+        let abandoned = self
+            .docs
+            .relink
+            .as_ref()
+            .is_some_and(|w| w.flags.abandon(&self.docs.stuck));
+        if !abandoned {
             return;
         }
         let Some(walk) = self.docs.relink.take() else {
@@ -1459,8 +1527,6 @@ impl Engine {
                 walk.pending.extra_ms.saturating_add(self.docs.timeout_ms) / 1000
             ),
         );
-        walk.flags.abandoned.store(true, Ordering::SeqCst);
-        self.docs.stuck.fetch_add(1, Ordering::SeqCst);
         self.log(
             LogLevel::Error,
             "a relink folder walk stalled; its thread was abandoned".to_owned(),
@@ -1794,7 +1860,7 @@ impl Control {
             folder: PathBuf::from(folder),
             limits,
         };
-        let flags = Arc::new(WorkerFlags::default());
+        let flags = Arc::new(WalkFlags::default());
         match self.eng.docs.spawn_relink(job, &flags) {
             Ok(()) => self.eng.docs.relink = Some(RelinkWalk { pending, flags }),
             Err(e) => fail(
@@ -2342,6 +2408,24 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A walk that finishes as its timeout passes is counted stuck by exactly one side, and
+    /// taken back by its thread when the stall check won: both orders leave the count at zero.
+    #[test]
+    fn a_walk_finishing_at_its_timeout_never_leaves_the_stuck_count_up() {
+        let stuck = AtomicUsize::new(0);
+        // The walk finishes first: the stall check finds it done and counts nothing.
+        let flags = WalkFlags::default();
+        flags.finish(&stuck);
+        assert!(!flags.abandon(&stuck));
+        assert_eq!(stuck.load(Ordering::SeqCst), 0);
+        // The stall check gives up first: counted stuck until the thread returns.
+        let flags = WalkFlags::default();
+        assert!(flags.abandon(&stuck));
+        assert_eq!(stuck.load(Ordering::SeqCst), 1);
+        flags.finish(&stuck);
+        assert_eq!(stuck.load(Ordering::SeqCst), 0);
+    }
 
     /// The seed is injected, so a new workspace's passcode is the same for the same seed.
     #[test]
