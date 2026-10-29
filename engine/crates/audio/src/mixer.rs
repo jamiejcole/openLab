@@ -602,10 +602,26 @@ impl Outbox {
         if let Err(PushError::Full(start)) = self.returns.push(start) {
             // The return queue is sized so this cannot happen while the controller drains it;
             // leaking is the RT-safe fallback to freeing here.
-            std::mem::forget(start);
+            leak_start(start);
             self.shared.leaked_starts.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The start `leak_start` last gave up on, so a test can free it: LeakSanitizer fails the
+    /// whole test binary on a deliberate leak.
+    static LEAKED_START: std::cell::Cell<*mut VoiceStart> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Gives up on `start` without freeing it (the audio thread must not).
+fn leak_start(start: Box<VoiceStart>) {
+    // Same as `mem::forget`; the raw pointer is only kept for the test above.
+    #[cfg_attr(not(test), allow(unused_variables))]
+    let raw = Box::into_raw(start);
+    #[cfg(test)]
+    LEAKED_START.with(|c| c.set(raw));
 }
 
 /// A command in the pending set, ordered so the heap's top is the earliest `(at, seq)`.
@@ -3434,6 +3450,11 @@ mod tests {
         assert_eq!(shared.leaked_starts.load(Ordering::Relaxed), 1);
         assert_eq!(shared.dropped_events.load(Ordering::Relaxed), 1);
         assert!(rx.pop().is_ok());
+        let raw = LEAKED_START.with(|c| c.replace(std::ptr::null_mut()));
+        assert!(!raw.is_null());
+        // SAFETY: `raw` came from `Box::into_raw` in `leak_start` on this thread and nothing else
+        // has freed or aliased it.
+        drop(unsafe { Box::from_raw(raw) });
     }
 
     #[test]

@@ -152,6 +152,11 @@ pub fn db_to_gain(db: f64) -> f32 {
 const EXP_K: f64 = 6.907_755_278_982_137;
 
 fn exp_shape(t: f64) -> f64 {
+    // The top end is exact whatever the platform's `exp_m1` does: the quotient is 1 only if both
+    // calls round alike, and Miri (like a hostile libm) is allowed to differ between calls.
+    if t >= 1.0 {
+        return 1.0;
+    }
     (EXP_K * t).exp_m1() / EXP_K.exp_m1()
 }
 
@@ -325,6 +330,8 @@ mod tests {
             assert_eq!(ramp_gain(1.0, 0.0, 100, 100, curve), 0.0);
             assert_eq!(ramp_gain(0.25, 0.5, 7, 0, curve), 0.5);
             assert_eq!(curve_shape(curve, f64::NAN), 0.0);
+            assert_eq!(curve_shape(curve, 0.0), 0.0);
+            assert_eq!(curve_shape(curve, 1.0), 1.0);
         }
         assert_eq!(db_to_gain(SILENCE_DB), 0.0);
         assert_eq!(db_to_gain(f64::NAN), 0.0);
