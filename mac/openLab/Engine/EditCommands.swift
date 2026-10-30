@@ -109,6 +109,15 @@ extension Command {
         Command(.object(["type": .string("rename_workspace"), "name": .string(name)]))
     }
 
+    /// `AddCueList { index, id, name }`: a new empty list (CL-01). The client makes the id.
+    static func addCueList(id: ModelID, name: String, index: Int) -> Command {
+        Command(
+            .object([
+                "type": .string("add_cue_list"), "index": .int(Int64(index)), "id": .string(id.raw),
+                "name": .string(name),
+            ]))
+    }
+
     /// `SetCueProperty { id, property }`.
     static func setProperty(_ id: ModelID, _ property: CueProperty) -> Command {
         Command(.object(["type": .string("set_cue_property"), "id": .string(id.raw), "property": property.json]))

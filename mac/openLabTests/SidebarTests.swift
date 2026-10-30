@@ -157,6 +157,39 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(side.activeCues, [Self.intro, Self.rain])  // loaded and broken cues are not active
     }
 
+    /// CL-01: the states that count as active are pinned, so a new state must pick a side.
+    func testWhichCueStatesCountAsActive() {
+        let active: Set<WireCueState> = [.running, .paused, .fading, .preWaiting, .postWaiting, .stopping]
+        XCTAssertEqual(Set(WireCueState.allCases.filter(\.isActive)), active)
+        XCTAssertFalse(WireCueState.idle.isActive || WireCueState.loaded.isActive || WireCueState.broken.isActive)
+    }
+
+    /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
+    /// engine has accepted; New Cart stays off (CL-05).
+    func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {
+        _ = try await make()
+        XCTAssertTrue(side.newListButton.isEnabled)
+        XCTAssertFalse(side.newCartButton.isEnabled)
+        var picked: ModelID?
+        side.onSelectList = { picked = $0 }
+        side.newListButton.performClick(nil)
+        let command = { () -> JSONValue? in
+            for case .command(_, let c, _) in self.rig.engine.received {
+                if let j = JSONValue.parse((try? c.json.text()) ?? ""), j["type"]?.stringValue == "add_cue_list" {
+                    return j
+                }
+            }
+            return nil
+        }
+        await assertEventually { command() != nil }
+        let sent = try XCTUnwrap(command())
+        XCTAssertEqual(sent["index"], .int(2))
+        XCTAssertEqual(sent["name"]?.stringValue, "Cue List 3")
+        XCTAssertNotNil(sent["id"]?.stringValue)
+        await assertEventually { picked != nil }
+        XCTAssertEqual(picked?.raw, sent["id"]?.stringValue)
+    }
+
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {
         _ = try await make()
         _ = side.activeTable.numberOfRows

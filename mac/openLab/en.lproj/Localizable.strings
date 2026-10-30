@@ -232,6 +232,7 @@
 "footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
 "sidebar.newCart" = "New Cart";
+"sidebar.newList.name" = "Cue List %d";
 
 "footer.mode.label" = "Mode";
 "footer.mode.edit" = "Edit";
@@ -244,6 +245,9 @@
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";
+"menu.help.crashReports" = "Show Crash Reports in Finder";
+"crash.none" = "There are no crash reports on this Mac.";
+"crash.previousRun" = "The last run did not end cleanly. See Show Log; crash reports: Help > Show Crash Reports in Finder.";
 
 /* Sidebar: Warnings tab (DX-01). {name} is replaced by the engine's field of that name. */
 "sidebar.tab.warnings" = "Warnings";

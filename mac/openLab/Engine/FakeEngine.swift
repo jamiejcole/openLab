@@ -471,6 +471,7 @@ final class FakeEngine: EngineTransport {
 
     private static let structural: Set<String> = [
         "add_cue", "paste", "paste_clipboard", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
+        "add_cue_list",
     ]
 
     /// Applies one structural command (or a transaction of them) to `lists`; false when it cannot.
@@ -480,6 +481,12 @@ final class FakeEngine: EngineTransport {
             var copy = lists
             for inner in c["commands"]?.arrayValue ?? [] where !applyStructural(inner, to: &copy) { return false }
             lists = copy
+            return true
+        case "add_cue_list":
+            guard let id = c["id"], let name = c["name"], case .int(let at)? = c["index"],
+                (0...Int64(lists.count)).contains(at)
+            else { return false }
+            lists.insert(.object(["id": id, "name": name, "cues": .array([])]), at: Int(at))
             return true
         case "add_cue":
             guard let cue = c["cue"], let at = c["at"] else { return false }

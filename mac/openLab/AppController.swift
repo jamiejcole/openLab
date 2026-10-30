@@ -38,6 +38,11 @@ final class AppController {
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
     var beep: @MainActor () -> Void = { NSSound.beep() }
+    /// DX-04: the folders holding crash reports, and the Finder reveal of those that exist.
+    var crashFolders: @MainActor () -> [URL] = AppController.defaultCrashFolders
+    var revealInFinder: @MainActor ([URL]) -> Void = { NSWorkspace.shared.activateFileViewerSelecting($0) }
+    /// The previous-run record is announced once per app run, at the first window.
+    var previousRunAnnounced = false
     /// A text field or text view is being edited: keys that type must stay with it.
     var isTextEditing: @MainActor () -> Bool = { (NSApp.keyWindow?.firstResponder as? NSText)?.isEditable == true }
     /// Per workspace: its `settings.hotkeys` as last read (a change re-reads and warns once).

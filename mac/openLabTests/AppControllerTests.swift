@@ -1546,6 +1546,51 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
     }
 
+    // MARK: Crash reports (DX-04)
+
+    func testRevealCrashReportsShowsOnlyTheFoldersThatExist() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let present = root.appendingPathComponent("Crashes")
+        try FileManager.default.createDirectory(at: present, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var revealed: [[URL]] = []
+        app.revealInFinder = { revealed.append($0) }
+        app.crashFolders = { [present, root.appendingPathComponent("DiagnosticReports")] }
+        app.revealCrashReports()
+        XCTAssertEqual(revealed, [[present]])
+        XCTAssertFalse(alerts.log.contains { $0.hasPrefix("info:") })
+    }
+
+    func testRevealCrashReportsSaysSoWhenThereAreNone() {
+        var revealed = 0
+        app.revealInFinder = { _ in revealed += 1 }
+        app.crashFolders = { [URL(fileURLWithPath: "/nonexistent/openLab-crashes")] }
+        app.revealCrashReports()
+        XCTAssertEqual(revealed, 0)
+        XCTAssertTrue(alerts.log.contains("info:" + loc("crash.none")))
+    }
+
+    func testHelpMenuHasTheCrashReportsItem() {
+        let titles = MainMenu.make().help.items.map(\.title)
+        XCTAssertTrue(titles.contains(loc("menu.help.crashReports")))
+    }
+
+    func testAnUncleanPreviousRunIsAnnouncedInTheFooterAndACleanOneIsNot() async throws {
+        let wc = try XCTUnwrap(app.allWindows.first)
+        engine.logTailEntries = [
+            try XCTUnwrap(JSONValue.parse(#"{"time_ms":1,"level":"info","kind":"go","message":"GO 1"}"#))
+        ]
+        await app.announcePreviousRun(on: wc.store)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, "")
+        engine.logTailEntries.append(
+            try XCTUnwrap(
+                JSONValue.parse(
+                    #"{"time_ms":2,"level":"warn","kind":"engine","message":"previous run ended without a clean shutdown (crash, kill or power loss): pid 7"}"#
+                )))
+        await app.announcePreviousRun(on: wc.store)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, loc("crash.previousRun"))
+    }
+
     // MARK: Window order and engine restarts (M5.19a, M5.2)
 
     func testWindowsAreInOpenOrderWithTenOrMoreWorkspaces() async throws {
