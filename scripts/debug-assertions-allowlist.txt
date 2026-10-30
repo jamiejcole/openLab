@@ -4,7 +4,6 @@
 # Entries starting KNOWN are findings being fixed: delete the entry with the fix.
 engine/crates/audio/src/output.rs | detector: debug builds run the callback under assert_no_alloc and count violations; the rendered audio is the same
 engine/crates/engine/src/main.rs | debug global allocator (assert_no_alloc) so the callback guard can count allocations; no effect on behaviour, plus its test
-engine/crates/core/src/command.rs | debug-only snapshot compared after a transaction rollback; asserts, changes no state
 engine/crates/audio/tests/cpu_budget.rs | test skips the wall-clock CPU gate in a debug build (meaningless there)
 engine/crates/engine/tests/perf.rs | test skips the wall-clock performance gate in a debug build (meaningless there)
 engine/crates/core/src/cue_engine/mod.rs | detector: the edit cross-check is on by default in debug builds; it counts unsignalled edits and changes no action

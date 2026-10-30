@@ -431,8 +431,10 @@ impl Workspace {
 
 /// Applies `commands` in order as one step. If one is refused, the steps already applied are
 /// undone with their own inverses, newest first: every inverse restores exactly what its command
-/// changed, so this costs what the transaction touched, not the size of the show. Debug and
-/// test builds also clone the workspace up front and check the rollback against it.
+/// changed, so this costs what the transaction touched, not the size of the show. That the
+/// inverses restore exactly is held by tests (`tests/transaction_rollback.rs`), not checked here:
+/// a copy of the workspace per transaction would cost the size of the show, and a check only
+/// debug builds made would make them act differently.
 fn transaction(
     ws: &mut Workspace,
     commands: Vec<Command>,
@@ -490,8 +492,6 @@ fn transaction_with(
     restoring: bool,
     undo: impl FnMut(&mut Workspace, Command) -> Result<Inverse, CommandError>,
 ) -> Result<Inverse, CommandError> {
-    #[cfg(debug_assertions)]
-    let snapshot = ws.clone();
     let mut undo_steps = Vec::with_capacity(commands.len());
     for (index, command) in commands.into_iter().enumerate() {
         match single(ws, command, restoring) {
@@ -505,14 +505,6 @@ fn transaction_with(
                         rollback: Box::new(rollback),
                     }
                 })?;
-                // Debug text rather than `==`, so a NaN a hostile workspace may hold compares
-                // equal to itself and -0.0 differs from 0.0.
-                #[cfg(debug_assertions)]
-                debug_assert_eq!(
-                    format!("{ws:?}"),
-                    format!("{snapshot:?}"),
-                    "transaction rollback did not restore the workspace exactly"
-                );
                 return Err(CommandError::InTransaction { index, source });
             }
         }
@@ -775,6 +767,39 @@ mod tests {
         assert_eq!(ws.cue_lists.len(), 2);
         assert_eq!(ws.cue_lists.first().unwrap().name, "Renamed");
         assert!(error.to_string().contains("partly changed"));
+    }
+
+    /// Regression: a rollback whose steps all succeed but do not restore the workspace (a wrong
+    /// inverse) panicked in debug builds, where release builds returned the error. Every build
+    /// now returns the command's refusal and does not panic.
+    #[test]
+    fn an_inexact_rollback_returns_the_refusal_in_every_build() {
+        let mut ws = sample();
+        let commands = vec![
+            Command::RenameCueList {
+                id: list(1),
+                name: "Renamed".into(),
+            },
+            Command::RemoveCueList { id: list(99) },
+        ];
+        let error = transaction_with(&mut ws, commands, false, |ws, _| {
+            single(
+                ws,
+                Command::RenameCueList {
+                    id: list(1),
+                    name: "Wrong".into(),
+                },
+                true,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            CommandError::InTransaction {
+                index: 1,
+                source: Box::new(CommandError::CueListNotFound(list(99))),
+            }
+        );
     }
 
     /// Steps are undone newest first; a step that is a transaction (the inverse of a paste or a
