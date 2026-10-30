@@ -82,9 +82,20 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+/// Serialises the lib tests that read `assert_no_alloc`'s process-wide violation counter, or raise it on
+/// purpose (the fault-injection tests in `output`): a deliberate violation on one test thread would
+/// otherwise fail another's "no violations" check. (The integration tests are separate processes; their
+/// deliberate violation has its own binary, `tests/rt_guard.rs`.)
+#[cfg(test)]
+pub(crate) fn alloc_counter_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Runs `f` with allocation forbidden; any (de)allocation fails the test.
 #[cfg(test)]
 pub(crate) fn no_alloc_for_tests<T>(f: impl FnOnce() -> T) -> T {
+    let _lock = alloc_counter_lock();
     let before = assert_no_alloc::violation_count();
     let r = assert_no_alloc::assert_no_alloc(f);
     assert_eq!(
