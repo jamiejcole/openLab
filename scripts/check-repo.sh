@@ -239,6 +239,16 @@ one_gate() {
   done
 }
 
+# 10. Regression (#408): `prepush.sh --check` with no stamp file must say why it refuses.
+prepush_no_stamp() {
+  local out
+  out=$(PREPUSH_STAMP=/nonexistent/openlab-prepush scripts/prepush.sh --check 2>&1) && fail prepush-stamp "--check passed with no stamp file"
+  case "$out" in
+    *"no PREPUSH PASS"*) ;;
+    *) fail prepush-stamp "scripts/prepush.sh --check with no stamp file printed no explanation (got: '$out')" ;;
+  esac
+}
+
 spdx
 strings_keys
 debug_assertions
@@ -248,6 +258,7 @@ one_home
 path_filters
 wall_clock
 one_gate
+prepush_no_stamp
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-STAMP="$(git rev-parse --git-dir)/openlab-prepush"
+STAMP="${PREPUSH_STAMP:-$(git rev-parse --git-dir)/openlab-prepush}"
 # shellcheck source=scripts/paths.sh
 . scripts/paths.sh
 
@@ -26,7 +26,9 @@ tree_clean() { [ -z "$(git status --porcelain)" ]; }
 if [ "${1:-}" = "--check" ]; then
   head="$(git rev-parse HEAD)"
   want="${2:-$head}"
-  saved="$(sed -n 's/^PREPUSH PASS //p' "$STAMP" 2>/dev/null | head -n 1)"
+  # No stamp file is the common case and must be explained: a failing sed under pipefail would exit silently.
+  saved=""
+  if [ -f "$STAMP" ]; then saved="$(sed -n 's/^PREPUSH PASS //p' "$STAMP" | head -n 1)"; fi
   if [ "$saved" != "$want" ]; then
     echo "prepush: no PREPUSH PASS for ${want} (saved: ${saved:-none}). Run scripts/prepush.sh (make prepush)."
     exit 1
