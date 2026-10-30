@@ -1,10 +1,15 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # Orchestrator state (2026-10-29)
 
-M1–M4 are complete: every engine-service issue is closed and ticked in `PROGRESS.md`. Work now is M5
-(macOS app), then M6 (release v0.0.1). Open work lives in GitHub issues by milestone
-(`gh issue list --milestone "M5 macOS app" --label task --state open`); each `PROGRESS.md` line names its
-issue. Every task issue carries a Checklist of its requirement IDs, ticked by the implementer as parts land.
+M1–M4 are complete. Work now is M5 (macOS app), then M6 (release v0.0.1). GitHub issues and milestones are the only
+tracker (`gh issue list --milestone "M5 macOS app" --state open`); every task issue carries a Checklist of its
+requirement IDs, ticked by the implementer as parts land.
+
+## 2026-10-30 session
+- Two external reviews (code, process) found Highs the loop missed. Response: rules become CI checks (#400), the
+  instruction files were made consistent and CLAUDE.md shortened (#399), PROGRESS.md deleted, reviewers run on Opus
+  and re-run what they cite, `main` requires up-to-date branches. Code Highs: #401, #402, #403.
+- User decisions: no human reads code or PRs; everything matches QLab 5, extras included (output delay goes, #404).
 
 ## 2026-10-29 session
 - Closed the post-review groundwork: about 55 issues fixed or closed (PRs #375, #380, #382, #390 and the QLab-parity PR). Remaining Lows were filed during reviews.
@@ -15,8 +20,7 @@ issue. Every task issue carries a Checklist of its requirement IDs, ticked by th
 
 ## Start of a session
 1. `git fetch origin`; check open PRs and the last CI run on `main`.
-2. Confirm `git config user.email` is the repo-local agent identity (`docs/dev-setup.md`); which `gh`
-   account to use: see memory.
+2. Confirm `git config user.email` is the repo-local agent identity (`docs/dev-setup.md`).
 3. The app's engine-side needs are issues now: #233 (protocol 2 switch), #110 (lifecycle contract),
    #236 (media duration), #237 (durations), #238 (undo guard), #239 (media paths, paste), #121 (hotkeys),
    #124 (Show Mode).
@@ -34,7 +38,6 @@ to `main` (QA-07).
 - Pushing a branch whose workflow file is old runs that old workflow (old branches ran CI on every
   push). Delete stale branches rather than pushing them.
 - Delete a worktree (and its `engine/target`) once its branch is pushed: agent worktrees filled the disk on 2026-10-28.
-- `PROGRESS.md`: tick boxes and add one-line tasks only.
 - Every brief includes the adversarial checklist in `.claude/agents/implementer.md`.
 - Two green PRs can still break `main` together; `main`'s run after each merge catches it, and a red
   `main` is fixed (through a PR) before new work.

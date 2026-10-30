@@ -9,21 +9,20 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 
 ## Budgets
 **Tokens** (correctness comes first, see CLAUDE.md; within that, spend tokens on review and save them on re-runs, re-reads and long reports):
-- Agents default to **Sonnet** (agent frontmatter). Pass `model: "opus"` only for design-heavy or RT/concurrency-critical work (the issue's `model:opus` label): the mixer/audio-thread code, lock-free queues, the cue-engine state machine, engine process lifecycle, and reviews of those. Everything else stays on Sonnet.
-- By default up to 5 subagents in parallel: at most 3 on Opus and 1–2 on Sonnet. Parallel implementers must touch disjoint files.
+- Implementers default to **Sonnet**; pass `model: "opus"` for the issue's `model:opus` label (mixer/audio thread, lock-free queues, the cue-engine state machine, engine process lifecycle). The `pr-reviewer` runs on **Opus** (frontmatter); for Opus-written work it is a fresh agent that never saw the implementer's context (CLAUDE.md "Review").
+- At most 2 implementers at once, on disjoint files. Fewer, smaller batches keep branches close to `main`.
 - Review once per batch. Re-review the fix commits after any High or Medium fix. Max 3 rounds, then escalate.
-- Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs. Read report files with `head`/`grep`, not in full.
+- Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
 
 **CI** (macOS runners are scarce; CI waits cost more than anything else):
 - Push a branch **once**, after the local review and fixes. Every push is a full CI run.
-- Do not merge `main` into a PR just because `main` moved: CI already tested the PR merged with `main` as it was, and `main`'s own run after each merge (plus the `ci-red` alert) catches two PRs that clash. Merge `main` in only when GitHub reports a conflict, or when `main` changed the same files in a way you judge risky.
-- When several PRs are green, merge them back to back: pending runs on `main` collapse into one.
+- `main` requires the branch to be up to date. Before merging a green PR that is behind, update it (`gh pr update-branch N`, a merge commit), wait for CI, then merge. Merge one PR at a time; that is why batches are few and combined.
 - Combine related reviewed batches into one PR (merge their branches into one combined branch, prepush once, list every `Closes #N`) instead of one PR per batch.
 - The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A `.github/` or `Makefile` change runs everything.
 
 ## 0. Re-orient (every session start or after a reset)
-- Read `docs/handoff/orchestrator-state.md`, then `PROGRESS.md` (history and order) and `gh issue list --milestone "<current milestone>" --label task --state open` (what's next). Skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, `git log --oneline -15`, `git status`.
-- Identity: `git config user.email` = the repo-local agent identity (`docs/dev-setup.md`); which `gh` account to use: see memory.
+- Read `docs/handoff/orchestrator-state.md`, then `gh issue list --milestone "<current milestone>" --state open` (what's next; issues and milestones are the only tracker). Skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, `git log --oneline -15`, `git status`.
+- Identity: `git config user.email` = the repo-local agent identity (`docs/dev-setup.md`). Account details are local notes, never written into the repo.
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
@@ -47,15 +46,16 @@ Verification: make prepush → PREPUSH PASS; issue checklist ticked as parts lan
 Report: <scratchpad>/reports/<batch>.md
 ```
 
-Never paste large file contents into briefs — point at paths. Agent hand-back delivery can fail; read the report file if no report arrives. Briefs tell implementers and reviewers to log QLab questions in `docs/todo/open-qlab-questions.md` rather than ask.
+Never paste large file contents into briefs — point at paths. Agent hand-back delivery can fail; read the report file if no report arrives.
 
 ## 3. Verify the report (don't trust it)
 - Check the commits exist, `git diff --stat` matches the claim, and the author is `openlab-dev`.
 - The implementer runs `make prepush` once, which saves `PREPUSH PASS <sha>` in the worktree. Verify with `scripts/prepush.sh --check` run in the implementer's worktree (exit 0 only if the stamp is for HEAD and the tree is clean); the report's `PREPUSH PASS` line must name the same sha. Don't re-run prepush for the same head.
-- Spot-check that the tests cited actually test the behaviour (open one or two), and that the ticked checklist boxes match what was built.
+- Run the tests the report cites and open them: they must exist, pass, and test the claimed behaviour. Ticked checklist boxes must match what was built. Never act on a summary alone.
 
 ## 4. Adversarial review
-- Spawn `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of.
+- Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of. Every PR gets one, including your own; you never review your own change.
+- Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
 - Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.2` milestone.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
@@ -66,13 +66,13 @@ Review traffic stays local (report files + `SendMessage`); GitHub is only the me
 - Check CI on the PR **once** when you would otherwise merge (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
 - Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or filed. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
 - Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
-- Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a Sonnet `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Small handoff-note commits may ride along in the next batch's PR.
+- Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Land them only while no agent is running, so no agent works under old rules. Small handoff-note commits may ride along in the next batch's PR.
 
 ## 6. Track
-- The PR's `Closes #N` closes the issues. After merge, tick the matching `PROGRESS.md` lines (only the orchestrator edits it).
+- The PR's `Closes #N` closes the issues.
 - Tick a requirement in `REQUIREMENTS.md` when no open issue lists it and every part within the release scope (§21) is implemented and tested. Check with an exact match, not GitHub search (it splits IDs at the hyphen): `gh issue list --state open --limit 500 --json number,body --jq '.[] | select(.body | test("\\bAUD-19\\b")) | .number'` prints nothing. The full v0.0.1 sweep is M6.4.
-- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone, a Checklist of its requirement IDs) and a one-line `PROGRESS.md` task.
-- Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. Lessons that every agent needs go into `CLAUDE.md`. A user policy decision goes into `CLAUDE.md` in the same session (through a reviewed PR); memory records only that the user decided it and when. Keep `docs/handoff/orchestrator-state.md` current at the end of a session.
+- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone, a Checklist of its requirement IDs).
+- Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. A lesson every agent needs becomes a CI or repo check where possible, else one line in `CLAUDE.md`. A user policy decision goes into `CLAUDE.md` in the same session (through a reviewed PR); memory records only that the user decided it and when. Keep `docs/handoff/orchestrator-state.md` current at the end of a session.
 
 ## 7. Talk to the user
 - After each landed batch, a short status update:
@@ -91,9 +91,5 @@ Review traffic stays local (report files + `SendMessage`); GitHub is only the me
 3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: `low` issues opened/closed, Mediums fixed in the last reviews, claims the repo did not back.
 4. Then the user check-in (section 7).
 
-## Standing decisions (quick reference)
-- Rust engine (headless, separate process) + Swift/AppKit macOS UI, JSON show file `.openlab`, GPLv3-or-later.
-- v0.0.1 = audio-only rehearsal on macOS; video is v0.0.2; lighting deferred; Windows UI tech decided later (engine CI on Windows from day one).
-- macOS 12 minimum, 2014 Mac mini is the performance target; CI perf budgets stand in until the M6 hardware check.
-- Everything reaches `main` through a PR merged by the orchestrator after green CI; never push directly to `main`. No self-hosted CI runner (user decision 2026-10-28).
-- QLab behaviour questions: CLAUDE.md "Behaviour decisions"; when the user answers a row, update it and the code if the answer differs. Still escalate architecture/scope/dependency questions, and behaviour that conflicts with ARCHITECTURE.md or show safety.
+## Standing decisions
+Rules live in `CLAUDE.md`, design in `docs/ARCHITECTURE.md`, scope in `REQUIREMENTS.md` §21. Orchestrator-only: no self-hosted CI runner (user decision 2026-10-28); `main` requires CI Result green and the branch up to date with `main` (2026-10-30).
