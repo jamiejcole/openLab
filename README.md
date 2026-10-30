@@ -4,8 +4,8 @@
 
 openLab is an open-source show-playback system for theatre, in the spirit of QLab 5. A headless Rust engine owns the
 show, timing and audio; a native Swift/AppKit app on macOS is the operator interface, so a UI fault never stops
-playback. See [`REQUIREMENTS.md`](REQUIREMENTS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`PROGRESS.md`](PROGRESS.md).
+playback. See [`REQUIREMENTS.md`](REQUIREMENTS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); open work is in
+GitHub issues and milestones.
 
 ## Licence
 

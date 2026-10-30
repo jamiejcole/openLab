@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 name: Task
-description: A unit of planned work (replaces a PROGRESS.md line)
+description: A unit of planned work
 labels: [task]
 body:
   - type: input
@@ -39,5 +39,21 @@ body:
     attributes:
       label: Area
       options: ["core", "audio", "engine", "mac", "docs"]
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      options: ["sonnet", "opus"]
+    validations:
+      required: true
+  - type: textarea
+    id: checklist
+    attributes:
+      label: Checklist
+      description: One box per requirement ID or part, ticked when implemented and tested.
+      value: |
+        - [ ] 
     validations:
       required: true

@@ -1,7 +1,7 @@
 # openLab — Requirements (Complete Product)
 
 The full feature set for a "finished" openLab: an open-source, cross-platform show-control and playback system in the spirit of QLab 5.
-This is the master list. Scope for each release (starting with v0.0.1) is chosen from here and tracked in `PROGRESS.md`.
+This is the master list. Scope for each release (starting with v0.0.1) is chosen from here and tracked in GitHub issues and milestones.
 
 **Conventions**
 - Each requirement has a stable ID (e.g. `AUD-07`). IDs are never reused or renumbered; retired items are struck through, not deleted.
