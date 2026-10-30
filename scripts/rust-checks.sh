@@ -11,6 +11,7 @@
 #   clippy-windows   the same lints for the Windows target (needs `rustup target add x86_64-pc-windows-gnu`)
 #   test             the workspace tests, every failure listed
 #   test-release     the same, optimised (debug-only checks off)
+#   fuzz-lint        fmt and clippy for engine/fuzz, which is outside the workspace
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../engine"
@@ -28,9 +29,15 @@ case "${1:-}" in
     lints --target x86_64-pc-windows-gnu --lib --bins
     ;;
   test) cargo test --workspace --locked --no-fail-fast ;;
+  fuzz-lint)
+    # The fuzz crate is outside the workspace, so the modes above never see it.
+    cd fuzz
+    cargo fmt --check
+    cargo clippy --locked -- -D warnings
+    ;;
   test-release) cargo test --release --workspace --locked --no-fail-fast ;;
   *)
-    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|test|test-release" >&2
+    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release" >&2
     exit 2
     ;;
 esac

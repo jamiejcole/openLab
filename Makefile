@@ -15,7 +15,7 @@ lint:
 	scripts/rust-checks.sh fmt
 	scripts/rust-checks.sh clippy
 	cd engine && cargo deny check
-	cd engine/fuzz && cargo fmt --check && cargo clippy --locked -- -D warnings
+	scripts/rust-checks.sh fuzz-lint
 	swift format lint --strict -r mac/
 
 test: test-rust test-mac

@@ -22,11 +22,23 @@ fail() { echo "FAIL [$1] $2"; failed=1; }
 # open-issue sub-check is skipped (one SKIPPED line), in CI it fails. (Plain variables: macOS has bash 3.2.)
 GH_SKIPPED=0
 ISSUE_CACHE=""
+# On a pull request only the issues on allowlist lines the PR adds or changes are asked about (BASE set):
+# closing an issue elsewhere must not turn unrelated PRs red. The full sweep (BASE empty) runs on main
+# and nightly, where a red run raises the ci-red alert. CHECK_REPO_BASE=<ref> forces the PR mode locally.
+BASE="${CHECK_REPO_BASE:-}"
+if [ -z "$BASE" ] && [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then BASE="origin/${GITHUB_BASE_REF:-main}"; fi
+CHANGED_ISSUES=""
+if [ -n "$BASE" ]; then
+  CHANGED_ISSUES=$(git diff "$BASE...HEAD" -- 'scripts/*allowlist*.txt' scripts/check-repo-known.txt |
+    grep -E '^\+[^+]' | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+fi
 issue_open() {
   local n=$1 state
+  if [ -n "$BASE" ] && ! printf '%s\n' "$CHANGED_ISSUES" | grep -qx "$n"; then return 0; fi
   state=$(printf '%s' "$ISSUE_CACHE" | sed -n "s/^$n=//p")
   if [ -z "$state" ]; then
-    state=$(gh issue view "$n" --json state --jq .state 2>/dev/null) || state=UNKNOWN
+    # Retry once: a transient API error must not read as an answer.
+    state=$(gh issue view "$n" --json state --jq .state 2>/dev/null || gh issue view "$n" --json state --jq .state 2>/dev/null) || state=UNKNOWN
     [ -n "$state" ] || state=UNKNOWN
     ISSUE_CACHE="$ISSUE_CACHE
 $n=$state"
@@ -234,7 +246,8 @@ wall_clock() {
 one_gate() {
   local f hits
   for f in .github/workflows/ci.yml Makefile scripts/prepush.sh; do
-    hits=$(grep -nE '^[^#]*cargo (clippy|test|fmt)[^#]*(--workspace|--all)' "$f")
+    # Any cargo fmt/clippy/test, except the ignored real-time gates (their own jobs and flags).
+    hits=$(grep -nE '^[^#]*cargo (clippy|test|fmt)( |$)' "$f" | grep -v -- --ignored)
     [ -z "$hits" ] || fail one-gate "$f spells out a Rust gate command (call scripts/rust-checks.sh instead): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
   done
 }
@@ -249,6 +262,20 @@ prepush_no_stamp() {
   esac
 }
 
+# 11. The soak_rt CI wrapper turns a host refusal, and only that, into a SKIPPED. Canned cargo logs.
+soak_classifier() {
+  local d out rc
+  d=$(mktemp -d)
+  printf 'host: slow (OPENLAB_SOAK_RT_REQUIRE is set)\nhost: slow (OPENLAB_SOAK_RT_REQUIRE is set)\ntest result: FAILED. 0 passed; 2 failed; 0 ignored\n' >"$d/refused"
+  printf 'host: slow (OPENLAB_SOAK_RT_REQUIRE is set)\nrun failed on xruns 5\ntest result: FAILED. 0 passed; 2 failed; 0 ignored\n' >"$d/mixed"
+  printf 'error[E0432]: unresolved import\n' >"$d/nosummary"
+  out=$(GITHUB_STEP_SUMMARY=/dev/null scripts/soak-rt-ci.sh --classify "$d/refused" 101 2>&1) && rc=0 || rc=$?
+  { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'SKIPPED'; } || fail soak-classifier "all-refused log must exit 0 with SKIPPED (rc $rc: $out)"
+  scripts/soak-rt-ci.sh --classify "$d/mixed" 101 >/dev/null 2>&1 && fail soak-classifier "a refusal plus another failure must exit 1"
+  scripts/soak-rt-ci.sh --classify "$d/nosummary" 101 >/dev/null 2>&1 && fail soak-classifier "a log with no test summary and rc 101 must exit 1"
+  rm -rf "$d"
+}
+
 spdx
 strings_keys
 debug_assertions
@@ -259,6 +286,7 @@ path_filters
 wall_clock
 one_gate
 prepush_no_stamp
+soak_classifier
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"
