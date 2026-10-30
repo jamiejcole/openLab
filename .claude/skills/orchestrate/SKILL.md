@@ -46,25 +46,25 @@ Verification: make prepush → PREPUSH PASS; issue checklist ticked as parts lan
 Report: <scratchpad>/reports/<batch>.md
 ```
 
-Never paste large file contents into briefs — point at paths. Agent hand-back delivery can fail; read the report file if no report arrives.
+Never paste large file contents into briefs — point at paths. Agent hand-back delivery can fail; read an implementer's report file if no report arrives (reviewers reply only).
 
 ## 3. Verify the report (don't trust it)
 - Check the commits exist, `git diff --stat` matches the claim, and the author is `openlab-dev`.
 - The implementer runs `make prepush` once, which saves `PREPUSH PASS <sha>` in the worktree. Verify with `scripts/prepush.sh --check` run in the implementer's worktree (exit 0 only if the stamp is for HEAD and the tree is clean); the report's `PREPUSH PASS` line must name the same sha. Don't re-run prepush for the same head.
-- Run the tests the report cites and open them: they must exist, pass, and test the claimed behaviour. Ticked checklist boxes must match what was built. Never act on a summary alone.
+- Verify per CLAUDE.md "Review": open the cited tests and run them. Ticked checklist boxes must match what was built.
 
 ## 4. Adversarial review
-- Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of. Every PR gets one, including your own; you never review your own change.
+- Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
 - Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
 - Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.2` milestone.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits. Max 3 rounds; then stop and escalate to the user with the disagreement.
 
 ## 5. Land it (PR into `main`)
-Review traffic stays local (report files + `SendMessage`); GitHub is only the merge gate.
+Review traffic stays local (implementer report files, reviewer replies, `SendMessage`); GitHub is only the merge gate.
 - Branch named after the tasks (e.g. `m5-2-engine-lifecycle`). Push once: `git push origin <worktree-branch>:<task-branch>`.
 - `gh pr create --base main` with the body from `.github/pull_request_template.md`: `Closes #N` for each issue, task IDs + one line each, requirement IDs, the `PREPUSH PASS` line, the review summary and docs-claims lines of the template, QLab rows added. No full review text.
 - Check CI on the PR **once** when you would otherwise merge (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
-- Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or filed. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`. Only the orchestrator merges; implementers and reviewers never push to or merge into `main`.
+- Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or filed. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
 - Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
 - Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Land them only while no agent is running, so no agent works under old rules. Small handoff-note commits may ride along in the next batch's PR.
 

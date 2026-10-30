@@ -14,7 +14,7 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 
 ## Build
 - Do only the assigned issues. Report discovered extra work (the orchestrator files the issue) rather than doing it.
-- Commit each working step as you go, not one big commit at the end. Tick the issue's checklist boxes as each part is implemented **and tested**.
+- Commit each working step as you go, not one big commit at the end.
 - Tests per CLAUDE.md "Tests": behaviour tests for every requirement the issue lists, plus error paths. Put them in the file the brief names, or the existing file for that behaviour. Check the brief's "Siblings to check": other entry points or copies of what you change.
 - macOS app: unit-test store and view-controller logic against `FakeEngine`; add or extend an XCUITest for a new user-visible flow. A behaviour the app relies on from the engine is proven by an engine test or a golden fixture, not only FakeEngine.
 - Update the relevant docs (`docs/*.md`) in the same commit as behaviour or contract changes.
@@ -24,7 +24,7 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 - Run `make prepush` once and paste its final `PREPUSH PASS` / `PREPUSH FAIL` line. Don't report done on a failure.
 - Self-review your diff (`git diff`) as a hostile reviewer would: panics, RT violations, races, untested branches, ARCHITECTURE drift.
 - Then ask what the adversarial reviewer will ask, and answer each with a test: what happens **during a live show** if this misbehaves (does a cue become broken, get skipped, play late or stop)? What does a hostile or broken input do (OSC/network peers, damaged or huge media, slow/hung disks, devices that vanish, an engine that restarts under the app)? What happens on Windows and on a slow 2014 Mac with an HDD? Does this behave the same in a release build? Is every other path that creates this data checked the same way? Which failure can't be detected, and is it at least logged?
-- Commit per CLAUDE.md "Git"; reference the issue in the last commit body. Do not push.
+- Commit per CLAUDE.md "Work and git"; reference the issue in the last commit body. Do not push.
 
 ## Report
 If the brief gives a report file path, write the full report there before ending — delivery to the orchestrator can fail, the file is the reliable copy.
