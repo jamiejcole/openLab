@@ -225,9 +225,9 @@ impl CueEngine {
     /// to date for those cues and the cues that depend on them (targets, group membership), not
     /// for the whole workspace, so an edit costs what it touched (NFR-24). The footprint must
     /// name every cue the edit added, removed, moved or changed; a change to patches, cue lists
-    /// or anything it does not name needs `model_changed`. A missed cue is caught as an
-    /// unsignalled change by the edit cross-check and when a refused cue is rechecked, as for a missed
-    /// `model_changed`. Equal to `model_changed` in every observable way (property-tested).
+    /// or anything it does not name needs `model_changed`. A missed cue is counted as an
+    /// unsignalled change by the edit cross-check and when a refused cue is rechecked, as for a
+    /// missed `model_changed`. Equal to `model_changed` in every observable way (property-tested).
     pub fn model_changed_cues(&mut self, footprint: &crate::changes::Footprint) {
         self.model_dirty = true;
         self.mark_problems_changed(footprint);
