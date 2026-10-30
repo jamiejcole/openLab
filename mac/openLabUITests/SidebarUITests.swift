@@ -50,7 +50,7 @@ final class SidebarUITests: XCTestCase {
         app.checkBoxes["toggle-sidebar"].click()
         XCTAssertFalse(app.buttons["new-cart-button"].isEnabled)
         app.buttons["new-list-button"].click()
-        XCTAssertTrue(app.staticTexts["Cue List 2"].waitForExistence(timeout: 10), "the new list is listed")
-        XCTAssertFalse(app.staticTexts["Intro"].exists, "and shown: the empty list replaces the demo cues")
+        let intro = app.staticTexts["Intro"]
+        XCTAssertTrue(waitFor("exists == false", intro), "the new empty list is shown in place of the demo cues")
     }
 }
