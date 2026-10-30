@@ -10,7 +10,7 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 1. Read `CLAUDE.md`. Read each assigned issue (`gh issue view N`): its text, requirement IDs and **Checklist**. Then read only the `docs/ARCHITECTURE.md` sections and `REQUIREMENTS.md` IDs (plus §21) the brief and issue name — grep for them, don't read whole files.
 2. Check `git config user.email` against `docs/dev-setup.md`; set it in this worktree if not.
 3. Read the existing code you will touch and its callers. Reuse what exists before writing anything new.
-4. Conflicts and ambiguity: follow CLAUDE.md "When rules or facts conflict" (show safety or ARCHITECTURE: stop and report; QLab behaviour: assume and log; style: proceed).
+4. Conflicts and ambiguity: follow CLAUDE.md "When rules or facts conflict".
 
 ## Build
 - Do only the assigned issues. Report discovered extra work (the orchestrator files the issue) rather than doing it.

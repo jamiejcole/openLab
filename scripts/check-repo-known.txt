@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Known failures of scripts/check-repo.sh that an open branch fixes: `check | item | reason`.
-# Delete the entry in the commit that fixes the finding. Never weaken the check instead.
+# Known failures of scripts/check-repo.sh: `check | item | reason`. The reason cites the open issue or branch
+# that fixes it, or starts with `permanent:` and says why. Delete a fixed entry in the commit that fixes it. Never weaken the check instead.
 headless-claim | docs/handoff/progress-archive.md | permanent: historical record of tasks, kept because issue bodies link to it

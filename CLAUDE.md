@@ -54,7 +54,7 @@ This file is the only copy of every rule below; other files link here instead of
 - **High:** a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input (fuzzers and property tests included; any input from outside the process is reachable).
 - **Medium:** wrong behaviour; a false or stale claim in a contract doc, ARCHITECTURE.md or this file; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.
 - **Low:** everything else.
-- High and Medium block merge; only the user downgrades a Medium (quote it in the PR). Lows: fix in the same PR when small and in a touched file, else a `low` issue.
+- High and Medium block merge; only the user downgrades a Medium (quote it in the PR). Lows: fix in the same PR when small and in a touched file, else a `low` issue in the current milestone.
 - Pre-existing in a touched file: a High is fixed in this PR or the PR waits for its fix; a Medium becomes a `severity:medium` issue in the current milestone (blocks the milestone, not the PR, unless the PR makes it worse). Mediums are never filed as `low`.
 - Every known exception (an allowlist or known-failure entry, an accepted finding) cites an open issue, or says why it is permanent.
 - A generator, fuzzer or oracle finding that is not a crash, panic or hang and needs input the loader already rejects: fix the generator or oracle.

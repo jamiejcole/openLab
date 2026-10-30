@@ -54,7 +54,7 @@ impl DocCx<'_> {
     /// the clients (one `model_changed` for `footprint`'s cues, M4.1a), and follows it on the
     /// audio side. Returns the inputs that must follow (patch resolutions).
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
-    /// makes the document dirty, but it is not an undo step (confirmed against QLab 5).
+    /// makes the document dirty (as in QLab 5), but it is not an undo step.
     pub(super) fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
         // Lists, patches and settings decide which cues are broken and where the playheads are:
         // the cue-scoped shortcut is only for edits that touched cues alone.
