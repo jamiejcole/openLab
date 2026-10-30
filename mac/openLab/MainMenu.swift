@@ -29,7 +29,13 @@ enum MainMenu {
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
         )
-        let help = menu("menu.help", [item("menu.help.openLabHelp", #selector(NSApplication.showHelp(_:)), "?")])
+        let help = menu(
+            "menu.help",
+            [
+                item("menu.help.openLabHelp", #selector(NSApplication.showHelp(_:)), "?"),
+                .separator(),
+                item("menu.help.crashReports", #selector(AppDelegate.revealCrashReports(_:))),
+            ])
         let transport = transportMenu(keys)
         let bar = NSMenu()
         for submenu in [appMenu(), fileMenu(), edit, cues, viewMenu(), transport, windows, help] {

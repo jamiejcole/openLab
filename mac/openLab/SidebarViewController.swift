@@ -242,10 +242,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
         newListButton.setAX(AX.newListButton)
         newCartButton.setAX(AX.newCartButton)
-        for b in [newListButton, newCartButton] {
-            b.bezelStyle = .rounded
-            b.isEnabled = false  // list management is not built yet
-        }
+        for b in [newListButton, newCartButton] { b.bezelStyle = .rounded }
+        newListButton.target = self
+        newListButton.action = #selector(newListClicked)
+        newCartButton.isEnabled = false  // carts are not in v0.0.1 (CL-05)
         let bottom = NSStackView(views: [newListButton, newCartButton])
         bottom.distribution = .fillEqually
 
@@ -281,6 +281,19 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
+    }
+
+    /// Adds an empty list after the last one and shows it. The id is the client's; the engine
+    /// may refuse; then nothing changes and no list is selected.
+    @objc private func newListClicked() {
+        let id = ModelID(UUID().uuidString.lowercased())
+        let index = lists.count
+        let name = String(format: loc("sidebar.newList.name"), index + 1)
+        Task { [weak self] in
+            guard let self else { return }
+            let sent = await store.send(command: .addCueList(id: id, name: name, index: index))
+            if case .success = sent { onSelectList?(id) }
+        }
     }
 
     @objc private func tabChanged() { showTab(tabs.selectedSegment) }

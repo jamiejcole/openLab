@@ -38,6 +38,10 @@ extension AppController {
                 wc.workspaceName = n.name
             }
             show(wc)
+            if !previousRunAnnounced {
+                previousRunAnnounced = true
+                Task { await announcePreviousRun(on: store) }
+            }
         }
         let liveIDs = Set(live.map(ObjectIdentifier.init))
         for id in controllers.keys where !liveIDs.contains(id) { dropWindow(id) }
@@ -104,5 +108,39 @@ extension AppController {
     var frontController: WorkspaceWindowController? {
         guard let key = keyWindow() else { return nil }
         return controllers.values.first { $0.window === key }
+    }
+}
+
+/// DX-04: crash reports and the engine's note that the last run did not end cleanly.
+extension AppController {
+    /// The engine's own crash folder, and macOS's for aborts and signals the engine cannot catch.
+    static func defaultCrashFolders() -> [URL] {
+        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+        return [
+            logs.appendingPathComponent("openLab/Crashes", isDirectory: true),
+            logs.appendingPathComponent("DiagnosticReports", isDirectory: true),
+        ]
+    }
+
+    /// Shows the crash folders that exist in Finder, so a report can be attached by hand; says so
+    /// when there are none.
+    func revealCrashReports() {
+        let existing = crashFolders().filter {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        if existing.isEmpty { alerts.showInfo(loc("crash.none")) } else { revealInFinder(existing) }
+    }
+
+    /// The engine logs "previous run ended without a clean shutdown" at its start (kind `engine`,
+    /// `warn`; docs/logging.md). Said in the footer of the first window, not in an alert: a show may
+    /// be about to run. The record itself stays in the log window.
+    func announcePreviousRun(on store: WorkspaceStore) async {
+        guard case .success(let tail) = await store.logTail(),
+            tail.entries.contains(where: {
+                $0.kind == "engine" && $0.message.hasPrefix("previous run ended without a clean shutdown")
+            })
+        else { return }
+        controllers[ObjectIdentifier(store)]?.footer.showNotice(loc("crash.previousRun"))
     }
 }

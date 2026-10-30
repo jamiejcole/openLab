@@ -42,4 +42,15 @@ final class SidebarUITests: XCTestCase {
         XCTAssertTrue(waitFor("count == 1", selected), "the cue is selected in the list")
         XCTAssertTrue(selected.firstMatch.staticTexts["Radio"].exists)
     }
+
+    /// CL-01: New List adds a list and shows it; New Cart is off (carts are not in v0.0.1).
+    func testNewListAddsAListAndNewCartIsDisabled() {
+        let app = launchDemo()
+        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
+        app.checkBoxes["toggle-sidebar"].click()
+        XCTAssertFalse(app.buttons["new-cart-button"].isEnabled)
+        app.buttons["new-list-button"].click()
+        let intro = app.staticTexts["Intro"]
+        XCTAssertTrue(waitFor("exists == false", intro), "the new empty list is shown in place of the demo cues")
+    }
 }
