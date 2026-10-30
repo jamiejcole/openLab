@@ -10,6 +10,7 @@
 mod advance;
 mod broken;
 mod control;
+mod cross_check;
 mod edits;
 mod fade;
 mod feedback;
@@ -113,9 +114,8 @@ pub struct CueEngine {
     spent: (SampleTime, usize),
     /// The outline release builds check for a missed `model_changed` (see `shape.rs`).
     shape: shape::Shape,
-    /// Tests: behave as a release build (no full check on every call).
-    #[cfg(test)]
-    release_checks: bool,
+    /// The edit cross-check (see [`CueEngine::set_edit_cross_check`]); `None` when off.
+    cross_check: Option<cross_check::CrossCheck>,
 }
 
 /// One `handle` call's inputs and outputs.
@@ -171,19 +171,21 @@ impl CueEngine {
             whole_show_passes: 0,
             spent: (0, 0),
             shape: shape::Shape::default(),
-            #[cfg(test)]
-            release_checks: false,
+            // Debug builds count the edits nobody signalled, so tests find a missed signal; the
+            // check only counts, so behaviour is that of a release build (CLAUDE.md).
+            cross_check: cfg!(debug_assertions).then(cross_check::CrossCheck::default),
         }
     }
 
-    /// Whether every call checks the model against a full rebuild (debug builds). Release
-    /// builds check the cheap outline instead (`shape.rs`).
-    fn full_checks(&self) -> bool {
-        #[cfg(test)]
-        if self.release_checks {
-            return false;
-        }
-        cfg!(debug_assertions)
+    /// Turns the edit cross-check on or off (on by default in debug builds, off in release).
+    /// With it, every `handle` call compares the workspace with the one the last call saw and
+    /// the problem cache with a full rebuild, and counts a difference nobody signalled in
+    /// [`Self::unsignalled_model_changes`]. It never follows or repairs what it finds: the
+    /// engine acts exactly as without it (the actions of every call are the same), only the
+    /// count differs. It costs a whole-workspace comparison and rebuild per call, so it is for
+    /// tests and debug builds.
+    pub fn set_edit_cross_check(&mut self, on: bool) {
+        self.cross_check = on.then(cross_check::CrossCheck::default);
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -249,19 +251,19 @@ impl CueEngine {
     /// `ws` is the current workspace; edits since the last call are taken into account first.
     pub fn handle(&mut self, ws: &Workspace, input: Input, now: SampleTime) -> Vec<Action> {
         // Whole-tree passes (the chain limit, following edits) only after `model_changed`, so a
-        // Tick on a big show costs nothing extra. Debug builds run them every call and count a
-        // change nobody signalled, as for the static problems; release builds compare the
-        // workspace's outline and, if it changed, count it and follow as if signalled.
+        // Tick on a big show costs nothing extra. Without the signal the workspace's outline is
+        // compared and, if it changed, the change is counted and followed as if signalled. The
+        // same in every build: the edit cross-check (debug builds) only counts.
         let signalled = std::mem::take(&mut self.model_dirty);
-        let full = self.full_checks();
-        let outline_changed = !signalled && !full && !self.shape.matches(ws);
+        let counted_at_start = self.unsignalled_model_changes();
+        let outline_changed = !signalled && !self.shape.matches(ws);
         if outline_changed {
             if self.unsignalled_model_changes() == self.shape.unsignalled() {
                 self.note_unsignalled();
             }
             self.mark_problems_dirty();
         }
-        let follow_edits = signalled || full || outline_changed;
+        let follow_edits = signalled || outline_changed;
         if signalled {
             self.model_syncs = self.model_syncs.saturating_add(1);
         }
@@ -297,7 +299,6 @@ impl CueEngine {
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after
         // `model_changed`.
-        let counted = self.unsignalled_model_changes();
         self.sync_problems(&mut cx);
         if follow_edits {
             self.limit = self.counted_chain_limit(ws);
@@ -305,15 +306,8 @@ impl CueEngine {
         cx.limit = self.limit;
         cx.budget = self.limit.saturating_sub(spent);
         if follow_edits {
-            let changed = self.sync_model(&mut cx) | self.sync_playheads(&mut cx);
-            // Once per call: the problems may have noticed the same edit.
-            if changed
-                && !signalled
-                && !outline_changed
-                && self.unsignalled_model_changes() == counted
-            {
-                self.note_unsignalled();
-            }
+            self.sync_model(&mut cx);
+            self.sync_playheads(&mut cx);
             self.shape.record(ws, self.unsignalled_model_changes());
             self.follow_duration_edits(&mut cx);
         }
@@ -330,7 +324,9 @@ impl CueEngine {
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));
-        cx.out
+        let out = cx.out;
+        self.cross_check_edits(ws, signalled, counted_at_start);
+        out
     }
 
     /// Safety net: ends groups left running with no busy child (see `sweep_groups`) and carries

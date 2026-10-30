@@ -19,10 +19,10 @@ impl CueEngine {
 
     /// Stops and forgets cues that are no longer in the workspace, then lets their groups react
     /// (and ends groups an edit left with no busy child).
-    pub(super) fn sync_model(&mut self, cx: &mut Ctx) -> bool {
-        let previews_ended = self.sync_previews(cx);
+    pub(super) fn sync_model(&mut self, cx: &mut Ctx) {
+        self.sync_previews(cx);
         if self.slots.is_empty() {
-            return previews_ended;
+            return;
         }
         // The cue index is in step with the workspace here (the problems followed the edits);
         // with duplicate ids it is not the reference, and the workspace is walked.
@@ -63,7 +63,6 @@ impl CueEngine {
             })
             .map(|(id, _)| *id)
             .collect();
-        let changed = !gone.is_empty() || previews_ended;
         for cue in gone {
             let before = self.state(cue);
             if let Some(slot) = self.remove_slot(cue, cx.now, Exit::Stopped, cx) {
@@ -82,7 +81,6 @@ impl CueEngine {
             guard -= 1;
             self.drain(cx);
         }
-        changed
     }
 
     /// A running (or paused) Wait or Fade whose duration was edited takes the new duration, as
@@ -140,8 +138,7 @@ impl CueEngine {
         }
     }
 
-    /// Follows edits to the cue lists. Returns whether any list's cues (or the set of lists)
-    /// differ from the last pass (as far as a call nothing was signalled for needs to know).
+    /// Follows edits to the cue lists.
     ///
     /// Called once the problems follow the edits, so the engine's cue index is in step with the
     /// workspace. A playhead that keeps its list's positions (after a full rebuild, or while the
@@ -150,11 +147,9 @@ impl CueEngine {
     /// index, before it followed the edit, said what the edit touched around the playhead
     /// ([`playhead::Followed`]); with nothing added, removed or moved nothing is read at all.
     /// Both ways place the playhead alike (property-tested against `model_changed`).
-    pub(super) fn sync_playheads(&mut self, cx: &mut Ctx) -> bool {
-        let before = self.playheads.len();
+    pub(super) fn sync_playheads(&mut self, cx: &mut Ctx) {
         self.playheads
             .retain(|id, _| cx.ws.cue_lists.iter().any(|l| l.id == *id));
-        let mut changed = self.playheads.len() != before;
         for list in &cx.ws.cue_lists {
             let tree = self.problems.tree();
             let (moved, around) = match self.playheads.get_mut(&list.id) {
@@ -162,9 +157,7 @@ impl CueEngine {
                     let followed = playhead.followed.take();
                     if let Some(old) = playhead.take_order() {
                         self.whole_show_passes = self.whole_show_passes.saturating_add(1);
-                        let (edited, moved) =
-                            playhead.follow(&old, playhead::positions(&list.cues));
-                        changed |= edited;
+                        let (_, moved) = playhead.follow(&old, playhead::positions(&list.cues));
                         // An edit can put the playhead into a group without moving it (the cue
                         // dragged into the group, which can leave the positions' order as it
                         // was) or move it within one (its cue deleted): look whenever edits
@@ -175,7 +168,6 @@ impl CueEngine {
                             .unwrap_or_default();
                         (moved, Some(around))
                     } else if let Some(followed) = followed {
-                        changed = true;
                         let in_list = |id: &CueId| tree.list_of(*id) == Some(list.id);
                         let cue = match playhead.cue {
                             Some(id) if in_list(&id) => Some(id),
@@ -203,7 +195,6 @@ impl CueEngine {
                     }
                 }
                 None => {
-                    changed = true;
                     self.whole_show_passes = self.whole_show_passes.saturating_add(1);
                     self.playheads.insert(list.id, Playhead::new(&list.cues));
                     (true, None)
@@ -231,7 +222,6 @@ impl CueEngine {
                 }
             }
         }
-        changed
     }
 
     /// Before the cue index follows an edit that added, removed or moved `structural`: each

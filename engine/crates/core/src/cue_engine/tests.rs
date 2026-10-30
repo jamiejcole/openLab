@@ -396,7 +396,7 @@ fn a_go_whose_playhead_cue_was_deleted_unsignalled_follows_the_edit() {
 fn a_top_level_cue_deleted_unsignalled_is_counted_and_followed_in_release() {
     let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
     let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
-    engine.release_checks = true;
+    engine.set_edit_cross_check(false);
     engine.handle(&ws, Input::Tick, 0);
     assert_eq!(engine.handle(&ws, Input::Tick, 1), vec![]);
     let mut gone = ws.clone();
