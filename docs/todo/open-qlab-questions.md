@@ -53,6 +53,7 @@ Before asking the user a new QLab question, search this file (both tables) first
 | 39 | After a paste (an app-made multi-selection), where does the playhead go? | The last pasted cue in row order. | Mac cue table selection / `WorkspaceStore` | QLab 5.5.3 hands-on 2026-10-29 (not tested) | assumed |
 | 40 | After Select All or a range selection, where does the playhead go? | The table's selected row (usually the last), so GO fires that cue. | Mac cue table selection / `WorkspaceStore` | QLab 5.5.3 hands-on 2026-10-29 (not tested) | assumed |
 | 41 | What byte limit applies to a cue name versus workspace, list and patch names? | Cue names stay at 1024 bytes (`MAX_CUE_NAME_BYTES`); workspace, list and patch names are 1024 Unicode scalars. | `command_model.rs` `check_name`, `MAX_CUE_NAME_BYTES` | QLab 5.5.3 hands-on 2026-10-29 (not tested) | assumed |
+| 42 | What name does a new cue list get from the sidebar's New List button? | "Cue List N", N being the list's position, added after the last list and shown at once. | Mac `SidebarViewController.newListClicked`, `sidebar.newList.name` | qlab-ref search "new cue list name": the default workspace list name is documented, a new list's name is not | assumed |
 
 ## Answered on the check pages (2026-10-27)
 
