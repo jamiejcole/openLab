@@ -171,10 +171,12 @@ impl CueEngine {
         self.problems.checks
     }
 
-    /// Times the model's problems were found out of date although `model_changed` was not
-    /// called, i.e. a binary (or test) that broke the contract; each was corrected. Release
-    /// builds check the workspace's outline on every call (`shape.rs`) and a cue about to be
-    /// refused for its problems; debug builds check everything on every call. The binary should log any increase.
+    /// Times a model change was found that `model_changed` did not signal, i.e. a binary (or
+    /// test) that broke the contract. Every build checks the workspace's outline on every call
+    /// (`shape.rs`: then the change is followed) and a cue about to be refused for its problems
+    /// (then its problems are rebuilt); with the edit cross-check on (debug builds,
+    /// [`Self::set_edit_cross_check`]) any other change is counted too, and left as it is. The
+    /// binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
     }

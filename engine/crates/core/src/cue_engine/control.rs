@@ -35,7 +35,7 @@ impl CueEngine {
         };
         // A cue with target problems never reaches its action (see `broken.rs`), so these only
         // act when the static problems are out of date: a model change the binary did not
-        // signal (`model_changed`), in a release build. They are also how the types say "no
+        // signal (`model_changed`) inside a cue or group. They are also how the types say "no
         // target". Tested in `tests.rs`.
         let Some(target) = model.kind.target() else {
             return cx.warn(EngineWarning::NoTarget { cue });
@@ -167,7 +167,7 @@ impl CueEngine {
             .playhead(list)
             .and_then(|id| playhead::locate(cues, id));
         // A playhead cue that is not in the list was deleted by an edit nobody signalled
-        // (release builds skip following edits on unsignalled calls): follow the edit now
+        // (edits are not followed on unsignalled calls unless the outline changed): follow it now
         // rather than ignore the GO.
         if path.is_none() && self.playhead(list).is_some() && self.resync_playhead(list, cues, cx) {
             path = self

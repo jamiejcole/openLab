@@ -73,6 +73,7 @@ fn send_edit(s: &mut OfflineShow, command: Command) -> usize {
         )),
         "{replies:?}"
     );
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
     at
 }
 

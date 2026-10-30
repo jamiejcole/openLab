@@ -87,7 +87,7 @@ pub struct CueEngine {
     panic: Option<(SampleTime, SampleTime)>,
     /// `model_changed` was called (or the engine is new) since the last call: the next call
     /// follows the edits (stops deleted cues, moves playheads) and recounts the chain limit.
-    /// Without it those passes are skipped (release builds): see `model_changed`.
+    /// Without it those passes are skipped unless the outline changed: see `model_changed`.
     model_dirty: bool,
     /// Cues being previewed (see `preview.rs`); apart from the show's runs.
     previews: BTreeMap<CueId, Preview>,
@@ -112,7 +112,7 @@ pub struct CueEngine {
     /// into call after call at one `now`, each with a fresh budget (see "Chains and the chain
     /// bound").
     spent: (SampleTime, usize),
-    /// The outline release builds check for a missed `model_changed` (see `shape.rs`).
+    /// The outline every call checks for a missed `model_changed` (see `shape.rs`).
     shape: shape::Shape,
     /// The edit cross-check (see [`CueEngine::set_edit_cross_check`]); `None` when off.
     cross_check: Option<cross_check::CrossCheck>,
@@ -208,12 +208,13 @@ impl CueEngine {
     /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
     /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
-    /// M4.2 contract. Release builds skip those whole-workspace passes on every other call
-    /// unless the workspace's outline changed (`shape.rs`: then the miss is counted and the
-    /// passes run), so a missed signal inside a cue or group leaves them out of date; what
-    /// could then refuse or drop a cue is guarded where it happens (a cue about to be refused for its problems is rechecked, a spent chain
-    /// budget is recounted, a GO whose playhead cue is gone resyncs that list) and counted in
-    /// [`Self::unsignalled_model_changes`]. Debug builds run the passes on every call and count.
+    /// M4.2 contract. Every other call skips those whole-workspace passes unless the
+    /// workspace's outline changed (`shape.rs`: then the miss is counted and the passes run), so
+    /// a missed signal inside a cue or group leaves them out of date until the next signal; what
+    /// could then refuse or drop a cue is guarded where it happens (a cue about to be refused
+    /// for its problems is rechecked, a spent chain budget is recounted, a GO whose playhead cue
+    /// is gone resyncs that list) and counted in [`Self::unsignalled_model_changes`]. Debug and
+    /// release builds act alike; the edit cross-check (debug builds) only counts any other miss.
     pub fn model_changed(&mut self) {
         self.model_dirty = true;
         self.mark_problems_dirty();
@@ -225,7 +226,7 @@ impl CueEngine {
     /// for the whole workspace, so an edit costs what it touched (NFR-24). The footprint must
     /// name every cue the edit added, removed, moved or changed; a change to patches, cue lists
     /// or anything it does not name needs `model_changed`. A missed cue is caught as an
-    /// unsignalled change in debug builds and when a refused cue is rechecked, as for a missed
+    /// unsignalled change by the edit cross-check and when a refused cue is rechecked, as for a missed
     /// `model_changed`. Equal to `model_changed` in every observable way (property-tested).
     pub fn model_changed_cues(&mut self, footprint: &crate::changes::Footprint) {
         self.model_dirty = true;

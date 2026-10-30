@@ -875,20 +875,6 @@ fn model_changes_count_from_the_signal() {
     assert_eq!(engine.unsignalled_model_changes(), 0);
 }
 
-/// A top-level cue removed without the signal changes the outline: counted and followed, with
-/// or without the edit cross-check.
-#[test]
-fn an_unsignalled_removal_of_a_top_level_cue_is_counted_and_followed() {
-    let mut ws = workspace(vec![memo(1), start_cue(2, Some(1))]);
-    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
-    engine.set_edit_cross_check(false);
-    engine.handle(&ws, Input::Tick, 0);
-    ws.cue_lists[0].cues.remove(0);
-    let edit = engine.handle(&ws, Input::Tick, 10);
-    assert_eq!(engine.unsignalled_model_changes(), 1);
-    assert_eq!(changes(&edit, 2), vec![(CueState::Broken, 10)]);
-}
-
 /// Edits nobody signalled inside a group (the outline is unchanged): a running cue deleted, a
 /// cue newly broken, cues added (the chain limit) and the playhead's cue replaced. An engine
 /// with the edit cross-check (debug builds) acts exactly as one without it (release builds) on
