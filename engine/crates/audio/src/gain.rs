@@ -64,6 +64,13 @@ impl Curve {
     /// Rising shape `f(t)` for `t` in `[0, 1]` (clamped; NaN counts as 0).
     pub fn shape(self, t: f64) -> f64 {
         let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        // Same exact-ends guard as openlab-core's `curve_shape` (tests/level_maths.rs).
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if t >= 1.0 {
+            return 1.0;
+        }
         let v = match self {
             Curve::Linear => t,
             Curve::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),

@@ -157,6 +157,14 @@ fn exp_shape(t: f64) -> f64 {
 /// The rising shape `f(t)` of a curve, `t` clamped to `[0, 1]` (NaN counts as 0).
 pub fn curve_shape(curve: FadeCurve, t: f64) -> f64 {
     let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    // Both ends are exact whatever `sin`/`cos` round to (Miri, like a hostile libm, may land
+    // one ulp short of 1 at t = 1). The audio crate's `Curve::shape` has the same guard.
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
     let v = match curve {
         FadeCurve::Linear => t,
         FadeCurve::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),
