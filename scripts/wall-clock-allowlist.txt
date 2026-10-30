@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Engine test code allowed to read the wall clock (Instant::now, .elapsed(), SystemTime), checked by
+# scripts/check-repo.sh: `path | reason`. Same rules as scripts/debug-assertions-allowlist.txt: a reason is
+# `permanent: ...` quoting code in backticks, or cites the open issue (#N) that removes the use; an entry
+# whose file no longer reads the clock fails the check, so delete it with the fix.
+# Test code means a tests/ directory, a tests.rs, or what follows a source file's first #[cfg(test)].
+# Real-time gates are the point of their tests and run only as ignored, release-mode jobs.
+engine/crates/audio/tests/cpu_budget.rs | permanent: the CPU budget gate measures real render time (`Instant::now()`); ignored test, release only
+engine/crates/engine/tests/perf.rs | permanent: the performance budget gate measures real time (`Instant::now()`); ignored test, release only
+engine/crates/engine/tests/soak_rt.rs | permanent: the real-time soak runs against the wall clock by design (`Instant::now()`); ignored test, nightly only
+engine/crates/audio/src/resample.rs | #400 timing read in a test; remove the clock use and the entry
+engine/crates/audio/src/stream.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/audio/tests/loops.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/core/tests/transaction_rollback.rs | #400 timing read in a test; remove the clock use and the entry
+engine/crates/engine/src/control/media/catalog/tests/volume.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/src/control/media/gate.rs | #400 timing read in a test; remove the clock use and the entry
+engine/crates/engine/src/control/netout/tests.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/src/control/watch/tests.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/src/diag/run_marker.rs | #400 SystemTime::now backdates a file's mtime in a test; use a fixed time and remove the entry
+engine/crates/engine/src/host/engine_file.rs | #400 SystemTime::now backdates a file's mtime in a test; use a fixed time and remove the entry
+engine/crates/engine/src/net/relaunch.rs | #400 timing read in a test; remove the clock use and the entry
+engine/crates/engine/tests/cli.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/control/devices.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/control/docs.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/control/media.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/control/multi_docs.rs | #400 timing read in a test; remove the clock use and the entry
+engine/crates/engine/tests/control/network.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/control_relink.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/net/session.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/net/ws.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/persist/writer.rs | #400 hang-guard deadline and timing reads in a test; remove the clock use and the entry
+engine/crates/engine/tests/show/device.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/show/mod.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry
+engine/crates/engine/tests/soak.rs | #400 reports the virtual soak's wall time; drop the report and the entry
+engine/crates/engine/tests/soak_common/mod.rs | #400 hang-guard deadline in a test; wait on a channel or the virtual clock and remove the entry

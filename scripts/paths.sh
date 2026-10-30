@@ -4,8 +4,8 @@
 # .github/workflows/ci.yml, so the local gate and CI choose their jobs from the same diff.
 # ERE patterns, matched with `grep -E` against repo-relative paths.
 
-# A CI or Makefile change re-runs everything.
-PATHS_ALL_RE='^(\.github/|Makefile$)'
+# A CI, Makefile or gate-script change re-runs everything.
+PATHS_ALL_RE='^(\.github/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci)\.sh$)'
 # The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/).
 PATHS_ENGINE_RE='^engine/'
 # The macOS app job. On a pull request it runs only for what the app reads from the engine: the
@@ -18,7 +18,7 @@ PATHS_MAC_MAIN_RE='^(mac|engine)/'
 # on a pull request only when the build itself changes.
 PATHS_BUNDLE_RE='^(mac/(project\.yml|scripts/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'
 # Perf-sensitive code also runs on the Intel runner (closest to the 2014 Mac mini target).
-PATHS_INTEL_RE='^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/src/control/(watch|watch_share|media|voices)\.rs$)'
+PATHS_INTEL_RE='^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/tests/soak_common/|crates/engine/src/control/(watch|media|voices)/|crates/engine/src/control/watch_share\.rs$)'
 # App code that XCUITests exercise (the engine client under Engine/ is covered by unit tests).
 PATHS_UI_RE='^mac/openLab/.*\.swift$'
 PATHS_UI_EXCLUDE_RE='^mac/openLab/Engine/'

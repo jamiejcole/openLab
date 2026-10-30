@@ -11,11 +11,9 @@ SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
 lint:
 	scripts/check-repo.sh
-	cd engine && cargo fmt --all --check
-	cd engine && cargo clippy --workspace --all-targets -- -D warnings
-	# Without --all-targets: test-only features (test-support) are not unified in, so this is the
-	# build the app ships and a warning only it shows is caught.
-	cd engine && cargo clippy --workspace --lib --bins -- -D warnings
+	# Same command lines as CI (scripts/rust-checks.sh): the test build, then the shipped one (--lib --bins).
+	scripts/rust-checks.sh fmt
+	scripts/rust-checks.sh clippy
 	cd engine && cargo deny check
 	cd engine/fuzz && cargo fmt --check && cargo clippy --locked -- -D warnings
 	swift format lint --strict -r mac/
@@ -34,7 +32,7 @@ prepush:
 	scripts/prepush.sh
 
 test-rust:
-	cd engine && cargo test --workspace
+	scripts/rust-checks.sh test
 
 # Short fuzz run per target (nightly + cargo-fuzz). Fixtures and fuzz/seeds seed the corpus;
 # crashes land in engine/fuzz/artifacts/.
@@ -58,8 +56,9 @@ fuzz:
 # --lib --tests skips doctests (rustdoc does not support -Zsanitizer reliably). Ignored tests (real-time, perf,
 # soak, CPU budget) stay ignored: their bounds are wall-clock and mean nothing under a 2-10x slowdown.
 # Skipped by name, each because a sanitizer cannot give a meaningful answer:
-#   ThreadSanitizer: long_start_chains_validate_in_linear_time asserts a wall-clock bound (a ~5-15x TSan slowdown
-#   breaks it; the algorithm is not at issue). It passes under ASan, so only the thread leg skips it.
+#   ThreadSanitizer: long_start_chains_validate_in_linear_time builds a 200k-cue chain, and TSan's ~5-15x
+#   slowdown made it miss its old time bound. That bound is gone, so the skip may be unneeded; it stays until
+#   the sanitizer job has run without it. It passes under ASan, so only the thread leg skips it.
 SAN_TEST := cargo +$(SAN_TOOLCHAIN) test -Zbuild-std --target $(SAN_TARGET) --workspace --locked --lib --tests --no-fail-fast
 sanitize: sanitize-address sanitize-thread miri
 

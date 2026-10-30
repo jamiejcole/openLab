@@ -837,13 +837,11 @@ fn long_start_chains_validate_in_linear_time() {
     let mut cues: Vec<Cue> = (1..N).map(|n| cue(n, start(n + 1))).collect();
     cues.push(cue(N, start(1))); // close the loop: every cue is in one cycle
     let ws = workspace(cues);
-    let began = std::time::Instant::now();
+    // No time bound: a wall-clock assert is flaky on a loaded or sanitised runner. The quadratic version
+    // never finished on this input, so a regression hangs the test and the CI job times out.
     let issues = validate(&ws);
-    let elapsed = began.elapsed();
     assert_eq!(issues.len(), N as usize);
     assert!(issues.iter().all(|i| i.kind == IssueKind::TriggerCycle));
-    // Linear: well under a second even in debug. The quadratic version needed hours.
-    assert!(elapsed.as_secs() < 10, "validate took {elapsed:?}");
 }
 
 #[test]

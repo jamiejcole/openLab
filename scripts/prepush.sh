@@ -85,7 +85,7 @@ step() {
   fi
 }
 
-clippy_windows() { (cd engine && cargo clippy --target x86_64-pc-windows-gnu --workspace --all-targets -- -D warnings); }
+clippy_windows() { scripts/rust-checks.sh clippy-windows; }
 mac_unit() {
   make project
   xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build \

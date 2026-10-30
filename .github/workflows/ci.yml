@@ -71,6 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/check-repo.sh
+        env:
+          # The allowlist checks ask GitHub whether the issues they cite are still open.
+          GH_TOKEN: ${{ github.token }}
 
   rust:
     name: Rust (${{ matrix.name }})
@@ -103,16 +106,18 @@ jobs:
           workspaces: engine
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked --no-fail-fast
+      # The command lines live in scripts/rust-checks.sh, which `make lint`, `make test-rust` and
+      # `make prepush` run too (it cds to engine/ itself; bash because Windows steps default to pwsh).
+      - run: bash ../scripts/rust-checks.sh fmt
+      - run: bash ../scripts/rust-checks.sh clippy
+      - run: bash ../scripts/rust-checks.sh test
       # Release builds skip debug-only checks (the cue engine's full model check on every call,
       # debug_assert!s) and optimise differently, so the suite also runs as shipped. In this job
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
       - name: Tests (release)
         if: matrix.os == 'macos-26'
-        run: cargo test --release --workspace --locked --no-fail-fast
+        run: bash ../scripts/rust-checks.sh test-release
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate
@@ -131,16 +136,17 @@ jobs:
       # control loop, with real timer wake-ups and a device stand-in rendering in real time
       # (jitter, xruns, late starts, counts); about four minutes with its final checkpoint.
       # Nightly and on demand only: its bounds depend on a shared runner's timer, and a noisy
-      # night must not turn a push to main red. The test first measures the host and skips, with
-      # the measurement in the log, when one-block (8 ms) sleeps overshoot by more than a block:
-      # both hosted macOS VMs do with their CPUs idle (Intel 26-36 ms at p50, arm64 13-18 ms;
-      # issue #213), so here it normally skips. On a machine that must keep real time, set
-      # OPENLAB_SOAK_RT_REQUIRE=1 to make a refusal fail instead.
+      # night must not turn a push to main red. The test first measures the host and refuses to run
+      # when one-block (8 ms) sleeps overshoot by more than a block: both hosted macOS VMs do with
+      # their CPUs idle (Intel 26-36 ms at p50, arm64 13-18 ms; issue #213). The step sets
+      # OPENLAB_SOAK_RT_REQUIRE=1, so a refusal is a test failure, never a pass; scripts/soak-rt-ci.sh
+      # turns exactly that failure into a SKIPPED warning annotation and job-summary line, and any
+      # other failure still fails the step. A self-hosted runner that keeps real time runs it for real.
       - name: Soak test (3 min real time)
         if: matrix.os == 'macos-26-intel' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
           OPENLAB_SOAK_RT_SECS: "180"
-        run: cargo test --release --locked -p openlab-engine --test soak_rt -- --ignored --nocapture
+        run: bash ../scripts/soak-rt-ci.sh
 
   cargo-deny:
     needs: changes

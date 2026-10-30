@@ -6,15 +6,92 @@
 # Known failures that an open branch fixes go in scripts/check-repo-known.txt (`check | item | reason`),
 # never into a weaker check; delete the entry in the commit that fixes the finding.
 # Behaviour-changing uses of debug_assertions are allowed only for files listed in
-# scripts/debug-assertions-allowlist.txt (`path | reason`).
+# scripts/debug-assertions-allowlist.txt, wall-clock use in engine test code only for files listed in
+# scripts/wall-clock-allowlist.txt (both `path | reason`; allowlist_entries says what a reason needs).
 set -u
 
 cd "$(git rev-parse --show-toplevel)" || exit 2
 KNOWN=scripts/check-repo-known.txt
 DEBUG_ALLOW=scripts/debug-assertions-allowlist.txt
+CLOCK_ALLOW=scripts/wall-clock-allowlist.txt
 failed=0
 
 fail() { echo "FAIL [$1] $2"; failed=1; }
+
+# issue_open <n>: true when GitHub says the issue is open. Needs `gh`; where it cannot answer, locally the
+# open-issue sub-check is skipped (one SKIPPED line), in CI it fails. (Plain variables: macOS has bash 3.2.)
+GH_SKIPPED=0
+ISSUE_CACHE=""
+issue_open() {
+  local n=$1 state
+  state=$(printf '%s' "$ISSUE_CACHE" | sed -n "s/^$n=//p")
+  if [ -z "$state" ]; then
+    state=$(gh issue view "$n" --json state --jq .state 2>/dev/null) || state=UNKNOWN
+    [ -n "$state" ] || state=UNKNOWN
+    ISSUE_CACHE="$ISSUE_CACHE
+$n=$state"
+  fi
+  case "$state" in
+    OPEN) return 0 ;;
+    UNKNOWN)
+      if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+        fail allowlist "cannot read issue #$n with gh in CI (is GH_TOKEN set?)"
+      elif [ "$GH_SKIPPED" = 0 ]; then
+        GH_SKIPPED=1
+        echo "SKIPPED [allowlist] open-issue check: gh cannot read issues here (CI runs it)"
+      fi
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# allowlist_entries <check> <file>: validates every `path | reason` line of an allowlist.
+# The path must be a tracked file. The reason must cite an open issue (`#N`: a debt being fixed) or start
+# `permanent:` (a standing exception). Every `quoted fragment` in backticks must still occur in the path,
+# and a permanent entry needs at least one, so an entry about code that was deleted or rewritten fails.
+allowlist_entries() {
+  local check=$1 file=$2 line path reason frag n frags ok
+  while IFS= read -r line; do
+    case "$line" in '' | '#'*) continue ;; esac
+    path=${line%% | *}
+    reason=${line#* | }
+    if [ "$reason" = "$line" ]; then
+      fail "$check" "$file: '$line' is not 'path | reason'"
+      continue
+    fi
+    if ! git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+      fail "$check" "$file: $path is not a tracked file; delete the entry"
+      continue
+    fi
+    ok=0
+    n=$(printf '%s' "$reason" | grep -oE '#[0-9]+' | head -n 1 | tr -d '#')
+    if [ -n "$n" ]; then
+      ok=1
+      issue_open "$n" || fail "$check" "$file: $path cites #$n, which is not open; fix it and delete the entry, or cite the issue that tracks it"
+    fi
+    frags=$(printf '%s' "$reason" | grep -oE '`[^`]+`' | tr -d '`')
+    case "$reason" in
+      permanent:*)
+        ok=1
+        [ -n "$frags" ] || fail "$check" "$file: permanent entry for $path quotes no \`code fragment\`"
+        ;;
+    esac
+    [ "$ok" = 1 ] || fail "$check" "$file: entry for $path cites no open issue (#N) and is not 'permanent:'; track it or fix it"
+    while IFS= read -r frag; do
+      [ -n "$frag" ] || continue
+      grep -qF -- "$frag" "$path" || fail "$check" "$file: the code quoted for $path no longer occurs in it: $frag"
+    done <<<"$frags"
+  done <"$file"
+}
+
+# allowlisted <file> <path>: true when the allowlist has an entry for the path.
+allowlisted() {
+  awk -F' *\\| *' -v p="$2" '$1 == p && $2 != "" { found = 1 } END { exit !found }' "$1" 2>/dev/null
+}
+
+# allowlist_paths <file>: the paths the allowlist names.
+allowlist_paths() { awk -F' *\\| *' '/^[^#]/ && $1 != "" { print $1 }' "$1"; }
 
 # known <check> <item>: true when the item is listed, with a reason, as a known failure.
 known() {
@@ -49,11 +126,15 @@ debug_assertions() {
   # Any code line naming the cfg (comments excluded): cfg!(), #[cfg()], cfg(not()), cfg_attr, all()/any().
   hits=$(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u |
     xargs grep -lE '^[[:space:]]*[^[:space:]/].*debug_assertions' 2>/dev/null)
-  [ -z "$hits" ] && return 0
+  allowlist_entries debug-assertions "$DEBUG_ALLOW"
   while IFS= read -r f; do
-    awk -F' *\\| *' -v p="$f" '$1 == p && $2 != "" { found = 1 } END { exit !found }' "$DEBUG_ALLOW" 2>/dev/null && continue
+    [ -n "$f" ] || continue
+    allowlisted "$DEBUG_ALLOW" "$f" && continue
     fail debug-assertions "$f uses debug_assertions and is not in $DEBUG_ALLOW; make debug and release behave the same, or list the file there with a reason (only detectors that log or count qualify)"
   done <<<"$hits"
+  for f in $(allowlist_paths "$DEBUG_ALLOW"); do
+    printf '%s\n' "$hits" | grep -qxF "$f" || fail debug-assertions "$DEBUG_ALLOW lists $f, which no longer uses debug_assertions; delete the entry"
+  done
 }
 
 # 4. A contract doc's stated current version equals the code constant.
@@ -102,12 +183,71 @@ one_home() {
   done
 }
 
+# 7. Every CI path filter in scripts/paths.sh names something that exists, and every source file is
+# covered by a job. A pattern for a file that was split or renamed would silently stop matching, and
+# the job it gates would not run for changes to it.
+path_filters() {
+  local var re item f files
+  files=$(git ls-files -co --exclude-standard | sort -u)
+  # shellcheck source=scripts/paths.sh
+  . scripts/paths.sh
+  for var in $(set | sed -n 's/^\(PATHS_[A-Z_]*_RE\)=.*/\1/p' | sort -u); do
+    re=${!var}
+    # Expand every (a|b) group into plain alternatives; each must match a tracked file.
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      printf '%s\n' "$files" | grep -qE "$item" || fail path-filters "$var: '$item' matches no file in the repo (renamed, split or deleted?); fix scripts/paths.sh"
+    done < <(perl -e 'sub ex { my ($s) = @_; if ($s =~ /^(.*?)\(([^()]*)\)(.*)$/s) { my ($p, $a, $q) = ($1, $2, $3); return map { ex($p . $_ . $q) } split(/\|/, $a, -1); } return $s; } print "$_\n" for ex("(" . $ARGV[0] . ")");' "$re" | sort -u)
+  done
+  for f in $(printf '%s\n' "$files" | grep -E '^engine/'); do
+    printf '%s\n' "$f" | grep -qE "$PATHS_ENGINE_RE" || fail path-filters "$f is covered by no engine job (PATHS_ENGINE_RE)"
+  done
+  for f in $(printf '%s\n' "$files" | grep -E '^mac/'); do
+    printf '%s\n' "$f" | grep -qE "$PATHS_MAC_MAIN_RE" || fail path-filters "$f is covered by no app job (PATHS_MAC_MAIN_RE)"
+  done
+}
+
+# 8. Tests do not depend on the wall clock (CLAUDE.md, "Tests"): Instant::now, .elapsed() and SystemTime
+# are allowed in engine test code only in files listed, with a reason, in scripts/wall-clock-allowlist.txt.
+# Test code is everything under a tests/ directory or in a tests.rs, and a source file's part after its
+# first #[cfg(test)].
+wall_clock() {
+  local hits f
+  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u | xargs awk '
+    FNR == 1 { t = (FILENAME ~ /\/tests\// || FILENAME ~ /\/tests\.rs$/) }
+    /^#\[cfg\(test\)\]/ { t = 1 }
+    t && $0 !~ /^[[:space:]]*\/\// && /Instant::now|\.elapsed\(\)|SystemTime/ { print FILENAME; nextfile }
+  ')
+  allowlist_entries wall-clock "$CLOCK_ALLOW"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    allowlisted "$CLOCK_ALLOW" "$f" && continue
+    fail wall-clock "$f reads the wall clock (Instant::now, .elapsed(), SystemTime) in test code; drive time from the virtual clock, or list the file in $CLOCK_ALLOW with an open issue"
+  done <<<"$hits"
+  for f in $(allowlist_paths "$CLOCK_ALLOW"); do
+    printf '%s\n' "$hits" | grep -qxF "$f" || fail wall-clock "$CLOCK_ALLOW lists $f, which no longer reads the wall clock in test code; delete the entry"
+  done
+}
+
+# 9. The Rust fmt/clippy/test command lines live only in scripts/rust-checks.sh, which CI, `make` and
+# prepush all call; a copy elsewhere is how the local gate and CI drift apart.
+one_gate() {
+  local f hits
+  for f in .github/workflows/ci.yml Makefile scripts/prepush.sh; do
+    hits=$(grep -nE '^[^#]*cargo (clippy|test|fmt)[^#]*(--workspace|--all)' "$f")
+    [ -z "$hits" ] || fail one-gate "$f spells out a Rust gate command (call scripts/rust-checks.sh instead): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
+  done
+}
+
 spdx
 strings_keys
 debug_assertions
 versions
 headless
 one_home
+path_filters
+wall_clock
+one_gate
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"
