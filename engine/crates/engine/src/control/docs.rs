@@ -2005,6 +2005,8 @@ impl Control {
         if duplicate {
             workspace.id = WorkspaceId(random_id());
             dirty = true;
+            // The engine's first call saw the old id (M4.2 contract: every change is signalled).
+            engine.model_changed();
         }
         // The device may have come back with another block size while the doc was built.
         if engine.config().lookahead() != self.eng.block
