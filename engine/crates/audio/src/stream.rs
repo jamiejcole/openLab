@@ -1522,17 +1522,13 @@ mod tests {
             Some(MediaError::TooManyStreams)
         );
         drop(a);
-        crate::spin::spin_until("the stream's slot to be released", || {
-            d.open_streams() == 0
-        });
+        crate::spin::spin_until("the stream's slot to be released", || d.open_streams() == 0);
         // A failed stream releases its slot too.
         let b = d
             .prepare(req(Media::Path("/nonexistent/x.wav".into())))
             .unwrap();
         assert!(b.handle.wait_primed(Duration::from_secs(10)).is_err());
-        crate::spin::spin_until("the stream's slot to be released", || {
-            d.open_streams() == 0
-        });
+        crate::spin::spin_until("the stream's slot to be released", || d.open_streams() == 0);
         assert!(d.prepare(req(Media::Preloaded(pre))).is_ok());
     }
 
