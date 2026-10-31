@@ -461,7 +461,16 @@ pub(super) struct Docs {
 pub(super) struct DocFile {
     saves: Vec<PendingSave>,
     autosave: Option<AutosaveRx>,
+    /// The show path the autosave in flight writes the recovery file of.
+    autosave_path: Option<PathBuf>,
     autosave_failed: bool,
+    /// Show paths this workspace was saved away from (Save As), with its id then: their
+    /// recovery files may still be on disk, and are this workspace's to remove once a save or
+    /// an autosave at the current path holds every edit they do (#383).
+    left_paths: Vec<(WorkspaceId, PathBuf)>,
+    /// Of those, the ones whose recovery file may go now ([`Control::clear_left_autosaves`]
+    /// removes them unless another workspace claims the path).
+    left_ready: Vec<(WorkspaceId, PathBuf)>,
     /// The revision last handed to the autosave.
     autosaved_revision: Option<u64>,
     dirty_since: Option<i64>,
@@ -478,13 +487,21 @@ impl DocFile {
         Self {
             saves: Vec::new(),
             autosave: None,
+            autosave_path: None,
             autosave_failed: false,
+            left_paths: Vec::new(),
+            left_ready: Vec::new(),
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
             notices: Vec::new(),
             resend_snapshot: false,
         }
+    }
+
+    /// Every path left behind is held by what is on disk at the current path now.
+    fn left_paths_done(&mut self) {
+        self.left_ready.append(&mut self.left_paths);
     }
 
     /// Saves and the autosave in flight: tests wait until it is zero.
@@ -1317,6 +1334,18 @@ impl DocCx<'_> {
         );
         if self.doc.show_path.as_deref() != Some(save.path.as_path()) {
             let old_dir = self.show_dir();
+            let ws = self.doc.model.ws().id;
+            let file = &mut self.doc.file;
+            if let Some(old) = self.doc.show_path.take()
+                && !file
+                    .left_paths
+                    .iter()
+                    .any(|(w, p)| *w == ws && same_path(p, &old))
+            {
+                file.left_paths.push((ws, old));
+            }
+            // Back at a path it left: that recovery file is the current one again.
+            file.left_paths.retain(|(_, p)| !same_path(p, &save.path));
             self.doc.show_path = Some(save.path.clone());
             if self.show_dir() != old_dir {
                 self.moved_folder(
@@ -1326,6 +1355,12 @@ impl DocCx<'_> {
                     clean_before,
                 );
             }
+        }
+        if clean_before {
+            // No edit since this save began, so no autosave at a path left behind holds one
+            // this save does not: their recovery files are redundant (#383). With edits since,
+            // they wait for the next save or autosave at this path.
+            self.doc.file.left_paths_done();
         }
         if !self.doc.is_dirty() {
             self.doc.file.dirty_since = None;
@@ -1400,8 +1435,16 @@ impl DocCx<'_> {
             Err(TryRecvError::Disconnected) => Err(PersistError::WriterGone),
         };
         self.doc.file.autosave = None;
+        let path = self.doc.file.autosave_path.take();
         match result {
-            Ok(_) => self.doc.file.autosave_failed = false,
+            Ok(written) => {
+                self.doc.file.autosave_failed = false;
+                // Written at the current path, after every path left behind was left: it holds
+                // every edit their recovery files do (#383).
+                if written.is_some() && path.is_some() && path == self.doc.show_path {
+                    self.doc.file.left_paths_done();
+                }
+            }
             Err(e) => {
                 // Said once per run of failures: it repeats every interval otherwise.
                 if !self.doc.file.autosave_failed {
@@ -1451,6 +1494,7 @@ impl DocCx<'_> {
             self.doc.revision,
         );
         self.doc.file.autosave = Some(rx);
+        self.doc.file.autosave_path.clone_from(&self.doc.show_path);
         self.doc.file.autosaved_revision = Some(self.doc.revision);
         self.doc.file.last_autosave = Some(now_ms);
     }
@@ -1824,6 +1868,43 @@ impl Control {
         self.claimed_paths(except)
             .iter()
             .any(|p| same_path(p, path))
+    }
+
+    /// Removes the recovery files of the show paths docs were saved away from, once their edits
+    /// are on disk at the doc's new path (#383): Save As left the old path's autosave, which is
+    /// offered again (same workspace id, another path) though it holds nothing new. A path a doc
+    /// holds, is saving to, or an open is reading is kept for now: its recovery file may be that
+    /// doc's. It is looked at again after the next save or autosave.
+    pub(super) fn clear_left_autosaves(&mut self) {
+        for i in 0..self.docs.len() {
+            let Some(doc) = self.docs.get_mut(i) else {
+                continue;
+            };
+            if doc.file.left_ready.is_empty() {
+                continue;
+            }
+            let ready = std::mem::take(&mut doc.file.left_ready);
+            let mut kept = Vec::new();
+            for (workspace, path) in ready {
+                match &self.eng.docs.writer {
+                    Some(writer) if !self.claimed(&path, None) => self
+                        .eng
+                        .docs
+                        .clears
+                        .push(writer.clear_recovery(workspace, Some(path))),
+                    // Tried again after the next save or autosave.
+                    Some(_) => kept.push((workspace, path)),
+                    None => {}
+                }
+            }
+            if let Some(doc) = self.docs.get_mut(i) {
+                for entry in kept {
+                    if !doc.file.left_paths.contains(&entry) {
+                        doc.file.left_paths.push(entry);
+                    }
+                }
+            }
+        }
     }
 
     /// `save` and `save_as` of doc `doc`: refused with `already_open` when the target is a show

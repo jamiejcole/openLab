@@ -651,6 +651,178 @@ fn autosave_fires_on_the_workspace_interval_and_a_save_clears_it() {
     assert!(names(&recovery).is_empty());
 }
 
+/// The name of cue 1 in the recovery file of `workspace` at `show`.
+fn recovered_at(r: &Rig, workspace: openlab_core::WorkspaceId, show: &Path) -> String {
+    let file = r.env.dirs.recovery_path(workspace, Some(show));
+    load_show(&fs::read_to_string(file).unwrap())
+        .unwrap()
+        .workspace
+        .find_cue(id(1))
+        .unwrap()
+        .name
+        .clone()
+}
+
+/// Save As from P1 to P2 with no edit since it began: P1's autosave holds nothing P2 does not,
+/// so it goes, and is not offered again beside P2 (#383).
+#[test]
+fn save_as_removes_the_autosave_left_at_the_old_path() {
+    let mut ws = memo_ws("one", &[1]);
+    ws.settings.autosave_interval = 30.0;
+    let mut r = saved_rig(ws);
+    let workspace = r.s.control().workspace().id;
+    let old = r.env.show_path();
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    assert_eq!(recovered_at(&r, workspace, &old), "edited");
+    let new = r.env.show_dir().join("moved.openlab");
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: new.to_string_lossy().into_owned(),
+        },
+    ));
+    r.s.settle_docs();
+    assert!(names(&r.env.dirs.recovery_dir()).is_empty());
+    assert!(matches!(
+        data(&request(&mut r.s, Request::ScanRecovery)),
+        ResultData::RecoveryEntries { entries } if entries.is_empty()
+    ));
+}
+
+/// An edit made while the Save As to P2 is written is in P1's autosave and not in P2: that
+/// autosave stays until an autosave at P2 holds the edit, and while another workspace has P1
+/// open it stays, since it may be that one's (#383).
+#[test]
+fn an_autosave_left_at_the_old_path_stays_while_it_holds_edits_or_another_workspace_has_it() {
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release));
+    let entered_tx = Mutex::new(entered_tx);
+    let held = Arc::clone(&hold);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save && held.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let mut ws = memo_ws("one", &[1]);
+    ws.settings.autosave_interval = 30.0;
+    let mut r = rig_with(ws, None, Some(hook));
+    let _unblock = Unblock(release_tx.clone());
+    let old = r.env.show_path();
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: old.to_string_lossy().into_owned(),
+        },
+    ));
+    let workspace = r.s.control().workspace().id;
+    let recovery = r.env.dirs.recovery_dir();
+    // Autosaved long ago, so the next edit is autosaved at once (no clock moves while the save
+    // is held: the clock also times a stalled write).
+    rename(&mut r.s, 1, "before");
+    r.s.tick();
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    r.clock.advance(60_000);
+    r.s.settle_docs();
+    assert_eq!(recovered_at(&r, workspace, &old), "before");
+
+    // Save As to P2, held on the writer; an edit meanwhile is autosaved at P1 once it is done.
+    hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let new = r.env.show_dir().join("moved.openlab");
+    let (tx, mut answer) = reply_channel();
+    let request_id = r.s.request_id();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Request {
+            id: request_id,
+            request: Request::SaveAs {
+                path: new.to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    r.s.tick();
+    entered.recv().unwrap();
+    // Delivered, not sent: sending waits for the writer.
+    let (tx, _edited) = reply_channel();
+    let edit_id = r.s.request_id();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Command {
+            id: edit_id,
+            command: Box::new(Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Name {
+                    value: "during".into(),
+                },
+            }),
+            coalesce: None,
+        },
+        reply: tx,
+    });
+    r.s.tick();
+    hold.store(false, std::sync::atomic::Ordering::SeqCst);
+    release_tx.send(()).unwrap();
+    r.s.settle_docs();
+    let got = answer.try_recv();
+    assert!(
+        matches!(
+            got,
+            Ok(ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            })
+        ),
+        "{got:?}"
+    );
+    assert!(!fs::read_to_string(&new).unwrap().contains("during"));
+    assert_eq!(
+        recovered_at(&r, workspace, &old),
+        "during",
+        "kept: P2 lacks it"
+    );
+
+    // Another workspace opens P1: P1's autosave may be its, so an autosave at P2 leaves it.
+    let other =
+        r.s.open_doc(openlab_engine::control::DocSource::Open {
+            path: old.clone(),
+            recovery: Some(RecoveryChoice::Ignore),
+        })
+        .unwrap();
+    rename(&mut r.s, 1, "after");
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    assert_eq!(recovered_at(&r, workspace, &new), "after");
+    assert_eq!(
+        recovered_at(&r, workspace, &old),
+        "during",
+        "P1 is open elsewhere"
+    );
+
+    // Closed again (a copy with a fresh id, so unsaved): the next autosave at P2 removes it.
+    r.s.close_doc(other, true).unwrap();
+    rename(&mut r.s, 1, "later");
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    assert_eq!(recovered_at(&r, workspace, &new), "later");
+    assert_eq!(
+        names(&recovery),
+        vec![
+            r.env
+                .dirs
+                .recovery_path(workspace, Some(&new))
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        ]
+    );
+}
+
 #[test]
 fn an_untitled_workspace_autosaves_under_its_id_alone() {
     let mut r = rig(memo_ws("one", &[1]));
