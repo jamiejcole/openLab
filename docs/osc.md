@@ -80,7 +80,7 @@ Each accepted message becomes the same input the UI sends (`docs/protocol.md`); 
 | `/hardStop` | none | `transport hard_stop_all` (the same as `/stop` today: stops have no fade-out yet) |
 | `/panic` | none | `transport panic` (every cue fades out over the workspace's panic duration; a second one stops everything) |
 | `/pause`, `/resume` | none | `transport pause_all` / `resume_all` |
-| `/reset` | none | `transport reset_all`: everything stops at once, every cue is reset and each list's playhead goes back to its first cue (QLab's workspace reset, OSC dictionary pp. 409-412) |
+| `/reset` | none | `transport reset_all`: everything stops at once, every cue is reset and each list's playhead goes back to its first cue (QLab's workspace reset address, OSC dictionary pp. 409-412; that every list's playhead goes back, not only the current one, is from the sidebar reset, pp. 97-98) |
 | `/playhead/next`, `/playhead/previous` | none | `transport playhead_next` / `playhead_previous` on the list |
 | `/playhead/{number}`, `/select/{number}` | none | `transport set_playhead_by_number` on the list that holds the cue (any list; it becomes the active one). `error` if there is no such cue or it is inside a group |
 | `/select/next`, `/select/previous` | none | the same as `/playhead/...` |
