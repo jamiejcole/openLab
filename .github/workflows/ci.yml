@@ -276,6 +276,9 @@ jobs:
         if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle
         if: needs.changes.outputs.bundle == 'true'
+      # Rebuilds the universal engine twice, so nightly and on demand only (those events have bundle=true).
+      - run: make test-bundle-rebuild
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
   # The one check branch protection requires: green when every job that ran passed.
   result:
