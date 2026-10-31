@@ -93,7 +93,7 @@ mac: project
 verify-bundle:
 	mac/scripts/verify-bundle.sh build/Build/Products/Release/openLab.app
 
-# Engine-only rebuild still gives a validly signed bundle (slow: Release builds; run in CI's mac job).
+# Engine-only rebuild still gives a validly signed bundle (slow: Release builds; run in CI nightly).
 test-bundle-rebuild:
 	mac/scripts/check-incremental-bundle.sh
 
