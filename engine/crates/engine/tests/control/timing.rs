@@ -466,6 +466,55 @@ fn reset_all_silences_every_output_at_once_and_rewinds_the_playhead() {
 }
 
 #[test]
+fn after_reset_all_the_playhead_cue_is_primed_again_and_go_starts_on_time() {
+    // Regression: the playhead move re-checked the primes while the stopped voice still
+    // existed, and nothing re-checked once it was gone, so the GO after a reset read the
+    // file cold (late on a slow disk).
+    let path = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    go(&mut s);
+    s.run(1000);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(2)));
+    s.transport(TransportAction::ResetAll);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(1)));
+    assert!(
+        s.control().primed().contains(&id(1)),
+        "the cue standing by is primed again: {:?}",
+        s.control().primed()
+    );
+    let hits = s.control().prime_hits();
+    let at = go(&mut s);
+    assert_eq!(at, s.rendered() + BLOCK);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+    s.run(2000);
+    let ch0 = s.channel(0);
+    assert_eq!(ch0[at as usize - 1], 0.0);
+    assert_eq!(ch0[at as usize], 0.5, "starts on its sample");
+}
+
+#[test]
+fn a_stopped_cue_set_as_playhead_is_primed_again() {
+    // The same gap on Stop All then Set Playhead back to the stopped cue.
+    let path = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    go(&mut s);
+    s.run(1000);
+    s.transport(TransportAction::StopAll);
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(1)),
+    });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    assert!(s.control().primed().contains(&id(1)));
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+}
+
+#[test]
 fn pause_and_resume_keep_the_position() {
     let path = wav(&ramp(6000));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));

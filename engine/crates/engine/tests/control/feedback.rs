@@ -473,6 +473,36 @@ fn panic_selected_fades_only_the_selection_and_a_second_press_cuts_it() {
 }
 
 #[test]
+fn a_batch_panicking_a_group_and_its_child_fades_the_child() {
+    // PB-03: an OSC or client batch naming a group and its child is one press of each, so
+    // the child fades with its group instead of being cut on the batch's sample.
+    let long = wav(&dc(80_000, 0.5));
+    let group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &long, 0)],
+        },
+    );
+    let mut s = show(workspace(vec![group]));
+    s.transport(TransportAction::Start { cue: id(10) });
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::Batch {
+        actions: vec![
+            TransportAction::PanicCue { cue: id(10) },
+            TransportAction::PanicCue { cue: id(1) },
+        ],
+    });
+    let at = s.now() as usize;
+    s.run(BLOCK * 6);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Stopping);
+    let ch = s.channel(0);
+    let tail = &ch[at + BLOCK as usize * 2..];
+    assert!(tail.iter().all(|&v| v > 0.0), "still sounding: fading");
+    assert!(tail.windows(2).all(|w| w[1] <= w[0]), "and falling");
+}
+
+#[test]
 fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
     // QLab check F4: the problem reaches the clients, GO skips the Fade, and its
     // "stop target when done" does not stop the target.

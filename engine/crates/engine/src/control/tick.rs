@@ -326,6 +326,12 @@ impl DocCx<'_> {
         if self.doc.model.engine().is_due(now) {
             self.feed(Input::Tick, now);
         }
+        // The playhead may stand on a cue whose stopped voice was still there at the playhead
+        // move's priming pass (a Reset All, a stop then Set Playhead): now it is gone, the cue
+        // is primed again before its GO.
+        if self.doc.voices.take_freed() {
+            self.doc.primes_dirty = true;
+        }
         if self.doc.primes_dirty {
             self.doc.primes_dirty = false;
             self.prime(now);

@@ -95,6 +95,9 @@ pub struct CueEngine {
     group_previews: BTreeMap<CueId, BTreeSet<CueId>>,
     /// Voices of previews fading out in the panic under way (see `preview.rs`).
     panicked_previews: Vec<PanickedPreview>,
+    /// Cues the `PanicCue` presses of the batch under way set fading out in a panic (each
+    /// `PanicCue` starts a new record; a `PanicCueInBatch` adds to it): see `press_panic`.
+    batch_panicked: BTreeSet<CueId>,
     next_preview: u64,
     /// `chain_limit` of the workspace as of the last such pass.
     limit: usize,
@@ -164,6 +167,7 @@ impl CueEngine {
             previews: BTreeMap::new(),
             group_previews: BTreeMap::new(),
             panicked_previews: Vec::new(),
+            batch_panicked: BTreeSet::new(),
             next_preview: 0,
             limit: 0,
             lengths: BTreeMap::new(),
@@ -556,14 +560,14 @@ impl CueEngine {
             Input::StopAll => self.stop_all(cx),
             Input::ResetAll => self.reset_all(cx),
             Input::PanicCue { cue } => {
+                self.batch_panicked.clear();
                 if self.known(cue, cx) {
-                    // A second press on a cue already fading out in a panic stops it at once
-                    // (QLab check Q7).
-                    if self.fading_in_panic(cue, cx) {
-                        self.stop_tree(cue, None, cx);
-                    } else {
-                        self.panic_tree(cue, cx);
-                    }
+                    self.press_panic(cue, cx);
+                }
+            }
+            Input::PanicCueInBatch { cue } => {
+                if self.known(cue, cx) {
+                    self.press_panic(cue, cx);
                 }
             }
             Input::PauseAll => self.pause_all(cx),

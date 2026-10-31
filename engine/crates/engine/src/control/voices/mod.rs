@@ -209,6 +209,9 @@ pub struct Voices {
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more (docs/audio.md, Meters).
     gone: Vec<(VoiceId, CueId)>,
+    /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
+    /// cue that still has one, so the one after it is gone may prime the cue again.
+    freed: bool,
 }
 
 /// Why a voice could not be prepared.
@@ -251,6 +254,11 @@ impl Voices {
 
     pub fn primed(&self) -> impl Iterator<Item = CueId> + '_ {
         self.primes.keys().copied()
+    }
+
+    /// Whether a show cue's record left since the last call (and clears it).
+    pub fn take_freed(&mut self) -> bool {
+        std::mem::take(&mut self.freed)
     }
 
     /// Starts that used a primed stream.
