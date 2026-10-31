@@ -26,7 +26,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
-- A feature issue without acceptance flows gets them first (CLAUDE.md "Tests"): a separate agent writes them from `~/qlab-ref` behaviour pages (not only the layout map), cites pages, and adds them as the issue's Checklist.
+- A feature issue without acceptance flows gets them first (CLAUDE.md "Tests"): a separate `general-purpose` agent (never the batch's implementer) writes them from `~/qlab-ref` behaviour pages (not only the layout map), cites pages, and adds them as the issue's Checklist.
 - First count open `low` + `severity:*` issues (`gh issue list --state open --limit 1000 --label low --json number --jq length`, same for each `severity:*` label). Above 30, the batch is only those issues (CLAUDE.md "Findings policy").
 - Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
 - Batch 1–4 closely related issues per implementer (same files, same concepts). Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
@@ -74,7 +74,7 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 ## 6. Track
 - The PR's `Closes #N` closes the issues.
 - Tick a requirement in `REQUIREMENTS.md` when no open issue lists it and every part within the release scope (§21) is implemented and tested. Check with an exact match, not GitHub search (it splits IDs at the hyphen): `gh issue list --state open --limit 500 --json number,body --jq '.[] | select(.body | test("\\bAUD-19\\b")) | .number'` prints nothing. The full v0.0.1 sweep is M6.4.
-- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone, a Checklist of its requirement IDs).
+- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone; a feature issue's Checklist is acceptance flows written by the flows agent, any other issue's is its requirement IDs).
 - Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. A lesson every agent needs becomes a CI or repo check where possible, else one line in `CLAUDE.md`. A user policy decision goes into `CLAUDE.md` in the same session (through a reviewed PR); memory records only that the user decided it and when. Keep `docs/handoff/orchestrator-state.md` current at the end of a session.
 
 ## 7. Talk to the user
