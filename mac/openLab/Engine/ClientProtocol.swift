@@ -141,6 +141,11 @@ enum Request: Hashable, Sendable, Codable {
     case saveAs(path: String)
     case relink(folder: String)
     case listDevices
+    /// Chooses the output device the engine opens at its next start (nil: the system default).
+    /// App-scope; the engine plays on one device for its whole run.
+    case setOutputDevice(device: String?)
+    /// Where each of the workspace's patches plays on this machine (WS-07).
+    case listPatchMappings
     case preshowCheck
     case logTail(max: UInt32? = nil)
     /// PB-10: Network cues still run but send nothing. Engine-wide, in memory only.
@@ -150,6 +155,8 @@ enum Request: Hashable, Sendable, Codable {
     /// WS-07: sets, or with nil clears, where the workspace's patch plays on this machine. Kept in
     /// the engine's machine settings, not the show file. A clear travels as an explicit `null`.
     case setPatchMapping(patch: ModelID, mapping: PatchMapping?)
+    /// AUD-14: an Audio cue's file peaks over file seconds `start..<end` in `buckets` parts (1 to 8192).
+    case waveform(cue: ModelID, start: Double, end: Double, buckets: UInt32)
     case snapshot
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -180,6 +187,10 @@ enum Request: Hashable, Sendable, Codable {
         case .saveAs(let p): return ("save_as", [("path", p)])
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
+        case .setOutputDevice(let device):
+            opt(&f, "device", device)
+            return ("set_output_device", f)
+        case .listPatchMappings: return ("list_patch_mappings", [])
         case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
             opt(&f, "max", max)
@@ -189,6 +200,8 @@ enum Request: Hashable, Sendable, Codable {
         case .setPatchMapping(let patch, let mapping):
             return ("set_patch_mapping", [("patch", patch), ("mapping", mapping as PatchMapping?)])
         case .snapshot: return ("snapshot", [])
+        case .waveform(let cue, let start, let end, let buckets):
+            return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
         }
     }
 
@@ -212,6 +225,9 @@ enum Request: Hashable, Sendable, Codable {
         case "save_as": self = .saveAs(path: try c.decode(String.self, forKey: "path"))
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
+        case "set_output_device":
+            self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+        case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
         case "set_output_overrides":
@@ -222,6 +238,10 @@ enum Request: Hashable, Sendable, Codable {
                 patch: try c.decode(ModelID.self, forKey: "patch"),
                 mapping: try c.decodeIfPresent(PatchMapping.self, forKey: "mapping"))
         case "snapshot": self = .snapshot
+        case "waveform":
+            self = .waveform(
+                cue: try c.decode(ModelID.self, forKey: "cue"), start: try c.decode(Double.self, forKey: "start"),
+                end: try c.decode(Double.self, forKey: "end"), buckets: try c.decode(UInt32.self, forKey: "buckets"))
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
         }

@@ -72,6 +72,27 @@ final class ProtocolFixtureTests: XCTestCase {
             ])
     }
 
+    func testOutputDeviceAndPatchMappingMessagesDecodeFromTheirFixtures() throws {
+        guard
+            case .request(_, .setOutputDevice(let device)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_output_device").utf8))
+        else { return XCTFail("set_output_device") }
+        XCTAssertEqual(device, "Scarlett 2i2")
+        let devicesText = try Fixtures.text("server", "result_devices")
+        guard case .result(_, .ok(let devices)) = try ServerMessage.decode(devicesText),
+            case .devices(let list, let selected)? = devices.data
+        else { return XCTFail("devices") }
+        XCTAssertEqual(list.map(\.name), ["Scarlett 2i2"])
+        XCTAssertEqual(selected, "Scarlett 2i2")
+        let mappingsText = try Fixtures.text("server", "result_patch_mappings")
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
+            case .patchMappings(let entries)? = ok.data
+        else { return XCTFail("patch_mappings") }
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].mapping, PatchMapping(device: "Scarlett 2i2", channels: [0, 1]))
+        XCTAssertNil(entries[1].mapping)
+    }
+
     func testSetPatchMappingSetsAndClears() throws {
         let set = try JSONDecoder().decode(
             ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_patch_mapping").utf8))
@@ -84,6 +105,26 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(cleared)
         // A clear is sent as an explicit null, as the fixture has it.
         XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
+    }
+
+    /// AUD-14: the `waveform` request is sent as the fixture has it and its answer decodes.
+    func testWaveformRequestAndResultMatchTheFixtures() throws {
+        let sent = ClientMessage.request(
+            id: 56, .waveform(cue: "00000000-0000-0000-0000-00000000000a", start: 0, end: 62.5, buckets: 800))
+        let golden = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "request_waveform").utf8))
+        XCTAssertEqual(sent, golden)
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_waveform")),
+            case .waveform(let w)? = ok.data
+        else { return XCTFail("waveform") }
+        XCTAssertEqual(w.cue, "00000000-0000-0000-0000-00000000000a")
+        XCTAssertEqual([w.duration, w.start, w.end], [62.5, 1.5, 2.0])
+        XCTAssertEqual(
+            w.channels,
+            [
+                WaveformPeaks.Channel(min: [-32767, -120, 0], max: [32767, 4000, 0]),
+                WaveformPeaks.Channel(min: [-16384, -1, 0], max: [16384, 1, 0]),
+            ])
     }
 
     /// M5.4d: the snapshot's `media_durations` and the `media_duration` runtime change.

@@ -188,12 +188,28 @@ struct ErrorBody: Hashable, Sendable, Decodable {
     let message: String
 }
 
+/// One patch's place on this machine; nil `mapping`: never mapped, or cleared.
+struct PatchMappingEntry: Hashable, Sendable, Decodable {
+    let patch: ModelID
+    let mapping: PatchMapping?
+}
+
 struct DeviceEntry: Hashable, Sendable, Decodable {
     let name: String
     let outputChannels: Int
+    /// The system default device: what an engine with no chosen device opens at start.
+    let isDefault: Bool
     enum CodingKeys: String, CodingKey {
         case name
         case outputChannels = "output_channels"
+        case isDefault = "is_default"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        outputChannels = try c.decode(Int.self, forKey: .outputChannels)
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 }
 
@@ -402,7 +418,10 @@ struct PreshowReport: Hashable, Sendable, Decodable {
 }
 
 enum ResultData: Sendable, Equatable, Decodable {
-    case devices([DeviceEntry])
+    /// `selected`: the device chosen for the next engine start (nil: none chosen). The device
+    /// playing now is the status message's `device`.
+    case devices([DeviceEntry], selected: String?)
+    case patchMappings([PatchMappingEntry])
     case relink(
         relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
@@ -410,6 +429,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
     case logTail(entries: [ShowLogEntry], dropped: UInt64, seq: UInt64)
     case preshowCheck(PreshowReport)
+    /// AUD-14: a `waveform` answer.
+    case waveform(WaveformPeaks)
     /// The doc a `new` / `open` / `open_recovery` opened.
     case opened(doc: ModelID)
     /// A data type this client does not know; the raw object is kept.
@@ -419,7 +440,11 @@ enum ResultData: Sendable, Equatable, Decodable {
         let c = try decoder.container(keyedBy: Key.self)
         let type = try c.decode(String.self, forKey: "type")
         switch type {
-        case "devices": self = .devices(try c.decode([DeviceEntry].self, forKey: "devices"))
+        case "devices":
+            self = .devices(
+                try c.decode([DeviceEntry].self, forKey: "devices"),
+                selected: try c.decodeIfPresent(String.self, forKey: "selected"))
+        case "patch_mappings": self = .patchMappings(try c.decode([PatchMappingEntry].self, forKey: "patches"))
         case "relink":
             self = .relink(
                 relinked: try c.decode(Int.self, forKey: "relinked"),
@@ -439,10 +464,26 @@ enum ResultData: Sendable, Equatable, Decodable {
                 dropped: try c.decode(UInt64.self, forKey: "dropped"),
                 seq: try c.decodeIfPresent(UInt64.self, forKey: "seq") ?? 0)
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
+        case "waveform": self = .waveform(try WaveformPeaks(from: decoder))
         case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }
+}
+
+/// An Audio cue's file waveform over file seconds `start..<end` (AUD-14): per file channel, each
+/// bucket's minimum and maximum, ±`fullScale` being full scale. `duration` is the whole file's.
+struct WaveformPeaks: Hashable, Sendable, Decodable {
+    struct Channel: Hashable, Sendable, Decodable {
+        let min: [Int16]
+        let max: [Int16]
+    }
+    static let fullScale: Float = 32767
+    let cue: ModelID
+    let duration: Double
+    let start: Double
+    let end: Double
+    let channels: [Channel]
 }
 
 /// One open workspace as the app connection lists it.

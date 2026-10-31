@@ -10,7 +10,8 @@
 "menu.app.quit" = "Quit openLab";
 
 "menu.file" = "File";
-"menu.file.close" = "Close Window";
+"menu.file.close" = "Close";
+"menu.file.closeAll" = "Close All";
 "menu.file.new" = "New Workspace";
 "menu.file.open" = "Open…";
 "menu.file.openRecent" = "Open Recent";
@@ -31,10 +32,10 @@
 "menu.cues.new" = "New %@ Cue";
 "menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
 "menu.cues.renumber" = "Renumber Selected Cues...";
-"menu.cues.moveUp" = "Move Selected Cues Up";
-"menu.cues.moveDown" = "Move Selected Cues Down";
-"menu.cues.selectNext" = "Select Next";
-"menu.cues.selectPrevious" = "Select Previous";
+"menu.view.moveUp" = "Move Selected Cues Up";
+"menu.view.moveDown" = "Move Selected Cues Down";
+"menu.view.selectNext" = "Select Next";
+"menu.view.selectPrevious" = "Select Previous";
 "edit.ok" = "OK";
 "edit.cancel" = "Cancel";
 "edit.renumber.title" = "Renumber Selected Cues";
@@ -134,6 +135,7 @@
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
+"cue.flagged.inside" = "Contains a flagged cue";
 
 "cue.state.idle" = "Idle";
 "cue.state.loaded" = "Loaded";
@@ -183,6 +185,7 @@
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.yields" = "%1$@ key: %2$@ is a cue hotkey in this show, so the cue keeps it and no key is bound.";
+"hotkeys.warn.menuShadowed" = "Cue hotkey %@ is also a menu command's key, so the cue does not fire from it.";
 "hotkeys.warn.shadowed" = "Cue hotkey %@ is a transport key in this workspace, so the cue does not fire from it.";
 "hotkeys.reason.reserved" = "the key is reserved";
 "hotkeys.reason.duplicate" = "it is the same key as %@";
@@ -253,7 +256,36 @@
 "footer.toggle.inspector" = "Show or hide the inspector";
 "footer.toggle.sidebar" = "Show or hide the sidebar";
 "footer.settings" = "Settings";
-"footer.settings.unavailable" = "Workspace settings are not available yet";
+"footer.settings.open" = "Workspace Settings";
+"menu.file.workspaceSettings" = "Workspace Settings…";
+"settings.title" = "Workspace Settings";
+"settings.title.workspace" = "Workspace Settings: %@";
+"settings.done" = "Done";
+"settings.seconds" = "seconds";
+"settings.tab.general" = "General";
+"settings.tab.audio" = "Audio";
+"settings.general.panic" = "Panic fade time";
+"settings.general.goInterval" = "Minimum time between GOs";
+"settings.general.outOfRange" = "Enter a number from %g to %g.";
+"settings.audio.device" = "Audio output device";
+"settings.audio.systemDefault" = "System Default";
+"settings.audio.notAvailable" = "%@ (not available)";
+"settings.audio.playingOn" = "Playing on: %1$@ (%2$@)";
+"settings.audio.noStatus" = "The engine has not reported its audio device.";
+"settings.audio.deviceProblem" = "The audio device is not working. Cues that play through it are silent until it is back.";
+"settings.audio.chosenMissing" = "%@ is not connected. openLab will use the system default device the next time it starts.";
+"settings.audio.restartNeeded" = "A device change takes effect the next time openLab starts. Quit and reopen openLab to use it.";
+"settings.audio.patches" = "Output patches";
+"settings.audio.patch" = "Patch";
+"settings.audio.patchDevice" = "Device";
+"settings.audio.noDevice" = "None";
+"settings.audio.untitledPatch" = "Untitled patch";
+"settings.audio.output" = "Output %ld plays on device channel";
+"settings.audio.tooFewChannels" = "%1$@ does not have enough output channels for this patch (%2$ld needed).";
+"settings.audio.problem.unmapped" = "This patch has no device on this computer, so cues that use it are silent.";
+"settings.audio.problem.deviceMissing" = "%@ is not connected. Cues that use this patch are silent.";
+"settings.audio.problem.channelsMissing" = "The device does not have the channels this patch uses.";
+"settings.audio.problem.outputCount" = "The number of channels does not match the patch's outputs.";
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";
@@ -432,6 +464,30 @@
 "menu.view" = "View";
 "menu.view.editMode" = "Enter Edit Mode";
 "menu.view.showMode" = "Enter Show Mode";
+"menu.view.inspector" = "Inspector";
+"menu.view.toolbar" = "Cue Toolbar";
+"menu.view.masthead" = "GO Area";
+"menu.view.sidebar" = "Sidebar";
+"menu.view.selectCue" = "Select Cue…";
+"menu.view.selectCue.title" = "Select Cue";
+"menu.view.selectCue.ok" = "Select";
+"menu.view.nextTab" = "Select Next Inspector Tab";
+"menu.view.previousTab" = "Select Previous Inspector Tab";
+"menu.view.movePlayheadToCue" = "Move Playhead to Cue…";
+"menu.view.movePlayheadToCue.title" = "Move Playhead to Cue";
+"menu.view.movePlayheadToCue.ok" = "Move Playhead";
+"menu.view.playheadNext" = "Move Playhead to Next Cue";
+"menu.view.playheadPrevious" = "Move Playhead to Previous Cue";
+"cue.prompt.number" = "Cue number";
+"cue.prompt.notFound" = "No cue is numbered %@.";
+"cue.prompt.time" = "Time (minutes:seconds)";
+"cue.prompt.badTime" = "That is not a time. Use seconds, minutes:seconds or hours:minutes:seconds, up to 24 hours.";
+"menu.tools" = "Tools";
+"menu.tools.loadToTime" = "Load to Time…";
+"menu.tools.loadToTime.title" = "Load to Time";
+"menu.tools.loadToTime.ok" = "Load";
+"menu.tools.revealTarget" = "Reveal Target File in Finder";
+"menu.window.launcher" = "Launcher Window";
 
 /* Audio levels and routing matrix, Fade cue settings (AUD-06, AUD-08, CT-10, AUD-09) */
 "inspector.tab.levels" = "Levels";
@@ -453,6 +509,30 @@
 "fade.curve.equal_power" = "Equal power";
 "fade.curve.logarithmic" = "Logarithmic";
 "fade.curve.exponential" = "Exponential";
+
+/* Audio cue timing and loops tab, waveform (AUD-11, AUD-12, AUD-14) */
+"inspector.tab.timeLoops" = "Timing & Loops";
+"timeLoops.start" = "Start";
+"timeLoops.end" = "End";
+"timeLoops.play" = "Play";
+"timeLoops.times" = "times";
+"timeLoops.loop" = "Loop until devamped";
+"timeLoops.slicesNote" = "This cue has slices: each slice keeps its own play count.";
+"timeLoops.zoomIn" = "Zoom in";
+"timeLoops.zoomOut" = "Zoom out";
+"timeLoops.noFile" = "No file";
+"timeLoops.notRead" = "Reading the file…";
+"timeLoops.unavailable" = "The waveform could not be read";
+"timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
+"timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";
+"timeLoops.invalid.unknownLength" = "The file has not been read yet: set the start once its length is known.";
+"timeLoops.addSlice" = "New Slice";
+"timeLoops.deleteSlices" = "Clear Slices";
+"timeLoops.fades" = "Built-in fades";
+"timeLoops.invalid.slice" = "Click in the waveform at least 0.05 s from the trims and from other slice markers, then add the slice.";
+"timeLoops.invalid.tooManySlices" = "A cue can have at most 254 slice markers.";
+"timeLoops.invalid.sliceCount" = "Enter a whole number of plays from 1 to 1000000, or a letter to loop until devamped.";
+"timeLoops.invalid.trimSlices" = "The trims must stay at least 0.05 s outside the slice markers.";
 
 /* Engine lifecycle (M5.2, NFR-01, NFR-05) */
 "engine.alarm.window" = "Engine";

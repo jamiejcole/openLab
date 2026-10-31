@@ -75,6 +75,8 @@ extension InspectorViewController {
         syncTab(levelsItem, present: audio)
         syncTab(fadeItem, present: fade)
         let set = LevelSet(kind: kind)
+        audioLevels.meter.bank = store.meters
+        audioLevels.meter.source = audio ? .cue(cue.id) : nil
         if audio, let set {
             audioLevels.show(set, inputs: max(Self.defaultInputs, set.inputExtent), outputs: set.outputs.count)
         }
@@ -115,7 +117,7 @@ extension InspectorViewController {
 
     // MARK: Sending
 
-    private func sendKind(
+    func sendKind(
         _ build: (JSONValue) -> JSONValue, key: String, coalesce: ((ModelID) -> String)? = nil
     ) {
         guard !isLocked, let cue = cueForEdit, let kind = cue.raw["kind"] else { return }

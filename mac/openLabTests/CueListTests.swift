@@ -218,15 +218,22 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: nil), "00:02.00")
     }
 
-    func testColourFlagAndContinueAreShownWithShapesAndLabels() async throws {
+    func testColourTintsRowFlagIsInStatusColumnAndContinueHasLabel() async throws {
         let h = try await H()
         let h2 = h.vc
         h.spy.expandItem(try XCTUnwrap(h2.node(H.group)))
         let name = try XCTUnwrap(h.cell("name", H.rain))
-        XCTAssertFalse(name.images[1].isHidden)
-        XCTAssertEqual(name.images[1].accessibilityLabel(), loc("cue.colour.blue"))
-        XCTAssertFalse(name.images[2].isHidden)
-        XCTAssertEqual(name.images[2].accessibilityLabel(), loc("cue.flagged"))
+        // A colour adds no marker to the Name column; the flag is a status-column icon.
+        XCTAssertTrue(name.images[1...].allSatisfy(\.isHidden))
+        let status = try XCTUnwrap(h.cell("status", H.rain))
+        XCTAssertFalse(status.images[3].isHidden)
+        XCTAssertEqual(status.images[3].accessibilityLabel(), loc("cue.flagged"))
+        // A flagged cue inside a group: the open group shows no flag, the collapsed one a hollow flag.
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[3].isHidden)
+        h.spy.collapseItem(try XCTUnwrap(h2.node(H.group)))
+        let groupFlag = try XCTUnwrap(h.cell("status", H.group)).images[3]
+        XCTAssertEqual(groupFlag.accessibilityLabel(), loc("cue.flagged.inside"))
+        h.spy.expandItem(try XCTUnwrap(h2.node(H.group)))
         let cont = try XCTUnwrap(h.cell("continue", H.rain))
         XCTAssertEqual(cont.images[0].accessibilityLabel(), loc("cue.continue.autoFollow"))
         // Row tint is the colour; a cue with no colour has none.
@@ -235,9 +242,26 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(row.tint, NSColor.systemBlue)
         let plain = try XCTUnwrap(h.spy.rowView(atRow: 0, makeIfNecessary: true) as? CueRowView)
         XCTAssertNil(plain.tint)
-        // Every colour has its own shape (UI-04).
-        let shapes = CueKindStyle.colours.values.map(\.icon.symbol)
-        XCTAssertEqual(Set(shapes).count, shapes.count)
+    }
+
+    func testCollapsedGroupFlagFollowsAChildFlaggedByTheEngine() async throws {
+        let h = try await H()
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
+        func groupFlag() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.group)).images[3] }
+        XCTAssertFalse(try groupFlag().isHidden, "Rain is flagged")
+        func rain(flagged: Bool) throws -> String {
+            var json = FakeEngine.cueJSON(
+                id: H.rain.raw, number: "2.2", name: "Rain", kind: FakeEngine.audioKind("media/r.wav"))
+            json.set("flagged", .bool(flagged))
+            return try H.upsertJSON(json, parent: H.group, index: 1)
+        }
+        // Only the child is upserted; the collapsed group's row must still redraw.
+        try h.change(upserts: [try rain(flagged: false)])
+        XCTAssertTrue(try groupFlag().isHidden)
+        try h.change(upserts: [try rain(flagged: true)])
+        XCTAssertEqual(try groupFlag().accessibilityLabel(), loc("cue.flagged.inside"))
+        try h.change(deletes: [H.rain])
+        XCTAssertTrue(try groupFlag().isHidden, "a deleted flagged child clears the flag")
     }
 
     func testDisarmedCueIsDimmed() async throws {
@@ -592,6 +616,66 @@ final class CueListTests: XCTestCase {
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":null}"#)
         XCTAssertFalse(h.vc.isPlayheadRow(H.fade))
         for id in [H.intro, H.fade, H.group] { XCTAssertFalse(h.vc.isPlayheadInside(id)) }
+    }
+
+    /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
+    /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
+    func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        let rows = h.visibleIDs()
+        let at = try XCTUnwrap(rows.firstIndex(of: H.group))
+        XCTAssertFalse(rows.contains(H.rain), "collapsed")
+        func sentPlayheads() -> [ModelID] {
+            h.rig.engine.receivedFrom.compactMap {
+                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
+                return nil
+            }
+        }
+        // Each direction goes to the group's neighbour, or (at an end of the list) nowhere: never
+        // to the opposite end.
+        var expected: [ModelID] = []
+        for (delta, row) in [(1, at + 1), (-1, at - 1)] {
+            h.vc.movePlayhead(by: delta)
+            if rows.indices.contains(row) { expected.append(rows[row]) }
+            await settle()
+            await assertEventually { sentPlayheads() == expected }
+        }
+        XCTAssertGreaterThan(rows.count, 1)
+    }
+
+    func testMenuDialogAnswersSelectMovePlayheadOrNameTheProblem() async throws {
+        let rig = try Rig()
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let wc = WorkspaceWindowController(store: rig.store)
+        let list = wc.cueList
+        let target = try XCTUnwrap(list.roots.first { $0.cue.number != nil })
+        let number = try XCTUnwrap(target.cue.number)
+        XCTAssertNil(wc.applyCueNumber(number, movePlayhead: false))
+        XCTAssertEqual(list.selectedIDs(), [target.id], "Select Cue selects it")
+        XCTAssertNil(wc.applyCueNumber(number, movePlayhead: true))
+        await assertEventually {
+            rig.engine.receivedFrom.contains {
+                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue == target.id }
+                return false
+            }
+        }
+        XCTAssertEqual(
+            wc.applyCueNumber("no-such", movePlayhead: true), String(format: loc("cue.prompt.notFound"), "no-such"))
+        XCTAssertEqual(
+            wc.applyCueNumber("no-such", movePlayhead: false), String(format: loc("cue.prompt.notFound"), "no-such"))
+        // Load to Time: a bad time (also a negative one: the engine's load takes 0 or more) is a notice.
+        for bad in ["", "abc", "-5", "1:75"] {
+            XCTAssertEqual(wc.applyLoadTime(bad, to: target.id), loc("cue.prompt.badTime"), bad)
+        }
+        var loads: [TransportAction] = []
+        wc.onCueAction = { loads.append($0) }
+        XCTAssertNil(wc.applyLoadTime("1:02.5", to: target.id))
+        XCTAssertEqual(loads, [.load(cue: target.id, at: 62.5)])
+        let before = rig.engine.receivedFrom.count
+        await settle()
+        XCTAssertEqual(rig.engine.receivedFrom.count, before, "nothing was sent for a bad time")
     }
 
     // MARK: Progress

@@ -43,6 +43,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
+    /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
+    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// Workspace-level notices in force (replaced by each `warnings` message).
@@ -55,6 +57,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// How many `log` messages and notes have been added in all (the entries are bounded, this is
     /// not): entry `i` of `logEntries` is number `logCount - logEntries.count + i`.
     private(set) var logCount = 0
+    /// Peak levels from `meters`, folded for the meter views on screen (not published: they redraw at the display rate).
+    let meters = MeterBank()
     /// The newest show-log record number heard (`log_entry`, `log_tail`); 0: none on this connection.
     private(set) var logSeq: UInt64 = 0
     /// A `log_entry` arrived more than one past the last: records were not pushed, so a live view
@@ -101,7 +105,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         connectionState = client.state
         stateSub = client.$state.sink { [weak self] state in
             self?.connectionState = state
-            if state != .connected { self?.clearPreviewing() }
+            if state != .connected {
+                self?.clearPreviewing()
+                self?.meters.reset()
+            }
         }
     }
 
@@ -117,6 +124,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// may show one as running while it waits to be reopened. Loaded and broken states stay (the
     /// next snapshot replaces them; they claim nothing is playing).
     func clearRuntime() {
+        meters.reset()
         let live = Set(cueStates.filter { $0.value.state.isActive }.keys).union(previewing)
         let ticking = Set(progress.keys)
         let waiting = Set(waits.keys)
@@ -190,6 +198,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// An Audio cue's file waveform over file seconds `start..<end` in `buckets` parts (AUD-14).
+    func waveform(cue: ModelID, start: Double, end: Double, buckets: Int) async -> Result<WaveformPeaks, EngineError> {
+        let n = UInt32(Swift.max(1, Swift.min(buckets, 8192)))
+        switch await client.send({ .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }) {
+        case .success(let ok):
+            if case .waveform(let peaks)? = ok.data { return .success(peaks) }
+            return .failure(.encoding("waveform result has no waveform data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
     /// The pre-show check (SM-06): one report of what would keep the show from running.
     func preshowCheck() async -> Result<PreshowReport, EngineError> {
         switch await client.send({ .request(id: $0, .preshowCheck) }) {
@@ -237,6 +256,26 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     func listDevices() async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .listDevices) }
+    }
+
+    /// Chooses the output device for the engine's next start (nil: the system default).
+    func setOutputDevice(_ name: String?) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setOutputDevice(device: name)) }
+    }
+
+    /// Where each patch of this workspace plays on this machine.
+    func listPatchMappings() async -> Result<[PatchMappingEntry], EngineError> {
+        switch await client.send({ .request(id: $0, .listPatchMappings) }) {
+        case .success(let ok):
+            if case .patchMappings(let entries)? = ok.data { return .success(entries) }
+            return .failure(.encoding("list_patch_mappings result has no patch_mappings data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
+    /// Sets, or with nil clears, where `patch` plays on this machine.
+    func setPatchMapping(_ patch: ModelID, _ mapping: PatchMapping?) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setPatchMapping(patch: patch, mapping: mapping)) }
     }
 
     // MARK: Applying server messages
@@ -304,8 +343,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             logPushes.send((seq, entry))
             if logSeq > 0, seq > logSeq, seq - logSeq > 1 { logGaps.send(seq) }  // no `+ 1`: a hostile u64::MAX
             logSeq = Swift.max(logSeq, seq)
-        case .meters, .result, .error, .appWelcome, .workspaces, .unknown:
-            // Meters have no consumer yet; the rest belong to the client or session.
+        case .meters(let outputs, let cues):
+            meters.ingest(outputs: outputs, cues: cues)
+        case .result, .error, .appWelcome, .workspaces, .unknown:
+            // These belong to the client or session.
             break
         }
         return .applied
@@ -322,6 +363,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         groupWarnings = Set(s.groupWarnings)
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         previewing = Set(s.previewing)
+        mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
         waits = [:]
@@ -477,9 +519,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {
                     runtimeWarnings.removeFirst(runtimeWarnings.count - Self.maxRuntimeWarnings)
                 }
-            case .mediaDuration:
-                // Decoded for the Duration column (#112), which keeps them; nothing shows them yet.
-                break
+            case .mediaDuration(let d):
+                // The Time & Loops tab draws the file once its length is known (AUD-14).
+                mediaDurations[d.cue] = d
+                cues.insert(d.cue)
             case .unknown(let type):
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }

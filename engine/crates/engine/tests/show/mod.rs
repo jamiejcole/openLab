@@ -25,6 +25,8 @@ use openlab_engine::control::watch::WatchMode;
 use uuid::Uuid;
 
 pub mod device;
+#[path = "../../../audio/tests/common/media.rs"]
+pub mod media;
 #[path = "../../../audio/tests/common/spin.rs"]
 pub mod spin;
 
@@ -165,10 +167,15 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
 }
 
 pub fn mixer_config() -> MixerConfig {
+    mixer_config_at(RATE, BLOCK)
+}
+
+/// [`mixer_config`] at another device rate and block size.
+pub fn mixer_config_at(rate: u32, block: u64) -> MixerConfig {
     MixerConfig {
-        sample_rate: RATE,
+        sample_rate: rate,
         output_channels: 2,
-        max_block_frames: BLOCK as usize,
+        max_block_frames: block as usize,
         max_voices: 64,
         max_voice_channels: 8,
         patches: 2,
@@ -178,7 +185,12 @@ pub fn mixer_config() -> MixerConfig {
 
 /// Patch mapped to the offline device's two outputs.
 pub fn config(ws: &Workspace) -> ControlConfig {
-    let mut c = ControlConfig::new(RATE, BLOCK);
+    config_at(ws, RATE, BLOCK)
+}
+
+/// [`config`] at another device rate and block size.
+pub fn config_at(ws: &Workspace, rate: u32, block: u64) -> ControlConfig {
+    let mut c = ControlConfig::new(rate, block);
     c.seed = 7;
     // No watch thread: a test runs passes itself (`OfflineShow::watch_pass`).
     c.watch.mode = WatchMode::Manual;
@@ -210,6 +222,14 @@ pub fn show(ws: Workspace) -> OfflineShow {
 
 pub fn show_with(ws: Workspace, config: ControlConfig) -> OfflineShow {
     let mut s = OfflineShow::new(ws, mixer_config(), config).unwrap();
+    s.settle_media();
+    s
+}
+
+/// [`show`] on an offline device at `rate` Hz in blocks of `block` frames.
+pub fn show_at(ws: Workspace, rate: u32, block: u64) -> OfflineShow {
+    let c = config_at(&ws, rate, block);
+    let mut s = OfflineShow::new(ws, mixer_config_at(rate, block), c).unwrap();
     s.settle_media();
     s
 }
@@ -457,6 +477,23 @@ pub fn release(path: &Path) {
         .unwrap_or_else(PoisonError::into_inner)
         .retain(|g| g != path);
     GATE_CHANGED.notify_all();
+}
+
+/// A waveform read (AUD-14) that, as [`gated_probe`], records its file and blocks while the
+/// file is gated, then reads it for real.
+pub fn gated_waveform(
+    path: &Path,
+    media: openlab_audio::Media,
+    info: &openlab_audio::MediaInfo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<openlab_audio::WaveformResult, openlab_audio::WaveformError> {
+    PROBED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(path.to_path_buf());
+    PROBED_CHANGED.notify_all();
+    gated_open(path);
+    openlab_audio::build_waveform(media, info, cancel)
 }
 
 /// The probe watchdog's clock, moved only by the test: whether a worker counts as stuck must not

@@ -283,6 +283,41 @@ fn check_single_instance(dirs: &AppDirs) -> Result<(), HostError> {
     }
 }
 
+/// Puts what start-up found (an unavailable chosen device, settings the file had wrong) in the
+/// show log as warnings, once the loop runs.
+fn log_start_notes(inbox: &crossbeam_channel::Sender<Inbox>, notes: impl Iterator<Item = String>) {
+    for message in notes {
+        let _ = inbox.send(Inbox::Log {
+            level: LogLevel::Warn,
+            message,
+        });
+    }
+}
+
+/// The device the engine opens: the one the operator chose by name (`set_output_device`), else
+/// the system default, else the first listed. A chosen device that is not listed (unplugged)
+/// falls back with a note for the log, so the show still starts and the operator is told.
+fn choose_device<'a>(
+    devices: &'a [openlab_audio::DeviceInfo],
+    default: Option<&str>,
+    chosen: Option<&str>,
+) -> Option<(&'a openlab_audio::DeviceInfo, Option<String>)> {
+    let mut note = None;
+    if let Some(name) = chosen {
+        if let Some(d) = devices.iter().find(|d| d.name == name) {
+            return Some((d, None));
+        }
+        note = Some(format!(
+            "the chosen output device \"{name}\" is not available; using the default device"
+        ));
+    }
+    devices
+        .iter()
+        .find(|d| Some(d.id.as_str()) == default)
+        .or_else(|| devices.first())
+        .map(|d| (d, note))
+}
+
 /// The run itself. This run's `engine.json`, once written, is left in `engine_file` for the
 /// caller to remove last.
 fn run_with(
@@ -297,11 +332,15 @@ fn run_with(
     }
     let devices = output_devices()?;
     let default = default_output_device_id();
-    let device = devices
-        .iter()
-        .find(|d| Some(&d.id) == default.as_ref())
-        .or_else(|| devices.first())
-        .ok_or(HostError::NoDevice)?;
+    let machine = dirs.map(load_machine_settings_checked);
+    let (device, device_note) = choose_device(
+        &devices,
+        default.as_deref(),
+        machine
+            .as_ref()
+            .and_then(|(loaded, _)| loaded.settings.output_device.as_deref()),
+    )
+    .ok_or(HostError::NoDevice)?;
     let rate = RATES
         .into_iter()
         .find(|&r| {
@@ -354,8 +393,9 @@ fn run_with(
             });
         }
     }
-    if let Some(dirs) = dirs {
-        let (loaded, writable) = load_machine_settings_checked(dirs);
+    log_start_notes(&inbox_tx, device_note.into_iter());
+    if let (Some(dirs), Some((loaded, writable))) = (dirs, machine) {
+        log_start_notes(&inbox_tx, loaded.warnings.iter().cloned());
         config.machine = loaded.settings;
         config.machine_writable = writable;
         config.app_dirs = Some(dirs.clone());
@@ -552,6 +592,40 @@ mod tests {
     use super::*;
 
     use std::fs;
+
+    fn info(id: &str, name: &str) -> openlab_audio::DeviceInfo {
+        openlab_audio::DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+            is_default: false,
+            configs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn start_notes_reach_the_inbox_as_warnings() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        log_start_notes(&tx, ["a".to_owned(), "b".to_owned()].into_iter());
+        let got: Vec<_> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(matches!(
+            &got[0],
+            Inbox::Log { level: LogLevel::Warn, message } if message == "a"
+        ));
+    }
+
+    #[test]
+    fn the_chosen_device_opens_and_a_missing_one_falls_back_with_a_note() {
+        let devices = [info("a", "Built-in"), info("b", "Scarlett 2i2")];
+        let (chosen, note) = choose_device(&devices, Some("a"), Some("Scarlett 2i2")).unwrap();
+        assert_eq!((chosen.id.as_str(), note), ("b", None));
+        let (fallback, note) = choose_device(&devices, Some("a"), Some("Gone")).unwrap();
+        assert_eq!(fallback.id, "a");
+        assert!(note.unwrap().contains("Gone"));
+        let (default, note) = choose_device(&devices, Some("b"), None).unwrap();
+        assert_eq!((default.id.as_str(), note), ("b", None));
+        assert!(choose_device(&[], None, Some("x")).is_none());
+    }
 
     fn markers(dirs: &AppDirs) -> Vec<String> {
         fs::read_dir(dirs.run_markers_dir())

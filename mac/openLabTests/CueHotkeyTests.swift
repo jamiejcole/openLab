@@ -180,7 +180,10 @@ final class TriggersTabTests: XCTestCase {
     func testTabExistsAfterBasics() {
         XCTAssertEqual(
             vc.tabView.tabViewItems.map(\.label),
-            [loc("inspector.tab.basics"), loc("inspector.tab.triggers"), loc("inspector.tab.levels")])
+            [
+                loc("inspector.tab.basics"), loc("inspector.tab.triggers"), loc("inspector.tab.timeLoops"),
+                loc("inspector.tab.levels"),
+            ])
     }
 
     func testRecordingAHotkeySendsTriggersAndShowsItAfterTheEngineAnswers() async {
@@ -470,6 +473,19 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertTrue(app.handleKeyDown(e) === e)
         await settle()
         XCTAssertTrue(hotkeys().isEmpty)
+    }
+
+    /// A cue hotkey a menu command shadows never fires, so the show log says so (once).
+    func testACueHotkeyOnAMenuKeyIsWarnedAboutInTheLog() async throws {
+        let first = try XCTUnwrap(app.session.stores["1"])
+        let chord = KeyChord("q", [.command])
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: chord.hotkeyJSON, osc: nil)))
+        await assertEventually { first.model?.cueHotkeys.contains { $0.chord == chord } == true }
+        let message = String(format: loc("hotkeys.warn.menuShadowed"), chord.display)
+        await assertEventually { first.logEntries.contains { $0.level == .warn && $0.message == message } }
+        _ = app.frontKeys
+        _ = app.keys(for: first)
+        XCTAssertEqual(first.logEntries.filter { $0.message == message }.count, 1)
     }
 
     func testFixedDefaultKeysYieldToACueHotkey() async throws {

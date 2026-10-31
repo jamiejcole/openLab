@@ -8,7 +8,9 @@
 //! loop never waits for the disk.
 
 use crate::show::*;
-use openlab_core::protocol::{ClientMessage, Outcome};
+use openlab_core::protocol::{
+    ClientMessage, ErrorCode, Outcome, Request, ResultData, WaveformData,
+};
 use openlab_core::protocol::{
     RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
     WireWarning,
@@ -1416,5 +1418,194 @@ fn a_show_voice_ending_on_the_pause_all_sample_is_primed_again() {
         s.control().primed().contains(&id(1)),
         "{:?}",
         s.control().primed()
+    );
+}
+
+/// Sends a `waveform` request for cue `n` the way a connection does: its answer may come on a
+/// later tick, so the reply channel is handed back.
+fn ask_waveform(
+    s: &mut OfflineShow,
+    n: u128,
+    (start, end, buckets): (f64, f64, u32),
+) -> openlab_engine::control::ReplyRx {
+    let (reply, rx) = openlab_engine::control::reply_channel();
+    let request_id = s.request_id();
+    let message = ClientMessage::Request {
+        id: request_id,
+        request: Request::Waveform {
+            cue: id(n),
+            start,
+            end,
+            buckets,
+        },
+    };
+    s.deliver(openlab_engine::control::Inbox::Client { message, reply });
+    rx
+}
+
+#[allow(clippy::panic)]
+fn waveform_of(m: Option<ServerMessage>) -> WaveformData {
+    match m {
+        Some(ServerMessage::Result {
+            outcome: Outcome::Ok(ok),
+            ..
+        }) => match ok.data {
+            Some(ResultData::Waveform(w)) => *w,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+#[allow(clippy::panic)]
+fn error_code(m: Option<ServerMessage>) -> ErrorCode {
+    match m {
+        Some(ServerMessage::Result {
+            outcome: Outcome::Error(e),
+            ..
+        }) => e.code,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// AUD-14: a cue's waveform is read on a probe worker (never in the control loop), answered
+/// with each bucket's min and max, and kept, so a zoom is answered at once.
+#[test]
+fn a_waveform_is_read_on_a_worker_and_kept_for_every_zoom() {
+    let mut samples = dc(4096, 0.5);
+    samples.extend(dc(4096, -0.25));
+    let path = wav(&samples);
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 1e9, 2));
+    // Nothing yet: the read is a worker's.
+    assert!(rx.try_recv().is_err());
+    assert_eq!(s.control().waveforms_pending(), 1);
+    s.settle_media();
+    let w = waveform_of(rx.try_recv().ok());
+    assert_eq!(w.cue, id(1));
+    // Halves of 4096 frames: the buckets fall on whole level buckets.
+    assert_eq!(w.duration, 8192.0 / 8000.0);
+    assert_eq!(
+        (w.start, w.end),
+        (0.0, w.duration),
+        "the end is clamped to the file"
+    );
+    assert_eq!(w.channels.len(), 1);
+    assert_eq!(w.channels[0].max, vec![16384, -8192]);
+    assert_eq!(w.channels[0].min, vec![16384, -8192]);
+    assert_eq!(s.control().waveforms_pending(), 0);
+    // A zoom into the first half is cut from what was kept, in the same breath.
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 0.5, 4));
+    let w = waveform_of(rx.try_recv().ok());
+    assert_eq!(w.channels[0].max, vec![16384; 4]);
+    assert_eq!(s.control().waveforms_pending(), 0);
+}
+
+/// A waveform of a cue that is not an Audio cue, has no playable file or does not exist is
+/// refused at once, each with its own code.
+#[test]
+fn a_waveform_of_no_playable_file_is_refused() {
+    let gone = fresh_path("wav");
+    let mut s = show(workspace(vec![audio(1, &gone, 0), cue(2, CueKind::Memo)]));
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 1.0, 10));
+    assert_eq!(error_code(rx.try_recv().ok()), ErrorCode::Unsupported);
+    let mut rx = ask_waveform(&mut s, 2, (0.0, 1.0, 10));
+    assert_eq!(error_code(rx.try_recv().ok()), ErrorCode::BadRequest);
+    let mut rx = ask_waveform(&mut s, 3, (0.0, 1.0, 10));
+    assert_eq!(error_code(rx.try_recv().ok()), ErrorCode::NotFound);
+    assert_eq!(s.control().waveforms_pending(), 0);
+}
+
+/// A waveform read stuck on a disk that stops answering never holds up the show: other cues
+/// play meanwhile, and the waveform reader gives up on it after `waveform_timeout`, failing the
+/// request with `io`; the probe pool never counts it as a stuck worker.
+#[test]
+fn a_waveform_read_stuck_on_a_dead_disk_fails_and_the_show_runs_on() {
+    let stuck = wav(&dc(4000, 0.5));
+    let fine = wav(&dc(4000, 0.5));
+    let ws = workspace(vec![audio(1, &stuck, 0), audio(2, &fine, 1)]);
+    let time = ProbeTime::new();
+    let mut c = config(&ws);
+    c.waveform = gated_waveform;
+    c.probe_clock = time.clock();
+    let timeout = c.waveform_timeout;
+    let mut s = show_with(ws, c);
+    gate(&stuck);
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 1.0, 100));
+    wait_probed(std::slice::from_ref(&stuck), 1);
+    // The show runs on while the read hangs.
+    let at = start(&mut s, 2) as usize;
+    s.run(BLOCK * 4);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert!(rx.try_recv().is_err());
+    time.advance(timeout + std::time::Duration::from_secs(1));
+    s.tick();
+    assert_eq!(error_code(rx.try_recv().ok()), ErrorCode::Io);
+    assert_eq!(s.control().waveforms_pending(), 0);
+    assert_eq!(s.control().abandoned_waveform_reads(), 1);
+    assert_eq!(
+        s.control().abandoned_probe_workers(),
+        0,
+        "never a stuck probe"
+    );
+    release(&stuck);
+    // Asked again once the disk answers, the file is read by a fresh worker.
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 1.0, 1));
+    s.settle_media();
+    assert_eq!(waveform_of(rx.try_recv().ok()).channels[0].max, vec![16384]);
+}
+
+/// Waveform reads hanging on two files never hold up a probe: a cue given a new file meanwhile is
+/// probed at once and plays on its GO, rather than being held and broken by the probe hold limit.
+#[test]
+fn hanging_waveform_reads_never_hold_up_a_probe() {
+    let slow: Vec<_> = (0..2).map(|_| wav(&dc(4000, 0.5))).collect();
+    let fresh = wav(&dc(4000, 0.5));
+    let ws = workspace(vec![
+        audio(1, &slow[0], 0),
+        audio(2, &slow[1], 0),
+        audio(3, &fresh_path("wav"), 1),
+    ]);
+    let mut c = config(&ws);
+    c.waveform = gated_waveform;
+    // The watchdogs' clock stands still: nothing is given up on, the reads hang for good.
+    c.probe_clock = ProbeTime::new().clock();
+    let mut s = show_with(ws, c);
+    for p in &slow {
+        gate(p);
+    }
+    let mut first = ask_waveform(&mut s, 1, (0.0, 1.0, 10));
+    let mut second = ask_waveform(&mut s, 2, (0.0, 1.0, 10));
+    wait_probed(std::slice::from_ref(&slow[0]), 1);
+    let request_id = s.request_id();
+    s.send(ClientMessage::Command {
+        id: request_id,
+        command: Box::new(Command::SetCueProperty {
+            id: id(3),
+            property: CueProperty::Media {
+                value: Some(openlab_core::MediaRef::new(fresh.to_str().unwrap())),
+            },
+        }),
+        coalesce: None,
+    });
+    spin::spin_until("the new file to be probed while the reads hang", || {
+        s.tick();
+        s.control().probes_pending() == 0
+    });
+    let at = start(&mut s, 3) as usize;
+    s.run(BLOCK * 4);
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert_ne!(s.control().engine().state(id(3)), CueState::Broken);
+    for p in &slow {
+        release(p);
+    }
+    s.settle_media();
+    assert_eq!(
+        waveform_of(first.try_recv().ok()).channels[0].max,
+        vec![16384; 10]
+    );
+    assert_eq!(
+        waveform_of(second.try_recv().ok()).channels[0].max,
+        vec![16384; 10]
     );
 }

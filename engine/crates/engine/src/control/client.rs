@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use openlab_core::Command;
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, HotkeyPhase, MAX_COALESCE_KEY, OkBody, Outcome, Request, ResultData,
-    ServerMessage, TransportAction,
+    ClientMessage, ErrorCode, HotkeyPhase, MAX_COALESCE_KEY, OkBody, Outcome, PatchMappingEntry,
+    Request, ResultData, ServerMessage, TransportAction,
 };
 
 use super::docs::DocSource;
@@ -46,6 +46,16 @@ impl Control {
             Inbox::Net(doc, answer) => {
                 if let Some(mut cx) = self.cx_of(doc) {
                     cx.net_answer(answer);
+                }
+            }
+            Inbox::Waveform {
+                doc,
+                ticket,
+                result,
+            } => {
+                self.eng.waveform_reader.finished(ticket);
+                if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+                    d.waveforms.answer(ticket, result);
                 }
             }
             Inbox::Doc(answer) => self.doc_answer(answer),
@@ -177,10 +187,21 @@ impl Control {
                             revision: None,
                             data: Some(ResultData::Devices {
                                 devices: self.eng.device_list(),
+                                selected: self.eng.config.machine.output_device.clone(),
                             }),
                         }),
                     },
                 ),
+                Request::SetOutputDevice { device } => {
+                    let outcome = self.eng.set_output_device(device);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
                 Request::LogTail { max } => {
                     let (entries, dropped, seq) = self.eng.log_tail(max);
                     reply(
@@ -386,6 +407,35 @@ impl DocCx<'_> {
                     }
                     reply(to, ok(id, None));
                 }
+                Request::ListPatchMappings => {
+                    let workspace = self.doc.model.ws().id;
+                    let patches = self
+                        .doc
+                        .model
+                        .ws()
+                        .patches
+                        .iter()
+                        .map(|p| PatchMappingEntry {
+                            patch: p.id,
+                            mapping: self
+                                .eng
+                                .config
+                                .machine
+                                .patch_mapping(workspace, p.id)
+                                .cloned(),
+                        })
+                        .collect();
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::PatchMappings { patches }),
+                            }),
+                        },
+                    );
+                }
                 Request::PreshowCheck => {
                     let report = self.preshow_report();
                     reply(
@@ -399,6 +449,12 @@ impl DocCx<'_> {
                         },
                     );
                 }
+                Request::Waveform {
+                    cue,
+                    start,
+                    end,
+                    buckets,
+                } => self.waveform(id, cue, (start, end, buckets), to),
                 // Saves come through [`Control::save`], which knows the other docs.
                 request => self.doc_request(id, request, to, Vec::new()),
             },

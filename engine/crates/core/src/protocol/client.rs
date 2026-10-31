@@ -326,6 +326,15 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// Chooses the output device the engine opens at its **next start** (the engine plays on one
+    /// device and does not switch while running; the app restarts it). `device` must be a name
+    /// `list_devices` gives; null or absent goes back to the system default. Kept in the
+    /// machine settings, not a show file. Answers `ok` with no data, `not_found` (no such
+    /// device) or `io` (the settings cannot be kept); nothing changes on a refusal. App-scope.
+    SetOutputDevice {
+        #[serde(default)]
+        device: Option<String>,
+    },
     /// Switches output overrides (PB-10) for the whole engine, every open workspace: not saved
     /// in any show file and gone when the engine restarts, as QLab's Overrides are. The
     /// `status` message reports them. Answers `ok` with no data.
@@ -353,6 +362,9 @@ pub enum Request {
         #[serde(default)]
         mapping: Option<PatchMapping>,
     },
+    /// Where each of the connection's workspace's patches plays on this machine (WS-07), for a
+    /// patch editor: answers `patch_mappings`. Workspace-bound.
+    ListPatchMappings,
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,
@@ -364,7 +376,20 @@ pub enum Request {
     },
     /// Send the full state again (after a `revision` or `seq` gap).
     Snapshot,
+    /// The waveform of an Audio cue's file (AUD-14): min/max peaks of each file channel over file
+    /// seconds `start..end` (`end` clamped to the file) in `buckets` equal parts, 1 to
+    /// [`MAX_WAVEFORM_BUCKETS`]. Read on a probe worker the first time and kept, so a later
+    /// zoom answers at once. Workspace-bound.
+    Waveform {
+        cue: CueId,
+        start: f64,
+        end: f64,
+        buckets: u32,
+    },
 }
+
+/// Most buckets one `waveform` request may ask for: more than any screen is wide.
+pub const MAX_WAVEFORM_BUCKETS: u32 = 8192;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -424,6 +449,30 @@ impl ClientMessage {
                 Err(ProtocolError::NotAbsolute {
                     field: "request.path",
                 })
+            }
+            Self::Request {
+                request:
+                    Request::Waveform {
+                        start,
+                        end,
+                        buckets,
+                        ..
+                    },
+                ..
+            } => {
+                non_negative("request.start", *start)?;
+                non_negative("request.end", *end)?;
+                if end <= start {
+                    return Err(ProtocolError::OutOfRange {
+                        field: "request.end",
+                    });
+                }
+                if !(1..=MAX_WAVEFORM_BUCKETS).contains(buckets) {
+                    return Err(ProtocolError::OutOfRange {
+                        field: "request.buckets",
+                    });
+                }
+                Ok(())
             }
             Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
                 Err(ProtocolError::OutOfRange {

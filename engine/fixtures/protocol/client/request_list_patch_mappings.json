@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 52,
+  "request": {
+    "type": "list_patch_mappings"
+  }
+}

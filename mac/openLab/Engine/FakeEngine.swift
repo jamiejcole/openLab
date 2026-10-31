@@ -81,6 +81,14 @@ final class FakeEngine: EngineTransport {
     /// `preshow_check` on one of these docs answers a sample report with problems (a broken cue,
     /// its missing file, a lost device) instead of the all-clear; other docs answer the all-clear.
     var preshowProblemDocs: Set<ModelID> = []
+    /// `list_devices`: name and output channel count of each device the fake lists.
+    var fakeDevices: [(name: String, channels: Int)] = [("Fake Output", 2)]
+    /// The fake device `list_devices` marks as the system default.
+    var fakeDefaultDevice: String?
+    /// The device `set_output_device` stored (nil: none chosen).
+    private(set) var selectedOutputDevice: String?
+    /// `set_patch_mapping` results by patch.
+    private(set) var patchMappings: [ModelID: PatchMapping] = [:]
     /// `scan_recovery` lists these (`recovery_entries` entry objects).
     var recoveryEntries: [JSONValue] = []
     /// `workspaces` lists a doc saved at one of these paths with this `path_hash`; at any other
@@ -701,7 +709,38 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .setOutputOverrides: result(c, id)
-        case .setPatchMapping: result(c, id)
+        case .setPatchMapping(let patch, let mapping):
+            guard let device = mapping?.device else {
+                patchMappings[patch] = nil
+                return result(c, id)
+            }
+            guard fakeDevices.contains(where: { $0.name == device }) else {
+                return result(c, id, error: (.notFound, "no output device named \"\(device)\""))
+            }
+            patchMappings[patch] = mapping
+            result(c, id)
+        case .setOutputDevice(let device):
+            if let device, !fakeDevices.contains(where: { $0.name == device }) {
+                return result(c, id, error: (.notFound, "no output device named \"\(device)\""))
+            }
+            selectedOutputDevice = device
+            result(c, id)
+        case .listPatchMappings:
+            let ids = (c.doc.flatMap { docs[$0]?["workspace"]?["patches"]?.arrayValue } ?? []).compactMap {
+                $0["id"]?.stringValue
+            }
+            let entries: [JSONValue] = ids.map { raw in
+                var entry: [String: JSONValue] = ["patch": .string(raw)]
+                if let m = patchMappings[ModelID(raw)] {
+                    entry["mapping"] = .object([
+                        "device": .string(m.device), "channels": .array(m.channels.map { .int(Int64($0)) }),
+                    ])
+                }
+                return .object(entry)
+            }
+            result(
+                c, id,
+                ok: .object(["data": .object(["type": .string("patch_mappings"), "patches": .array(entries)])]))
         case .setShowMode(let on):
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             docs[doc]?["document"]?.set("show_mode", .bool(on))
@@ -731,9 +770,46 @@ final class FakeEngine: EngineTransport {
             let problems = c.doc.map(preshowProblemDocs.contains) ?? false
             result(c, id, ok: .object(["data": problems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
-            let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
-            result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
+            let devs: [JSONValue] = fakeDevices.map {
+                .object([
+                    "name": .string($0.name), "output_channels": .int(Int64($0.channels)),
+                    "is_default": .bool($0.name == fakeDefaultDevice),
+                ])
+            }
+            var data: [String: JSONValue] = ["type": .string("devices"), "devices": .array(devs)]
+            if let selectedOutputDevice { data["selected"] = .string(selectedOutputDevice) }
+            result(c, id, ok: .object(["data": .object(data)]))
+        case .waveform(let cue, let start, let end, let buckets):
+            waveform(id, cue: cue, range: (start, end), buckets: Int(buckets), from: c)
         }
+    }
+
+    /// A made-up stereo waveform of the cue's file, whose length is its `media_durations` entry (as the
+    /// engine, `unsupported` until that is known): a swell that peaks mid-file, the right channel
+    /// at half the left.
+    private func waveform(
+        _ id: UInt64, cue: ModelID, range: (Double, Double), buckets: Int, from c: FakeConnection
+    ) {
+        let entry = c.doc.flatMap { docs[$0]?["media_durations"]?.arrayValue }?
+            .first { $0["cue"]?.stringValue == cue.raw }
+        guard let duration = entry?["file"]?.doubleValue, duration > 0 else {
+            return result(c, id, error: (.unsupported, "the file is not playable, or not read yet"))
+        }
+        let start = min(range.0, duration)
+        let end = min(range.1, duration)
+        let n = max(1, min(buckets, 8192))
+        func channel(_ scale: Double) -> JSONValue {
+            let peaks = (0..<n).map { i -> Int64 in
+                let t = start + (end - start) * (Double(i) + 0.5) / Double(n)
+                return Int64(32767 * scale * sin(Double.pi * t / duration))
+            }
+            return .object(["min": .array(peaks.map { .int(-$0) }), "max": .array(peaks.map { .int($0) })])
+        }
+        let data: JSONValue = .object([
+            "type": .string("waveform"), "cue": .string(cue.raw), "duration": .double(duration),
+            "start": .double(start), "end": .double(end), "channels": .array([channel(0.9), channel(0.45)]),
+        ])
+        result(c, id, ok: .object(["data": data]))
     }
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }

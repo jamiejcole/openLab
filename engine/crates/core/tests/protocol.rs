@@ -238,6 +238,13 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 network_disabled: true,
             },
         ),
+        (
+            "set_output_device",
+            Request::SetOutputDevice {
+                device: Some("Scarlett 2i2".into()),
+            },
+        ),
+        ("list_patch_mappings", Request::ListPatchMappings),
         ("preshow_check", Request::PreshowCheck),
         ("set_show_mode", Request::SetShowMode { on: true }),
         (
@@ -248,6 +255,15 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                     device: "Scarlett 18i20".into(),
                     channels: vec![2, 3],
                 }),
+            },
+        ),
+        (
+            "waveform",
+            Request::Waveform {
+                cue: cue_id(10),
+                start: 0.0,
+                end: 62.5,
+                buckets: 800,
             },
         ),
     ]
@@ -375,6 +391,37 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A new Audio cue exactly as the app's Finder drop sends it (`NewCueKind.audio.cueJSON`, the
+    // Swift test compares): no number, the file, one cue output per patch output and file
+    // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
+    let mut dropped = cue(13, audio());
+    if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
+        *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
+        levels.crosspoints = (0..2)
+            .map(|n| Crosspoint {
+                input: n,
+                output: n,
+                db: 0.0,
+                mute: false,
+            })
+            .collect();
+    }
+    add(
+        "command_add_new_audio_cue",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::AddCue {
+                at: Position {
+                    list: list(),
+                    parent: None,
+                    index: 0,
+                },
+                cue: dropped,
+                auto_number: true,
+            }),
+            coalesce: None,
+        }),
+    );
     // A Devamp cue's settings, `devamp_mode` included, travel as its kind.
     add(
         "command_set_devamp_kind",
@@ -390,6 +437,54 @@ fn fixtures() -> Vec<(String, Sample)> {
                         devamp_mode: DevampMode::LoopingCue,
                     },
                 },
+            }),
+            coalesce: None,
+        }),
+    );
+    // An Audio cue's timing as the Timing & Loops tab sends it (AUD-10, AUD-12): trims, slice
+    // markers with their play counts, the last slice's count, and the integrated fade-in and
+    // fade-out on one curve. The Swift test builds these fields through the tab; the engine's
+    // real-audio tests play this message.
+    let mut timed = audio();
+    if let CueKind::Audio {
+        start_time,
+        end_time,
+        fade_in,
+        fade_out,
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut timed
+    {
+        *start_time = 0.25;
+        *end_time = Some(1.75);
+        *fade_in = FadeSpec {
+            duration: 0.1,
+            curve: FadeCurve::SCurve,
+        };
+        *fade_out = FadeSpec {
+            duration: 0.2,
+            curve: FadeCurve::SCurve,
+        };
+        *slices = vec![
+            SliceMarker {
+                time: 0.5,
+                play_count: 3,
+            },
+            SliceMarker {
+                time: 1.0,
+                play_count: 1,
+            },
+        ];
+        *last_slice_play_count = 2;
+    }
+    add(
+        "command_set_audio_timing",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(10),
+                property: CueProperty::Kind { value: timed },
             }),
             coalesce: None,
         }),
@@ -908,7 +1003,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                     devices: vec![DeviceEntry {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
+                        is_default: true,
                     }],
+                    selected: Some("Scarlett 2i2".into()),
                 }),
             }),
         }),
@@ -923,6 +1020,55 @@ fn fixtures() -> Vec<(String, Sample)> {
                     entries: all_log_kinds().into_iter().map(log_entry_sample).collect(),
                     dropped: 2,
                     seq: 1009,
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_waveform",
+        server(ServerMessage::Result {
+            id: rid(52),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Waveform(Box::new(WaveformData {
+                    cue: cue_id(10),
+                    duration: 62.5,
+                    start: 1.5,
+                    end: 2.0,
+                    channels: vec![
+                        WaveformChannel {
+                            min: vec![-32767, -120, 0],
+                            max: vec![32767, 4000, 0],
+                        },
+                        WaveformChannel {
+                            min: vec![-16384, -1, 0],
+                            max: vec![16384, 1, 0],
+                        },
+                    ],
+                }))),
+            }),
+        }),
+    );
+    add(
+        "result_patch_mappings",
+        server(ServerMessage::Result {
+            id: rid(60),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PatchMappings {
+                    patches: vec![
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x70)),
+                            mapping: Some(PatchMapping {
+                                device: "Scarlett 2i2".into(),
+                                channels: vec![0, 1],
+                            }),
+                        },
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x71)),
+                            mapping: None,
+                        },
+                    ],
                 }),
             }),
         }),
@@ -1389,7 +1535,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 23);
-    assert_eq!(all_requests().len(), 14);
+    assert_eq!(all_requests().len(), 17);
 }
 
 #[test]
@@ -1581,6 +1727,39 @@ fn malformed_input_is_an_error_never_a_panic() {
 
 /// A `batch` is refused whole when it is empty, too long, names a cue twice, carries
 /// an action that is not per-cue (a nested batch among them) or an item out of range.
+/// AUD-14: a `waveform` request needs a finite range that is not empty, and 1 to
+/// `MAX_WAVEFORM_BUCKETS` buckets.
+#[test]
+fn a_waveform_request_out_of_range_is_bad_request() {
+    let wave = |start: f64, end: f64, buckets: u32| {
+        let r = Request::Waveform {
+            cue: cue_id(1),
+            start,
+            end,
+            buckets,
+        };
+        // Past `encode_client`, which refuses these too: a hostile peer would.
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: r,
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    let field = |field| Err(ProtocolError::OutOfRange { field });
+    assert_eq!(wave(-1.0, 2.0, 10), field("request.start"));
+    assert_eq!(wave(2.0, 2.0, 10), field("request.end"));
+    assert_eq!(wave(3.0, 2.0, 10), field("request.end"));
+    assert_eq!(wave(0.0, 2.0, 0), field("request.buckets"));
+    assert_eq!(
+        wave(0.0, 2.0, MAX_WAVEFORM_BUCKETS + 1),
+        field("request.buckets")
+    );
+    assert!(wave(0.0, 2.0, MAX_WAVEFORM_BUCKETS).is_ok());
+    // JSON has no infinity; a huge number is finite and accepted (the engine clamps to the file).
+    assert!(wave(0.0, 1e300, 1).is_ok());
+}
+
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
     let batch = |actions: Vec<TransportAction>| {
@@ -3501,6 +3680,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        Just(Request::ListPatchMappings),
+        proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
         any::<bool>().prop_map(|on| Request::SetShowMode { on }),
         (
             any::<u128>(),
@@ -3512,6 +3693,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
             }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
+        (
+            any::<u128>(),
+            0.0f64..1e5,
+            0.001f64..1e5,
+            1u32..=MAX_WAVEFORM_BUCKETS
+        )
+            .prop_map(|(cue, start, len, buckets)| Request::Waveform {
+                cue: CueId(uuid::Uuid::from_u128(cue)),
+                start,
+                end: start + len,
+                buckets,
+            }),
     ]
 }
 
