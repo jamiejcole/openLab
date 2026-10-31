@@ -130,8 +130,8 @@ struct Ctx<'w> {
     /// The limit was recounted this call (see `CueEngine::budget_left`).
     limit_verified: bool,
     out: Vec<Action>,
-    /// Runtimes that ended since groups last looked: `(cue, at, how)`.
-    vacated: Vec<(CueId, SampleTime, Exit)>,
+    /// Runtimes that ended since groups last looked: `(the group the run started in, at, how)`.
+    vacated: Vec<(Option<CueId>, SampleTime, Exit)>,
 }
 
 impl Ctx<'_> {

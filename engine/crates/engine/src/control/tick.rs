@@ -9,7 +9,7 @@ use openlab_core::{Input, SampleTime, seconds_to_samples};
 
 use super::voices::Effects;
 use super::watch::WatchEvent;
-use super::{Control, DocCx, DocId, PROBE_HOLD_LIMIT, media};
+use super::{Control, DocCx, DocId, PROBE_HOLD_LIMIT, STREAM_START_LIMIT, media};
 
 impl Control {
     /// One wake of the loop (ARCHITECTURE §3.1, §3.2; docs/audio.md: every tick): the device,
@@ -296,7 +296,10 @@ impl DocCx<'_> {
             self.doc.voices.event(e, &mut fx);
         }
         self.doc.events = events;
-        self.doc.voices.poll_streams(&mut fx, &self.doc.ws);
+        let start_limit = seconds_to_samples(STREAM_START_LIMIT.as_secs_f64(), self.eng.rate);
+        self.doc
+            .voices
+            .poll_streams(now, start_limit, &mut fx, &self.doc.ws);
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
         self.follow(fx, now);
