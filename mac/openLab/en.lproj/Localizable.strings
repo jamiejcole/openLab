@@ -57,6 +57,8 @@
 "menu.transport.stopAll" = "Stop All";
 "menu.transport.pauseAll" = "Pause All";
 "menu.transport.resumeAll" = "Resume All";
+"menu.transport.resetAll" = "Reset All";
+"menu.transport.panicSelected" = "Panic Selected";
 "menu.transport.panic" = "Panic";
 "menu.transport.loadSelected" = "Load Selected";
 "menu.transport.startSelected" = "Start Selected";
@@ -232,7 +234,6 @@
 "inspector.failed" = "The change could not be sent.";
 
 "transport.reset" = "Reset all";
-"transport.reset.unavailable" = "Reset all is not available yet.";
 "transport.pause" = "Pause all";
 "transport.resume" = "Resume all";
 "transport.panic" = "Panic";

@@ -221,12 +221,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             button.imageScaling = .scaleProportionallyDown
             button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
-            if entry.id == AX.transportReset {
-                // The engine has no reset-all command yet (#123); an enabled button that does
-                // nothing is worse than a disabled one in an emergency.
-                button.isEnabled = false
-                button.toolTip = loc("transport.reset.unavailable")
-            }
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)
         }

@@ -29,6 +29,7 @@ enum TransportAction: Hashable, Sendable, Codable {
     case panic
     case pauseAll
     case resumeAll
+    case resetAll
     case setPlayhead(list: ModelID, cue: ModelID?)
     case setPlayheadByNumber(list: ModelID, number: String)
     case playheadNext(list: ModelID)
@@ -60,6 +61,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case .panic: return ("panic", [])
         case .pauseAll: return ("pause_all", [])
         case .resumeAll: return ("resume_all", [])
+        case .resetAll: return ("reset_all", [])
         case .setPlayhead(let l, let c): return ("set_playhead", [("list", l), ("cue", c)])
         case .setPlayheadByNumber(let l, let n): return ("set_playhead_by_number", [("list", l), ("number", n)])
         case .playheadNext(let l): return ("playhead_next", [("list", l)])
@@ -93,6 +95,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case "panic": self = .panic
         case "pause_all": self = .pauseAll
         case "resume_all": self = .resumeAll
+        case "reset_all": self = .resetAll
         case "set_playhead":
             self = .setPlayhead(list: try list(), cue: try c.decodeIfPresent(ModelID.self, forKey: "cue"))
         case "set_playhead_by_number":

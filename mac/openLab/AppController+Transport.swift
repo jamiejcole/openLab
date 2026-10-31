@@ -3,7 +3,7 @@
 import AppKit
 
 /// Transport commands from menu items and keys: each workspace's transport keys, GO, the
-/// selected-cue actions, Panic, Relink Media and the show log they report failures to.
+/// selected-cue actions, Panic, Reset All, Relink Media and the show log they report failures to.
 extension AppController {
     // MARK: Transport commands (menu items and keys)
 
@@ -20,7 +20,7 @@ extension AppController {
             ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
             : TransportKeys(settings: settings, cueChords: cueChords)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
-        // fixed app defaults (L, P, V) already yielded to cue hotkeys inside `TransportKeys`.
+        // fixed app defaults (L, P, V, S) already yielded to cue hotkeys inside `TransportKeys`.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
         let transportShadowed = cueChords.intersection(keys.chords.values)
@@ -97,12 +97,17 @@ extension AppController {
         case .go: _ = await go(store)
         case .pauseAll: await run(.pauseAll, on: store)
         case .resumeAll: await run(.resumeAll, on: store)
+        // QLab's sidebar reset: no confirmation, as for the other workspace transport buttons.
+        case .resetAll: await run(.resetAll, on: store)
         case .stopAll: await run(.stopAll, on: store)  // atomic in the engine: every cue and preview
         case .panic: break
         case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
         case .startSelected: await runAll(selected.map { .start(cue: $0) }, on: store)
         case .stopSelected: await runAll(selected.map { .hardStop(cue: $0) }, on: store)
         case .resetSelected: await runAll(selected.map { .reset(cue: $0) }, on: store)
+        // A second press on cues still fading from the first stops them at once: the engine
+        // decides that per cue (QLab: S twice is a hard stop of the selection).
+        case .panicSelected: await runAll(selected.map { .panicCue(cue: $0) }, on: store)
         case .previewSelected:
             // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
             let audio = selected.filter { store.model?.cue($0)?.kindType == "audio" }
