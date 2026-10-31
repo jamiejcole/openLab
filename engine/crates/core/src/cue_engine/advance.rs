@@ -104,6 +104,7 @@ impl CueEngine {
             run.length = None;
             let follow = run.follow;
             let seq = run.seq;
+            let started_in = run.started_in;
             // A playlist child that broke while paused: its playlist hears of it now.
             let halt = run.broke_paused.take().and_then(|b| b.halt);
             if run.fade.is_some() {
@@ -120,9 +121,9 @@ impl CueEngine {
                 self.continue_after(cue, at, cx);
             }
             if let Some(rest) = halt {
-                self.halt_playlist(cue, seq, rest.map(|r| at.saturating_add(r)), cx);
+                self.halt_playlist(cue, seq, started_in, rest.map(|r| at.saturating_add(r)), cx);
             }
-            self.child_action_done(cue, seq, at, cx);
+            self.child_action_done(cue, seq, started_in, at, cx);
         }
     }
 
@@ -293,6 +294,8 @@ impl CueEngine {
             // A run skipped for static problems completed as far as its group is concerned (it
             // is passed over, as a disarmed cue is); one that broke at run time did not.
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
+            let started_in = run.started_in;
+            let is_group = run.group.is_some();
             let exit = if (run.broken.is_some() && !run.unplayed) || failed {
                 Exit::Broken
             } else {
@@ -304,7 +307,10 @@ impl CueEngine {
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };
-            cx.vacated.push((cue, at, exit));
+            cx.vacated.push((started_in, at, exit));
+            if is_group {
+                self.release_moved_runs(cue, cx.ws);
+            }
         }
     }
 
@@ -318,10 +324,13 @@ impl CueEngine {
     ) -> Option<Slot> {
         let slot = self.slots.remove(&cue)?;
         if let Slot::Active(run) = &slot {
-            cx.vacated.push((cue, at, exit));
+            cx.vacated.push((run.started_in, at, exit));
             // A Fade cue stopped mid-fade leaves its targets' levels where they are.
             if let Some(fade) = &run.fade {
                 self.hold_fade(cue, run.seq, fade, at.max(cx.now), false, cx);
+            }
+            if run.group.is_some() {
+                self.release_moved_runs(cue, cx.ws);
             }
         }
         Some(slot)

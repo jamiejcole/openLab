@@ -120,12 +120,18 @@ impl CueEngine {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let group = matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default);
+        if group.is_some() {
+            // A new run of the group waits only on its own tree: a child started on its own
+            // while the group was idle and dragged out since does not hold it.
+            self.release_moved_runs(cue, cx.ws);
+        }
         self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
         new.pre_wait_total = pre_wait_total;
         new.voice = voice;
         new.started = at;
+        new.started_in = super::group::ancestors(cx.ws, cue).first().copied();
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
         // so its auto-continue fires on schedule (user decision, M2.13).
         if self.refuses(cue, cx) {
@@ -142,14 +148,16 @@ impl CueEngine {
         let before = self.state(cue);
         let now = cx.now;
         let frames = fade_out.map_or(0, |f| cx.secs(f.duration, &self.config));
-        let busy_children = self.any_busy_child(cx.ws, cue);
+        self.release_moved_runs(cue, cx.ws);
+        let busy_children = self.any_busy_child(cue);
         match self.slots.get_mut(&cue) {
             None | Some(Slot::Broken(_)) => return,
             Some(Slot::Active(run)) if run.broken.is_some() => {
                 // It owns no voice; stopping cancels its pending auto-continue.
                 if let Some(reason) = run.broken {
+                    let started_in = run.started_in;
                     self.slots.insert(cue, Slot::Broken(reason));
-                    cx.vacated.push((cue, now, Exit::Stopped));
+                    cx.vacated.push((started_in, now, Exit::Stopped));
                 }
                 return self.report(cue, before, now, cx);
             }
