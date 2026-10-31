@@ -33,17 +33,19 @@ enum CueRowMenu {
         var clickedHasMedia: Bool
         var anyActive: Bool
         var canPaste: Bool
+        var showMode: Bool
     }
 
-    /// Show Mode is applied separately (`MainMenu.lockEditItems`).
+    /// Show Mode locks the same four editing items as the Edit menu does (SM-01).
     static func isEnabled(_ item: Item, _ c: Context) -> Bool {
         switch item {
         case .preview: return c.anyAudioSelected
-        case .load, .cut, .copy, .delete: return c.selectedCount > 0
+        case .load: return c.selectedCount > 0
+        case .cut, .copy, .delete: return c.selectedCount > 0 && !c.showMode
         case .panic: return c.anyActive  // greyed unless something plays
         case .movePlayhead: return !c.clickedIsPlayhead
         case .revealTarget: return c.clickedHasMedia
-        case .paste: return c.canPaste
+        case .paste: return c.canPaste && !c.showMode
         }
     }
 
@@ -74,34 +76,33 @@ extension CueListViewController: NSMenuDelegate {
             clickedIsPlayhead: isPlayheadRow(node.id),
             clickedHasMedia: revealURL(node) != nil,
             anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,
-            canPaste: pasteboard.data(forType: CueEditor.pasteType) != nil)
-        func entry(_ item: CueRowMenu.Item, _ action: Selector, target: AnyObject? = nil, command: String? = nil)
-            -> NSMenuItem
-        {
+            canPaste: pasteboard.data(forType: CueEditor.pasteType) != nil, showMode: store.showMode)
+        func entry(_ item: CueRowMenu.Item, _ action: Selector, command: String? = nil) -> NSMenuItem {
             let e = NSMenuItem(title: loc(item.titleKey), action: action, keyEquivalent: "")
-            e.target = target
+            e.target = self
             e.representedObject = command ?? node.id.raw
             e.tag = CueRowMenu.Item.allCases.firstIndex(of: item) ?? -1
             return e
         }
-        let transport = #selector(AppDelegate.transportCommand(_:))
+        let transport = #selector(rowCommand(_:))
         let items: [NSMenuItem?] = [
             entry(.preview, transport, command: TransportCommand.previewSelected.rawValue),
             entry(.load, transport, command: TransportCommand.loadSelected.rawValue),
             entry(.panic, transport, command: TransportCommand.panic.rawValue),
             .separator(),
-            entry(.movePlayhead, #selector(movePlayheadToCue(_:)), target: self),
-            entry(.revealTarget, #selector(revealTargetInFinder(_:)), target: self),
+            entry(.movePlayhead, #selector(movePlayheadToCue(_:))),
+            entry(.revealTarget, #selector(revealTargetInFinder(_:))),
             .separator(),
-            entry(.cut, #selector(AppDelegate.cutCues(_:))),
-            entry(.copy, #selector(AppDelegate.copyCues(_:))),
-            entry(.paste, #selector(AppDelegate.pasteCues(_:))),
-            entry(.delete, #selector(AppDelegate.deleteCues(_:))),
+            entry(.cut, #selector(rowCut(_:))),
+            entry(.copy, #selector(rowCopy(_:))),
+            entry(.paste, #selector(rowPaste(_:))),
+            entry(.delete, #selector(rowDelete(_:))),
         ]
         items.compactMap { $0 }.forEach(menu.addItem)
-        MainMenu.lockEditItems(in: menu, locked: store.showMode)
+        // The rules decide; AppKit's own validation pass must not overwrite them.
+        menu.autoenablesItems = false
         for item in menu.items where CueRowMenu.Item.allCases.indices.contains(item.tag) && !item.isSeparatorItem {
-            item.isEnabled = item.isEnabled && CueRowMenu.isEnabled(CueRowMenu.Item.allCases[item.tag], context)
+            item.isEnabled = CueRowMenu.isEnabled(CueRowMenu.Item.allCases[item.tag], context)
         }
     }
 
@@ -109,6 +110,20 @@ extension CueListViewController: NSMenuDelegate {
         guard node.cue.kindType == "audio" else { return nil }
         return CueRowMenu.mediaURL(node.cue.raw["kind"]?["media"]?.stringValue, showPath: store.document?.path)
     }
+
+    /// Preview, Load and Panic: the same command the Transport menu runs, on this window.
+    @objc func rowCommand(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
+            return
+        }
+        onCommand?(command)
+    }
+
+    // The editor's own methods, as the Edit menu calls them, but never the text field in focus.
+    @objc func rowCut(_ sender: Any?) { Task { await editor?.cutSelection() } }
+    @objc func rowCopy(_ sender: Any?) { Task { await editor?.copySelection() } }
+    @objc func rowPaste(_ sender: Any?) { Task { await editor?.paste() } }
+    @objc func rowDelete(_ sender: Any?) { Task { await editor?.deleteSelection() } }
 
     @objc func movePlayheadToCue(_ sender: NSMenuItem) {
         guard let list = listID, let raw = sender.representedObject as? String else { return }

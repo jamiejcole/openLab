@@ -177,19 +177,22 @@ final class IconLookup: @unchecked Sendable {
         }
     }
 
-    /// Replaces the existence check (nil: the system's) and forgets what was logged.
-    func setLookup(_ newLookup: (@Sendable (String) -> Bool)?) {
-        lock.lock()
-        has = newLookup ?? IconLookup.systemHas
-        reported = []
-        lock.unlock()
-    }
+    #if DEBUG
+        /// Test seam, not in a Release build: replaces the existence check (nil: the system's) and
+        /// forgets what was logged.
+        func setLookup(_ newLookup: (@Sendable (String) -> Bool)?) {
+            lock.lock()
+            has = newLookup ?? IconLookup.systemHas
+            reported = []
+            lock.unlock()
+        }
 
-    var reportedNames: Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        return reported
-    }
+        var reportedNames: Set<String> {
+            lock.lock()
+            defer { lock.unlock() }
+            return reported
+        }
+    #endif
 
     /// `text` drawn as a template image, so it takes the control's tint.
     static func textImage(_ text: String, compact: Bool) -> NSImage {

@@ -496,6 +496,6 @@
 "cuelist.menu.revealTarget" = "Reveal Target in Finder";
 "footer.count" = "%1$@ in %2$@";
 "footer.count.cue.one" = "1 cue";
-"footer.count.cue.many" = "%d cues";
+"footer.count.cue.many" = "%ld cues";
 "footer.count.list.one" = "1 list";
-"footer.count.list.many" = "%d lists";
+"footer.count.list.many" = "%ld lists";

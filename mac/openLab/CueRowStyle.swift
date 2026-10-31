@@ -12,8 +12,8 @@ struct CueStateStyle: Equatable {
 
     var label: String { loc(labelKey) }
 
-    /// A group with a broken descendant and no problem of its own: it still starts, so it is not
-    /// marked broken (its own shape and wording keep that from reading as "will not fire").
+    /// A non-blocking warning: the cue still plays. Nothing raises one yet (a group with a broken
+    /// descendant shows broken, like the child).
     static let warning = CueStateStyle(icon: .stateWarning, labelKey: "cue.state.warning", tint: .systemYellow)
 
     static func style(for state: WireCueState) -> CueStateStyle {

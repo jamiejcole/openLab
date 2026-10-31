@@ -17,6 +17,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPauseAll: (() -> Void)?
     var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
+    /// A transport command from the cue row menu, for this window.
+    var onCommand: ((TransportCommand) -> Void)? {
+        didSet { cueList.onCommand = onCommand }
+    }
     /// Pause, resume or panic of one cue, from the Active Cues panel.
     var onCueAction: ((TransportAction) -> Void)? {
         didSet {
@@ -64,6 +68,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         self.store = store
         cueList = CueListViewController(store: store)
         editor = CueEditor(store: store, cueList: cueList)
+        cueList.editor = editor
         sidebar = SidebarViewController(store: store)
         inspector = InspectorViewController(store: store)
         let window = NSWindow(

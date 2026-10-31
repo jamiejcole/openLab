@@ -769,6 +769,7 @@ extension CueListTests {
 
     private func enabled(_ menu: NSMenu) -> [CueRowMenu.Item: Bool] {
         var out: [CueRowMenu.Item: Bool] = [:]
+        menu.update()  // AppKit's own pass must not change what the rules decided
         for item in menu.items where !item.isSeparatorItem {
             out[CueRowMenu.Item.allCases[item.tag]] = item.isEnabled
         }
@@ -790,13 +791,10 @@ extension CueListTests {
                 "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
                 "Copy", "Paste", "Delete",
             ])
-        let actions = m.items.compactMap(\.action)
-        XCTAssertTrue(actions.contains(#selector(AppDelegate.copyCues(_:))))
-        XCTAssertTrue(actions.contains(#selector(AppDelegate.deleteCues(_:))))
-        let transport = m.items.filter { $0.action == #selector(AppDelegate.transportCommand(_:)) }
+        XCTAssertTrue(m.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === h.vc }, "this window's own")
+        let transport = m.items.filter { $0.action == #selector(CueListViewController.rowCommand(_:)) }
         XCTAssertEqual(
             transport.compactMap { $0.representedObject as? String }, ["previewSelected", "loadSelected", "panic"])
-        XCTAssertTrue(transport.allSatisfy { $0.target == nil }, "routed along the responder chain")
     }
 
     func testRightClickSelectsAnUnselectedRowButKeepsASelectionItIsIn() async throws {
@@ -892,19 +890,47 @@ extension CueListTests {
         XCTAssertNil(h.vc.timeShown["name"])
     }
 
-    func testGroupWithOnlyABrokenDescendantShowsAWarningNotBroken() async throws {
+    func testGroupWithABrokenDescendantShowsBrokenLikeItsChild() async throws {
         let h = try await H()
         try h.runtime(
             #"{"type":"cue_state","cue":"\#(H.group)","state":"broken"},{"type":"group_warning","group":"\#(H.group)","warning":true}"#
         )
-        let style = h.vc.displayStyle(H.group).style
-        XCTAssertEqual(style, .warning)
-        XCTAssertNotEqual(style.icon, CueStateStyle.style(for: .broken).icon)
         XCTAssertEqual(
-            try XCTUnwrap(h.cell("status", H.group)).images[1].accessibilityLabel(), loc("cue.state.warning"))
-        // A cue with problems of its own, or one that broke while running, stays broken.
-        XCTAssertEqual(h.vc.displayStyle(H.fade).style, CueStateStyle.style(for: .broken))
-        XCTAssertEqual(h.vc.displayStyle(H.radio).style, CueStateStyle.style(for: .broken))
+            try XCTUnwrap(h.cell("status", H.group)).images[1].accessibilityLabel(), loc("cue.state.broken"))
+    }
+
+    /// With two workspaces open, the row menu acts on the window that was right-clicked, never the
+    /// key window's selection.
+    func testRowMenuActsOnTheClickedWindowNotAnotherOne() async throws {
+        let a = try await H()
+        let b = try await H()
+        let editorA = CueEditor(store: a.store, cueList: a.vc)
+        let editorB = CueEditor(store: b.store, cueList: b.vc)
+        a.vc.editor = editorA
+        b.vc.editor = editorB
+        let pbA = privatePasteboard()
+        let pbB = privatePasteboard()
+        editorA.pasteboard = pbA
+        editorB.pasteboard = pbB
+        var commandsA: [TransportCommand] = []
+        var commandsB: [TransportCommand] = []
+        a.vc.onCommand = { commandsA.append($0) }
+        b.vc.onCommand = { commandsB.append($0) }
+        a.vc.select([H.intro])  // A holds a selection, as the key window
+        let m = try menu(b, H.fade, pasteboard: privatePasteboard())
+        func fire(_ item: CueRowMenu.Item) throws {
+            let entry = try XCTUnwrap(m.items.first { !$0.isSeparatorItem && CueRowMenu.Item.allCases[$0.tag] == item })
+            let target = try XCTUnwrap(entry.target as? CueListViewController)
+            XCTAssertTrue(target === b.vc)
+            _ = target.perform(try XCTUnwrap(entry.action), with: entry)
+        }
+        try fire(.load)
+        XCTAssertEqual(commandsB, [.loadSelected])
+        XCTAssertEqual(commandsA, [])
+        try fire(.copy)
+        await assertEventually { pbB.string(forType: CueEditor.pasteType) != nil }
+        XCTAssertNil(pbA.string(forType: CueEditor.pasteType))
+        XCTAssertTrue(try XCTUnwrap(pbB.string(forType: CueEditor.pasteType)).contains(H.fade.raw))
     }
 
     func testLeftAndRightArrowsCollapseAndExpandTheSelectedGroup() async throws {
