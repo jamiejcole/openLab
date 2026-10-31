@@ -1,0 +1,53 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000a",
+    "property": {
+      "type": "kind",
+      "value": {
+        "type": "audio",
+        "media": "media/a.wav",
+        "patch": "00000000-0000-0000-0000-000000000001",
+        "start_time": 0.25,
+        "end_time": 1.75,
+        "fade_in": {
+          "duration": 0.1,
+          "curve": "s_curve"
+        },
+        "fade_out": {
+          "duration": 0.2,
+          "curve": "s_curve"
+        },
+        "slices": [
+          {
+            "time": 0.5,
+            "play_count": 3
+          },
+          {
+            "time": 1.0,
+            "play_count": 1
+          }
+        ],
+        "last_slice_play_count": 2,
+        "levels": {
+          "master_db": 0.0,
+          "outputs": [
+            {
+              "db": 0.0,
+              "mute": false
+            },
+            {
+              "db": 0.0,
+              "mute": false
+            }
+          ],
+          "crosspoints": [],
+          "gangs": []
+        },
+        "preload": false
+      }
+    }
+  }
+}

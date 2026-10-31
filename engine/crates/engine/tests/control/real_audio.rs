@@ -10,8 +10,8 @@
 //! End to end with real audio files: WAV, AIFF, FLAC, ALAC, MP3, AAC and Ogg files are added,
 //! edited, played and saved through the client messages the app sends (decoded from JSON),
 //! rendered offline at 44.1 and 48 kHz, and the output is measured: levels, routing, mutes,
-//! fades and their curves, groups, playlists, continues, Stop and Panic, rate conversion, save
-//! and reopen (AUD-01, AUD-06, AUD-09, AUD-10, GRP-01).
+//! fades and their curves, slices and integrated fades, groups, playlists, continues, Stop and
+//! Panic, rate conversion, save and reopen (AUD-01, AUD-06, AUD-09, AUD-10, AUD-12, GRP-01).
 
 use std::path::{Path, PathBuf};
 
@@ -21,8 +21,8 @@ use openlab_core::protocol::{
     ClientMessage, Outcome, ServerMessage, WireCueState, WireWarning, decode_client,
 };
 use openlab_core::{
-    Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueState, FadeCurve, FadeLevels,
-    GroupMode, MediaRef, SILENCE_DB, Workspace, db_to_gain,
+    Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueProperty, CueState, FadeCurve,
+    FadeLevels, FadeSpec, GroupMode, MediaRef, SILENCE_DB, Workspace, db_to_gain,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -943,4 +943,180 @@ fn a_saved_and_reopened_show_renders_the_same_samples() {
     let second = script(&mut again);
     assert_eq!(first.len(), second.len());
     assert!(first == second, "the reopened show sounds different");
+}
+
+/// A mono 24-bit WAV at 48 kHz whose frame `i` holds `i / 2^23`: the output says exactly which
+/// file frame played on each sample.
+fn index_wav(frames: usize) -> PathBuf {
+    let x: Vec<f32> = (0..frames).map(|i| i as f32 / 8_388_608.0).collect();
+    media::temp_file("index.wav", &media::wav(&x, 1, R48, Pcm::I24))
+}
+
+/// The app's Timing & Loops edit of cue 10 (`engine/fixtures/protocol/client/
+/// command_set_audio_timing.json`, whose timing fields the Swift test builds through the tab):
+/// trims 0.25–1.75 s, slices at 0.5 s (3 plays) and 1 s (1 play), the last slice twice, an
+/// S-curve fade-in of 0.1 s and fade-out of 0.2 s. Only the file, patch and routing are this
+/// show's (`own`).
+fn set_timing_like_app(s: &mut OfflineShow, own: CueKind) {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/protocol/client/command_set_audio_timing.json"),
+    )
+    .unwrap();
+    let mut message = decode_client(&text).unwrap();
+    let ClientMessage::Command {
+        id: rid, command, ..
+    } = &mut message
+    else {
+        panic!("not a command");
+    };
+    *rid = s.request_id();
+    let Command::SetCueProperty {
+        id: cue,
+        property: CueProperty::Kind { value },
+    } = command.as_mut()
+    else {
+        panic!("not a kind edit");
+    };
+    assert_eq!(*cue, id(10));
+    let (
+        CueKind::Audio {
+            media,
+            patch,
+            levels,
+            ..
+        },
+        CueKind::Audio {
+            media: m,
+            patch: p,
+            levels: l,
+            ..
+        },
+    ) = (own, &mut *value)
+    else {
+        panic!("not audio kinds");
+    };
+    (*m, *p, *l) = (media, patch, levels);
+    let replies = s.send(message);
+    assert!(
+        replies.iter().all(|r| !matches!(
+            r,
+            ServerMessage::Result {
+                outcome: Outcome::Error(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.settle_media();
+}
+
+/// AUD-10, AUD-12: the tab's slices and integrated fades, played from a real file. Every
+/// output sample is the file frame the slice plan says (each slice played its count, back to
+/// back, sample-exact) times the fade-in and fade-out envelopes on their documented curve; the
+/// fade-out ends on the last frame of the last play, and the cue then ends.
+#[test]
+fn slices_play_their_counts_sample_exact_under_the_integrated_fades() {
+    let path = index_wav(2 * R48 as usize);
+    let c = audio(10, &path, 0);
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    set_timing_like_app(&mut s, c.kind.clone());
+    let at = go_app(&mut s);
+    s.run(3 * u64::from(R48));
+    let out = s.channel(0);
+    // 0.25–0.5 s three times, 0.5–1 s once, 1–1.75 s twice.
+    let plan: Vec<usize> = [
+        (12_000..24_000, 3),
+        (24_000..48_000, 1),
+        (48_000..84_000, 2),
+    ]
+    .into_iter()
+    .flat_map(|(r, n)| std::iter::repeat_n(r, n).flatten())
+    .collect();
+    let len = plan.len();
+    assert_eq!(len, 132_000);
+    let (fin, fout) = (4_800usize, 9_600usize);
+    for (p, &frame) in plan.iter().enumerate() {
+        let env_in = if p < fin {
+            ramp(0.0, 1.0, p as f64 / fin as f64, FadeCurve::SCurve)
+        } else {
+            1.0
+        };
+        let env_out = match (p + fout + 1).checked_sub(len) {
+            Some(k) => ramp(1.0, 0.0, k as f64 / fout as f64, FadeCurve::SCurve),
+            None => 1.0,
+        };
+        let want = frame as f64 / 8_388_608.0 * env_in * env_out;
+        let got = f64::from(out[at + p]);
+        assert!(
+            (got - want).abs() <= 1.1e-6,
+            "sample {p} (file frame {frame}): {got}, want {want}"
+        );
+    }
+    // Unfaded, the samples name their frames exactly: the loop joins are seamless.
+    for p in [
+        fin,
+        12_000 - 1,
+        12_000,
+        36_000,
+        60_000,
+        96_000,
+        len - fout - 2,
+    ] {
+        assert_eq!(
+            (f64::from(out[at + p]) * 8_388_608.0).round() as usize,
+            plan[p],
+            "sample {p}"
+        );
+    }
+    assert_eq!(
+        out[at + len - 1],
+        0.0,
+        "the fade-out reaches 0 on the last frame"
+    );
+    assert!(out[at + len..].iter().all(|&v| v == 0.0));
+    assert_eq!(state(&s, 10), CueState::Idle);
+}
+
+/// AUD-10: an integrated fade-in and fade-out set through the app follow each documented
+/// curve sample by sample; the fade-out's last sample is the trimmed file's last.
+#[test]
+fn integrated_fades_follow_each_curve_sample_by_sample() {
+    for curve in CURVES {
+        let path = dc_wav(2 * R48 as usize);
+        let c = audio(1, &path, 0);
+        let mut s = app_show(std::slice::from_ref(&c), R48);
+        let mut kind = c.kind.clone();
+        if let CueKind::Audio {
+            end_time,
+            fade_in,
+            fade_out,
+            ..
+        } = &mut kind
+        {
+            *end_time = Some(1.5);
+            *fade_in = FadeSpec {
+                duration: 0.25,
+                curve,
+            };
+            *fade_out = FadeSpec {
+                duration: 0.5,
+                curve,
+            };
+        }
+        set_kind(&mut s, 1, &kind);
+        let at = go_app(&mut s);
+        s.run(2 * u64::from(R48));
+        let out = s.channel(0);
+        let (n_in, n_out, len) = (R48 as usize / 4, R48 as usize / 2, 72_000);
+        assert_envelope(&out, at, n_in, (0.0, 1.0), curve, 0);
+        assert_envelope(&out, at + len - 1 - n_out, n_out, (1.0, 0.0), curve, 0);
+        assert!(
+            out[at + n_in..at + len - 1 - n_out]
+                .iter()
+                .all(|&v| (v - 0.5).abs() < 1e-7),
+            "{curve:?}: full level between the fades"
+        );
+        assert!(out[at + len..].iter().all(|&v| v == 0.0), "{curve:?}");
+    }
 }
