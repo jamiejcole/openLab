@@ -190,7 +190,8 @@ impl CueEngine {
                 if !(reason == BrokenReason::DeviceLost && self.device_back(cue)) {
                     self.slots.insert(cue, Slot::Broken(reason));
                 }
-                cx.vacated.push((cue, cx.now, Exit::Stopped));
+                cx.vacated
+                    .push((cue, run.started_in, cx.now, Exit::Stopped));
                 self.report(cue, before, cx.now, cx);
             }
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its

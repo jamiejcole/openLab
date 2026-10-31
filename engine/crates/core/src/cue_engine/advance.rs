@@ -294,6 +294,7 @@ impl CueEngine {
             // A run skipped for static problems completed as far as its group is concerned (it
             // is passed over, as a disarmed cue is); one that broke at run time did not.
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
+            let started_in = run.started_in;
             let exit = if (run.broken.is_some() && !run.unplayed) || failed {
                 Exit::Broken
             } else {
@@ -305,7 +306,7 @@ impl CueEngine {
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };
-            cx.vacated.push((cue, at, exit));
+            cx.vacated.push((cue, started_in, at, exit));
         }
     }
 
@@ -319,7 +320,7 @@ impl CueEngine {
     ) -> Option<Slot> {
         let slot = self.slots.remove(&cue)?;
         if let Slot::Active(run) = &slot {
-            cx.vacated.push((cue, at, exit));
+            cx.vacated.push((cue, run.started_in, at, exit));
             // A Fade cue stopped mid-fade leaves its targets' levels where they are.
             if let Some(fade) = &run.fade {
                 self.hold_fade(cue, run.seq, fade, at.max(cx.now), false, cx);

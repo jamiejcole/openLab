@@ -149,8 +149,9 @@ impl CueEngine {
             Some(Slot::Active(run)) if run.broken.is_some() => {
                 // It owns no voice; stopping cancels its pending auto-continue.
                 if let Some(reason) = run.broken {
+                    let started_in = run.started_in;
                     self.slots.insert(cue, Slot::Broken(reason));
-                    cx.vacated.push((cue, now, Exit::Stopped));
+                    cx.vacated.push((cue, started_in, now, Exit::Stopped));
                 }
                 return self.report(cue, before, now, cx);
             }

@@ -74,8 +74,8 @@ impl CueEngine {
             self.report(cue, before, cx.now, cx);
         }
         self.drain(cx);
-        // Each round removes at least one group's run and starts nothing; the guard is a second
-        // line of defence.
+        // Each round ends at least one group's action or gives it a busy child again, starting
+        // only within the call's budget; the guard is a second line of defence.
         let mut guard = self.slots.len().saturating_add(1);
         while guard > 0 && self.sweep_groups(cx) {
             guard -= 1;

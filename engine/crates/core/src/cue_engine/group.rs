@@ -104,14 +104,17 @@ impl CueEngine {
         matches!(self.slots.get(&cue), Some(Slot::Active(_)))
     }
 
-    /// Whether a child of the group is busy. A child with the group's own id (a duplicate id
-    /// in an invalid workspace) shares its runtime and does not count, or the group would keep
-    /// itself running.
+    /// Whether a child of the group is busy with a run it started as a child of this group. A
+    /// cue moved into the group while it ran does not keep the group running. A child with the
+    /// group's own id (a duplicate id in an invalid workspace) shares its runtime and does not
+    /// count, or the group would keep itself running.
     pub(super) fn any_busy_child(&self, ws: &Workspace, group: CueId) -> bool {
         ws.find_cue(group).is_some_and(|g| {
-            g.children()
-                .iter()
-                .any(|c| c.id != group && self.busy(c.id))
+            g.children().iter().any(|c| {
+                c.id != group
+                    && matches!(self.slots.get(&c.id),
+                        Some(Slot::Active(run)) if run.started_in == Some(group))
+            })
         })
     }
 
@@ -728,10 +731,15 @@ impl CueEngine {
     /// Carries out what groups must do now that some of their children's runtimes have ended.
     pub(super) fn drain(&mut self, cx: &mut Ctx) {
         let mut i = 0;
-        while let Some(&(cue, at, exit)) = cx.vacated.get(i) {
+        while let Some(&(cue, started_in, at, exit)) = cx.vacated.get(i) {
             i += 1;
-            if let Some(&parent) = ancestors(cx.ws, cue).first() {
-                self.child_left(parent, exit, at, cx);
+            // Only the group the run started in hears of it, while the cue is still its child
+            // (or was deleted): a cue moved out of it was let go of then (`sweep_groups`).
+            let Some(group) = started_in else {
+                continue;
+            };
+            if ancestors(cx.ws, cue).first() == Some(&group) || cx.ws.find_cue(cue).is_none() {
+                self.child_left(group, exit, at, cx);
             }
         }
         cx.vacated.clear();
@@ -815,9 +823,11 @@ impl CueEngine {
         self.child_action_done(group, seq, started_in, at, cx);
     }
 
-    /// Ends groups whose action has no busy child left although no child told them (a busy
-    /// child moved out of the group, a mode change, or duplicate ids): they stop at `now`.
-    /// Returns whether any did.
+    /// Carries on groups whose action has no busy child left although no child told them (a busy
+    /// child moved out of the group, or duplicate ids): the group no longer waits on it, so a
+    /// playlist moves on to its next child (the one that took the moved child's place) and any
+    /// other group, or a playlist with nothing left to start, completes at `now` and follows
+    /// (a stopping one stops). Returns whether any did.
     pub(super) fn sweep_groups(&mut self, cx: &mut Ctx) -> bool {
         let stranded: Vec<CueId> = self
             .slots
@@ -836,7 +846,11 @@ impl CueEngine {
             .collect();
         let any = !stranded.is_empty();
         for group in stranded {
-            self.resolve_group(group, Exit::Stopped, cx.now, cx);
+            let now = cx.now;
+            self.playlist_next(group, now, cx);
+            if !self.any_busy_child(cx.ws, group) {
+                self.resolve_group(group, Exit::Completed, now, cx);
+            }
         }
         any
     }
