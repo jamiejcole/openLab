@@ -615,6 +615,7 @@ fn edits_that_change_nothing_make_no_revision_and_no_undo_step() {
     let mut s = playing_show();
     let mut mirror = Mirror::new(&s);
     let before = s.control().snapshot();
+    let passes = s.control().engine().whole_show_passes();
     for same in [
         master(0.0),
         Command::SetWorkspaceSetting {
@@ -649,6 +650,10 @@ fn edits_that_change_nothing_make_no_revision_and_no_undo_step() {
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.document.dirty, before.document.dirty);
     assert!(!after.document.can_undo);
+    // Nor a rebuild in the cue engine, though most of them are model-wide (a repeated no-op
+    // must not cost a whole-show pass each time).
+    s.transport(TransportAction::ResumeAll);
+    assert_eq!(s.control().engine().whole_show_passes(), passes);
 }
 
 #[test]

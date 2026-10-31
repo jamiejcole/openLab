@@ -32,7 +32,7 @@ impl DocCx<'_> {
         // During an outage a panic fade could only play once the device is back, so it stops
         // everything at once: a second Panic within the fade is a hard stop (unless this one
         // already was).
-        if panic && self.eng.backend.is_down() && self.doc.engine.panic_end().is_some() {
+        if panic && self.eng.backend.is_down() && self.doc.model.engine().panic_end().is_some() {
             self.feed(Input::Panic, now);
         }
         if let Some(scope) = scope {
@@ -45,7 +45,7 @@ impl DocCx<'_> {
     /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
     /// Panic, a hard stop or a reset would leave it sounding.
     pub(super) fn silence_orphans(&mut self, scope: Scope, now: SampleTime) {
-        let engine = &self.doc.engine;
+        let engine = self.doc.model.engine();
         let owned = |cue: CueId, run: openlab_core::RunId| {
             engine.run_of(cue) == Some(run)
                 && matches!(
@@ -59,7 +59,8 @@ impl DocCx<'_> {
                 root == cue
                     || self
                         .doc
-                        .ws
+                        .model
+                        .ws()
                         .find_cue(root)
                         .is_some_and(|r| descendants(r.children()).any(|c| c.id == cue))
             }
@@ -73,7 +74,7 @@ impl DocCx<'_> {
         }
         // A Panic fades them out with everything else, ending on the panic's end; otherwise
         // (or past it) they are cut at once.
-        let fade = match (scope, self.doc.engine.panic_end()) {
+        let fade = match (scope, self.doc.model.engine().panic_end()) {
             (Scope::All, Some(end)) if end > now => {
                 openlab_audio::Fade::new(end - now, voices::to_curve(openlab_core::PANIC_CURVE))
             }
@@ -109,7 +110,7 @@ impl Control {
     pub fn hotkey(&mut self, hotkey: &openlab_core::Hotkey) {
         self.each_doc(|cx| {
             let now = cx.now();
-            for cue in cx.doc.ws.cues_with_hotkey(hotkey) {
+            for cue in cx.doc.model.ws().cues_with_hotkey(hotkey) {
                 cx.transport(TransportAction::Start { cue }, now);
             }
         });
@@ -121,7 +122,7 @@ impl Control {
     pub fn hotkey_released(&mut self, hotkey: &openlab_core::Hotkey) {
         self.each_doc(|cx| {
             let now = cx.now();
-            for cue in cx.doc.ws.cues_with_hotkey(hotkey) {
+            for cue in cx.doc.model.ws().cues_with_hotkey(hotkey) {
                 cx.transport(TransportAction::TriggerReleased { cue }, now);
             }
         });

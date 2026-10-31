@@ -208,8 +208,9 @@ impl CueEngine {
     /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
     /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
-    /// The binary calls it after every change. Every other call skips those whole-workspace
-    /// passes unless the workspace's outline changed (`shape.rs`: then the miss is counted and
+    /// The binary calls it after every change (by construction: a doc's workspace is written
+    /// only through a guard that signals, its `control/model.rs`). Every other call skips those
+    /// whole-workspace passes unless the workspace's outline changed (`shape.rs`: then the miss is counted and
     /// the passes run), so a missed signal inside a cue or group leaves them out of date until
     /// the next signal; what could then refuse or drop a cue is guarded where it happens (a cue
     /// about to be refused for its problems is rechecked, a spent chain budget is recounted, a

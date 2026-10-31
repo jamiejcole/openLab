@@ -249,7 +249,8 @@ impl DocCx<'_> {
         let now = self.now();
         let name = self
             .doc
-            .ws
+            .model
+            .ws()
             .patches
             .iter()
             .find(|p| p.id == patch)
