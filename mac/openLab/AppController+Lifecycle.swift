@@ -211,10 +211,38 @@ extension AppController {
         await windows[doc]?.commitPendingEdits() ?? true
     }
 
-    private func save(_ store: WorkspaceStore, name: String) async -> Bool {
+    /// File > Save / Save As (allowed in Show Mode, as in QLab). `asNew`: always ask for a path.
+    /// An untitled workspace asks either way. Typed-in inspector edits are sent first.
+    @discardableResult
+    func saveWorkspace(_ store: WorkspaceStore, asNew: Bool = false) async -> Bool {
+        guard let doc = session.doc(of: store) else {
+            beep()
+            return false
+        }
+        guard await commitEdits(doc) else { return false }
+        return await save(store, name: name(of: doc), asNew: asNew)
+    }
+
+    /// Save and Save As need a front workspace the engine has open. Show Mode does not block them.
+    var canSaveFront: Bool {
+        guard let store = frontController?.store else { return false }
+        return session.doc(of: store) != nil
+    }
+
+    /// Recent workspaces whose file is still there: a moved or deleted one would fail on every choice.
+    func existingRecentURLs() -> [URL] {
+        recentURLs().filter(recentExists)
+    }
+
+    func clearRecents() {
+        forgetRecents()
+        launcher.reload(recents: existingRecentURLs())
+    }
+
+    private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
         var saveAsURL: URL?
         let reply: Result<OkBody, EngineError>?
-        if store.document?.path == nil {
+        if asNew || store.document?.path == nil {
             guard let url = pickSaveURL(name) else { return false }
             saveAsURL = url
             reply = await bounded { await store.saveAs(path: url.path) }
