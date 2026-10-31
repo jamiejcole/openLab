@@ -412,63 +412,6 @@ fn an_undo_refused_partway_is_rolled_back_and_kept() {
     assert_eq!((history.undo_len(), history.redo_len()), (1, 0));
 }
 
-/// Measurement, not a check (no wall-clock assertion): the cost of a transaction on a
-/// 2,000-cue show, refused at its last command and applied, against cloning the show. Before
-/// Both paid one clone. Run in release, where the debug-build check clone is gone:
-/// `cargo test --release -p openlab-core --test transaction_rollback -- --ignored --nocapture`.
-#[test]
-#[ignore = "measurement; prints timings"]
-fn measure_transaction_cost_on_a_large_show() {
-    use std::time::Instant;
-    let cues: Vec<Cue> = (0..2_000u128)
-        .map(|n| Cue {
-            name: format!("Cue {n} with a realistic name"),
-            notes: "Stand by on the book; GO on the actor's exit.".into(),
-            ..numbered(100 + n, &n.to_string(), audio())
-        })
-        .collect();
-    let ws = workspace(cues);
-    let rounds = 500u32;
-    let edits = || {
-        vec![
-            set(1_100, CueProperty::Name { value: "x".into() }),
-            Command::MoveCue {
-                id: cue_id(105),
-                index: 0,
-            },
-        ]
-    };
-
-    let mut work = ws.clone();
-    let start = Instant::now();
-    for _ in 0..rounds {
-        let mut commands = edits();
-        commands.push(missing());
-        let _ = work.apply(Command::Transaction { commands });
-    }
-    let refused = start.elapsed() / rounds;
-
-    let start = Instant::now();
-    for _ in 0..rounds {
-        let undo = work
-            .apply(Command::Transaction { commands: edits() })
-            .unwrap();
-        work.apply(undo).unwrap();
-    }
-    let applied = start.elapsed() / (2 * rounds);
-
-    let start = Instant::now();
-    for _ in 0..rounds {
-        std::hint::black_box(ws.clone());
-    }
-    let clone = start.elapsed() / rounds;
-    assert_eq!(work, ws);
-    println!(
-        "2000 cues: refused transaction {refused:?}, applied transaction {applied:?}, \
-         workspace clone {clone:?}"
-    );
-}
-
 /// A loaded show may hold a cue value that load only warns about (a hotkey name in capitals).
 fn with_loaded_bad_hotkey() -> Workspace {
     let mut cue_ = memo(30);

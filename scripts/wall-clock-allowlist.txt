@@ -9,7 +9,6 @@ engine/crates/audio/tests/cpu_budget.rs | permanent: the CPU budget gate measure
 engine/crates/engine/tests/perf.rs | permanent: the performance budget gate measures real time (`Instant::now()`); ignored test, release only
 engine/crates/engine/tests/soak_rt.rs | permanent: the real-time soak runs against the wall clock by design (`Instant::now()`); ignored test, nightly only
 engine/crates/audio/src/resample.rs | permanent: an ignored benchmark that prints real render time (`let t = std::time::Instant::now();`)
-engine/crates/core/tests/transaction_rollback.rs | #409 timing read in a test; remove the clock use and the entry
 engine/crates/engine/src/control/media/catalog/tests/volume.rs | permanent: `let base = Instant::now();` is only the origin of the probe clock the test moves by hand
 engine/crates/engine/src/control/media/gate.rs | permanent: `let t0 = Instant::now();` is only the origin of the instants the test passes to the gate
 engine/crates/engine/src/net/relaunch.rs | permanent: `let t0 = Instant::now();` is only the origin of the instants the test passes to the budget
