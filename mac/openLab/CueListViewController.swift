@@ -114,7 +114,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 {
     /// QLab order. The first and last columns carry no title.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, 70), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
+        ("status", nil, 80), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
         ("target", "cuelist.col.target", 160), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
@@ -420,6 +420,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         batchNewGroups = []
         batchCollapsed = []
         defer { batching = false }
+        // A group's hollow flag depends on its descendants, so every group above a changed cue
+        // (before and after the change) redraws its status cell.
+        var flagGroups = Set<ModelID>()
+        func noteAncestors(_ id: ModelID) {
+            var n = nodes[id]?.parent
+            while let g = n {
+                flagGroups.insert(g.id)
+                n = g.parent
+            }
+        }
+        for case .cue(let id) in deletes { noteAncestors(id) }
+        for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for case .cue(let id) in deletes {
             batchTouched.insert(id)
             remove(id, expanded: &expanded)
@@ -433,6 +445,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         }
         updatePlayheadAncestors()
+        for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for id in expanded.union(batchNewGroups.subtracting(batchCollapsed)) {
             if let n = nodes[id] { outlineView.expandItem(n) }
         }
@@ -442,7 +455,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if !pointing.isEmpty { refresh(Set(pointing), columns: ["target"]) }
         // Groups that gained or lost the playhead show or clear their "inside" marker.
         let flipped = oldAncestors.symmetricDifference(playheadAncestors)
-        if !flipped.isEmpty { refresh(flipped, columns: ["status"]) }
+        let flagRows = flagGroups.union(flipped).filter { nodes[$0] != nil }
+        if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
         placeDurationEditor()
     }
 

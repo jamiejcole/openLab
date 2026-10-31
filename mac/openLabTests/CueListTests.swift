@@ -244,6 +244,26 @@ final class CueListTests: XCTestCase {
         XCTAssertNil(plain.tint)
     }
 
+    func testCollapsedGroupFlagFollowsAChildFlaggedByTheEngine() async throws {
+        let h = try await H()
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
+        func groupFlag() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.group)).images[3] }
+        XCTAssertFalse(try groupFlag().isHidden, "Rain is flagged")
+        func rain(flagged: Bool) throws -> String {
+            var json = FakeEngine.cueJSON(
+                id: H.rain.raw, number: "2.2", name: "Rain", kind: FakeEngine.audioKind("media/r.wav"))
+            json.set("flagged", .bool(flagged))
+            return try H.upsertJSON(json, parent: H.group, index: 1)
+        }
+        // Only the child is upserted; the collapsed group's row must still redraw.
+        try h.change(upserts: [try rain(flagged: false)])
+        XCTAssertTrue(try groupFlag().isHidden)
+        try h.change(upserts: [try rain(flagged: true)])
+        XCTAssertEqual(try groupFlag().accessibilityLabel(), loc("cue.flagged.inside"))
+        try h.change(deletes: [H.rain])
+        XCTAssertTrue(try groupFlag().isHidden, "a deleted flagged child clears the flag")
+    }
+
     func testDisarmedCueIsDimmed() async throws {
         let h = try await H()
         var cue = FakeEngine.cueJSON(
