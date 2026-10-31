@@ -446,6 +446,11 @@ extension ClientMessage {
                 .setShowMode, .setPatchMapping,
                 .snapshot:
                 return true
+            #if DEBUG
+                // A stepped engine waits for its background work (up to 30 s) before it answers these.
+                case .advance, .loseDevice: return false
+                case .restoreDevice: return true
+            #endif
             }
         }
     }

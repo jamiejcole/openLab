@@ -729,3 +729,261 @@ fn not_virtual(id: RequestId, what: &str, to: &ReplyTx) -> Flow {
     );
     Flow::Continue
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use openlab_audio::MixerConfig;
+    use openlab_core::protocol::{ClientMessage, Outcome, Request, ServerMessage};
+
+    use crate::control::devices;
+    use crate::control::{Backend, ControlConfig, ReplyRx, outbound_channel, reply_channel};
+
+    const BLOCK: u32 = 256;
+
+    /// The control loop on a virtual device, as the host builds it (`host::run_with`).
+    struct Rig {
+        control: Control,
+        vd: VirtualDevice,
+        inbox: crossbeam_channel::Sender<Inbox>,
+        _outbound: crate::control::OutboundRx,
+    }
+
+    fn rig(mode: VirtualMode) -> Rig {
+        let vd = VirtualDevice::new(mode);
+        let (ctl, mixer) = Mixer::new(MixerConfig {
+            sample_rate: VIRTUAL_RATE,
+            output_channels: usize::from(VIRTUAL_CHANNELS),
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let request = OpenRequest {
+            device_id: Some(VIRTUAL_DEVICE_ID.into()),
+            buffer_frames: Some(BLOCK),
+        };
+        let device = devices::start(
+            vd.layer(),
+            mixer,
+            request,
+            vd.listed(),
+            tx.clone(),
+            vd.wall_clock(),
+        )
+        .unwrap()
+        .with_sleep_clock(vd.sleep_clock());
+        let mut config = ControlConfig::new(VIRTUAL_RATE, u64::from(BLOCK));
+        config.clock = vd.epoch_clock();
+        config.virtual_device = Some(vd.clone().with_inbox(rx));
+        let (out, outbound) = outbound_channel(4096);
+        let control = Control::empty(
+            ctl,
+            Backend::Device(Box::new(device)),
+            config,
+            tx.clone(),
+            out,
+        )
+        .unwrap();
+        Rig {
+            control,
+            vd,
+            inbox: tx,
+            _outbound: outbound,
+        }
+    }
+
+    fn conn(id: u64, request: Request) -> (Inbox, ReplyRx) {
+        let (reply, rx) = reply_channel();
+        let msg = Inbox::Conn {
+            doc: None,
+            message: ClientMessage::Request {
+                id: RequestId(id),
+                request,
+            },
+            reply,
+        };
+        (msg, rx)
+    }
+
+    /// Sends `request` as an app connection and returns the outcome of its result.
+    fn ask(r: &mut Rig, request: Request) -> (Flow, Outcome) {
+        let (msg, mut rx) = conn(1, request);
+        let flow = r.control.handle(msg);
+        (flow, outcome(&mut rx, 1))
+    }
+
+    fn outcome(rx: &mut ReplyRx, id: u64) -> Outcome {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|m| match m {
+                ServerMessage::Result { id: i, outcome } if i == RequestId(id) => Some(outcome),
+                _ => None,
+            })
+            .expect("no result")
+    }
+
+    fn code(o: &Outcome) -> Option<ErrorCode> {
+        match o {
+            Outcome::Error(e) => Some(e.code),
+            Outcome::Ok(_) => None,
+        }
+    }
+
+    /// QA-01: device time moves by exactly the frames asked for, rendered block by block, and
+    /// every clock the engine is given follows it.
+    #[test]
+    fn advance_renders_exactly_the_frames_asked_and_moves_every_clock() {
+        let mut r = rig(VirtualMode::Stepped);
+        let wall = r.vd.wall_clock();
+        let start = wall();
+        let epoch = r.vd.epoch_clock();
+        assert_eq!(epoch.now_ms(), STEPPED_EPOCH_MS);
+        let (flow, o) = ask(&mut r, Request::Advance { frames: 0 });
+        assert_eq!((flow, code(&o)), (Flow::Continue, None), "{o:?}");
+        assert_eq!(r.control.mixer().samples_rendered(), 0, "0 only waits");
+        // Not a whole number of blocks: the last one is short.
+        let (_, o) = ask(&mut r, Request::Advance { frames: 4_900 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().samples_rendered(), 4_900);
+        assert_eq!(wall() - start, frames_to_duration(4_900));
+        assert_eq!(epoch.now_ms(), STEPPED_EPOCH_MS + 102);
+        assert_eq!(
+            (r.vd.sleep_clock())(),
+            std::time::UNIX_EPOCH
+                + Duration::from_millis(STEPPED_EPOCH_MS.unsigned_abs())
+                + frames_to_duration(4_900)
+        );
+    }
+
+    #[test]
+    fn device_time_is_counted_exactly_in_frames() {
+        assert_eq!(frames_to_duration(48_000), Duration::from_secs(1));
+        assert_eq!(frames_to_duration(48), Duration::from_millis(1));
+        assert_eq!(frames_to_duration(1), Duration::from_nanos(20_833));
+        assert_eq!(
+            frames_to_duration(u64::MAX),
+            Duration::from_secs(u64::MAX / 48_000) + frames_to_duration(u64::MAX % 48_000)
+        );
+    }
+
+    /// A second `advance` that arrives while one runs (on another connection) is refused and
+    /// the first goes on; a shutdown that arrives meanwhile ends it and is passed on.
+    #[test]
+    fn an_advance_during_an_advance_is_refused_and_a_shutdown_ends_it() {
+        let mut r = rig(VirtualMode::Stepped);
+        let (second, mut second_rx) = conn(2, Request::Advance { frames: 256 });
+        r.inbox.send(second).unwrap();
+        let (flow, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!((flow, code(&o)), (Flow::Continue, None), "{o:?}");
+        assert_eq!(
+            code(&outcome(&mut second_rx, 2)),
+            Some(ErrorCode::BadRequest)
+        );
+        assert_eq!(r.control.mixer().samples_rendered(), 512);
+
+        r.inbox.send(Inbox::Shutdown).unwrap();
+        let (flow, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(flow, Flow::Shutdown);
+        assert_eq!(code(&o), Some(ErrorCode::Internal));
+        // And the next advance is not refused as one already under way.
+        let (_, o) = ask(&mut r, Request::Advance { frames: 256 });
+        assert_eq!(code(&o), None, "{o:?}");
+    }
+
+    /// Stepped, a worker's answer that comes between requests is held for the next wait:
+    /// device time and the device list do not change behind the test's back.
+    #[test]
+    fn a_workers_answer_between_requests_waits_for_the_next_advance() {
+        let mut r = rig(VirtualMode::Stepped);
+        let is_default = |r: &Rig| r.control.eng.device_list().first().map(|d| d.is_default);
+        let mut relisted = r.vd.listed();
+        relisted[0].is_default = false;
+        let flow = r
+            .control
+            .handle(Inbox::Device(devices::DeviceAnswer::Listed(Ok(relisted))));
+        assert_eq!(flow, Flow::Continue);
+        assert_eq!(crate::lock(&r.vd.shared.held).len(), 1);
+        assert_eq!(is_default(&r), Some(true), "not taken in yet");
+        let (_, o) = ask(&mut r, Request::Advance { frames: 0 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert!(crate::lock(&r.vd.shared.held).is_empty());
+        assert_eq!(is_default(&r), Some(false), "taken in by the advance");
+    }
+
+    /// `lose_device`, stepped: answered once the loss is handled (the device is down and its
+    /// stream closed). Time passes without rendering while it is gone; after
+    /// `restore_device`, the next list read finds it and it plays again.
+    #[test]
+    fn a_lost_device_renders_nothing_until_restored_and_reopened() {
+        let mut r = rig(VirtualMode::Stepped);
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        let (flow, o) = ask(&mut r, Request::LoseDevice);
+        assert_eq!((flow, code(&o)), (Flow::Continue, None), "{o:?}");
+        assert!(r.control.device_down());
+        assert_eq!(r.control.device_jobs_pending(), 0, "the stream was closed");
+        assert!(r.vd.listed().is_empty());
+        let (_, o) = ask(&mut r, Request::Advance { frames: 48_000 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(
+            r.control.mixer().samples_rendered(),
+            512,
+            "nothing rendered"
+        );
+        assert!(r.control.device_down(), "reopens fail while it is gone");
+
+        let (_, o) = ask(&mut r, Request::RestoreDevice);
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.vd.listed().len(), 1);
+        // Within a list period (1 s) and the backoff, it is open and rendering again.
+        let (_, o) = ask(&mut r, Request::Advance { frames: 96_000 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert!(!r.control.device_down());
+        assert!(r.control.mixer().samples_rendered() > 512);
+    }
+
+    /// Realtime: the stream renders on its own, `advance` is refused, and a lost device
+    /// reports itself to the policy as a host would.
+    #[test]
+    fn a_realtime_device_renders_by_itself_and_refuses_advance() {
+        let mut r = rig(VirtualMode::Realtime);
+        crate::spin::spin_until("the realtime device renders", || {
+            r.control.mixer().samples_rendered() > 0
+        });
+        let (_, o) = ask(&mut r, Request::Advance { frames: 1 });
+        assert_eq!(code(&o), Some(ErrorCode::Unsupported));
+        let (_, o) = ask(&mut r, Request::LoseDevice);
+        assert_eq!(code(&o), None, "{o:?}");
+        crate::spin::spin_until("the loss is seen", || {
+            r.control.tick();
+            r.control.device_down()
+        });
+    }
+
+    /// Without a virtual device (a show on a real device or offline) the test-only requests
+    /// are refused, not acted on.
+    #[test]
+    fn without_a_virtual_device_the_test_requests_are_unsupported() {
+        let mut show = crate::control::tests::memo_show();
+        for request in [
+            Request::Advance { frames: 1 },
+            Request::LoseDevice,
+            Request::RestoreDevice,
+        ] {
+            let replies = show.send_app(ClientMessage::Request {
+                id: RequestId(9),
+                request: request.clone(),
+            });
+            let refused = replies.iter().any(|m| {
+                matches!(
+                    m,
+                    ServerMessage::Result {
+                        outcome: Outcome::Error(e),
+                        ..
+                    } if e.code == ErrorCode::Unsupported
+                )
+            });
+            assert!(refused, "{request:?}: {replies:?}");
+        }
+    }
+}

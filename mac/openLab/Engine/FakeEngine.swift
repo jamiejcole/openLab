@@ -786,6 +786,8 @@ final class FakeEngine: EngineTransport {
             result(c, id, ok: .object(["data": .object(data)]))
         case .waveform(let cue, let start, let end, let buckets):
             waveform(id, cue: cue, range: (start, end), buckets: Int(buckets), from: c)
+        case .advance, .loseDevice, .restoreDevice:
+            result(c, id, error: (.unsupported, "the fake engine has no virtual device"))
         }
     }
 

@@ -161,6 +161,14 @@ enum Request: Hashable, Sendable, Codable {
     /// AUD-14: an Audio cue's file peaks over file seconds `start..<end` in `buckets` parts (1 to 8192).
     case waveform(cue: ModelID, start: Double, end: Double, buckets: UInt32)
     case snapshot
+    #if DEBUG
+        /// Test support only: an engine built with test-support on its virtual device
+        /// (docs/protocol.md "Test support"). `advance` moves a stepped engine's device time by
+        /// `frames`; `loseDevice` / `restoreDevice` take the virtual device away and bring it back.
+        case advance(frames: UInt64)
+        case loseDevice
+        case restoreDevice
+    #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
     /// holds this connection's broadcasts until the `result` (docs/network.md "Ordering and gaps").
@@ -205,6 +213,11 @@ enum Request: Hashable, Sendable, Codable {
         case .snapshot: return ("snapshot", [])
         case .waveform(let cue, let start, let end, let buckets):
             return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
+        #if DEBUG
+            case .advance(let frames): return ("advance", [("frames", frames)])
+            case .loseDevice: return ("lose_device", [])
+            case .restoreDevice: return ("restore_device", [])
+        #endif
         }
     }
 
@@ -245,6 +258,11 @@ enum Request: Hashable, Sendable, Codable {
             self = .waveform(
                 cue: try c.decode(ModelID.self, forKey: "cue"), start: try c.decode(Double.self, forKey: "start"),
                 end: try c.decode(Double.self, forKey: "end"), buckets: try c.decode(UInt32.self, forKey: "buckets"))
+        #if DEBUG
+            case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
+            case "lose_device": self = .loseDevice
+            case "restore_device": self = .restoreDevice
+        #endif
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
         }
