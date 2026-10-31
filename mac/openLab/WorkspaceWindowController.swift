@@ -130,12 +130,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
-        // The cue list's own subscription is older, so it has switched lists by the time this runs.
-        sub = store.changes.sink { [weak self] _ in
+        // Combine does not deliver in subscription order, so whatever reads the cue list's own
+        // state (the shown list, its tree) waits for `onModelApplied`, which it calls once it has
+        // applied a reset or model change or switched lists. This sink only reads the store.
+        cueList.onModelApplied = { [weak self] in self?.cueListApplied() }
+        sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated {
-                self?.syncSidebarList()
-                self?.syncFooterCount()
-                self?.syncMasthead()
+                switch change {
+                case .reset, .model: self?.syncFooterCount()
+                // Runtime ticks cannot change the shown list: only the standby cue moves.
+                case .runtime, .progress, .waits, .notices: self?.syncMasthead()
+                }
             }
         }
         wireFind()
@@ -143,8 +148,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
-            self?.syncSidebarList()
-            self?.syncMasthead()
         }
         sidebar.onNotice = { [weak self] in self?.showNotice($0) }
         sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
@@ -177,7 +180,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func reveal(cue id: ModelID) {
         guard let list = store.model?.cueLists.first(where: { Self.contains(id, in: $0.cues) }) else { return }
         if cueList.listID != list.id { cueList.showList(list.id) }
-        syncSidebarList()
         cueList.reveal(id)
     }
 
@@ -403,6 +405,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
         masthead.show(standby: id.flatMap { store.model?.cue($0) })
+    }
+
+    /// The cue list has applied a change: the syncs that read its shown list and tree run now.
+    private func cueListApplied() {
+        syncSidebarList()
+        syncMasthead()
+        refreshFind()
     }
 
     func syncFooterCount() {

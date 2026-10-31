@@ -133,7 +133,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var targeters: [ModelID: Set<ModelID>] = [:]
     /// The playhead's cue and every group around it: those groups show that it is inside.
     private var playheadAncestors: Set<ModelID> = []
-    private var sub: AnyCancellable?
+    /// Internal so a test can detach it and deliver changes in a chosen order.
+    var sub: AnyCancellable?
     /// While `applyModel` runs: every cue it touched (their targeters refresh), the groups it created
     /// (shown expanded, like QLab) and the existing groups that were collapsed (they stay so).
     private var batching = false
@@ -347,7 +348,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Store changes
 
-    private func handle(_ change: StoreChange) {
+    func handle(_ change: StoreChange) {
         switch change {
         case .reset:
             rebuild()

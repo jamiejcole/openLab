@@ -27,9 +27,8 @@ extension WorkspaceWindowController {
         findBar.onStep = { [weak self] forward in self?.stepFind(forward: forward) }
         findBar.onSelectFound = { [weak self] in self?.selectFound() }
         findBar.onDone = { [weak self] in self?.closeFind() }
-        // Only a reset or a model change can change what is found; runtime and progress ticks
-        // (up to 30 a second while cues play) must not rescan the list.
-        cueList.onModelApplied = { [weak self] in self?.refreshFind() }
+        // `cueListApplied` rescans: only a reset or a model change can change what is found, and
+        // runtime and progress ticks (up to 30 a second while cues play) must not.
     }
 
     /// Cmd-F cycles as in QLab: the bar opens; then the cursor goes to its field; then, with the
