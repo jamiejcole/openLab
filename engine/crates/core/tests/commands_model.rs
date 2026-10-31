@@ -843,12 +843,6 @@ fn bad_patches_are_not_added() {
         refused(&ws, add(0, loud)),
         CommandError::InvalidModel(_)
     ));
-    let mut late = patch(2, 2);
-    late.outputs[1].delay_ms = 5000.0;
-    assert!(matches!(
-        refused(&ws, add(0, late)),
-        CommandError::InvalidModel(_)
-    ));
 }
 
 #[test]
@@ -1000,10 +994,6 @@ fn patch_properties_can_be_edited_and_undone() {
             output: 0,
             value: true,
         },
-        PatchProperty::OutputDelay {
-            output: 1,
-            value: 12.5,
-        },
         PatchProperty::OutputPolarity {
             output: 0,
             value: true,
@@ -1034,7 +1024,7 @@ fn muting_an_output_keeps_its_level() {
 fn the_channel_count_grows_and_shrinks_and_undo_restores_what_shrinking_dropped() {
     let mut ws = workspace(vec![]);
     ws.patches[0].outputs[1].level_db = -9.0;
-    ws.patches[0].outputs[1].delay_ms = 4.0;
+    ws.patches[0].outputs[1].polarity_inverted = true;
     let grown = round_trip(&ws, patch_prop(1, PatchProperty::ChannelCount { value: 4 }));
     assert_eq!(grown.patches[0].outputs.len(), 4);
     assert_eq!(grown.patches[0].outputs[3].level_db, 0.0);
@@ -1051,7 +1041,7 @@ fn the_channel_count_grows_and_shrinks_and_undo_restores_what_shrinking_dropped(
         )
         .unwrap();
     history.undo(&mut work).unwrap();
-    assert_eq!(work.patches[0].outputs[1].delay_ms, 4.0);
+    assert_eq!(work.patches[0].outputs[1], ws.patches[0].outputs[1]);
 }
 
 #[test]
@@ -1082,20 +1072,6 @@ fn bad_patch_edits_are_refused() {
             PatchProperty::OutputLevel {
                 output: 0,
                 value: 13.0,
-            },
-            "model",
-        ),
-        (
-            PatchProperty::OutputDelay {
-                output: 0,
-                value: 1000.5,
-            },
-            "model",
-        ),
-        (
-            PatchProperty::OutputDelay {
-                output: 0,
-                value: -1.0,
             },
             "model",
         ),

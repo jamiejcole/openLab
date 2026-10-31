@@ -7,8 +7,8 @@ mod common;
 
 use common::*;
 use openlab_audio::{
-    CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MixerConfig, OutputSettings,
-    PENDING_CAPACITY, RejectReason, VoiceId,
+    CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MixerConfig, PENDING_CAPACITY,
+    RejectReason, VoiceId,
 };
 
 #[test]
@@ -79,19 +79,6 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
     }
     let (_keep_open, starving) = open_source(1000, &[0.1; 200]);
     start(&mut ctl, 0, 100, starving, 1);
-    let settings = OutputSettings {
-        level: 0.5,
-        mute: false,
-        invert: true,
-        delay_frames: 333,
-    };
-    ctl.send(
-        800,
-        CommandKind::SetOutput {
-            output: 3,
-            settings,
-        },
-    );
     ctl.send(
         900,
         CommandKind::SetPatchRouting {
@@ -342,10 +329,6 @@ fn commands_for_unknown_voices_or_indices_are_ignored() {
             cue_output: 0,
             device_output: 1,
             gain: 1.0,
-        },
-        CommandKind::SetOutput {
-            output: 99,
-            settings: OutputSettings::default(),
         },
     ];
     for c in cmds {

@@ -62,10 +62,6 @@ fn touched(cmds: &[CommandKind]) -> BTreeSet<u16> {
     routes(cmds).into_iter().map(|r| r.0).collect()
 }
 
-fn rate() -> NonZeroU32 {
-    NonZeroU32::new(8000).unwrap()
-}
-
 fn pid() -> PatchId {
     PatchId(Uuid::from_u128(7))
 }
@@ -103,7 +99,6 @@ fn out(level_db: f64, mute: bool, polarity_inverted: bool) -> PatchOutput {
     PatchOutput {
         level_db,
         mute,
-        delay_ms: 0.0,
         polarity_inverted,
     }
 }
@@ -150,7 +145,7 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
         out(-6.0, false, true),
         out(0.0, true, false),
     ]);
-    let mut p = Patches::new(2, 4, rate());
+    let mut p = Patches::new(2, 4);
     let (cmds, changed) = p.sync(D0, &ws, &settings(&ws, vec![3, 0, 1]), &device(4), &idle());
     assert_eq!(changed.len(), 1);
     assert!(matches!(changed[0].1, PatchResolution::Mapped { .. }));
@@ -179,7 +174,7 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
 #[test]
 fn unmapped_and_short_devices_are_reported_and_silent() {
     let ws = ws_with(vec![out(0.0, false, false); 2]);
-    let mut p = Patches::new(1, 2, rate());
+    let mut p = Patches::new(1, 2);
     let (cmds, changed) = p.sync(D0, &ws, &MachineSettings::default(), &device(2), &idle());
     assert_eq!(changed, vec![(pid(), PatchResolution::Unmapped)]);
     assert!(routes(&cmds).iter().all(|r| r.3 == 0.0));
@@ -201,47 +196,16 @@ fn patches_beyond_the_mixer_are_unmapped() {
     let mut second = ws.patches[0].clone();
     second.id = PatchId(Uuid::from_u128(8));
     ws.patches.push(second);
-    let mut p = Patches::new(1, 1, rate());
+    let mut p = Patches::new(1, 1);
     let (_, changed) = p.sync(D0, &ws, &settings(&ws, vec![0]), &device(1), &idle());
     assert_eq!(p.mixer_patch(D0, PatchId(Uuid::from_u128(8))), None);
     assert!(changed.contains(&(PatchId(Uuid::from_u128(8)), PatchResolution::Unmapped)));
 }
 
-fn delays(cmds: &[CommandKind]) -> Vec<(u16, u32)> {
-    cmds.iter()
-        .filter_map(|c| match c {
-            CommandKind::SetOutput { output, settings } => {
-                assert_eq!(settings.level, 1.0);
-                assert!(!settings.mute && !settings.invert);
-                Some((*output, settings.delay_frames))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-#[test]
-fn output_delays_go_to_the_mapped_device_outputs() {
-    let mut ws = ws_with(vec![out(0.0, false, false); 2]);
-    ws.patches[0].outputs[0].delay_ms = 2.5;
-    ws.patches[0].outputs[1].delay_ms = 1000.0;
-    let mut p = Patches::new(2, 4, rate());
-    let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
-    // 2.5 ms at 8 kHz = 20 frames; 1 s = 8000 frames. Outputs left at 0 are not sent.
-    assert_eq!(delays(&cmds), vec![(1, 8000), (3, 20)]);
-    assert_eq!(p.delay_conflicts(D0).count(), 0);
-    // Unchanged: nothing sent. The device gone: the delays go back to 0.
-    let (again, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
-    assert!(delays(&again).is_empty());
-    let (gone, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &[], &idle());
-    assert_eq!(delays(&gone), vec![(1, 0), (3, 0)]);
-}
-
 #[test]
 fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_a_rebuild() {
-    let mut ws = ws_with(vec![out(0.0, false, false); 2]);
-    ws.patches[0].outputs[0].delay_ms = 2.5;
-    let mut p = Patches::new(2, 4, rate());
+    let ws = ws_with(vec![out(0.0, false, false); 2]);
+    let mut p = Patches::new(2, 4);
     let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
     assert_eq!(p.owner(0), Some((D0, pid())));
     assert_eq!(p.owner(1), None);
@@ -255,10 +219,6 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
     let mut gains = routes(&p.resend(0));
     gains.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(gains, sent);
-    assert_eq!(
-        p.resend_output(3).map(|c| delays(&[c])),
-        Some(vec![(3, 20)])
-    );
 
     // Disabled: the patch moves to slot 1 at the next sync; slot 0 never comes back, even
     // when the doc closes.
@@ -271,7 +231,7 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
     p.release_doc(D0);
     assert_eq!(p.free_slots(), 1);
 
-    // A rebuild frees it and sends every slot, output and the master again.
+    // A rebuild frees it and sends every slot and the master again.
     let all = p.rebuilt();
     assert_eq!(p.free_slots(), 2);
     assert!(p.take_freed());
@@ -279,40 +239,11 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
         all.iter()
             .any(|c| matches!(c, CommandKind::SetMaster { gain } if *gain == 1.0))
     );
-    assert_eq!(
-        delays(&all),
-        vec![(0, 0), (1, 0), (2, 0), (3, 0)],
-        "every device output is sent, at the delay it has now"
-    );
-}
-
-#[test]
-fn patches_that_disagree_on_an_output_delay_use_the_longest_and_say_so() {
-    let mut ws = ws_with(vec![out(0.0, false, false)]);
-    ws.patches[0].outputs[0].delay_ms = 1.0;
-    let mut second = ws.patches[0].clone();
-    second.id = PatchId(Uuid::from_u128(8));
-    second.outputs[0].delay_ms = 3.0;
-    ws.patches.push(second);
-    let mut s = settings(&ws, vec![0]);
-    s.set_patch_mapping(
-        ws.id,
-        PatchId(Uuid::from_u128(8)),
-        PatchMapping {
-            device: "Dev".into(),
-            channels: vec![0],
-        },
-    )
-    .unwrap();
-    let mut p = Patches::new(2, 2, rate());
-    let (cmds, _) = p.sync(D0, &ws, &s, &device(2), &idle());
-    assert_eq!(delays(&cmds), vec![(0, 24)]);
-    assert_eq!(p.delay_conflicts(D0).collect::<Vec<_>>(), vec![0]);
 }
 
 #[test]
 fn slots_follow_patch_ids_not_list_positions() {
-    let mut p = Patches::new(4, 4, rate());
+    let mut p = Patches::new(4, 4);
     let ws = ws_of(&[10, 11, 12]);
     let chan = |n: u128| (n - 10) as u32;
     p.sync(D0, &ws, &mapped(&ws, chan), &device(4), &idle());
@@ -339,7 +270,7 @@ fn slots_follow_patch_ids_not_list_positions() {
 
 #[test]
 fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
-    let mut p = Patches::new(2, 2, rate());
+    let mut p = Patches::new(2, 2);
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
     p.sync(D0, &ws, &s, &device(2), &idle());
@@ -376,7 +307,7 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
 
 #[test]
 fn a_retired_slot_still_follows_the_workspace_master() {
-    let mut p = Patches::new(2, 2, rate());
+    let mut p = Patches::new(2, 2);
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
     p.sync(D0, &ws, &s, &device(2), &idle());
@@ -395,7 +326,7 @@ fn a_retired_slot_still_follows_the_workspace_master() {
 
 #[test]
 fn a_removed_patch_that_comes_back_takes_its_retired_slot_again() {
-    let mut p = Patches::new(3, 2, rate());
+    let mut p = Patches::new(3, 2);
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
     p.sync(D0, &ws, &s, &device(2), &idle());
@@ -411,7 +342,7 @@ fn a_removed_patch_that_comes_back_takes_its_retired_slot_again() {
 
 #[test]
 fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
-    let mut p = Patches::new(3, 4, rate());
+    let mut p = Patches::new(3, 4);
     let mut ws = ws_of(&[10]);
     let s = mapped(&ws, |_| 1);
     p.sync(D0, &ws, &s, &device(4), &idle());
@@ -460,7 +391,7 @@ fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() 
         .unwrap();
         s
     };
-    let mut p = Patches::new(3, 4, rate());
+    let mut p = Patches::new(3, 4);
     let mut ws = ws_of(&[10]);
     ws.patches[0].outputs.push(out(-6.0, false, false));
     p.sync(D0, &ws, &map(&ws, vec![1, 2]), &device(4), &idle());
@@ -481,7 +412,7 @@ fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() 
 
 #[test]
 fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
-    let mut p = Patches::new(1, 1, rate());
+    let mut p = Patches::new(1, 1);
     let ws = ws_of(&[10, 11, 12]);
     let s = mapped(&ws, |_| 0);
     let (_, changed) = p.sync(D0, &ws, &s, &device(1), &idle());
@@ -494,7 +425,7 @@ fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
     assert_eq!(slot(&p, 11), Some(0));
     assert_eq!(p.exhausted(D0), &[id(12)]);
     // A mixer with no slots at all is no panic either.
-    let mut none = Patches::new(0, 1, rate());
+    let mut none = Patches::new(0, 1);
     let (cmds, changed) = none.sync(D0, &ws, &s, &device(1), &idle());
     assert!(
         cmds.iter()
@@ -507,7 +438,7 @@ fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
 fn the_workspace_master_is_folded_into_the_matrix_gains() {
     let mut ws = ws_with(vec![out(-3.0, false, false), out(-1.5, false, true)]);
     let s = settings(&ws, vec![0, 1]);
-    let mut p = Patches::new(1, 2, rate());
+    let mut p = Patches::new(1, 2);
     p.sync(D0, &ws, &s, &device(2), &idle());
     // At 0 dB the gains are bit for bit patch master × level (as before M4.15b).
     let pm = db_to_gain(-6.0);
@@ -541,7 +472,7 @@ const D2: DocId = DocId(2);
 
 #[test]
 fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
-    let mut p = Patches::new(2, 2, rate());
+    let mut p = Patches::new(2, 2);
     // Two docs with the same patch id (a copy of a show) get a slot each.
     let ws = ws_of(&[10]);
     let s = mapped(&ws, |_| 0);
@@ -569,40 +500,4 @@ fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
     // The other doc's slot was never touched.
     assert_eq!(p.sent[1], routed);
     assert!(p.release_doc(D0).is_empty(), "closing twice does nothing");
-}
-
-#[test]
-fn docs_that_disagree_on_an_output_delay_use_the_longest_and_each_is_told() {
-    let mut a = ws_with(vec![out(0.0, false, false)]);
-    a.patches[0].outputs[0].delay_ms = 1.0;
-    let mut b = a.clone();
-    b.patches[0].outputs[0].delay_ms = 3.0;
-    let mut c = a.clone();
-    c.patches[0].outputs[0].delay_ms = 1.0;
-    let mut p = Patches::new(3, 2, rate());
-    let (cmds, _) = p.sync(D0, &a, &settings(&a, vec![0]), &device(2), &idle());
-    assert_eq!(delays(&cmds), vec![(0, 8)]);
-    assert!(!p.take_conflicts_changed());
-    let (cmds, _) = p.sync(D1, &b, &settings(&b, vec![0]), &device(2), &idle());
-    assert_eq!(delays(&cmds), vec![(0, 24)]);
-    assert!(p.take_conflicts_changed());
-    assert_eq!(p.delay_conflicts(D0).collect::<Vec<_>>(), vec![0]);
-    assert_eq!(p.delay_conflicts(D1).collect::<Vec<_>>(), vec![0]);
-    // A doc that maps to the other output only is not part of it.
-    p.sync(D2, &c, &settings(&c, vec![1]), &device(2), &idle());
-    assert_eq!(p.delay_conflicts(D2).count(), 0);
-    // The doc that wanted the longer delay closes: back to 1 ms, no conflict.
-    let cmds = p.release_doc(D1);
-    assert_eq!(delays(&cmds), vec![(0, 8)]);
-    assert!(p.take_conflicts_changed());
-    assert_eq!(p.delay_conflicts(D0).count(), 0);
-}
-
-#[test]
-fn delay_frames_round_and_reject_bad_values() {
-    assert_eq!(delay_frames(0.0, rate()), 0);
-    assert_eq!(delay_frames(-1.0, rate()), 0);
-    assert_eq!(delay_frames(f64::NAN, rate()), 0);
-    assert_eq!(delay_frames(0.0626, rate()), 1);
-    assert_eq!(delay_frames(5000.0, rate()), 8000);
 }
