@@ -125,6 +125,16 @@ extension Command {
             ]))
     }
 
+    /// `RenameCueList { id, name }`.
+    static func renameCueList(id: ModelID, name: String) -> Command {
+        Command(.object(["type": .string("rename_cue_list"), "id": .string(id.raw), "name": .string(name)]))
+    }
+
+    /// `RemoveCueList { id }`: the engine refuses a list that holds cues and the only list.
+    static func removeCueList(id: ModelID) -> Command {
+        Command(.object(["type": .string("remove_cue_list"), "id": .string(id.raw)]))
+    }
+
     /// `SetCueProperty { id, property }`.
     static func setProperty(_ id: ModelID, _ property: CueProperty) -> Command {
         Command(.object(["type": .string("set_cue_property"), "id": .string(id.raw), "property": property.json]))

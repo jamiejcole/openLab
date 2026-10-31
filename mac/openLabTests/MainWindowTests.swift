@@ -155,4 +155,64 @@ final class MainWindowTests: XCTestCase {
         }
         XCTAssertGreaterThan(seen, 30)
     }
+
+    // MARK: Masthead standby and notes
+
+    private func demoController() async throws -> (WorkspaceWindowController, Rig) {
+        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
+        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        return (WorkspaceWindowController(store: rig.store), rig)
+    }
+
+    private func standBy(_ rig: Rig, _ cue: ModelID) throws {
+        let change = #"{"type":"playhead","list":"\#(CueListHarness.list)","cue":"\#(cue)"}"#
+        let msg = try ServerMessage.decode(
+            #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[\#(change)]}"#)
+        XCTAssertEqual(rig.store.receive(msg), .applied)
+    }
+
+    private func setNotesCommands(_ rig: Rig) -> [JSONValue] {
+        rig.engine.received.compactMap {
+            if case .command(_, let c, _) = $0, c.json["property"]?["type"]?.stringValue == "notes" { return c.json }
+            return nil
+        }
+    }
+
+    func testMastheadShowsStandbyCueAsNumberCommaNameWithItsNotes() async throws {
+        let (wc, rig) = try await demoController()
+        // The snapshot's playhead is shown from the start (an unnumbered cue: its name alone).
+        XCTAssertEqual(wc.masthead.cueID, CueListHarness.fade)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
+        try standBy(rig, CueListHarness.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        XCTAssertEqual(
+            wc.masthead.standbyField.stringValue,
+            [cue.number, cue.listName].compactMap { $0 }.joined(separator: ", "))
+        XCTAssertTrue(wc.masthead.notesView.isEditable)
+    }
+
+    func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        wc.masthead.notesView.string = "Hold for applause"
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        XCTAssertEqual(setNotesCommands(rig).last?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "Hold for applause")
+    }
+
+    func testMastheadNotesAreReadOnlyAndSendNothingInShowMode() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        wc.setShowMode(true)
+        await assertEventually { wc.masthead.isLocked }
+        XCTAssertFalse(wc.masthead.notesView.isEditable)
+        XCTAssertFalse(wc.masthead.notesView.isSelectable, "a focused text view would swallow GO")
+        wc.masthead.notesView.string = "typed anyway"
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await wc.editor.setNotes(of: CueListHarness.intro, text: "typed anyway")
+        XCTAssertTrue(setNotesCommands(rig).isEmpty)
+    }
 }

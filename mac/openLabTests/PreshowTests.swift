@@ -267,4 +267,50 @@ final class PreshowTests: XCTestCase {
         XCTAssertEqual(item?.title, loc("menu.window.preshowCheck"))
         XCTAssertEqual(item?.keyEquivalent, "W")
     }
+
+    func testInspectCueButtonAndDoubleClickSelectTheCueAndOpenItsTab() async throws {
+        let rig = try await demoRig()
+        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.setVisible(.inspector, false)
+        await wc.showPreshowCheck().value
+        let pc = wc.preshowWindow
+        XCTAssertFalse(pc.inspectButton.isEnabled, "nothing selected")
+        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
+        pc.table.selectRowIndexes([row], byExtendingSelection: false)
+        XCTAssertTrue(pc.inspectButton.isEnabled)
+        // The selection already chose the cue; move away, then use the button.
+        wc.cueList.selectAsUser([intro])
+        wc.setVisible(.inspector, false)
+        XCTAssertEqual(pc.table.doubleAction, #selector(PreshowWindowController.inspectClicked))
+        pc.inspectClicked()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
+        XCTAssertTrue(wc.isVisible(.inspector))
+        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
+        pc.close()
+    }
+
+    func testHidingAnEntryDropsItFromTheListAndSaysSoUntilUnhidden() async throws {
+        let rig = try await demoRig()
+        let pc = PreshowWindowController(store: rig.store)
+        pc.show(try fixtureReport())
+        let all = pc.rows.filter { !$0.isHeading }.count
+        let row = try XCTUnwrap(pc.rows.firstIndex { !$0.isHeading && $0.section == .media })
+        let hiddenRow = pc.rows[row]
+        pc.toggleHidden(row: row)
+        XCTAssertEqual(pc.rows.filter { !$0.isHeading }.count, all - 1)
+        XCTAssertFalse(pc.rows.contains { $0.hideKey == hiddenRow.hideKey })
+        XCTAssertEqual(pc.hiddenCount, 1)
+        XCTAssertEqual(
+            pc.summaryLabel.stringValue,
+            String(format: loc("preshow.summary.hidden"), PreshowRows.summary(try fixtureReport()), 1))
+        // Shown again on request, dimmed; unhiding brings it back for good.
+        pc.setShowHidden(true)
+        let back = try XCTUnwrap(pc.rows.firstIndex { $0.hideKey == hiddenRow.hideKey })
+        XCTAssertTrue(pc.rows[back].isHidden)
+        pc.toggleHidden(row: back)
+        pc.setShowHidden(false)
+        XCTAssertEqual(pc.rows.filter { !$0.isHeading }.count, all)
+        XCTAssertEqual(pc.hiddenCount, 0)
+    }
 }

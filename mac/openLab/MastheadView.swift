@@ -2,11 +2,18 @@
 
 import AppKit
 
-/// GO button, standing-by cue name and its notes. Read-only until the store exists (M5.2+).
-final class MastheadView: NSView {
+/// GO button, the standing-by cue as "number, name" on one line, and its notes. As in QLab the
+/// notes are editable in Edit Mode and read-only in Show Mode.
+final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
     let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
     let notesView = NSTextView()
+    /// The cue the masthead shows; nil when nothing stands by.
+    private(set) var cueID: ModelID?
+    /// Show Mode (or no cue): the notes cannot be typed in.
+    var isLocked = false { didSet { applyEditable() } }
+    /// The typed notes for the shown cue; the window sends them the way the inspector does.
+    var onCommitNotes: ((ModelID, String) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -31,9 +38,14 @@ final class MastheadView: NSView {
         standbyField.maximumNumberOfLines = 1
 
         notesView.setAX(AX.standbyNotes, label: loc("masthead.notes.label"))
+        // Only editable in Edit Mode with a cue. Locked, it takes no focus: a focused text view
+        // swallows the transport keys (Space = GO).
         notesView.isEditable = false
-        // A focused text view swallows the transport keys (Space = GO), so it must not take focus.
         notesView.isSelectable = false
+        notesView.isRichText = false
+        notesView.isAutomaticQuoteSubstitutionEnabled = false
+        notesView.isAutomaticDashSubstitutionEnabled = false
+        notesView.delegate = self
         notesView.drawsBackground = false
         notesView.font = .systemFont(ofSize: 13)
         notesView.textColor = .secondaryLabelColor
@@ -66,6 +78,32 @@ final class MastheadView: NSView {
             goButton.heightAnchor.constraint(equalToConstant: 80),
             notesScroll.heightAnchor.constraint(equalToConstant: 44),
         ])
+    }
+
+    private func applyEditable() {
+        let on = !isLocked && cueID != nil
+        notesView.isEditable = on
+        notesView.isSelectable = on
+        if !on, notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
+    }
+
+    /// Shows `cue` as standing by. Notes the operator is typing are not overwritten.
+    func show(standby cue: Cue?) {
+        cueID = cue?.id
+        if let cue {
+            standbyField.stringValue = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: ", ")
+        } else {
+            standbyField.stringValue = loc("masthead.standby.none")
+        }
+        let notes = cue?.raw["notes"]?.stringValue ?? ""
+        if notesView.string != notes, notesView.window?.firstResponder !== notesView { notesView.string = notes }
+        applyEditable()
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+        guard !isLocked, let id = cueID else { return }
+        onCommitNotes?(id, notesView.string)
     }
 
     @available(*, unavailable)
