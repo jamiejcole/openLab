@@ -1,0 +1,7 @@
+{
+  "type": "transport",
+  "id": 33,
+  "action": {
+    "type": "reset_all"
+  }
+}

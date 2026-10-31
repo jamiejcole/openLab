@@ -387,6 +387,16 @@ Problems that keep a cue from running are found **before it is triggered** (NFR-
 
 `Input::StopAll` (OSC `/stop` and `/hardStop`): every cue of every list, at every depth, and every preview stops at once, children before their groups, exactly as `Stop` with no fade does for one cue (pending pre-waits, continues and devamp next cues fire nothing). It ends any panic window (`panic_end()` is `None` after it), so a Panic right after is a new panic with its fade, not a second press. `Input::PanicCue { cue }` (OSC `/cue/{n}/panic`) is the cue's own panic of its `panic` second trigger (see `panic_tree`): the cue and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched. **Second press** (QLab check Q7, M4.1d): `PanicCue` on a cue that, or whose descendant, is already fading out in a panic (its own or a workspace Panic) stops it and what is in it at once (`StopVoice` with no fade); other cues keep playing. The `panic` second-trigger option does not do this (a trigger on a cue fading out in a panic restarts it, see Second trigger). Both ignore an unknown cue or nothing running (`PanicCue` warns `UnknownCue` for an id not in the workspace).
 
+## Reset All
+
+`Input::ResetAll` (protocol `reset_all`, the app's sidebar Reset all) follows QLab's sidebar reset (manual pp. 97-98: hard stop of everything, temporary changes reset, every playhead to its list's first cue, the workspace as just opened). As one input, in this order:
+
+- **Stop All** (see above): every cue of every list at every depth and every preview stops at once, a panic fade under way included; no panic window is left, so a Panic right after is a first one with its fade.
+- **Reset** of every cue that still has a runtime, children before their groups: a cue broken at run time is cleared (its pending auto-continue cancelled), a loaded cue unloads (`UnloadVoice`). A cue with static problems stays broken, as Reset leaves it.
+- **Random groups** forget their round-robin cycle (as a new engine: the workspace opened again).
+- **Playheads**: each list's playhead moves to its first cue (none for an empty list); the binary primes the cues from there as after any playhead move ([Actions for the binary](#actions-for-the-binary-m42-contract)). QLab also loads that first cue; openLab's priming takes the place of that load.
+- **Kept**: Arm/Disarm changes and level edits (they are edits of the model, saved with the show; QLab check A1), double-GO protection's timer.
+
 ## Pause All and Resume All (PB-04)
 
 - `Input::PauseAll` pauses every active cue of every list at every depth, groups before their children, with the Pause operation (so every pause rule holds: timers, voices `PauseVoice`, Fade cues holding their ramps, devamps kept). Stopping, loaded, idle and broken cues are left as they are (as Pause leaves them). Then every playing preview pauses (QLab check V4, see [Preview](#preview-cue-05-pb-09)).

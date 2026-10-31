@@ -4,8 +4,8 @@ import AppKit
 
 /// The transport commands in the Transport menu, in menu order.
 enum TransportCommand: String, CaseIterable, Codable, Sendable {
-    case go, stopAll, pauseAll, resumeAll, panic
-    case loadSelected, startSelected, pauseResumeSelected, stopSelected, resetSelected, previewSelected
+    case go, stopAll, pauseAll, resumeAll, resetAll, panic
+    case loadSelected, startSelected, pauseResumeSelected, stopSelected, panicSelected, resetSelected, previewSelected
 
     var titleKey: String { "menu.transport.\(rawValue)" }
 }
@@ -83,7 +83,9 @@ enum KeyBindError: Error, Equatable {
 /// - There are no Next / Previous Cue keys (format v6): QLab's key map has none and takes no Up or
 ///   Down arrow; the arrows and the fixed Select Next / Select Previous items move the selection.
 /// - The model has no fields for the selected-cue keys: Load Selected `L`, Pause/Resume
-///   Selected `P` and Preview Selected `V` (QLab's key) are fixed app defaults, dropped if a show's key already uses the chord.
+///   Selected `P`, Preview Selected `V` and Panic Selected `S` (QLab's keys) are fixed app
+///   defaults, dropped if a show's key already uses the chord.
+/// - Reset All has no key (QLab has none); it is the sidebar button and the Transport menu item.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
 /// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
@@ -97,6 +99,7 @@ struct TransportKeys: Equatable {
 
     static let fixed: [(TransportCommand, KeyChord)] = [
         (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")), (.previewSelected, KeyChord("v")),
+        (.panicSelected, KeyChord("s")),
     ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
@@ -105,7 +108,7 @@ struct TransportKeys: Equatable {
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (L, P, V) that one of them
+    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (L, P, V, S) that one of them
     /// uses yields to it, so an app default never silently takes a show's key.
     init(settings: JSONValue?, cueChords: Set<KeyChord> = []) {
         let hotkeys = settings?["hotkeys"]
