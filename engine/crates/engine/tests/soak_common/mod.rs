@@ -18,7 +18,6 @@
 //! See `soak.rs` for what is checked and why.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
 
 use openlab_core::protocol::{
     ClientMessage, Outcome, RequestId, RuntimeChange, ServerMessage, Snapshot, TransportAction,
@@ -32,7 +31,6 @@ use openlab_engine::control::Control;
 
 use crate::show::{BLOCK, RATE, audio, cue, dc, id, list_id, wav, with_slices, workspace};
 
-const SETTLE: Duration = Duration::from_secs(30);
 /// Bounds that hold with a wide margin on a healthy run; a leak crosses them within hours.
 pub const MAX_VOICES: usize = 64;
 pub const MAX_STREAMS: usize = 128;
@@ -895,12 +893,10 @@ impl<D: Driver> Soak<D> {
         // A disk worker closes a released stream on its own thread, a moment after the handle
         // is dropped: wait for it (a hang guard, as the audio crate's own tests do). A stream
         // that is never closed is the leak this looks for.
-        let deadline = Instant::now() + SETTLE;
-        while q.open != q.held && Instant::now() < deadline {
-            std::thread::yield_now();
+        crate::show::spin::spin_until("a stream is open but not held", || {
             q = self.d.with(Quiet::of);
-        }
-        assert_eq!(q.open, q.held, "a stream is open but not held");
+            q.open == q.held
+        });
         assert_eq!(q.deferred, 0);
         assert_eq!(q.mixer_voices, 0, "the mixer still holds voices");
         assert_eq!(

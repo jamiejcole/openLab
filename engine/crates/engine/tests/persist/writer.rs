@@ -521,10 +521,7 @@ fn a_stalled_save_does_not_stop_other_shows_and_its_show_saves_again_after() {
     // The volume answers again: the stale write lands, then a new save goes over it.
     release.send(()).unwrap();
     stuck.recv_timeout(hang_guard).unwrap().unwrap();
-    let deadline = std::time::Instant::now() + hang_guard;
-    while writer.stalled_threads() > 0 && std::time::Instant::now() < deadline {
-        thread::yield_now();
-    }
+    crate::spin::spin_until("the stale thread to end", || writer.stalled_threads() == 0);
     assert_eq!(writer.stalled_threads(), 0);
     writer
         .save(newer, pa.clone(), 3, 20, 3)
@@ -584,10 +581,7 @@ fn a_stalled_save_still_lets_its_workspace_be_saved_elsewhere_and_autosaved() {
         .unwrap();
     release.send(()).unwrap();
     stuck.recv_timeout(hang_guard).unwrap().unwrap();
-    let deadline = std::time::Instant::now() + hang_guard;
-    while writer.stalled_threads() > 0 && std::time::Instant::now() < deadline {
-        thread::yield_now();
-    }
+    crate::spin::spin_until("the stale thread to end", || writer.stalled_threads() == 0);
     assert_eq!(writer.stalled_threads(), 0);
     assert!(
         std::fs::read_to_string(&recovery)

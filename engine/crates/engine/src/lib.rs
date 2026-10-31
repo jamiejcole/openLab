@@ -20,6 +20,11 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The hang guard for tests that wait on a thread of their own, shared with the integration tests.
+#[cfg(test)]
+#[path = "../../audio/tests/common/spin.rs"]
+pub(crate) mod spin;
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -341,10 +341,9 @@ fn discarding_edits_removes_their_autosave_so_it_is_not_offered_later() {
     assert!(r.s.control().doc_ids().is_empty());
     r.s.settle_docs();
     // The worker removes it asynchronously: wait for it through the inbox-free path.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !names(&recovery).is_empty() && std::time::Instant::now() < deadline {
-        thread::yield_now();
-    }
+    crate::show::spin::spin_until("the recovery file to be removed", || {
+        names(&recovery).is_empty()
+    });
     assert!(names(&recovery).is_empty(), "{:?}", names(&recovery));
     // Opening the show now offers nothing.
     let replies = request(&mut r.s, open(&path));
@@ -1303,10 +1302,9 @@ fn a_stalled_read_times_out_with_io_and_the_next_request_works() {
     // The stuck read comes back much later: its answer is stale and changes nothing, and the
     // worker leaves.
     release.send(()).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while r.s.control().stuck_doc_workers() > 0 && std::time::Instant::now() < deadline {
-        thread::yield_now();
-    }
+    crate::show::spin::spin_until("the stuck worker to leave", || {
+        r.s.control().stuck_doc_workers() == 0
+    });
     assert_eq!(r.s.control().stuck_doc_workers(), 0);
     r.s.tick();
     assert_eq!(r.s.control().workspace().name, "other");
@@ -1482,10 +1480,9 @@ fn an_answer_already_in_the_inbox_when_the_timeout_fires_is_not_reported_as_io()
         reply: tx,
     });
     // The worker has read the file and posted its answer, which nobody has applied yet.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while r.s.control().doc_answers_posted() == 0 && std::time::Instant::now() < deadline {
-        thread::yield_now();
-    }
+    crate::show::spin::spin_until("the worker to post its answer", || {
+        r.s.control().doc_answers_posted() != 0
+    });
     assert_eq!(r.s.control().doc_answers_posted(), 1);
     r.clock.advance(25_000);
     // A tick that does not apply the inbox first: the timeout check runs with the answer unread.

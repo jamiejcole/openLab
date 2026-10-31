@@ -342,11 +342,9 @@ fn resolve_ok(net: &mut NetOut, n: u128, addrs: Vec<SocketAddr>, now: SampleTime
 
 /// Waits (bounded, no sleeping) until every queued message has been handled.
 fn drained(net: &NetOut) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while net.outstanding.load(Ordering::SeqCst) > 0 {
-        assert!(Instant::now() < deadline, "workers never drained");
-        thread::yield_now();
-    }
+    crate::spin::spin_until("workers never drained", || {
+        net.outstanding.load(Ordering::SeqCst) == 0
+    });
 }
 
 fn send_one(net: &mut NetOut, p: &NetworkPatch) {
@@ -658,14 +656,7 @@ fn two_docs_share_the_look_up_bound() {
         "a hung thread of a closed doc still counts"
     );
     held.release();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while alive.alive() > 0 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the thread never ended"
-        );
-        std::thread::yield_now();
-    }
+    crate::spin::spin_until("the thread never ended", || alive.alive() == 0);
 }
 
 #[test]
@@ -699,14 +690,9 @@ fn idle_senders_are_freed_when_the_limit_is_reached() {
     }
     // The workers drain on their own threads; wait until every queue is empty, so the
     // senders are idle (bounded: a failure guard, not a timing assumption).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while net.links.values().any(|l| !l.tx.is_empty()) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "workers never drained"
-        );
-        std::thread::yield_now();
-    }
+    crate::spin::spin_until("workers never drained", || {
+        net.links.values().all(|l| l.tx.is_empty())
+    });
     for n in limit..limit + 10 {
         let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
         assert_eq!(o, SendOutcome::Queued, "{n}");

@@ -8,9 +8,11 @@
 //! forbidden.
 
 mod common;
+#[path = "common/spin.rs"]
+mod spin;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::media::*;
 use common::*;
@@ -265,11 +267,10 @@ fn loops_beyond_the_cache_bounds_seek_as_before() {
     render(&mut r, BLOCK);
     drop(h);
     ctl.pump();
-    let deadline = Instant::now() + FAILSAFE;
-    while d.cache_bytes() != 0 && Instant::now() < deadline {
-        std::thread::yield_now();
+    spin::spin_until("the loop-exit cache to be freed", || {
         ctl.pump();
-    }
+        d.cache_bytes() == 0
+    });
     assert_eq!(d.cache_bytes(), 0);
 }
 

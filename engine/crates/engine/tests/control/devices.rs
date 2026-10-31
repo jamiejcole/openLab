@@ -1465,15 +1465,10 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
         request: Request::New {},
     });
     // Another doc opens beside the first, built on the document worker.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while s.control().doc_ids().len() < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the new doc was not installed"
-        );
+    crate::show::spin::spin_until("the new doc to be installed", || {
         s.tick();
-        std::thread::yield_now();
-    }
+        s.control().doc_ids().len() >= 2
+    });
     let docs = s.control().doc_ids();
     let new_ws = s.control().doc(docs[1]).unwrap().workspace().clone();
     let patch = new_ws.patches[0].id;

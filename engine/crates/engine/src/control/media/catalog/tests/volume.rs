@@ -44,11 +44,13 @@ impl Hang {
 
     fn wait_entered(&self, n: usize) {
         let mut g = lock(&self.0);
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Consecutive 1 s waits in which no probe came.
+        let mut idle = 0;
         while g.0 < n {
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "probes never came");
-            g = self.1.wait_timeout(g, left).unwrap().0;
+            assert!(idle < 30, "probes never came");
+            let seen = g.0;
+            g = self.1.wait_timeout(g, Duration::from_secs(1)).unwrap().0;
+            idle = if g.0 == seen { idle + 1 } else { 0 };
         }
     }
 }
@@ -145,11 +147,9 @@ fn a_hung_volume_with_many_files_cannot_delay_a_healthy_one() {
     assert!(matches!(cat.get("/healthy/h.wav"), Some(Probe::Ready(_))));
     // One trial of the dead volume runs; the three others wait (no worker taken).
     DEAD_VOLUME.wait_entered(3);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while lock(&cat.pool.gate).deferred.len() < 3 {
-        assert!(Instant::now() < deadline, "files never deferred");
-        std::thread::yield_now();
-    }
+    crate::spin::spin_until("files never deferred", || {
+        lock(&cat.pool.gate).deferred.len() >= 3
+    });
     assert_eq!(DEAD_VOLUME.entered(), 3);
     assert_eq!(cat.abandoned_workers(), 2);
     for k in &dead {
@@ -330,11 +330,9 @@ fn files_waiting_on_a_share_that_recovers_are_all_probed_though_stuck_jobs_never
     }
     cat.prioritize(rest.iter().map(String::as_str));
     WEDGED_SHARE.wait_entered(3);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while lock(&cat.pool.gate).deferred.len() < 3 {
-        assert!(Instant::now() < deadline, "files never deferred");
-        std::thread::yield_now();
-    }
+    crate::spin::spin_until("files never deferred", || {
+        lock(&cat.pool.gate).deferred.len() >= 3
+    });
     // The share answers: the hung reads return, the stall ends, and every waiting file is
     // probed, however many workers were abandoned before.
     WEDGED_SHARE.open();

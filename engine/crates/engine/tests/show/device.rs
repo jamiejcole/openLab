@@ -30,6 +30,8 @@ use super::{BLOCK, RATE, mixer_config};
 
 /// How long the driver waits for the device thread or a disk worker before failing the test.
 const WAIT: Duration = Duration::from_secs(30);
+/// Timed-out 20 ms waits before a wait for another thread is called a hang.
+const WAIT_STEPS: u32 = 1_500;
 
 /// A listed output device with `channels` channels at [`RATE`].
 pub fn listed(id: &str, name: &str, channels: u16) -> ListedDevice {
@@ -421,14 +423,17 @@ impl DeviceShow {
     }
 
     fn settle_media(&mut self) {
-        let deadline = Instant::now() + WAIT;
+        let mut timeouts = 0;
         while self.control.probes_pending() > 0 {
-            assert!(Instant::now() < deadline, "probes never answered");
             match self.inbox.recv_timeout(Duration::from_millis(20)) {
                 Ok(msg) => {
                     let _ = self.control.handle(msg);
                 }
-                Err(_) => self.control.tick(),
+                Err(_) => {
+                    timeouts += 1;
+                    assert!(timeouts <= WAIT_STEPS, "probes never answered");
+                    self.control.tick();
+                }
             }
         }
         self.pump_inbox();
@@ -553,17 +558,20 @@ impl DeviceShow {
         let id = self.request_id();
         self.control
             .open_doc(DocSource::Workspace(Box::new(ws)), id, &tx);
-        let deadline = Instant::now() + WAIT;
+        let mut timeouts = 0;
         let doc = loop {
             if let Some((_, doc)) = self.control.take_opened().pop() {
                 break doc;
             }
-            assert!(Instant::now() < deadline, "the doc was never installed");
             match self.inbox.recv_timeout(Duration::from_millis(20)) {
                 Ok(msg) => {
                     let _ = self.control.handle(msg);
                 }
-                Err(_) => self.control.tick(),
+                Err(_) => {
+                    timeouts += 1;
+                    assert!(timeouts <= WAIT_STEPS, "the doc was never installed");
+                    self.control.tick();
+                }
             }
         };
         self.settle_media();

@@ -19,6 +19,9 @@ final class LevelsUITests: XCTestCase {
 
     private func type(_ text: String, into field: XCUIElement) {
         field.click()
+        // Keystrokes sent before the click has made the field first responder are lost on a busy
+        // runner, which left the field at its old value.
+        XCTAssertTrue(waitFor("hasKeyboardFocus == true", field), "the field takes focus")
         field.typeKey("a", modifierFlags: .command)
         field.typeText(text + "\r")
     }

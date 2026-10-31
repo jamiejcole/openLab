@@ -240,7 +240,8 @@ mod tests {
         for name in [&stale, &fresh] {
             fs::write(name, "{").unwrap();
         }
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        // Long ago by any clock: the temp-file sweep compares file ages with the current time.
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(600);
         fs::File::options()
             .write(true)
             .open(&stale)
