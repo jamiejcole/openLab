@@ -60,13 +60,13 @@ enum CueKindStyle {
 
     static func kindLabel(_ type: String) -> String { kinds[type].map { loc($0.labelKey) } ?? type }
 
-    /// Each colour has its own shape as well as its tint (UI-04).
-    static let colours: [String: (icon: Icon, labelKey: String, tint: NSColor)] = [
-        "red": (.colourRed, "cue.colour.red", .systemRed),
-        "orange": (.colourOrange, "cue.colour.orange", .systemOrange),
-        "green": (.colourGreen, "cue.colour.green", .systemGreen),
-        "blue": (.colourBlue, "cue.colour.blue", .systemBlue),
-        "purple": (.colourPurple, "cue.colour.purple", .systemPurple),
+    /// A cue colour only tints its row, as in QLab; it is not a state, so it has no shape.
+    static let colours: [String: (labelKey: String, tint: NSColor)] = [
+        "red": ("cue.colour.red", .systemRed),
+        "orange": ("cue.colour.orange", .systemOrange),
+        "green": ("cue.colour.green", .systemGreen),
+        "blue": ("cue.colour.blue", .systemBlue),
+        "purple": ("cue.colour.purple", .systemPurple),
     ]
 
     static let continueModes: [String: (icon: Icon, labelKey: String)] = [

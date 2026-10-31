@@ -218,15 +218,22 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(CueTime.progress(elapsed: 2, remaining: nil), "00:02.00")
     }
 
-    func testColourFlagAndContinueAreShownWithShapesAndLabels() async throws {
+    func testColourTintsRowFlagIsInStatusColumnAndContinueHasLabel() async throws {
         let h = try await H()
         let h2 = h.vc
         h.spy.expandItem(try XCTUnwrap(h2.node(H.group)))
         let name = try XCTUnwrap(h.cell("name", H.rain))
-        XCTAssertFalse(name.images[1].isHidden)
-        XCTAssertEqual(name.images[1].accessibilityLabel(), loc("cue.colour.blue"))
-        XCTAssertFalse(name.images[2].isHidden)
-        XCTAssertEqual(name.images[2].accessibilityLabel(), loc("cue.flagged"))
+        // A colour adds no marker to the Name column; the flag is a status-column icon.
+        XCTAssertTrue(name.images[1...].allSatisfy(\.isHidden))
+        let status = try XCTUnwrap(h.cell("status", H.rain))
+        XCTAssertFalse(status.images[3].isHidden)
+        XCTAssertEqual(status.images[3].accessibilityLabel(), loc("cue.flagged"))
+        // A flagged cue inside a group: the open group shows no flag, the collapsed one a hollow flag.
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[3].isHidden)
+        h.spy.collapseItem(try XCTUnwrap(h2.node(H.group)))
+        let groupFlag = try XCTUnwrap(h.cell("status", H.group)).images[3]
+        XCTAssertEqual(groupFlag.accessibilityLabel(), loc("cue.flagged.inside"))
+        h.spy.expandItem(try XCTUnwrap(h2.node(H.group)))
         let cont = try XCTUnwrap(h.cell("continue", H.rain))
         XCTAssertEqual(cont.images[0].accessibilityLabel(), loc("cue.continue.autoFollow"))
         // Row tint is the colour; a cue with no colour has none.
@@ -235,9 +242,26 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(row.tint, NSColor.systemBlue)
         let plain = try XCTUnwrap(h.spy.rowView(atRow: 0, makeIfNecessary: true) as? CueRowView)
         XCTAssertNil(plain.tint)
-        // Every colour has its own shape (UI-04).
-        let shapes = CueKindStyle.colours.values.map(\.icon.symbol)
-        XCTAssertEqual(Set(shapes).count, shapes.count)
+    }
+
+    func testCollapsedGroupFlagFollowsAChildFlaggedByTheEngine() async throws {
+        let h = try await H()
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
+        func groupFlag() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.group)).images[3] }
+        XCTAssertFalse(try groupFlag().isHidden, "Rain is flagged")
+        func rain(flagged: Bool) throws -> String {
+            var json = FakeEngine.cueJSON(
+                id: H.rain.raw, number: "2.2", name: "Rain", kind: FakeEngine.audioKind("media/r.wav"))
+            json.set("flagged", .bool(flagged))
+            return try H.upsertJSON(json, parent: H.group, index: 1)
+        }
+        // Only the child is upserted; the collapsed group's row must still redraw.
+        try h.change(upserts: [try rain(flagged: false)])
+        XCTAssertTrue(try groupFlag().isHidden)
+        try h.change(upserts: [try rain(flagged: true)])
+        XCTAssertEqual(try groupFlag().accessibilityLabel(), loc("cue.flagged.inside"))
+        try h.change(deletes: [H.rain])
+        XCTAssertTrue(try groupFlag().isHidden, "a deleted flagged child clears the flag")
     }
 
     func testDisarmedCueIsDimmed() async throws {

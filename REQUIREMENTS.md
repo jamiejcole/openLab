@@ -275,7 +275,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [ ] **UI-01** `v0.0.1` Settings split as in QLab 5. Application preferences (per machine): launch behaviour, autosave interval, audio devices and buffer size, MIDI devices. Workspace settings (travel with the show file, WS-06): GO protection, Panic time, backups, output patches and dB limits, hotkeys. ~~Theme~~ *(dropped 2026-10-29: QLab 5 has no theme control.)*
 - [ ] **UI-02** `v0.0.1` Resizable, dockable panels; layouts saved per machine.
 - [ ] **UI-03** `v0.0.1` UI scaling / font size for small laptop screens and high-DPI displays.
-- [ ] **UI-04** `v0.0.1` Cue state is never conveyed by colour alone (icon/shape too) — colour-blind safe.
+- [ ] **UI-04** `v0.0.1` Cue state is never conveyed by colour alone (icon/shape too) — colour-blind safe. A cue colour is a row highlight only, as in QLab; it is not a state.
 - [ ] **UI-05** Basic screen-reader support (VoiceOver / Narrator) for core list and transport controls.
 - [ ] **UI-06** `v0.0.1` UI text externalised for future localisation.
 - [ ] **UI-07** `v0.0.1` Layout, workflow, terminology and keyboard shortcuts closely follow QLab 5 so existing QLab users can switch with minimal retraining (main window: toolbar + GO/standby area, cue list, inspector tabs at the bottom, sidebar for lists/carts/active cues).

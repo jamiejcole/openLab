@@ -134,6 +134,7 @@
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
+"cue.flagged.inside" = "Contains a flagged cue";
 
 "cue.state.idle" = "Idle";
 "cue.state.loaded" = "Loaded";
