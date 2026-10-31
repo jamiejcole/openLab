@@ -28,7 +28,11 @@ This file is the only copy of every rule below; other files link here instead of
 ## Tests
 - Every change ships with tests; every bug fix with one regression test that failed before the fix. No variant matrices.
 - No real-time sleeps or wall-clock in tests: use the virtual clock or offline render driver.
-- New behaviour is proven by unit tests. Add an XCUITest only for a flow unit tests cannot reach (focus, window ordering) and say in the PR whether it joins the per-PR smoke set (`scripts/ui-smoke.txt`, 3 tests: launch, GO, panic) or only the nightly full suite (the default).
+- A user-visible behaviour is proven end to end: the test performs the user's action on the app with the real engine and asserts what the user sees (selected row, standby, the icon and text actually drawn, a window's frame, no system beep). A test that only asserts the app sent a message or set a property does not prove a UI behaviour (Medium).
+- App tests use the real engine, never an engine double. `FakeEngine` is being deleted (#132): no new test uses it, and until #132 lands a flow's real-engine check is the implementer running the built app with the real engine and reporting what it showed.
+- A feature issue's Checklist is acceptance flows, written before implementation from QLab 5's behaviour (manual pages cited): starting state → user action → what the user sees. The implementer does not edit them; each flow has a real-engine test named after it, and a box is ticked only when that test passes.
+- Unit tests prove logic; an XCUITest covers a flow unit tests cannot drive (real key events, focus, window ordering, layout). Say in the PR whether it joins the per-PR smoke set (`scripts/ui-smoke.txt`) or only the nightly full suite (the default).
+- Expensive suites (being built in #132; until then they do not exist in CI) run only when needed: real-engine app tests run in CI when the engine, the protocol or the app's engine client changes, nightly and on demand; the core-flows set runs nightly and after big feature changes.
 - Extend the existing test file and `tests/common`; no new harness types. `tests/common/mod.rs` starts with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - A test that cannot run here fails or reports a skip; it never passes by returning early.
 - Test-only code (fakes, fault switches, fixtures) never compiles into a Release product.
@@ -63,10 +67,12 @@ This file is the only copy of every rule below; other files link here instead of
 
 ## Review
 - Every change is reviewed by a `pr-reviewer` agent on a different model or a fresh context from its implementer (Sonnet work: Opus review; Opus work: a fresh Opus review). The orchestrator never reviews its own change.
+- For a feature or other user-visible change (not a simple fix), review also covers the issue's flows: what the user sees after each step, including reactions that should exist but are missing (no diff shows those).
 - A High or Medium finding comes with the test or command the reviewer ran and its output. The orchestrator re-runs it before acting, and checks reports by running the named tests, not by reading summaries.
 
 ## Work and git
-- Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone.
+- Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
+- Fewer, flow-complete batches: an issue closes only when every flow on it passes.
 - Milestone and task IDs (`M5.4`) may appear in issues, PR titles and docs, never in code, comments or test names (requirement IDs are fine there).
 - Only the orchestrator ticks `REQUIREMENTS.md`, after merge. Notes and decisions go in the issue, the PR or the docs.
 - Commit with plain `git add` / `git commit`; author is the repo-local identity (`docs/dev-setup.md`); no `Co-authored-by` or AI trailer. Subject: area prefix + imperative, e.g. `core: add continue-mode state transitions`.
