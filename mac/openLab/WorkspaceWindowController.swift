@@ -18,6 +18,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPauseAll: (() -> Void)?
     var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
+    var onResetAll: (() -> Void)?
     /// A transport command from the cue row menu, for this window.
     var onCommand: ((TransportCommand) -> Void)? {
         didSet { cueList.onCommand = onCommand }
@@ -163,6 +164,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+        wire(sidebar.transportButtons[AX.transportReset], #selector(resetAllClicked))
     }
 
     /// Shows `id` in its list and selects it (a Warnings row was chosen). The selection is made
@@ -415,6 +417,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc private func pauseAllClicked() { onPauseAll?() }
     @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
+    @objc private func resetAllClicked() { onResetAll?() }
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.

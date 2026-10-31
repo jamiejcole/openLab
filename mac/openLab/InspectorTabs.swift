@@ -96,12 +96,9 @@ extension InspectorViewController {
     @objc func clearTargetClicked() {
         guard !isLocked, let cue = cueForEdit else { return }
         if cue.kindType == "audio" {
-            sendKind(
-                { kind in
-                    var kind = kind
-                    kind.set("media", .null)
-                    return kind
-                }, key: "media")
+            // `media` has its own property: `kind_fields` cannot name it (docs/commands.md).
+            messageLabel.stringValue = ""
+            send(.setProperty(cue.id, .media(nil)), cue: cue.id, key: "media", revert: [])
             render()
         } else if InspectorEdit.targetKinds.contains(cue.kindType) {
             messageLabel.stringValue = ""

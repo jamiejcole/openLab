@@ -76,6 +76,13 @@ final class LevelSetTests: XCTestCase {
         XCTAssertEqual(JSONValue.parse(try command.json.text()), fixture)
     }
 
+    func testKindFieldsCommandEnvelopeMatchesCoreFixture() throws {
+        let fixture = try Fixtures.json("client", "command_set_kind_fields")["command"]
+        let fields = try XCTUnwrap(fixture?["property"]?["value"]?.objectValue)
+        let command = Command.setProperty("00000000-0000-0000-0000-00000000000a", .kindFields(fields))
+        XCTAssertEqual(JSONValue.parse(try command.json.text()), fixture)
+    }
+
     func testAudioRoutingRoundTrip() throws {
         let k = FakeEngine.audioKind("a.wav")
         var set = try XCTUnwrap(LevelSet(kind: k))

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace-wide transport: Panic (PB-03), Stop All, Pause All and Resume All (PB-04). They reach every
-//! cue of every list at every depth through the per-cue operations, so every rule of those
-//! holds. Rules: `docs/cue-engine.md`, "Panic" and "Pause All and Resume All".
+//! Workspace-wide transport: Panic (PB-03), Stop All, Reset All, Pause All and Resume All
+//! (PB-04). They reach every cue of every list at every depth through the per-cue operations,
+//! so every rule of those holds. Rules: `docs/cue-engine.md`, "Panic", "Reset All" and "Pause
+//! All and Resume All".
 
 use std::collections::HashSet;
 
@@ -82,6 +83,31 @@ impl CueEngine {
                     self.stop_one(cue, None, cx);
                 }
             }
+        }
+    }
+
+    /// Reset All (QLab's sidebar reset, manual pp. 97-98): a hard stop of everything (as Stop
+    /// All), then a Reset of every cue that still has a runtime (broken at run time, loaded),
+    /// children before their groups; random groups start a fresh cycle and every list's
+    /// playhead goes back to its first cue, as when the workspace was opened. Priming the cue
+    /// now standing by is the binary's job, as after any playhead move.
+    pub(super) fn reset_all(&mut self, cx: &mut Ctx) {
+        self.stop_all(cx);
+        if !self.slots.is_empty() {
+            for tree in Self::trees(cx) {
+                for cue in tree.into_iter().rev() {
+                    if self.slots.contains_key(&cue) {
+                        self.reset_one(cue, cx);
+                    }
+                }
+            }
+        }
+        self.continued.clear();
+        self.random_cycles.clear();
+        let ws = cx.ws;
+        for list in &ws.cue_lists {
+            let first = super::playhead::positions(&list.cues).first().copied();
+            self.move_playhead(list.id, first, cx);
         }
     }
 

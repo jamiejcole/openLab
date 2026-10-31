@@ -14,9 +14,9 @@
 //! targets (so Start/GoTo cycles, self-targets and missing targets), duplicate ids (more
 //! cycles), and random input sequences: every operation, model edits (deletes, moves out of
 //! groups, reorders, mode and timing changes), Arm/Disarm changes applied to the model as the
-//! binary does, Panic, Pause All / Resume All, random media and device availability (static
-//! broken cues), device loss, previews, and faults of the simulated mixer (a voice that ends
-//! early or fails).
+//! binary does, Panic, Reset All, Pause All / Resume All, random media and device availability
+//! (static broken cues), device loss, previews, and faults of the simulated mixer (a voice that
+//! ends early or fails).
 //!
 //! **Simulated mixer.** [`Sim`] answers the engine's voice actions like the real mixer would,
 //! on virtual time: a voice ends after its length (end reports are delivered late, at the next
@@ -1289,7 +1289,22 @@ impl Run {
         self.input = input.clone();
         let now = self.now;
         let is_panic = input == Input::Panic;
+        let is_reset_all = input == Input::ResetAll;
         let actions = handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now);
+        // Reset All: the workspace as just opened (only static problems remain).
+        if is_reset_all {
+            prop_assert!(self.engine.next_deadline().is_none());
+            prop_assert!(self.engine.panic_end().is_none());
+            for (id, state) in self.engine.cue_states() {
+                prop_assert_eq!(state, CueState::Broken, "cue {} after Reset All", id);
+            }
+            for list in &self.ws.cue_lists {
+                prop_assert_eq!(
+                    self.engine.playhead(list.id),
+                    list.cues.first().map(|c| c.id)
+                );
+            }
+        }
         // Deadlines in `now .. now + lookahead` are committed (end excluded).
         let horizon = self.horizon();
         if std::env::var_os("OPENLAB_PROP_TRACE").is_some() {
@@ -2097,6 +2112,7 @@ impl Run {
                 cue: target,
                 run: RunId(u64::MAX - u64::from(s.b)),
             },
+            20 if s.b % 8 == 7 => Input::ResetAll,
             20 => Input::Panic,
             21 => Input::PauseAll,
             22 => Input::ResumeAll,

@@ -399,6 +399,73 @@ fn panic_fades_everything_out_together() {
 }
 
 #[test]
+fn a_second_panic_during_the_fade_cuts_every_output_to_silence() {
+    // PB-03 (QLab: Esc twice is a hard stop): the second press, well inside the 800-frame
+    // fade, silences both outputs from the sample it is carried out on.
+    let a = wav(&dc(16000, 1.0));
+    let b = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(1000);
+    let tp = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(200);
+    let t2 = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(1500);
+    for ch in 0..2 {
+        let x = s.channel(ch);
+        let cut = x.iter().rposition(|&v| v != 0.0).unwrap() + 1;
+        // Still fading when pressed, silent from the second press's sample on: well before
+        // the first panic's end.
+        assert!(x[t2 - 1] > 0.0, "channel {ch}");
+        assert!(
+            cut <= t2 + BLOCK as usize,
+            "channel {ch}: sound until {cut}, pressed at {t2}"
+        );
+        assert!(cut < tp + 800);
+    }
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().engine().panic_end(), None);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn reset_all_silences_every_output_at_once_and_rewinds_the_playhead() {
+    let a = wav(&dc(16000, 1.0));
+    let b = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![
+        audio(1, &a, 0),
+        audio(2, &b, 1),
+        audio(3, &b, 0),
+    ]));
+    go(&mut s);
+    go(&mut s);
+    s.run(1000);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(3)));
+    // Mid panic fade, so the reset also proves it ends the fade at once.
+    s.transport(TransportAction::Panic);
+    s.run(100);
+    let at = s.now() as usize;
+    s.transport(TransportAction::ResetAll);
+    s.run(1500);
+    for ch in 0..2 {
+        let x = s.channel(ch);
+        assert!(x[at - 1] > 0.0, "channel {ch}");
+        let cut = x.iter().rposition(|&v| v != 0.0).unwrap() + 1;
+        assert!(
+            cut <= at + BLOCK as usize,
+            "channel {ch}: sound until {cut}, reset at {at}"
+        );
+    }
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().engine().panic_end(), None);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
 fn pause_and_resume_keep_the_position() {
     let path = wav(&ramp(6000));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));

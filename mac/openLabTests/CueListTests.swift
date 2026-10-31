@@ -878,7 +878,8 @@ extension CueListTests {
         XCTAssertTrue(m.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === h.vc }, "this window's own")
         let transport = m.items.filter { $0.action == #selector(CueListViewController.rowCommand(_:)) }
         XCTAssertEqual(
-            transport.compactMap { $0.representedObject as? String }, ["previewSelected", "loadSelected", "panic"])
+            transport.compactMap { $0.representedObject as? String },
+            ["previewSelected", "loadSelected", "panicSelected"])
     }
 
     func testRightClickSelectsAnUnselectedRowButKeepsASelectionItIsIn() async throws {
