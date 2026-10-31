@@ -66,13 +66,14 @@ final class LevelsUITests: XCTestCase {
         let app = launchDemo()
         selectCue("Intro", in: app)
         app.typeKey(.downArrow, modifierFlags: [])  // the Fade cue below it
-        open("Fade", in: app)
+        open("Curve", in: app)
 
         let curve = app.popUpButtons["fade-curve"]
         XCTAssertTrue(curve.waitForExistence(timeout: 5))
         let duration = app.textFields["fade-duration"]
         XCTAssertEqual(duration.value as? String, "00:05.00")
 
+        open("Levels", in: app)
         let matrix = app.groups["fade-matrix"]
         XCTAssertTrue(matrix.waitForExistence(timeout: 5))
         clickCell(matrix, row: 0, column: 1)  // cue output 2: not faded yet
@@ -83,6 +84,7 @@ final class LevelsUITests: XCTestCase {
         XCTAssertTrue(waitFor("value == '-20.0'", field), "the Fade moves output 2 to -20 dB")
         XCTAssertTrue(waitFor("value == 1", active), "which makes it active")
 
+        open("Curve", in: app)
         type("3", into: duration)
         XCTAssertTrue(waitFor("value == '00:03.00'", duration), "the duration is stored")
     }
