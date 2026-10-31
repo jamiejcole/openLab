@@ -981,8 +981,13 @@ final class SystemEngineProcessesTests: XCTestCase {
             var status: Int32 = 0
             var error: Int32 = 0
         }
+        guard pid > 0 else {  // 0 or -1 would wait for, and kill, a whole process group
+            XCTFail("no child to reap (pid \(pid)) \(what)", file: file, line: line)
+            return nil
+        }
         let box = Box()
-        let reaped = XCTestExpectation(description: "child \(pid) exited")
+        // A semaphore, not an expectation: it is waited on twice (before and after the kill).
+        let reaped = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
             var status: Int32 = 0
             var r: pid_t
@@ -990,13 +995,15 @@ final class SystemEngineProcessesTests: XCTestCase {
             box.result = r
             box.status = status
             box.error = r < 0 ? errno : 0
-            reaped.fulfill()
+            reaped.signal()
         }
-        if XCTWaiter().wait(for: [reaped], timeout: timeout) != .completed {
+        if reaped.wait(timeout: .now() + timeout) == .timedOut {
             let state = Self.processState(pid)
             kill(pid, SIGKILL)
-            _ = XCTWaiter().wait(for: [reaped], timeout: 10)
-            XCTFail("child \(pid) \(what) did not exit within \(timeout) s; it was \(state)", file: file, line: line)
+            let after = reaped.wait(timeout: .now() + 10) == .timedOut ? "; not reaped 10 s after SIGKILL" : ""
+            XCTFail(
+                "child \(pid) \(what) did not exit within \(timeout) s; it was \(state)\(after)", file: file, line: line
+            )
             return nil
         }
         guard box.result == pid else {
@@ -1070,7 +1077,12 @@ final class SystemEngineProcessesTests: XCTestCase {
         let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("600"), nil]
         defer { for a in argv { free(a) } }
         XCTAssertEqual(posix_spawn(&pid, "/bin/sleep", nil, nil, argv, nil), 0)
-        XCTExpectFailure("the child is still sleeping when the wait ends") {
+        let options = XCTExpectedFailure.Options()
+        // Only the bound's own failure, and only once the killed child was reaped.
+        options.issueMatcher = {
+            $0.compactDescription.contains("did not exit within") && !$0.compactDescription.contains("not reaped")
+        }
+        XCTExpectFailure("the child is still sleeping when the wait ends", options: options) {
             XCTAssertNil(reap(pid, timeout: 0.5))
         }
         let alive = kill(pid, 0)
