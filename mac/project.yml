@@ -43,6 +43,8 @@ targets:
       - name: Build openlab-engine
         script: '"$SRCROOT/scripts/build-engine.sh"'
         basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/openlab-engine
     scheme:
       testTargets:
         - openLabTests

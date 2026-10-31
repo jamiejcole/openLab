@@ -276,6 +276,8 @@ jobs:
         if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle
         if: needs.changes.outputs.bundle == 'true'
+      - run: make test-bundle-rebuild
+        if: needs.changes.outputs.bundle == 'true'
 
   # The one check branch protection requires: green when every job that ran passed.
   result:

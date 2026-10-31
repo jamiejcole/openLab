@@ -9,7 +9,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac test-mac-ui-full mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: lint test test-rust test-mac test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -92,6 +92,10 @@ mac: project
 
 verify-bundle:
 	mac/scripts/verify-bundle.sh build/Build/Products/Release/openLab.app
+
+# Engine-only rebuild still gives a validly signed bundle (slow: Release builds; run in CI's mac job).
+test-bundle-rebuild:
+	mac/scripts/check-incremental-bundle.sh
 
 dmg:
 	@echo "dmg: not yet implemented (M6.1)"; exit 1
