@@ -78,7 +78,7 @@ final class FooterBar: NSView {
     /// The engine's health in one line (DX-03); clicking it opens the details.
     let statusButton = NSButton()
     private(set) var presentation = StatusPresentation.make(nil)
-    /// A result the operator asked for that needs no answer (a relink); stays until replaced.
+    /// A result the operator asked for that needs no answer (a relink); clears after a while (`noticeLifetime`) unless replaced.
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
@@ -122,6 +122,9 @@ final class FooterBar: NSView {
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
         noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let minNotice = noticeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
+        minNotice.priority = NSLayoutConstraint.Priority(749)
+        minNotice.isActive = true
         show(status: nil, connected: true)
 
         for spec in Self.specs {
@@ -171,7 +174,27 @@ final class FooterBar: NSView {
     }
 
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
-    func showNotice(_ text: String) { noticeLabel.stringValue = text }
+    func showNotice(_ text: String, error: Bool = false) {
+        noticeLabel.stringValue = text
+        noticeLabel.textColor = error ? .systemRed : .secondaryLabelColor
+        // An old notice must not stay up for the whole show. Each notice has its own generation, so
+        // an earlier timer never clears a later notice, even one with the same text.
+        noticeGeneration += 1
+        let mine = noticeGeneration
+        scheduleClear(noticeLifetime) { [weak self] in
+            guard let self, self.noticeGeneration == mine else { return }
+            self.noticeLabel.stringValue = ""
+            self.noticeLabel.textColor = .secondaryLabelColor
+        }
+    }
+
+    /// Seconds a notice stays up.
+    let noticeLifetime: TimeInterval = 60
+    private var noticeGeneration = 0
+    /// Runs `work` after `delay` seconds on the main queue (a seam: tests fire it by hand).
+    var scheduleClear: (TimeInterval, @escaping @MainActor () -> Void) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { work() } }
+    }
 
     /// Without a connection the last status is stale: the line says the engine is offline.
     func show(status: SystemStatus?, connected: Bool) {

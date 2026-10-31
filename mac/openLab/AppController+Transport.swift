@@ -216,8 +216,7 @@ extension AppController {
             controllers[ObjectIdentifier(store)]?.footer.showNotice(message)
         case .failure(let e):
             let message = String(format: loc("relink.failed"), describe(e))
-            _ = store.receive(.log(.error, message))
-            alerts.showError(message)
+            raise(message, from: store)
         }
     }
 

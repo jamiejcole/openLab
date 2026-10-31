@@ -10,7 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
-        alerts: { [unowned self] in appController.alerts })
+        alerts: { [unowned self] in alarmAlerts })
+    /// What the engine alarm raises errors and notices through: quiet in Show Mode (NFR-10).
+    @MainActor var alarmAlerts: WorkspaceAlerts { appController.gatedAlerts }
 
     /// The system pieces launching uses (tests inject them).
     private let launch: AppLaunch
@@ -216,7 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 return false
             }
             item.state = front.isVisible(area) ? .on : .off
-            return true
+            // Show Mode has taken the toolbar and inspector away (SM-01): their items wait.
+            return !(front.isShowMode && WorkspaceWindowController.hiddenInShowMode.contains(area))
         case #selector(selectCue(_:))?, #selector(movePlayheadToCue(_:))?, #selector(movePlayheadNext(_:))?,
             #selector(movePlayheadPrevious(_:))?:
             return appController.frontController != nil && !appController.isTextEditing()
@@ -225,7 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard let front = appController.frontController else { return false }
             return front.isVisible(.inspector) && !appController.isTextEditing()
         case #selector(loadToTime(_:))?:
-            return appController.frontController.map { !$0.cueList.selectedIDs().isEmpty } ?? false
+            // An edit-time tool: off in Show Mode, as in QLab.
+            return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty

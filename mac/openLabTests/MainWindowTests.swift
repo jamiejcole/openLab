@@ -180,7 +180,7 @@ final class MainWindowTests: XCTestCase {
         }
     }
 
-    func testMastheadShowsStandbyCueAsNumberCommaNameWithItsNotes() async throws {
+    func testMastheadShowsStandbyCueAsNumberDotNameWithItsNotes() async throws {
         let (wc, rig) = try await demoController()
         // The snapshot's playhead is shown from the start (an unnumbered cue: its name alone).
         XCTAssertEqual(wc.masthead.cueID, CueListHarness.fade)
@@ -189,7 +189,7 @@ final class MainWindowTests: XCTestCase {
         let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
         XCTAssertEqual(
             wc.masthead.standbyField.stringValue,
-            [cue.number, cue.listName].compactMap { $0 }.joined(separator: ", "))
+            [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} "))
         XCTAssertTrue(wc.masthead.notesView.isEditable)
     }
 
@@ -295,5 +295,62 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
         XCTAssertFalse(
             wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+    }
+
+    // MARK: Show Mode sizes and contrast (SM-01, SM-03)
+
+    func testMastheadMetricsGrowInShowModeByTheDocumentedProportions() {
+        let window = NSSize(width: 1200, height: 800)
+        let edit = MastheadMetrics.make(showMode: false, window: window)
+        let show = MastheadMetrics.make(showMode: true, window: window)
+        XCTAssertEqual(edit.goSize, NSSize(width: 84, height: 72))
+        XCTAssertEqual(show.goSize, NSSize(width: 144, height: 104))
+        XCTAssertEqual(show.standbyFontSize, edit.standbyFontSize * 2)
+        XCTAssertEqual(show.notesHeight / edit.notesHeight, 1.7, accuracy: 0.02)
+        XCTAssertEqual(show.notesFontSize / edit.notesFontSize, 1.7, accuracy: 0.1)
+        XCTAssertGreaterThan(show.height, edit.height)
+        // The GO button must still fit inside its masthead.
+        XCTAssertLessThanOrEqual(show.goSize.height + 20, show.height)
+        let tiny = MastheadMetrics.make(showMode: false, window: NSSize(width: 100, height: 100))
+        XCTAssertGreaterThanOrEqual(tiny.goSize.width, 80)
+        XCTAssertGreaterThanOrEqual(tiny.goSize.height, 56)
+    }
+
+    func testStandbyIsOneLineNumberDotName() async throws {
+        let (wc, rig) = try await demoController()
+        XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
+        try standBy(rig, CueListHarness.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        let number = try XCTUnwrap(cue.number, "the demo's Intro cue is numbered")
+        XCTAssertTrue(wc.masthead.standbyField.stringValue.hasPrefix(number + " \u{00B7} "))
+        wc.setShowMode(true)
+        XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
+        XCTAssertEqual(
+            wc.masthead.standbyField.font?.pointSize,
+            MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
+    }
+
+    func testShowModePaletteMeetsContrastTargets() {
+        typealias P = ShowModePalette
+        // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
+        XCTAssertGreaterThanOrEqual(P.contrast(P.standbyText, P.background), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.notesText, P.background), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.goText, P.goFill), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.goFill, P.background), 3)
+        XCTAssertEqual(P.contrast(P.RGB(r: 1, g: 1, b: 1), P.RGB(r: 0, g: 0, b: 0)), 21, accuracy: 0.001)
+        XCTAssertEqual(P.contrast(P.background, P.background), 1, accuracy: 0.001)
+    }
+
+    func testMastheadAppliesThePaletteInShowModeOnly() async throws {
+        let (wc, _) = try await demoController()
+        wc.setShowMode(true)
+        let c = try XCTUnwrap(
+            wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        XCTAssertEqual(c.redComponent, 0, accuracy: 0.001)
+        let go = try XCTUnwrap(
+            wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
+        wc.setShowMode(false)
+        XCTAssertNil(wc.masthead.layer?.backgroundColor)
     }
 }

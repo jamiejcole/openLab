@@ -41,7 +41,7 @@ extension AppController {
         switch result {
         case .success(let doc): show(doc)
         case .failure(.engine(.alreadyOpen, _)), .failure(.recoveryOffered): break  // shown; or Cancel
-        case .failure(let e): alerts.showError(String(format: loc("error.openFailed"), describe(e)))
+        case .failure(let e): gatedAlerts.showError(String(format: loc("error.openFailed"), describe(e)))
         }
         return result
     }
@@ -75,10 +75,10 @@ extension AppController {
         case .success?:
             dropWindow(ObjectIdentifier(store))
         case .failure(let e)?:
-            alerts.showError(String(format: loc("error.closeFailed"), describe(e)))
+            raise(String(format: loc("error.closeFailed"), describe(e)), from: store)
             return false
         case nil:
-            alerts.showError(String(format: loc("error.closeFailed"), loc("error.detail.timeout")))
+            raise(String(format: loc("error.closeFailed"), loc("error.detail.timeout")), from: store)
             return false
         }
         showLauncherIfNoWindows()
@@ -262,9 +262,9 @@ extension AppController {
             if let saveAsURL { noteRecent(saveAsURL) }
             return true
         case .failure(let e)?:
-            alerts.showError(String(format: loc("error.saveFailed"), describe(e)))
+            raise(String(format: loc("error.saveFailed"), describe(e)), from: store)
         case nil:
-            alerts.showError(String(format: loc("error.saveFailed"), loc("error.detail.timeout")))
+            raise(String(format: loc("error.saveFailed"), loc("error.detail.timeout")), from: store)
         }
         return false
     }
