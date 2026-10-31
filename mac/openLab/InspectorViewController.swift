@@ -224,12 +224,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             f.widthAnchor.constraint(equalToConstant: 80).isActive = true
         }
         loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        func pair(_ a: NSView, _ b: NSView) -> NSStackView {
-            let s = NSStackView(views: [a, b])
-            s.spacing = 8
-            s.alignment = .top
-            return s
-        }
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let nameRow = NSStackView(views: [kindIcon, nameField])
         nameRow.spacing = 4
@@ -255,7 +249,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 labelled(loc("cuelist.col.postWait"), postWaitField),
                 labelled(loc("inspector.continue"), continuePopup),
             ], width: 152)
-        _ = pair
         clearTargetButton.setAX("inspector-target-clear")
         clearTargetButton.isBordered = false
         clearTargetButton.image = NSImage(
