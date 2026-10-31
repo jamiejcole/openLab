@@ -2,9 +2,10 @@
 
 import AppKit
 
-/// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14), after Basics and Triggers as
-/// in QLab. Trims and the play count are fields of the cue's `kind`, so an edit sends the whole kind
-/// (core's `CueProperty::Kind`, as the Levels tab does) with only that field changed.
+/// The timing and loops tab of an Audio cue (AUD-10, AUD-11, AUD-12, AUD-14), after Basics and
+/// Triggers as in QLab. Trims, play counts, slices and the built-in fades are fields of the cue's
+/// `kind`, so an edit sends the whole kind (core's `CueProperty::Kind`, as the Levels tab does) with
+/// only those fields changed.
 extension InspectorViewController {
     func buildTimeLoopsTab() {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
@@ -62,16 +63,10 @@ extension InspectorViewController {
         timeLoops.showProgress(elapsed: store.progress[cue.id]?.elapsed)
     }
 
+    /// Sends `change` made to the cue as the model has it plus any edit not yet answered
+    /// (`cueForEdit`), then shows that at once, so the next edit and the waveform build on it.
     func sendTimeLoops(_ change: TimeLoopsPanel.Change) {
-        sendKind(
-            { kind in
-                var kind = kind
-                switch change {
-                case .start(let s): kind.set("start_time", .double(s))
-                case .end(let e): kind.set("end_time", e.map { .double($0) } ?? .null)
-                case .playCount(let n): kind.set("last_slice_play_count", .int(Int64(n)))
-                }
-                return kind
-            }, key: "timeLoops")
+        sendKind({ TimeLoopsPanel.apply(change, to: $0) }, key: "timeLoops")
+        if let cue = cueForEdit, cue.kindType == "audio" { renderTimeLoops(cue) }
     }
 }

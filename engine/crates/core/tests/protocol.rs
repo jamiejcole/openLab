@@ -441,6 +441,54 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // An Audio cue's timing as the Timing & Loops tab sends it (AUD-10, AUD-12): trims, slice
+    // markers with their play counts, the last slice's count, and the integrated fade-in and
+    // fade-out on one curve. The Swift test builds these fields through the tab; the engine's
+    // real-audio tests play this message.
+    let mut timed = audio();
+    if let CueKind::Audio {
+        start_time,
+        end_time,
+        fade_in,
+        fade_out,
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut timed
+    {
+        *start_time = 0.25;
+        *end_time = Some(1.75);
+        *fade_in = FadeSpec {
+            duration: 0.1,
+            curve: FadeCurve::SCurve,
+        };
+        *fade_out = FadeSpec {
+            duration: 0.2,
+            curve: FadeCurve::SCurve,
+        };
+        *slices = vec![
+            SliceMarker {
+                time: 0.5,
+                play_count: 3,
+            },
+            SliceMarker {
+                time: 1.0,
+                play_count: 1,
+            },
+        ];
+        *last_slice_play_count = 2;
+    }
+    add(
+        "command_set_audio_timing",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(10),
+                property: CueProperty::Kind { value: timed },
+            }),
+            coalesce: None,
+        }),
+    );
     // An Audio cue's file alone, and a raw clipboard to paste.
     add(
         "command_set_cue_media",
