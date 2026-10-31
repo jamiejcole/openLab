@@ -618,6 +618,66 @@ final class CueListTests: XCTestCase {
         for id in [H.intro, H.fade, H.group] { XCTAssertFalse(h.vc.isPlayheadInside(id)) }
     }
 
+    /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
+    /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
+    func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        let rows = h.visibleIDs()
+        let at = try XCTUnwrap(rows.firstIndex(of: H.group))
+        XCTAssertFalse(rows.contains(H.rain), "collapsed")
+        func sentPlayheads() -> [ModelID] {
+            h.rig.engine.receivedFrom.compactMap {
+                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
+                return nil
+            }
+        }
+        // Each direction goes to the group's neighbour, or (at an end of the list) nowhere: never
+        // to the opposite end.
+        var expected: [ModelID] = []
+        for (delta, row) in [(1, at + 1), (-1, at - 1)] {
+            h.vc.movePlayhead(by: delta)
+            if rows.indices.contains(row) { expected.append(rows[row]) }
+            await settle()
+            await assertEventually { sentPlayheads() == expected }
+        }
+        XCTAssertGreaterThan(rows.count, 1)
+    }
+
+    func testMenuDialogAnswersSelectMovePlayheadOrNameTheProblem() async throws {
+        let rig = try Rig()
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let wc = WorkspaceWindowController(store: rig.store)
+        let list = wc.cueList
+        let target = try XCTUnwrap(list.roots.first { $0.cue.number != nil })
+        let number = try XCTUnwrap(target.cue.number)
+        XCTAssertNil(wc.applyCueNumber(number, movePlayhead: false))
+        XCTAssertEqual(list.selectedIDs(), [target.id], "Select Cue selects it")
+        XCTAssertNil(wc.applyCueNumber(number, movePlayhead: true))
+        await assertEventually {
+            rig.engine.receivedFrom.contains {
+                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue == target.id }
+                return false
+            }
+        }
+        XCTAssertEqual(
+            wc.applyCueNumber("no-such", movePlayhead: true), String(format: loc("cue.prompt.notFound"), "no-such"))
+        XCTAssertEqual(
+            wc.applyCueNumber("no-such", movePlayhead: false), String(format: loc("cue.prompt.notFound"), "no-such"))
+        // Load to Time: a bad time (also a negative one: the engine's load takes 0 or more) is a notice.
+        for bad in ["", "abc", "-5", "1:75"] {
+            XCTAssertEqual(wc.applyLoadTime(bad, to: target.id), loc("cue.prompt.badTime"), bad)
+        }
+        var loads: [TransportAction] = []
+        wc.onCueAction = { loads.append($0) }
+        XCTAssertNil(wc.applyLoadTime("1:02.5", to: target.id))
+        XCTAssertEqual(loads, [.load(cue: target.id, at: 62.5)])
+        let before = rig.engine.receivedFrom.count
+        await settle()
+        XCTAssertEqual(rig.engine.receivedFrom.count, before, "nothing was sent for a bad time")
+    }
+
     // MARK: Progress
 
     func testProgressTouchesOnlyTheRunningRowsDurationCell() async throws {

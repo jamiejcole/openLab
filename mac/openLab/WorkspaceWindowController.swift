@@ -285,6 +285,68 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// One text field in a sheet; `done` gets the text when the first button is chosen.
+    private func askText(title: String, label: String, ok: String, field: String, done: @escaping (String) -> Void) {
+        guard let window else { return }
+        let input = NSTextField(string: field)
+        input.placeholderString = label
+        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+        input.setAccessibilityLabel(label)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = label
+        alert.accessoryView = input
+        alert.addButton(withTitle: ok)
+        alert.addButton(withTitle: loc("edit.cancel"))
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { done(input.stringValue) }
+        }
+    }
+
+    /// View > Select Cue... / Move Playhead to Cue...: asks for a cue number and then selects that
+    /// cue as a click would (the playhead follows), or only moves the playhead.
+    func promptCue(movePlayhead: Bool) {
+        let key = movePlayhead ? "menu.view.movePlayheadToCue" : "menu.view.selectCue"
+        askText(title: loc(key + ".title"), label: loc("cue.prompt.number"), ok: loc(key + ".ok"), field: "") {
+            [weak self] text in
+            guard let self, let problem = self.applyCueNumber(text, movePlayhead: movePlayhead) else { return }
+            self.showNotice(problem)
+        }
+    }
+
+    /// The dialog's answer for Select Cue / Move Playhead to Cue. Nil: done; else the notice to show.
+    func applyCueNumber(_ text: String, movePlayhead: Bool) -> String? {
+        guard let id = cueList.cue(numbered: text) else { return String(format: loc("cue.prompt.notFound"), text) }
+        if movePlayhead { cueList.setPlayhead(id) } else { cueList.selectAsUser([id]) }
+        return nil
+    }
+
+    /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
+    /// command (the Transport menu's Load Selected uses 0).
+    func promptLoadToTime() {
+        guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
+        askText(
+            title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
+            ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
+        ) {
+            [weak self] text in
+            guard let self, let problem = self.applyLoadTime(text, to: id) else { return }
+            self.showNotice(problem)
+        }
+    }
+
+    /// The dialog's answer for Load to Time. Nil: the load was sent; else the notice to show. The
+    /// engine's `load` takes 0 or more seconds, so a negative time is refused like any bad time.
+    func applyLoadTime(_ text: String, to id: ModelID) -> String? {
+        guard let seconds = CueTime.parse(text) else { return loc("cue.prompt.badTime") }
+        loadToTime(id, seconds)
+        return nil
+    }
+
+    func loadToTime(_ id: ModelID, _ seconds: Double) {
+        onCueAction?(.load(cue: id, at: seconds))
+    }
+
     private static func plain(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
 
     /// The workspace's name (set by the app as the engine reports it); Show Mode adds a suffix.

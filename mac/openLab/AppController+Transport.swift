@@ -21,15 +21,19 @@ extension AppController {
             : TransportKeys(settings: settings, cueChords: cueChords)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
         // fixed app defaults (L, P, V) already yielded to cue hotkeys inside `TransportKeys`.
-        let shadowed = cueChords.intersection(keys.chords.values)
+        // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
+        // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
+        let transportShadowed = cueChords.intersection(keys.chords.values)
+        let menuShadowed = cueChords.intersection(menuChords()).subtracting(transportShadowed)
+        let shadowed = transportShadowed.union(menuShadowed)
         if let cached, same, cached.shadowed == shadowed { return cached.keys }
         keyCache[id] = (settings, cueChords, shadowed, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {
-            _ = store.receive(
-                .log(.warn, String(format: loc("hotkeys.warn.shadowed"), chord.display)))
+            let key = transportShadowed.contains(chord) ? "hotkeys.warn.shadowed" : "hotkeys.warn.menuShadowed"
+            _ = store.receive(.log(.warn, String(format: loc(key), chord.display)))
         }
         return keys
     }
@@ -43,6 +47,27 @@ extension AppController {
     /// rows (one cue selected, the playhead follows).
     func selectAdjacentCue(by delta: Int) {
         frontController?.cueList.selectAdjacent(by: delta)
+    }
+
+    /// View > Playhead Next / Previous: the front list's playhead moves by `delta` rows.
+    func movePlayheadAdjacent(by delta: Int) {
+        frontController?.cueList.movePlayhead(by: delta)
+    }
+
+    /// View > Select Next / Previous Inspector Tab (the inspector must be showing).
+    func selectAdjacentInspectorTab(by delta: Int) {
+        guard let front = frontController, front.isVisible(.inspector) else { return }
+        if delta > 0 {
+            front.inspector.tabView.selectNextTabViewItem(nil)
+        } else {
+            front.inspector.tabView.selectPreviousTabViewItem(nil)
+        }
+    }
+
+    /// View > Inspector / Toolbar / GO Area / Sidebar: the footer toggle buttons' action.
+    func toggleLayout(_ area: LayoutArea) {
+        guard let front = frontController else { return }
+        front.setVisible(area, !front.isVisible(area))
     }
 
     /// Whether the menu item for `command` may fire now. Disabled items also let their key through
