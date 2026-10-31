@@ -470,6 +470,7 @@
 "timeLoops.unavailable" = "The waveform could not be read";
 "timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
 "timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";
+"timeLoops.invalid.unknownLength" = "The file has not been read yet: set the start once its length is known.";
 
 /* Engine lifecycle (M5.2, NFR-01, NFR-05) */
 "engine.alarm.window" = "Engine";

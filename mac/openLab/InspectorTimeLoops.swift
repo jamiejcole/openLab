@@ -39,10 +39,22 @@ extension InspectorViewController {
         } else if !audio, present {
             tabView.removeTabViewItem(item)
         }
-        guard audio else { return }
+        guard audio else {
+            timeLoops.isActive = false
+            return
+        }
         timeLoops.show(cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file)
+        updateTimeLoopsActive()
         updateTimeLoopsProgress()
     }
+
+    /// Peaks are fetched only while this tab is the one shown (and not in Show Mode, which the
+    /// panel checks): a click through Audio cues on another tab reads no files.
+    func updateTimeLoopsActive() {
+        timeLoops.isActive = timeLoopsItem != nil && tabView.selectedTabViewItem === timeLoopsItem
+    }
+
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) { updateTimeLoopsActive() }
 
     /// The playhead line follows the selected cue's progress.
     func updateTimeLoopsProgress() {

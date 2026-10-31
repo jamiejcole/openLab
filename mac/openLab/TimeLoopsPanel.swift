@@ -48,7 +48,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// Fetches peaks (the store's `waveform`).
     var loadPeaks: ((ModelID, Double, Double, Int) async -> Result<WaveformPeaks, EngineError>)?
     var isLocked = false {
-        didSet { applyLock() }
+        didSet {
+            applyLock()
+            if !isLocked, oldValue { reload() }
+        }
+    }
+    /// The tab is the one on screen. Peaks are fetched only then.
+    var isActive = false {
+        didSet { if isActive, !oldValue { reload() } }
     }
 
     private(set) var cache: [PeaksKey: WaveformPeaks] = [:]
@@ -233,9 +240,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         reload()
     }
 
-    /// The peaks for what is visible at the view's width: from the cache, or fetched.
+    /// The peaks for what is visible at the view's width: from the cache, or fetched. Only while
+    /// the tab is on screen and not in Show Mode: reading a waveform decodes the whole file, which
+    /// a show in progress must not pay for a click in the cue list.
     func reload() {
-        guard let file else { return }
+        guard let file, isActive, !isLocked else { return }
         let (a, b) = visible
         let scaleFactor = waveform.window?.backingScaleFactor ?? 2
         let width = Int(waveform.bounds.width * scaleFactor)
@@ -297,7 +306,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         guard let t = CueTime.parse(text) else { return refuse(field, "inspector.invalid.time") }
         if field === startField {
-            if let end, t > end - WaveformView.minLength { return refuse(field, "timeLoops.invalid.trim") }
+            // Until the file's length is known there is nothing to check a start against: the
+            // engine would take one past the end and the cue would play nothing.
+            guard let end else { return refuse(field, "timeLoops.invalid.unknownLength") }
+            if t > end - WaveformView.minLength { return refuse(field, "timeLoops.invalid.trim") }
             if t != startTime { onChange?(.start(t)) }
             field.stringValue = CueTime.format(t)
         } else if field === endField {

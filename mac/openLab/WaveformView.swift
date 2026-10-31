@@ -87,7 +87,7 @@ struct WaveformDrawing: Equatable {
 /// dimmed, and the playhead while the cue plays. Dragging a handle moves that trim; the new time is
 /// reported as it moves and committed once when the mouse goes up.
 @MainActor
-final class WaveformView: NSView {
+class WaveformView: NSView {
     enum Handle: Equatable { case start, end }
 
     static let rulerHeight: CGFloat = 18
@@ -139,6 +139,8 @@ final class WaveformView: NSView {
     /// The trims when the drag began: letting go there sends nothing.
     private var dragOrigin: (start: Double, end: Double?) = (0, nil)
     private var drawing: WaveformDrawing?
+    /// The width changed during a live resize: [`onResize`] is owed when it ends.
+    private var resizedLive = false
 
     override var isFlipped: Bool { true }
 
@@ -151,8 +153,21 @@ final class WaveformView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize.width != frame.width
         super.setFrameSize(newSize)
-        if changed {
-            scale.width = newSize.width
+        guard changed else { return }
+        scale.width = newSize.width
+        // While the window is dragged to a new size the drawing stretches to fit; the peaks for
+        // the new width are asked for once, when the drag ends.
+        if inLiveResize {
+            resizedLive = true
+        } else {
+            onResize?()
+        }
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        if resizedLive {
+            resizedLive = false
             onResize?()
         }
     }

@@ -233,6 +233,63 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(kinds.last?["last_slice_play_count"], .double(1))
     }
 
+    // MARK: When peaks are asked for
+
+    /// Selecting Audio cues with another tab showing reads no file; showing the tab does.
+    func testNoPeaksAreAskedWhileTheTabIsHidden() async {
+        vc.setSelection([Self.intro])
+        vc.tabView.selectTabViewItem(withIdentifier: "basics")
+        vc.setSelection([CueListHarness.fade])
+        vc.setSelection([Self.intro])
+        XCTAssertNil(panel.loading)
+        XCTAssertEqual(waveformRequests, 0)
+        vc.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        await panel.loading?.value
+        XCTAssertEqual(waveformRequests, 1)
+        XCTAssertNotNil(wave.peaks)
+    }
+
+    /// SM-01: in Show Mode no file is read for a waveform; back in Edit Mode it is.
+    func testNoPeaksAreAskedInShowMode() async {
+        vc.isLocked = true
+        vc.setSelection([Self.intro])
+        vc.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        XCTAssertNil(panel.loading)
+        XCTAssertEqual(waveformRequests, 0)
+        vc.isLocked = false
+        await panel.loading?.value
+        XCTAssertEqual(waveformRequests, 1)
+    }
+
+    /// While the window is being resized nothing is asked; once, when the resize ends.
+    func testALiveResizeAsksForPeaksOnceWhenItEnds() {
+        final class Resizing: WaveformView {
+            var live = true
+            override var inLiveResize: Bool { live }
+        }
+        let view = Resizing()
+        var asked = 0
+        view.onResize = { asked += 1 }
+        for w in stride(from: 300, through: 600, by: 50) { view.setFrameSize(NSSize(width: w, height: 100)) }
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(view.scale.width, 600, "the drawing follows meanwhile")
+        view.live = false
+        view.viewDidEndLiveResize()
+        XCTAssertEqual(asked, 1)
+        view.viewDidEndLiveResize()
+        XCTAssertEqual(asked, 1, "owed once")
+    }
+
+    /// A start typed before the file's length is known is refused: nothing bounds it yet.
+    func testAStartBeforeTheLengthIsKnownIsRefused() async {
+        await showIntro()
+        panel.show(cue: Self.intro, kind: rig.store.model?.cue(Self.intro)?.raw["kind"] ?? .null, duration: nil)
+        type(panel.startField, "5")
+        XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.unknownLength"))
+        XCTAssertEqual(panel.startField.stringValue, "00:00.00")
+        XCTAssertTrue(kinds.isEmpty)
+    }
+
     /// While it plays, the playhead line is where the cue is in the file; looping, it wraps.
     func testThePlayheadFollowsProgress() async {
         await showIntro()

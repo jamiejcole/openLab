@@ -7,7 +7,7 @@ import Combine
 /// store as model commands; fields show the store's model, so a refused or invalid edit simply
 /// puts the model's value back. A field being edited is never overwritten by a model change.
 @MainActor
-final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTextViewDelegate {
+final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTextViewDelegate, NSTabViewDelegate {
     static let colours = ["none", "red", "orange", "green", "blue", "purple"]
     static let continueModes = ["do_not_continue", "auto_continue", "auto_follow"]
 
@@ -250,6 +250,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         buildLevelsTabs()
         buildTimeLoopsTab()
         tabView.setAX(AX.inspectorTabs)
+        tabView.delegate = self
 
         for v in [tabView, emptyLabel, messageLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
