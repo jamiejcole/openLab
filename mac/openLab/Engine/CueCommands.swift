@@ -3,9 +3,9 @@
 import Foundation
 
 /// The cue kinds the toolbar and Cues menu can add (the model's kinds that need no choice first;
-/// Network needs a destination patch and has no toolbar button).
+/// Audio takes the first audio patch and Network the first network patch).
 enum NewCueKind: String, CaseIterable, Sendable {
-    case audio, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, arm, disarm
+    case audio, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, arm, disarm, network
 
     var titleKey: String { "cue.type.\(rawValue)" }
 
@@ -18,7 +18,7 @@ enum NewCueKind: String, CaseIterable, Sendable {
     /// flow through crosspoint (1,1)). Core's crosspoints are sparse, so a cue sent with none plays
     /// silent. A mono file plays on output 1 alone; inputs beyond the file's channels are ignored by
     /// the mixer. The engine plays this exact message in its tests (client/command_add_new_audio_cue).
-    func kindJSON(patch: ModelObject?) -> JSONValue? {
+    func kindJSON(patch: ModelObject?, networkPatch: ModelObject? = nil) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]
         switch self {
@@ -55,14 +55,21 @@ enum NewCueKind: String, CaseIterable, Sendable {
                 "target": .null, "start_next_cue": .bool(false), "stop_target_when_slice_ends": .bool(false),
             ]) { a, _ in a }
         case .goto: fields.merge(["target": .null, "then_go": .bool(false)]) { a, _ in a }
+        case .network:
+            // No address yet: core keeps a Network cue without a valid message and shows it broken
+            // until it is edited, so nothing is sent by accident.
+            guard let networkPatch else { return nil }
+            fields.merge(["destination": .string(networkPatch.id.raw), "address": .string(""), "args": .array([])]) {
+                a, _ in a
+            }
         case .start, .pause, .reset, .arm, .disarm: fields["target"] = .null
         }
         return .object(fields)
     }
 
     /// A whole new cue (no number: `auto_number` gives it one).
-    func cueJSON(id: ModelID, patch: ModelObject?) -> JSONValue? {
-        guard let kind = kindJSON(patch: patch) else { return nil }
+    func cueJSON(id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil) -> JSONValue? {
+        guard let kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
         return .object([
             "id": .string(id.raw), "number": .null, "name": .string(""), "notes": .string(""),
             "color": .string("none"), "flagged": .bool(false), "armed": .bool(true), "pre_wait": .double(0),
@@ -79,6 +86,11 @@ extension Command {
             "list": .string(list.raw), "parent": parent.map { .string($0.raw) } ?? .null,
             "index": .int(Int64(index)),
         ])
+    }
+
+    /// `AddNetworkPatch` at `index`.
+    static func addNetworkPatch(_ patch: JSONValue, index: Int) -> Command {
+        Command(.object(["type": .string("add_network_patch"), "index": .int(Int64(index)), "patch": patch]))
     }
 
     /// `AddCue` with the next automatic number (ED-08).

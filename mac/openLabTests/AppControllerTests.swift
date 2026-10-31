@@ -986,7 +986,8 @@ final class AppControllerTests: XCTestCase {
     func testEditMenuLocksEditingItemsInShowMode() {
         let edit = MainMenu.make().edit
         MainMenu.lockEditItems(in: edit, locked: true)
-        let enabled = Dictionary(uniqueKeysWithValues: edit.items.map { ($0.title, $0.isEnabled) })
+        let enabled = Dictionary(
+            uniqueKeysWithValues: edit.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) })
         for key in [
             "menu.edit.undo", "menu.edit.redo", "menu.edit.cut", "menu.edit.copy", "menu.edit.paste",
             "menu.edit.delete",
@@ -1928,5 +1929,119 @@ final class AppControllerTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
+    }
+
+    // MARK: Find (ED-09) and the Network cue key
+
+    private func findMenuItems() throws -> [NSMenuItem] {
+        let edit = MainMenu.make().edit
+        return try XCTUnwrap(edit.items.first { $0.title == loc("menu.edit.find") }?.submenu).items
+    }
+
+    private func keyDown(_ chars: String, _ flags: NSEvent.ModifierFlags, code: UInt16) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars.lowercased(), isARepeat: false, keyCode: code))
+    }
+
+    func testFindMenuHasQLabsKeysAndDrivesTheKeyWindowsWorkspace() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = try findMenuItems()
+        XCTAssertEqual(
+            items.map { [$0.action.map(NSStringFromSelector) ?? "", $0.keyEquivalent] },
+            [["showFind:", "f"], ["findNextCue:", "g"], ["findPreviousCue:", "G"]])
+        XCTAssertTrue(items.allSatisfy { $0.keyEquivalentModifierMask == [.command] }, "AppKit reads G as Shift-G")
+        XCTAssertTrue(items.allSatisfy { delegate.validateMenuItem($0) })
+
+        delegate.showFind(items[0])
+        XCTAssertTrue(wc.find.isOpen)
+        wc.findBar.field.stringValue = "intro"
+        wc.setFindQuery("intro")
+        delegate.findNextCue(items[1])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.intro])
+        delegate.findPreviousCue(items[2])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.intro], "one match: Previous wraps onto it")
+
+        // Cmd-G with the bar closed opens it, as Cmd-F does.
+        wc.closeFind()
+        delegate.findNextCue(items[1])
+        XCTAssertTrue(wc.find.isOpen)
+
+        // Off in Show Mode, in the menu and in the window.
+        wc.setShowMode(true)
+        XCTAssertTrue(items.allSatisfy { !delegate.validateMenuItem($0) })
+        delegate.showFind(items[0])
+        XCTAssertFalse(wc.find.isOpen)
+    }
+
+    func testFindKeysAreNotTakenByTheKeyMonitor() async throws {
+        keyDoc = "1"
+        let saved = NSApp.mainMenu
+        NSApp.mainMenu = MainMenu.make().bar
+        defer { NSApp.mainMenu = saved }
+        for (chars, flags, code) in [
+            ("f", NSEvent.ModifierFlags.command, UInt16(3)), ("g", .command, 5), ("G", [.command, .shift], 5),
+        ] {
+            let event = try keyDown(chars, flags, code: code)
+            XCTAssertTrue(app.handleKeyDown(event) === event, "\(chars) reaches the menu")
+        }
+        await settle()
+        XCTAssertTrue(panics().isEmpty)
+    }
+
+    func testEscPanicsWhetherOrNotTheFindFieldHasTheFocus() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        wc.openFind()
+        // The cursor is in the field: the app-wide monitor panics and passes Esc on; the field then closes the bar.
+        XCTAssertTrue(wc.findBar.fieldHasFocus)
+        let esc = try escEvent()
+        XCTAssertTrue(app.handleKeyDown(esc) === esc)
+        await assertEventually { panics().count == 1 }
+        XCTAssertTrue(wc.find.isOpen, "the monitor itself leaves the bar to the field")
+        _ = wc.findBar.control(
+            wc.findBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertFalse(wc.find.isOpen)
+        // Bar open, cursor in the cue list: Esc still panics, and does not close the bar.
+        wc.openFind()
+        window.makeFirstResponder(wc.cueList.outlineView)
+        XCTAssertFalse(wc.findBar.fieldHasFocus)
+        _ = app.handleKeyDown(try escEvent())
+        await assertEventually { panics().count == 2 }
+        await settle()
+        XCTAssertEqual(panics().count, 2)
+        XCTAssertTrue(wc.find.isOpen)
+    }
+
+    func testNetworkCueFromTheCuesMenuAndCmd8() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let bar = MainMenu.make().bar
+        let items = bar.items.compactMap(\.submenu).flatMap(\.items)
+        let entry = try XCTUnwrap(items.first { $0.keyEquivalent == "8" && $0.keyEquivalentModifierMask == [.command] })
+        XCTAssertEqual(entry.representedObject as? String, "network")
+        XCTAssertTrue(delegate.validateMenuItem(entry))
+        func added() -> [JSONValue] {
+            engine.receivedFrom.compactMap {
+                if case .command(_, let c, _) = $0.message, c.json["type"]?.stringValue == "add_cue" { return c.json }
+                return nil
+            }
+        }
+        delegate.newCue(entry)
+        await assertEventually { added().count == 1 }
+        let kind = try XCTUnwrap(added().first?["cue"]?["kind"])
+        XCTAssertEqual(kind["type"]?.stringValue, "network")
+        let desk = try XCTUnwrap(app.session.stores["1"]?.model?.networkPatches.first)
+        XCTAssertEqual(kind["destination"]?.stringValue, desk.id.raw)
+        app.windows["1"]?.setShowMode(true)
+        XCTAssertFalse(delegate.validateMenuItem(entry), "no new cues in Show Mode")
     }
 }

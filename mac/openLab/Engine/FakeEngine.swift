@@ -481,7 +481,7 @@ final class FakeEngine: EngineTransport {
 
     private static let structural: Set<String> = [
         "add_cue", "paste", "paste_clipboard", "remove_cue", "move_cue", "reparent_cue", "transaction", "renumber",
-        "add_cue_list",
+        "add_cue_list", "add_network_patch",
     ]
 
     /// Applies one structural command (or a transaction of them) to `lists`; false when it cannot.
@@ -492,6 +492,9 @@ final class FakeEngine: EngineTransport {
             for inner in c["commands"]?.arrayValue ?? [] where !applyStructural(inner, to: &copy) { return false }
             lists = copy
             return true
+        case "add_network_patch":
+            // Patches are not kept by the fake; a Network cue that follows still reads its destination.
+            return c["patch"] != nil
         case "add_cue_list":
             guard let id = c["id"], let name = c["name"], case .int(let at)? = c["index"],
                 (0...Int64(lists.count)).contains(at)

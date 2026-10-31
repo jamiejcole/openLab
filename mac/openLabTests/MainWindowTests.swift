@@ -6,6 +6,9 @@ import XCTest
 
 @MainActor
 final class MainWindowTests: XCTestCase {
+    /// The rigs of tests that build their own show, kept alive for the test.
+    private var retained: [Rig] = []
+
     private func ax(_ root: NSView, _ id: String) -> NSView? {
         if root.accessibilityIdentifier() == id { return root }
         for sub in root.subviews { if let hit = ax(sub, id) { return hit } }
@@ -295,5 +298,225 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
         XCTAssertFalse(
             wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+    }
+
+    // MARK: Find (ED-09)
+
+    private enum F {
+        static let thunder: ModelID = "00000000-0000-0000-0000-0000000000a1"
+        static let wind: ModelID = "00000000-0000-0000-0000-0000000000a2"
+        static let group: ModelID = "00000000-0000-0000-0000-0000000000a3"
+        static let door: ModelID = "00000000-0000-0000-0000-0000000000a4"
+        static let zebra: ModelID = "00000000-0000-0000-0000-0000000000a5"
+    }
+
+    /// A show with a name, a number, notes, a file and a type to find, two of them inside a group.
+    private func findController() async throws -> WorkspaceWindowController {
+        func cue(_ id: ModelID, _ number: String?, _ name: String, _ notes: String, _ kind: JSONValue) -> JSONValue {
+            var c = FakeEngine.cueJSON(id: id.raw, number: number, name: name, kind: kind)
+            c.set("notes", .string(notes))
+            return c
+        }
+        let wait = JSONValue.object(["type": .string("wait"), "duration": .double(5)])
+        let memo = JSONValue.object(["type": .string("memo")])
+        let kids = [cue(F.door, "3.1", "Door", "", wait), cue(F.zebra, "3.2", "Zebra", "", memo)]
+        var snapshot = FakeEngine.emptySnapshot(name: "Find")
+        snapshot["workspace"]?.set(
+            "cue_lists",
+            .array([
+                .object([
+                    "id": .string(FakeEngine.demoListID), "name": .string("Main"),
+                    "cues": .array([
+                        cue(F.thunder, "1", "Opening Light", "", FakeEngine.audioKind("/show/media/Thunder.wav")),
+                        cue(F.wind, "2", "Cue", "bring up the Wind chimes", wait),
+                        cue(F.group, "3", "Act Two", "", FakeEngine.groupKind(kids)),
+                    ]),
+                ])
+            ]))
+        let rig = try Rig(snapshot: snapshot)
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        retained.append(rig)
+        return wc
+    }
+
+    private func find(_ wc: WorkspaceWindowController, _ text: String) -> [ModelID] {
+        wc.setFindQuery(text)
+        return wc.find.matches
+    }
+
+    func testFindMatchesNameNumberNotesTypeAndFileIgnoringCase() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        XCTAssertEqual(find(wc, "OPENING light"), [F.thunder], "name")
+        XCTAssertEqual(find(wc, "3.2"), [F.zebra], "number")
+        XCTAssertEqual(find(wc, "wind CHIMES"), [F.wind], "notes")
+        XCTAssertEqual(find(wc, "thunder.wav"), [F.thunder], "audio file name")
+        XCTAssertEqual(find(wc, "/show/media"), [], "the folder is not the file name")
+        XCTAssertEqual(find(wc, "MEMO"), [F.zebra], "cue type")
+        XCTAssertEqual(find(wc, "wait"), [F.wind, F.door], "list order, group children included")
+        XCTAssertEqual(find(wc, "   "), [], "blank text finds nothing")
+        XCTAssertEqual(find(wc, "no such thing"), [])
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "0 found")
+        wc.findBar.field.stringValue = ""
+        wc.setFindQuery("")
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "")
+    }
+
+    func testFindOpensCollapsedGroupsAndWrapsInBothDirections() async throws {
+        let wc = try await findController()
+        let outline = wc.cueList.outlineView
+        let group = try XCTUnwrap(wc.cueList.node(F.group))
+        outline.collapseItem(group)
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        XCTAssertEqual(find(wc, "wait"), [F.wind, F.door])
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "2 found")
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind])
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "1 of 2")
+        XCTAssertFalse(outline.isItemExpanded(group))
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.door])
+        XCTAssertTrue(outline.isItemExpanded(group), "the group opens to show the found cue")
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind], "Next wraps to the first")
+        wc.stepFind(forward: false)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.door], "Previous wraps to the last")
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "2 of 2")
+    }
+
+    func testFindStartsFromTheSelectionAndAClickEndsTheWalk() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        _ = find(wc, "wait")
+        wc.cueList.select([F.thunder])
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind], "the first found cue after the selection")
+        wc.cueList.select([F.group])
+        wc.stepFind(forward: false)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind], "the last found cue before the selection")
+        wc.cueList.select([F.group])
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.door])
+    }
+
+    func testSelectFoundSelectsEveryMatchIncludingInsideAClosedGroup() async throws {
+        let wc = try await findController()
+        let group = try XCTUnwrap(wc.cueList.node(F.group))
+        wc.cueList.outlineView.collapseItem(group)
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        _ = find(wc, "wait")
+        XCTAssertTrue(wc.findBar.selectFoundButton.isEnabled)
+        wc.findBar.selectFoundButton.performClick(nil)
+        XCTAssertEqual(Set(wc.cueList.selectedIDs()), [F.wind, F.door])
+        wc.findBar.field.stringValue = "nothing"
+        _ = find(wc, "nothing")
+        XCTAssertFalse(wc.findBar.selectFoundButton.isEnabled)
+        XCTAssertFalse(wc.findBar.nextButton.isEnabled)
+    }
+
+    func testFindFollowsEditsWhileTheBarIsOpen() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "zebra"
+        _ = find(wc, "zebra")
+        wc.stepFind(forward: true)
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "1 of 1")
+        let memo = JSONValue.object(["type": .string("memo")])
+        let renamed = FakeEngine.cueJSON(id: F.zebra.raw, number: "3.2", name: "Lion", kind: memo)
+        let upsert = try ServerMessage.decode(
+            #"{"type":"model_changed","revision":\#(wc.store.revision + 1),"upserts":[{"type":"cue","list":"\#(FakeEngine.demoListID)","parent":"\#(F.group)","index":1,"cue":\#(try renamed.text())}],"deletes":[]}"#
+        )
+        XCTAssertEqual(wc.store.receive(upsert), .applied)
+        XCTAssertEqual(wc.find.matches, [], "the renamed cue no longer matches")
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "0 found")
+    }
+
+    func testDoneAndCmdFCycleGiveTheCueTypeRowBack() async throws {
+        let wc = try await findController()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+        XCTAssertTrue(wc.findBar.isHidden)
+        // The three states of Cmd-F: open, cursor to the field, close.
+        wc.toggleFind()
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        XCTAssertFalse(wc.findBar.isHidden)
+        XCTAssertTrue(wc.findBar.fieldHasFocus)
+        window.makeFirstResponder(wc.cueList.outlineView)
+        wc.toggleFind()
+        XCTAssertFalse(wc.findBar.isHidden, "the cursor moves to the field first")
+        XCTAssertTrue(wc.findBar.fieldHasFocus)
+        wc.toggleFind()
+        XCTAssertTrue(wc.findBar.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the focus returns to the cue list")
+        // Done clears the search.
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        wc.setFindQuery("wait")
+        wc.findBar.doneButton.performClick(nil)
+        XCTAssertTrue(wc.findBar.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+        XCTAssertEqual(wc.findBar.query, "")
+        XCTAssertEqual(wc.find.matches, [])
+        wc.openFind()
+        XCTAssertEqual(wc.findBar.query, "", "a fresh search")
+    }
+
+    func testToolbarHiddenBeforeFindStaysHiddenAfter() async throws {
+        let wc = try await findController()
+        wc.setVisible(.toolbar, false)
+        wc.openFind()
+        XCTAssertFalse(wc.findBar.isHidden)
+        XCTAssertFalse(wc.isVisible(.toolbar), "the View menu's state is the user's, not Find's")
+        wc.closeFind()
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        wc.setVisible(.toolbar, true)
+        wc.openFind()
+        wc.setVisible(.toolbar, false)  // toggled while Find holds the row
+        wc.closeFind()
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+    }
+
+    func testEscInTheFieldClosesTheBarAndReturnIsNext() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        _ = find(wc, "wait")
+        let (field, text) = (wc.findBar.field, NSTextView())
+        XCTAssertTrue(wc.findBar.control(field, textView: text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind])
+        XCTAssertFalse(wc.findBar.control(field, textView: text, doCommandBy: #selector(NSResponder.moveLeft(_:))))
+        let esc = wc.findBar.control(field, textView: text, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertTrue(esc)
+        XCTAssertTrue(wc.findBar.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+    }
+
+    func testShowModeClosesFindAndRefusesIt() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "wait"
+        _ = find(wc, "wait")
+        wc.setShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertTrue(wc.findBar.isHidden, "Find is off in Show Mode")
+        XCTAssertFalse(wc.find.isOpen)
+        wc.toggleFind()
+        wc.openFind()
+        wc.findNext(forward: true)
+        XCTAssertFalse(wc.find.isOpen)
+        XCTAssertTrue(wc.findBar.isHidden)
+        wc.setShowMode(false)
+        XCTAssertFalse(wc.cueToolbar.isHidden, "the cue-type row is back with Edit Mode")
+        wc.openFind()
+        XCTAssertTrue(wc.find.isOpen)
     }
 }
