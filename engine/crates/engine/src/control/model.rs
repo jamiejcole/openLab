@@ -80,12 +80,15 @@ impl WorkspaceEdit<'_> {
         }
     }
 
-    /// Ends an edit that `result` reports on: [`Self::touched`] with `footprint`, the edit's
-    /// (an edit refused for anything but a failed rollback changed nothing, so it holds), or
-    /// the whole workspace after a failed rollback, which may have left any part changed.
+    /// Ends a `History` edit that `result` reports on. Applied: [`Self::touched`] with
+    /// `footprint`, the edit's. Refused: `History` changed nothing (its contract), so no cue is
+    /// named and the follow-up costs nothing, even for a model-wide command a client repeats.
+    /// A failed rollback may have left any part changed: the whole workspace.
     pub(super) fn ended<T>(self, footprint: &Footprint, result: &Result<T, CommandError>) {
-        if !matches!(result, Err(CommandError::RollbackFailed { .. })) {
-            self.touched(footprint);
+        match result {
+            Ok(_) => self.touched(footprint),
+            Err(CommandError::RollbackFailed { .. }) => {}
+            Err(_) => self.touched(&Footprint::default()),
         }
     }
 }
@@ -164,6 +167,21 @@ mod tests {
         let (syncs, passes) = counts(&m);
         m.edit()
             .touched(&Footprint::edited([CueId(Uuid::from_u128(9))]));
+        assert_eq!(after_a_call(&mut m), (syncs + 1, passes));
+    }
+
+    /// A refusal changed nothing: even a model-wide command's costs no rebuild, so a client
+    /// repeating one cannot load the control thread with them.
+    #[test]
+    fn a_refused_edit_names_no_cue_whatever_its_footprint() {
+        let mut m = model();
+        let (syncs, passes) = counts(&m);
+        let wide = Footprint {
+            settings: true,
+            ..Footprint::default()
+        };
+        let refused: Result<(), CommandError> = Err(CommandError::Internal);
+        m.edit().ended(&wide, &refused);
         assert_eq!(after_a_call(&mut m), (syncs + 1, passes));
     }
 
