@@ -46,8 +46,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// one is selected.
     let timeLoops = TimeLoopsPanel()
     var timeLoopsItem: NSTabViewItem?
-    /// `kind` is replaced whole by a levels or fade edit, so an edit made before the engine answered
-    /// the previous one must start from what was sent (as `pendingTriggers`).
+    /// A levels or fade edit sends only its changed `kind_fields`, but is built from the kind as the
+    /// previous unanswered edit left it, so those fields start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",

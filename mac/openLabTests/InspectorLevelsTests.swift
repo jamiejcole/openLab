@@ -382,6 +382,8 @@ final class InspectorLevelsTests: XCTestCase {
             return kind?["curve"] == .string(FadeSettingsPanel.curves[1])
                 && kind?["stop_target_when_done"] == .bool(false)
         }
+        await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
+        XCTAssertEqual(f.stopCheck.state, .off, "the panel shows the other client's edit, not the stale overlay")
     }
 
     func testFadeInvalidDurationIsRefusedLocally() async throws {
