@@ -38,20 +38,20 @@ final class StatusLogTests: XCTestCase {
         let p = StatusPresentation.make(try healthy())
         XCTAssertEqual(p.level, .normal)
         XCTAssertEqual(p.summary, "Audio OK  CPU 8%  Dropouts 0")
-        XCTAssertEqual(p.symbol, "checkmark.circle")
+        XCTAssertEqual(p.icon, .statusNormal)
         XCTAssertTrue(p.details.contains("Output device: Built-in (OK)"))
     }
 
     func testLostDeviceIsAnAlarmShownByWordAndSymbolNotColourOnly() throws {
         let p = StatusPresentation.make(try status("status_device_lost"))
         XCTAssertEqual(p.level, .alarm)
-        XCTAssertEqual(p.symbol, "exclamationmark.octagon.fill")
+        XCTAssertEqual(p.icon, .statusAlarm)
         XCTAssertTrue(p.summary.hasPrefix(loc("status.alarm")), p.summary)
         XCTAssertTrue(p.summary.contains(loc("status.device.lost")))
         // The disk fault and the dropout are in the details, not lost.
         XCTAssertTrue(p.details.contains(loc("status.disk.unhealthy")))
         XCTAssertTrue(p.details.contains { $0.contains("lost") })
-        XCTAssertNotEqual(p.symbol, StatusPresentation.make(try healthy()).symbol)
+        XCTAssertNotEqual(p.icon, StatusPresentation.make(try healthy()).icon)
     }
 
     func testUnhealthyDiskAloneIsAnAlarm() throws {
@@ -67,7 +67,7 @@ final class StatusLogTests: XCTestCase {
         // The fixture is a healthy device with one dropout.
         let p = StatusPresentation.make(try status("status"))
         XCTAssertEqual(p.level, .warning)
-        XCTAssertEqual(p.symbol, "exclamationmark.triangle.fill")
+        XCTAssertEqual(p.icon, .statusWarning)
         XCTAssertTrue(p.summary.hasPrefix(loc("status.warning")))
         var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
         json.set("xruns", .int(0))
@@ -134,7 +134,7 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(wc.footer.presentation.level, .normal)
         rig.client.stop()
         await assertEventually { wc.footer.presentation == StatusPresentation.offline() }
-        XCTAssertNotEqual(wc.footer.presentation.symbol, "checkmark.circle")
+        XCTAssertNotEqual(wc.footer.presentation.icon, .statusNormal)
     }
 
     func testNewSnapshotClearsTheStatusUntilTheNextPush() async throws {

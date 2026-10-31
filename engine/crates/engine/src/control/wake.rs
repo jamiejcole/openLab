@@ -13,7 +13,7 @@ impl Doc {
     /// window or a deferred report of it becomes due, at most [`MAX_WAIT`].
     fn wait(&self, eng: &Engine) -> Duration {
         let frames = wake_frames(
-            self.engine.next_deadline(),
+            self.model.engine().next_deadline(),
             self.deferred.iter().map(|(at, _)| *at),
             eng.mixer.samples_rendered(),
             eng.block,

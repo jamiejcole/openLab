@@ -1449,6 +1449,57 @@ fn a_held_failed_playlist_child_moved_into_an_idle_playlist_starts_nothing_there
     }
 }
 
+/// What the app sends for "new Group with these cues selected": the group goes where the first
+/// cue is, then each cue moves into it in list order, as one transaction.
+fn wrap(rig: &mut Rig, group: Cue, at: usize, cues: &[u128]) {
+    let group_id = group.id;
+    let mut commands = vec![Command::AddCue {
+        at: Position {
+            list: list(),
+            parent: None,
+            index: at,
+        },
+        cue: group,
+        auto_number: true,
+    }];
+    for (index, n) in cues.iter().enumerate() {
+        commands.push(Command::ReparentCue {
+            id: id(*n),
+            to: Position {
+                list: list(),
+                parent: Some(group_id),
+                index,
+            },
+        });
+    }
+    rig.ws.apply(Command::Transaction { commands }).unwrap();
+}
+
+#[test]
+fn wrapping_a_playing_cue_in_a_new_group_stops_nothing_and_the_group_stays_idle() {
+    let mut rig = Rig::new(vec![memo(2), sound(3), wait(4, 1.0), memo(5)]);
+    rig.start(0, 3);
+    // A playlist that auto-follows: the mode and continue most likely to carry on wrongly.
+    let g = timed(grp(1, playlist(), vec![]), 0.0, 0.0, AF);
+    wrap(&mut rig, g, 1, &[3, 4]);
+    let wrapped = rig.tick(100);
+    assert!(
+        voice_stops(&wrapped).is_empty(),
+        "{:?}",
+        voice_stops(&wrapped)
+    );
+    assert!(starts(&wrapped).is_empty(), "{:?}", starts(&wrapped));
+    assert_eq!(rig.state(3), CueState::Running);
+    assert_eq!(rig.state(1), CueState::Idle);
+    // The sound ends: the group never started it, so it neither plays on to 4 nor follows to 5.
+    let mut end = rig.ended(1000, 3, 900);
+    end.extend(rig.tick(5000));
+    assert!(starts(&end).is_empty(), "{:?}", starts(&end));
+    for n in [1, 3, 4, 5] {
+        assert_eq!(rig.state(n), CueState::Idle, "cue {n}");
+    }
+}
+
 // ----- Q2 against a reference: the follow of a halted playlist -----
 
 /// One child of the playlist the property builds: a sound of `len` ms or a Wait of `len` ms,

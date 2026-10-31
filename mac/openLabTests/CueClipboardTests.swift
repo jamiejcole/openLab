@@ -409,6 +409,11 @@ final class CueClipboardTests: XCTestCase {
         await e.cutSelection()
         await e.paste()
         await e.deleteNumbers()
+        // The cue row menu's actions reach the same editor.
+        wc.cueList.rowCut(nil)
+        wc.cueList.rowPaste(nil)
+        wc.cueList.rowDelete(nil)
+        wc.cueList.rowCopy(nil)
         await e.addFiles(files, parent: nil, index: 0)
         await e.replaceFile(of: first, with: files[0])
         XCTAssertNil(wc.cueList.fileDropPlan(files, item: nil, index: 0))

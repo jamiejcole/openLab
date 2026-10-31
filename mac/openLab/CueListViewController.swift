@@ -87,16 +87,16 @@ final class CueCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Shows `symbol` in image `i` (hidden when nil) with an accessibility label and tooltip.
-    func setImage(_ i: Int, symbol: String?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
+    func setImage(_ i: Int, icon: Icon?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
         let view = images[i]
-        guard let symbol, let label else {
+        guard let icon, let label else {
             view.isHidden = true
             view.image = nil
             view.toolTip = nil
             return
         }
         view.isHidden = false
-        view.image = symbolImage(symbol, label)
+        view.image = icon.image(label, compact: true)
         view.contentTintColor = tint
         view.setAccessibilityLabel(label)
         view.toolTip = tooltip ?? label
@@ -143,6 +143,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var batchTouched = Set<ModelID>()
     private var batchNewGroups = Set<ModelID>()
     private var batchCollapsed = Set<ModelID>()
+    /// Whether a running time shows the whole time or the time left, per time column; each window
+    /// has its own. A wait counts down by default, as it always has; Duration shows elapsed / total.
+    /// Kept for the life of the window only (no window-state persistence exists yet).
+    static let timeColumns = ["preWait", "duration", "postWait"]
+    private(set) var timeShown: [String: TimeShown] = [
+        "preWait": .remaining, "duration": .full, "postWait": .remaining,
+    ]
+    /// Where Paste looks for cues (tests use a private one).
+    var pasteboard: NSPasteboard = .general
+    /// This window's editor and transport: the row menu acts on the window that was clicked, not
+    /// on the key window (the menu-bar actions do).
+    weak var editor: CueEditor?
+    var onCommand: ((TransportCommand) -> Void)?
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
     init(store: WorkspaceStore, outlineView: NSOutlineView = NSOutlineView()) {
@@ -162,6 +175,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for spec in Self.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             column.title = spec.titleKey.map(loc) ?? ""
+            if Self.timeColumns.contains(spec.id) {
+                column.headerCell = TimeHeaderCell(textCell: column.title)
+                updateTimeHeader(column)
+            }
             column.width = spec.width
             column.minWidth = 24
             outlineView.addTableColumn(column)
@@ -178,6 +195,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
         outlineView.doubleAction = #selector(doubleClicked)
+        let menu = NSMenu()
+        menu.delegate = self
+        outlineView.menu = menu
         durationEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         durationEditor.delegate = self
         durationEditor.usesSingleLineMode = true
@@ -832,13 +852,41 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return (state, detail)
     }
 
+    // MARK: Time column headers
+
+    /// The header chevron: switches the column between the full time and the time left.
+    func toggleTimeShown(_ column: String) {
+        guard Self.timeColumns.contains(column) else { return }
+        timeShown[column] = timeShown[column] == .full ? .remaining : .full
+        guard let index = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == column }) else {
+            return
+        }
+        updateTimeHeader(outlineView.tableColumns[index])
+        outlineView.headerView?.needsDisplay = true
+        let rows = outlineView.numberOfRows
+        if rows > 0 {
+            outlineView.reloadData(forRowIndexes: IndexSet(0..<rows), columnIndexes: IndexSet(integer: index))
+        }
+        placeDurationEditor()
+    }
+
+    private func updateTimeHeader(_ column: NSTableColumn) {
+        let shown = timeShown[column.identifier.rawValue] ?? .remaining
+        (column.headerCell as? TimeHeaderCell)?.shown = shown
+        column.headerToolTip = loc(shown == .full ? "cuelist.time.showRemaining" : "cuelist.time.showFull")
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, didClick tableColumn: NSTableColumn) {
+        toggleTimeShown(tableColumn.identifier.rawValue)
+    }
+
     private func fill(_ cell: CueCell, column: String, node: CueNode) {
         let cue = node.cue
         cell.label.stringValue = ""
         cell.label.alphaValue = cue.raw["armed"] == .bool(false) ? 0.5 : 1
         cell.label.textColor = .labelColor
         cell.label.isHidden = true
-        for i in cell.images.indices { cell.setImage(i, symbol: nil, label: nil) }
+        for i in cell.images.indices { cell.setImage(i, icon: nil, label: nil) }
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
@@ -846,26 +894,26 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "status":
             if isPlayheadRow(node.id) {
-                cell.setImage(0, symbol: "arrowtriangle.right.fill", label: loc("cue.playhead"))
+                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"))
             } else if isPlayheadInside(node.id) {
-                cell.setImage(0, symbol: "arrowtriangle.right", label: loc("cue.playhead.inside"))
+                cell.setImage(0, icon: .playheadInside, label: loc("cue.playhead.inside"))
             }
             let (state, detail) = displayState(node.id)
             let style = CueStateStyle.style(for: state)
-            if let symbol = style.symbol {
+            if let icon = style.icon {
                 cell.setImage(
-                    1, symbol: symbol, label: style.label, tint: style.tint,
+                    1, icon: icon, label: style.label, tint: style.tint,
                     tooltip: detail.map { "\(style.label): \($0)" })
             }
             // A preview is outside the show, so it has its own mark next to the cue's state.
             if store.previewing.contains(node.id) {
-                cell.setImage(2, symbol: "headphones", label: loc("cue.previewing"), tint: .systemTeal)
+                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
             }
         case "number": text(cue.number ?? "")
         case "name":
             let kind = cue.kindType
             if let style = CueKindStyle.kinds[kind] {
-                cell.setImage(0, symbol: style.symbol, label: loc(style.labelKey))
+                cell.setImage(0, icon: style.icon, label: loc(style.labelKey))
             }
             if cue.displayName.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
@@ -874,16 +922,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(cue.displayName)
             }
             if let colour = cue.raw["color"]?.stringValue.flatMap({ CueKindStyle.colours[$0] }) {
-                cell.setImage(1, symbol: colour.symbol, label: loc(colour.labelKey), tint: colour.tint)
+                cell.setImage(1, icon: colour.icon, label: loc(colour.labelKey), tint: colour.tint)
             }
             if cue.raw["flagged"] == .bool(true) {
-                cell.setImage(2, symbol: "flag.fill", label: loc("cue.flagged"), tint: .systemOrange)
+                cell.setImage(2, icon: .flagged, label: loc("cue.flagged"), tint: .systemOrange)
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
-                text(CueTime.running(wait.remaining))
+                text(
+                    timeShown[column] == .full
+                        ? CueTime.progress(elapsed: wait.elapsed, remaining: wait.remaining)
+                        : CueTime.running(wait.remaining))
                 break
             }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
@@ -892,7 +943,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "duration": text(durationText(node))
         case "continue":
             if let mode = cue.raw["continue_mode"]?.stringValue.flatMap({ CueKindStyle.continueModes[$0] }) {
-                cell.setImage(0, symbol: mode.symbol, label: loc(mode.labelKey))
+                cell.setImage(0, icon: mode.icon, label: loc(mode.labelKey))
             }
         default: break
         }
@@ -911,7 +962,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func durationText(_ node: CueNode) -> String {
-        if let p = store.progress[node.id] { return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining) }
+        if let p = store.progress[node.id] {
+            if timeShown["duration"] == .remaining, let left = p.remaining { return CueTime.running(left) }
+            return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining)
+        }
         switch node.cue.kindType {
         case "fade", "wait": return CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         default: return ""

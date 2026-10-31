@@ -755,6 +755,64 @@ fn reparent_refuses_nesting_beyond_the_limit() {
     assert_clean(&ws);
 }
 
+// ---- new group from the selected cues (ED-03) -------------------------------------------------
+
+/// What the app sends for a new Group with `cues` selected (list order): group 9 goes at `at` in
+/// `parent`, then each cue moves into it in order, as one transaction.
+fn wrap(parent: Option<u128>, at: usize, cues: &[u128]) -> Command {
+    let mut commands = vec![add(pos(parent, at), grp(9, vec![]))];
+    commands.extend(
+        cues.iter()
+            .enumerate()
+            .map(|(i, n)| reparent(*n, pos(Some(9), i))),
+    );
+    Command::Transaction { commands }
+}
+
+#[test]
+fn a_new_group_takes_in_contiguous_selected_cues_at_the_first_ones_place() {
+    let mut ws = workspace(vec![memo(1), memo(2), memo(3), memo(4)]);
+    let before = ws.clone();
+    let mut history = History::new();
+    history.execute(&mut ws, wrap(None, 1, &[2, 3])).unwrap();
+    assert_eq!(top(&ws), "1 9[2 3] 4");
+    assert_clean(&ws);
+    // One undo step puts everything back exactly; redo makes the group again.
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before);
+    assert_eq!(bytes(&ws), bytes(&before));
+    history.redo(&mut ws).unwrap();
+    assert_eq!(top(&ws), "1 9[2 3] 4");
+}
+
+#[test]
+fn a_new_group_takes_in_scattered_cues_from_different_parents() {
+    // 1, 2[3, 4[5]], 6: 3 and 6 are selected; the group goes where 3 is, inside 2.
+    let mut ws = sample();
+    round_trip(&mut ws, wrap(Some(2), 0, &[3, 6]));
+    assert_eq!(top(&ws), "1 2[9[3 6] 4[5]]");
+    // A selected group brings its children: 1 and group 4 (5 with it).
+    let mut ws = sample();
+    round_trip(&mut ws, wrap(None, 0, &[1, 4]));
+    assert_eq!(top(&ws), "9[1 4[5]] 2[3] 6");
+    assert_clean(&ws);
+}
+
+#[test]
+fn a_new_group_that_cannot_take_a_cue_in_is_refused_whole() {
+    // Wrapping the deepest allowed chain would nest one level too deep: nothing changes.
+    let mut ws = workspace(vec![memo(1), chain(MAX_GROUP_DEPTH)]);
+    assert_clean(&ws);
+    let error = refused(&mut ws, wrap(None, 0, &[1, 101]));
+    assert_eq!(
+        error,
+        CommandError::InTransaction {
+            index: 2,
+            source: Box::new(CommandError::NestingTooDeep)
+        }
+    );
+}
+
 // ---- properties (ED-04) -----------------------------------------------------------------------
 
 #[test]

@@ -1124,6 +1124,22 @@ fn error_logs(out: &[ServerMessage]) -> Vec<&str> {
         .collect()
 }
 
+/// A save-as to another folder re-spells relative references in the live workspace: that edit
+/// reaches the cue engine with no signal by hand (the workspace's write guard tells it).
+#[test]
+fn a_save_as_that_respells_references_reaches_the_cue_engine_without_a_signal() {
+    let (_a, _b, mut r, b_show) = two_relative_cues();
+    assert_engine_follows(&mut r.s, |s| {
+        ok_result(&request(
+            s,
+            Request::SaveAs {
+                path: b_show.to_string_lossy().into_owned(),
+            },
+        ));
+    });
+    assert_ne!(media_of(r.s.control().workspace(), 1), "sfx/hit.wav");
+}
+
 #[test]
 fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is() {
     let (_a, _b, mut r, b_show) = two_relative_cues();
