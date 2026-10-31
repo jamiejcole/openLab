@@ -80,15 +80,17 @@ impl WorkspaceEdit<'_> {
         }
     }
 
-    /// Ends a `History` edit that `result` reports on. Applied: [`Self::touched`] with
-    /// `footprint`, the edit's. Refused: `History` changed nothing (its contract), so no cue is
-    /// named and the follow-up costs nothing, even for a model-wide command a client repeats.
-    /// A failed rollback may have left any part changed: the whole workspace.
-    pub(super) fn ended<T>(self, footprint: &Footprint, result: &Result<T, CommandError>) {
+    /// Ends a `History` edit that `result` reports on. Changed (`Ok(true)`): [`Self::touched`]
+    /// with `footprint`, the edit's. Unchanged (`Ok(false)`: a value set to what it was, an
+    /// empty transaction, nothing to undo or redo) or refused: `History` changed nothing (its
+    /// contract, property-tested in core's `commands_prop`), so no cue is named and the
+    /// follow-up costs nothing, even for a model-wide command a client repeats. A failed
+    /// rollback may have left any part changed: the whole workspace.
+    pub(super) fn ended(self, footprint: &Footprint, result: &Result<bool, CommandError>) {
         match result {
-            Ok(_) => self.touched(footprint),
+            Ok(true) => self.touched(footprint),
             Err(CommandError::RollbackFailed { .. }) => {}
-            Err(_) => self.touched(&Footprint::default()),
+            Ok(false) | Err(_) => self.touched(&Footprint::default()),
         }
     }
 }
@@ -170,19 +172,22 @@ mod tests {
         assert_eq!(after_a_call(&mut m), (syncs + 1, passes));
     }
 
-    /// A refusal changed nothing: even a model-wide command's costs no rebuild, so a client
-    /// repeating one cannot load the control thread with them.
+    /// A refusal or a no-op changed nothing: even a model-wide command's costs no rebuild, so a
+    /// client repeating one cannot load the control thread with them.
     #[test]
-    fn a_refused_edit_names_no_cue_whatever_its_footprint() {
+    fn a_refused_or_unchanged_edit_names_no_cue_whatever_its_footprint() {
         let mut m = model();
         let (syncs, passes) = counts(&m);
         let wide = Footprint {
             settings: true,
             ..Footprint::default()
         };
-        let refused: Result<(), CommandError> = Err(CommandError::Internal);
+        let refused: Result<bool, CommandError> = Err(CommandError::Internal);
         m.edit().ended(&wide, &refused);
         assert_eq!(after_a_call(&mut m), (syncs + 1, passes));
+        // Applied but changed nothing (a setting set to what it was): the same.
+        m.edit().ended(&wide, &Ok(false));
+        assert_eq!(after_a_call(&mut m), (syncs + 2, passes));
     }
 
     #[test]
@@ -196,7 +201,7 @@ mod tests {
         m.edit().touched(&wide);
         let (_, after_wide) = after_a_call(&mut m);
         assert!(after_wide > passes);
-        let failed: Result<(), CommandError> = Err(CommandError::RollbackFailed {
+        let failed: Result<bool, CommandError> = Err(CommandError::RollbackFailed {
             index: 0,
             source: Box::new(CommandError::Internal),
             rollback: Box::new(CommandError::Internal),
