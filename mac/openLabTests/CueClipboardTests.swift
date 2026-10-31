@@ -88,11 +88,20 @@ final class CueClipboardTests: XCTestCase {
     func testMixedDropKeepsTheAudioFilesAndReportsTheRest() async throws {
         let (h, editor, log) = try await harness()
         let files = try tempFiles(["a.wav", "notes.txt", "b.flac"])
+        let plan = try XCTUnwrap(h.vc.fileDropPlan(files, item: nil, index: 0))
+        XCTAssertEqual(plan, .insert([files[0], files[2]], nil, 0))
+        XCTAssertEqual(CueListViewController.skipped(files, plan), 1)
+        // A folder named like an audio file is skipped too, not a reason to refuse the drop.
+        let mixed = try tempFiles(["c.wav"], directories: ["Stems.wav"])
+        let folderPlan = try XCTUnwrap(h.vc.fileDropPlan(mixed, item: nil, index: 0))
+        XCTAssertEqual(folderPlan, .insert([mixed[0]], nil, 0))
+        XCTAssertEqual(CueListViewController.skipped(mixed, folderPlan), 1)
+        XCTAssertNil(h.vc.fileDropPlan([mixed[1]], item: nil, index: 0))
         XCTAssertEqual(
-            h.vc.fileDropPlan(files, item: nil, index: 0), .insert([files[0], files[2]], nil, 0))
+            String(format: loc("edit.drop.skipped.one"), 1), "1 dropped file was not audio and was left out.")
         let ids = await editor.addFiles([files[0], files[2]], parent: nil, index: 0, skipped: 1)
         XCTAssertEqual(ids.count, 2)
-        XCTAssertEqual(log.notices, [String(format: loc("edit.drop.skipped"), 1)])
+        XCTAssertEqual(log.notices, [String(format: loc("edit.drop.skipped.one"), 1)])
     }
 
     func testChooseButtonReplacesTheFileThroughTheDropPath() async throws {

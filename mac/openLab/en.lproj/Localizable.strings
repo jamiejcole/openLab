@@ -44,6 +44,7 @@
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
+"edit.drop.skipped.one" = "1 dropped file was not audio and was left out.";
 "edit.drop.skipped" = "%d dropped files were not audio and were left out.";
 "edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
 "edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";

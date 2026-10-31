@@ -656,6 +656,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return .insert(audio, target.parent?.id, target.index)
     }
 
+    /// How many dragged files `plan` leaves out (not audio files).
+    static func skipped(_ urls: [URL], _ plan: FileDrop) -> Int {
+        if case .insert(let audio, _, _) = plan { return urls.count - audio.count }
+        return 0
+    }
+
     func outlineView(
         _ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
         proposedChildIndex index: Int
@@ -681,9 +687,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let files = fileURLs(info)
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
-            var used = 1
-            if case .insert(let audio, _, _) = plan { used = audio.count }
-            onFileDrop?(plan, files.count - used)
+            onFileDrop?(plan, Self.skipped(files, plan))
             return true
         }
         guard !isEditLocked, !dragged.isEmpty else { return false }

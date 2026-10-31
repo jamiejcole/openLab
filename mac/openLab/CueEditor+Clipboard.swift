@@ -37,9 +37,14 @@ extension CueEditor {
         return cue
     }
 
-    /// The files of a mixed drop that carry an audio extension; the rest are skipped.
+    /// The plain files of a mixed drop that carry an audio extension; folders (even `Stems.wav`)
+    /// and other files are skipped.
     static func audioExtensionFiles(_ urls: [URL]) -> [URL] {
-        urls.filter { $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased()) }
+        urls.filter {
+            var isDir: ObjCBool = false
+            return $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased())
+                && !(FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDir) && isDir.boolValue)
+        }
     }
 
     /// The private pasteboard payload; bump `version` when its shape changes.
@@ -105,7 +110,9 @@ extension CueEditor {
         }
         cueList?.selectAsUser(ids)
         // Say what a mixed drop left out, so the operator does not think a file was lost.
-        if skipped > 0 { notify(String(format: loc("edit.drop.skipped"), skipped)) }
+        if skipped > 0 {
+            notify(String(format: loc(skipped == 1 ? "edit.drop.skipped.one" : "edit.drop.skipped"), skipped))
+        }
         return ids
     }
 

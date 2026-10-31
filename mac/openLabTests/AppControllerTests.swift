@@ -1097,6 +1097,16 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(saveRequests().saveAs, ["/Shows/Fresh.openlab"])
     }
 
+    func testRecentsHideWorkspacesWhoseFileIsGone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let here = dir.appendingPathComponent("Here.openlab")
+        try Data().write(to: here)
+        recents = [dir.appendingPathComponent("Gone.openlab"), here]
+        XCTAssertEqual(app.existingRecentURLs(), [here])
+    }
+
     func testOpenRecentMenuListsTheRecentWorkspacesAndClearForgetsThem() throws {
         let menu = NSMenu()
         MainMenu.fillRecent(menu, [])

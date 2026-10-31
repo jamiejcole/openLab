@@ -214,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The Transport menu shows the key window's workspace keys.
     @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.title == NSLocalizedString("menu.file.openRecent", comment: "") {
-            MainMenu.fillRecent(menu, appController.recentURLs())
+            MainMenu.fillRecent(menu, appController.existingRecentURLs())
             return
         }
         // Show Mode (SM-01): the editing items go dark in the front window's Show Mode.

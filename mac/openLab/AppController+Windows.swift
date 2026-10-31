@@ -85,7 +85,7 @@ extension AppController {
     }
 
     func showLauncher() {
-        launcher.reload(recents: recentURLs())
+        launcher.reload(recents: existingRecentURLs())
         launcher.window?.makeKeyAndOrderFront(nil)
     }
 

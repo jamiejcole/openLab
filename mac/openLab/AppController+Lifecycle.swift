@@ -229,9 +229,14 @@ extension AppController {
         return session.doc(of: store) != nil
     }
 
+    /// Recent workspaces whose file is still there: a moved or deleted one would fail on every choice.
+    func existingRecentURLs() -> [URL] {
+        recentURLs().filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     func clearRecents() {
         forgetRecents()
-        launcher.reload(recents: recentURLs())
+        launcher.reload(recents: existingRecentURLs())
     }
 
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
