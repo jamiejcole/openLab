@@ -376,7 +376,8 @@ impl CueIndex {
     /// have changed; `structural` those it added, removed or moved (a subset of `touched`;
     /// sibling order is only re-read around these). Cost: the touched cues and the sibling lists
     /// of the structural ones, plus one scan of the cue ids when one of them cannot be found
-    /// where the index had it.
+    /// where the index had it; when anything was added, also the subtrees of the structural
+    /// cues (new and old), which are walked as added tops (see below).
     ///
     /// `added` is the part of `structural` that was added (the top of each added subtree). An
     /// added subtree is new as a whole: a cue in it that had been in the index (removed and
