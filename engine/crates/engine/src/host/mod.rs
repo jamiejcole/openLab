@@ -283,6 +283,17 @@ fn check_single_instance(dirs: &AppDirs) -> Result<(), HostError> {
     }
 }
 
+/// Puts what start-up found (an unavailable chosen device, settings the file had wrong) in the
+/// show log as warnings, once the loop runs.
+fn log_start_notes(inbox: &crossbeam_channel::Sender<Inbox>, notes: impl Iterator<Item = String>) {
+    for message in notes {
+        let _ = inbox.send(Inbox::Log {
+            level: LogLevel::Warn,
+            message,
+        });
+    }
+}
+
 /// The device the engine opens: the one the operator chose by name (`set_output_device`), else
 /// the system default, else the first listed. A chosen device that is not listed (unplugged)
 /// falls back with a note for the log, so the show still starts and the operator is told.
@@ -382,13 +393,9 @@ fn run_with(
             });
         }
     }
-    if let Some(note) = device_note {
-        let _ = inbox_tx.send(Inbox::Log {
-            level: LogLevel::Warn,
-            message: note,
-        });
-    }
+    log_start_notes(&inbox_tx, device_note.into_iter());
     if let (Some(dirs), Some((loaded, writable))) = (dirs, machine) {
+        log_start_notes(&inbox_tx, loaded.warnings.iter().cloned());
         config.machine = loaded.settings;
         config.machine_writable = writable;
         config.app_dirs = Some(dirs.clone());
@@ -593,6 +600,18 @@ mod tests {
             is_default: false,
             configs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn start_notes_reach_the_inbox_as_warnings() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        log_start_notes(&tx, ["a".to_owned(), "b".to_owned()].into_iter());
+        let got: Vec<_> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(matches!(
+            &got[0],
+            Inbox::Log { level: LogLevel::Warn, message } if message == "a"
+        ));
     }
 
     #[test]

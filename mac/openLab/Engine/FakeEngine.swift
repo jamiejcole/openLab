@@ -83,6 +83,8 @@ final class FakeEngine: EngineTransport {
     var preshowProblemDocs: Set<ModelID> = []
     /// `list_devices`: name and output channel count of each device the fake lists.
     var fakeDevices: [(name: String, channels: Int)] = [("Fake Output", 2)]
+    /// The fake device `list_devices` marks as the system default.
+    var fakeDefaultDevice: String?
     /// The device `set_output_device` stored (nil: none chosen).
     private(set) var selectedOutputDevice: String?
     /// `set_patch_mapping` results by patch.
@@ -769,7 +771,10 @@ final class FakeEngine: EngineTransport {
             result(c, id, ok: .object(["data": problems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
             let devs: [JSONValue] = fakeDevices.map {
-                .object(["name": .string($0.name), "output_channels": .int(Int64($0.channels))])
+                .object([
+                    "name": .string($0.name), "output_channels": .int(Int64($0.channels)),
+                    "is_default": .bool($0.name == fakeDefaultDevice),
+                ])
             }
             var data: [String: JSONValue] = ["type": .string("devices"), "devices": .array(devs)]
             if let selectedOutputDevice { data["selected"] = .string(selectedOutputDevice) }

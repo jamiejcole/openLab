@@ -197,9 +197,19 @@ struct PatchMappingEntry: Hashable, Sendable, Decodable {
 struct DeviceEntry: Hashable, Sendable, Decodable {
     let name: String
     let outputChannels: Int
+    /// The system default device: what an engine with no chosen device opens at start.
+    let isDefault: Bool
     enum CodingKeys: String, CodingKey {
         case name
         case outputChannels = "output_channels"
+        case isDefault = "is_default"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        outputChannels = try c.decode(Int.self, forKey: .outputChannels)
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 }
 

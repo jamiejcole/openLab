@@ -119,6 +119,41 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertTrue(sc.messageLabel.stringValue.contains("Scarlett"), sc.messageLabel.stringValue)
     }
 
+    func testTheSystemDefaultCountsWhenItDiffersFromTheDevicePlaying() async throws {
+        let rig = try Rig()
+        rig.engine.fakeDevices = [("Built-in", 2), ("Scarlett", 4)]
+        rig.engine.fakeDefaultDevice = "Built-in"
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        await sc.present().value
+        try pushStatus(rig, device: "Scarlett")
+        await assertEventually { sc.model.playing?.name == "Scarlett" }
+        // Nothing chosen: the next start opens the default, which is not what plays.
+        XCTAssertNil(sc.model.chosenDevice)
+        XCTAssertTrue(sc.model.needsRestart)
+        sc.render()
+        XCTAssertEqual(sc.deviceNoteLabel.stringValue, loc("settings.audio.restartNeeded"))
+        try pushStatus(rig, device: "Built-in")
+        await assertEventually { sc.model.playing?.name == "Built-in" }
+        XCTAssertFalse(sc.model.needsRestart)
+    }
+
+    func testAnUnchangedStatusRebuildsNothing() async throws {
+        let (rig, sc) = try await open()
+        try pushStatus(rig, device: "Built-in")
+        await assertEventually { sc.model.playing?.name == "Built-in" }
+        await settle()
+        let drawn = sc.renderCount
+        for _ in 0..<3 {
+            try pushStatus(rig, device: "Built-in")
+            await settle()
+        }
+        XCTAssertEqual(sc.renderCount, drawn, "same device, same state: nothing to redraw")
+        try pushStatus(rig, device: "Built-in", state: "lost")
+        await assertEventually { sc.renderCount > drawn }
+    }
+
     // MARK: Patch editor
 
     func testThePatchEditorListsThePatchAndFlagsAnUnmappedOne() async throws {
@@ -142,6 +177,17 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.patchProblemLabel.stringValue, "")
         XCTAssertEqual(sc.channelPopups.map { $0.selectedItem?.tag }, [0, 1])
         XCTAssertEqual(sc.channelPopups[0].itemTitles, ["1", "2", "3", "4"])
+    }
+
+    func testPickingTheDeviceAPatchAlreadyUsesKeepsItsRouting() async throws {
+        let (rig, sc) = try await open()
+        let row = try XCTUnwrap(sc.model.patches.first)
+        await sc.model.setMapping(row, device: "Scarlett")
+        await sc.model.setChannel(try XCTUnwrap(sc.model.patches.first), output: 1, channel: 3)
+        let sentBefore = requests(rig).count
+        await sc.model.setMapping(try XCTUnwrap(sc.model.patches.first), device: "Scarlett")
+        XCTAssertEqual(rig.engine.patchMappings[patch], PatchMapping(device: "Scarlett", channels: [0, 3]))
+        XCTAssertEqual(requests(rig).count, sentBefore, "the same device again sends nothing")
     }
 
     func testChangingAnOutputsChannelSendsTheWholeMapping() async throws {

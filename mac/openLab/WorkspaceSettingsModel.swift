@@ -47,24 +47,26 @@ final class WorkspaceSettingsModel: ObservableObject {
         switch await store.listDevices() {
         case .success(let ok):
             if case .devices(let list, let selected)? = ok.data {
-                devices = list
-                chosenDevice = selected
-                loaded = true
+                // Assigned only on a change: each assignment publishes, and the window rebuilds.
+                if devices != list { devices = list }
+                if chosenDevice != selected { chosenDevice = selected }
+                if !loaded { loaded = true }
             }
         case .failure(let e):
-            loaded = false
+            if loaded { loaded = false }
             message = describe(e)
             return
         }
         switch await store.listPatchMappings() {
         case .success(let entries):
             let byPatch = Dictionary(entries.map { ($0.patch, $0.mapping) }, uniquingKeysWith: { first, _ in first })
-            patches = (store.model?.patches ?? []).map { object in
+            let rows = (store.model?.patches ?? []).map { object in
                 PatchRow(
                     id: object.id, name: object.raw["name"]?.stringValue ?? "",
                     outputCount: object.raw["outputs"]?.arrayValue?.count ?? 0,
                     mapping: byPatch[object.id] ?? nil)
             }
+            if patches != rows { patches = rows }
         case .failure(let e): message = describe(e)
         }
     }
@@ -72,10 +74,34 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// The device the engine is playing on now, from the status message.
     var playing: DeviceStatus? { store.status?.device }
 
-    /// A device was chosen that is not the one playing: it opens at the next start.
+    /// What the engine will open at its next start: the chosen device, else the system default
+    /// (nil when the list names none).
+    var nextStartDevice: String? { chosenDevice ?? devices.first { $0.isDefault }?.name }
+
+    /// The next start would open a different device from the one playing now.
     var needsRestart: Bool {
-        guard let chosen = chosenDevice, let name = playing?.name else { return false }
-        return chosen != name
+        guard let next = nextStartDevice, let name = playing?.name else { return false }
+        return next != name
+    }
+
+    /// Everything the window draws; the window rebuilds its controls only when this changes.
+    struct DisplayState: Equatable {
+        var devices: [DeviceEntry]
+        var chosen: String?
+        var patches: [PatchRow]
+        var playingName: String?
+        var playingState: String?
+        var loaded: Bool
+        var message: String?
+        var panic: Double?
+        var goInterval: Double?
+    }
+
+    var displayState: DisplayState {
+        DisplayState(
+            devices: devices, chosen: chosenDevice, patches: patches, playingName: playing?.name,
+            playingState: playing?.state.raw, loaded: loaded, message: message, panic: panicDuration,
+            goInterval: minGoInterval)
     }
 
     /// The playing device is lost, failed or absent: patches on it are silent until it is back.
@@ -130,6 +156,9 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Puts `row` on `device`, output i on device channel `channels[i]`; nil `device` clears it
     /// (the engine pauses the cues playing through the patch, as QLab does).
     func setMapping(_ row: PatchRow, device: String?, channels: [UInt32]? = nil) async {
+        // The popup fires its action when the same device is picked again; that must not reset
+        // the routing the show was built with to the first channels.
+        if channels == nil, device == row.mapping?.device { return }
         var mapping: PatchMapping?
         if let device {
             let count = channelCount(of: device)

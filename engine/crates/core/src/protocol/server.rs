@@ -480,6 +480,9 @@ pub struct RecoveryEntryInfo {
 pub struct DeviceEntry {
     pub name: String,
     pub output_channels: u32,
+    /// The system default device (what an unchosen engine opens at start).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_default: bool,
 }
 
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).

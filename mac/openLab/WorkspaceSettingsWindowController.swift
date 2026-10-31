@@ -31,6 +31,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let doneButton = NSButton(title: loc("settings.done"), target: nil, action: nil)
 
     private var subs: [AnyCancellable] = []
+    private var observers: [NSObjectProtocol] = []
+    /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
+    private(set) var renderCount = 0
+    private var lastDrawn: WorkspaceSettingsModel.DisplayState?
+    /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
+    private var menuOpen = false
     private var shownPatch: ModelID?
 
     init(store: WorkspaceStore) {
@@ -47,8 +53,23 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        let center = NotificationCenter.default
+        observers.append(
+            center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) {
+                [weak self] _ in MainActor.assumeIsolated { self?.menuOpen = true }
+            })
+        observers.append(
+            center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) {
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.menuOpen = false
+                    self?.renderSoon()
+                }
+            })
         render()
     }
+
+    deinit { for o in observers { NotificationCenter.default.removeObserver(o) } }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -173,6 +194,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     /// Redraws every control from the model. Called after each answer and each status change.
     func render() {
+        let state = model.displayState
+        guard state != lastDrawn, !menuOpen else { return }
+        lastDrawn = state
+        renderCount += 1
         renderGeneral()
         renderDevice()
         renderPatch()
@@ -315,6 +340,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     @objc private func patchChosen() {
         shownPatch = (patchPopup.selectedItem?.representedObject as? String).map { ModelID($0) }
+        lastDrawn = nil
         render()
     }
 

@@ -90,6 +90,7 @@ fn entry(name: &str, output_channels: u32) -> DeviceEntry {
     DeviceEntry {
         name: name.into(),
         output_channels,
+        is_default: false,
     }
 }
 

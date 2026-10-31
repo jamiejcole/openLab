@@ -915,6 +915,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     devices: vec![DeviceEntry {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
+                        is_default: true,
                     }],
                     selected: Some("Scarlett 2i2".into()),
                 }),

@@ -109,13 +109,28 @@ pub fn load_settings(text: &str) -> LoadedSettings {
         ));
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut settings: MachineSettings = match serde_json::from_str(text) {
+    let unreadable = |error: serde_json::Error| {
+        defaults(format!(
+            "settings file is unreadable ({error}); using defaults"
+        ))
+    };
+    let mut value: serde_json::Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(error) => return unreadable(error),
+    };
+    // A wrong-typed device choice drops only itself: the mappings beside it are the operator's.
+    let mut warnings = Vec::new();
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("output_device")
+            .is_some_and(|v| !v.is_string() && !v.is_null())
+    {
+        object.remove("output_device");
+        warnings.push("output device is not a name; using the system default".to_owned());
+    }
+    let mut settings: MachineSettings = match serde_json::from_value(value) {
         Ok(settings) => settings,
-        Err(error) => {
-            return defaults(format!(
-                "settings file is unreadable ({error}); using defaults"
-            ));
-        }
+        Err(error) => return unreadable(error),
     };
     if settings.settings_version > SETTINGS_VERSION {
         return defaults(format!(
@@ -123,7 +138,6 @@ pub fn load_settings(text: &str) -> LoadedSettings {
             settings.settings_version
         ));
     }
-    let mut warnings = Vec::new();
     sanitise(&mut settings, &mut warnings);
     LoadedSettings { settings, warnings }
 }
@@ -391,6 +405,19 @@ mod tests {
         let loaded = load_settings(r#"{"settings_version": 1, "output_device": "Scarlett"}"#);
         assert_eq!(loaded.settings.output_device.as_deref(), Some("Scarlett"));
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_typed_output_device_keeps_the_mappings() {
+        let ws = "00000000-0000-0000-0000-000000000001";
+        let p = "00000000-0000-0000-0000-000000000002";
+        let text = format!(
+            r#"{{"settings_version": 1, "output_device": 5, "workspaces": {{"{ws}": {{"patches": {{"{p}": {{"device": "Scarlett", "channels": [0, 1]}}}}}}}}}}"#
+        );
+        let loaded = load_settings(&text);
+        assert_eq!(loaded.settings.output_device, None);
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.workspaces.len(), 1, "mappings survive");
     }
 
     #[test]
