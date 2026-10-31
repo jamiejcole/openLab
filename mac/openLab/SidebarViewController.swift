@@ -386,8 +386,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     func syncSelection() {
         guard isViewLoaded else { return }
         // This may run before the sidebar's own store subscription has: draw from the store's lists.
-        if lists != (store.model?.cueLists ?? []) {
-            lists = store.model?.cueLists ?? []
+        // Only ids and names are compared: a cue edit must not deep-compare every cue tree.
+        let current = store.model?.cueLists ?? []
+        if lists.map(\.id) != current.map(\.id) || lists.map(\.name) != current.map(\.name) {
+            lists = current
             listTable.reloadData()
         }
         settingSelection = true
