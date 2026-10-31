@@ -113,10 +113,13 @@ known() {
 # known_entries: every known-failure reason cites an open issue (`#N`) or starts `permanent:`.
 known_entries() {
   local check item reason n
-  while IFS='|' read -r check item reason; do
+  while IFS='|' read -r check item reason || [ -n "$check" ]; do
     case "$check" in '' | '#'*) continue ;; esac
     reason=${reason# }
-    case "$reason" in permanent:*) continue ;; esac
+    case "$reason" in
+      permanent:*[![:space:]]*) continue ;;
+      permanent:*) fail known "$KNOWN: permanent entry '${check% } |${item% }' does not say why"; continue ;;
+    esac
     n=$(printf '%s' "$reason" | grep -oE '#[0-9]+' | head -n 1 | tr -d '#')
     if [ -z "$n" ]; then
       fail known "$KNOWN: entry '${check% } |${item% }' cites no open issue (#N) and is not 'permanent:'"
