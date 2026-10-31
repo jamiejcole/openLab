@@ -26,8 +26,7 @@ final class InspectorUITests: XCTestCase {
     func testGroupSetToPlaylistAndLoop() {
         let app = launchDemo()
 
-        XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
-        app.staticTexts["Act One"].click()
+        selectCue("Act One", in: app)
         tabButton("Mode", in: app).click()
         let mode = app.popUpButtons["inspector-group-mode"]
         XCTAssertTrue(mode.waitForExistence(timeout: 5))

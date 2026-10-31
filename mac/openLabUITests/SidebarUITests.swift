@@ -29,7 +29,7 @@ final class SidebarUITests: XCTestCase {
         let app = launchDemo()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.checkBoxes["toggle-sidebar"].click()
-        app.radioButtons["Warnings"].click()
+        tabButton("Warnings", in: app).click()
         let warnings = app.descendants(matching: .any).matching(identifier: "sidebar-warnings").firstMatch
         XCTAssertTrue(warnings.waitForExistence(timeout: 10))
         let row = warnings.staticTexts["2.3  Radio"]

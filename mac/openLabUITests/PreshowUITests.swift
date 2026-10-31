@@ -31,7 +31,7 @@ final class PreshowUITests: XCTestCase {
         report.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         app.checkBoxes["toggle-sidebar"].click()
-        app.radioButtons["Active Cues"].click()
+        tabButton("Active Cues", in: app).click()
         XCTAssertTrue(app.staticTexts["2.1  Door slam"].waitForExistence(timeout: 10), "GO ran")
     }
 

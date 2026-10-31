@@ -17,6 +17,16 @@ final class LevelsUITests: XCTestCase {
         matrix.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y)).click()
     }
 
+    /// Clicks the cell until the matrix's label names it: a click that lands while the matrix is
+    /// redrawing after the previous edit selects nothing.
+    private func clickCell(_ matrix: XCUIElement, row: Int, column: Int, selecting name: String, label: XCUIElement) {
+        for _ in 0..<3 {
+            clickCell(matrix, row: row, column: column)
+            if waitFor("value == '\(name)'", label, timeout: 4) { return }
+        }
+        XCTFail("the cell \(name) does not get selected")
+    }
+
     private func type(_ text: String, into field: XCUIElement) {
         field.click()
         // Keystrokes sent before the click has made the field first responder are lost on a busy
@@ -28,8 +38,7 @@ final class LevelsUITests: XCTestCase {
 
     func testSettingACueLevelAndACrosspoint() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
-        app.staticTexts["Intro"].click()
+        selectCue("Intro", in: app)
         open("Levels", in: app)
 
         let field = app.textFields["levels-field"]
@@ -49,14 +58,13 @@ final class LevelsUITests: XCTestCase {
 
         clickCell(matrix, row: 0, column: -1)
         XCTAssertTrue(waitFor("value == '-6.0'", field), "the master kept its level")
-        clickCell(matrix, row: 2, column: 1)
+        clickCell(matrix, row: 2, column: 1, selecting: "File channel 2 to output 2", label: label)
         XCTAssertTrue(waitFor("value == '-12.0'", field), "and so did the crosspoint")
     }
 
     func testFadeCueTargetLevel() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
-        app.staticTexts["Intro"].click()
+        selectCue("Intro", in: app)
         app.typeKey(.downArrow, modifierFlags: [])  // the Fade cue below it
         open("Fade", in: app)
 

@@ -18,8 +18,18 @@ extension XCTestCase {
         let app = launchFake()
         let windows = app.windows.matching(identifier: "main-window")
         XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
+        // Cmd-W closes the key window: wait until the front window is the empty one (the demo's
+        // cue is not in it), or the demo closes instead and the test finds no cues.
+        let emptyInFront = NSPredicate { _, _ in
+            let front = windows.element(boundBy: 0)
+            return front.exists && !front.staticTexts["Intro"].exists
+        }
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: emptyInFront, object: nil)], timeout: 10),
+            .completed, "the empty workspace is in front")
         app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(waitFor("count == 1", windows), "the empty workspace closes")
+        XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["Intro"]), "the demo is ready")
         return app
     }
 
@@ -27,6 +37,20 @@ extension XCTestCase {
     @MainActor func waitFor(_ format: String, _ object: Any?, timeout: TimeInterval = 10) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: object)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Selects the cue row titled `title` and waits until the list shows it selected. A click that
+    /// lands while the list is still laying out selects nothing, which left the inspector without
+    /// its tabs; the click is repeated until the selection shows.
+    @MainActor func selectCue(_ title: String, in app: XCUIApplication) {
+        let row = app.staticTexts[title]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "the cue \(title) is listed")
+        let selected = app.descendants(matching: .outlineRow).matching(NSPredicate(format: "selected == true"))
+        for _ in 0..<3 {
+            row.click()
+            if waitFor("count == 1", selected, timeout: 4) { return }
+        }
+        XCTFail("the cue \(title) does not get selected")
     }
 
     /// The inspector or sidebar tab titled `title`, once it has laid out: the tab bar is a segmented
