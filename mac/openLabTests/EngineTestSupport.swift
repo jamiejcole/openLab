@@ -267,6 +267,11 @@ final class TestEngine {
         try await advance(frames: UInt64((seconds * Self.rate).rounded()))
     }
 
+    /// An app-scope request on the harness's own app connection (`lose_device`, `list_devices`, ...).
+    func request(_ request: Request) async -> Result<OkBody, EngineError> {
+        await app.send({ .request(id: $0, request) })
+    }
+
     func advance(frames: UInt64) async throws {
         switch await app.send({ .request(id: $0, .advance(frames: frames)) }) {
         case .success: return
@@ -349,8 +354,10 @@ extension Rig {
 
     /// A client + store bound to a fresh copy of the test show `show` on the class's real engine
     /// (nil `show`: the app connection), connected, with manual reconnect and request schedulers.
-    static func open(_ show: String? = "Demo") async throws -> Rig {
-        let engine = try await TestEngine.shared()
+    /// `engine`: one of the test's own (`TestEngine.start()`, for a test that kills or stops it).
+    static func open(_ show: String? = "Demo", on own: TestEngine? = nil) async throws -> Rig {
+        let engine: TestEngine
+        if let own { engine = own } else { engine = try await TestEngine.shared() }
         var doc: ModelID?
         if let show { doc = try await engine.open(show) }
         let rig = Rig(engine: engine, workspace: doc)
