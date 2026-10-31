@@ -23,6 +23,7 @@ mod patch_mapping;
 mod preshow;
 mod progress;
 mod protocol;
+mod real_audio;
 mod shutdown;
 mod timing;
 mod undo_active;
