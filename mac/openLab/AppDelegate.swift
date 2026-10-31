@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
-        alerts: { [unowned self] in appController.alerts })
+        alerts: { [unowned self] in appController.gatedAlerts })
 
     /// The system pieces launching uses (tests inject them).
     private let launch: AppLaunch
@@ -216,7 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 return false
             }
             item.state = front.isVisible(area) ? .on : .off
-            return true
+            // Show Mode has taken the toolbar and inspector away (SM-01): their items wait.
+            return !(front.isShowMode && WorkspaceWindowController.hiddenInShowMode.contains(area))
         case #selector(selectCue(_:))?, #selector(movePlayheadToCue(_:))?, #selector(movePlayheadNext(_:))?,
             #selector(movePlayheadPrevious(_:))?:
             return appController.frontController != nil && !appController.isTextEditing()

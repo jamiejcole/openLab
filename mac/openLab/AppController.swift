@@ -30,6 +30,22 @@ final class AppController {
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
     var alerts: WorkspaceAlerts = AppKitAlerts()
+    /// `alerts` for errors and notices: with a window in Show Mode they become a log record and a
+    /// footer line on that window instead of a modal (NFR-10). Confirmations are not gated.
+    var gatedAlerts: WorkspaceAlerts {
+        ShowModeGatedAlerts(base: alerts) { [weak self] message, error in
+            self?.divertToShowModeWindows(message, error: error) ?? false
+        }
+    }
+
+    private func divertToShowModeWindows(_ message: String, error: Bool) -> Bool {
+        let live = controllers.values.filter(\.isShowMode)
+        for c in live {
+            _ = c.store.receive(.log(error ? .error : .info, message))
+            c.footer.showNotice(message)
+        }
+        return !live.isEmpty
+    }
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
     /// The folder to search for missing media (nil: cancelled).
     var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel

@@ -117,3 +117,34 @@ struct AppKitAlerts: WorkspaceAlerts {
         return alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 }
+
+/// Show Mode raises nothing modal that is not a safety confirmation (NFR-10): errors and notices go
+/// to `divert` first, which says whether a Show Mode window took them (log and footer); otherwise
+/// the base alerts show them. Confirmations and decisions pass through untouched.
+@MainActor
+struct ShowModeGatedAlerts: WorkspaceAlerts {
+    let base: WorkspaceAlerts
+    /// True when it took the message (some window is in Show Mode); `error` tells its severity.
+    let divert: @MainActor (_ message: String, _ error: Bool) -> Bool
+
+    func showError(_ message: String) {
+        if !divert(message, true) { base.showError(message) }
+    }
+
+    func showInfo(_ message: String) {
+        if !divert(message, false) { base.showInfo(message) }
+    }
+
+    func confirmCloseWhilePlaying(workspace: String) -> Bool { base.confirmCloseWhilePlaying(workspace: workspace) }
+    func confirmQuitWhilePlaying() -> Bool { base.confirmQuitWhilePlaying() }
+    func confirmCloseInShowMode(workspace: String) -> Bool { base.confirmCloseInShowMode(workspace: workspace) }
+    func confirmQuitInShowMode() -> Bool { base.confirmQuitInShowMode() }
+    func confirmQuitDisconnected() -> Bool { base.confirmQuitDisconnected() }
+    func unsavedChanges(workspace: String) -> SaveChoice { base.unsavedChanges(workspace: workspace) }
+    func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
+        base.recoveryOffer(workspace: workspace, modifiedMs: modifiedMs)
+    }
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+        base.offerAutosave(name: name, modifiedMs: modifiedMs, setAside: setAside)
+    }
+}

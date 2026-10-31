@@ -132,7 +132,7 @@ extension AppController {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && isDirectory.boolValue
         }
-        if existing.isEmpty { alerts.showInfo(loc("crash.none")) } else { revealInFinder(existing) }
+        if existing.isEmpty { gatedAlerts.showInfo(loc("crash.none")) } else { revealInFinder(existing) }
     }
 
     /// The engine logs "previous run ended without a clean shutdown" at its start (kind `engine`,

@@ -199,7 +199,7 @@ audio thread: voice reads ring ─► trims/loops/slices ─► cue fades (in/ou
 
 - Engine Rust code returns `Result`. Workspace lints (`[workspace.lints.clippy]`, all `deny`, `-D warnings` in CI) apply to all three crates: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `print_stdout`, `print_stderr`, `undocumented_unsafe_blocks`, `indexing_slicing`. `engine/clippy.toml` relaxes unwrap/expect/panic/print/indexing in tests only; that covers `#[test]` fns and `#[cfg(test)]` items, so integration-test crates and their support modules allow them at the top of the file.
 - Nothing in the engine writes to stdout/stderr except through the logging path. The one exception is CLI output in `main` (e.g. `--version`), written via `std::io::Write` with write errors handled (a closed pipe must not panic).
-- Failures surface as **broken cue state, warnings, or log entries** — never a crash, never a modal during Show Mode.
+- Failures surface as **broken cue state, warnings, or log entries** — never a crash, never a modal during Show Mode. In the Mac app a window in Show Mode (or any window while another is in it) turns every error or notice alert into a log record plus a footer line (`ShowModeGatedAlerts`, `WorkspaceWindowController.showNotice`); only the safety confirmations (close or quit while playing or in Show Mode, unsaved changes), the open-time autosave decisions and the engine alarm still interrupt.
 - `unsafe` is forbidden in `openlab-core`; allowed elsewhere only with a `// SAFETY:` comment and a test exercising it.
 - Every bug fix lands with a regression test.
 

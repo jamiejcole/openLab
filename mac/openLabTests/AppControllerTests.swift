@@ -1021,7 +1021,7 @@ final class AppControllerTests: XCTestCase {
             XCTAssertFalse(delegate.validateMenuItem(item), item.title)
         }
         // Items that are not edits stay available in Show Mode.
-        let inspector = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) })
+        let inspector = try XCTUnwrap(items.first { MainMenu.layoutArea(of: $0) == .masthead && $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) })
         XCTAssertTrue(delegate.validateMenuItem(inspector))
         let launcher = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
         XCTAssertTrue(delegate.validateMenuItem(launcher))
@@ -1838,5 +1838,130 @@ final class AppControllerTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
+    }
+
+    // MARK: Show Mode layout and quiet (SM-01, SM-03, NFR-10)
+
+    func testShowModeHidesToolbarAndInspectorAndEditModeBringsBackTheChoice() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setVisible(.inspector, false)
+        XCTAssertTrue(wc.isVisible(.toolbar))
+        wc.setShowMode(true)
+        XCTAssertFalse(wc.isVisible(.toolbar), "hidden, not just disabled")
+        XCTAssertFalse(wc.isVisible(.inspector))
+        XCTAssertTrue(wc.isVisible(.masthead), "the masthead toggle is independent of Show Mode")
+        XCTAssertTrue(wc.cueList.view.superview != nil && !wc.cueList.view.isHidden)
+        XCTAssertFalse(wc.footer.toggles[.toolbar]?.isEnabled ?? true)
+        XCTAssertFalse(wc.footer.toggles[.inspector]?.isEnabled ?? true)
+        XCTAssertEqual(wc.footer.toggles[.toolbar]?.state, .off)
+        wc.setVisible(.inspector, true)
+        XCTAssertFalse(wc.isVisible(.inspector), "a toggle cannot bring it back in Show Mode")
+        wc.setShowMode(false)
+        XCTAssertTrue(wc.isVisible(.toolbar))
+        XCTAssertFalse(wc.isVisible(.inspector), "the choice made before Show Mode is back")
+        XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
+        XCTAssertTrue(wc.footer.toggles[.toolbar]?.isEnabled ?? false)
+    }
+
+    func testViewMenuGreysTheAreasShowModeHidesAndTheModeItemThatDoesNotApply() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
+        func layout(_ area: LayoutArea) throws -> NSMenuItem {
+            try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) && MainMenu.layoutArea(of: $0) == area })
+        }
+        let enterShow = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterShowMode(_:)) })
+        let enterEdit = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterEditMode(_:)) })
+        XCTAssertTrue(delegate.validateMenuItem(enterShow))
+        XCTAssertFalse(delegate.validateMenuItem(enterEdit))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.inspector)))
+        wc.setShowMode(true)
+        XCTAssertFalse(delegate.validateMenuItem(enterShow))
+        XCTAssertTrue(delegate.validateMenuItem(enterEdit))
+        XCTAssertFalse(delegate.validateMenuItem(try layout(.inspector)))
+        XCTAssertFalse(delegate.validateMenuItem(try layout(.toolbar)))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.masthead)))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.sidebar)))
+        app.toggleLayout(.inspector)
+        XCTAssertFalse(wc.isVisible(.inspector))
+    }
+
+    func testMastheadIsLargerAndHighContrastInShowModeAndFollowsTheWindowSize() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let edit = wc.masthead.metrics
+        wc.setShowMode(true)
+        let show = wc.masthead.metrics
+        XCTAssertTrue(wc.masthead.isShowMode)
+        XCTAssertGreaterThan(show.goSize.width, edit.goSize.width)
+        XCTAssertGreaterThan(show.goSize.height, edit.goSize.height)
+        XCTAssertEqual(wc.masthead.goButton.constraints.first { $0.firstAttribute == .width }?.constant, show.goSize.width)
+        wc.setShowMode(false)
+        XCTAssertEqual(wc.masthead.metrics, edit)
+        XCTAssertFalse(wc.masthead.isShowMode)
+        wc.window?.setContentSize(NSSize(width: 1600, height: 1000))
+        wc.setShowMode(true)
+        XCTAssertEqual(wc.masthead.metrics, MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero))
+    }
+
+    /// Errors and notices that would be a modal in Edit Mode become a log record and a footer line.
+    func testShowModeSuppressesTheNoticeSheetAndLogsIt() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        wc.showNotice("Could not do that")
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertEqual(wc.store.logEntries.last?.message, "Could not do that")
+        XCTAssertEqual(wc.store.logEntries.last?.level, .warn)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, "Could not do that")
+    }
+
+    func testShowModeSuppressesTheCrashReportsInfoAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        app.crashFolders = { [URL(fileURLWithPath: "/nonexistent/openLab-crashes")] }
+        wc.setShowMode(true)
+        app.revealCrashReports()
+        XCTAssertFalse(alerts.log.contains { $0.hasPrefix("info:") })
+        XCTAssertEqual(wc.store.logEntries.last?.message, loc("crash.none"))
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, loc("crash.none"))
+    }
+
+    /// Another workspace is in Show Mode while this one is closed: a failed close must not put a
+    /// modal over the show.
+    func testShowModeSuppressesTheCloseFailedAlertOfAnotherWorkspace() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        show.setShowMode(true)
+        engine.holdResults = true
+        let task = Task { await app.closeWorkspace(second) }
+        await assertEventually { closeMessages().count == 1 }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let closed = await task.value
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.errors.isEmpty, "no modal about the failure: \(alerts.errors)")
+        XCTAssertEqual(show.store.logEntries.last?.level, .error)
+        XCTAssertEqual(show.footer.noticeLabel.stringValue, show.store.logEntries.last?.message)
+        engine.releaseResults()
+    }
+
+    func testShowModeSuppressesTheSaveFailedAlertOnQuitButKeepsTheQuitConfirmation() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        alerts.saveChoices = [.save]
+        engine.garbleResults = true
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.log.first, "quitPlaying", "the one quit confirmation stays (playing outranks Show Mode)")
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+    }
+
+    func testEditModeStillShowsErrorsAsAlerts() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        app.crashFolders = { [URL(fileURLWithPath: "/nonexistent/openLab-crashes")] }
+        app.revealCrashReports()
+        XCTAssertTrue(alerts.log.contains("info:" + loc("crash.none")))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.isEmpty)
     }
 }
