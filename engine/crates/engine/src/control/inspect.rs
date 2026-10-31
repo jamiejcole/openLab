@@ -212,6 +212,16 @@ impl Control {
         self.docs.iter().map(|d| d.media.preloads_pending()).sum()
     }
 
+    /// Waveform reads (AUD-14) running or waiting to, every doc's.
+    pub fn waveforms_pending(&self) -> usize {
+        self.eng.waveform_reader.pending()
+    }
+
+    /// Waveform reads given up on (stuck); apart from [`Self::abandoned_probe_workers`].
+    pub fn abandoned_waveform_reads(&self) -> usize {
+        self.eng.waveform_reader.abandoned()
+    }
+
     /// Probe workers replaced because they were stuck (the engine's pool).
     pub fn abandoned_probe_workers(&self) -> usize {
         self.eng.pool.abandoned_workers()

@@ -107,6 +107,26 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
     }
 
+    /// AUD-14: the `waveform` request is sent as the fixture has it and its answer decodes.
+    func testWaveformRequestAndResultMatchTheFixtures() throws {
+        let sent = ClientMessage.request(
+            id: 56, .waveform(cue: "00000000-0000-0000-0000-00000000000a", start: 0, end: 62.5, buckets: 800))
+        let golden = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "request_waveform").utf8))
+        XCTAssertEqual(sent, golden)
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_waveform")),
+            case .waveform(let w)? = ok.data
+        else { return XCTFail("waveform") }
+        XCTAssertEqual(w.cue, "00000000-0000-0000-0000-00000000000a")
+        XCTAssertEqual([w.duration, w.start, w.end], [62.5, 1.5, 2.0])
+        XCTAssertEqual(
+            w.channels,
+            [
+                WaveformPeaks.Channel(min: [-32767, -120, 0], max: [32767, 4000, 0]),
+                WaveformPeaks.Channel(min: [-16384, -1, 0], max: [16384, 1, 0]),
+            ])
+    }
+
     /// M5.4d: the snapshot's `media_durations` and the `media_duration` runtime change.
     func testMediaDurationsDecode() throws {
         guard case .snapshot(let snap) = try ServerMessage.decode(try Fixtures.text("server", "snapshot")) else {

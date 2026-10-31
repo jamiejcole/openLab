@@ -429,6 +429,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
     case logTail(entries: [ShowLogEntry], dropped: UInt64, seq: UInt64)
     case preshowCheck(PreshowReport)
+    /// AUD-14: a `waveform` answer.
+    case waveform(WaveformPeaks)
     /// The doc a `new` / `open` / `open_recovery` opened.
     case opened(doc: ModelID)
     /// A data type this client does not know; the raw object is kept.
@@ -462,10 +464,26 @@ enum ResultData: Sendable, Equatable, Decodable {
                 dropped: try c.decode(UInt64.self, forKey: "dropped"),
                 seq: try c.decodeIfPresent(UInt64.self, forKey: "seq") ?? 0)
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
+        case "waveform": self = .waveform(try WaveformPeaks(from: decoder))
         case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }
+}
+
+/// An Audio cue's file waveform over file seconds `start..<end` (AUD-14): per file channel, each
+/// bucket's minimum and maximum, ±`fullScale` being full scale. `duration` is the whole file's.
+struct WaveformPeaks: Hashable, Sendable, Decodable {
+    struct Channel: Hashable, Sendable, Decodable {
+        let min: [Int16]
+        let max: [Int16]
+    }
+    static let fullScale: Float = 32767
+    let cue: ModelID
+    let duration: Double
+    let start: Double
+    let end: Double
+    let channels: [Channel]
 }
 
 /// One open workspace as the app connection lists it.

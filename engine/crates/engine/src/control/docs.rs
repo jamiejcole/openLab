@@ -1364,6 +1364,8 @@ impl DocCx<'_> {
             }
         }
         self.doc.media.reset(self.show_dir(), self.doc.model.ws());
+        self.doc.waveforms.reset();
+        self.eng.waveform_reader.forget(self.doc.id);
         if changed {
             // An undo can restore an old relative spelling that now resolves against the new
             // folder, so history goes on any move from a known folder. Only the first save of an
@@ -2160,6 +2162,7 @@ impl Control {
         self.eng.observe.reset(doc);
         self.eng.watch.leave(doc);
         self.eng.pool.leave(doc);
+        self.eng.waveform_reader.forget(doc);
         self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
         // Saves under way still finish on the writer and are answered then.
         self.eng

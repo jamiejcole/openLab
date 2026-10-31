@@ -48,6 +48,16 @@ impl Control {
                     cx.net_answer(answer);
                 }
             }
+            Inbox::Waveform {
+                doc,
+                ticket,
+                result,
+            } => {
+                self.eng.waveform_reader.finished(ticket);
+                if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+                    d.waveforms.answer(ticket, result);
+                }
+            }
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),
             Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
@@ -439,6 +449,12 @@ impl DocCx<'_> {
                         },
                     );
                 }
+                Request::Waveform {
+                    cue,
+                    start,
+                    end,
+                    buckets,
+                } => self.waveform(id, cue, (start, end, buckets), to),
                 // Saves come through [`Control::save`], which knows the other docs.
                 request => self.doc_request(id, request, to, Vec::new()),
             },

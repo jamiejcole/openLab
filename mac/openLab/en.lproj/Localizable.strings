@@ -484,6 +484,23 @@
 "fade.curve.logarithmic" = "Logarithmic";
 "fade.curve.exponential" = "Exponential";
 
+/* Audio cue timing and loops tab, waveform (AUD-11, AUD-12, AUD-14) */
+"inspector.tab.timeLoops" = "Timing & Loops";
+"timeLoops.start" = "Start";
+"timeLoops.end" = "End";
+"timeLoops.play" = "Play";
+"timeLoops.times" = "times";
+"timeLoops.loop" = "Loop until devamped";
+"timeLoops.slicesNote" = "This cue has slices: each slice keeps its own play count.";
+"timeLoops.zoomIn" = "Zoom in";
+"timeLoops.zoomOut" = "Zoom out";
+"timeLoops.noFile" = "No file";
+"timeLoops.notRead" = "Reading the file…";
+"timeLoops.unavailable" = "The waveform could not be read";
+"timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
+"timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";
+"timeLoops.invalid.unknownLength" = "The file has not been read yet: set the start once its length is known.";
+
 /* Engine lifecycle (M5.2, NFR-01, NFR-05) */
 "engine.alarm.window" = "Engine";
 "engine.alarm.crashed" = "The engine crashed";

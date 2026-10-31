@@ -155,6 +155,8 @@ enum Request: Hashable, Sendable, Codable {
     /// WS-07: sets, or with nil clears, where the workspace's patch plays on this machine. Kept in
     /// the engine's machine settings, not the show file. A clear travels as an explicit `null`.
     case setPatchMapping(patch: ModelID, mapping: PatchMapping?)
+    /// AUD-14: an Audio cue's file peaks over file seconds `start..<end` in `buckets` parts (1 to 8192).
+    case waveform(cue: ModelID, start: Double, end: Double, buckets: UInt32)
     case snapshot
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -198,6 +200,8 @@ enum Request: Hashable, Sendable, Codable {
         case .setPatchMapping(let patch, let mapping):
             return ("set_patch_mapping", [("patch", patch), ("mapping", mapping as PatchMapping?)])
         case .snapshot: return ("snapshot", [])
+        case .waveform(let cue, let start, let end, let buckets):
+            return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
         }
     }
 
@@ -234,6 +238,10 @@ enum Request: Hashable, Sendable, Codable {
                 patch: try c.decode(ModelID.self, forKey: "patch"),
                 mapping: try c.decodeIfPresent(PatchMapping.self, forKey: "mapping"))
         case "snapshot": self = .snapshot
+        case "waveform":
+            self = .waveform(
+                cue: try c.decode(ModelID.self, forKey: "cue"), start: try c.decode(Double.self, forKey: "start"),
+                end: try c.decode(Double.self, forKey: "end"), buckets: try c.decode(UInt32.self, forKey: "buckets"))
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))
         }

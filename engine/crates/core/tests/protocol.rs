@@ -257,6 +257,15 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 }),
             },
         ),
+        (
+            "waveform",
+            Request::Waveform {
+                cue: cue_id(10),
+                start: 0.0,
+                end: 62.5,
+                buckets: 800,
+            },
+        ),
     ]
 }
 
@@ -968,6 +977,31 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_waveform",
+        server(ServerMessage::Result {
+            id: rid(52),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Waveform(Box::new(WaveformData {
+                    cue: cue_id(10),
+                    duration: 62.5,
+                    start: 1.5,
+                    end: 2.0,
+                    channels: vec![
+                        WaveformChannel {
+                            min: vec![-32767, -120, 0],
+                            max: vec![32767, 4000, 0],
+                        },
+                        WaveformChannel {
+                            min: vec![-16384, -1, 0],
+                            max: vec![16384, 1, 0],
+                        },
+                    ],
+                }))),
+            }),
+        }),
+    );
+    add(
         "result_patch_mappings",
         server(ServerMessage::Result {
             id: rid(60),
@@ -1453,7 +1487,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 23);
-    assert_eq!(all_requests().len(), 16);
+    assert_eq!(all_requests().len(), 17);
 }
 
 #[test]
@@ -1645,6 +1679,39 @@ fn malformed_input_is_an_error_never_a_panic() {
 
 /// A `batch` is refused whole when it is empty, too long, names a cue twice, carries
 /// an action that is not per-cue (a nested batch among them) or an item out of range.
+/// AUD-14: a `waveform` request needs a finite range that is not empty, and 1 to
+/// `MAX_WAVEFORM_BUCKETS` buckets.
+#[test]
+fn a_waveform_request_out_of_range_is_bad_request() {
+    let wave = |start: f64, end: f64, buckets: u32| {
+        let r = Request::Waveform {
+            cue: cue_id(1),
+            start,
+            end,
+            buckets,
+        };
+        // Past `encode_client`, which refuses these too: a hostile peer would.
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: r,
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    let field = |field| Err(ProtocolError::OutOfRange { field });
+    assert_eq!(wave(-1.0, 2.0, 10), field("request.start"));
+    assert_eq!(wave(2.0, 2.0, 10), field("request.end"));
+    assert_eq!(wave(3.0, 2.0, 10), field("request.end"));
+    assert_eq!(wave(0.0, 2.0, 0), field("request.buckets"));
+    assert_eq!(
+        wave(0.0, 2.0, MAX_WAVEFORM_BUCKETS + 1),
+        field("request.buckets")
+    );
+    assert!(wave(0.0, 2.0, MAX_WAVEFORM_BUCKETS).is_ok());
+    // JSON has no infinity; a huge number is finite and accepted (the engine clamps to the file).
+    assert!(wave(0.0, 1e300, 1).is_ok());
+}
+
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
     let batch = |actions: Vec<TransportAction>| {
@@ -3578,6 +3645,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
             }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
+        (
+            any::<u128>(),
+            0.0f64..1e5,
+            0.001f64..1e5,
+            1u32..=MAX_WAVEFORM_BUCKETS
+        )
+            .prop_map(|(cue, start, len, buckets)| Request::Waveform {
+                cue: CueId(uuid::Uuid::from_u128(cue)),
+                start,
+                end: start + len,
+                buckets,
+            }),
     ]
 }
 
