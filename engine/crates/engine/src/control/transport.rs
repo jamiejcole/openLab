@@ -16,17 +16,31 @@ impl DocCx<'_> {
         // together start on the same sample (NFR-21). The codec refused any item `batch_cue`
         // does not accept (a nested batch among them); a batch from elsewhere is held to it too.
         if let TransportAction::Batch { actions } = action {
+            // The panic_cue items after the first are one press with it: a child an earlier
+            // item's group set fading is not pressed a second time (PB-03).
+            let mut panicked = false;
             for item in actions {
                 if item.batch_cue().is_some() {
-                    self.transport(item, now);
+                    let panic_cue = matches!(item, TransportAction::PanicCue { .. });
+                    self.transport_one(item, now, panicked);
+                    panicked |= panic_cue;
                 }
             }
             return;
         }
+        self.transport_one(action, now, false);
+    }
+
+    /// One transport action; `later_panic`: a `panic_cue` after another of the same batch.
+    fn transport_one(&mut self, action: TransportAction, now: SampleTime, later_panic: bool) {
         let scope = orphan_scope(&action);
         let panic = matches!(action, TransportAction::Panic);
         self.observe_transport(&action);
         if let Some(input) = transport_input(action) {
+            let input = match input {
+                Input::PanicCue { cue } if later_panic => Input::PanicCueInBatch { cue },
+                input => input,
+            };
             self.feed(input, now);
         }
         // During an outage a panic fade could only play once the device is back, so it stops

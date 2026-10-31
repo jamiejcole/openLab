@@ -177,12 +177,34 @@ impl CueEngine {
         }
     }
 
+    /// One press of a cue's panic: a second press on a cue already fading out in a panic stops
+    /// it at once (QLab check Q7), else it fades. The cues it sets fading are noted for the rest
+    /// of the batch, whose later items count them as not yet panicked: a batch of a group and
+    /// its child is one press of each, so the child fades with its group instead of being cut.
+    pub(super) fn press_panic(&mut self, cue: CueId, cx: &mut Ctx) {
+        if self.fading_in_panic(cue, cx) {
+            return self.stop_tree(cue, None, cx);
+        }
+        let mut tree = self.inside(cue, cx);
+        tree.push(cue);
+        let calm: Vec<CueId> = (tree.into_iter())
+            .filter(|id| matches!(self.slots.get(id), Some(Slot::Active(r)) if !r.panicked))
+            .collect();
+        self.panic_tree(cue, cx);
+        for id in calm {
+            if matches!(self.slots.get(&id), Some(Slot::Active(r)) if r.panicked) {
+                self.batch_panicked.insert(id);
+            }
+        }
+    }
+
     /// A press of `PanicCue` is a second one when the cue itself is fading out in a panic (a
     /// workspace Panic or its own), or it has active descendants and every one of them is. A group
-    /// with only some children already fading is on its first press: the rest fade.
+    /// with only some children already fading is on its first press: the rest fade. A cue an
+    /// earlier item of the same batch set fading does not count as fading (`press_panic`).
     pub(super) fn fading_in_panic(&self, cue: CueId, cx: &Ctx) -> bool {
         let panicked = |id: &CueId| match self.slots.get(id) {
-            Some(Slot::Active(run)) => Some(run.panicked),
+            Some(Slot::Active(run)) => Some(run.panicked && !self.batch_panicked.contains(id)),
             _ => None,
         };
         if panicked(&cue) == Some(true) {

@@ -1504,6 +1504,51 @@ fn a_first_panic_on_a_group_with_only_some_children_fading_fades_the_rest() {
 }
 
 #[test]
+fn a_batch_panicking_a_group_and_its_child_is_one_press_of_each() {
+    // PB-03: a client or OSC batch naming the group and its child (in either order) fades the
+    // child with the group; only a press in a later command stops it at once.
+    for group_first in [true, false] {
+        let mut rig = Rig::panicking(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+        rig.start(0, 1);
+        let (first, later) = if group_first { (1, 2) } else { (2, 1) };
+        let mut out = rig.at(100, Input::PanicCue { cue: id(first) });
+        out.extend(rig.at(100, Input::PanicCueInBatch { cue: id(later) }));
+        let mut stops = voice_stops(&out);
+        stops.sort_by_key(|s| s.0);
+        let want = vec![
+            (id(2), 100, panic_fade(1000)),
+            (id(3), 100, panic_fade(1000)),
+        ];
+        assert_eq!(stops, want, "group first: {group_first}");
+        assert_eq!(rig.state(2), CueState::Stopping);
+        assert_eq!(rig.state(3), CueState::Stopping);
+        // The next command's press is a second one: the child stops at once.
+        let second = rig.at(400, Input::PanicCue { cue: id(2) });
+        assert_eq!(voice_stops(&second), vec![(id(2), 400, None)]);
+        assert_eq!(
+            rig.state(3),
+            CueState::Stopping,
+            "group first: {group_first}"
+        );
+    }
+}
+
+#[test]
+fn a_batch_item_on_a_cue_an_earlier_command_panicked_is_a_second_press() {
+    // Only fading started by the same batch makes a first press: B was pressed before.
+    let mut rig = Rig::panicking(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.at(100, Input::PanicCue { cue: id(2) });
+    let mut out = rig.at(300, Input::PanicCue { cue: id(1) });
+    out.extend(rig.at(300, Input::PanicCueInBatch { cue: id(2) }));
+    assert_eq!(
+        voice_stops(&out),
+        vec![(id(3), 300, panic_fade(1000)), (id(2), 300, None)]
+    );
+    assert_eq!(rig.state(3), CueState::Stopping);
+}
+
+#[test]
 fn a_panic_cue_on_a_cue_fading_in_a_workspace_panic_stops_it_at_once() {
     let mut rig = Rig::panicking(vec![sound(1), sound(2)]);
     rig.start(0, 1);
