@@ -245,6 +245,26 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .request(id: $0, .listDevices) }
     }
 
+    /// Chooses the output device for the engine's next start (nil: the system default).
+    func setOutputDevice(_ name: String?) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setOutputDevice(device: name)) }
+    }
+
+    /// Where each patch of this workspace plays on this machine.
+    func listPatchMappings() async -> Result<[PatchMappingEntry], EngineError> {
+        switch await client.send({ .request(id: $0, .listPatchMappings) }) {
+        case .success(let ok):
+            if case .patchMappings(let entries)? = ok.data { return .success(entries) }
+            return .failure(.encoding("list_patch_mappings result has no patch_mappings data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
+    /// Sets, or with nil clears, where `patch` plays on this machine.
+    func setPatchMapping(_ patch: ModelID, _ mapping: PatchMapping?) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setPatchMapping(patch: patch, mapping: mapping)) }
+    }
+
     // MARK: Applying server messages
 
     func engineClient(_ client: EngineClient, didReceive message: ServerMessage) -> ApplyOutcome {

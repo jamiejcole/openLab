@@ -238,6 +238,13 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 network_disabled: true,
             },
         ),
+        (
+            "set_output_device",
+            Request::SetOutputDevice {
+                device: Some("Scarlett 2i2".into()),
+            },
+        ),
+        ("list_patch_mappings", Request::ListPatchMappings),
         ("preshow_check", Request::PreshowCheck),
         ("set_show_mode", Request::SetShowMode { on: true }),
         (
@@ -908,7 +915,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                     devices: vec![DeviceEntry {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
+                        is_default: true,
                     }],
+                    selected: Some("Scarlett 2i2".into()),
                 }),
             }),
         }),
@@ -923,6 +932,30 @@ fn fixtures() -> Vec<(String, Sample)> {
                     entries: all_log_kinds().into_iter().map(log_entry_sample).collect(),
                     dropped: 2,
                     seq: 1009,
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_patch_mappings",
+        server(ServerMessage::Result {
+            id: rid(60),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PatchMappings {
+                    patches: vec![
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x70)),
+                            mapping: Some(PatchMapping {
+                                device: "Scarlett 2i2".into(),
+                                channels: vec![0, 1],
+                            }),
+                        },
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x71)),
+                            mapping: None,
+                        },
+                    ],
                 }),
             }),
         }),
@@ -1389,7 +1422,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 23);
-    assert_eq!(all_requests().len(), 14);
+    assert_eq!(all_requests().len(), 16);
 }
 
 #[test]
@@ -3501,6 +3534,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        Just(Request::ListPatchMappings),
+        proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
         any::<bool>().prop_map(|on| Request::SetShowMode { on }),
         (
             any::<u128>(),
