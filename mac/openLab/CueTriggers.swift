@@ -97,7 +97,10 @@ enum HotkeyRules {
                 guard !item.keyEquivalent.isEmpty, item.action != #selector(AppDelegate.transportCommand(_:)) else {
                     continue
                 }
-                out.insert(KeyChord(item.keyEquivalent, item.keyEquivalentModifierMask))
+                // AppKit reads an upper-case letter as Shift (Redo "Z", Save As "S", Pre-Show "W").
+                var mods = item.keyEquivalentModifierMask
+                if item.keyEquivalent.lowercased() != item.keyEquivalent { mods.insert(.shift) }
+                out.insert(KeyChord(item.keyEquivalent, mods))
             }
         }
         if let main = NSApp?.mainMenu { walk(main) }

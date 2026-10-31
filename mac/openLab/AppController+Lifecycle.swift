@@ -85,6 +85,14 @@ extension AppController {
         return true
     }
 
+    /// File > Close All: closes every workspace the way Close does (save prompt, Show Mode and
+    /// playing confirmations), one after another; Cancel on any of them stops the rest.
+    func closeAllWorkspaces() async {
+        for doc in session.orderedStores.map(\.doc) {
+            if !(await closeWorkspace(doc)) { return }
+        }
+    }
+
     // MARK: Quit
 
     /// True when the app may quit: the playing confirmation and every dirty workspace's save
