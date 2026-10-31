@@ -96,6 +96,9 @@ final class MastheadView: NSView, NSTextViewDelegate {
         if let editing = editingID, editing != cue?.id {
             editingID = nil
             onCommitNotes?(editing, notesView.string)
+            // AppKit announces the start of typing once per focus session: leave the field so the
+            // next keystroke starts a new session for the new cue instead of typing unseen.
+            if notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
         }
         let changed = cueID != cue?.id
         cueID = cue?.id

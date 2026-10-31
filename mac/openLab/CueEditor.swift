@@ -268,11 +268,18 @@ final class CueEditor {
 
     /// Sets a cue's notes from the masthead, through the inspector's notes command. Refused in
     /// Show Mode like every edit.
-    func setNotes(of id: ModelID, text: String) async {
-        guard await begin(), let cue = store.model?.cue(id), let model = store.model else { return }
-        if case .success(let command?) = InspectorEdit.command(.notes, text: text, cue: cue, model: model) {
-            _ = report(await store.send(command: command))
+    /// False when the notes were not saved (cue gone, edit refused), so Save, Close and Quit stop.
+    @discardableResult
+    func setNotes(of id: ModelID, text: String) async -> Bool {
+        guard await begin() else { return false }
+        guard let cue = store.model?.cue(id), let model = store.model else {
+            notify(loc("masthead.notes.cueGone"))
+            return false
         }
+        if case .success(let command?) = InspectorEdit.command(.notes, text: text, cue: cue, model: model) {
+            return report(await store.send(command: command))
+        }
+        return true
     }
 
     func undo() async {

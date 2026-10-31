@@ -398,7 +398,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func commitPendingEdits() async -> Bool {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
-        if let notes = masthead.takePendingNotes() { await editor.setNotes(of: notes.id, text: notes.text) }
+        if let notes = masthead.takePendingNotes() {
+            ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
+        }
         return await inspector.commitPendingEdits() && ok
     }
 

@@ -103,6 +103,7 @@
 "masthead.go" = "GO";
 "masthead.go.label" = "Go";
 "masthead.standby.none" = "No cue standing by";
+"masthead.notes.cueGone" = "The notes could not be saved: the cue no longer exists.";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
 "cue.type.audio" = "Audio";

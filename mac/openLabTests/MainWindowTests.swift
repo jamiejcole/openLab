@@ -253,4 +253,31 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(setNotesCommands(rig).count, 1)
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before save")
     }
+
+    func testTypingForTheNewCueAfterAMidEditPlayheadMoveIsCommittedToIt() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "for intro")
+        try standBy(rig, CueListHarness.fade)
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "focus leaves so a new session starts")
+        // The operator clicks back in and types for the new cue.
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "for fade")
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await assertEventually { self.setNotesCommands(rig).count == 2 }
+        let sent = setNotesCommands(rig)
+        XCTAssertEqual(sent.last?["id"]?.stringValue, CueListHarness.fade.raw)
+        XCTAssertEqual(sent.last?["property"]?["value"]?.stringValue, "for fade")
+    }
+
+    func testNotesForADeletedCueReportInsteadOfVanishing() async throws {
+        let (wc, _) = try await demoController()
+        var notices: [String] = []
+        wc.editor.notify = { notices.append($0) }
+        let saved = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
+        XCTAssertFalse(saved)
+        XCTAssertEqual(notices, [loc("masthead.notes.cueGone")])
+    }
 }
