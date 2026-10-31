@@ -111,3 +111,80 @@ impl Drop for WorkspaceEdit<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openlab_core::{CueId, CueListId, EngineConfig, PatchId, WorkspaceId};
+    use uuid::Uuid;
+
+    /// An empty workspace whose engine has followed it once.
+    fn model() -> DocModel {
+        let ws = Workspace::new_empty(
+            WorkspaceId(Uuid::from_u128(1)),
+            CueListId(Uuid::from_u128(2)),
+            PatchId(Uuid::from_u128(3)),
+        );
+        let engine = CueEngine::new(EngineConfig::new(48_000, 64, 1).unwrap());
+        let mut m = DocModel::new(ws, engine);
+        m.handle(Input::Tick, 0);
+        m
+    }
+
+    /// `(model_syncs, whole_show_passes)` before or after a call.
+    fn counts(m: &DocModel) -> (u64, u64) {
+        (m.engine().model_syncs(), m.engine().whole_show_passes())
+    }
+
+    fn after_a_call(m: &mut DocModel) -> (u64, u64) {
+        m.handle(Input::Tick, 0);
+        counts(m)
+    }
+
+    #[test]
+    fn a_call_with_no_edit_follows_nothing() {
+        let mut m = model();
+        let before = counts(&m);
+        assert_eq!(after_a_call(&mut m), before);
+    }
+
+    #[test]
+    fn a_dropped_edit_tells_the_engine_of_the_whole_workspace() {
+        let mut m = model();
+        let (syncs, passes) = counts(&m);
+        m.edit().name = "renamed".into();
+        let (s, p) = after_a_call(&mut m);
+        assert_eq!(s, syncs + 1);
+        assert!(p > passes, "a full rebuild walks the workspace");
+    }
+
+    #[test]
+    fn an_edit_ended_with_a_cue_footprint_tells_the_engine_of_those_cues_alone() {
+        let mut m = model();
+        let (syncs, passes) = counts(&m);
+        m.edit()
+            .touched(&Footprint::edited([CueId(Uuid::from_u128(9))]));
+        assert_eq!(after_a_call(&mut m), (syncs + 1, passes));
+    }
+
+    #[test]
+    fn a_model_wide_footprint_or_a_failed_rollback_tells_the_engine_of_the_whole_workspace() {
+        let mut m = model();
+        let (_, passes) = counts(&m);
+        let wide = Footprint {
+            settings: true,
+            ..Footprint::default()
+        };
+        m.edit().touched(&wide);
+        let (_, after_wide) = after_a_call(&mut m);
+        assert!(after_wide > passes);
+        let failed: Result<(), CommandError> = Err(CommandError::RollbackFailed {
+            index: 0,
+            source: Box::new(CommandError::Internal),
+            rollback: Box::new(CommandError::Internal),
+        });
+        m.edit().ended(&Footprint::default(), &failed);
+        let (_, after_failed) = after_a_call(&mut m);
+        assert!(after_failed > after_wide);
+    }
+}

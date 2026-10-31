@@ -301,6 +301,7 @@ mod tests {
     fn a_command_whose_rollback_fails_is_an_unundoable_edit() {
         let mut s = two_cue_show();
         let before = s.control().revision();
+        let syncs = s.control().engine().model_syncs();
         s.take_outbound();
         openlab_core::fault::inject(0, 1, true);
         let id = s.request_id();
@@ -310,6 +311,8 @@ mod tests {
             coalesce: None,
         });
         assert_partly_changed(&mut s, &replies, before);
+        // The workspace's write guard told the engine (no signal by hand), in every build.
+        assert!(s.control().engine().model_syncs() > syncs);
         // The first rename stayed; the second never ran.
         let names: Vec<_> = s.control().workspace().cue_lists[0]
             .cues
