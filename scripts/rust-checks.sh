@@ -21,10 +21,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../engine"
 lints() { cargo clippy --workspace "$@" --locked -- -D warnings; }
 
 # The engine binary as shipped (`cargo build --release --bin openlab-engine`: no dev-dependencies) must not
-# enable a test-only feature on any crate, for any target.
+# enable a test-only feature on any crate, for any target. The tree is inverted on each workspace crate (-i):
+# a plain tree does not list the root package's own features, so a `default = ["test-support"]` in the
+# engine's Cargo.toml would slip through.
 shipped_features() {
   local tree hits
-  tree=$(cargo tree --locked --target all -p openlab-engine -e normal,build,features --prefix none)
+  tree=$(cargo tree --locked --target all -p openlab-engine -e normal,build,features --prefix none \
+    -i openlab-engine -i openlab-audio -i openlab-core)
   hits=$(printf '%s\n' "$tree" | grep -E 'feature "(test-support|fault-injection)"' | sort -u || true)
   if [ -n "$hits" ]; then
     echo "test-only features in the shipped engine build:" >&2
