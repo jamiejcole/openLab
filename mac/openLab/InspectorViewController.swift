@@ -208,8 +208,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             if let width { s.widthAnchor.constraint(equalToConstant: width).isActive = true }
             return s
         }
-        for f in [numberField, preWaitField, postWaitField, durationField, loadTimeField] {
-            f.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        // Number and Duration share a row, as do the two waits, so the five fields fit the inspector's
+        // 240 pt height: stacked singly they overflowed and the top rows overlapped (#445).
+        for f in [numberField, preWaitField, postWaitField, durationField] {
+            f.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        }
+        loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        func pair(_ a: NSView, _ b: NSView) -> NSStackView {
+            let s = NSStackView(views: [a, b])
+            s.spacing = 8
+            s.alignment = .top
+            return s
         }
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let nameRow = NSStackView(views: [kindIcon, nameField])
@@ -217,13 +226,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let left = column(
             [
-                row(loc("cuelist.col.number"), numberField), row(loc("cuelist.col.duration"), durationField),
-                row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField),
+                pair(
+                    row(loc("cuelist.col.number"), numberField), row(loc("cuelist.col.duration"), durationField)),
+                pair(
+                    row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField)),
                 row(loc("inspector.continue"), continuePopup),
-            ], width: 150)
+            ], width: 168)
         let targetRow = NSStackView(views: [targetField, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
+        targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        chooseButton.setContentHuggingPriority(.required, for: .horizontal)
+        chooseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let centre = column([
             row(loc("cuelist.col.name"), nameRow), row(loc("cuelist.col.target"), targetRow),
             row(loc("inspector.notes"), scroll),
@@ -233,11 +248,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         let right = column(
-            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 110)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
-        columns.spacing = 20
+        columns.distribution = .fill
+        centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        columns.spacing = 12
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
 
         let item = NSTabViewItem(identifier: "basics")
@@ -488,6 +505,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             targetField.stringValue = ""
         }
         targetField.isEnabled = isTarget
+        targetField.toolTip = targetField.stringValue.isEmpty ? nil : targetField.stringValue
         // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
         durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
         syncTab(loadTimeItem, present: kind == "load")
