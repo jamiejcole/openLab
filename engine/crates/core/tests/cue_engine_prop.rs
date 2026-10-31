@@ -28,7 +28,9 @@
 //!
 //! **Invariants** (each cites its rule in `docs/cue-engine.md`):
 //! - Exactly one state per cue, the one last reported; every runtime is reachable from the
-//!   reported state and the other way round (States; `cue_states`); run ids are unique, and a
+//!   reported state and the other way round (States; `cue_states`), but for a playlist child
+//!   that failed while paused, which shows `paused` with no voice until the resume (A failure
+//!   while paused); run ids are unique, and a
 //!   deadline always belongs to a visible cue.
 //! - The playhead is past the end or on a position of its list (Playhead).
 //! - Stepping (`PlayheadNext`/`PlayheadPrevious`) enters only "start first and enter" groups and
@@ -1822,6 +1824,24 @@ impl Run {
                     "cue {} broken with no reason to show",
                     id
                 ),
+                // A playlist child that failed while paused shows `paused` until the resume and
+                // owns no voice meanwhile (A failure while paused, QLab 5.5.3).
+                CueState::Paused if run.is_none() => prop_assert!(
+                    self.engine.is_paused(*id)
+                        && self.engine.broken_reason(*id).is_some()
+                        && groups_around(&self.ws.cue_lists[0].cues, *id)
+                            .last()
+                            .and_then(|g| self.ws.find_cue(*g))
+                            .is_some_and(|g| matches!(
+                                g.kind,
+                                CueKind::Group {
+                                    mode: GroupMode::Playlist { .. },
+                                    ..
+                                }
+                            )),
+                    "paused cue {} has no runtime and did not break while paused in a playlist",
+                    id
+                ),
                 _ => prop_assert!(run.is_some(), "{:?} cue {} has no runtime", state, id),
             }
             if let Some(run) = run {
@@ -2749,6 +2769,65 @@ fn a_resumed_voice_whose_known_end_is_in_the_window_is_not_a_leak() {
             step(1350, 1, 0),
         ],
         lookahead: 251,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
+/// Found on CI: Pause All lands while a playlist's pre-wait ends inside the lookahead window, so
+/// its first child, a sound, is started and paused in one call; its stream then fails to open.
+/// The child owns no voice but shows `paused` until the resume (A failure while paused, QLab
+/// 5.5.3), which is not a paused cue that lost its runtime.
+#[test]
+fn a_playlist_child_failing_while_paused_shows_paused_with_no_voice() {
+    let spec = |kind: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: false,
+        dup: false,
+        level: 0,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let step = |dt: u64, op: u8, a: u8| Step { dt, op, a, b: 0 };
+    let case = Case {
+        specs: vec![
+            spec(0),
+            spec(0),
+            spec(0),
+            spec(27),
+            spec(0),
+            spec(0),
+            spec(0),
+            spec(0),
+            Spec {
+                pre: 1,
+                armed: true,
+                group_mode: 6,
+                ..spec(4)
+            },
+            Spec {
+                armed: true,
+                level: 1,
+                target: 198,
+                ..spec(5)
+            },
+            Spec {
+                armed: true,
+                level: 1,
+                ..spec(14)
+            },
+        ],
+        steps: vec![step(0, 2, 18), step(495, 21, 0)],
+        lookahead: 6,
         min_go: 0,
         panic: 0,
     };
