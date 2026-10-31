@@ -41,7 +41,9 @@ pub const DEFAULT_OPENERS: usize = 4;
 /// nothing in flight, so a dead volume holds at most one, and exits when there is none.
 /// The bound means dead volumes cannot make the streamer start threads without end, as the
 /// probe pool's `MAX_ABANDONED_WORKERS` does for probes; past it, such an open waits for an
-/// opener to come free.
+/// opener to come free. Worst case, 16 or more dead volumes reach it, one per extra: a slow but
+/// healthy volume can hold the base openers meanwhile, which then take second opens on those
+/// same dead volumes when it answers.
 pub const MAX_EXTRA_OPENERS: usize = 16;
 pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
