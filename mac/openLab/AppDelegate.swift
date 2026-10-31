@@ -10,7 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
-        alerts: { [unowned self] in appController.gatedAlerts })
+        alerts: { [unowned self] in alarmAlerts })
+    /// What the engine alarm raises errors and notices through: quiet in Show Mode (NFR-10).
+    @MainActor var alarmAlerts: WorkspaceAlerts { appController.gatedAlerts }
 
     /// The system pieces launching uses (tests inject them).
     private let launch: AppLaunch

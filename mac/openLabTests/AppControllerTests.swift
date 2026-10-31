@@ -2027,7 +2027,7 @@ final class AppControllerTests: XCTestCase {
 
     /// Another workspace is in Show Mode while this one is closed: a failed close must not put a
     /// modal over the show.
-    func testShowModeSuppressesTheCloseFailedAlertOfAnotherWorkspace() async throws {
+    func testCloseTimeoutNamingNoWindowGoesToTheShowModeFooter() async throws {
         let second = try await addWorkspace()
         let show = try XCTUnwrap(app.windows["1"])
         show.setShowMode(true)
@@ -2074,7 +2074,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(wc.footer.noticeLabel.stringValue, wc.store.logEntries.last?.message)
     }
 
-    func testShowModeSuppressesTheCloseRefusedAlertOfAnotherWorkspace() async throws {
+    func testCloseRefusalNamingNoWindowGoesToTheShowModeFooter() async throws {
         let second = try await addWorkspace()
         let show = try XCTUnwrap(app.windows["1"])
         show.setShowMode(true)
@@ -2130,5 +2130,29 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(delegate.validateMenuItem(item))
         wc.promptLoadToTime()
         XCTAssertNil(wc.window?.attachedSheet)
+    }
+
+    func testFooterNoticeClearsAfterItsLifetimeAndARepeatIsNotClearedEarly() {
+        let footer = FooterBar()
+        var timers: [@MainActor () -> Void] = []
+        footer.scheduleClear = { _, work in timers.append(work) }
+        footer.showNotice("Save failed", error: true)
+        footer.showNotice("Save failed", error: true)  // the same text again, later
+        timers[0]()
+        XCTAssertEqual(footer.noticeLabel.stringValue, "Save failed", "the first timer is stale")
+        timers[1]()
+        XCTAssertEqual(footer.noticeLabel.stringValue, "")
+        footer.showNotice("Other")
+        XCTAssertEqual(footer.noticeLabel.stringValue, "Other")
+    }
+
+    func testTheAlarmCoordinatorsAlertsAreTheQuietOnesInShowMode() async throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        delegate.alarmAlerts.showError("boom")
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.message, "boom")
     }
 }
