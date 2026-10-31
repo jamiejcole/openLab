@@ -6,6 +6,13 @@ import Foundation
 /// hundredths (manual pp. 126, 131: 100 s shows as `01:40.00`) but keeps milliseconds, so a stored
 /// time with a millisecond digit shows it: an edit field must give back exactly what it shows.
 /// `mm:ss.cc`, `h:mm:ss.cc` from an hour.
+enum TimeShown {
+    /// The whole time: `elapsed / total` while it runs, the set time at rest.
+    case full
+    /// The time left while it runs.
+    case remaining
+}
+
 enum CueTime {
     /// Core's `MAX_TIME`: 24 hours.
     static let maxSeconds: Double = 24 * 60 * 60

@@ -22,6 +22,9 @@ extension AppController {
             wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
+            wc.onCommand = { [weak self, weak wc] command in
+                Task { await self?.perform(command, on: wc) }
+            }
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             wc.onRelink = { [weak self] in Task { await self?.relinkMedia(on: store) } }
             controllers[ObjectIdentifier(store)] = wc

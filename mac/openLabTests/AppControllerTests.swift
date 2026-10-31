@@ -443,6 +443,20 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
     }
 
+    /// The cue row menu's command goes to the window that was clicked (`perform(on:)`), whichever
+    /// window is in front.
+    func testCommandOnATargetWindowUsesThatWindowsSelection() async throws {
+        let second = try await addWorkspace()
+        let clicked = try XCTUnwrap(app.windows["1"])
+        let running: ModelID = "00000000-0000-0000-0000-00000000000a"
+        clicked.cueList.select([running])
+        keyDoc = second  // the other window is in front, with nothing selected
+        await app.perform(.loadSelected)
+        XCTAssertEqual(transports(.load(cue: running, at: 0)), [], "the front window has no selection")
+        await app.perform(.loadSelected, on: clicked)
+        XCTAssertEqual(transports(.load(cue: running, at: 0)), ["1"])
+    }
+
     func testSelectedCueCommandsUseTheSelection() async throws {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])

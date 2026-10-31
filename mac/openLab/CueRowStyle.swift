@@ -6,7 +6,7 @@ import AppKit
 /// colour alone (UI-04); `tint` only adds to it. Idle shows no symbol (it is the common state of
 /// a 2,000-cue list) but still has an accessibility label.
 struct CueStateStyle: Equatable {
-    var symbol: String?
+    var icon: Icon?
     var labelKey: String
     var tint: NSColor?
 
@@ -14,20 +14,20 @@ struct CueStateStyle: Equatable {
 
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
-        case .idle: return CueStateStyle(symbol: nil, labelKey: "cue.state.idle", tint: nil)
+        case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)
         case .loaded:
-            return CueStateStyle(symbol: "arrow.down.circle.fill", labelKey: "cue.state.loaded", tint: .systemBlue)
+            return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: .systemBlue)
         case .preWaiting:
-            return CueStateStyle(symbol: "hourglass", labelKey: "cue.state.preWaiting", tint: .systemOrange)
-        case .running: return CueStateStyle(symbol: "play.fill", labelKey: "cue.state.running", tint: .systemGreen)
-        case .paused: return CueStateStyle(symbol: "pause.fill", labelKey: "cue.state.paused", tint: .systemYellow)
+            return CueStateStyle(icon: .statePreWaiting, labelKey: "cue.state.preWaiting", tint: .systemOrange)
+        case .running: return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.running", tint: .systemGreen)
+        case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: .systemYellow)
         case .postWaiting:
-            return CueStateStyle(symbol: "timer", labelKey: "cue.state.postWaiting", tint: .systemOrange)
-        case .fading: return CueStateStyle(symbol: "waveform", labelKey: "cue.state.fading", tint: .systemGreen)
-        case .stopping: return CueStateStyle(symbol: "stop.fill", labelKey: "cue.state.stopping", tint: .systemRed)
+            return CueStateStyle(icon: .statePostWaiting, labelKey: "cue.state.postWaiting", tint: .systemOrange)
+        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: .systemGreen)
+        case .stopping: return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: .systemRed)
         case .broken:
             return CueStateStyle(
-                symbol: "exclamationmark.triangle.fill", labelKey: "cue.state.broken", tint: .systemRed)
+                icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
         }
     }
 
@@ -47,30 +47,30 @@ struct CueStateStyle: Equatable {
 
 /// Symbols and labels for the cue kinds, colours and continue modes (cell content).
 enum CueKindStyle {
-    static let kinds: [String: (symbol: String, labelKey: String)] = [
-        "audio": ("speaker.wave.2", "cue.type.audio"), "group": ("folder", "cue.type.group"),
-        "memo": ("note.text", "cue.type.memo"), "wait": ("timer", "cue.type.wait"),
-        "fade": ("slider.horizontal.3", "cue.type.fade"), "start": ("play.fill", "cue.type.start"),
-        "stop": ("stop.fill", "cue.type.stop"), "pause": ("pause.fill", "cue.type.pause"),
-        "load": ("arrow.down.circle", "cue.type.load"), "reset": ("arrow.counterclockwise", "cue.type.reset"),
-        "devamp": ("arrow.uturn.forward", "cue.type.devamp"), "go_to": ("arrow.right.to.line", "cue.type.goto"),
-        "arm": ("record.circle", "cue.type.arm"), "disarm": ("slash.circle", "cue.type.disarm"),
-        "network": ("network", "cue.type.network"),
+    static let kinds: [String: (icon: Icon, labelKey: String)] = [
+        "audio": (.kindAudio, "cue.type.audio"), "group": (.kindGroup, "cue.type.group"),
+        "memo": (.kindMemo, "cue.type.memo"), "wait": (.kindWait, "cue.type.wait"),
+        "fade": (.kindFade, "cue.type.fade"), "start": (.kindStart, "cue.type.start"),
+        "stop": (.kindStop, "cue.type.stop"), "pause": (.kindPause, "cue.type.pause"),
+        "load": (.kindLoad, "cue.type.load"), "reset": (.kindReset, "cue.type.reset"),
+        "devamp": (.kindDevamp, "cue.type.devamp"), "go_to": (.kindGoTo, "cue.type.goto"),
+        "arm": (.kindArm, "cue.type.arm"), "disarm": (.kindDisarm, "cue.type.disarm"),
+        "network": (.kindNetwork, "cue.type.network"),
     ]
 
     static func kindLabel(_ type: String) -> String { kinds[type].map { loc($0.labelKey) } ?? type }
 
     /// Each colour has its own shape as well as its tint (UI-04).
-    static let colours: [String: (symbol: String, labelKey: String, tint: NSColor)] = [
-        "red": ("circle.fill", "cue.colour.red", .systemRed),
-        "orange": ("square.fill", "cue.colour.orange", .systemOrange),
-        "green": ("triangle.fill", "cue.colour.green", .systemGreen),
-        "blue": ("diamond.fill", "cue.colour.blue", .systemBlue),
-        "purple": ("hexagon.fill", "cue.colour.purple", .systemPurple),
+    static let colours: [String: (icon: Icon, labelKey: String, tint: NSColor)] = [
+        "red": (.colourRed, "cue.colour.red", .systemRed),
+        "orange": (.colourOrange, "cue.colour.orange", .systemOrange),
+        "green": (.colourGreen, "cue.colour.green", .systemGreen),
+        "blue": (.colourBlue, "cue.colour.blue", .systemBlue),
+        "purple": (.colourPurple, "cue.colour.purple", .systemPurple),
     ]
 
-    static let continueModes: [String: (symbol: String, labelKey: String)] = [
-        "auto_continue": ("arrow.down", "cue.continue.autoContinue"),
-        "auto_follow": ("arrow.turn.down.right", "cue.continue.autoFollow"),
+    static let continueModes: [String: (icon: Icon, labelKey: String)] = [
+        "auto_continue": (.continueAuto, "cue.continue.autoContinue"),
+        "auto_follow": (.continueFollow, "cue.continue.autoFollow"),
     ]
 }

@@ -621,7 +621,7 @@ impl Control {
             pool.set_volume_of(volume);
         }
         let cue_outputs = mixer.cue_outputs();
-        let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
+        let patches = Patches::new(config.mixer_patches, cue_outputs);
         let playable = match backend.device() {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),

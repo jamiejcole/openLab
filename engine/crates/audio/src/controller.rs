@@ -295,7 +295,7 @@ impl MixerController {
     }
 
     /// Takes the peak absolute sample of each device output since the last read (AUD-19), as
-    /// sent to the device: after patch, output level, mute, polarity, delay and master. Fills
+    /// sent to the device: after the patch matrices (output level, mute, polarity) and master. Fills
     /// `out[d]` for device output `d` and returns how many it filled; outputs beyond `out` are
     /// not read and keep their peaks. Never blocks the audio thread; allocates nothing.
     pub fn read_output_meters_into(&mut self, out: &mut [f32]) -> usize {

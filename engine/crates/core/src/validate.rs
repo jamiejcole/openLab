@@ -79,8 +79,6 @@ pub fn host_problem(host: &str) -> Option<&'static str> {
 /// Deepest allowed cue nesting (a top-level cue is depth 1). Keeps every valid workspace within
 /// the JSON parser's recursion limit, so whatever saves also loads.
 pub const MAX_GROUP_DEPTH: usize = 32;
-/// Longest patch output delay, milliseconds.
-pub const MAX_DELAY_MS: f64 = 1000.0;
 /// Largest auto-numbering start value and increment.
 pub const MAX_AUTO_NUMBER: f64 = 1_000_000.0;
 /// Shortest slice of an Audio cue, seconds: between its trim points and slice markers, every
@@ -194,6 +192,10 @@ pub enum IssueKind {
     /// takes no Up or Down arrow; the arrows and Select Next / Previous move the selection and
     /// with it the playhead), so the key was removed.
     PlayheadKeysRemoved,
+    /// Warning, only when loading a show file older than version 7: a patch output had a delay.
+    /// Version 7 has none (QLab 5 has no per-output delay), so the delays were removed and those
+    /// outputs now play undelayed.
+    OutputDelaysRemoved,
     /// An OSC rights set had Edit or Control without View: they were cleared. `row` is the
     /// passcode row (`None`: the No Passcode row).
     OscRightsNeedView { row: Option<usize> },
@@ -294,6 +296,12 @@ impl fmt::Display for ValidationIssue {
                 "this show had its own Next Cue or Previous Cue key; the key map no longer has \
                  them (the Up and Down arrows and Select Next / Previous move the playhead with \
                  the selection), so the key was removed"
+            ),
+            IssueKind::OutputDelaysRemoved => write!(
+                f,
+                "this show delayed some patch outputs; patches no longer have output delays, so \
+                 the delays were removed and those outputs play undelayed: align speakers in a \
+                 processor or the audio interface"
             ),
             IssueKind::GroupFadeNowRelative => write!(
                 f,
@@ -638,7 +646,6 @@ impl Checker {
                 patch.outputs.push(PatchOutput {
                     level_db: 0.0,
                     mute: false,
-                    delay_ms: 0.0,
                     polarity_inverted: false,
                 });
             }
@@ -655,9 +662,6 @@ impl Checker {
                 bad.push("outputs.level_db");
             }
             clamp(&mut output.level_db, SILENCE_DB, MAX_DB);
-            if clamp(&mut output.delay_ms, 0.0, MAX_DELAY_MS) {
-                bad.push("outputs.delay_ms");
-            }
         }
         for field in bad {
             self.warn(None, IssueKind::InvalidPatchValue { patch: id, field });

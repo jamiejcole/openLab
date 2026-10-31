@@ -89,7 +89,7 @@ impl DocCx<'_> {
     }
 
     /// Resolves the patches against the playable devices and brings the mixer's matrices (with
-    /// the workspace master folded in) and output delays up to date. Returns the
+    /// the workspace master folded in) up to date. Returns the
     /// `Availability` for the patches whose resolution changed (`all`: every patch).
     pub(super) fn sync_patches(&mut self, all: bool) -> Vec<Input> {
         self.map_unmapped_patches();

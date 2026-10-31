@@ -5,7 +5,6 @@
 //! [`Mixer::new`]; voice starts that must be freed go back to the controller on the return queue.
 
 mod commands;
-mod delay;
 mod faults;
 mod render;
 mod voice;
@@ -23,7 +22,6 @@ use crate::meter::{Meters, XrunNotifier};
 use crate::plan::{Slice, StreamLink};
 
 use commands::{Outbox, Pending};
-use delay::DelayLine;
 use faults::{DisabledFlags, FaultLog, FaultWindow, Health, Stage, StageTracker};
 pub use faults::{DisabledUnits, FAULT_LIMIT, FAULT_WINDOW, FaultStage};
 use voice::Voice;
@@ -45,10 +43,8 @@ pub const COMMAND_CAPACITY: usize = 1024;
 /// Capacity of the mixer's time-ordered pending set.
 pub const PENDING_CAPACITY: usize = 4096;
 const EVENT_CAPACITY: usize = 1024;
-/// De-zipper length for gain changes without an explicit ramp, and delay-change crossfades.
+/// De-zipper length for gain changes without an explicit ramp.
 const DEZIP_SECONDS: f64 = 0.005;
-/// Longest per-output delay (speaker alignment).
-const MAX_DELAY_SECONDS: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MixerConfig {
@@ -183,25 +179,6 @@ impl VoiceStart {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OutputSettings {
-    pub level: f32,
-    pub mute: bool,
-    pub invert: bool,
-    pub delay_frames: u32,
-}
-
-impl Default for OutputSettings {
-    fn default() -> Self {
-        OutputSettings {
-            level: 1.0,
-            mute: false,
-            invert: false,
-            delay_frames: 0,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum CommandKind {
     StartVoice(Box<VoiceStart>),
@@ -239,10 +216,6 @@ pub enum CommandKind {
     MoveVoice {
         voice: VoiceId,
         patch: u16,
-    },
-    SetOutput {
-        output: u16,
-        settings: OutputSettings,
     },
     SetMaster {
         gain: f32,
@@ -444,9 +417,7 @@ pub struct Mixer {
     outbox: Outbox,
     voices: Vec<Voice>,
     patches: Vec<Patch>,
-    out_gain: Vec<Param>,
-    delays: Vec<DelayLine>,
-    /// Per device output; a disabled output is silent and ignores `SetOutput`.
+    /// Per device output; a disabled output is silent.
     out_health: Vec<Health>,
     master: Param,
     /// A disabled master is bypassed at unity and ignores `SetMaster`.
@@ -511,7 +482,6 @@ impl Mixer {
             return Err(ConfigError::Lookahead);
         }
         let dezip = ((f64::from(sample_rate) * DEZIP_SECONDS).round() as u64).max(1);
-        let max_delay = (sample_rate * MAX_DELAY_SECONDS) as usize;
         let lookahead = u64::from(sample_rate) * u64::from(lookahead_ms) / 1000;
 
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
@@ -551,10 +521,6 @@ impl Mixer {
                     dirty: false,
                     health: Health::OK,
                 })
-                .collect(),
-            out_gain: vec![Param::new(1.0); outs],
-            delays: (0..outs)
-                .map(|_| DelayLine::new(max_delay, dezip))
                 .collect(),
             out_health: vec![Health::OK; outs],
             master: Param::new(1.0),

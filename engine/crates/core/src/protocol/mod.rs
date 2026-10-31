@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// client only on an equal version.
 /// 2: connections bind to one of several open workspaces (M4.15f).
 /// 3: the key map lost `playhead_next` and `playhead_previous` (show-file format 6).
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Longest frame the engine reads from a client. Commands and requests are small; a big paste is
 /// well under this. Decoding buffers a frame several times over, so the limit bounds the memory

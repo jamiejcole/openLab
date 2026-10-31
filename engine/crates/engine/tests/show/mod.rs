@@ -150,7 +150,6 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
                 PatchOutput {
                     level_db: 0.0,
                     mute: false,
-                    delay_ms: 0.0,
                     polarity_inverted: false,
                 };
                 2

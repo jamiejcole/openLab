@@ -7,8 +7,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{
-    CommandKind, DelayLine, Event, FinishReason, MAX_OUTPUT_CHANNELS, MAX_PATCHES, Mixer,
-    SampleTime, Voice, VoiceId,
+    CommandKind, Event, FinishReason, MAX_OUTPUT_CHANNELS, MAX_PATCHES, Mixer, SampleTime, Voice,
+    VoiceId,
 };
 
 /// Faulted blocks, each blamed on the same unit (a voice, a patch, a device output, the master
@@ -115,7 +115,7 @@ pub(super) enum Stage {
     },
     /// Mixing patch `k`, or applying a routing command to it.
     Patch(usize),
-    /// Device output `o`'s delay line and gain, or applying a `SetOutput` to it.
+    /// Device output `o`: the master applied to it and its meter peak.
     Output(usize),
     Master,
     Meters,
@@ -136,7 +136,6 @@ impl Stage {
             CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
                 Stage::Patch(usize::from(*patch))
             }
-            CommandKind::SetOutput { output, .. } => Stage::Output(usize::from(*output)),
             CommandKind::SetMaster { .. } => Stage::Master,
         }
     }
@@ -148,15 +147,15 @@ pub enum FaultStage {
     /// A patch matrix (mixing its bus, or a routing command for it). Its gains were reset to
     /// silence; the control thread re-sends its routing.
     Patch(u16),
-    /// A device output's delay line or gain (or a `SetOutput` for it). Reset to unity with no
-    /// delay; the control thread re-sends its settings.
+    /// A device output (the master applied to it, its meter peak). It has no state to reset;
+    /// the fault is reported, and the output disabled at the limit.
     Output(u16),
     /// The master gain (or a `SetMaster`). Reset to unity; the control thread re-sends it.
     Master,
     /// Publishing the meters.
     Meters,
     /// Faults with no unit to blame reached [`FAULT_LIMIT`]: every patch was reset to silence,
-    /// every output and the master to unity, all re-enabled; the control thread re-sends them.
+    /// the master to unity, every unit re-enabled; the control thread re-sends them.
     Mixer,
 }
 
@@ -279,13 +278,13 @@ impl Mixer {
     /// - a command to a voice: the command is gone (taken off the pending set before it was
     ///   applied) and the voice, in whatever state the command left it, is dropped at once; a
     ///   start that never reached the pool is reported finished the same way;
-    /// - a patch: reset to silence; a device output or the master: reset to unity (the only
-    ///   value the control thread gives them), an output keeping its delay with nothing stored
-    ///   ([`DelayLine::reset`]). Reported ([`Event::StageFaulted`])
-    ///   for the control thread to re-send its settings; disabled at the limit (also published
+    /// - a patch: reset to silence; the master: reset to unity (the only value the control
+    ///   thread gives it); a device output: nothing to reset. Reported
+    ///   ([`Event::StageFaulted`]) for the control thread to re-send a patch's or the master's
+    ///   settings; disabled at the limit (also published
     ///   in [`DisabledUnits`], so a lost report is found);
     /// - the meters: reported; disabled at the limit;
-    /// - none of these: at the limit, every patch, output and the master are rebuilt
+    /// - none of these: at the limit, every patch and the master are rebuilt
     ///   ([`FaultStage::Mixer`]).
     ///
     /// Real-time safe: resets reuse the mixer's buffers and events go on the preallocated queue.
@@ -330,15 +329,9 @@ impl Mixer {
                 (stage, p.health.fault(block))
             }
             Stage::Output(o) => {
-                let (Some(g), Some(d), Some(h)) = (
-                    self.out_gain.get_mut(o),
-                    self.delays.get_mut(o),
-                    self.out_health.get_mut(o),
-                ) else {
+                let Some(h) = self.out_health.get_mut(o) else {
                     return;
                 };
-                g.set(1.0);
-                d.reset();
                 let stage = FaultStage::Output(u16::try_from(o).unwrap_or(u16::MAX));
                 (stage, h.fault(block))
             }
@@ -374,10 +367,8 @@ impl Mixer {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The last resort for faults no unit can be blamed for: every patch back to silence, every
-    /// device output and the master to unity (each output keeping its delay, nothing stored),
-    /// all enabled, to be set again from
-    /// the control thread's copy. Voices and pending commands are kept (they are the show; a
+    /// The last resort for faults no unit can be blamed for: every patch back to silence and the
+    /// master to unity, every unit enabled, to be set again from the control thread's copy. Voices and pending commands are kept (they are the show; a
     /// fault in one is blamed on it).
     fn rebuild(&mut self) {
         self.outbox.shared.disabled.clear();
@@ -385,8 +376,6 @@ impl Mixer {
             p.reset();
             p.health = Health::OK;
         }
-        self.out_gain.iter_mut().for_each(|g| g.set(1.0));
-        self.delays.iter_mut().for_each(DelayLine::reset);
         self.out_health.fill(Health::OK);
         self.master.set(1.0);
         self.master_health = Health::OK;
@@ -402,7 +391,7 @@ mod tests {
     use crate::OfflineRenderer;
     use crate::controller::MixerController;
     use crate::gain::Fade;
-    use crate::mixer::{GainTarget, MixerConfig, OutputSettings, VoiceStart};
+    use crate::mixer::{GainTarget, MixerConfig, VoiceStart};
     use rtrb::RingBuffer;
 
     #[test]
@@ -659,38 +648,6 @@ mod tests {
         assert_eq!(play(&mut r, 8), [0.5, 0.5]);
     }
 
-    /// Regression (#317): an output reset after a fault keeps its delay, so a delay-compensated
-    /// output is heard late again, never early (undelayed) while its settings come back.
-    #[test]
-    fn an_output_fault_keeps_the_output_delayed() {
-        let (mut ctl, mut r) = two_voices();
-        let settings = OutputSettings {
-            delay_frames: 100,
-            ..OutputSettings::default()
-        };
-        let at = ctl.samples_rendered();
-        ctl.send(
-            at,
-            CommandKind::SetOutput {
-                output: 0,
-                settings,
-            },
-        );
-        assert_eq!(play(&mut r, 8), [0.5, 0.5]);
-        r.mixer_mut().stage.panic_at = Some(Stage::Output(0));
-        fault(&mut r);
-        r.mixer_mut().stage.panic_at = None;
-        assert_eq!(stage_events(&mut ctl), [(FaultStage::Output(0), false)]);
-        let mut buf = [0.0; 256];
-        for half in buf.as_chunks_mut::<128>().0 {
-            assert!(r.mixer_mut().process_guarded(half, 64));
-        }
-        let out0: Vec<f32> = buf.chunks(2).map(|f| f[0]).collect();
-        assert!(out0[..100].iter().all(|&s| s == 0.0), "{out0:?}");
-        assert!(out0[100..].iter().all(|&s| s == 0.5), "{out0:?}");
-        assert!(buf.chunks(2).all(|f| f[1] == 0.5));
-    }
-
     #[test]
     fn a_patch_whose_mix_panics_every_block_is_disabled_and_the_other_patches_play_on() {
         let (mut ctl, mut r) = two_voices_on([0, 1]);
@@ -718,6 +675,19 @@ mod tests {
         assert_eq!(ctl.faulted_voices(), 0);
     }
 
+    /// An output has no setting of its own: after a one-off fault it is reported and plays on
+    /// at its level with nothing sent back.
+    #[test]
+    fn an_output_that_panics_once_plays_on_without_a_resend() {
+        let (mut ctl, mut r) = two_voices();
+        assert_eq!(play(&mut r, 8), [0.5, 0.5]);
+        r.mixer_mut().stage.panic_at = Some(Stage::Output(0));
+        fault(&mut r);
+        r.mixer_mut().stage.panic_at = None;
+        assert_eq!(stage_events(&mut ctl), [(FaultStage::Output(0), false)]);
+        assert_eq!(play(&mut r, 8), [0.5, 0.5]);
+    }
+
     #[test]
     fn an_output_master_or_meter_stage_that_keeps_panicking_is_disabled_and_the_rest_plays() {
         let cases = [
@@ -737,17 +707,9 @@ mod tests {
                 [(reported, false), (reported, false), (reported, true)]
             );
             // Its settings are ignored from here.
-            let at = ctl.samples_rendered();
-            match stage {
-                Stage::Output(_) => ctl.send(
-                    at,
-                    CommandKind::SetOutput {
-                        output: 0,
-                        settings: OutputSettings::default(),
-                    },
-                ),
-                Stage::Master => ctl.send(at, CommandKind::SetMaster { gain: 0.0 }),
-                _ => {}
+            if stage == Stage::Master {
+                let at = ctl.samples_rendered();
+                ctl.send(at, CommandKind::SetMaster { gain: 0.0 });
             }
             assert_eq!(play(&mut r, 8), heard, "{stage:?}");
         }
@@ -781,10 +743,6 @@ mod tests {
             }
         }
         let at = ctl.samples_rendered();
-        for output in 0..2 {
-            let settings = OutputSettings::default();
-            ctl.send(at, CommandKind::SetOutput { output, settings });
-        }
         ctl.send(at, CommandKind::SetMaster { gain: 1.0 });
         assert_eq!(play(&mut r, 8), [0.5, 0.5]);
         assert_eq!(ctl.faulted_stages(), FAULT_LIMIT as u64 + 1);
