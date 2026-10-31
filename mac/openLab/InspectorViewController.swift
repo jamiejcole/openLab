@@ -207,7 +207,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Number and Duration share a row, as do the two waits, so the five fields fit the inspector's
         // 240 pt height: stacked singly they overflowed and the top rows overlapped (#445).
         for f in [numberField, preWaitField, postWaitField, durationField] {
-            f.widthAnchor.constraint(equalToConstant: 96).isActive = true
+            f.widthAnchor.constraint(equalToConstant: 80).isActive = true
         }
         loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
         func pair(_ a: NSView, _ b: NSView) -> NSStackView {
@@ -227,12 +227,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 pair(
                     row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField)),
                 row(loc("inspector.continue"), continuePopup),
-            ], width: 200)
+            ], width: 168)
         let targetRow = NSStackView(views: [targetField, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
-        targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+        targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
         chooseButton.setContentHuggingPriority(.required, for: .horizontal)
         chooseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let centre = column([
@@ -244,13 +244,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         let right = column(
-            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 110)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
         columns.distribution = .fill
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        columns.spacing = 20
+        columns.spacing = 12
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
 
         let item = NSTabViewItem(identifier: "basics")

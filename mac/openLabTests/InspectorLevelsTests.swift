@@ -498,8 +498,11 @@ final class InspectorBasicsLayoutTests: XCTestCase {
     private func frame(_ v: NSView) -> NSRect { vc.view.convert(v.bounds, from: v) }
 
     func testNumberAndTargetKeepUsableWidthWithoutOverlap() {
-        for width in [CGFloat(640), 900] {
+        for width in [CGFloat(520), 900] {
             laidOut(CueListHarness.intro, width: width)
+            XCTAssertEqual(window.contentView?.frame.width, width, "the Basics view must not force the window wider")
+            XCTAssertLessThanOrEqual(vc.view.fittingSize.width, 520, "minimum width")
+            XCTAssertFalse(vc.tabView.selectedTabViewItem?.view?.hasAmbiguousLayout ?? true)
             let fields: [(String, NSView)] = [
                 ("number", vc.numberField), ("duration", vc.durationField), ("preWait", vc.preWaitField),
                 ("postWait", vc.postWaitField), ("name", vc.nameField), ("target", vc.targetField),
@@ -507,7 +510,7 @@ final class InspectorBasicsLayoutTests: XCTestCase {
             ]
             for (name, v) in fields {
                 let f = frame(v)
-                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 150 : 60, "\(name) at \(width)")
+                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 90 : 60, "\(name) at \(width)")
                 XCTAssertGreaterThanOrEqual(f.height, 14, "\(name) height at \(width)")
                 XCTAssertTrue(vc.view.bounds.insetBy(dx: -1, dy: -1).contains(f), "\(name) clipped at \(width)")
             }
