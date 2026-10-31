@@ -70,6 +70,8 @@ fn edit(s: &mut OfflineShow, doc: DocId, command: Command) {
         },
     );
     assert!(matches!(result(&replies), Outcome::Ok(_)), "{replies:?}");
+    let engine = s.control().doc(doc).unwrap().engine();
+    assert_eq!(engine.unsignalled_model_changes(), 0);
 }
 
 fn memo_show(name: &str) -> Workspace {

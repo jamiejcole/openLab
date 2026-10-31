@@ -66,11 +66,13 @@ impl Mirror {
 
 fn send(s: &mut OfflineShow, command: Command, coalesce: Option<&str>) -> Vec<ServerMessage> {
     let id = s.request_id();
-    s.send(ClientMessage::Command {
+    let replies = s.send(ClientMessage::Command {
         id,
         command: Box::new(command),
         coalesce: coalesce.map(str::to_owned),
-    })
+    });
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
+    replies
 }
 
 fn command(s: &mut OfflineShow, command: Command) {

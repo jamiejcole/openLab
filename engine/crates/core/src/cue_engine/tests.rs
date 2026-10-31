@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Paths only reachable with out-of-date static problems (a model change the binary did not
-//! signal, in a release build): debug builds correct such a change at the start of `handle`, so
-//! these tests carry out the deadlines directly on the edited workspace.
+//! signal). The outline check at the start of `handle` follows some such changes, so these tests
+//! carry out the deadlines directly on the edited workspace.
 
 use uuid::Uuid;
 
@@ -160,8 +160,7 @@ fn a_fade_cue_whose_target_changed_unsignalled_only_warns() {
 }
 
 /// Carries out `input` on `ws` without the start of a call, as `handle` does after a model
-/// change the binary did not signal in a release build (debug builds would correct it at the
-/// start of `handle`).
+/// change the binary did not signal inside a cue or group.
 fn input_unsignalled(
     engine: &mut CueEngine,
     ws: &Workspace,
@@ -269,8 +268,8 @@ fn a_cue_still_broken_after_an_unsignalled_edit_is_still_refused() {
     assert_eq!(engine.unsignalled_model_changes(), 1);
 }
 
-/// A call as a release build makes it when nothing was signalled: the chain limit and the
-/// playheads are those of the last pass, not recounted.
+/// A call as `handle` makes it when nothing was signalled: the chain limit and the playheads are
+/// those of the last pass, not recounted.
 fn stale_cx(ws: &Workspace, now: SampleTime, limit: usize) -> Ctx<'_> {
     Ctx {
         ws,
@@ -286,7 +285,7 @@ fn stale_cx(ws: &Workspace, now: SampleTime, limit: usize) -> Ctx<'_> {
 
 #[test]
 fn a_stale_chain_limit_is_recounted_instead_of_dropping_a_start() {
-    // Release builds cache the limit between `model_changed` calls. If cues were added without
+    // The limit is cached between `model_changed` calls. If cues were added without
     // the signal, a call that legitimately starts more cues than the old limit must not lose
     // starts: the spent budget is recounted once.
     let small = workspace(vec![cue(1, CueKind::Memo, 0.0)]);
@@ -365,7 +364,7 @@ fn a_genuine_cycle_is_still_cut_with_a_stale_limit() {
 
 #[test]
 fn a_go_whose_playhead_cue_was_deleted_unsignalled_follows_the_edit() {
-    // Release builds do not follow edits on a call nothing was signalled for; a GO must not be
+    // Edits are not followed on a call nothing was signalled for; a GO must not be
     // ignored because the playhead still names the deleted cue.
     let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
     let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
@@ -390,27 +389,29 @@ fn a_go_whose_playhead_cue_was_deleted_unsignalled_follows_the_edit() {
     assert_eq!(engine.unsignalled_model_changes(), 1);
 }
 
-/// Release builds (here forced, as debug builds run the full check on every call): a cue
-/// deleted without `model_changed` is noticed by the outline check, counted and followed.
+/// A cue deleted without `model_changed` is noticed by the outline check, counted once and
+/// followed, with or without the edit cross-check (which does not count it again).
 #[test]
-fn a_top_level_cue_deleted_unsignalled_is_counted_and_followed_in_release() {
-    let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
-    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
-    engine.release_checks = true;
-    engine.handle(&ws, Input::Tick, 0);
-    assert_eq!(engine.handle(&ws, Input::Tick, 1), vec![]);
-    let mut gone = ws.clone();
-    gone.cue_lists[0].cues.remove(0);
-    let out = engine.handle(&gone, Input::Tick, 2);
-    assert_eq!(engine.unsignalled_model_changes(), 1);
-    assert!(
-        out.contains(&Action::PlayheadChanged {
-            list: CueListId(Uuid::from_u128(1)),
-            cue: Some(id(2)),
-        }),
-        "{out:?}"
-    );
-    // Recorded: the next call finds nothing new.
-    assert_eq!(engine.handle(&gone, Input::Tick, 3), vec![]);
-    assert_eq!(engine.unsignalled_model_changes(), 1);
+fn a_top_level_cue_deleted_unsignalled_is_counted_and_followed() {
+    for cross_check in [false, true] {
+        let ws = workspace(vec![cue(1, CueKind::Memo, 0.0), cue(2, CueKind::Memo, 0.0)]);
+        let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+        engine.set_edit_cross_check(cross_check);
+        engine.handle(&ws, Input::Tick, 0);
+        assert_eq!(engine.handle(&ws, Input::Tick, 1), vec![]);
+        let mut gone = ws.clone();
+        gone.cue_lists[0].cues.remove(0);
+        let out = engine.handle(&gone, Input::Tick, 2);
+        assert_eq!(engine.unsignalled_model_changes(), 1, "{cross_check}");
+        assert!(
+            out.contains(&Action::PlayheadChanged {
+                list: CueListId(Uuid::from_u128(1)),
+                cue: Some(id(2)),
+            }),
+            "{out:?}"
+        );
+        // Recorded: the next call finds nothing new.
+        assert_eq!(engine.handle(&gone, Input::Tick, 3), vec![]);
+        assert_eq!(engine.unsignalled_model_changes(), 1, "{cross_check}");
+    }
 }

@@ -171,10 +171,12 @@ impl CueEngine {
         self.problems.checks
     }
 
-    /// Times the model's problems were found out of date although `model_changed` was not
-    /// called, i.e. a binary (or test) that broke the contract; each was corrected. Release
-    /// builds check the workspace's outline on every call (`shape.rs`) and a cue about to be
-    /// refused for its problems; debug builds check everything on every call. The binary should log any increase.
+    /// Times a model change was found that `model_changed` did not signal, i.e. a binary (or
+    /// test) that broke the contract. Every build checks the workspace's outline on every call
+    /// (`shape.rs`: then the change is followed) and a cue about to be refused for its problems
+    /// (then its problems are rebuilt); with the edit cross-check on (debug builds,
+    /// [`Self::set_edit_cross_check`]) any other change is counted too, and left as it is. The
+    /// binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
     }
@@ -331,13 +333,7 @@ impl CueEngine {
     /// Start of a call: bring the model's part up to date if the model changed.
     pub(super) fn sync_problems(&mut self, cx: &mut Ctx) {
         match std::mem::replace(&mut self.problems.pending, Pending::Clean) {
-            Pending::Clean =>
-            {
-                #[cfg(debug_assertions)]
-                if self.full_checks() {
-                    self.check_signalled(cx);
-                }
-            }
+            Pending::Clean => {}
             Pending::All => self.rebuild_problems(cx),
             Pending::Cues {
                 touched,
@@ -592,21 +588,11 @@ impl CueEngine {
         }
     }
 
-    /// Debug builds: a model change the binary did not signal is caught (and counted) here.
-    #[cfg(debug_assertions)]
-    fn check_signalled(&mut self, cx: &mut Ctx) {
-        if self.verify_problem_cache(cx.ws).is_err() {
-            self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
-            self.problems.pending = Pending::All;
-            self.sync_problems(cx);
-        }
-    }
-
     /// Checks the problem bookkeeping against a from-scratch rebuild for `ws`: the model's part
     /// (places, facts, the indexes), every cue's problems and the groups' warning counts. Call
     /// it with nothing pending (after a `handle`); `Err` says what differs. It rebuilds the
-    /// whole model, so it is for tests and debug builds, where it is how a missed
-    /// `model_changed` is caught and how the incremental path is held to the full rebuild.
+    /// whole model, so it is for tests and the edit cross-check (debug builds), where it is how a
+    /// missed `model_changed` is counted and how the incremental path is held to the full rebuild.
     pub fn verify_problem_cache(&self, ws: &Workspace) -> Result<(), String> {
         let p = &self.problems;
         let fresh = model_facts(ws);

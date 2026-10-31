@@ -58,6 +58,7 @@ fn command(s: &mut OfflineShow, command: Command) {
         command: Box::new(command),
         coalesce: None,
     });
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
 fn rename(n: u128, name: &str) -> Command {
