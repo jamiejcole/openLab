@@ -22,6 +22,11 @@ struct PreshowRow: Hashable {
     /// False for entries listed for information only (a spare patch, an unchecked destination,
     /// `preload_over_budget`): shown dimmed, not counted.
     let isProblem: Bool
+    /// The operator hid this entry: a known issue that must not drown out new ones.
+    var isHidden = false
+
+    /// What "hide" remembers. It includes the detail, so a changed problem on the same cue is new.
+    var hideKey: String { "\(section.rawValue)|\(cue?.raw ?? "")|\(title)|\(detail)" }
 }
 
 /// Turns a `PreshowReport` into rows. Sections come in a fixed order (broken cues, media, devices,
@@ -34,7 +39,9 @@ enum PreshowRows {
     static let maxNamedCues = 5
 
     @MainActor
-    static func make(report: PreshowReport, model: WorkspaceModel?) -> [PreshowRow] {
+    static func make(
+        report: PreshowReport, model: WorkspaceModel?, hidden: Set<String> = [], showHidden: Bool = true
+    ) -> [PreshowRow] {
         let index = cueIndex(model)
         let modelLabel = WarningRows.labeler(model)
         // The index is O(1); the labeler searches the tree, so cues go through the index first.
@@ -53,10 +60,12 @@ enum PreshowRows {
             _ section: PreshowRow.Section, _ title: String, _ detail: String, cue: ModelID?, tab: String?,
             problem: Bool = true
         ) {
-            sections[section, default: []].append(
-                PreshowRow(
-                    section: section, isHeading: false, title: title, detail: detail, cue: cue, inspectorTab: tab,
-                    isProblem: problem))
+            var row = PreshowRow(
+                section: section, isHeading: false, title: title, detail: detail, cue: cue, inspectorTab: tab,
+                isProblem: problem)
+            row.isHidden = hidden.contains(row.hideKey)
+            if row.isHidden && !showHidden { return }
+            sections[section, default: []].append(row)
         }
 
         for c in report.brokenCues {

@@ -207,6 +207,36 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(picked?.raw, sent["id"]?.stringValue)
     }
 
+    /// The right-click menu on a list row renames and deletes it; Show Mode and an engine refusal
+    /// are both handled.
+    func testListRowMenuRenamesAndDeletesAndRefusesInShowMode() async throws {
+        let wc = try await make()
+        let list = try XCTUnwrap(side.lists.first).id
+        let sent = { (type: String) -> [JSONValue] in
+            self.rig.engine.received.compactMap {
+                if case .command(_, let c, _) = $0, c.json["type"]?.stringValue == type { return c.json }
+                return nil
+            }
+        }
+        await side.rename(list: list, to: "Front of House")
+        XCTAssertEqual(sent("rename_cue_list").last?["name"]?.stringValue, "Front of House")
+        XCTAssertEqual(sent("rename_cue_list").last?["id"]?.stringValue, list.raw)
+        var notices: [String] = []
+        side.onNotice = { notices.append($0) }
+        rig.engine.refuseCommands = true
+        await side.delete(list: list)
+        XCTAssertEqual(sent("remove_cue_list").count, 1)
+        XCTAssertEqual(notices.count, 1, "the engine's refusal is shown")
+        rig.engine.refuseCommands = false
+        wc.setShowMode(true)
+        await assertEventually { wc.sidebar.listEditLocked }
+        side.listEditLocked = true
+        await side.rename(list: list, to: "Other")
+        await side.delete(list: list)
+        XCTAssertEqual(sent("rename_cue_list").count, 1)
+        XCTAssertEqual(sent("remove_cue_list").count, 1)
+    }
+
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {
         _ = try await make()
         _ = side.activeTable.numberOfRows
