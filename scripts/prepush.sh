@@ -4,8 +4,10 @@
 # against origin/main (committed, staged, unstaged and untracked files) with the same path sets CI uses
 # (scripts/paths.sh):
 #   engine/ changed or CI/Makefile changed -> Windows clippy and the Rust tests
-#   app code changed                       -> the app's unit tests and UI smoke set (else its unit
-#                                             tests when the protocol or show file changed)
+#   the engine, protocol or app engine client changed (PATHS_APP_ENGINE_RE)
+#                                          -> the app's unit tests on the real engine and the UI smoke set
+#   other app code, the protocol or show file changed
+#                                          -> the app's engine-free unit tests (`make test-mac-unit`)
 #   what ci.yml's `bundle` output covers   -> the Release `make mac` universal build
 # It stops at the first failure and, on a clean tree, saves `PREPUSH PASS <HEAD sha>` to
 # `$(git rev-parse --git-dir)/openlab-prepush`.
@@ -13,8 +15,8 @@
 #   scripts/prepush.sh                run the gate
 #   scripts/prepush.sh --check [sha]  exit 0 only if the saved stamp is for `sha` (default HEAD) and,
 #                                     for HEAD, the tree is clean (the pre-push hook uses this)
-# PREPUSH_UI=1 forces the app tests with the UI smoke set, PREPUSH_UI=0 skips the UI tests,
-# PREPUSH_UI=full runs the whole UI suite (what CI does nightly).
+# PREPUSH_UI=1 forces the real-engine app tests with the UI smoke set, PREPUSH_UI=0 skips them (the
+# engine-free unit tests still run when app code changed), PREPUSH_UI=full runs the whole UI suite.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -64,9 +66,7 @@ want_ui=0
 if touched "$PATHS_ALL_RE" || touched "$PATHS_ENGINE_RE"; then want_rust=1; fi
 if touched "$PATHS_ALL_RE" || touched "$PATHS_BUNDLE_RE"; then want_bundle=1; fi
 if touched "$PATHS_ALL_RE" || touched "$PATHS_MAC_PR_RE"; then want_mac_unit=1; fi
-if [ "$known_base" = 0 ] || printf '%s\n' "$changed" | grep -E "$PATHS_UI_RE" | grep -vq "$PATHS_UI_EXCLUDE_RE"; then
-  want_ui=1
-fi
+if touched "$PATHS_ALL_RE" || touched "$PATHS_APP_ENGINE_RE"; then want_ui=1; fi
 case "${PREPUSH_UI:-}" in
   1) want_ui=1 ;;
   full) want_ui=2 ;;
@@ -90,11 +90,6 @@ step() {
 }
 
 clippy_windows() { scripts/rust-checks.sh clippy-windows; }
-mac_unit() {
-  make project
-  xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build \
-    -destination "platform=macOS,arch=$(uname -m)" -skip-testing:openLabUITests test
-}
 
 step "lint" make lint
 if [ "$want_rust" = 1 ]; then
@@ -106,11 +101,11 @@ if [ "$want_bundle" = 1 ]; then
 fi
 if [ "$want_ui" != 0 ]; then
   # XCUITests drive the real screen: two at once (parallel agents) find each other's windows and fail.
-  # lockf waits for the other run to finish. CI runs the same smoke set per PR (make test-mac).
+  # lockf waits for the other run to finish. CI runs the same tests when the same paths change.
   if [ "$want_ui" = 2 ]; then ui_target=test-mac-ui-full; else ui_target=test-mac; fi
   step "test-mac-ui" lockf -k /tmp/openlab-xcuitest.lock make "$ui_target"
 elif [ "$want_mac_unit" = 1 ]; then
-  step "test-mac-unit" mac_unit
+  step "test-mac-unit" make test-mac-unit
 fi
 
 trap - EXIT

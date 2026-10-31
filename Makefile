@@ -9,7 +9,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: lint test test-rust test-mac test-mac-unit test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -77,7 +77,13 @@ MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
 miri:
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
-# Every unit test plus the UI smoke set (scripts/ui-smoke.txt): what a PR runs.
+# The engine-free unit tests: what every app PR runs. The tests that start the real engine report a
+# skip (OPENLAB_ENGINE_TESTS=skip reaches the test process through xcodebuild's TEST_RUNNER_ prefix).
+test-mac-unit: project
+	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests test
+
+# Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
+# that changes the engine, the protocol or the app's engine client runs (scripts/paths.sh).
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests $(UI_SMOKE) test

@@ -27,6 +27,7 @@ jobs:
     outputs:
       engine: ${{ steps.diff.outputs.engine }}
       mac: ${{ steps.diff.outputs.mac }}
+      app_engine: ${{ steps.diff.outputs.app_engine }}
       bundle: ${{ steps.diff.outputs.bundle }}
       intel: ${{ steps.diff.outputs.intel }}
     steps:
@@ -47,6 +48,7 @@ jobs:
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "engine=true" >> "$GITHUB_OUTPUT"
             echo "mac=true" >> "$GITHUB_OUTPUT"
+            echo "app_engine=true" >> "$GITHUB_OUTPUT"
             echo "bundle=true" >> "$GITHUB_OUTPUT"
             echo "intel=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -59,7 +61,8 @@ jobs:
           if match "$PATHS_ALL_RE"; then all=true; else all=false; fi
           if [ "$all" = true ] || match "$PATHS_ENGINE_RE"; then echo "engine=true"; else echo "engine=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$EVENT" = pull_request ]; then mac_re="$PATHS_MAC_PR_RE"; else mac_re="$PATHS_MAC_MAIN_RE"; fi
-          if [ "$all" = true ] || match "$mac_re"; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+          if [ "$all" = true ] || match "$mac_re" || match "$PATHS_APP_ENGINE_RE"; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
+          if [ "$all" = true ] || match "$PATHS_APP_ENGINE_RE"; then echo "app_engine=true"; else echo "app_engine=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$EVENT" != pull_request ] || [ "$all" = true ] || match "$PATHS_BUNDLE_RE"; then echo "bundle=true"; else echo "bundle=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$all" = true ] || match "$PATHS_INTEL_RE"; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
 
@@ -265,13 +268,21 @@ jobs:
         continue-on-error: true
         with:
           workspaces: engine
+          # The app's Debug engine (built with test-support for the real-engine tests) is the
+          # workspace's own crates: cached too, keyed on the engine's sources, so an app-only change
+          # does not rebuild it.
+          cache-workspace-crates: true
+          key: ${{ hashFiles('engine/crates/**', 'engine/Cargo.lock') }}
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
-      # A PR and a push run the unit tests and the UI smoke set (scripts/ui-smoke.txt); the full UI
-      # suite is slow and flaky, so it runs on the nightly schedule (and on demand), where a failure
-      # turns the run red and the `alert` job opens the ci-red issue.
-      - run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || 'test-mac' }}
+      # The app tests that start the real engine are expensive: a PR or push runs them with the UI smoke
+      # set (`make test-mac`) only when the engine, the protocol or the app's engine client changed
+      # (`changes.app_engine`, scripts/paths.sh); otherwise the engine-free unit tests (`make
+      # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
+      # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
+      # `alert` job opens the ci-red issue.
+      - run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
       - run: make mac
         if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle

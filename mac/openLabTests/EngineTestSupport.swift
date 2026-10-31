@@ -190,6 +190,10 @@ final class TestEngine {
 
     /// A new engine of its own (a test that ends or kills it must not share it).
     static func start() async throws -> TestEngine {
+        // `make test-mac-unit` (every app PR) runs the engine-free tests only (scripts/paths.sh).
+        if ProcessInfo.processInfo.environment["OPENLAB_ENGINE_TESTS"] == "skip" {
+            throw XCTSkip("real-engine tests are off in this run (make test-mac-unit)")
+        }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
             "openlab-unit-\(UUID().uuidString)", isDirectory: true)
         let support = folder.appendingPathComponent("support", isDirectory: true)
