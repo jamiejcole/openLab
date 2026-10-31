@@ -393,11 +393,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    /// Commits what is typed in the inspector and in the cue list's Duration cell, and waits for the
+    /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        if let notes = masthead.takePendingNotes() { await editor.setNotes(of: notes.id, text: notes.text) }
         return await inspector.commitPendingEdits() && ok
     }
 

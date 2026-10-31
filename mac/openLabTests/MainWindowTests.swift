@@ -196,7 +196,7 @@ final class MainWindowTests: XCTestCase {
     func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {
         let (wc, rig) = try await demoController()
         try standBy(rig, CueListHarness.intro)
-        wc.masthead.notesView.string = "Hold for applause"
+        typeMastheadNotes(wc, "Hold for applause")
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
         XCTAssertEqual(setNotesCommands(rig).last?["id"]?.stringValue, CueListHarness.intro.raw)
@@ -214,5 +214,43 @@ final class MainWindowTests: XCTestCase {
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         await wc.editor.setNotes(of: CueListHarness.intro, text: "typed anyway")
         XCTAssertTrue(setNotesCommands(rig).isEmpty)
+    }
+
+    private func typeMastheadNotes(_ wc: WorkspaceWindowController, _ text: String) {
+        wc.masthead.notesView.string = text
+        wc.masthead.textDidBeginEditing(Notification(name: NSText.didBeginEditingNotification))
+    }
+
+    func testPlayheadMovingMidEditCommitsTheNotesToTheCueTheyWereTypedFor() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "for intro")
+        try standBy(rig, CueListHarness.fade)
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await Task.yield()
+        let sent = setNotesCommands(rig)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(sent.first?["property"]?["value"]?.stringValue, "for intro")
+        XCTAssertNotEqual(wc.masthead.notesView.string, "for intro", "the new cue shows its own notes")
+    }
+
+    func testEnteringShowModeMidEditCommitsTheMastheadNotes() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "typed before show mode")
+        await wc.requestShowMode(true)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before show mode")
+    }
+
+    func testSaveMidEditCommitsTheMastheadNotes() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "typed before save")
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(setNotesCommands(rig).count, 1)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before save")
     }
 }

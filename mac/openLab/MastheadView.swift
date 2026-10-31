@@ -87,8 +87,17 @@ final class MastheadView: NSView, NSTextViewDelegate {
         if !on, notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
     }
 
-    /// Shows `cue` as standing by. Notes the operator is typing are not overwritten.
+    /// The cue whose notes are being typed: fixed when typing starts, so the text always goes to
+    /// the cue it was typed for even if the playhead moves meanwhile.
+    private var editingID: ModelID?
+
+    /// Shows `cue` as standing by. Notes being typed for another cue are committed to that cue first.
     func show(standby cue: Cue?) {
+        if let editing = editingID, editing != cue?.id {
+            editingID = nil
+            onCommitNotes?(editing, notesView.string)
+        }
+        let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
             standbyField.stringValue = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }
@@ -97,13 +106,25 @@ final class MastheadView: NSView, NSTextViewDelegate {
             standbyField.stringValue = loc("masthead.standby.none")
         }
         let notes = cue?.raw["notes"]?.stringValue ?? ""
-        if notesView.string != notes, notesView.window?.firstResponder !== notesView { notesView.string = notes }
+        if notesView.string != notes, changed || editingID == nil { notesView.string = notes }
         applyEditable()
     }
 
+    func textDidBeginEditing(_ notification: Notification) {
+        editingID = cueID
+    }
+
     func textDidEndEditing(_ notification: Notification) {
-        guard !isLocked, let id = cueID else { return }
-        onCommitNotes?(id, notesView.string)
+        guard let id = editingID else { return }
+        editingID = nil
+        if !isLocked { onCommitNotes?(id, notesView.string) }
+    }
+
+    /// Notes typed and not yet sent, handed over (and forgotten) for Show Mode, Save, Close and Quit.
+    func takePendingNotes() -> (id: ModelID, text: String)? {
+        guard let id = editingID, !isLocked else { return nil }
+        editingID = nil
+        return (id, notesView.string)
     }
 
     @available(*, unavailable)
