@@ -8,7 +8,7 @@ import XCTest
 /// and nothing runs while no meter is on screen. The display tick is driven by hand.
 @MainActor
 final class MeterTests: XCTestCase {
-    static let intro = CueListHarness.intro
+    static let intro = TestSnapshots.intro
 
     /// Hands the bank's tick handler to the test and counts timers started and stopped.
     @MainActor final class FakeTicker {
@@ -60,7 +60,7 @@ final class MeterTests: XCTestCase {
     // MARK: Push to state
 
     func testStoreFoldsAMetersPushIntoTheBank() throws {
-        let rig = try Rig()
+        let rig = try Rig.offline()
         view.bank = rig.store.meters
         XCTAssertEqual(rig.store.meters.visibleCount, 1)
         let msg = try ServerMessage.decode(
@@ -185,10 +185,7 @@ final class MeterTests: XCTestCase {
     // MARK: Inspector and the rest of the window
 
     private func inspector() async throws -> (Rig, InspectorViewController) {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try Rig.offline(TestSnapshots.show())
         let vc = InspectorViewController(store: rig.store)
         window.contentView = vc.view
         window.orderFront(nil)
@@ -213,15 +210,12 @@ final class MeterTests: XCTestCase {
     func testFadeLevelsHaveNoMeterAndNonAudioCuesWatchNothing() async throws {
         let (_, vc) = try await inspector()
         XCTAssertNil(vc.fadeLevels.view.subviews.flatMap { $0.subviews }.first { $0 is MeterView })
-        vc.setSelection([CueListHarness.group])
+        vc.setSelection([TestSnapshots.group])
         XCTAssertNil(vc.audioLevels.meter.source)
     }
 
     func testActiveCuesAndCueListHaveNoMeters() async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try Rig.offline(TestSnapshots.show())
         let wc = WorkspaceWindowController(store: rig.store)
         func meters(in v: NSView) -> Int {
             (v is MeterView ? 1 : 0) + v.subviews.reduce(0) { $0 + meters(in: $1) }
