@@ -215,7 +215,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "", "", ",", "", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "", ",", "", "w", "w", "s", "S"])
     }
 
     // MARK: Front-window routing
@@ -715,17 +715,17 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
     }
 
-    /// Select Next / Select Previous are fixed Cues-menu items (Cmd-Down / Cmd-Up), not in the key
+    /// Select Next / Select Previous are fixed View-menu items (Cmd-Down / Cmd-Up), not in the key
     /// map, and they move the selection of the front cue list; the playhead follows it.
     func testSelectNextAndPreviousAreFixedMenuItemsThatMoveTheSelection() async throws {
         keyDoc = "1"
         let menus = MainMenu.make()
-        func item(_ title: String) -> NSMenuItem? { menus.cues.items.first { $0.title == loc(title) } }
-        XCTAssertEqual(item("menu.cues.selectNext")?.keyEquivalent, KeyChord.down)
-        XCTAssertEqual(item("menu.cues.selectNext")?.keyEquivalentModifierMask, [.command])
-        XCTAssertEqual(item("menu.cues.selectPrevious")?.keyEquivalent, KeyChord.up)
-        XCTAssertEqual(item("menu.cues.selectPrevious")?.keyEquivalentModifierMask, [.command])
-        XCTAssertNotEqual(loc("menu.cues.selectNext"), "menu.cues.selectNext", "string exists")
+        func item(_ title: String) -> NSMenuItem? { menus.view.items.first { $0.title == loc(title) } }
+        XCTAssertEqual(item("menu.view.selectNext")?.keyEquivalent, KeyChord.down)
+        XCTAssertEqual(item("menu.view.selectNext")?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item("menu.view.selectPrevious")?.keyEquivalent, KeyChord.up)
+        XCTAssertEqual(item("menu.view.selectPrevious")?.keyEquivalentModifierMask, [.command])
+        XCTAssertNotEqual(loc("menu.view.selectNext"), "menu.view.selectNext", "string exists")
         let wc = try XCTUnwrap(app.windows["1"])
         let outline = wc.cueList.outlineView
         XCTAssertGreaterThanOrEqual(outline.numberOfRows, 2)
@@ -904,10 +904,124 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(edit.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
     }
 
-    func testViewMenuHasQLabsModeKeys() throws {
-        let view = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.view") })
-        XCTAssertEqual(view.items.map(\.keyEquivalent), ["[", "]"])
-        XCTAssertTrue(view.items.allSatisfy { $0.keyEquivalentModifierMask == [.command, .shift] })
+    // MARK: Menu bar gaps: each new item reaches the store call or window action it names
+
+    func testCloseAllClosesEveryWorkspaceAndCancelStopsTheRest() async throws {
+        keyDoc = "1"
+        let second = try await addWorkspace()
+        XCTAssertEqual(app.windows.count, 2)
+        alerts.closePlaying = false  // workspace 1 plays in the fixture: Cancel on it
+        await app.closeAllWorkspaces()
+        XCTAssertEqual(alerts.log, ["closePlaying"], "Cancel on the first leaves the rest alone")
+        XCTAssertEqual(app.windows.count, 2)
+        XCTAssertNotNil(app.windows[second])
+        alerts.closePlaying = true
+        alerts.saveChoices = [.dontSave]
+        await app.closeAllWorkspaces()
+        XCTAssertEqual(closeMessages().count, 2)
+        XCTAssertTrue(app.windows.isEmpty)
+    }
+
+    func testLayoutMenuItemsDriveTheFooterToggles() throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        for area in LayoutArea.allCases {
+            let before = wc.isVisible(area)
+            app.toggleLayout(area)
+            XCTAssertEqual(wc.isVisible(area), !before, "\(area)")
+            XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            app.toggleLayout(area)
+            XCTAssertEqual(wc.isVisible(area), before)
+        }
+    }
+
+    func testInspectorTabItemsMoveTheTabAndNeedTheInspector() throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let tabs = wc.inspector.tabView
+        XCTAssertGreaterThan(tabs.numberOfTabViewItems, 1)
+        tabs.selectFirstTabViewItem(nil)
+        app.selectAdjacentInspectorTab(by: 1)
+        XCTAssertEqual(tabs.indexOfTabViewItem(try XCTUnwrap(tabs.selectedTabViewItem)), 1)
+        app.selectAdjacentInspectorTab(by: -1)
+        XCTAssertEqual(tabs.indexOfTabViewItem(try XCTUnwrap(tabs.selectedTabViewItem)), 0)
+        wc.setVisible(.inspector, false)
+        app.selectAdjacentInspectorTab(by: 1)
+        XCTAssertEqual(tabs.indexOfTabViewItem(try XCTUnwrap(tabs.selectedTabViewItem)), 0, "hidden: no change")
+    }
+
+    func testSelectCueFindsACueByItsNumberAnywhereInTheList() throws {
+        let list = try XCTUnwrap(app.windows["1"]).cueList
+        let numbered = try XCTUnwrap(list.roots.first { $0.cue.number != nil })
+        let number = try XCTUnwrap(numbered.cue.number)
+        XCTAssertEqual(list.cue(numbered: number), numbered.id)
+        XCTAssertEqual(list.cue(numbered: "  \(number) "), numbered.id, "blanks around it are ignored")
+        XCTAssertNil(list.cue(numbered: number + "99x"))
+        XCTAssertNil(list.cue(numbered: "  "), "an empty number names no cue")
+    }
+
+    func testPlayheadNextAndPreviousSendSetPlayheadForTheAdjacentRow() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let outline = wc.cueList.outlineView
+        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        XCTAssertGreaterThanOrEqual(outline.numberOfRows, 2)
+        let current = wc.store.playheads[list].flatMap { wc.cueList.node($0) }.map { outline.row(forItem: $0) } ?? -1
+        var moved = 0
+        for (delta, row) in [(1, current + 1), (-1, current < 0 ? outline.numberOfRows - 1 : current - 1)]
+        where outline.numberOfRows > row && row >= 0 && row != current {
+            let target = try XCTUnwrap(outline.item(atRow: row) as? CueNode)
+            app.movePlayheadAdjacent(by: delta)
+            await assertEventually { !transports(.setPlayhead(list: list, cue: target.id)).isEmpty }
+            moved += 1
+        }
+        XCTAssertGreaterThan(moved, 0)
+    }
+
+    func testLoadToTimeSendsTheEnginesLoadCommandForTheSelectedCue() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let cue = try XCTUnwrap(wc.cueList.roots.first).id
+        wc.cueList.selectAsUser([cue])
+        wc.loadToTime(cue, 12.5)
+        await assertEventually { !transports(.load(cue: cue, at: 12.5)).isEmpty }
+        XCTAssertNil(CueTime.parse("-1"), "a typed time is validated by the shared parser")
+        XCTAssertEqual(CueTime.parse("1:02.5"), 62.5)
+    }
+
+    func testRevealTargetFileNeedsAnAudioCueWithAFile() throws {
+        let list = try XCTUnwrap(app.windows["1"]).cueList
+        let plain = try XCTUnwrap(list.roots.first { $0.cue.kindType != "audio" })
+        list.selectAsUser([plain.id])
+        XCTAssertFalse(list.canRevealSelectedTarget)
+        XCTAssertFalse(list.revealSelectedTarget())
+    }
+
+    /// Show Mode (SM-01) greys every item of the locked-edit list wherever it sits in the bar, and
+    /// Edit Mode leaves the movers and the number tools on.
+    func testShowModeGreysTheToolsAndViewEditItems() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
+        let locked = items.filter { item in MainMenu.LockedEdit.allCases.contains { $0.selector == item.action } }
+        XCTAssertFalse(locked.isEmpty)
+        wc.setShowMode(false)
+        for lock in [MainMenu.LockedEdit.renumber, .moveUp, .moveDown, .deleteNumbers] {
+            for item in items where item.action == lock.selector {
+                XCTAssertTrue(delegate.validateMenuItem(item), "\(lock) in Edit Mode")
+            }
+        }
+        wc.setShowMode(true)
+        for item in locked {
+            XCTAssertFalse(delegate.validateMenuItem(item), item.title)
+        }
+        // Items that are not edits stay available in Show Mode.
+        let inspector = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) })
+        XCTAssertTrue(delegate.validateMenuItem(inspector))
+        let launcher = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
+        XCTAssertTrue(delegate.validateMenuItem(launcher))
     }
 
     func testCloseInShowModeAsksOnceAndCancelKeepsTheWindow() async throws {

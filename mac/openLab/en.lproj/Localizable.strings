@@ -10,7 +10,8 @@
 "menu.app.quit" = "Quit openLab";
 
 "menu.file" = "File";
-"menu.file.close" = "Close Window";
+"menu.file.close" = "Close";
+"menu.file.closeAll" = "Close All";
 "menu.file.new" = "New Workspace";
 "menu.file.open" = "Open…";
 "menu.file.openRecent" = "Open Recent";
@@ -31,10 +32,10 @@
 "menu.cues.new" = "New %@ Cue";
 "menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
 "menu.cues.renumber" = "Renumber Selected Cues...";
-"menu.cues.moveUp" = "Move Selected Cues Up";
-"menu.cues.moveDown" = "Move Selected Cues Down";
-"menu.cues.selectNext" = "Select Next";
-"menu.cues.selectPrevious" = "Select Previous";
+"menu.view.moveUp" = "Move Selected Cues Up";
+"menu.view.moveDown" = "Move Selected Cues Down";
+"menu.view.selectNext" = "Select Next";
+"menu.view.selectPrevious" = "Select Previous";
 "edit.ok" = "OK";
 "edit.cancel" = "Cancel";
 "edit.renumber.title" = "Renumber Selected Cues";
@@ -462,6 +463,30 @@
 "menu.view" = "View";
 "menu.view.editMode" = "Enter Edit Mode";
 "menu.view.showMode" = "Enter Show Mode";
+"menu.view.inspector" = "Inspector";
+"menu.view.toolbar" = "Cue Toolbar";
+"menu.view.masthead" = "GO Area";
+"menu.view.sidebar" = "Sidebar";
+"menu.view.selectCue" = "Select Cue…";
+"menu.view.selectCue.title" = "Select Cue";
+"menu.view.selectCue.ok" = "Select";
+"menu.view.nextTab" = "Select Next Inspector Tab";
+"menu.view.previousTab" = "Select Previous Inspector Tab";
+"menu.view.movePlayheadToCue" = "Move Playhead to Cue…";
+"menu.view.movePlayheadToCue.title" = "Move Playhead to Cue";
+"menu.view.movePlayheadToCue.ok" = "Move Playhead";
+"menu.view.playheadNext" = "Move Playhead to Next Cue";
+"menu.view.playheadPrevious" = "Move Playhead to Previous Cue";
+"cue.prompt.number" = "Cue number";
+"cue.prompt.notFound" = "No cue is numbered %@.";
+"cue.prompt.time" = "Time (minutes:seconds)";
+"cue.prompt.badTime" = "That is not a time. Use seconds, minutes:seconds or hours:minutes:seconds, up to 24 hours.";
+"menu.tools" = "Tools";
+"menu.tools.loadToTime" = "Load to Time…";
+"menu.tools.loadToTime.title" = "Load to Time";
+"menu.tools.loadToTime.ok" = "Load";
+"menu.tools.revealTarget" = "Reveal Target File in Finder";
+"menu.window.launcher" = "Launcher Window";
 
 /* Audio levels and routing matrix, Fade cue settings (AUD-06, AUD-08, CT-10, AUD-09) */
 "inspector.tab.levels" = "Levels";

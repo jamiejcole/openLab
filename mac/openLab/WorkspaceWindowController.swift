@@ -285,6 +285,59 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// One text field in a sheet; `done` gets the text when the first button is chosen.
+    private func askText(title: String, label: String, ok: String, field: String, done: @escaping (String) -> Void) {
+        guard let window else { return }
+        let input = NSTextField(string: field)
+        input.placeholderString = label
+        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+        input.setAccessibilityLabel(label)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = label
+        alert.accessoryView = input
+        alert.addButton(withTitle: ok)
+        alert.addButton(withTitle: loc("edit.cancel"))
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { done(input.stringValue) }
+        }
+    }
+
+    /// View > Select Cue... / Move Playhead to Cue...: asks for a cue number and then selects that
+    /// cue as a click would (the playhead follows), or only moves the playhead.
+    func promptCue(movePlayhead: Bool) {
+        let key = movePlayhead ? "menu.view.movePlayheadToCue" : "menu.view.selectCue"
+        askText(title: loc(key + ".title"), label: loc("cue.prompt.number"), ok: loc(key + ".ok"), field: "") {
+            [weak self] text in
+            guard let self else { return }
+            guard let id = self.cueList.cue(numbered: text) else {
+                return self.showNotice(String(format: loc("cue.prompt.notFound"), text))
+            }
+            if movePlayhead {
+                guard let list = self.cueList.listID else { return }
+                Task { await self.store.transport(.setPlayhead(list: list, cue: id)) }
+            } else {
+                self.cueList.selectAsUser([id])
+            }
+        }
+    }
+
+    /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
+    /// command (the Transport menu's Load Selected uses 0).
+    func promptLoadToTime() {
+        guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
+        askText(title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"), ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00") {
+            [weak self] text in
+            guard let self else { return }
+            guard let seconds = CueTime.parse(text) else { return self.showNotice(loc("cue.prompt.badTime")) }
+            self.loadToTime(id, seconds)
+        }
+    }
+
+    func loadToTime(_ id: ModelID, _ seconds: Double) {
+        onCueAction?(.load(cue: id, at: seconds))
+    }
+
     private static func plain(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
 
     /// The workspace's name (set by the app as the engine reports it); Show Mode adds a suffix.

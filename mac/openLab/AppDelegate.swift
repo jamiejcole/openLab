@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
-    @MainActor private(set) lazy var appController = AppController(session: engineSession, supervisor: engine.1)
+    @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in appController.alerts })
@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let url = sender.representedObject as? URL else { return }
         Task { await appController.openWorkspace(url: url) }
     }
+    @MainActor @objc func closeAllWorkspaces(_ sender: Any?) { Task { await appController.closeAllWorkspaces() } }
     @MainActor @objc func clearRecents(_ sender: Any?) { appController.clearRecents() }
     @MainActor @objc func recoverAutosaves(_ sender: Any?) { Task { await alarmController.recoverAutosaves() } }
 
@@ -142,6 +143,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
     @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
     @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
+    @MainActor @objc func toggleLayoutArea(_ sender: NSMenuItem) {
+        guard let area = MainMenu.layoutArea(of: sender) else { return }
+        appController.toggleLayout(area)
+    }
+    @MainActor @objc func selectCue(_ sender: Any?) { appController.frontController?.promptCue(movePlayhead: false) }
+    @MainActor @objc func movePlayheadToCue(_ sender: Any?) {
+        appController.frontController?.promptCue(movePlayhead: true)
+    }
+    @MainActor @objc func movePlayheadNext(_ sender: Any?) { appController.movePlayheadAdjacent(by: 1) }
+    @MainActor @objc func movePlayheadPrevious(_ sender: Any?) { appController.movePlayheadAdjacent(by: -1) }
+    @MainActor @objc func selectNextInspectorTab(_ sender: Any?) { appController.selectAdjacentInspectorTab(by: 1) }
+    @MainActor @objc func selectPreviousInspectorTab(_ sender: Any?) {
+        appController.selectAdjacentInspectorTab(by: -1)
+    }
+    @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.promptLoadToTime() }
+    @MainActor @objc func revealTargetFile(_ sender: Any?) {
+        appController.frontController?.cueList.revealSelectedTarget()
+    }
+    @MainActor @objc func showLauncherWindow(_ sender: Any?) { appController.showLauncher() }
     @MainActor @objc func selectNextCue(_ sender: Any?) { appController.selectAdjacentCue(by: 1) }
     @MainActor @objc func selectPreviousCue(_ sender: Any?) { appController.selectAdjacentCue(by: -1) }
     @MainActor @objc func undoEdit(_ sender: Any?) {
@@ -187,6 +207,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(enterShowMode(_:))?, #selector(enterEditMode(_:))?:
             guard let front = appController.frontController else { return false }
             return front.isShowMode == (item.action == #selector(enterEditMode(_:)))
+        case #selector(toggleLayoutArea(_:))?:
+            guard let front = appController.frontController, let area = MainMenu.layoutArea(of: item) else {
+                return false
+            }
+            item.state = front.isVisible(area) ? .on : .off
+            return true
+        case #selector(selectCue(_:))?, #selector(movePlayheadToCue(_:))?, #selector(movePlayheadNext(_:))?,
+            #selector(movePlayheadPrevious(_:))?:
+            return appController.frontController != nil && !appController.isTextEditing()
+        case #selector(selectNextInspectorTab(_:))?, #selector(selectPreviousInspectorTab(_:))?:
+            // Cmd-Left / Right move the insertion point of a text field being edited.
+            guard let front = appController.frontController else { return false }
+            return front.isVisible(.inspector) && !appController.isTextEditing()
+        case #selector(loadToTime(_:))?:
+            return appController.frontController.map { !$0.cueList.selectedIDs().isEmpty } ?? false
+        case #selector(revealTargetFile(_:))?:
+            return appController.frontController?.cueList.canRevealSelectedTarget ?? false
+        case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
         case #selector(newCue(_:))?, #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?,
             #selector(moveCuesDown(_:))?, #selector(relinkMedia(_:))?:
             return canEditFront

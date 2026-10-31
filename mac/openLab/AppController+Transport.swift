@@ -45,6 +45,23 @@ extension AppController {
         frontController?.cueList.selectAdjacent(by: delta)
     }
 
+    /// View > Playhead Next / Previous: the front list's playhead moves by `delta` rows.
+    func movePlayheadAdjacent(by delta: Int) {
+        frontController?.cueList.movePlayhead(by: delta)
+    }
+
+    /// View > Select Next / Previous Inspector Tab (the inspector must be showing).
+    func selectAdjacentInspectorTab(by delta: Int) {
+        guard let front = frontController, front.isVisible(.inspector) else { return }
+        if delta > 0 { front.inspector.tabView.selectNextTabViewItem(nil) } else { front.inspector.tabView.selectPreviousTabViewItem(nil) }
+    }
+
+    /// View > Inspector / Toolbar / GO Area / Sidebar: the footer toggle buttons' action.
+    func toggleLayout(_ area: LayoutArea) {
+        guard let front = frontController else { return }
+        front.setVisible(area, !front.isVisible(area))
+    }
+
     /// Whether the menu item for `command` may fire now. Disabled items also let their key through
     /// to the text field being edited (see `KeyMap` for the precedence rule).
     func canPerform(_ command: TransportCommand) -> Bool {

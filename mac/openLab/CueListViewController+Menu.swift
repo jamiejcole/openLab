@@ -121,7 +121,7 @@ extension CueListViewController: NSMenuDelegate {
         }
     }
 
-    private func revealURL(_ node: CueNode) -> URL? {
+    func revealURL(_ node: CueNode) -> URL? {
         guard node.cue.kindType == "audio" else { return nil }
         return CueRowMenu.mediaURL(node.cue.raw["kind"]?["media"]?.stringValue, showPath: store.document?.path)
     }
@@ -150,5 +150,47 @@ extension CueListViewController: NSMenuDelegate {
             let url = revealURL(node)
         else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: View and Tools menu actions (the same commands the row menu and the keys run)
+
+    /// The first cue in row order whose number is `number` (surrounding blanks ignored), through
+    /// groups, collapsed or not. Nil: none, or `number` is empty.
+    func cue(numbered number: String) -> ModelID? {
+        let wanted = number.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return nil }
+        func find(_ nodes: [CueNode]) -> ModelID? {
+            for node in nodes {
+                if node.cue.number == wanted { return node.id }
+                if let hit = find(node.children) { return hit }
+            }
+            return nil
+        }
+        return find(roots)
+    }
+
+    /// Move Playhead to Next / Previous Cue: the visible row `delta` from the playhead's, as the
+    /// row menu's "Move Playhead" sends it. At either end nothing changes.
+    func movePlayhead(by delta: Int) {
+        guard let list = listID, outlineView.numberOfRows > 0 else { return }
+        let count = outlineView.numberOfRows
+        let current = store.playheads[list].flatMap { node($0) }.map { outlineView.row(forItem: $0) } ?? -1
+        let from = current >= 0 ? current : (delta > 0 ? -1 : count)
+        let row = min(max(from + delta, 0), count - 1)
+        guard row != from, let node = outlineView.item(atRow: row) as? CueNode else { return }
+        Task { await store.transport(.setPlayhead(list: list, cue: node.id)) }
+    }
+
+    /// Tools > Reveal Target File in Finder: the last selected cue's file, as the row menu does.
+    @discardableResult
+    func revealSelectedTarget() -> Bool {
+        guard let id = selectedIDs().last, let node = node(id), let url = revealURL(node) else { return false }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
+    }
+
+    /// Whether Reveal Target File has a file to show (for the menu item).
+    var canRevealSelectedTarget: Bool {
+        selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil
     }
 }
