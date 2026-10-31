@@ -383,17 +383,40 @@ final class EngineClientTests: XCTestCase {
     }
 
     func testLaunchArgumentSelectsTheEngine() {
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab"]), .real)
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake"]), .fake(crashAfter: nil))
+        let app: [String: String] = [:]
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab"], environment: app), .real)
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"], environment: app), .real)
+        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"], environment: app), .real)
         XCTAssertEqual(
-            EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake", "-OpenLabFakeCrashAfter", "2"]),
-            .fake(crashAfter: 2))
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake-single"]), .real)
-        XCTAssertEqual(
-            EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "fake", "-OpenLabFakeEmpty"]),
-            .fake(crashAfter: nil, empty: true))
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"]), .real)
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"]), .real)
+            EngineMode.fromLaunchArguments(
+                [
+                    "openLab", "-OpenLabEngine", "test", "-OpenLabVirtualDevice", "stepped", "-OpenLabAppSupport",
+                    "/tmp/s", "-OpenLabOpen", "/a.openlab", "-OpenLabOpen", "/b.openlab",
+                ], environment: app),
+            .test(
+                TestEngineOptions(
+                    clock: .stepped, appSupport: URL(fileURLWithPath: "/tmp/s"), open: ["/a.openlab", "/b.openlab"])))
+        // Realtime unless told otherwise, and a folder of its own when none is named.
+        guard case .test(let o) = EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "test"], environment: app)
+        else { return XCTFail("not the test engine") }
+        XCTAssertEqual(o.clock, .realtime)
+        XCTAssertTrue(o.appSupport.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: o.appSupport.path), [])
+        // The unit-test host never runs the shipping engine, whatever its arguments.
+        guard
+            case .test(let host) = EngineMode.fromLaunchArguments(
+                ["openLab"], environment: ["XCTestConfigurationFilePath": "/x"])
+        else { return XCTFail("the unit-test host runs the shipping engine") }
+        XCTAssertEqual(host.clock, .stepped)
+    }
+
+    /// The test engine is the bundled one on its virtual device, in its own folder, ending with the
+    /// app (`--watch-stdin`), never relaunching it; the shows open on its first start only.
+    func testTheTestEngineArgumentsNeverRelaunchTheApp() {
+        let o = TestEngineOptions(clock: .stepped, appSupport: URL(fileURLWithPath: "/tmp/s"), open: ["/a.openlab"])
+        XCTAssertEqual(o.engineArguments, ["--virtual-device", "stepped", "--app-support", "/tmp/s", "--watch-stdin"])
+        XCTAssertEqual(o.openArguments, ["--open", "/a.openlab"])
+        XCTAssertFalse((o.engineArguments + o.openArguments).contains("--relaunch-app"))
     }
 
     // MARK: Review fixes

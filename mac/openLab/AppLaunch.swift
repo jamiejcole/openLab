@@ -57,13 +57,14 @@ struct AppLaunch {
     var terminate: @MainActor () -> Void
 
     static var live: AppLaunch {
-        AppLaunch(
+        let mode = EngineMode.fromLaunchArguments()
+        return AppLaunch(
             runningFirst: {
-                // The fake engine (UI tests) and the unit-test host share no engine with anyone.
-                guard EngineMode.fromLaunchArguments() == .real, !EngineMode.isUnitTestHost() else { return nil }
+                // The test engine (tests and the unit-test host) is shared with no other copy.
+                guard mode == .real else { return nil }
                 return SingleInstance.runningFirst()
             },
-            makeEngine: { EngineMode.fromLaunchArguments().make() },
+            makeEngine: { mode.make() },
             installMenu: { delegate in
                 NSApp.appearance = NSAppearance(named: .darkAqua)
                 let menu = MainMenu.make()
