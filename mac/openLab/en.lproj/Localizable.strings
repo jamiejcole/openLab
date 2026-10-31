@@ -500,6 +500,13 @@
 "timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
 "timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";
 "timeLoops.invalid.unknownLength" = "The file has not been read yet: set the start once its length is known.";
+"timeLoops.addSlice" = "New Slice";
+"timeLoops.deleteSlices" = "Clear Slices";
+"timeLoops.fades" = "Built-in fades";
+"timeLoops.invalid.slice" = "Click in the waveform at least 0.05 s from the trims and from other slice markers, then add the slice.";
+"timeLoops.invalid.tooManySlices" = "A cue can have at most 254 slice markers.";
+"timeLoops.invalid.sliceCount" = "Enter a whole number of plays from 1 to 1000000, or a letter to loop until devamped.";
+"timeLoops.invalid.trimSlices" = "The trims must stay at least 0.05 s outside the slice markers.";
 
 /* Engine lifecycle (M5.2, NFR-01, NFR-05) */
 "engine.alarm.window" = "Engine";

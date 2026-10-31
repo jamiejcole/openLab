@@ -2,19 +2,31 @@
 
 import AppKit
 
-/// The time and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14; QLab surface
+/// The time and loops tab of an Audio cue (AUD-10, AUD-11, AUD-12, AUD-14; QLab surface
 /// `inspector.audio.time-loops`): start and end trim fields and how many times the cue plays on
-/// the left, the file's waveform with draggable trim handles filling the rest, zoom buttons
-/// under it. Edits are reported as `Change`s; the inspector turns them into model commands.
-/// Peaks come from the engine (`waveform` request) and are kept per file and zoom.
+/// the left, the file's waveform with draggable trims, slice markers and fades filling the rest,
+/// and under it the slice buttons, the built-in fade switch with its curve, and zoom. Edits are
+/// reported as `Change`s; the inspector turns them into model commands. Peaks come from the engine
+/// (`waveform` request) and are kept per file and zoom.
 @MainActor
 final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     enum Change: Equatable {
         case start(Double)
         /// nil: the end of the file.
         case end(Double?)
-        /// 0: loop until devamped (infinite).
+        /// 0: loop until devamped (infinite). With slices, the last slice's count.
         case playCount(Int)
+        /// The whole set of slice markers, in time order.
+        case slices([SliceMark])
+        /// The built-in fade-in and fade-out lengths (0: none) and their one curve.
+        case fades(fadeIn: Double, fadeOut: Double, curve: String)
+    }
+
+    /// A slice marker: where it is in the file, and the play count of the slice it ends (0: until
+    /// devamped).
+    struct SliceMark: Equatable {
+        var time: Double
+        var playCount: Int
     }
 
     /// Peaks asked for: one file, one stretch of it, at one width.
@@ -28,6 +40,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     static let cacheLimit = 16
     static let maxPlayCount = 1_000_000
+    /// The audio engine plays at most 256 slices, one more when a start part way in splits a loop
+    /// (`MAX_SLICES`): more markers would leave a cue that cannot play.
+    static let maxSliceMarks = 254
+    /// The fade each way that switching the built-in fades on gives, at most a quarter of the cue.
+    static let defaultFade = 1.0
     /// The narrowest stretch a zoom shows, seconds.
     static let minSpan = 0.1
 
@@ -41,6 +58,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     let waveform = WaveformView()
     let zoomOutButton = NSButton()
     let zoomInButton = NSButton()
+    let deleteSlicesButton = NSButton(title: loc("timeLoops.deleteSlices"), target: nil, action: nil)
+    let addSliceButton = NSButton(title: loc("timeLoops.addSlice"), target: nil, action: nil)
+    let fadeCheck = NSButton(checkboxWithTitle: loc("timeLoops.fades"), target: nil, action: nil)
+    let fadeCurvePopup = NSPopUpButton()
+    /// Edits one slice's play count in place, over its number on the waveform.
+    let sliceCountField = NSTextField()
+    /// The slice whose count `sliceCountField` edits.
+    private(set) var editingSlice: Int?
 
     var onChange: ((Change) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
@@ -62,6 +87,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var cacheOrder: [PeaksKey] = []
     /// The file shown: its cue, reference and length.
     private var file: (cue: ModelID, media: String, duration: Double)?
+    private var shownCue: ModelID?
     private var kind: JSONValue = .null
     private var generation = 0
     /// The fetch under way (tests wait on it).
@@ -77,7 +103,12 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.setAX(AX.timeLoopsWaveform)
         zoomOutButton.setAX(AX.timeLoopsZoomOut)
         zoomInButton.setAX(AX.timeLoopsZoomIn)
-        for f in [startField, endField, countField] {
+        deleteSlicesButton.setAX(AX.timeLoopsDeleteSlices)
+        addSliceButton.setAX(AX.timeLoopsAddSlice)
+        fadeCheck.setAX(AX.timeLoopsFades)
+        fadeCurvePopup.setAX(AX.timeLoopsFadeCurve)
+        sliceCountField.setAX(AX.timeLoopsSliceCount)
+        for f in [startField, endField, countField, sliceCountField] {
             f.delegate = self
             f.usesSingleLineMode = true
             f.alignment = .right
@@ -89,6 +120,22 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             r.target = self
             r.action = #selector(radioChanged(_:))
         }
+        for (b, action) in [
+            (deleteSlicesButton, #selector(deleteSlices)), (addSliceButton, #selector(addSlice)),
+            (fadeCheck, #selector(fadeToggled)),
+        ] {
+            b.target = self
+            b.action = action
+        }
+        for b in [deleteSlicesButton, addSliceButton] { b.bezelStyle = .texturedRounded }
+        for key in FadeSettingsPanel.curves {
+            fadeCurvePopup.menu?.addItem(NSMenuItem(title: loc("fade.curve.\(key)"), action: nil, keyEquivalent: ""))
+        }
+        fadeCurvePopup.target = self
+        fadeCurvePopup.action = #selector(fadeCurveChanged)
+        sliceCountField.isHidden = true
+        sliceCountField.alignment = .center
+        waveform.addSubview(sliceCountField)
         for (b, symbol, key, action) in [
             (zoomOutButton, "minus.magnifyingglass", "timeLoops.zoomOut", #selector(zoomOut)),
             (zoomInButton, "plus.magnifyingglass", "timeLoops.zoomIn", #selector(zoomIn)),
@@ -107,6 +154,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             (handle == .start ? startField : endField).stringValue = CueTime.format(t)
         }
         waveform.onTrimCommit = { [weak self] handle, t in self?.commitDrag(handle, t) }
+        waveform.onSliceCommit = { [weak self] in self?.commitSlice() }
+        waveform.onFadesCommit = { [weak self] fadeIn, fadeOut in
+            guard let self, !isLocked else { return }
+            onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: waveform.fadeCurve))
+        }
+        waveform.onInsertion = { [weak self] in self?.applyLock() }
+        waveform.onEditCount = { [weak self] i in self?.editSliceCount(i) }
         waveform.onResize = { [weak self] in self?.reload() }
         layout()
     }
@@ -134,7 +188,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         left.widthAnchor.constraint(equalToConstant: 180).isActive = true
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let strip = NSStackView(views: [spacer, zoomOutButton, zoomInButton])
+        let strip = NSStackView(views: [
+            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, spacer, zoomOutButton, zoomInButton,
+        ])
         strip.spacing = 4
         waveform.translatesAutoresizingMaskIntoConstraints = false
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -160,7 +216,19 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var startTime: Double { kind["start_time"]?.doubleValue ?? 0 }
     var endTime: Double? { kind["end_time"]?.doubleValue }
     var playCount: Int { Int(kind["last_slice_play_count"]?.doubleValue ?? 1) }
-    var hasSlices: Bool { !(kind["slices"]?.arrayValue ?? []).isEmpty }
+    var hasSlices: Bool { !sliceMarks.isEmpty }
+    var sliceMarks: [SliceMark] {
+        (kind["slices"]?.arrayValue ?? []).compactMap { m in
+            guard let t = m["time"]?.doubleValue, let n = m["play_count"]?.doubleValue else { return nil }
+            return SliceMark(time: t, playCount: Int(n))
+        }
+    }
+    var fadeIn: Double { kind["fade_in"]?["duration"]?.doubleValue ?? 0 }
+    var fadeOut: Double { kind["fade_out"]?["duration"]?.doubleValue ?? 0 }
+    /// The built-in fades' curve: the fade-in's, which the tab sets for both.
+    var fadeCurve: String { kind["fade_in"]?["curve"]?.stringValue ?? "linear" }
+    /// The built-in fades are on while either has a length.
+    var hasFades: Bool { fadeIn > 0 || fadeOut > 0 }
 
     /// Shows an Audio cue's `kind`; `duration` is its file's length, nil while not known. A field
     /// being typed in keeps its text.
@@ -171,6 +239,12 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let fileChanged =
             newFile?.0 != file?.cue || newFile?.1 != file?.media || newFile?.2 != file?.duration
         file = newFile
+        // An insertion point or count edit belongs to the cue it was made on.
+        if cue != shownCue {
+            shownCue = cue
+            waveform.insertion = nil
+            endSliceCountEdit()
+        }
         if startField.currentEditor() == nil { startField.stringValue = CueTime.format(startTime) }
         if endField.currentEditor() == nil {
             endField.stringValue = (endTime ?? duration).map(CueTime.format) ?? ""
@@ -183,11 +257,22 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         if waveform.dragging == nil {
             waveform.trimStart = startTime
             waveform.trimEnd = endTime
+            let marks = sliceMarks
+            waveform.sliceMarks = marks.map(\.time)
+            waveform.sliceCounts = marks.map(\.playCount) + [playCount]
+            waveform.fadesShown = hasFades
+            waveform.fadeIn = fadeIn
+            waveform.fadeOut = fadeOut
+            waveform.fadeCurve = fadeCurve
         }
+        fadeCheck.state = hasFades ? .on : .off
+        fadeCurvePopup.selectItem(at: FadeSettingsPanel.curves.firstIndex(of: fadeCurve) ?? 0)
         if fileChanged {
             waveform.duration = file?.duration
             waveform.peaks = nil
             waveform.playhead = nil
+            waveform.insertion = nil
+            endSliceCountEdit()
             setVisible(start: 0, end: file?.duration ?? 1)
             waveform.message = loc(media.isEmpty ? "timeLoops.noFile" : "timeLoops.notRead")
             reload()
@@ -214,6 +299,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         // With slices each slice has its own count (QLab: edited on the slice markers).
         for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !isLocked && !sliced }
         countField.isEnabled = !isLocked && !sliced && playCount != 0
+        deleteSlicesButton.isEnabled = !isLocked && sliced
+        addSliceButton.isEnabled = !isLocked && waveform.insertion != nil
+        fadeCheck.isEnabled = !isLocked
+        fadeCurvePopup.isEnabled = !isLocked && hasFades
+        if isLocked { endSliceCountEdit() }
         waveform.isLocked = isLocked
         waveform.window?.invalidateCursorRects(for: waveform)
     }
@@ -286,12 +376,136 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         switch handle {
         case .start: if let t { onChange?(.start(t)) }
         case .end: onChange?(.end(t))
+        case .slice, .fadeIn, .fadeOut: break
+        }
+    }
+
+    /// The markers as the waveform shows them. Slice edits build on these, not on the model: a
+    /// second edit made before the engine answered the first must keep the first.
+    var shownMarks: [SliceMark] {
+        zip(waveform.sliceMarks, waveform.sliceCounts).map { SliceMark(time: $0, playCount: $1) }
+    }
+
+    /// Shows `marks` at once and sends them.
+    private func sendSlices(_ marks: [SliceMark]) {
+        let last = waveform.sliceCounts.last ?? playCount
+        waveform.sliceMarks = marks.map(\.time)
+        waveform.sliceCounts = marks.map(\.playCount) + [last]
+        onChange?(.slices(marks))
+    }
+
+    /// A slice marker let go at a new time or dragged out of the waveform (the view has already
+    /// moved or dropped it).
+    private func commitSlice() {
+        guard !isLocked else { return }
+        onChange?(.slices(shownMarks))
+    }
+
+    /// A new marker at the insertion point. The slice before it plays once and the one after keeps
+    /// the count the split slice had, as QLab does.
+    @objc func addSlice() {
+        guard !isLocked, let t = waveform.insertion else { return }
+        var marks = shownMarks
+        guard marks.count < Self.maxSliceMarks else { return refuseSlice("timeLoops.invalid.tooManySlices") }
+        let end = endTime ?? file?.duration ?? .infinity
+        let bounds = [startTime, end] + marks.map(\.time)
+        guard bounds.allSatisfy({ abs($0 - t) >= WaveformView.minLength - 1e-9 }), t > startTime, t < end else {
+            return refuseSlice("timeLoops.invalid.slice")
+        }
+        marks.insert(SliceMark(time: t, playCount: 1), at: marks.firstIndex { $0.time > t } ?? marks.count)
+        sendSlices(marks)
+    }
+
+    @objc func deleteSlices() {
+        guard !isLocked, !shownMarks.isEmpty else { return }
+        sendSlices([])
+    }
+
+    private func refuseSlice(_ key: String) { onInvalid?(key) }
+
+    /// Shows the fades at once and sends them. Like slice edits, fade edits build on what the
+    /// waveform shows, so a quick second edit keeps the first.
+    private func sendFades(_ fadeIn: Double, _ fadeOut: Double, _ curve: String) {
+        waveform.fadeIn = fadeIn
+        waveform.fadeOut = fadeOut
+        waveform.fadeCurve = curve
+        waveform.fadesShown = fadeIn > 0 || fadeOut > 0
+        fadeCheck.state = waveform.fadesShown ? .on : .off
+        fadeCurvePopup.isEnabled = waveform.fadesShown
+        onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: curve))
+    }
+
+    /// The built-in fades on (each way `defaultFade`, at most a quarter of the cue) or off (no
+    /// length; the curve is kept).
+    @objc private func fadeToggled() {
+        guard !isLocked else { return }
+        let on = waveform.fadesShown
+        if fadeCheck.state == .on, !on {
+            let length = (endTime ?? file?.duration).map { $0 - startTime } ?? 4 * Self.defaultFade
+            let d = WaveformView.clampRounded(min(Self.defaultFade, length / 4), 0, Self.defaultFade)
+            sendFades(d, d, waveform.fadeCurve)
+        } else if fadeCheck.state == .off, on {
+            sendFades(0, 0, waveform.fadeCurve)
+        }
+        fadeCheck.state = waveform.fadesShown ? .on : .off
+    }
+
+    @objc private func fadeCurveChanged() {
+        guard !isLocked else { return }
+        let curve = FadeSettingsPanel.curves[max(0, fadeCurvePopup.indexOfSelectedItem)]
+        let other = kind["fade_out"]?["curve"]?.stringValue ?? curve
+        if curve != waveform.fadeCurve || curve != other { sendFades(waveform.fadeIn, waveform.fadeOut, curve) }
+    }
+
+    /// Opens the in-place editor on slice `index`'s play count (the last slice's is the cue's
+    /// `last_slice_play_count`).
+    func editSliceCount(_ index: Int) {
+        let counts = waveform.sliceCounts
+        guard !isLocked, counts.count > 1, counts.indices.contains(index) else { return }
+        // One edit at a time: a field editor still open is closed without its text.
+        endSliceCountEdit()
+        editingSlice = index
+        let count = counts[index]
+        sliceCountField.stringValue = count == 0 ? "\u{221E}" : String(count)
+        sliceCountField.frame = waveform.countRect(index)
+        sliceCountField.isHidden = false
+        waveform.window?.makeFirstResponder(sliceCountField)
+    }
+
+    private func endSliceCountEdit() {
+        editingSlice = nil
+        sliceCountField.abortEditing()
+        sliceCountField.isHidden = true
+    }
+
+    /// A slice's typed play count: a whole number of plays, or a letter (or ∞) to loop until
+    /// devamped, as QLab takes one. 0 is refused: openLab cannot skip a slice.
+    private func commitSliceCount(_ text: String) {
+        guard let index = editingSlice else { return }
+        endSliceCountEdit()
+        let n: Int
+        if let typed = Int(text), (1...Self.maxPlayCount).contains(typed) {
+            n = typed
+        } else if text == "\u{221E}" || text.first?.isLetter == true {
+            n = 0
+        } else {
+            return refuseSlice("timeLoops.invalid.sliceCount")
+        }
+        var marks = shownMarks
+        if index < marks.count {
+            guard marks[index].playCount != n else { return }
+            marks[index].playCount = n
+            sendSlices(marks)
+        } else if index == marks.count, n != waveform.sliceCounts.last {
+            waveform.sliceCounts[index] = n
+            onChange?(.playCount(n))
         }
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard !isLocked, let field = obj.object as? NSTextField else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if field === sliceCountField { return commitSliceCount(text) }
         if field === countField {
             guard let n = Int(text), (1...Self.maxPlayCount).contains(n) else {
                 return refuse(field, "timeLoops.invalid.count")
@@ -310,10 +524,16 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             // engine would take one past the end and the cue would play nothing.
             guard let end else { return refuse(field, "timeLoops.invalid.unknownLength") }
             if t > end - WaveformView.minLength { return refuse(field, "timeLoops.invalid.trim") }
+            if let first = sliceMarks.first, t > first.time - WaveformView.minLength {
+                return refuse(field, "timeLoops.invalid.trimSlices")
+            }
             if t != startTime { onChange?(.start(t)) }
             field.stringValue = CueTime.format(t)
         } else if field === endField {
             if t < startTime + WaveformView.minLength { return refuse(field, "timeLoops.invalid.trim") }
+            if let last = sliceMarks.last, t < last.time + WaveformView.minLength {
+                return refuse(field, "timeLoops.invalid.trimSlices")
+            }
             // At or past the file's end: the end of the file.
             let value: Double? = file.map { t >= $0.duration } == true ? nil : t
             if value != endTime { onChange?(.end(value)) }

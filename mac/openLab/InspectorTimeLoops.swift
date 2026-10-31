@@ -2,9 +2,10 @@
 
 import AppKit
 
-/// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14), after Basics and Triggers as
-/// in QLab. Trims and the play count are fields of the cue's `kind`, so an edit sends the whole kind
-/// (core's `CueProperty::Kind`, as the Levels tab does) with only that field changed.
+/// The timing and loops tab of an Audio cue (AUD-10, AUD-11, AUD-12, AUD-14), after Basics and
+/// Triggers as in QLab. Trims, play counts, slices and the built-in fades are fields of the cue's
+/// `kind`, so an edit sends the whole kind (core's `CueProperty::Kind`, as the Levels tab does) with
+/// only those fields changed.
 extension InspectorViewController {
     func buildTimeLoopsTab() {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
@@ -70,6 +71,16 @@ extension InspectorViewController {
                 case .start(let s): kind.set("start_time", .double(s))
                 case .end(let e): kind.set("end_time", e.map { .double($0) } ?? .null)
                 case .playCount(let n): kind.set("last_slice_play_count", .int(Int64(n)))
+                case .slices(let marks):
+                    kind.set(
+                        "slices",
+                        .array(
+                            marks.map {
+                                .object(["time": .double($0.time), "play_count": .int(Int64($0.playCount))])
+                            }))
+                case .fades(let fadeIn, let fadeOut, let curve):
+                    kind.set("fade_in", .object(["duration": .double(fadeIn), "curve": .string(curve)]))
+                    kind.set("fade_out", .object(["duration": .double(fadeOut), "curve": .string(curve)]))
                 }
                 return kind
             }, key: "timeLoops")
