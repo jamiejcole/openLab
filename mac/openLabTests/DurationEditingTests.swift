@@ -263,10 +263,11 @@ final class InspectorDurationTests: XCTestCase {
         _ = f.curvePopup.target?.perform(f.curvePopup.action, with: f.curvePopup)
         await assertEventually { self.commands.count == 2 }
         XCTAssertEqual(commands[0], property(CueListHarness.fade, "duration", "2.5"))
-        XCTAssertEqual(commands[1]?["property"]?["value"]?["duration"], .double(2.5))
+        XCTAssertEqual(commands[1]?["property"]?["value"]?.objectValue?.keys.sorted(), ["curve"])
         XCTAssertEqual(commands[1]?["property"]?["value"]?["curve"], .string("linear"))
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
         XCTAssertEqual(kind(CueListHarness.fade)?["duration"], .double(2.5))
+        XCTAssertEqual(kind(CueListHarness.fade)?["curve"], .string("linear"))
     }
 
     /// #354: a Duration typed in the cue list while an inspector kind edit is unanswered: the next
@@ -286,11 +287,12 @@ final class InspectorDurationTests: XCTestCase {
         f.curvePopup.selectItem(at: 0)
         _ = f.curvePopup.target?.perform(f.curvePopup.action, with: f.curvePopup)
         await assertEventually { self.commands.count == 3 }
-        XCTAssertEqual(commands[2]?["property"]?["value"]?["duration"]?.doubleValue, 7, "the cue-list edit is kept")
+        XCTAssertEqual(commands[2]?["property"]?["value"]?.objectValue?.keys.sorted(), ["curve"])
         rig.engine.holdResults = false
         rig.engine.releaseResults()
         _ = await typed.value
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
+        XCTAssertEqual(kind(CueListHarness.fade)?["duration"]?.doubleValue, 7, "the cue-list edit is kept")
     }
 }
 
