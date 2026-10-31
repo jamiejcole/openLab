@@ -65,6 +65,47 @@ struct AudioFacts {
     media: Option<MediaRef>,
     patch: PatchId,
     patch_exists: bool,
+    /// What the cue's slice plan is built from, as of the model.
+    plan: PlanKey,
+}
+
+/// What an Audio cue's slice plan is built from (its file, trims, markers and play counts;
+/// times by their bits). A slice report holds for the cue only while this is unchanged: an edit
+/// of any of them makes the report unknown (assumed playable, like an unreported file) until the
+/// binary checks the new plan, so a fix is never refused for the old report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlanKey {
+    media: Option<MediaRef>,
+    start: u64,
+    end: Option<u64>,
+    marks: Vec<(u64, u32)>,
+    last: u32,
+}
+
+impl PlanKey {
+    fn of(kind: &CueKind) -> Option<Self> {
+        let CueKind::Audio {
+            media,
+            start_time,
+            end_time,
+            slices,
+            last_slice_play_count,
+            ..
+        } = kind
+        else {
+            return None;
+        };
+        Some(Self {
+            media: media.clone(),
+            start: start_time.to_bits(),
+            end: end_time.map(f64::to_bits),
+            marks: slices
+                .iter()
+                .map(|m| (m.time.to_bits(), m.play_count))
+                .collect(),
+            last: *last_slice_play_count,
+        })
+    }
 }
 
 /// The model's part of every cue's problems, with the indexes a status input needs.
@@ -111,10 +152,11 @@ pub(super) struct Problems {
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
-    /// Audio cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`).
-    /// Kept by cue id as reported, like `media`: the binary tells `None` for a cue it stops
-    /// tracking (gone, another file, not probed).
-    slices: BTreeMap<CueId, String>,
+    /// Audio cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`),
+    /// and the plan inputs the cue had when it was reported ([`PlanKey`]): the report counts
+    /// only while the cue still has them. Kept by cue id as reported, like `media`: the binary
+    /// tells `None` for a cue it stops tracking (gone, another file, not probed).
+    slices: BTreeMap<CueId, (String, PlanKey)>,
     /// Every cue that has problems, with them.
     current: BTreeMap<CueId, Vec<CueProblem>>,
     /// Cues shown with [`CueProblem::StartedBroken`].
@@ -662,9 +704,20 @@ impl CueEngine {
         let p = &mut self.problems;
         let mut changed = BTreeSet::new();
         for (cue, reason) in cues {
-            let differs = match reason {
-                Some(reason) => p.slices.insert(cue, reason.clone()) != Some(reason),
-                None => p.slices.remove(&cue).is_some(),
+            // Reported against the model as it is now (the binary checks the current workspace).
+            let key = p
+                .model
+                .facts
+                .get(&cue)
+                .and_then(|f| f.audio.as_ref())
+                .map(|a| a.plan.clone());
+            let differs = match (reason, key) {
+                (Some(reason), Some(key)) => {
+                    let entry = (reason, key);
+                    p.slices.insert(cue, entry.clone()) != Some(entry)
+                }
+                // Not an Audio cue (any more): nothing to hold the report against.
+                (Some(_), None) | (None, _) => p.slices.remove(&cue).is_some(),
             };
             if differs {
                 changed.insert(cue);
@@ -779,7 +832,9 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
                 // Slices are planned against the file's probe: a file that is missing or
                 // cannot be played has no slices to judge.
                 Some(MediaStatus::Available | MediaStatus::Unknown) | None => {
-                    if let Some(reason) = p.slices.get(&cue) {
+                    if let Some((reason, key)) = p.slices.get(&cue)
+                        && *key == a.plan
+                    {
                         found.push(CueProblem::SlicesUnplayable {
                             reason: reason.clone(),
                         });
@@ -920,10 +975,11 @@ fn facts_of<'w>(
         None
     };
     let audio = match &cue.kind {
-        CueKind::Audio { media, patch, .. } => Some(AudioFacts {
+        CueKind::Audio { media, patch, .. } => PlanKey::of(&cue.kind).map(|plan| AudioFacts {
             media: media.clone(),
             patch: *patch,
             patch_exists: patch_exists(*patch),
+            plan,
         }),
         _ => None,
     };

@@ -1326,6 +1326,41 @@ fn a_cue_whose_last_loop_is_too_short_for_its_file_is_broken_before_go() {
     assert!(s.control().engine().problems(id(1)).is_empty());
 }
 
+/// The fix of a cue's slices and a GO arrive in one burst (one inbox drain, no tick between, so
+/// no new plan check yet): the fixed cue plays, as the cue engine holds a slice report only for
+/// the plan it was made for (#410).
+#[test]
+fn a_go_right_after_a_slice_fix_plays_the_fixed_cue() {
+    let path = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![with_slices(
+        audio(1, &path, 0),
+        &[(0.09, 1)],
+        2,
+    )]));
+    s.settle_media();
+    s.run(BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    set_kind(
+        &mut s,
+        1,
+        with_slices(audio(1, &path, 0), &[(0.05, 1)], 2).kind,
+    );
+    let at = go(&mut s) as usize;
+    s.run(1200);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    // Broken again by an edit to another plan that cannot play: reported once checked.
+    set_kind(
+        &mut s,
+        1,
+        with_slices(audio(1, &path, 0), &[(0.08, 1)], 2).kind,
+    );
+    s.run(BLOCK);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::SlicesUnplayable { .. }]
+    ));
+}
+
 #[test]
 fn a_playlist_child_whose_stream_fails_before_it_plays_is_skipped() {
     // QLab P5/G2: c2's file changes after its probe, so its stream fails before it

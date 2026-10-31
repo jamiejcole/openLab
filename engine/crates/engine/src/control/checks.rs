@@ -279,9 +279,10 @@ impl PlanChecks {
     /// What changed since the last call, as of the last `check`, in id order. Looks only at
     /// the cues whose plan was rebuilt or dropped since then.
     ///
-    /// `slices`: the slice problems for the cue engine. A cue whose plan cannot be built gets
-    /// why; one told that before whose plan builds now, or that has no plan any more (gone,
-    /// another file, its file not probed or not playable), gets `None`.
+    /// `slices`: the slice problems for the cue engine. A cue whose plan was rebuilt and cannot
+    /// be built gets why (again, if it was told before: the cue engine holds a report only for
+    /// the plan inputs it was made for); one told that before whose plan builds now, or that has
+    /// no plan any more (gone, another file, its file not probed or not playable), gets `None`.
     ///
     /// `lengths`: the nominal lengths for the cue engine. A cue with a finite plan now gets its
     /// length; one that had a length and has none now (gone, its file not probed or not
@@ -297,7 +298,10 @@ impl PlanChecks {
         for id in std::mem::take(&mut self.stale) {
             let entry = self.cues.get(&id).and_then(|t| t.entry.as_ref());
             let error = self.errors.get(&id);
-            if self.told_errors.get(&id) != error {
+            // A rebuilt plan that still cannot be played is told again even with the same
+            // reason: the cue engine holds a report only for the plan inputs it was made for,
+            // and the rebuild may be for new ones.
+            if error.is_some() || self.told_errors.get(&id) != error {
                 match error {
                     Some(e) => self.told_errors.insert(id, e.clone()),
                     None => self.told_errors.remove(&id),

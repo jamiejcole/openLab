@@ -162,9 +162,24 @@ fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
     assert_eq!(problem_reports(&fixed), vec![(id(1), vec![])]);
     assert_eq!(changes(&fixed, 1), vec![(CueState::Idle, 200)]);
     assert_eq!(voice_starts(&rig.start(300, 1)), vec![(id(1), 300)]);
+    // An edit of anything else keeps the report; an edit of the plan's inputs (here a marker)
+    // drops it at once, before the binary has checked the new plan: a GO in the same burst as
+    // the fix plays the cue.
+    rig.at(400, slices(2, Some("a looping slice is too short")));
+    rig.find_mut(2).name = "renamed".into();
+    rig.tick(410);
+    assert_eq!(rig.problems(2), problem);
+    if let CueKind::Audio { slices, .. } = &mut rig.find_mut(2).kind {
+        slices.push(SliceMarker {
+            time: 0.5,
+            play_count: 1,
+        });
+    }
+    assert_eq!(voice_starts(&rig.start(420, 2)), vec![(id(2), 420)]);
+    assert!(rig.problems(2).is_empty());
     // Clearing a cue that has none, or one not in the workspace, does nothing.
-    assert!(rig.at(310, slices(2, None)).is_empty());
-    assert!(rig.at(320, slices(99, Some("too short"))).is_empty());
+    assert!(rig.at(430, slices(2, None)).is_empty());
+    assert!(rig.at(440, slices(99, Some("too short"))).is_empty());
 }
 
 #[test]
