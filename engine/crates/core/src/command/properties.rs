@@ -60,7 +60,7 @@ impl CueProperty {
                 CueKind::Group { mode, .. } => Self::GroupMode { value: *mode },
                 _ => return None,
             },
-            Self::Kind { .. } => Self::Kind {
+            Self::Kind { .. } | Self::KindFields { .. } => Self::Kind {
                 value: cue.kind.clone(),
             },
             Self::Media { .. } => match &cue.kind {
@@ -127,6 +127,8 @@ impl CueProperty {
                 _ => return false,
             },
             Self::Kind { value } => cue.kind = value.clone(),
+            // Resolved to a `Kind` by `set_property` before anything is written.
+            Self::KindFields { .. } => return false,
             Self::Media { value } => match &mut cue.kind {
                 CueKind::Audio { media, .. } => media.clone_from(value),
                 _ => return false,
@@ -204,6 +206,30 @@ fn blank_cue(id: CueId) -> Cue {
     }
 }
 
+/// The cue's kind with `fields` set, every other field as it is now.
+fn merge_kind_fields(
+    id: CueId,
+    kind: &CueKind,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<CueKind, CommandError> {
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(kind) else {
+        return Err(CommandError::Internal);
+    };
+    for (key, value) in fields {
+        if matches!(key.as_str(), "type" | "children" | "media") {
+            return Err(CommandError::InvalidValue(
+                "that kind field cannot be set on its own",
+            ));
+        }
+        let Some(slot) = merged.get_mut(key) else {
+            return Err(CommandError::PropertyNotApplicable(id));
+        };
+        *slot = value.clone();
+    }
+    serde_json::from_value(serde_json::Value::Object(merged))
+        .map_err(|_| CommandError::InvalidValue("a kind field has a value of the wrong type"))
+}
+
 pub(super) fn set_property(
     ws: &mut Workspace,
     id: CueId,
@@ -212,6 +238,18 @@ pub(super) fn set_property(
 ) -> Result<Inverse, CommandError> {
     let path = find_path(ws, id).ok_or(CommandError::CueNotFound(id))?;
     let cue = cue_at(ws, &path).ok_or(CommandError::Internal)?;
+    // Judged and applied as the whole new kind, against the kind the cue has now.
+    let property = match property {
+        CueProperty::KindFields { value } => {
+            if matches!(cue.kind, CueKind::Group { .. }) {
+                return Err(CommandError::KindChangeInvolvesGroup(id));
+            }
+            CueProperty::Kind {
+                value: merge_kind_fields(id, &cue.kind, &value)?,
+            }
+        }
+        other => other,
+    };
     if let CueProperty::Kind { value } = &property
         && (matches!(cue.kind, CueKind::Group { .. }) || matches!(value, CueKind::Group { .. }))
     {

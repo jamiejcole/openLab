@@ -1,0 +1,16 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000a",
+    "property": {
+      "type": "kind_fields",
+      "value": {
+        "last_slice_play_count": 2,
+        "preload": true
+      }
+    }
+  },
+  "coalesce": "levels:10:1:1"
+}

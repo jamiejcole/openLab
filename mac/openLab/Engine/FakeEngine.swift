@@ -390,6 +390,8 @@ final class FakeEngine: EngineTransport {
                         case "target": cue["kind"]?.set("target", value)
                         case "group_mode": cue["kind"]?.set("mode", value)
                         case "media", "duration", "load_to_time": cue["kind"]?.set(type, value)
+                        case "kind_fields":
+                            for (field, v) in value.objectValue ?? [:] { cue["kind"]?.set(field, v) }
                         default: cue.set(type, value)
                         }
                     }

@@ -489,6 +489,24 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A Fade cue's curve and an Audio cue's levels: the inspector sends only the fields it
+    // changed, so another client's edit to the rest of the kind is kept.
+    add(
+        "command_set_kind_fields",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(10),
+                property: CueProperty::KindFields {
+                    value: serde_json::json!({ "last_slice_play_count": 2, "preload": true })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                },
+            }),
+            coalesce: Some("levels:10:1:1".into()),
+        }),
+    );
     // An Audio cue's file alone, and a raw clipboard to paste.
     add(
         "command_set_cue_media",

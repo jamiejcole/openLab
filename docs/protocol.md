@@ -176,7 +176,9 @@ M5.6b additions (`PROTOCOL_VERSION` stayed 2): the cue properties `duration` (`{
 
 M5.4d additions (`PROTOCOL_VERSION` stayed 2): the snapshot's optional `media_durations` and the `media_duration` runtime change (fixtures `server/snapshot.json`, `server/runtime_media_duration.json`). A client ignores a runtime change `type` it does not know (the Swift client logs it), so an older client is unaffected.
 
-The app's Timing & Loops tab sends an Audio cue's trims, slice markers (`slices`, each `{time, play_count}`), `last_slice_play_count` and integrated fades (`fade_in`, `fade_out`) as its `kind` cue property, the rest of the kind unchanged (fixture `client/command_set_audio_timing.json`; no new message or field).
+The cue property `kind_fields` (`{ "type": "kind_fields", "value": { field: value, ... } }`, fixture `client/command_set_kind_fields.json`; `PROTOCOL_VERSION` stayed 4, an older engine refuses the unknown property type) sets the named top-level fields of the cue's kind and leaves every other field as the engine has it, so a change another client made to those fields before this one arrives is kept. It is `kind`'s rules otherwise (never to or from a Group, the merged kind is judged whole, not for `batch_set`); `type`, `children` and `media` cannot be named, nor a field the kind does not have, nor a value of the wrong type (`result` error). Undo restores the whole old kind.
+
+The app's Timing & Loops tab sends an Audio cue's trims, slice markers (`slices`, each `{time, play_count}`), `last_slice_play_count` and integrated fades (`fade_in`, `fade_out`), and the Levels and Fade tabs send levels, `curve` and `stop_target_when_done`, each as the `kind_fields` it changed.
 
 ### Media durations
 

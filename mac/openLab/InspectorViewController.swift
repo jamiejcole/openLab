@@ -684,6 +684,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
         let type = property["type"]?.stringValue
         if type == "kind" { return property["value"] }
+        if type == "kind_fields", let fields = property["value"]?.objectValue,
+            let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
+        {
+            for (field, value) in fields { kind.set(field, value) }
+            return kind
+        }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         else { return nil }
