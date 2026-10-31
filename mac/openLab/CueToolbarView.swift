@@ -4,25 +4,25 @@ import AppKit
 
 /// Row of cue-type buttons in rounded segments; a click asks `onAdd` for a cue of that kind.
 final class CueToolbarView: NSView {
-    private static let groups: [[(symbol: String, key: String)]] = [
-        [("speaker.wave.2", "cue.type.audio")],
+    private static let groups: [[(icon: Icon, key: String)]] = [
+        [(.kindAudio, "cue.type.audio")],
         [
-            ("folder", "cue.type.group"), ("note.text", "cue.type.memo"),
-            ("timer", "cue.type.wait"), ("slider.horizontal.3", "cue.type.fade"),
+            (.kindGroup, "cue.type.group"), (.kindMemo, "cue.type.memo"),
+            (.kindWait, "cue.type.wait"), (.kindFade, "cue.type.fade"),
         ],
         [
-            ("play.fill", "cue.type.start"), ("stop.fill", "cue.type.stop"),
-            ("pause.fill", "cue.type.pause"), ("arrow.down.circle", "cue.type.load"),
-            ("arrow.counterclockwise", "cue.type.reset"), ("arrow.uturn.forward", "cue.type.devamp"),
+            (.kindStart, "cue.type.start"), (.kindStop, "cue.type.stop"),
+            (.kindPause, "cue.type.pause"), (.kindLoad, "cue.type.load"),
+            (.kindReset, "cue.type.reset"), (.kindDevamp, "cue.type.devamp"),
         ],
         [
-            ("arrow.right.to.line", "cue.type.goto"), ("scope", "cue.type.target"),
-            ("record.circle", "cue.type.arm"), ("slash.circle", "cue.type.disarm"),
+            (.kindGoTo, "cue.type.goto"), (.kindTarget, "cue.type.target"),
+            (.kindArm, "cue.type.arm"), (.kindDisarm, "cue.type.disarm"),
         ],
     ]
 
-    /// Symbol names, exposed so tests can check they resolve.
-    static var symbolNames: [String] { groups.flatMap { $0.map(\.symbol) } }
+    /// The icons shown, for tests.
+    static var icons: [Icon] { groups.flatMap { $0.map(\.icon) } }
 
     private(set) var segmentedControls: [NSSegmentedControl] = []
     var onAdd: ((NewCueKind) -> Void)?
@@ -64,7 +64,7 @@ final class CueToolbarView: NSView {
             control.segmentCount = group.count
             for (i, entry) in group.enumerated() {
                 let name = loc(entry.key)
-                control.setImage(symbolImage(entry.symbol, name), forSegment: i)
+                control.setImage(entry.icon.image(name, compact: true), forSegment: i)
                 control.setToolTip(name, forSegment: i)
                 control.setWidth(34, forSegment: i)
                 control.setEnabled(Self.kinds[segmentedControls.count][i] != nil, forSegment: i)

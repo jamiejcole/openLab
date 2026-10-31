@@ -87,16 +87,16 @@ final class CueCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Shows `symbol` in image `i` (hidden when nil) with an accessibility label and tooltip.
-    func setImage(_ i: Int, symbol: String?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
+    func setImage(_ i: Int, icon: Icon?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
         let view = images[i]
-        guard let symbol, let label else {
+        guard let icon, let label else {
             view.isHidden = true
             view.image = nil
             view.toolTip = nil
             return
         }
         view.isHidden = false
-        view.image = symbolImage(symbol, label)
+        view.image = icon.image(label, compact: true)
         view.contentTintColor = tint
         view.setAccessibilityLabel(label)
         view.toolTip = tooltip ?? label
@@ -829,7 +829,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.label.alphaValue = cue.raw["armed"] == .bool(false) ? 0.5 : 1
         cell.label.textColor = .labelColor
         cell.label.isHidden = true
-        for i in cell.images.indices { cell.setImage(i, symbol: nil, label: nil) }
+        for i in cell.images.indices { cell.setImage(i, icon: nil, label: nil) }
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
@@ -837,26 +837,26 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "status":
             if isPlayheadRow(node.id) {
-                cell.setImage(0, symbol: "arrowtriangle.right.fill", label: loc("cue.playhead"))
+                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"))
             } else if isPlayheadInside(node.id) {
-                cell.setImage(0, symbol: "arrowtriangle.right", label: loc("cue.playhead.inside"))
+                cell.setImage(0, icon: .playheadInside, label: loc("cue.playhead.inside"))
             }
             let (state, detail) = displayState(node.id)
             let style = CueStateStyle.style(for: state)
-            if let symbol = style.symbol {
+            if let icon = style.icon {
                 cell.setImage(
-                    1, symbol: symbol, label: style.label, tint: style.tint,
+                    1, icon: icon, label: style.label, tint: style.tint,
                     tooltip: detail.map { "\(style.label): \($0)" })
             }
             // A preview is outside the show, so it has its own mark next to the cue's state.
             if store.previewing.contains(node.id) {
-                cell.setImage(2, symbol: "headphones", label: loc("cue.previewing"), tint: .systemTeal)
+                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
             }
         case "number": text(cue.number ?? "")
         case "name":
             let kind = cue.kindType
             if let style = CueKindStyle.kinds[kind] {
-                cell.setImage(0, symbol: style.symbol, label: loc(style.labelKey))
+                cell.setImage(0, icon: style.icon, label: loc(style.labelKey))
             }
             if cue.displayName.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
@@ -865,10 +865,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(cue.displayName)
             }
             if let colour = cue.raw["color"]?.stringValue.flatMap({ CueKindStyle.colours[$0] }) {
-                cell.setImage(1, symbol: colour.symbol, label: loc(colour.labelKey), tint: colour.tint)
+                cell.setImage(1, icon: colour.icon, label: loc(colour.labelKey), tint: colour.tint)
             }
             if cue.raw["flagged"] == .bool(true) {
-                cell.setImage(2, symbol: "flag.fill", label: loc("cue.flagged"), tint: .systemOrange)
+                cell.setImage(2, icon: .flagged, label: loc("cue.flagged"), tint: .systemOrange)
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":
@@ -883,7 +883,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "duration": text(durationText(node))
         case "continue":
             if let mode = cue.raw["continue_mode"]?.stringValue.flatMap({ CueKindStyle.continueModes[$0] }) {
-                cell.setImage(0, symbol: mode.symbol, label: loc(mode.labelKey))
+                cell.setImage(0, icon: mode.icon, label: loc(mode.labelKey))
             }
         default: break
         }

@@ -96,7 +96,3 @@ extension NSView {
         if let label { setAccessibilityLabel(label) }
     }
 }
-
-func symbolImage(_ name: String, _ description: String) -> NSImage? {
-    NSImage(systemSymbolName: name, accessibilityDescription: description)
-}

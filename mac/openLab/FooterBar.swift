@@ -84,14 +84,14 @@ final class FooterBar: NSView {
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
 
-    private static let specs: [(area: LayoutArea, id: String, symbol: String, key: String)] = [
-        (.toolbar, AX.toggleToolbar, "square.grid.2x2", "footer.toggle.toolbar"),
-        (.masthead, AX.toggleMasthead, "rectangle.topthird.inset.filled", "footer.toggle.masthead"),
-        (.inspector, AX.toggleInspector, "rectangle.bottomthird.inset.filled", "footer.toggle.inspector"),
-        (.sidebar, AX.toggleSidebar, "sidebar.right", "footer.toggle.sidebar"),
+    private static let specs: [(area: LayoutArea, id: String, icon: Icon, key: String)] = [
+        (.toolbar, AX.toggleToolbar, .layoutToolbar, "footer.toggle.toolbar"),
+        (.masthead, AX.toggleMasthead, .layoutMasthead, "footer.toggle.masthead"),
+        (.inspector, AX.toggleInspector, .layoutInspector, "footer.toggle.inspector"),
+        (.sidebar, AX.toggleSidebar, .layoutSidebar, "footer.toggle.sidebar"),
     ]
 
-    static var symbolNames: [String] { specs.map { $0.symbol } + ["gearshape"] }
+    static var icons: [Icon] { specs.map { $0.icon } + [.settings] }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -121,7 +121,7 @@ final class FooterBar: NSView {
             let b = NSButton()
             b.setButtonType(.pushOnPushOff)
             b.bezelStyle = .texturedRounded
-            b.image = symbolImage(spec.symbol, name)
+            b.image = spec.icon.image(name)
             b.toolTip = name
             b.setAX(spec.id, label: name)
             b.target = self
@@ -130,7 +130,7 @@ final class FooterBar: NSView {
             b.tag = LayoutArea.allCases.firstIndex(of: spec.area) ?? 0
             toggles[spec.area] = b
         }
-        settingsButton.image = symbolImage("gearshape", loc("footer.settings"))
+        settingsButton.image = Icon.settings.image(loc("footer.settings"))
         settingsButton.setAX(AX.settingsButton, label: loc("footer.settings"))
         settingsButton.toolTip = loc("footer.settings")
         settingsButton.bezelStyle = .texturedRounded
@@ -165,7 +165,7 @@ final class FooterBar: NSView {
         }
         presentation = p
         statusButton.title = p.summary
-        statusButton.image = symbolImage(p.symbol, p.summary)
+        statusButton.image = p.icon.image(p.summary, compact: true)
         statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil
         statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
         statusButton.setAccessibilityLabel(p.summary)

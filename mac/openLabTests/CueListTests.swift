@@ -236,7 +236,7 @@ final class CueListTests: XCTestCase {
         let plain = try XCTUnwrap(h.spy.rowView(atRow: 0, makeIfNecessary: true) as? CueRowView)
         XCTAssertNil(plain.tint)
         // Every colour has its own shape (UI-04).
-        let shapes = CueKindStyle.colours.values.map(\.symbol)
+        let shapes = CueKindStyle.colours.values.map(\.icon.symbol)
         XCTAssertEqual(Set(shapes).count, shapes.count)
     }
 
@@ -465,12 +465,12 @@ final class CueListTests: XCTestCase {
             XCTAssertNotEqual(style.label, style.labelKey, "\(state) has no label string")
             XCTAssertFalse(style.label.isEmpty)
             if state == .idle {
-                XCTAssertNil(style.symbol)
+                XCTAssertNil(style.icon)
                 continue
             }
-            let symbol = try? XCTUnwrap(style.symbol, "\(state)")
-            XCTAssertNotNil(symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }, "\(state)")
-            XCTAssertTrue(symbols.insert(symbol ?? "").inserted, "\(state) shares a symbol")
+            let icon = try? XCTUnwrap(style.icon, "\(state)")
+            XCTAssertEqual(icon?.resolvesToSymbol, true, "\(state)")
+            XCTAssertTrue(symbols.insert(icon?.symbol ?? "").inserted, "\(state) shares a symbol")
         }
         XCTAssertEqual(
             Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count, WireCueState.allCases.count)

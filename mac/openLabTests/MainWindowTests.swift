@@ -63,12 +63,41 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
 
-    func testSymbolsResolve() {
-        let names =
-            CueToolbarView.symbolNames + SidebarViewController.symbolNames + FooterBar.symbolNames
-        for name in names {
-            XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), name)
+    func testEveryIconAndFallbackResolves() {
+        for icon in Icon.allCases {
+            let e = icon.entry
+            XCTAssertNotNil(NSImage(systemSymbolName: e.symbol, accessibilityDescription: nil), "\(icon) \(e.symbol)")
+            XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
+            if let fb = e.fallback {
+                XCTAssertNotNil(NSImage(systemSymbolName: fb, accessibilityDescription: nil), "\(icon) fallback \(fb)")
+            }
+            // Deployment target is macOS 12: a newer symbol must come with a fallback, and no row
+            // may need more than 12 without one.
+            XCTAssertLessThanOrEqual(e.minMacOS, 12, "\(icon) needs macOS \(e.minMacOS)")
+            if e.minMacOS > 10 { XCTAssertNotNil(e.fallback, "\(icon) has no fallback") }
         }
+        // The call sites that expose their icons use only table rows.
+        XCTAssertFalse((CueToolbarView.icons + SidebarViewController.icons + FooterBar.icons).isEmpty)
+    }
+
+    func testMissingSymbolFallsBackThenShowsTheLocalisedNameAndLogsOnce() {
+        defer { IconLookup.shared.setLookup(nil) }
+        // The primary name vanishes: the fallback symbol shows.
+        IconLookup.shared.setLookup { $0 != "gearshape" }
+        XCTAssertNotNil(Icon.settings.image("Settings").accessibilityDescription)
+        XCTAssertTrue(Icon.settings.resolvesToSymbol)
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
+        // Both vanish: a text image carrying the label, logged once per name.
+        IconLookup.shared.setLookup { _ in false }
+        let text = Icon.settings.image("Settings")
+        XCTAssertEqual(text.accessibilityDescription, "Settings")
+        XCTAssertTrue(text.isTemplate)
+        XCTAssertGreaterThan(text.size.width, Icon.settings.image("S", compact: true).size.width)
+        _ = Icon.settings.image("Settings")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
+        _ = Icon.kindAudio.image("Audio")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "speaker.wave.2"])
+        XCTAssertFalse(Icon.settings.resolvesToSymbol)
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {
