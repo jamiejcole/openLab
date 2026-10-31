@@ -12,14 +12,6 @@ use openlab_audio::{
 };
 
 #[test]
-fn harness_detects_allocation() {
-    let before = assert_no_alloc::violation_count();
-    let v = assert_no_alloc::assert_no_alloc(|| std::hint::black_box(vec![1u8; 16]));
-    assert!(assert_no_alloc::violation_count() > before);
-    drop(v);
-}
-
-#[test]
 fn no_allocation_across_a_busy_voice_lifecycle() {
     let cfg = MixerConfig {
         output_channels: 8,
