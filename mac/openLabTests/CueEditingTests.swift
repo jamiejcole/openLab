@@ -90,6 +90,12 @@ final class CueEditingTests: XCTestCase {
         XCTAssertEqual(
             NewCueKind.audio.kindJSON(patch: model)?["levels"]?["outputs"]?.arrayValue?.count, 2,
             "one cue output per patch output")
+        // File channel n to cue output n at 0 dB: with no crosspoint a dropped file plays silent.
+        let route = { (n: Int64) -> JSONValue in
+            .object(["input": .int(n), "output": .int(n), "db": .double(0), "mute": .bool(false)])
+        }
+        XCTAssertEqual(
+            NewCueKind.audio.kindJSON(patch: model)?["levels"]?["crosspoints"], .array([route(0), route(1)]))
         XCTAssertEqual(NewCueKind.goto.wireType, "go_to")
         XCTAssertEqual(CueToolbarView.kinds.flatMap { $0 }.compactMap { $0 }.count, NewCueKind.allCases.count)
     }

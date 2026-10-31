@@ -13,7 +13,9 @@ enum NewCueKind: String, CaseIterable, Sendable {
     var wireType: String { self == .goto ? "go_to" : rawValue }
 
     /// The `kind` object with defaults. Audio needs a patch (core requires one) and gets one cue
-    /// output per patch output.
+    /// output per patch output, with file channel n routed to cue output n at 0 dB (QLab 5's default
+    /// Audio cue levels). Core's crosspoints are sparse, so a cue sent with none plays silent. A mono
+    /// file plays on output 1 alone; inputs beyond the file's channels are ignored by the mixer.
     func kindJSON(patch: ModelObject?) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]
@@ -22,12 +24,15 @@ enum NewCueKind: String, CaseIterable, Sendable {
             guard let patch else { return nil }
             let count = patch.raw["outputs"]?.arrayValue?.count ?? 0
             let output = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+            let diagonal = (0..<count).map { n -> JSONValue in
+                .object(["input": .int(Int64(n)), "output": .int(Int64(n)), "db": .double(0), "mute": .bool(false)])
+            }
             fields.merge([
                 "media": .null, "patch": .string(patch.id.raw), "start_time": .double(0), "end_time": .null,
                 "fade_in": fade, "fade_out": fade, "slices": .array([]), "last_slice_play_count": .int(1),
                 "levels": .object([
                     "master_db": .double(0), "outputs": .array(Array(repeating: output, count: count)),
-                    "crosspoints": .array([]), "gangs": .array([]),
+                    "crosspoints": .array(diagonal), "gangs": .array([]),
                 ]),
                 "preload": .bool(false),
             ]) { a, _ in a }
