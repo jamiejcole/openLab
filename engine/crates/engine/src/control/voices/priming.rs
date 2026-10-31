@@ -188,14 +188,15 @@ impl Voices {
             if r.stream_failed || !matches!(r.phase, Phase::Playing) || r.paused_at.is_some() {
                 continue;
             }
-            let late = r.stream.as_ref().is_some_and(|h| {
-                !h.is_primed()
-                    && h.error().is_none()
-                    && now
-                        >= r.start_at
-                            .saturating_add(r.paused_frames)
-                            .saturating_add(limit)
-            });
+            // Paused time does not count: the voice is silent then anyway.
+            let due = r
+                .start_at
+                .saturating_add(r.paused_frames)
+                .saturating_add(limit);
+            let late = now >= due
+                && r.stream
+                    .as_ref()
+                    .is_some_and(|h| !h.is_primed() && h.error().is_none());
             if !late {
                 continue;
             }

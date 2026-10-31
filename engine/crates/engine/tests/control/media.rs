@@ -973,6 +973,31 @@ fn a_start_whose_open_hangs_fails_after_five_seconds() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
 }
 
+/// Time paused does not count towards the stream start limit: a cue paused while its open
+/// hangs is still paused well past 5 s, and breaks only after 5 s of running time in all.
+#[test]
+fn time_paused_does_not_count_towards_the_stream_start_limit() {
+    let path = wav(&dc(10 * RATE as usize, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = show_with(ws, c);
+    gate(&path);
+    start(&mut s, 1);
+    let second = u64::from(RATE);
+    s.run_unsettled(2 * second);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run_unsettled(6 * second);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run_unsettled(2 * second);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.run_unsettled(second + 4 * BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    release(&path);
+}
+
 #[test]
 fn a_panic_silences_a_stalled_tail_within_its_fade() {
     let mut s = stalled_tail();
