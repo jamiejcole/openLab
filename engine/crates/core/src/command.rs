@@ -109,6 +109,15 @@ pub enum CueProperty {
     Kind {
         value: CueKind,
     },
+    /// The named top-level fields of the cue's kind (`levels`, `curve`, `slices`, ...) with these
+    /// values, every other field as the engine has it now, so an edit from another client to a
+    /// field not named here is kept. Same rules as `Kind` (never a Group; the result is judged
+    /// as a whole new kind is); `type`, `children` and `media` cannot be named (`media` has its
+    /// own property, which stores the path), nor a field the kind does not have. The inverse is
+    /// the whole old `Kind`.
+    KindFields {
+        value: serde_json::Map<String, serde_json::Value>,
+    },
     /// Only for Audio cues: the file alone, so a replaced file leaves levels, routing, fades and
     /// slices as they are. `None` clears it. The engine stores a path inside the show folder
     /// relative to it ([`Command::prepare`]).
@@ -598,7 +607,10 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
         }
         Command::SetCueProperty { id, property } => set_property(ws, id, property, restoring),
         Command::BatchSet { ids, property } => {
-            if matches!(property, CueProperty::Kind { .. }) {
+            if matches!(
+                property,
+                CueProperty::Kind { .. } | CueProperty::KindFields { .. }
+            ) {
                 return Err(CommandError::NotBatchable);
             }
             batch_set(ws, ids, &property, restoring)

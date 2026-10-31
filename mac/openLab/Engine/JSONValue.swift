@@ -84,6 +84,11 @@ enum JSONValue: Hashable, Sendable, Codable {
         return nil
     }
 
+    var objectValue: [String: JSONValue]? {
+        if case .object(let o) = self { return o }
+        return nil
+    }
+
     /// Parses JSON text; nil if it is not valid JSON.
     static func parse(_ text: String) -> JSONValue? {
         try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))

@@ -298,6 +298,7 @@ fn each_supported_address_becomes_its_protocol_input() {
         ("/panic", vec![], transport(TransportAction::Panic)),
         ("/pause", vec![], transport(TransportAction::PauseAll)),
         ("/resume", vec![], transport(TransportAction::ResumeAll)),
+        ("/reset", vec![], transport(TransportAction::ResetAll)),
         (
             "/playhead/next",
             vec![],
@@ -3615,6 +3616,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/panic", vec![]), Control),
         (msg("/pause", vec![]), Control),
         (msg("/resume", vec![]), Control),
+        (msg("/reset", vec![]), Control),
         (msg("/playhead/1", vec![]), Control),
         (msg("/playhead/next", vec![]), Control),
         (msg("/playhead/previous", vec![]), Control),

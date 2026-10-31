@@ -51,12 +51,14 @@ final class InspectorLevelsTests: XCTestCase {
     }
 
     private func kindOf(_ command: JSONValue?) -> JSONValue? {
-        guard command?["type"]?.stringValue == "set_cue_property", command?["property"]?["type"]?.stringValue == "kind"
+        guard command?["type"]?.stringValue == "set_cue_property",
+            command?["property"]?["type"]?.stringValue == "kind_fields"
         else { return nil }
         return normalised(command?["property"]?["value"])
     }
 
     private var lastKind: JSONValue? { kindOf(sent.last?.command) }
+    private var lastKindFields: [String: JSONValue]? { lastKind?.objectValue }
 
     private func modelKind(_ id: ModelID) -> JSONValue? { normalised(rig.store.model?.cue(id)?.raw["kind"]) }
 
@@ -88,9 +90,9 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.intro])
         XCTAssertEqual(tabs(), ["basics", "triggers", "timeLoops", "levels"])
         vc.setSelection([Self.fade])
-        XCTAssertEqual(tabs(), ["basics", "triggers", "fade"])
+        XCTAssertEqual(tabs(), ["basics", "triggers", "curve", "fadeLevels"])
         vc.setSelection([CueListHarness.group])
-        XCTAssertEqual(tabs(), ["basics", "mode", "triggers"])
+        XCTAssertEqual(tabs(), ["basics", "triggers", "mode"])
     }
 
     func testMatrixShowsTheCueRouting() {
@@ -109,7 +111,7 @@ final class InspectorLevelsTests: XCTestCase {
         type(p, "-6")
         await assertEventually { self.sent.count == 1 }
         XCTAssertEqual(lastKind?["levels"]?["master_db"], .double(-6))
-        XCTAssertEqual(lastKind?["media"], .string("media/a.wav"), "the rest of the kind is untouched")
+        XCTAssertNil(lastKind?["media"], "the rest of the kind is not sent")
         XCTAssertNil(sent.last?.coalesce, "a typed value is a one-off edit")
 
         p.select(.output(1))
@@ -337,8 +339,8 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(modelKind(Self.fade)?["duration"], .double(2.5), "no edit lost the one before it")
     }
 
-    /// Regression: `kind` is sent whole, so an edit made before the engine answered the one before it
-    /// must still carry that one (the answer, arriving late, also must not undo it on screen).
+    /// An edit made before the engine answered the one before it keeps that one (the answer, arriving
+    /// late, also must not undo it on screen).
     func testQuickEditsOfOneKindKeepEachOther() async throws {
         vc.setSelection([Self.fade])
         let f = vc.fadeSettings
@@ -348,12 +350,40 @@ final class InspectorLevelsTests: XCTestCase {
         fire(f.curvePopup)
         type(vc.fadeLevels, "-20")  // the master, with the two edits before it unanswered
         await assertEventually { self.sent.count == 3 }
-        XCTAssertEqual(lastKind?["duration"], .double(2.5))
-        XCTAssertEqual(lastKind?["curve"], .string("linear"))
+        XCTAssertEqual(Set(lastKind?.objectValue?.keys.map { $0 } ?? []), ["levels"])
         XCTAssertEqual(lastKind?["levels"]?["master_db"], .double(-20))
         await assertEventually("all answered") { self.modelKind(Self.fade)?["levels"]?["master_db"] == .double(-20) }
+        XCTAssertEqual(modelKind(Self.fade)?["duration"], .double(2.5))
+        XCTAssertEqual(modelKind(Self.fade)?["curve"], .string("linear"))
         XCTAssertEqual(vc.fadeSettings.curvePopup.indexOfSelectedItem, 1)
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
+    }
+
+    /// #457: another client changes the cue's kind and the engine has done it before this app's copy
+    /// has heard (nothing is awaited between the two). The curve edit names only the curve, so the
+    /// other client's field survives; sending the whole kind put the old value back.
+    func testAKindEditFromAnotherClientBeforeTheAnswerIsKept() async throws {
+        vc.setSelection([Self.fade])
+        let other = try await rig.engine.connect(info: EngineConnectionInfo(port: 1, token: rig.engine.token, pid: 2))
+        other.send(
+            #"{"type":"hello","protocol_version":\#(protocolVersion),"token":"\#(rig.engine.token)","client_name":"other","workspace":1,"pid":2}"#
+        )
+        other.send(
+            #"{"type":"command","id":1,"command":{"type":"set_cue_property","id":"\#(Self.fade.raw)","property":{"type":"kind_fields","value":{"stop_target_when_done":false}}}}"#
+        )
+        XCTAssertEqual(modelKind(Self.fade)?["stop_target_when_done"], .bool(true), "this app has not heard yet")
+        let f = vc.fadeSettings
+        f.curvePopup.selectItem(at: 1)
+        fire(f.curvePopup)
+        await assertEventually { self.sent.count == 2 }
+        XCTAssertEqual(Set(lastKindFields?.keys.map { $0 } ?? []), ["curve"], "only the edited field is sent")
+        await assertEventually("both edits are in the model") {
+            let kind = self.modelKind(Self.fade)
+            return kind?["curve"] == .string(FadeSettingsPanel.curves[1])
+                && kind?["stop_target_when_done"] == .bool(false)
+        }
+        await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
+        XCTAssertEqual(f.stopCheck.state, .off, "the panel shows the other client's edit, not the stale overlay")
     }
 
     func testFadeInvalidDurationIsRefusedLocally() async throws {
@@ -391,7 +421,8 @@ final class InspectorLevelsTests: XCTestCase {
         fire(p.activeCheck)
         await assertEventually { self.sent.count == 3 }
         XCTAssertEqual(lastKind?["levels"]?["master_db"], .null)
-        XCTAssertEqual(lastKind?["duration"], .double(5), "levels edits keep the fade's settings")
+        XCTAssertNil(lastKind?["duration"], "a levels edit does not send the fade's settings")
+        XCTAssertEqual(modelKind(Self.fade)?["duration"], .double(5), "and they stay")
     }
 
     func testFadeSetLevelsFromTarget() async throws {
@@ -529,5 +560,144 @@ final class InspectorBasicsLayoutTests: XCTestCase {
         vc.targetField.stringValue = "/Volumes/Show/Act 1/Sound/intro.wav"
         vc.render()
         XCTAssertEqual(vc.targetField.toolTip, vc.targetField.stringValue)
+    }
+}
+
+/// Tab order by cue kind, the Devamp Settings tab and the Target's clear button (#393).
+@MainActor
+final class InspectorTabOrderTests: XCTestCase {
+    static let devamp: ModelID = "00000000-0000-0000-0000-000000000040"
+    private var rig: Rig!
+    private var vc: InspectorViewController!
+    private var window: NSWindow!
+
+    override func setUp() async throws {
+        var s = FakeEngine.demoSnapshot(base: try Fixtures.json("server", "welcome")["snapshot"] ?? .null)
+        var lists = s["workspace"]?["cue_lists"]?.arrayValue ?? []
+        let extra = FakeEngine.cueJSON(
+            id: Self.devamp.raw, number: "9", name: "Out of loop",
+            kind: .object([
+                "type": .string("devamp"), "target": .string(CueListHarness.intro.raw),
+                "start_next_cue": .bool(false), "stop_target_when_slice_ends": .bool(false),
+                "devamp_mode": .string("current_slice"),
+            ]))
+        lists[0].set("cues", .array((lists[0]["cues"]?.arrayValue ?? []) + [extra]))
+        s["workspace"]?.set("cue_lists", .array(lists))
+        rig = try Rig(snapshot: s)
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        vc = InspectorViewController(store: rig.store)
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = vc.view
+    }
+
+    override func tearDown() async throws { window.orderOut(nil) }
+
+    private func tabs() -> [String] { vc.tabView.tabViewItems.compactMap { $0.identifier as? String } }
+
+    private var sent: [JSONValue] {
+        rig.engine.received.compactMap {
+            if case .command(_, let c, _) = $0 { return JSONValue.parse((try? c.json.text()) ?? "") }
+            return nil
+        }
+    }
+
+    /// Every kind's tabs are Basics and Triggers, then its own, in the table's order.
+    func testTabsFollowTheTableForEveryKind() {
+        for kind in CueKindStyle.kinds.keys.sorted() {
+            let expected = InspectorTabs.ids(forKind: kind)
+            XCTAssertEqual(Array(expected.prefix(2)), ["basics", "triggers"], kind)
+            let cue = rig.store.model?.cueLists.flatMap { $0.cues }.first { $0.kindType == kind }
+            guard let cue else { continue }
+            vc.setSelection([cue.id])
+            XCTAssertEqual(tabs(), expected, kind)
+        }
+        XCTAssertEqual(InspectorTabs.ids(forKind: "fade"), ["basics", "triggers", "curve", "fadeLevels"])
+        XCTAssertEqual(InspectorTabs.ids(forKind: "devamp"), ["basics", "triggers", "devamp"])
+    }
+
+    func testChangingKindKeepsTheSelectedCommonTab() {
+        vc.setSelection([CueListHarness.intro])
+        vc.tabView.selectTabViewItem(at: 1)
+        vc.setSelection([CueListHarness.fade])
+        XCTAssertEqual(vc.tabView.selectedTabViewItem?.identifier as? String, "triggers")
+    }
+
+    func testDevampSettingsEditTheKind() async {
+        vc.setSelection([Self.devamp])
+        XCTAssertEqual(vc.devampStartNextCheck.state, .off)
+        vc.devampStartNextCheck.state = .on
+        vc.devampModePopup.selectItem(at: 1)
+        vc.devampChanged()
+        await assertEventually { !self.sent.isEmpty }
+        XCTAssertEqual(sent.last?["property"]?["type"], .string("kind_fields"))
+        let kind = normalised(sent.last?["property"]?["value"])
+        XCTAssertEqual(kind?["start_next_cue"], .bool(true))
+        XCTAssertEqual(kind?["devamp_mode"], .string("looping_cue"))
+        XCTAssertNil(kind?["target"], "only the changed fields are sent; the engine keeps the rest")
+    }
+
+    func testShowModeLocksTheDevampTabAndClearButton() async {
+        vc.setSelection([Self.devamp])
+        vc.isLocked = true
+        for c in [vc.devampStartNextCheck, vc.devampStopCheck, vc.devampModePopup, vc.clearTargetButton] as [NSControl]
+        {
+            XCTAssertFalse(c.isEnabled)
+        }
+        vc.devampStartNextCheck.state = .on
+        vc.devampChanged()
+        vc.clearTargetClicked()
+        XCTAssertTrue(sent.isEmpty, "locked edits send nothing")
+    }
+
+    func testClearTargetOnAControlCueSendsNoTarget() async {
+        vc.setSelection([Self.devamp])
+        XCTAssertTrue(vc.clearTargetButton.isEnabled)
+        vc.clearTargetClicked()
+        await assertEventually { !self.sent.isEmpty }
+        XCTAssertEqual(sent.last?["property"]?["type"], .string("target"))
+        XCTAssertEqual(sent.last?["property"]?["value"], .null)
+        await assertEventually { self.vc.clearTargetButton.isEnabled == false }
+    }
+
+    func testClearTargetOnAnAudioCueDropsTheFile() async {
+        vc.setSelection([CueListHarness.intro])
+        XCTAssertTrue(vc.clearTargetButton.isEnabled)
+        vc.clearTargetClicked()
+        await assertEventually { !self.sent.isEmpty }
+        XCTAssertEqual(sent.last?["property"]?["type"], .string("media"))
+        XCTAssertEqual(sent.last?["property"]?["value"], .null)
+    }
+
+    /// Labels sit left of the fields, in one column, and still fit 520 x 240 and 900 wide.
+    func testBasicsLabelsSitLeftOfTheirFieldsInOneColumn() {
+        for width in [CGFloat(520), 900] {
+            vc.setSelection([CueListHarness.intro])
+            window.setContentSize(NSSize(width: width, height: 240))
+            vc.view.layoutSubtreeIfNeeded()
+            vc.tabView.selectedTabViewItem?.view?.layoutSubtreeIfNeeded()
+            func frame(_ v: NSView) -> NSRect { vc.view.convert(v.bounds, from: v) }
+            let column = [vc.numberField, vc.durationField, vc.preWaitField, vc.postWaitField, vc.continuePopup]
+            for (a, b) in zip(column, column.dropFirst()) {
+                XCTAssertLessThan(frame(a).midY - frame(b).midY, 40, "one column, top to bottom at \(width)")
+                XCTAssertGreaterThan(frame(a).midY, frame(b).midY, "\(width)")
+                XCTAssertEqual(frame(a).minX, frame(b).minX, accuracy: 0.5, "fields line up at \(width)")
+            }
+            for f in column {
+                XCTAssertTrue(vc.view.bounds.insetBy(dx: -1, dy: -1).contains(frame(f)), "clipped at \(width)")
+                let label = f.superview?.subviews.first as? NSTextField
+                XCTAssertNotNil(label)
+                if let label {
+                    XCTAssertLessThanOrEqual(frame(label).maxX, frame(f).minX, "label left of field at \(width)")
+                    XCTAssertEqual(frame(label).midY, frame(f).midY, accuracy: 8, "same row at \(width)")
+                }
+            }
+            XCTAssertTrue(
+                vc.view.bounds.insetBy(dx: -1, dy: -1).contains(frame(vc.clearTargetButton)),
+                "clear clipped at \(width)")
+        }
     }
 }

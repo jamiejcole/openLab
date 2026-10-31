@@ -429,6 +429,80 @@ fn a_second_panic_on_a_fading_cue_stops_it_within_the_next_blocks() {
 }
 
 #[test]
+fn panic_selected_fades_only_the_selection_and_a_second_press_cuts_it() {
+    // The app's Panic Selected: one batch of `panic_cue`, at one scheduling time. The
+    // unselected cue plays on through both presses (QLab check Q7).
+    let long = wav(&dc(80_000, 0.5));
+    let ws = workspace(vec![
+        audio(1, &long, 0),
+        audio(2, &long, 0),
+        audio(3, &long, 1),
+    ]);
+    let mut s = show(ws);
+    for n in 1..=3 {
+        s.transport(TransportAction::Start { cue: id(n) });
+    }
+    s.run(BLOCK * 4);
+    let selected = || TransportAction::Batch {
+        actions: vec![
+            TransportAction::PanicCue { cue: id(1) },
+            TransportAction::PanicCue { cue: id(2) },
+        ],
+    };
+    s.transport(selected());
+    s.run(BLOCK * 2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Stopping);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Stopping);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Running);
+    s.transport(selected());
+    let at = s.now() as usize;
+    s.run(BLOCK * 6);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Running);
+    assert!(
+        s.channel(0)[at + BLOCK as usize..]
+            .iter()
+            .all(|&v| v == 0.0),
+        "the selection is silent from the second press"
+    );
+    assert!(
+        s.channel(1)[at..].iter().all(|&v| v == 0.5),
+        "the rest plays on"
+    );
+}
+
+#[test]
+fn a_batch_panicking_a_group_and_its_child_fades_the_child() {
+    // PB-03: an OSC or client batch naming a group and its child is one press of each, so
+    // the child fades with its group instead of being cut on the batch's sample.
+    let long = wav(&dc(80_000, 0.5));
+    let group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![audio(1, &long, 0)],
+        },
+    );
+    let mut s = show(workspace(vec![group]));
+    s.transport(TransportAction::Start { cue: id(10) });
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::Batch {
+        actions: vec![
+            TransportAction::PanicCue { cue: id(10) },
+            TransportAction::PanicCue { cue: id(1) },
+        ],
+    });
+    let at = s.now() as usize;
+    s.run(BLOCK * 6);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Stopping);
+    let ch = s.channel(0);
+    let tail = &ch[at + BLOCK as usize * 2..];
+    assert!(tail.iter().all(|&v| v > 0.0), "still sounding: fading");
+    assert!(tail.windows(2).all(|w| w[1] <= w[0]), "and falling");
+}
+
+#[test]
 fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
     // QLab check F4: the problem reaches the clients, GO skips the Fade, and its
     // "stop target when done" does not stop the target.

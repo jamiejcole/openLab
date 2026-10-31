@@ -947,6 +947,98 @@ fn set_property_refuses_the_wrong_kind_of_cue() {
     );
 }
 
+fn fields(json: serde_json::Value) -> CueProperty {
+    let serde_json::Value::Object(value) = json else {
+        panic!("not an object");
+    };
+    CueProperty::KindFields { value }
+}
+
+#[test]
+fn kind_fields_keep_the_kind_fields_not_named() {
+    let mut ws = workspace(vec![cue(1, audio())]);
+    // Another client moves the trim; a sender that read the kind before then names only its own
+    // field and must not put the old trim back.
+    ws.apply(set(
+        1,
+        fields(serde_json::json!({ "start_time": 0.5, "end_time": 2.0 })),
+    ))
+    .unwrap();
+    let before = ws.clone();
+    let inverse = ws
+        .apply(set(
+            1,
+            fields(serde_json::json!({ "last_slice_play_count": 4 })),
+        ))
+        .unwrap();
+    match kind_of(&ws, 1) {
+        CueKind::Audio {
+            start_time,
+            end_time,
+            last_slice_play_count,
+            ..
+        } => {
+            assert_eq!((start_time, end_time), (0.5, Some(2.0)));
+            assert_eq!(last_slice_play_count, 4);
+        }
+        other => panic!("{other:?}"),
+    }
+    ws.apply(inverse).unwrap();
+    assert_eq!(ws, before, "undo restores the kind");
+    assert_clean(&ws);
+}
+
+#[test]
+fn kind_fields_refuse_bad_fields_groups_and_batches() {
+    let mut ws = workspace(vec![cue(1, audio()), grp(2, vec![]), cue(3, fade(1))]);
+    for bad in [
+        serde_json::json!({ "type": "memo" }),
+        serde_json::json!({ "media": "x.wav" }),
+        serde_json::json!({ "children": [] }),
+        serde_json::json!({ "last_slice_play_count": "many" }),
+    ] {
+        assert!(
+            matches!(
+                refused(&mut ws, set(1, fields(bad.clone()))),
+                CommandError::InvalidValue(_)
+            ),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        refused(
+            &mut ws,
+            set(1, fields(serde_json::json!({ "curve": "linear" })))
+        ),
+        CommandError::PropertyNotApplicable(cue_id(1))
+    );
+    assert_eq!(
+        refused(
+            &mut ws,
+            set(2, fields(serde_json::json!({ "mode": "timeline" })))
+        ),
+        CommandError::KindChangeInvolvesGroup(cue_id(2))
+    );
+    // The merged kind is judged like a whole kind.
+    assert!(matches!(
+        refused(
+            &mut ws,
+            set(3, fields(serde_json::json!({ "duration": -1.0 })))
+        ),
+        CommandError::InvalidCue(_)
+    ));
+    assert_eq!(
+        refused(
+            &mut ws,
+            Command::BatchSet {
+                ids: vec![cue_id(1)],
+                property: fields(serde_json::json!({ "preload": true })),
+            }
+        ),
+        CommandError::NotBatchable
+    );
+}
+
 #[test]
 fn set_property_refuses_non_finite_and_out_of_range_values() {
     let mut ws = workspace(vec![cue(1, audio()), memo(2)]);

@@ -399,6 +399,122 @@ fn panic_fades_everything_out_together() {
 }
 
 #[test]
+fn a_second_panic_during_the_fade_cuts_every_output_to_silence() {
+    // PB-03 (QLab: Esc twice is a hard stop): the second press, well inside the 800-frame
+    // fade, silences both outputs from the sample it is carried out on.
+    let a = wav(&dc(16000, 1.0));
+    let b = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]));
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(1000);
+    let tp = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(200);
+    let t2 = s.now() as usize;
+    s.transport(TransportAction::Panic);
+    s.run(1500);
+    for ch in 0..2 {
+        let x = s.channel(ch);
+        let cut = x.iter().rposition(|&v| v != 0.0).unwrap() + 1;
+        // Still fading when pressed, silent from the second press's sample on: well before
+        // the first panic's end.
+        assert!(x[t2 - 1] > 0.0, "channel {ch}");
+        assert!(
+            cut <= t2 + BLOCK as usize,
+            "channel {ch}: sound until {cut}, pressed at {t2}"
+        );
+        assert!(cut < tp + 800);
+    }
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().engine().panic_end(), None);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn reset_all_silences_every_output_at_once_and_rewinds_the_playhead() {
+    let a = wav(&dc(16000, 1.0));
+    let b = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![
+        audio(1, &a, 0),
+        audio(2, &b, 1),
+        audio(3, &b, 0),
+    ]));
+    go(&mut s);
+    go(&mut s);
+    s.run(1000);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(3)));
+    // Mid panic fade, so the reset also proves it ends the fade at once.
+    s.transport(TransportAction::Panic);
+    s.run(100);
+    let at = s.now() as usize;
+    s.transport(TransportAction::ResetAll);
+    s.run(1500);
+    for ch in 0..2 {
+        let x = s.channel(ch);
+        assert!(x[at - 1] > 0.0, "channel {ch}");
+        let cut = x.iter().rposition(|&v| v != 0.0).unwrap() + 1;
+        assert!(
+            cut <= at + BLOCK as usize,
+            "channel {ch}: sound until {cut}, reset at {at}"
+        );
+    }
+    assert_eq!(s.control().engine().cue_states().count(), 0);
+    assert_eq!(s.control().engine().panic_end(), None);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn after_reset_all_the_playhead_cue_is_primed_again_and_go_starts_on_time() {
+    // Regression: the playhead move re-checked the primes while the stopped voice still
+    // existed, and nothing re-checked once it was gone, so the GO after a reset read the
+    // file cold (late on a slow disk).
+    let path = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    go(&mut s);
+    s.run(1000);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(2)));
+    s.transport(TransportAction::ResetAll);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().engine().playhead(list_id()), Some(id(1)));
+    assert!(
+        s.control().primed().contains(&id(1)),
+        "the cue standing by is primed again: {:?}",
+        s.control().primed()
+    );
+    let hits = s.control().prime_hits();
+    let at = go(&mut s);
+    assert_eq!(at, s.rendered() + BLOCK);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+    s.run(2000);
+    let ch0 = s.channel(0);
+    assert_eq!(ch0[at as usize - 1], 0.0);
+    assert_eq!(ch0[at as usize], 0.5, "starts on its sample");
+}
+
+#[test]
+fn a_stopped_cue_set_as_playhead_is_primed_again() {
+    // The same gap on Stop All then Set Playhead back to the stopped cue.
+    let path = wav(&dc(16000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    go(&mut s);
+    s.run(1000);
+    s.transport(TransportAction::StopAll);
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(1)),
+    });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+    assert!(s.control().primed().contains(&id(1)));
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+}
+
+#[test]
 fn pause_and_resume_keep_the_position() {
     let path = wav(&ramp(6000));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));

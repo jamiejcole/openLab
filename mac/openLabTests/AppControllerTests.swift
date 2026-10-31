@@ -249,6 +249,92 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.pauseAll), [second])
     }
 
+    /// QLab's S key: each press is one batch of `panic_cue` for the selection, in Show Mode too;
+    /// a second press is sent the same way (the engine hard-stops cues still fading from the
+    /// first), and only the selected cues are named.
+    func testPanicSelectedSendsAPanicCueForEachSelectedCueOnEveryPress() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        XCTAssertEqual(app.frontKeys.chord(for: .panicSelected), KeyChord("s"))
+        let roots = wc.cueList.roots.map(\.id)
+        XCTAssertEqual(roots.count, 2)
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode }
+        XCTAssertTrue(app.canPerform(.panicSelected))
+        wc.cueList.select([roots[0]])
+        await app.perform(.panicSelected)
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: roots[0])), ["1", "1"])
+        XCTAssertTrue(transports(.panicCue(cue: roots[1])).isEmpty, "an unselected cue is left alone")
+        // A held key fires once.
+        await app.perform(.panicSelected, isRepeat: true)
+        XCTAssertEqual(transports(.panicCue(cue: roots[0])).count, 2)
+        // Several selected cues: one batch, so they fade from the same sample.
+        wc.cueList.select(roots)
+        let order = wc.cueList.selectedIDs()
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.batch(actions: order.map { .panicCue(cue: $0) })), ["1"])
+    }
+
+    /// A group's panic fades its whole subtree; a selected descendant's own panic_cue would be a
+    /// second press (hard cut), so only the topmost selected cue of each subtree is panicked.
+    func testPanicSelectedSkipsSelectedDescendantsOfASelectedGroup() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let list = try XCTUnwrap(wc.cueList.listID)
+        func audio(_ id: String) -> JSONValue {
+            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.audioKind("media/x.wav"))
+        }
+        func group(_ id: String, _ kids: [JSONValue]) -> JSONValue {
+            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.groupKind(kids))
+        }
+        let outer = group("g-outer", [audio("child"), group("g-inner", [audio("grandchild")])])
+        let cue = try outer.text()
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(list)","parent":null,"index":0,"cue":\#(cue)}],"deletes":[]}"#,
+            doc: "1")
+        await assertEventually { wc.cueList.node("grandchild") != nil }
+        wc.cueList.reveal("grandchild")  // expands the groups so every row can be selected
+        let sibling = try XCTUnwrap(wc.cueList.roots.map(\.id).first { $0 != "g-outer" })
+
+        // Group + child: only the group.
+        wc.cueList.select(["g-outer", "child"])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "g-outer")), ["1"])
+        XCTAssertTrue(transports(.panicCue(cue: "child")).isEmpty)
+        // Group + grandchild, and a top-level sibling: one panic each for group and sibling.
+        wc.cueList.select(["g-outer", "grandchild", sibling])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "g-outer")).count, 1, "the second press went out inside the batch")
+        XCTAssertTrue(transports(.panicCue(cue: "grandchild")).isEmpty)
+        XCTAssertEqual(transports(.batch(actions: [.panicCue(cue: "g-outer"), .panicCue(cue: sibling)])), ["1"])
+        // A child alone, with no selected ancestor, is still panicked.
+        wc.cueList.select(["child"])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "child")), ["1"])
+    }
+
+    /// The sidebar Reset all button and the Transport menu item send `reset_all` to their own
+    /// workspace, with no confirmation, in Show Mode as in Edit Mode (QLab's sidebar is the same
+    /// in both).
+    func testResetAllButtonAndMenuItemResetTheirOwnWorkspaceInShowMode() async throws {
+        let second = try await addWorkspace()
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows[second])
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode }
+        let reset = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportReset])
+        XCTAssertTrue(reset.isEnabled)
+        reset.performClick(nil)
+        await assertEventually { !transports(.resetAll).isEmpty }
+        XCTAssertEqual(transports(.resetAll), [second])
+        XCTAssertTrue(app.canPerform(.resetAll))
+        XCTAssertNil(app.frontKeys.chord(for: .resetAll), "QLab has no Reset All key")
+        await app.perform(.resetAll)
+        XCTAssertEqual(transports(.resetAll), [second, "1"])
+    }
+
     func testPanicButtonIsAppScope() async throws {
         _ = try await addWorkspace()
         app.windows["1"]?.sidebar.transportButtons[AX.transportPanic]?.performClick(nil)
@@ -593,8 +679,11 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { !transports(action).isEmpty }
     }
 
-    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() throws {
+    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
+        // Masthead notes are typed in Edit Mode; in Show Mode they are read-only and take no focus.
+        wc.setShowMode(true)
+        await assertEventually { wc.masthead.isLocked }
         XCTAssertFalse(wc.masthead.notesView.acceptsFirstResponder)
         XCTAssertTrue(wc.window?.initialFirstResponder === wc.cueList.outlineView)
     }
@@ -704,6 +793,10 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(item(.stopAll)?.keyEquivalent, "", "no Stop All key: Esc is the app-wide panic")
         XCTAssertEqual(item(.panic)?.keyEquivalent, "", "Esc is handled app-wide, not by the menu")
         XCTAssertEqual(item(.pauseResumeSelected)?.keyEquivalent, "p")
+        XCTAssertEqual(item(.panicSelected)?.keyEquivalent, "s")
+        XCTAssertEqual(item(.resetAll)?.keyEquivalent, "", "QLab has no Reset All key")
+        XCTAssertEqual(item(.resetAll)?.title, loc("menu.transport.resetAll"))
+        XCTAssertEqual(item(.panicSelected)?.title, loc("menu.transport.panicSelected"))
         let commands = menus.transport.items.compactMap { $0.representedObject as? String }
         XCTAssertEqual(commands.count, TransportCommand.allCases.count)
 
@@ -1018,7 +1111,10 @@ final class AppControllerTests: XCTestCase {
             XCTAssertFalse(delegate.validateMenuItem(item), item.title)
         }
         // Items that are not edits stay available in Show Mode.
-        let inspector = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) })
+        let inspector = try XCTUnwrap(
+            items.first {
+                MainMenu.layoutArea(of: $0) == .masthead && $0.action == #selector(AppDelegate.toggleLayoutArea(_:))
+            })
         XCTAssertTrue(delegate.validateMenuItem(inspector))
         let launcher = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
         XCTAssertTrue(delegate.validateMenuItem(launcher))
@@ -1835,5 +1931,228 @@ final class AppControllerTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
+    }
+
+    // MARK: Show Mode layout and quiet (SM-01, SM-03, NFR-10)
+
+    func testShowModeHidesToolbarAndInspectorAndEditModeBringsBackTheChoice() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setVisible(.inspector, false)
+        XCTAssertTrue(wc.isVisible(.toolbar))
+        wc.setShowMode(true)
+        XCTAssertFalse(wc.isVisible(.toolbar), "hidden, not just disabled")
+        XCTAssertFalse(wc.isVisible(.inspector))
+        XCTAssertTrue(wc.isVisible(.masthead), "the masthead toggle is independent of Show Mode")
+        XCTAssertTrue(wc.cueList.view.superview != nil && !wc.cueList.view.isHidden)
+        XCTAssertFalse(wc.footer.toggles[.toolbar]?.isEnabled ?? true)
+        XCTAssertFalse(wc.footer.toggles[.inspector]?.isEnabled ?? true)
+        XCTAssertEqual(wc.footer.toggles[.toolbar]?.state, .off)
+        wc.setVisible(.inspector, true)
+        XCTAssertFalse(wc.isVisible(.inspector), "a toggle cannot bring it back in Show Mode")
+        wc.setShowMode(false)
+        XCTAssertTrue(wc.isVisible(.toolbar))
+        XCTAssertFalse(wc.isVisible(.inspector), "the choice made before Show Mode is back")
+        XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
+        XCTAssertTrue(wc.footer.toggles[.toolbar]?.isEnabled ?? false)
+    }
+
+    func testViewMenuGreysTheAreasShowModeHidesAndTheModeItemThatDoesNotApply() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
+        func layout(_ area: LayoutArea) throws -> NSMenuItem {
+            try XCTUnwrap(
+                items.first {
+                    $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) && MainMenu.layoutArea(of: $0) == area
+                })
+        }
+        let enterShow = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterShowMode(_:)) })
+        let enterEdit = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterEditMode(_:)) })
+        XCTAssertTrue(delegate.validateMenuItem(enterShow))
+        XCTAssertFalse(delegate.validateMenuItem(enterEdit))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.inspector)))
+        wc.setShowMode(true)
+        XCTAssertFalse(delegate.validateMenuItem(enterShow))
+        XCTAssertTrue(delegate.validateMenuItem(enterEdit))
+        XCTAssertFalse(delegate.validateMenuItem(try layout(.inspector)))
+        XCTAssertFalse(delegate.validateMenuItem(try layout(.toolbar)))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.masthead)))
+        XCTAssertTrue(delegate.validateMenuItem(try layout(.sidebar)))
+        app.toggleLayout(.inspector)
+        XCTAssertFalse(wc.isVisible(.inspector))
+    }
+
+    func testMastheadIsLargerAndHighContrastInShowModeAndFollowsTheWindowSize() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let edit = wc.masthead.metrics
+        wc.setShowMode(true)
+        let show = wc.masthead.metrics
+        XCTAssertTrue(wc.masthead.isShowMode)
+        XCTAssertGreaterThan(show.goSize.width, edit.goSize.width)
+        XCTAssertGreaterThan(show.goSize.height, edit.goSize.height)
+        XCTAssertEqual(
+            wc.masthead.goButton.constraints.first { $0.firstAttribute == .width }?.constant, show.goSize.width)
+        wc.setShowMode(false)
+        XCTAssertEqual(wc.masthead.metrics, edit)
+        XCTAssertFalse(wc.masthead.isShowMode)
+        wc.window?.setContentSize(NSSize(width: 1600, height: 1000))
+        wc.setShowMode(true)
+        XCTAssertEqual(
+            wc.masthead.metrics,
+            MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero))
+    }
+
+    /// Errors and notices that would be a modal in Edit Mode become a log record and a footer line.
+    func testShowModeSuppressesTheNoticeSheetAndLogsIt() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        wc.showNotice("Could not do that")
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertEqual(wc.store.logEntries.last?.message, "Could not do that")
+        XCTAssertEqual(wc.store.logEntries.last?.level, .warn)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, "Could not do that")
+    }
+
+    func testShowModeSuppressesTheCrashReportsInfoAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        app.crashFolders = { [URL(fileURLWithPath: "/nonexistent/openLab-crashes")] }
+        wc.setShowMode(true)
+        app.revealCrashReports()
+        XCTAssertFalse(alerts.log.contains { $0.hasPrefix("info:") })
+        XCTAssertEqual(wc.store.logEntries.last?.message, loc("crash.none"))
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, loc("crash.none"))
+    }
+
+    /// Another workspace is in Show Mode while this one is closed: a failed close must not put a
+    /// modal over the show.
+    func testCloseTimeoutNamingNoWindowGoesToTheShowModeFooter() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        show.setShowMode(true)
+        engine.holdResults = true
+        let task = Task { await app.closeWorkspace(second) }
+        await assertEventually { closeMessages().count == 1 }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let closed = await task.value
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.errors.isEmpty, "no modal about the failure: \(alerts.errors)")
+        XCTAssertEqual(show.store.logEntries.last?.level, .error)
+        XCTAssertEqual(show.footer.noticeLabel.stringValue, show.store.logEntries.last?.message)
+        engine.releaseResults()
+    }
+
+    func testShowModeSuppressesTheSaveFailedAlertOnQuitButKeepsTheQuitConfirmation() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        alerts.saveChoices = [.save]
+        engine.garbleResults = true
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.log.first, "quitPlaying", "the one quit confirmation stays (playing outranks Show Mode)")
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+    }
+
+    func testEditModeStillShowsErrorsAsAlerts() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        app.crashFolders = { [URL(fileURLWithPath: "/nonexistent/openLab-crashes")] }
+        app.revealCrashReports()
+        XCTAssertTrue(alerts.log.contains("info:" + loc("crash.none")))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.isEmpty)
+    }
+
+    func testShowModeSuppressesTheOpenFailedAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        engine.garbleResults = true
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/X.openlab"))
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, wc.store.logEntries.last?.message)
+    }
+
+    func testCloseRefusalNamingNoWindowGoesToTheShowModeFooter() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        show.setShowMode(true)
+        engine.garbleResults = true
+        let closed = await app.closeWorkspace(second)
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(show.store.logEntries.last?.level, .error)
+    }
+
+    func testShowModeSuppressesTheSaveTimeoutAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        engine.holdResults = true
+        let task = Task { await app.saveWorkspace(wc.store) }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let saved = await task.value
+        XCTAssertFalse(saved)
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        engine.releaseResults()
+    }
+
+    /// An Edit Mode workspace's failure shows on its own window while another is in Show Mode: as a
+    /// sheet there (which blocks nothing else), logged once, and nothing lands on the Show Mode window.
+    func testRelinkFailureOfAnEditWorkspaceIsASheetOnItAndLeavesTheShowModeWindowAlone() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        let edit = try XCTUnwrap(app.windows[second])
+        show.setShowMode(true)
+        engine.garbleResults = true
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: edit.store)
+        XCTAssertTrue(alerts.errors.isEmpty, "no app-level modal")
+        let sheet = try XCTUnwrap(edit.window?.attachedSheet, "a sheet on the failing workspace's window")
+        edit.window?.endSheet(sheet)
+        XCTAssertEqual(edit.store.logEntries.filter { $0.level == .error }.count, 1, "logged once")
+        XCTAssertTrue(show.footer.noticeLabel.stringValue.isEmpty)
+        XCTAssertFalse(show.store.logEntries.contains { $0.level == .error })
+    }
+
+    func testLoadToTimeIsOffInShowMode() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
+        let item = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.loadToTime(_:)) })
+        wc.cueList.selectAsUser([try XCTUnwrap(wc.store.model?.cueLists.first?.cues.first?.id)])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        wc.setShowMode(true)
+        XCTAssertFalse(delegate.validateMenuItem(item))
+        wc.promptLoadToTime()
+        XCTAssertNil(wc.window?.attachedSheet)
+    }
+
+    func testFooterNoticeClearsAfterItsLifetimeAndARepeatIsNotClearedEarly() {
+        let footer = FooterBar()
+        var timers: [@MainActor () -> Void] = []
+        footer.scheduleClear = { _, work in timers.append(work) }
+        footer.showNotice("Save failed", error: true)
+        footer.showNotice("Save failed", error: true)  // the same text again, later
+        timers[0]()
+        XCTAssertEqual(footer.noticeLabel.stringValue, "Save failed", "the first timer is stale")
+        timers[1]()
+        XCTAssertEqual(footer.noticeLabel.stringValue, "")
+        footer.showNotice("Other")
+        XCTAssertEqual(footer.noticeLabel.stringValue, "Other")
+    }
+
+    func testTheAlarmCoordinatorsAlertsAreTheQuietOnesInShowMode() async throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        delegate.alarmAlerts.showError("boom")
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.message, "boom")
     }
 }

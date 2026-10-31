@@ -103,7 +103,8 @@ extension CueListViewController: NSMenuDelegate {
         let items: [NSMenuItem?] = [
             entry(.preview, transport, command: TransportCommand.previewSelected.rawValue),
             entry(.load, transport, command: TransportCommand.loadSelected.rawValue),
-            entry(.panic, transport, command: TransportCommand.panic.rawValue),
+            // QLab's row Panic is the cue's own: the selection fades, the rest plays on.
+            entry(.panic, transport, command: TransportCommand.panicSelected.rawValue),
             .separator(),
             entry(.movePlayhead, #selector(movePlayheadToCue(_:))),
             entry(.revealTarget, #selector(revealTargetInFinder(_:))),

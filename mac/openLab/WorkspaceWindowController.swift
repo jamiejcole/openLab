@@ -18,6 +18,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPauseAll: (() -> Void)?
     var onResumeAll: (() -> Void)?
     var onPanic: (() -> Void)?
+    var onResetAll: (() -> Void)?
     /// A transport command from the cue row menu, for this window.
     var onCommand: ((TransportCommand) -> Void)? {
         didSet { cueList.onCommand = onCommand }
@@ -131,13 +132,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated {
                 self?.syncSidebarList()
                 self?.syncFooterCount()
+                self?.syncMasthead()
             }
         }
+        masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
             self?.syncSidebarList()
+            self?.syncMasthead()
         }
+        sidebar.onNotice = { [weak self] in self?.showNotice($0) }
         sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
         // Both publish before they change: use the delivered values.
         statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
@@ -145,6 +150,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         syncSidebarList()
         syncFooterCount()
+        syncMasthead()
         // The store's mode moves on the operator's choice and on the engine's word (a reconnect,
         // another client): the window follows either. Published before it changes: use the value.
         showModeSub = store.$showMode.sink { [weak self] on in
@@ -158,6 +164,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
         wire(sidebar.transportButtons[AX.transportPanic], #selector(panicClicked))
+        wire(sidebar.transportButtons[AX.transportReset], #selector(resetAllClicked))
     }
 
     /// Shows `id` in its list and selects it (a Warnings row was chosen). The selection is made
@@ -214,10 +221,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Show Mode (SM-01) belongs to this window only and is not saved; the store tells the engine
-    /// (`set_show_mode`, so it holds off sleep, SM-07) and restores it after a reconnect. Locks the
-    /// inspector and cue-type row; transport, hotkeys, the sidebar and the layout toggles keep
-    /// working, as in QLab.
+    /// Show Mode (SM-01) belongs to this window; the store tells the engine (`set_show_mode`, so it
+    /// holds off sleep, SM-07) and restores it from the engine's word after a reconnect. It hides
+    /// the cue-type row and the whole inspector (their toggles wait, greyed, and the choice comes
+    /// back on leaving) and enlarges the masthead; transport, hotkeys, the sidebar and the masthead
+    /// toggle keep working, as in QLab.
     private(set) var isShowMode = false
 
     /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
@@ -242,15 +250,41 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard on != isShowMode else { return }
         isShowMode = on
         inspector.isLocked = on
+        masthead.isLocked = on
         cueToolbar.isLocked = on
         cueList.isEditLocked = on
         sidebar.relinkLocked = on
+        sidebar.listEditLocked = on
         footer.setShowMode(on)
+        for area in Self.hiddenInShowMode { show(area, on ? false : wanted[area] ?? true) }
+        refreshMasthead()
         refreshTitle()
+    }
+
+    /// The areas Show Mode takes away.
+    static let hiddenInShowMode: [LayoutArea] = [.toolbar, .inspector]
+    /// What the footer toggles last asked for. In Show Mode the shown state differs from it.
+    private var wanted: [LayoutArea: Bool] = [:]
+
+    private func refreshMasthead() {
+        let size = window?.contentView?.bounds.size ?? NSSize(width: 1200, height: 800)
+        masthead.apply(showMode: isShowMode, window: size)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        refreshMasthead()
+    }
+
+    /// A notice without an interruption: a log record and the footer line.
+    func quietNotice(_ message: String, error: Bool) {
+        _ = store.receive(.log(error ? .error : .warn, message))
+        footer.showNotice(message, error: error)
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).
     func showNotice(_ message: String) {
+        // Show Mode raises nothing modal (NFR-10): the footer and the show log carry it.
+        if isShowMode { return quietNotice(message, error: false) }
         guard let window else { return NSSound.beep() }
         let alert = NSAlert()
         alert.messageText = message
@@ -324,7 +358,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
     /// command (the Transport menu's Load Selected uses 0).
     func promptLoadToTime() {
-        guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
+        guard !isShowMode, let id = cueList.selectedIDs().last else { return NSSound.beep() }
         askText(
             title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
             ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
@@ -359,6 +393,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
+    /// The shown list's playhead cue, with its notes.
+    func syncMasthead() {
+        let id = cueList.listID.flatMap { store.playheads[$0] }
+        masthead.show(standby: id.flatMap { store.model?.cue($0) })
+    }
+
     func syncFooterCount() {
         let model = store.model
         footer.showCount(cues: model?.cueCount ?? 0, lists: model?.cueLists.count ?? 0)
@@ -377,14 +417,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc private func pauseAllClicked() { onPauseAll?() }
     @objc private func resumeAllClicked() { onResumeAll?() }
     @objc private func panicClicked() { onPanic?() }
+    @objc private func resetAllClicked() { onResetAll?() }
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    /// Commits what is typed in the inspector and in the cue list's Duration cell, and waits for the
+    /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        if let notes = masthead.takePendingNotes() {
+            ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
+        }
         return await inspector.commitPendingEdits() && ok
     }
 
@@ -403,6 +447,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func setVisible(_ area: LayoutArea, _ visible: Bool) {
+        if isShowMode, Self.hiddenInShowMode.contains(area) { return }
+        wanted[area] = visible
+        show(area, visible)
+    }
+
+    private func show(_ area: LayoutArea, _ visible: Bool) {
         switch area {
         case .toolbar: cueToolbar.isHidden = !visible
         case .masthead: masthead.isHidden = !visible
@@ -410,6 +460,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .sidebar: sidebar.view.isHidden = !visible
         }
         footer.toggles[area]?.state = visible ? .on : .off
+        footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
     }
 
     func isVisible(_ area: LayoutArea) -> Bool {
@@ -449,7 +500,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         // These views have no intrinsic height; without explicit heights the stack stretches them.
-        masthead.heightAnchor.constraint(equalToConstant: 100).isActive = true
         cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
         for v in [masthead, cueToolbar, footer] {

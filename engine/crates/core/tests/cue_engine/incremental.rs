@@ -421,6 +421,68 @@ fn a_re_added_group_whose_child_keeps_its_id_but_not_its_content_is_followed() {
     assert!(broken_ids(&twin).is_empty());
 }
 
+/// Group 10 { group 11 { fade 12 aimed at a missing cue } }, broken; then group 10 comes back
+/// with a memo under id 12 instead.
+fn readd_with_a_fixed_child() -> (Twin, Command) {
+    let twin = Twin::new(vec![
+        cue(10, group(vec![cue(11, group(vec![cue(12, fade(98))]))])),
+        cue(1, CueKind::Memo),
+    ]);
+    assert_eq!(broken_ids(&twin), vec![id(12)]);
+    let readd = Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: id(10) },
+            Command::AddCue {
+                at: Position {
+                    list: list_id(1),
+                    parent: None,
+                    index: 0,
+                },
+                cue: cue(
+                    10,
+                    group(vec![cue(11, group(vec![cue(12, CueKind::Memo)]))]),
+                ),
+                auto_number: false,
+            },
+        ],
+    };
+    (twin, readd)
+}
+
+fn move_11_to_the_top() -> Command {
+    Command::ReparentCue {
+        id: id(11),
+        to: Position {
+            list: list_id(1),
+            parent: None,
+            index: 0,
+        },
+    }
+}
+
+#[test]
+fn a_cue_moved_out_of_a_re_added_group_before_the_call_keeps_its_new_content() {
+    // The shrunk case of the visits property: an undo re-adds a group and the next edit moves
+    // part of it out before the engine is called, so the re-added subtree no longer holds it.
+    let (mut twin, readd) = readd_with_a_fixed_child();
+    twin.edit_uncalled(readd);
+    twin.edit_uncalled(move_11_to_the_top());
+    twin.input(Input::Tick);
+    assert!(broken_ids(&twin).is_empty());
+    assert!(twin.problems(12).is_empty());
+}
+
+#[test]
+fn a_cue_moved_out_of_a_re_added_group_in_one_transaction_keeps_its_new_content() {
+    let (mut twin, readd) = readd_with_a_fixed_child();
+    let Command::Transaction { mut commands } = readd else {
+        panic!("a transaction")
+    };
+    commands.push(move_11_to_the_top());
+    twin.edit(Command::Transaction { commands });
+    assert!(broken_ids(&twin).is_empty());
+}
+
 #[test]
 fn an_edit_costs_what_it_touched() {
     // 2,000 audio cues, and a fade on cue 1,500.

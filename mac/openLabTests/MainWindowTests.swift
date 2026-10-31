@@ -155,4 +155,202 @@ final class MainWindowTests: XCTestCase {
         }
         XCTAssertGreaterThan(seen, 30)
     }
+
+    // MARK: Masthead standby and notes
+
+    private func demoController() async throws -> (WorkspaceWindowController, Rig) {
+        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
+        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        return (WorkspaceWindowController(store: rig.store), rig)
+    }
+
+    private func standBy(_ rig: Rig, _ cue: ModelID) throws {
+        let change = #"{"type":"playhead","list":"\#(CueListHarness.list)","cue":"\#(cue)"}"#
+        let msg = try ServerMessage.decode(
+            #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[\#(change)]}"#)
+        XCTAssertEqual(rig.store.receive(msg), .applied)
+    }
+
+    private func setNotesCommands(_ rig: Rig) -> [JSONValue] {
+        rig.engine.received.compactMap {
+            if case .command(_, let c, _) = $0, c.json["property"]?["type"]?.stringValue == "notes" { return c.json }
+            return nil
+        }
+    }
+
+    func testMastheadShowsStandbyCueAsNumberDotNameWithItsNotes() async throws {
+        let (wc, rig) = try await demoController()
+        // The snapshot's playhead is shown from the start (an unnumbered cue: its name alone).
+        XCTAssertEqual(wc.masthead.cueID, CueListHarness.fade)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
+        try standBy(rig, CueListHarness.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        XCTAssertEqual(
+            wc.masthead.standbyField.stringValue,
+            [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} "))
+        XCTAssertTrue(wc.masthead.notesView.isEditable)
+    }
+
+    func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "Hold for applause")
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        XCTAssertEqual(setNotesCommands(rig).last?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "Hold for applause")
+    }
+
+    func testMastheadNotesAreReadOnlyAndSendNothingInShowMode() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        wc.setShowMode(true)
+        await assertEventually { wc.masthead.isLocked }
+        XCTAssertFalse(wc.masthead.notesView.isEditable)
+        XCTAssertFalse(wc.masthead.notesView.isSelectable, "a focused text view would swallow GO")
+        wc.masthead.notesView.string = "typed anyway"
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await wc.editor.setNotes(of: CueListHarness.intro, text: "typed anyway")
+        XCTAssertTrue(setNotesCommands(rig).isEmpty)
+    }
+
+    private func typeMastheadNotes(_ wc: WorkspaceWindowController, _ text: String) {
+        wc.masthead.notesView.string = text
+        wc.masthead.textDidBeginEditing(Notification(name: NSText.didBeginEditingNotification))
+    }
+
+    func testPlayheadMovingMidEditCommitsTheNotesToTheCueTheyWereTypedFor() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "for intro")
+        try standBy(rig, CueListHarness.fade)
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await Task.yield()
+        let sent = setNotesCommands(rig)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(sent.first?["property"]?["value"]?.stringValue, "for intro")
+        XCTAssertNotEqual(wc.masthead.notesView.string, "for intro", "the new cue shows its own notes")
+    }
+
+    func testEnteringShowModeMidEditCommitsTheMastheadNotes() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "typed before show mode")
+        await wc.requestShowMode(true)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before show mode")
+    }
+
+    func testSaveMidEditCommitsTheMastheadNotes() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        typeMastheadNotes(wc, "typed before save")
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(setNotesCommands(rig).count, 1)
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before save")
+    }
+
+    func testTypingForTheNewCueAfterAMidEditPlayheadMoveIsCommittedToIt() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "for intro")
+        try standBy(rig, CueListHarness.fade)
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "focus leaves so a new session starts")
+        // The operator clicks back in and types for the new cue.
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "for fade")
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        await assertEventually { self.setNotesCommands(rig).count == 2 }
+        let sent = setNotesCommands(rig)
+        XCTAssertEqual(sent.last?["id"]?.stringValue, CueListHarness.fade.raw)
+        XCTAssertEqual(sent.last?["property"]?["value"]?.stringValue, "for fade")
+    }
+
+    func testNotesForADeletedCueReportInsteadOfVanishing() async throws {
+        let (wc, _) = try await demoController()
+        var notices: [String] = []
+        wc.editor.notify = { notices.append($0) }
+        let saved = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
+        XCTAssertFalse(saved)
+        XCTAssertEqual(notices, [loc("masthead.notes.cueGone")])
+    }
+
+    func testEscapeInMastheadNotesCommitsAndReturnsFocus() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "typed then escape")
+        let handled = wc.masthead.textView(
+            wc.masthead.notesView, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertTrue(handled)
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView)
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
+        XCTAssertFalse(
+            wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+    }
+
+    // MARK: Show Mode sizes and contrast (SM-01, SM-03)
+
+    func testMastheadMetricsGrowInShowModeByTheDocumentedProportions() {
+        let window = NSSize(width: 1200, height: 800)
+        let edit = MastheadMetrics.make(showMode: false, window: window)
+        let show = MastheadMetrics.make(showMode: true, window: window)
+        XCTAssertEqual(edit.goSize, NSSize(width: 84, height: 72))
+        XCTAssertEqual(show.goSize, NSSize(width: 144, height: 104))
+        XCTAssertEqual(show.standbyFontSize, edit.standbyFontSize * 2)
+        XCTAssertEqual(show.notesHeight / edit.notesHeight, 1.7, accuracy: 0.02)
+        XCTAssertEqual(show.notesFontSize / edit.notesFontSize, 1.7, accuracy: 0.1)
+        XCTAssertGreaterThan(show.height, edit.height)
+        // The GO button must still fit inside its masthead.
+        XCTAssertLessThanOrEqual(show.goSize.height + 20, show.height)
+        let tiny = MastheadMetrics.make(showMode: false, window: NSSize(width: 100, height: 100))
+        XCTAssertGreaterThanOrEqual(tiny.goSize.width, 80)
+        XCTAssertGreaterThanOrEqual(tiny.goSize.height, 56)
+    }
+
+    func testStandbyIsOneLineNumberDotName() async throws {
+        let (wc, rig) = try await demoController()
+        XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
+        try standBy(rig, CueListHarness.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        let number = try XCTUnwrap(cue.number, "the demo's Intro cue is numbered")
+        XCTAssertTrue(wc.masthead.standbyField.stringValue.hasPrefix(number + " \u{00B7} "))
+        wc.setShowMode(true)
+        XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
+        XCTAssertEqual(
+            wc.masthead.standbyField.font?.pointSize,
+            MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
+    }
+
+    func testShowModePaletteMeetsContrastTargets() {
+        typealias P = ShowModePalette
+        // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
+        XCTAssertGreaterThanOrEqual(P.contrast(P.standbyText, P.background), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.notesText, P.background), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.goText, P.goFill), 7)
+        XCTAssertGreaterThanOrEqual(P.contrast(P.goFill, P.background), 3)
+        XCTAssertEqual(P.contrast(P.RGB(r: 1, g: 1, b: 1), P.RGB(r: 0, g: 0, b: 0)), 21, accuracy: 0.001)
+        XCTAssertEqual(P.contrast(P.background, P.background), 1, accuracy: 0.001)
+    }
+
+    func testMastheadAppliesThePaletteInShowModeOnly() async throws {
+        let (wc, _) = try await demoController()
+        wc.setShowMode(true)
+        let c = try XCTUnwrap(
+            wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        XCTAssertEqual(c.redComponent, 0, accuracy: 0.001)
+        let go = try XCTUnwrap(
+            wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
+        wc.setShowMode(false)
+        XCTAssertNil(wc.masthead.layer?.backgroundColor)
+    }
 }

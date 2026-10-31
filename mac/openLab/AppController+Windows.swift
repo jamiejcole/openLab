@@ -22,6 +22,7 @@ extension AppController {
             wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
             wc.onPanic = { [weak self] in Task { _ = await self?.panicAll() } }
+            wc.onResetAll = { [weak self] in Task { await self?.run(.resetAll, on: store) } }
             wc.onCommand = { [weak self, weak wc] command in
                 Task { await self?.perform(command, on: wc) }
             }
@@ -132,7 +133,7 @@ extension AppController {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && isDirectory.boolValue
         }
-        if existing.isEmpty { alerts.showInfo(loc("crash.none")) } else { revealInFinder(existing) }
+        if existing.isEmpty { gatedAlerts.showInfo(loc("crash.none")) } else { revealInFinder(existing) }
     }
 
     /// The engine logs "previous run ended without a clean shutdown" at its start (kind `engine`,

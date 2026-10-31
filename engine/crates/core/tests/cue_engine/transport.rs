@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Panic (PB-03), Pause All and Resume All (PB-04), per docs/cue-engine.md "Panic" and "Pause
-//! All and Resume All". Virtual sample clock at 1 kHz: one second is 1000 samples.
+//! Panic (PB-03), Reset All, Pause All and Resume All (PB-04), per docs/cue-engine.md "Panic",
+//! "Reset All" and "Pause All and Resume All". Virtual sample clock at 1 kHz: one second is
+//! 1000 samples.
 
 use crate::common::*;
 use openlab_core::*;
@@ -61,6 +62,13 @@ impl Rig {
 
     fn panic(&mut self, now: SampleTime) -> Vec<Action> {
         self.at(now, Input::Panic)
+    }
+
+    /// Only cues with static problems report a state, and nothing is pending.
+    fn assert_quiet_but_broken(&self) {
+        assert!(self.engine.next_deadline().is_none());
+        assert!(self.engine.cue_states().all(|(_, s)| s == CueState::Broken));
+        assert_eq!(self.engine.panic_end(), None);
     }
 
     /// Nothing runs, waits or is loaded, and no panic is under way.
@@ -1318,6 +1326,109 @@ fn stop_all_stops_paused_cues_and_does_nothing_when_idle() {
     rig.assert_quiet();
 }
 
+// ----- Reset All -----
+
+/// QLab's sidebar reset (manual pp. 97-98): a hard stop of everything, every cue reset, and
+/// every list's playhead back on its first cue, mid-panic and with a pending continue,
+/// a loaded cue, a run-time break and a preview all under way.
+#[test]
+fn reset_all_mid_show_stops_resets_and_rewinds_every_list() {
+    let mut rig = Rig::lists(
+        vec![
+            vec![
+                timed(sound(1), 0.0, 0.5, AC),
+                timed(sound(2), 0.0, 0.0, DNC),
+                grp(3, GroupMode::Timeline, vec![sound(4)]),
+                sound(5),
+            ],
+            vec![sound(6), sound(7), sound(8)],
+        ],
+        0,
+    );
+    rig.go(0);
+    rig.start(0, 3);
+    rig.start(0, 6);
+    rig.at(
+        0,
+        Input::SetPlayhead {
+            list: list_id(2),
+            cue: Some(id(8)),
+        },
+    );
+    fail(&mut rig, 10, 6);
+    rig.preview(30, 8);
+    rig.panic(40);
+    rig.at(
+        50,
+        Input::Load {
+            cue: id(7),
+            time: 0.0,
+        },
+    );
+    assert_eq!(rig.state(6), CueState::Broken);
+    assert_eq!(rig.state(7), CueState::Loaded);
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(3)));
+    let reset = rig.at(100, Input::ResetAll);
+    // Everything playing is cut on the input's sample, no fade (the panic's included).
+    assert_eq!(
+        voice_stops(&reset),
+        vec![(id(1), 100, None), (id(4), 100, None)]
+    );
+    assert!(reset.iter().any(|a| matches!(
+        a,
+        Action::PreviewStop { cue, at: 100, fade: None, .. } if *cue == id(8)
+    )));
+    assert!(
+        reset
+            .iter()
+            .any(|a| matches!(a, Action::UnloadVoice { cue, .. } if *cue == id(7)))
+    );
+    for n in 1..=8 {
+        assert_eq!(rig.state(n), CueState::Idle, "cue {n}");
+    }
+    assert!(!rig.engine.is_previewing(id(8)));
+    assert_eq!(rig.engine.playhead(list_id(1)), Some(id(1)));
+    assert_eq!(rig.engine.playhead(list_id(2)), Some(id(6)));
+    // Cue 1's post-wait auto-continue fires nothing, and a Panic now is a first one.
+    assert!(starts(&rig.tick(5000)).is_empty());
+    rig.assert_quiet();
+    rig.start(5000, 5);
+    assert_eq!(
+        voice_stops(&rig.panic(5100)),
+        vec![(id(5), 5100, panic_fade(1000))]
+    );
+}
+
+#[test]
+fn reset_all_keeps_a_cue_with_static_problems_broken_and_works_when_idle() {
+    let mut no_target = cue(2, fade(1));
+    if let CueKind::Fade { target, .. } = &mut no_target.kind {
+        *target = None;
+    }
+    let mut rig = Rig::panicking(vec![sound(1), no_target]);
+    assert!(voice_stops(&rig.at(0, Input::ResetAll)).is_empty());
+    assert_eq!(rig.state(2), CueState::Broken);
+    assert_eq!(rig.playhead(), Some(id(1)));
+    rig.assert_quiet_but_broken();
+}
+
+/// A random group's round-robin cycle starts afresh, as when the workspace opens: without the
+/// reset no child plays twice before every other has played once.
+#[test]
+fn reset_all_starts_a_random_groups_cycle_afresh() {
+    let repeats = (0..32).any(|seed| {
+        let mut rig = Rig::seeded(
+            vec![grp(1, GroupMode::StartRandom, vec![sound(2), sound(3)])],
+            seed,
+        );
+        let first = voice_starts(&rig.start(0, 1));
+        rig.at(10, Input::ResetAll);
+        let second = voice_starts(&rig.start(20, 1));
+        first.first().map(|s| s.0) == second.first().map(|s| s.0)
+    });
+    assert!(repeats, "a reset random group never repeated its last pick");
+}
+
 #[test]
 fn a_cues_own_panic_fades_it_and_what_is_in_it_and_leaves_the_rest() {
     let mut rig = Rig::panicking(vec![
@@ -1390,6 +1501,51 @@ fn a_first_panic_on_a_group_with_only_some_children_fading_fades_the_rest() {
         voice_stops(&second),
         vec![(id(3), 400, None), (id(2), 400, None)]
     );
+}
+
+#[test]
+fn a_batch_panicking_a_group_and_its_child_is_one_press_of_each() {
+    // PB-03: a client or OSC batch naming the group and its child (in either order) fades the
+    // child with the group; only a press in a later command stops it at once.
+    for group_first in [true, false] {
+        let mut rig = Rig::panicking(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+        rig.start(0, 1);
+        let (first, later) = if group_first { (1, 2) } else { (2, 1) };
+        let mut out = rig.at(100, Input::PanicCue { cue: id(first) });
+        out.extend(rig.at(100, Input::PanicCueInBatch { cue: id(later) }));
+        let mut stops = voice_stops(&out);
+        stops.sort_by_key(|s| s.0);
+        let want = vec![
+            (id(2), 100, panic_fade(1000)),
+            (id(3), 100, panic_fade(1000)),
+        ];
+        assert_eq!(stops, want, "group first: {group_first}");
+        assert_eq!(rig.state(2), CueState::Stopping);
+        assert_eq!(rig.state(3), CueState::Stopping);
+        // The next command's press is a second one: the child stops at once.
+        let second = rig.at(400, Input::PanicCue { cue: id(2) });
+        assert_eq!(voice_stops(&second), vec![(id(2), 400, None)]);
+        assert_eq!(
+            rig.state(3),
+            CueState::Stopping,
+            "group first: {group_first}"
+        );
+    }
+}
+
+#[test]
+fn a_batch_item_on_a_cue_an_earlier_command_panicked_is_a_second_press() {
+    // Only fading started by the same batch makes a first press: B was pressed before.
+    let mut rig = Rig::panicking(vec![grp(1, GroupMode::Timeline, vec![sound(2), sound(3)])]);
+    rig.start(0, 1);
+    rig.at(100, Input::PanicCue { cue: id(2) });
+    let mut out = rig.at(300, Input::PanicCue { cue: id(1) });
+    out.extend(rig.at(300, Input::PanicCueInBatch { cue: id(2) }));
+    assert_eq!(
+        voice_stops(&out),
+        vec![(id(3), 300, panic_fade(1000)), (id(2), 300, None)]
+    );
+    assert_eq!(rig.state(3), CueState::Stopping);
 }
 
 #[test]

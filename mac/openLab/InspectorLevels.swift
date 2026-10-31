@@ -3,9 +3,8 @@
 import AppKit
 
 /// The Levels tab of an Audio cue (AUD-06, AUD-08) and the Fade tab of a Fade cue (CT-10, AUD-09).
-/// Levels, routing, curve and stop flag are edited by sending the cue's whole `kind` (core's
-/// `CueProperty::Kind`; there is no finer command, docs/commands.md), built from the model's kind with
-/// only the edited fields changed; the Fade's duration has its own `duration` property. Dragging a
+/// Levels, routing, curve and stop flag are edited by sending only the kind fields the edit changed
+/// (core's `CueProperty::KindFields`, docs/commands.md); the engine merges them into the kind it has; the Fade's duration has its own `duration` property. Dragging a
 /// fader or a matrix cell sends every move with one `coalesce` key, so the whole drag is one undo step.
 extension InspectorViewController {
     /// How many file channels the matrix shows when the cue's routing mentions fewer. The engine does
@@ -32,15 +31,15 @@ extension InspectorViewController {
         levels.view = padded(audioLevels.view)
         levelsItem = levels
 
-        let fadeColumns = NSStackView(views: [fadeSettings.view, fadeLevels.view])
-        fadeColumns.orientation = .horizontal
-        fadeColumns.alignment = .top
-        fadeColumns.spacing = 20
-        fadeLevels.view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let fade = NSTabViewItem(identifier: "fade")
-        fade.label = loc("inspector.tab.fade")
-        fade.view = padded(fadeColumns)
-        fadeItem = fade
+        // The curve comes before the levels, as in QLab (Basics, Triggers, Curve, Levels).
+        let curve = NSTabViewItem(identifier: "curve")
+        curve.label = loc("inspector.tab.curve")
+        curve.view = padded(fadeSettings.view)
+        curveItem = curve
+        let fadeLevelsTab = NSTabViewItem(identifier: "fadeLevels")
+        fadeLevelsTab.label = loc("inspector.tab.levels")
+        fadeLevelsTab.view = padded(fadeLevels.view)
+        fadeLevelsItem = fadeLevelsTab
     }
 
     private func padded(_ content: NSView) -> NSView {
@@ -56,24 +55,11 @@ extension InspectorViewController {
         return box
     }
 
-    /// Puts `item` in the tab view or takes it out.
-    func syncTab(_ item: NSTabViewItem?, present wanted: Bool) {
-        guard let item else { return }
-        let present = tabView.tabViewItems.contains { $0 === item }
-        if wanted, !present {
-            tabView.addTabViewItem(item)
-        } else if !wanted, present {
-            tabView.removeTabViewItem(item)
-        }
-    }
-
-    /// Shows the Levels tab for an Audio cue and the Fade tab for a Fade cue, and none otherwise.
+    /// Fills the Levels tab of an Audio cue and the Curve and Levels tabs of a Fade cue.
     func renderLevels(_ cue: Cue, model: WorkspaceModel) {
         let kind = cue.raw["kind"] ?? .null
         let audio = cue.kindType == "audio"
         let fade = cue.kindType == "fade"
-        syncTab(levelsItem, present: audio)
-        syncTab(fadeItem, present: fade)
         let set = LevelSet(kind: kind)
         audioLevels.meter.bank = store.meters
         audioLevels.meter.source = audio ? .cue(cue.id) : nil
@@ -123,8 +109,12 @@ extension InspectorViewController {
         guard !isLocked, let cue = cueForEdit, let kind = cue.raw["kind"] else { return }
         let new = build(kind)
         guard new != kind else { return }
+        // Only the fields this edit changed go out, so a change another client made to the others
+        // (a stop flag set elsewhere, say) before the engine answers is not written back (#457).
+        var changed: [String: JSONValue] = [:]
+        for (field, value) in new.objectValue ?? [:] where kind[field] != value { changed[field] = value }
         messageLabel.stringValue = ""
-        send(.setProperty(cue.id, .kind(new)), cue: cue.id, key: key, revert: [], coalesce: coalesce?(cue.id))
+        send(.setProperty(cue.id, .kindFields(changed)), cue: cue.id, key: key, revert: [], coalesce: coalesce?(cue.id))
     }
 
     func sendLevels(_ set: LevelSet, gesture: Int?) {

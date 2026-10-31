@@ -41,13 +41,23 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let fadeLevels = LevelsPanel(isFade: true)
     let fadeSettings = FadeSettingsPanel()
     var levelsItem: NSTabViewItem?
-    var fadeItem: NSTabViewItem?
+    var curveItem: NSTabViewItem?
+    var fadeLevelsItem: NSTabViewItem?
+    /// Every tab by identifier; `syncTabs` puts the shown cue's into the tab view in order.
+    var tabItems: [String: NSTabViewItem] = [:]
+    /// The Devamp Settings tab, in the tab view only while a Devamp cue is selected.
+    let devampStartNextCheck = NSButton(checkboxWithTitle: loc("inspector.devamp.startNext"), target: nil, action: nil)
+    let devampStopCheck = NSButton(checkboxWithTitle: loc("inspector.devamp.stopTarget"), target: nil, action: nil)
+    let devampModePopup = NSPopUpButton()
+    static let devampModes = ["current_slice", "looping_cue"]
+    /// Clears the Target: an Audio cue's file or a control cue's target cue.
+    let clearTargetButton = NSButton(title: "", target: nil, action: nil)
     /// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14), in the tab view only while
     /// one is selected.
     let timeLoops = TimeLoopsPanel()
     var timeLoopsItem: NSTabViewItem?
-    /// `kind` is replaced whole by a levels or fade edit, so an edit made before the engine answered
-    /// the previous one must start from what was sent (as `pendingTriggers`).
+    /// A levels or fade edit sends only its changed `kind_fields`, but is built from the kind as the
+    /// previous unanswered edit left it, so those fields start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
@@ -214,25 +224,41 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             f.widthAnchor.constraint(equalToConstant: 80).isActive = true
         }
         loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        func pair(_ a: NSView, _ b: NSView) -> NSStackView {
-            let s = NSStackView(views: [a, b])
-            s.spacing = 8
-            s.alignment = .top
-            return s
-        }
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let nameRow = NSStackView(views: [kindIcon, nameField])
         nameRow.spacing = 4
         nameField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // Labels sit left of their fields in one column, as in QLab's Basics.
+        func labelled(_ title: String, _ control: NSView) -> NSView {
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .right
+            label.widthAnchor.constraint(equalToConstant: 52).isActive = true
+            let s = NSStackView(views: [label, control])
+            s.spacing = 6
+            s.alignment = .firstBaseline
+            return s
+        }
+        continuePopup.widthAnchor.constraint(equalToConstant: 94).isActive = true
         let left = column(
             [
-                pair(
-                    row(loc("cuelist.col.number"), numberField), row(loc("cuelist.col.duration"), durationField)),
-                pair(
-                    row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField)),
-                row(loc("inspector.continue"), continuePopup),
-            ], width: 168)
-        let targetRow = NSStackView(views: [targetField, chooseButton])
+                labelled(loc("cuelist.col.number"), numberField),
+                labelled(loc("cuelist.col.duration"), durationField),
+                labelled(loc("cuelist.col.preWait"), preWaitField),
+                labelled(loc("cuelist.col.postWait"), postWaitField),
+                labelled(loc("inspector.continue"), continuePopup),
+            ], width: 152)
+        clearTargetButton.setAX("inspector-target-clear")
+        clearTargetButton.isBordered = false
+        clearTargetButton.image = NSImage(
+            systemSymbolName: "xmark.circle.fill", accessibilityDescription: loc("inspector.target.clear"))
+        clearTargetButton.toolTip = loc("inspector.target.clear")
+        clearTargetButton.target = self
+        clearTargetButton.action = #selector(clearTargetClicked)
+        clearTargetButton.setContentHuggingPriority(.required, for: .horizontal)
+        clearTargetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let targetRow = NSStackView(views: [targetField, clearTargetButton, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
@@ -254,18 +280,24 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         columns.alignment = .top
         columns.distribution = .fill
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        columns.spacing = 12
+        columns.spacing = 10
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
 
         let item = NSTabViewItem(identifier: "basics")
         item.label = loc("inspector.tab.basics")
         item.view = columns
-        tabView.addTabViewItem(item)
-        tabView.addTabViewItem(triggersTab(row: row, column: column))
+        let triggers = triggersTab(row: row, column: column)
         modeItem = modeTab(row: row, column: column)
         loadTimeItem = loadTimeTab(row: row, column: column)
+        let devamp = devampTab(row: row, column: column)
         buildLevelsTabs()
         buildTimeLoopsTab()
+        for i in [item, triggers, devamp]
+            + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
+        {
+            if let id = i.identifier as? String { tabItems[id] = i }
+        }
+        syncTabs(forKind: "")
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self
 
@@ -395,14 +427,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// Shows the Mode tab for a Group cue and hides it otherwise; the controls follow the model.
     private func renderMode(_ cue: Cue) {
-        guard let modeItem else { return }
         let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
-        let present = tabView.tabViewItems.contains { $0 === modeItem }
-        if mode == nil, present {
-            tabView.removeTabViewItem(modeItem)
-        } else if mode != nil, !present {
-            tabView.insertTabViewItem(modeItem, at: 1)
-        }
         guard let mode else { return }
         let type = mode["type"]?.stringValue ?? "timeline"
         groupModePopup.selectItem(at: Self.groupModes.firstIndex(of: type) ?? 0)
@@ -499,6 +524,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetField.placeholderString =
             isTarget ? (noFile ? loc("inspector.target.noFile") : nil) : loc("inspector.target.notApplicable")
         chooseButton.isEnabled = kind == "audio" && !isLocked
+        let targetKey = kind == "audio" ? "media" : "target"
+        let hasTarget = (isTarget || kind == "audio") && !(cue.raw["kind"]?[targetKey]?.stringValue ?? "").isEmpty
+        clearTargetButton.isEnabled = hasTarget && !isLocked
         if kind == "audio" {
             targetField.stringValue = cue.raw["kind"]?["media"]?.stringValue ?? ""
         } else if !isTarget {
@@ -508,7 +536,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetField.toolTip = targetField.stringValue.isEmpty ? nil : targetField.stringValue
         // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
         durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
-        syncTab(loadTimeItem, present: kind == "load")
+        syncTabs(forKind: kind)
         let colour = cue.raw["color"]?.stringValue ?? "none"
         colourPopup.selectItem(at: Self.colours.firstIndex(of: colour) ?? 0)
         let mode = cue.raw["continue_mode"]?.stringValue ?? "do_not_continue"
@@ -525,6 +553,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
         renderMode(cue)
+        renderDevamp(cue)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -552,7 +581,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var lockedControls: [NSControl] {
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
-            hotkeyField, hotkeyClear, chooseButton,
+            hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
+            devampModePopup,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]
@@ -647,7 +677,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             let outcome = await store.send(command: command, coalesce: coalesce)
             // Answered: the model holds the edit (or refused it), so the unanswered copy must not hide it
             // from the render below.
-            if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
+            if let sentKind, pendingKinds[cue] == sentKind {
+                pendingKinds[cue] = nil
+                // The panels were last drawn with the overlay; show the model's kind now it is gone.
+                if selection == [cue] { render() }
+            }
             if case .failure(let error) = outcome {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
@@ -684,6 +718,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
         let type = property["type"]?.stringValue
         if type == "kind" { return property["value"] }
+        if type == "kind_fields", let fields = property["value"]?.objectValue,
+            let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
+        {
+            for (field, value) in fields { kind.set(field, value) }
+            return kind
+        }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         else { return nil }

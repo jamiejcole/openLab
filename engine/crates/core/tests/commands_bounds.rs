@@ -48,6 +48,18 @@ fn oversize_kinds() -> Vec<CueKind> {
     ]
 }
 
+/// `kind` as a `KindFields` value: every field a client may name (not `type`, `media`, `children`).
+fn kind_fields_of(kind: &CueKind) -> CueProperty {
+    let mut value = match serde_json::to_value(kind).unwrap() {
+        serde_json::Value::Object(map) => map,
+        _ => panic!("a kind serializes to an object"),
+    };
+    for key in ["type", "media", "children"] {
+        value.remove(key);
+    }
+    CueProperty::KindFields { value }
+}
+
 fn with_kind(n: u128, kind: CueKind) -> Cue {
     let mut c = cue(n, CueKind::Memo);
     c.kind = kind;
@@ -121,7 +133,23 @@ fn an_oversize_network_message_is_refused_on_every_path_that_makes_one() {
             &w,
             Command::SetCueProperty {
                 id: cue_id(1),
-                property: CueProperty::Kind { value: kind },
+                property: CueProperty::Kind {
+                    value: kind.clone(),
+                },
+            },
+        );
+        // The same fields named one by one, on a Network cue that has them.
+        let mut small = w.clone();
+        small.cue_lists[0].cues[0].kind = CueKind::Network {
+            destination: net_id(1),
+            address: "/go".into(),
+            args: vec![],
+        };
+        assert_refused(
+            &small,
+            Command::SetCueProperty {
+                id: cue_id(1),
+                property: kind_fields_of(&kind),
             },
         );
     }
@@ -335,6 +363,15 @@ fn a_trim_or_slice_under_50_ms_is_refused_on_every_path_and_50_ms_is_accepted() 
         ] {
             assert_refused(&w, command);
         }
+        let mut on_audio = w.clone();
+        on_audio.cue_lists[0].cues[0].kind = audio();
+        assert_refused(
+            &on_audio,
+            Command::SetCueProperty {
+                id: cue_id(1),
+                property: kind_fields_of(&bad.kind),
+            },
+        );
         let ok = short_region(0.05, as_trim);
         let mut work = w.clone();
         History::new()
@@ -348,4 +385,68 @@ fn a_trim_or_slice_under_50_ms_is_refused_on_every_path_and_50_ms_is_accepted() 
             )
             .unwrap();
     }
+}
+
+/// An Audio cue with `n` slice markers one second apart.
+fn many_slices(n: usize) -> Cue {
+    let mut kind = audio();
+    if let CueKind::Audio { slices, .. } = &mut kind {
+        *slices = (1..=n)
+            .map(|i| SliceMarker {
+                time: i as f64,
+                play_count: 1,
+            })
+            .collect();
+    }
+    cue(5, kind)
+}
+
+#[test]
+fn more_slice_markers_than_the_audio_engine_plays_are_refused_on_every_path() {
+    let w = ws();
+    let bad = many_slices(MAX_SLICE_MARKERS + 1);
+    for command in [
+        Command::AddCue {
+            at: at_end(),
+            cue: bad.clone(),
+            auto_number: false,
+        },
+        Command::Paste {
+            at: at_end(),
+            cues: vec![bad.clone()],
+        },
+        Command::PasteClipboard {
+            at: at_end(),
+            cues: vec![bad.clone()],
+            source_dir: None,
+        },
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: CueProperty::Kind {
+                value: bad.kind.clone(),
+            },
+        },
+    ] {
+        assert_refused(&w, command);
+    }
+    let mut on_audio = w.clone();
+    on_audio.cue_lists[0].cues[0].kind = audio();
+    assert_refused(
+        &on_audio,
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: kind_fields_of(&bad.kind),
+        },
+    );
+    let mut work = w.clone();
+    History::new()
+        .execute(
+            &mut work,
+            Command::AddCue {
+                at: at_end(),
+                cue: many_slices(MAX_SLICE_MARKERS),
+                auto_number: false,
+            },
+        )
+        .unwrap();
 }

@@ -13,6 +13,13 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
     let table: NSTableView = NonKeyTableView()
     let checkButton = NSButton(title: loc("preshow.checkAgain"), target: nil, action: nil)
     let summaryLabel = NSTextField(labelWithString: "")
+    let inspectButton = NSButton(title: loc("preshow.inspect"), target: nil, action: nil)
+    let hideButton = NSButton(title: loc("preshow.hide"), target: nil, action: nil)
+    let showHiddenCheckbox = NSButton(checkboxWithTitle: loc("preshow.showHidden"), target: nil, action: nil)
+    /// Entries the operator hid, for this workspace window's lifetime (app state: nothing is
+    /// written to the show file, so another machine or a relaunch shows them again).
+    private(set) var hidden: Set<String> = []
+    private(set) var showHidden = false
     /// A cue entry was chosen: the cue and the inspector tab that holds what to fix.
     var onInspect: ((ModelID, String?) -> Void)?
     private(set) var rows: [PreshowRow] = []
@@ -87,9 +94,39 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     func show(_ report: PreshowReport) {
         self.report = report
-        setRows(PreshowRows.make(report: report, model: store.model))
-        summaryLabel.stringValue = PreshowRows.summary(report)
+        redraw()
         summaryLabel.textColor = report.ok ? .labelColor : .systemRed
+    }
+
+    /// Rebuilds the list from the report with the hide choices applied.
+    private func redraw() {
+        guard let report else { return }
+        setRows(PreshowRows.make(report: report, model: store.model, hidden: hidden, showHidden: showHidden))
+        let count = hiddenCount
+        let summary = PreshowRows.summary(report)
+        summaryLabel.stringValue = count == 0 ? summary : String(format: loc("preshow.summary.hidden"), summary, count)
+        updateControls()
+    }
+
+    /// Entries of the current report that are hidden.
+    var hiddenCount: Int {
+        guard let report else { return 0 }
+        return PreshowRows.make(report: report, model: store.model, hidden: hidden, showHidden: true)
+            .filter { !$0.isHeading && $0.isHidden }.count
+    }
+
+    /// Hides the selected entry, or shows it again when it is hidden.
+    func toggleHidden(row: Int) {
+        guard rows.indices.contains(row), !rows[row].isHeading else { return }
+        let key = rows[row].hideKey
+        if !hidden.insert(key).inserted { hidden.remove(key) }
+        redraw()
+    }
+
+    func setShowHidden(_ on: Bool) {
+        showHidden = on
+        showHiddenCheckbox.state = on ? .on : .off
+        redraw()
     }
 
     /// A new report starts with nothing selected: a selection left on whatever row now sits at
@@ -119,6 +156,12 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     private func updateControls() {
         checkButton.isEnabled = connected && !checking
+        let row = table.selectedRow
+        let entry = rows.indices.contains(row) && !rows[row].isHeading ? rows[row] : nil
+        inspectButton.isEnabled = entry?.cue != nil
+        hideButton.isEnabled = entry != nil
+        hideButton.title = loc(entry?.isHidden == true ? "preshow.unhide" : "preshow.hide")
+        showHiddenCheckbox.isEnabled = report != nil
     }
 
     // MARK: Choosing an entry
@@ -142,6 +185,15 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
         if row >= 0, row != chosenByMouseDown, table.selectedRow == row { choose(row: row) }
     }
 
+    /// Inspect Cue: selects the chosen entry's cue and opens the tab that fixes it.
+    @objc func inspectClicked() {
+        let row = table.selectedRow
+        if row >= 0 { choose(row: row) }
+    }
+
+    @objc private func hideClicked() { toggleHidden(row: table.selectedRow) }
+    @objc private func showHiddenClicked() { setShowHidden(showHiddenCheckbox.state == .on) }
+
     @objc private func checkClicked() { Task { await runCheck() } }
 
     // MARK: Views
@@ -158,6 +210,22 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
         summaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let bar = NSStackView(views: [summaryLabel, checkButton])
         bar.spacing = 8
+        for (b, action, ax) in [
+            (inspectButton, #selector(inspectClicked), AX.preshowInspect),
+            (hideButton, #selector(hideClicked), AX.preshowHide),
+        ] {
+            b.bezelStyle = .rounded
+            b.target = self
+            b.action = action
+            b.setAX(ax)
+            b.isEnabled = false
+        }
+        showHiddenCheckbox.target = self
+        showHiddenCheckbox.action = #selector(showHiddenClicked)
+        showHiddenCheckbox.setAX(AX.preshowShowHidden)
+        showHiddenCheckbox.isEnabled = false
+        let actions = NSStackView(views: [inspectButton, hideButton, showHiddenCheckbox])
+        actions.spacing = 8
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("entry"))
         column.title = loc("preshow.title")
@@ -169,19 +237,21 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
         table.delegate = self
         table.target = self
         table.action = #selector(rowClicked)
+        table.doubleAction = #selector(inspectClicked)
         table.setAX(AX.preshowTable, label: loc("preshow.title"))
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
 
-        let root = NSStackView(views: [bar, scroll])
+        let root = NSStackView(views: [bar, scroll, actions])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 8
         root.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -20).isActive = true
         bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -20).isActive = true
+        actions.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor, constant: -20).isActive = true
         return root
     }
 
@@ -205,6 +275,7 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
+        updateControls()
         guard row >= 0, !reloading else { return }
         if NSApp.currentEvent?.type == .leftMouseDown { chosenByMouseDown = row }
         choose(row: row)
@@ -238,6 +309,11 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
                             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                             .foregroundColor: NSColor.secondaryLabelColor,
                         ]))
+            }
+            if r.isHidden {
+                text.addAttribute(
+                    .foregroundColor, value: NSColor.tertiaryLabelColor,
+                    range: NSRange(location: 0, length: text.length))
             }
             field.attributedStringValue = text
         }

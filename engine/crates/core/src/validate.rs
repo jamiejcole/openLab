@@ -14,7 +14,8 @@ use std::hash::Hash;
 
 use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
 use crate::cue::{
-    CueKind, CueLevels, MAX_CHANNELS, MAX_DB, MAX_TIME, OscArg, SILENCE_DB, SliceMarker,
+    CueKind, CueLevels, MAX_CHANNELS, MAX_DB, MAX_SLICE_MARKERS, MAX_TIME, OscArg, SILENCE_DB,
+    SliceMarker,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
@@ -163,6 +164,9 @@ pub enum IssueKind {
     SliceMoved { from: f64, to: f64 },
     /// Slice markers were out of order; they were sorted.
     SlicesUnsorted,
+    /// The cue had `count` more slice markers than [`MAX_SLICE_MARKERS`], the most the audio
+    /// engine can play; the last ones were removed.
+    TooManySlices { count: usize },
     /// `count` entries of `field` referred to channels or outputs that do not exist; removed.
     IndexOutOfRange { field: &'static str, count: usize },
     /// The Audio cue has `count` more outputs than its patch; they are kept but silent.
@@ -269,6 +273,10 @@ impl fmt::Display for ValidationIssue {
                 MIN_SLICE_SECONDS * 1000.0
             ),
             IssueKind::SlicesUnsorted => write!(f, "slices out of order; sorted"),
+            IssueKind::TooManySlices { count } => write!(
+                f,
+                "{count} slice markers beyond the limit of {MAX_SLICE_MARKERS}; removed"
+            ),
             IssueKind::IndexOutOfRange { field, count } => {
                 write!(
                     f,
@@ -889,7 +897,13 @@ impl Checker {
                 kept.pop();
             }
         }
+        // Last, so the markers that go are the ones a player would reach last.
+        let excess = kept.len().saturating_sub(MAX_SLICE_MARKERS);
+        kept.truncate(MAX_SLICE_MARKERS);
         *slices = kept;
+        if excess > 0 {
+            self.warn(id, IssueKind::TooManySlices { count: excess });
+        }
         for (from, to) in moved {
             self.warn(id, IssueKind::SliceMoved { from, to });
         }

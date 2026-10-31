@@ -77,19 +77,19 @@ final class SidebarTests: XCTestCase {
 
     // MARK: Transport strip
 
-    /// A button that is enabled must do something: the window controller gives it an action.
-    /// Reset all has no engine command yet, so it is disabled and its tooltip says why.
-    func testEveryEnabledTransportButtonHasAnActionAndResetAllIsDisabledWithItsReason() async throws {
+    /// Every transport button is enabled and does something: the window controller gives it an
+    /// action, Reset all included (QLab's top row: reset, pause, resume, panic).
+    func testEveryTransportButtonIsEnabledWithAnAction() async throws {
         let wc = try await make()
         wc.sidebar.loadViewIfNeeded()
         XCTAssertEqual(wc.sidebar.transportButtons.count, 4)
-        for (id, button) in wc.sidebar.transportButtons where button.isEnabled {
-            XCTAssertNotNil(button.action, "\(id) is enabled but has no action")
-            XCTAssertNotNil(button.target, "\(id) is enabled but has no target")
+        for (id, button) in wc.sidebar.transportButtons {
+            XCTAssertTrue(button.isEnabled, "\(id) is disabled")
+            XCTAssertNotNil(button.action, "\(id) has no action")
+            XCTAssertNotNil(button.target, "\(id) has no target")
         }
         let reset = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportReset])
-        XCTAssertFalse(reset.isEnabled)
-        XCTAssertEqual(reset.toolTip, loc("transport.reset.unavailable"))
+        XCTAssertEqual(reset.toolTip, loc("transport.reset"))
     }
 
     // MARK: Cue lists
@@ -205,6 +205,36 @@ final class SidebarTests: XCTestCase {
         XCTAssertNotNil(sent["id"]?.stringValue)
         await assertEventually { picked != nil }
         XCTAssertEqual(picked?.raw, sent["id"]?.stringValue)
+    }
+
+    /// The right-click menu on a list row renames and deletes it; Show Mode and an engine refusal
+    /// are both handled.
+    func testListRowMenuRenamesAndDeletesAndRefusesInShowMode() async throws {
+        let wc = try await make()
+        let list = try XCTUnwrap(side.lists.first).id
+        let sent = { (type: String) -> [JSONValue] in
+            self.rig.engine.received.compactMap {
+                if case .command(_, let c, _) = $0, c.json["type"]?.stringValue == type { return c.json }
+                return nil
+            }
+        }
+        await side.rename(list: list, to: "Front of House")
+        XCTAssertEqual(sent("rename_cue_list").last?["name"]?.stringValue, "Front of House")
+        XCTAssertEqual(sent("rename_cue_list").last?["id"]?.stringValue, list.raw)
+        var notices: [String] = []
+        side.onNotice = { notices.append($0) }
+        rig.engine.refuseCommands = true
+        await side.delete(list: list)
+        XCTAssertEqual(sent("remove_cue_list").count, 1)
+        XCTAssertEqual(notices.count, 1, "the engine's refusal is shown")
+        rig.engine.refuseCommands = false
+        wc.setShowMode(true)
+        await assertEventually { wc.sidebar.listEditLocked }
+        side.listEditLocked = true
+        await side.rename(list: list, to: "Other")
+        await side.delete(list: list)
+        XCTAssertEqual(sent("rename_cue_list").count, 1)
+        XCTAssertEqual(sent("remove_cue_list").count, 1)
     }
 
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {

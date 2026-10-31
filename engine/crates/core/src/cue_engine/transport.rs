@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace-wide transport: Panic (PB-03), Stop All, Pause All and Resume All (PB-04). They reach every
-//! cue of every list at every depth through the per-cue operations, so every rule of those
-//! holds. Rules: `docs/cue-engine.md`, "Panic" and "Pause All and Resume All".
+//! Workspace-wide transport: Panic (PB-03), Stop All, Reset All, Pause All and Resume All
+//! (PB-04). They reach every cue of every list at every depth through the per-cue operations,
+//! so every rule of those holds. Rules: `docs/cue-engine.md`, "Panic", "Reset All" and "Pause
+//! All and Resume All".
 
 use std::collections::HashSet;
 
@@ -85,6 +86,31 @@ impl CueEngine {
         }
     }
 
+    /// Reset All (QLab's sidebar reset, manual pp. 97-98): a hard stop of everything (as Stop
+    /// All), then a Reset of every cue that still has a runtime (broken at run time, loaded),
+    /// children before their groups; random groups start a fresh cycle and every list's
+    /// playhead goes back to its first cue, as when the workspace was opened. Priming the cue
+    /// now standing by is the binary's job, as after any playhead move.
+    pub(super) fn reset_all(&mut self, cx: &mut Ctx) {
+        self.stop_all(cx);
+        if !self.slots.is_empty() {
+            for tree in Self::trees(cx) {
+                for cue in tree.into_iter().rev() {
+                    if self.slots.contains_key(&cue) {
+                        self.reset_one(cue, cx);
+                    }
+                }
+            }
+        }
+        self.continued.clear();
+        self.random_cycles.clear();
+        let ws = cx.ws;
+        for list in &ws.cue_lists {
+            let first = super::playhead::positions(&list.cues).first().copied();
+            self.move_playhead(list.id, first, cx);
+        }
+    }
+
     /// A lost device (M4.2g): every active run stops at once, children before their groups, so
     /// nothing scheduled before the loss starts by itself after the device returns. Loaded cues
     /// and settled broken cues stay as they are.
@@ -151,12 +177,34 @@ impl CueEngine {
         }
     }
 
+    /// One press of a cue's panic: a second press on a cue already fading out in a panic stops
+    /// it at once (QLab check Q7), else it fades. The cues it sets fading are noted for the rest
+    /// of the batch, whose later items count them as not yet panicked: a batch of a group and
+    /// its child is one press of each, so the child fades with its group instead of being cut.
+    pub(super) fn press_panic(&mut self, cue: CueId, cx: &mut Ctx) {
+        if self.fading_in_panic(cue, cx) {
+            return self.stop_tree(cue, None, cx);
+        }
+        let mut tree = self.inside(cue, cx);
+        tree.push(cue);
+        let calm: Vec<CueId> = (tree.into_iter())
+            .filter(|id| matches!(self.slots.get(id), Some(Slot::Active(r)) if !r.panicked))
+            .collect();
+        self.panic_tree(cue, cx);
+        for id in calm {
+            if matches!(self.slots.get(&id), Some(Slot::Active(r)) if r.panicked) {
+                self.batch_panicked.insert(id);
+            }
+        }
+    }
+
     /// A press of `PanicCue` is a second one when the cue itself is fading out in a panic (a
     /// workspace Panic or its own), or it has active descendants and every one of them is. A group
-    /// with only some children already fading is on its first press: the rest fade.
+    /// with only some children already fading is on its first press: the rest fade. A cue an
+    /// earlier item of the same batch set fading does not count as fading (`press_panic`).
     pub(super) fn fading_in_panic(&self, cue: CueId, cx: &Ctx) -> bool {
         let panicked = |id: &CueId| match self.slots.get(id) {
-            Some(Slot::Active(run)) => Some(run.panicked),
+            Some(Slot::Active(run)) => Some(run.panicked && !self.batch_panicked.contains(id)),
             _ => None,
         };
         if panicked(&cue) == Some(true) {

@@ -20,6 +20,10 @@ enum CueProperty: Hashable, Sendable {
     case secondTriggerOnRelease(Bool)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
+    /// Named fields of the cue's kind alone (`levels`, `curve`, `slices`, ...): the engine merges them
+    /// into the kind it has now, so another client's edit to the rest of the kind is kept. Not `type`,
+    /// `children` or `media`.
+    case kindFields([String: JSONValue])
     /// An audio cue's file alone (an absolute path; the engine stores it relative to the show folder
     /// when inside it); nil clears it. Levels, routing, fades and slices stay.
     case media(String?)
@@ -54,6 +58,7 @@ enum CueProperty: Hashable, Sendable {
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
         case .kind(let v): return p("kind", v)
+        case .kindFields(let v): return p("kind_fields", .object(v))
         case .media(let v): return p("media", v.map { .string($0) } ?? .null)
         case .destination(let v): return p("destination", .string(v.raw))
         case .address(let v): return p("address", .string(v))
@@ -123,6 +128,16 @@ extension Command {
                 "type": .string("add_cue_list"), "index": .int(Int64(index)), "id": .string(id.raw),
                 "name": .string(name),
             ]))
+    }
+
+    /// `RenameCueList { id, name }`.
+    static func renameCueList(id: ModelID, name: String) -> Command {
+        Command(.object(["type": .string("rename_cue_list"), "id": .string(id.raw), "name": .string(name)]))
+    }
+
+    /// `RemoveCueList { id }`: the engine refuses a list that holds cues and the only list.
+    static func removeCueList(id: ModelID) -> Command {
+        Command(.object(["type": .string("remove_cue_list"), "id": .string(id.raw)]))
     }
 
     /// `SetCueProperty { id, property }`.

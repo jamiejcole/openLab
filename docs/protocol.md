@@ -59,6 +59,7 @@ The macOS client (`EngineClient`) gives each live message (`transport`, `command
 | `stop_all`, `hard_stop_all` | - | `StopAll`: every cue and preview stops at once (no fade, nothing pending fires, no panic window). The two are the same today, as `stop` and `hard_stop` are for one cue (no stop fade-outs yet); they are kept apart so a client can say which it means (the OSC API's `/stop` and `/hardStop`) |
 | `panic_cue` | `cue` | `PanicCue`: the cue's own panic (as its `panic` second trigger): it and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched |
 | `pause_all`, `resume_all` | - | `PauseAll`, `ResumeAll` |
+| `reset_all` | - | `ResetAll`: every cue and preview stops at once as for `stop_all` (a panic fade under way included), every cue is reset (a run-time break cleared, a loaded cue unloaded), random groups start a fresh cycle and each list's playhead goes back to its first cue: the doc as just opened. The app's sidebar Reset all |
 | `set_playhead` | `list`, `cue` (null: past the end) | `SetPlayhead` |
 | `set_playhead_by_number` | `list`, `number` | `SetPlayheadByNumber` |
 | `playhead_next`, `playhead_previous` | `list` | `PlayheadNext`, `PlayheadPrevious` |
@@ -71,9 +72,9 @@ The macOS client (`EngineClient`) gives each live message (`transport`, `command
 | `trigger_released` | `cue` | `TriggerReleased` (second trigger on release) |
 | `preview` | `cue` | `Preview` (M4.13): an audio cue, or every armed audio cue in a group (M2.28) |
 | `stop_preview` | `cue` (optional; absent or null: every preview) | `StopPreview` |
-| `batch` | `actions`: 1 to 4096 (`MAX_BATCH_ACTIONS`) per-cue actions | Each item's input, in order, all at one scheduling time and before anything else is handled, so cues started together start on the same sample and cues stopped together end on the same sample (NFR-21; the app's Start, Stop, Pause/Resume, Reset and Preview Selected, M5.11g). An item is `start`, `stop`, `hard_stop`, `panic_cue`, `pause`, `resume`, `load`, `reset`, `preview` or `stop_preview` with a `cue`; no cue twice. An empty or longer list, another action (a nested `batch` among them) or a repeated cue makes the frame `bad_request`, nothing done. A cue not in the workspace gets `unknown_cue` and the other items still run, as separate actions would; one `result` for the batch |
+| `batch` | `actions`: 1 to 4096 (`MAX_BATCH_ACTIONS`) per-cue actions | Each item's input, in order, all at one scheduling time and before anything else is handled, so cues started together start on the same sample and cues stopped together end on the same sample (NFR-21; the app's Start, Stop, Pause/Resume, Reset and Preview Selected, M5.11g). An item is `start`, `stop`, `hard_stop`, `panic_cue`, `pause`, `resume`, `load`, `reset`, `preview` or `stop_preview` with a `cue`; no cue twice. An empty or longer list, another action (a nested `batch` among them) or a repeated cue makes the frame `bad_request`, nothing done. A cue not in the workspace gets `unknown_cue` and the other items still run, as separate actions would; one `result` for the batch. The `panic_cue` items are one press: a cue fading only because an earlier item panicked it (its group, or its children) is not pressed a second time (docs/cue-engine.md, Panic) |
 
-`stop_all`, `hard_stop_all`, `panic_cue` and `go_from` were added with the OSC API (M4.5b). The Swift `Codable` types do not exist yet: **M5 must implement all four** (fixtures `transport_stop_all.json`, `transport_hard_stop_all.json`, `transport_panic_cue.json`, `transport_go_from.json`).
+`stop_all`, `hard_stop_all`, `panic_cue` and `go_from` were added with the OSC API (M4.5b); `reset_all` with the app's Reset all. The Swift `Codable` types cover every action (fixtures `transport_*.json`).
 
 The `result` of a transport action means "accepted and handed to the cue engine"; what happened shows in `runtime` (states, playhead, warnings such as `go_ignored` or `trigger_ignored`).
 
@@ -176,7 +177,9 @@ M5.6b additions (`PROTOCOL_VERSION` stayed 2): the cue properties `duration` (`{
 
 M5.4d additions (`PROTOCOL_VERSION` stayed 2): the snapshot's optional `media_durations` and the `media_duration` runtime change (fixtures `server/snapshot.json`, `server/runtime_media_duration.json`). A client ignores a runtime change `type` it does not know (the Swift client logs it), so an older client is unaffected.
 
-The app's Timing & Loops tab sends an Audio cue's trims, slice markers (`slices`, each `{time, play_count}`), `last_slice_play_count` and integrated fades (`fade_in`, `fade_out`) as its `kind` cue property, the rest of the kind unchanged (fixture `client/command_set_audio_timing.json`; no new message or field).
+The cue property `kind_fields` (`{ "type": "kind_fields", "value": { field: value, ... } }`, fixture `client/command_set_kind_fields.json`; `PROTOCOL_VERSION` stayed 4, an older engine refuses the unknown property type) sets the named top-level fields of the cue's kind and leaves every other field as the engine has it, so a change another client made to those fields before this one arrives is kept. It is `kind`'s rules otherwise (never to or from a Group, the merged kind is judged whole, not for `batch_set`); `type`, `children` and `media` cannot be named, nor a field the kind does not have, nor a value of the wrong type (`result` error). Undo restores the whole old kind.
+
+The app's Timing & Loops tab sends an Audio cue's trims, slice markers (`slices`, each `{time, play_count}`), `last_slice_play_count` and integrated fades (`fade_in`, `fade_out`), and the Levels and Fade tabs send levels, `curve` and `stop_target_when_done`, each as the `kind_fields` it changed.
 
 ### Media durations
 

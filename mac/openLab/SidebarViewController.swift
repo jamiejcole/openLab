@@ -119,7 +119,7 @@ final class WarningCell: NSTableCellView {
 /// broken cue with why, and the engine's notices (DX-01). It reads the store and
 /// reports intents through closures; it never talks to the engine.
 @MainActor
-final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     private static let transport: [(id: String, icon: Icon, key: String)] = [
         (AX.transportReset, .transportReset, "transport.reset"),
         (AX.transportPause, .transportPause, "transport.pause"),
@@ -155,6 +155,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             warningsTable.reloadData()
         }
     }
+
+    /// Show Mode: renaming and deleting lists change the workspace, so the list menu is off.
+    var listEditLocked = false
+    /// Why a list edit was refused (the window shows it as a sheet).
+    var onNotice: ((String) -> Void)?
 
     private(set) var transportButtons: [String: NSButton] = [:]
     private(set) var lists: [CueList] = []
@@ -216,12 +221,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             button.imageScaling = .scaleProportionallyDown
             button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
-            if entry.id == AX.transportReset {
-                // The engine has no reset-all command yet (#123); an enabled button that does
-                // nothing is worse than a disabled one in an emergency.
-                button.isEnabled = false
-                button.toolTip = loc("transport.reset.unavailable")
-            }
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)
         }
@@ -283,6 +282,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         table.headerView = nil
         table.dataSource = self
         table.delegate = self
+        if table === listTable {
+            let menu = NSMenu()
+            menu.delegate = self
+            table.menu = menu
+        }
         table.setAX(id, label: label)
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -299,6 +303,69 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             guard let self else { return }
             let sent = await store.send(command: .addCueList(id: id, name: name, index: index))
             if case .success = sent { onSelectList?(id) }
+        }
+    }
+
+    // MARK: List menu (right-click a list row)
+
+    /// The list row the menu opened on; nil when the click missed every row.
+    private var menuList: CueList? {
+        lists.indices.contains(listTable.clickedRow) ? lists[listTable.clickedRow] : nil
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard menuList != nil else { return }
+        let rename = menu.addItem(
+            withTitle: loc("sidebar.list.rename"), action: #selector(renameListClicked), keyEquivalent: "")
+        let delete = menu.addItem(
+            withTitle: loc("sidebar.list.delete"), action: #selector(deleteListClicked), keyEquivalent: "")
+        for item in [rename, delete] {
+            item.target = self
+            item.isEnabled = !listEditLocked
+        }
+    }
+
+    @objc private func renameListClicked() {
+        guard let list = menuList, let window = view.window else { return }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        field.stringValue = list.name
+        let alert = NSAlert()
+        alert.messageText = loc("sidebar.list.rename.prompt")
+        alert.accessoryView = field
+        alert.addButton(withTitle: loc("sidebar.list.rename.ok"))
+        alert.addButton(withTitle: loc("edit.cancel"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { await self?.rename(list: list.id, to: field.stringValue) }
+        }
+    }
+
+    @objc private func deleteListClicked() {
+        guard let list = menuList else { return }
+        Task { await delete(list: list.id) }
+    }
+
+    /// Renames a list. Empty text and an unchanged name send nothing.
+    func rename(list id: ModelID, to name: String) async {
+        guard !listEditLocked, let list = lists.first(where: { $0.id == id }), !name.isEmpty, name != list.name else {
+            return
+        }
+        report(await store.send(command: .renameCueList(id: id, name: name)))
+    }
+
+    /// Deletes an empty list; the engine refuses one with cues and the only list, and the reason is shown.
+    func delete(list id: ModelID) async {
+        guard !listEditLocked, lists.contains(where: { $0.id == id }) else { return }
+        report(await store.send(command: .removeCueList(id: id)))
+    }
+
+    private func report(_ result: Result<OkBody, EngineError>) {
+        guard case .failure(let error) = result else { return }
+        if case .engine(_, let message) = error {
+            onNotice?(String(format: loc("edit.error.refused"), message))
+        } else {
+            onNotice?(loc("edit.error.notConnected"))
         }
     }
 

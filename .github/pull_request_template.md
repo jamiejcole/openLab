@@ -11,7 +11,7 @@ IDs (e.g. AUD-07, NFR-02):
 `PREPUSH PASS <sha>` line (the sha must be the PR head; `scripts/prepush.sh --check` verifies it):
 
 ## Review
-R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows filed #…
+R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows dropped: <one line each, or none>
 Pre-existing findings filed: #… (or none)
 
 ## Docs claims
