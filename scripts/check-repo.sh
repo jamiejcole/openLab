@@ -3,8 +3,8 @@
 # Repo hygiene checks that need no toolchain; run by `make lint` and the `checks` CI job.
 # Runs every check and lists every failure, so one run shows all of them.
 #
-# Known failures that an open branch fixes go in scripts/check-repo-known.txt (`check | item | reason`),
-# never into a weaker check; delete the entry in the commit that fixes the finding.
+# Known failures go in scripts/check-repo-known.txt (`check | item | reason`; the reason cites
+# an open issue or starts `permanent:`), never into a weaker check; delete the entry in the commit that fixes the finding.
 # Behaviour-changing uses of debug_assertions are allowed only for files listed in
 # scripts/debug-assertions-allowlist.txt, wall-clock use in engine test code only for files listed in
 # scripts/wall-clock-allowlist.txt (both `path | reason`; allowlist_entries says what a reason needs).
@@ -110,7 +110,23 @@ known() {
   awk -F' *\\| *' -v c="$1" -v i="$2" '$1 == c && $2 == i && $3 != "" { found = 1 } END { exit !found }' "$KNOWN" 2>/dev/null
 }
 
-# 1. SPDX header on every source file (CLAUDE.md, "Every source file").
+# known_entries: every known-failure reason cites an open issue (`#N`) or starts `permanent:`.
+known_entries() {
+  local check item reason n
+  while IFS='|' read -r check item reason; do
+    case "$check" in '' | '#'*) continue ;; esac
+    reason=${reason# }
+    case "$reason" in permanent:*) continue ;; esac
+    n=$(printf '%s' "$reason" | grep -oE '#[0-9]+' | head -n 1 | tr -d '#')
+    if [ -z "$n" ]; then
+      fail known "$KNOWN: entry '${check% } |${item% }' cites no open issue (#N) and is not 'permanent:'"
+    elif ! issue_open "$n"; then
+      fail known "$KNOWN: entry '${check% } |${item% }' cites #$n, which is not open"
+    fi
+  done <"$KNOWN"
+}
+
+# 1. SPDX header on every source file (CLAUDE.md, "Contracts (same commit)").
 spdx() {
   local missing
   missing=$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' '*.strings' 'scripts/hooks/*' Makefile |
@@ -276,6 +292,7 @@ soak_classifier() {
   rm -rf "$d"
 }
 
+known_entries
 spdx
 strings_keys
 debug_assertions
