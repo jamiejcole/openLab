@@ -429,6 +429,15 @@ fn more_slice_markers_than_the_audio_engine_plays_are_refused_on_every_path() {
     ] {
         assert_refused(&w, command);
     }
+    let mut on_audio = w.clone();
+    on_audio.cue_lists[0].cues[0].kind = audio();
+    assert_refused(
+        &on_audio,
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: kind_fields_of(&bad.kind),
+        },
+    );
     let mut work = w.clone();
     History::new()
         .execute(
