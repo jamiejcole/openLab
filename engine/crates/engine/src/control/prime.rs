@@ -91,12 +91,16 @@ impl Engine {
 impl DocCx<'_> {
     /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
     pub(super) fn prime(&mut self, now: SampleTime) {
-        let wanted = prime_set(&self.doc.ws, &self.doc.engine, self.eng.config.prime_cues);
+        let wanted = prime_set(
+            self.doc.model.ws(),
+            self.doc.model.engine(),
+            self.eng.config.prime_cues,
+        );
         // Their files are probed first (H2: a restart mid-show must not leave the cue at the
         // playhead behind a hundred others).
         let keys: Vec<String> = wanted
             .iter()
-            .filter_map(|c| match &self.doc.ws.find_cue(*c)?.kind {
+            .filter_map(|c| match &self.doc.model.ws().find_cue(*c)?.kind {
                 CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
                 _ => None,
             })
@@ -117,7 +121,7 @@ impl DocCx<'_> {
         };
         let mut env = Env {
             doc: self.doc.id,
-            ws: &self.doc.ws,
+            ws: self.doc.model.ws(),
             media: &self.doc.media,
             streamer: &mut self.eng.streamer,
             patches: &self.eng.patches,

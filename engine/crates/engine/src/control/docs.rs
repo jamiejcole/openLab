@@ -46,6 +46,7 @@ use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
 use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
 use super::media::{Indexed, MediaCatalog, index_workspace};
+use super::model::DocModel;
 use super::{
     Control, ControlConfig, ControlError, Doc, DocCx, DocId, Engine, Inbox, MAX_DOCS, ReplyTx,
     Scope, fail, notice, ok,
@@ -155,10 +156,14 @@ pub struct Loaded {
 
 /// Everything a doc being opened needs, built on the document worker (ARCHITECTURE §3.1).
 pub struct DocParts {
-    loaded: Loaded,
-    /// A cue engine that has followed the workspace once (its static problems and playheads
-    /// worked out) ...
-    engine: CueEngine,
+    /// The workspace and a cue engine that has followed it once (its static problems and
+    /// playheads worked out) ...
+    model: DocModel,
+    /// The show file it came from; `None` for an autosave opened as untitled.
+    path: Option<PathBuf>,
+    /// Has changes the show file lacks (restored from an autosave).
+    dirty: bool,
+    notices: Vec<WireWarning>,
     /// ... and what it said doing so, carried out when the doc is installed.
     actions: Vec<Action>,
     /// The media catalog's reading of the workspace.
@@ -170,25 +175,33 @@ pub struct DocParts {
 impl fmt::Debug for DocParts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DocParts")
-            .field("loaded", &self.loaded)
+            .field("path", &self.path)
+            .field("dirty", &self.dirty)
             .finish_non_exhaustive()
     }
 }
 
 /// Builds a doc's parts from a workspace read (on the document worker).
 fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
-    let mut engine = CueEngine::new(config);
-    engine.model_changed();
+    let Loaded {
+        workspace,
+        path,
+        dirty,
+        notices,
+    } = loaded;
+    let mut model = DocModel::new(workspace, CueEngine::new(config));
     // Sample 0: nothing runs yet, so what this decides (problems, playheads) does not depend
     // on the time; the control thread hands the engine the real time from its next call on.
-    let actions = engine.handle(&loaded.workspace, Input::Tick, 0);
-    let show_dir = loaded.path.as_deref().and_then(folder_of);
-    let indexed = index_workspace(&loaded.workspace, show_dir.as_deref());
+    let actions = model.handle(Input::Tick, 0);
+    let show_dir = path.as_deref().and_then(folder_of);
+    let indexed = index_workspace(model.ws(), show_dir.as_deref());
     let mut checks = PlanChecks::default();
-    checks.check_all(&loaded.workspace, &NoProbes, config.sample_rate());
+    checks.check_all(model.ws(), &NoProbes, config.sample_rate());
     DocParts {
-        loaded,
-        engine,
+        model,
+        path,
+        dirty,
+        notices,
         actions,
         indexed,
         checks,
@@ -1049,7 +1062,7 @@ impl DocCx<'_> {
             truncated,
             skipped,
         } = found;
-        let current = audio_media(&self.doc.ws);
+        let current = audio_media(self.doc.model.ws());
         let relinks: Vec<Relink> = plan
             .matches
             .into_iter()
@@ -1063,9 +1076,12 @@ impl DocCx<'_> {
             .collect();
         let relinked = relinks.len() as u64;
         let now = self.now();
-        let command = relink_command(&self.doc.ws, &relinks);
+        let command = relink_command(self.doc.model.ws(), &relinks);
         let footprint = command.footprint();
-        let revision = match self.doc.history.execute(&mut self.doc.ws, command) {
+        let mut edit = self.doc.model.edit();
+        let result = self.doc.history.execute(&mut edit, command);
+        edit.ended(&footprint, &result);
+        let revision = match result {
             Ok(true) => {
                 self.edited(now, &footprint);
                 self.log(
@@ -1180,7 +1196,7 @@ impl DocCx<'_> {
             show_dir: dir.as_deref().and_then(Path::to_str),
             style: PathStyle::host(),
         };
-        command.prepare(&self.doc.ws, &paths, &mut || CueId(random_id()))
+        command.prepare(self.doc.model.ws(), &paths, &mut || CueId(random_id()))
     }
 
     // ---- Saving -----------------------------------------------------------------------------
@@ -1200,7 +1216,7 @@ impl DocCx<'_> {
         let moved = self.doc.show_path.as_deref() != Some(path.as_path())
             && new_dir.is_some()
             && new_dir != old_dir;
-        let mut copy = self.doc.ws.clone();
+        let mut copy = self.doc.model.ws().clone();
         let mut rebased = false;
         let mut respelled_relative = false;
         let mut relink_failure = None;
@@ -1217,7 +1233,7 @@ impl DocCx<'_> {
                 if !rebased {
                     // A refusal changes nothing, but a failed rollback leaves some relinks in
                     // the copy: save the workspace as it is.
-                    copy = self.doc.ws.clone();
+                    copy = self.doc.model.ws().clone();
                 }
             }
         }
@@ -1330,11 +1346,13 @@ impl DocCx<'_> {
         let mut changed = false;
         let mut respelled = respelled;
         if rebase_refs && let Some(new_dir) = self.show_dir() {
-            let (relinks, now_respelled) = rebase(&self.doc.ws, old_dir, &new_dir);
+            let (relinks, now_respelled) = rebase(self.doc.model.ws(), old_dir, &new_dir);
             respelled |= now_respelled;
             if !relinks.is_empty() {
-                let command = relink_command(&self.doc.ws, &relinks);
-                let result = self.doc.ws.apply(command);
+                let command = relink_command(self.doc.model.ws(), &relinks);
+                // The engine is told of the whole workspace (the guard's drop): this clears
+                // history and resends every client the model anyway.
+                let result = self.doc.model.edit().apply(command);
                 // A failed rollback leaves some relinks applied: the model did change.
                 changed = match &result {
                     Ok(_) => true,
@@ -1345,7 +1363,7 @@ impl DocCx<'_> {
                 }
             }
         }
-        self.doc.media.reset(self.show_dir(), &self.doc.ws);
+        self.doc.media.reset(self.show_dir(), self.doc.model.ws());
         if changed {
             // An undo can restore an old relative spelling that now resolves against the new
             // folder, so history goes on any move from a known folder. Only the first save of an
@@ -1358,7 +1376,6 @@ impl DocCx<'_> {
             if clean_before {
                 self.doc.saved_revision = self.doc.revision;
             }
-            self.doc.engine.model_changed();
         }
         let inputs = self.sync_workspace(false);
         let now = self.now();
@@ -1409,7 +1426,8 @@ impl DocCx<'_> {
         let seconds = |ms: i64| ms as f64 / 1000.0;
         let interval = self
             .doc
-            .ws
+            .model
+            .ws()
             .settings
             .autosave_interval
             .max(MIN_AUTOSAVE_SECS);
@@ -1425,7 +1443,7 @@ impl DocCx<'_> {
             return;
         };
         let rx = writer.autosave(
-            self.doc.ws.clone(),
+            self.doc.model.ws().clone(),
             self.doc.show_path.clone(),
             self.doc.revision,
         );
@@ -1847,7 +1865,7 @@ impl Control {
             return;
         };
         let (workspace, show_dir) = (
-            Box::new(d.ws.clone()),
+            Box::new(d.model.ws().clone()),
             d.show_path.as_deref().and_then(folder_of),
         );
         let limits = self.eng.config.relink_limits;
@@ -1963,7 +1981,7 @@ impl Control {
             return;
         }
         // Another doc may have been saved to this path while it was read.
-        if let Some(path) = &parts.loaded.path
+        if let Some(path) = &parts.path
             && self.claimed(path, None)
         {
             fail(
@@ -1986,32 +2004,26 @@ impl Control {
             return;
         };
         let DocParts {
-            loaded,
-            mut engine,
+            mut model,
+            path,
+            mut dirty,
+            notices,
             actions,
             indexed,
             checks,
         } = parts;
-        let Loaded {
-            mut workspace,
-            path,
-            mut dirty,
-            notices,
-        } = loaded;
         // A copy of an open show (a Finder duplicate) has its workspace id: QLab 5 gives the
         // copy a fresh one and marks it unsaved. Ids must be unique: autosaves, OSC
         // `/workspace/{id}` and the app's windows go by them.
-        let duplicate = self.docs.iter().any(|d| d.ws.id == workspace.id);
+        let duplicate = self.docs.iter().any(|d| d.model.ws().id == model.ws().id);
         if duplicate {
-            workspace.id = WorkspaceId(random_id());
+            // The engine's first call saw the old id; the edit tells it.
+            model.edit().id = WorkspaceId(random_id());
             dirty = true;
-            // The engine's first call saw the old id; every model change is signalled
-            // (docs/cue-engine.md).
-            engine.model_changed();
         }
         // The device may have come back with another block size while the doc was built.
-        if engine.config().lookahead() != self.eng.block
-            && let Err(e) = engine.set_lookahead(self.eng.block)
+        if model.engine().config().lookahead() != self.eng.block
+            && let Err(e) = model.set_lookahead(self.eng.block)
         {
             self.eng.log(
                 LogLevel::Error,
@@ -2028,7 +2040,7 @@ impl Control {
         // The checks walked the workspace already, and no file has answered since: what the
         // catalog noted for them is in them.
         let _ = media.take_plan_changes();
-        let mut doc = Doc::new(&self.eng, doc_id, workspace, engine, path, media);
+        let mut doc = Doc::new(&self.eng, doc_id, model, path, media);
         doc.checks = checks;
         doc.file.notices = notices;
         doc.revision = 1;
@@ -2116,7 +2128,7 @@ impl Control {
                 ));
             }
             if cx.doc.is_dirty() {
-                let (id, path) = (cx.doc.ws.id, cx.doc.show_path.clone());
+                let (id, path) = (cx.doc.model.ws().id, cx.doc.show_path.clone());
                 cx.clear_autosave_of(id, path);
             }
             cx.stop_everything();
@@ -2275,7 +2287,7 @@ impl Control {
             if !doc.is_dirty() {
                 continue;
             }
-            let name = doc.ws.name.clone();
+            let name = doc.model.ws().name.clone();
             let file = &mut doc.file;
             let current = file.autosaved_revision == Some(doc.revision);
             match (file.autosave.take(), current) {
@@ -2283,8 +2295,11 @@ impl Control {
                 (None, true) => counts.written += 1,
                 (_, false) => match &self.eng.docs.writer {
                     Some(writer) => {
-                        let rx =
-                            writer.autosave(doc.ws.clone(), doc.show_path.clone(), doc.revision);
+                        let rx = writer.autosave(
+                            doc.model.ws().clone(),
+                            doc.show_path.clone(),
+                            doc.revision,
+                        );
                         file.autosaved_revision = Some(doc.revision);
                         waiting.push_back((index, name, rx, false));
                     }
@@ -2328,7 +2343,11 @@ impl Control {
                             "could not write the recovery file of \"{name}\" at shutdown: {e}; trying once more"
                         ),
                     ));
-                    let rx = writer.autosave(doc.ws.clone(), doc.show_path.clone(), doc.revision);
+                    let rx = writer.autosave(
+                        doc.model.ws().clone(),
+                        doc.show_path.clone(),
+                        doc.revision,
+                    );
                     waiting.push_back((index, name, rx, true));
                 }
                 Ok(Err(e)) => {

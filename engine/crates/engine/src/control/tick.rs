@@ -40,7 +40,7 @@ impl Control {
         let awake = self
             .docs
             .iter()
-            .any(|d| d.show_mode || d.engine.has_active_cues());
+            .any(|d| d.show_mode || d.model.engine().has_active_cues());
         self.eng.keep_awake(awake);
         self.eng.settings_tick();
         self.health();
@@ -299,7 +299,7 @@ impl DocCx<'_> {
         let start_limit = seconds_to_samples(STREAM_START_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc
             .voices
-            .poll_streams(now, start_limit, &mut fx, &self.doc.ws);
+            .poll_streams(now, start_limit, &mut fx, self.doc.model.ws());
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
         self.follow(fx, now);
@@ -307,7 +307,7 @@ impl DocCx<'_> {
         self.doc.net.tick(now);
         self.note_lookup_limit();
         self.deliver_deferred(now);
-        if self.doc.engine.is_due(now) {
+        if self.doc.model.engine().is_due(now) {
             self.feed(Input::Tick, now);
         }
         if self.doc.primes_dirty {

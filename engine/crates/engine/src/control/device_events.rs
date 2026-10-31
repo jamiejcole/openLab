@@ -157,7 +157,7 @@ impl Control {
             let old = self.eng.block;
             let mut failed = None;
             for doc in &mut self.docs {
-                if let Err(e) = doc.engine.set_lookahead(b) {
+                if let Err(e) = doc.model.set_lookahead(b) {
                     failed = Some(e);
                     break;
                 }
@@ -176,7 +176,7 @@ impl Control {
                 Some(e) => {
                     for doc in &mut self.docs {
                         // The old lookahead was accepted before: this cannot fail.
-                        let _ = doc.engine.set_lookahead(old);
+                        let _ = doc.model.set_lookahead(old);
                     }
                     self.eng.log_device(
                         LogLevel::Warn,
@@ -213,7 +213,7 @@ impl DocCx<'_> {
         // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
         // the device too: nothing scheduled before the outage may start by itself after it.
         // They end as device_lost breaks; `Input::DeviceLost` below stops all the others.
-        for (cue, state) in self.doc.engine.cue_states() {
+        for (cue, state) in self.doc.model.engine().cue_states() {
             if matches!(
                 state,
                 CueState::PreWaiting
@@ -222,9 +222,9 @@ impl DocCx<'_> {
                     | CueState::PostWaiting
                     | CueState::Fading
                     | CueState::Stopping
-            ) && let Some(run) = self.doc.engine.run_of(cue)
+            ) && let Some(run) = self.doc.model.engine().run_of(cue)
                 && matches!(
-                    self.doc.ws.find_cue(cue).map(|c| &c.kind),
+                    self.doc.model.ws().find_cue(cue).map(|c| &c.kind),
                     Some(CueKind::Audio { .. })
                 )
                 && !runs.contains(&(cue, run))
@@ -324,7 +324,7 @@ impl DocCx<'_> {
                 ));
             }
         }
-        for patch in &self.doc.ws.patches {
+        for patch in &self.doc.model.ws().patches {
             if let Some(PatchResolution::ChannelsMissing {
                 device,
                 needed,
@@ -345,7 +345,8 @@ impl DocCx<'_> {
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self
                 .doc
-                .ws
+                .model
+                .ws()
                 .patches
                 .iter()
                 .find(|p| p.id == id)

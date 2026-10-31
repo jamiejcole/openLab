@@ -39,7 +39,8 @@ impl DocCx<'_> {
     ) {
         let Some(patch) = self
             .doc
-            .ws
+            .model
+            .ws()
             .network_patches
             .iter()
             .find(|p| p.id == destination)
