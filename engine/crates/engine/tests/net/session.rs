@@ -123,21 +123,23 @@ fn advance(
         peak: 0.0,
         finite: true,
     };
-    let mut waits = 0;
+    let mut timeouts = 0;
     // Media answers first, so a start does not wait on a probe for want of a wake.
     while control.probes_pending() > 0 || control.preloads_pending() > 0 {
-        waits += 1;
-        // 20 ms or more each: at least SETTLE.
-        if waits > SETTLE_WAITS {
-            panic!("probes never answered");
-        }
         match inbox.recv_timeout(Duration::from_millis(20)) {
             Ok(m) => {
                 if control.handle(m) == Flow::Shutdown {
                     return (out, true);
                 }
             }
-            Err(_) => control.tick(),
+            Err(_) => {
+                // Only a wait that ran its 20 ms counts: SETTLE_WAITS of them are at least SETTLE.
+                timeouts += 1;
+                if timeouts > SETTLE_WAITS {
+                    panic!("probes never answered");
+                }
+                control.tick();
+            }
         }
     }
     control.tick();

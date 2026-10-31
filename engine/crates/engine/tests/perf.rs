@@ -858,8 +858,9 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
     ];
     let mut took = [Duration::MAX; 4];
     // Each step is timed once per run, so a shared runner's noise needs more runs than the
-    // loops that time a thousand ticks; the budget is unchanged. A run that leaves every step
-    // under it ends the loop.
+    // loops that time a thousand ticks; the budget is unchanged. Each step keeps its minimum
+    // over up to 20 runs (the minima may come from different runs), and the loop ends as soon
+    // as every minimum is under budget.
     for _ in 0..RUNS * 4 {
         if took.iter().all(|t| *t < limit) {
             break;

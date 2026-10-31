@@ -61,6 +61,8 @@ fn a_bad_command_line_is_a_usage_error_on_stderr_with_exit_2() {
 /// A hang guard for waits on a spawned engine, not a timing assertion: generous for a slow
 /// host, so an expected line that never comes fails the test instead of hanging it.
 const HANG: Duration = Duration::from_secs(30);
+/// Most stderr lines read while waiting for one thing; an engine that never stops logging fails.
+const MAX_LINES: usize = 10_000;
 
 /// A spawned engine whose stderr lines arrive on a channel (read on a thread, so a wait is
 /// bounded), killed and reaped on drop: a failed assertion does not leave it running.
@@ -97,8 +99,8 @@ impl Engine {
     /// Reads stderr lines until one contains `want`; `false` when stderr ends first. Panics
     /// if neither happens within [`HANG`].
     fn wait_for(&mut self, want: &str) -> bool {
-        loop {
-            // A wait of `HANG` for each line: the guard is on silence, so a slow start is not a hang.
+        // Silence for `HANG` is a hang, and so is an engine that never stops logging.
+        for _ in 0..MAX_LINES {
             match self.lines.recv_timeout(HANG) {
                 Ok(line) => {
                     let hit = line.contains(want);
@@ -113,6 +115,7 @@ impl Engine {
                 }
             }
         }
+        panic!("no {want:?} in {MAX_LINES} lines: {:?}", self.seen)
     }
 
     /// Asks the engine to end gracefully (SIGTERM on macOS; stdin closing with
@@ -134,7 +137,7 @@ impl Engine {
     /// Reads stderr to its end (the engine has exited, or is exiting) and reaps it. Panics if
     /// stderr is still open after [`HANG`].
     fn exit_status(&mut self) -> ExitStatus {
-        loop {
+        for _ in 0..MAX_LINES {
             match self.lines.recv_timeout(HANG) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return self.child.wait().unwrap(),
@@ -143,6 +146,7 @@ impl Engine {
                 }
             }
         }
+        panic!("still logging after {MAX_LINES} lines: {:?}", self.seen)
     }
 }
 

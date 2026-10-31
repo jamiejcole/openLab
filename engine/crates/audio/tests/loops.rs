@@ -8,7 +8,7 @@
 //! forbidden.
 
 mod common;
-#[path = "../../engine/tests/common/spin.rs"]
+#[path = "common/spin.rs"]
 mod spin;
 
 use std::path::{Path, PathBuf};

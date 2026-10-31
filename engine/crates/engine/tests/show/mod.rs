@@ -25,7 +25,7 @@ use openlab_engine::control::watch::WatchMode;
 use uuid::Uuid;
 
 pub mod device;
-#[path = "../common/spin.rs"]
+#[path = "../../../audio/tests/common/spin.rs"]
 pub mod spin;
 
 pub const RATE: u32 = 8000;
@@ -497,12 +497,14 @@ pub fn wait_probed(paths: &[PathBuf], n: usize) {
             drop(probed);
             panic!("probes never came");
         }
-        let seen = probed.len();
+        let seen = probed.iter().filter(|p| paths.contains(p)).count();
         let (guard, _) = PROBED_CHANGED
             .wait_timeout(probed, std::time::Duration::from_secs(1))
             .unwrap_or_else(PoisonError::into_inner);
         probed = guard;
-        idle = if probed.len() == seen { idle + 1 } else { 0 };
+        // Only probes of these files count as progress, not other tests' in the shared list.
+        let now = probed.iter().filter(|p| paths.contains(p)).count();
+        idle = if now == seen { idle + 1 } else { 0 };
     }
 }
 
