@@ -145,7 +145,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self?.cueList.showList(id)
             self?.syncSidebarList()
             self?.syncMasthead()
-            self?.refreshFind()
         }
         sidebar.onNotice = { [weak self] in self?.showNotice($0) }
         sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }

@@ -265,6 +265,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         chosenList = id
         sentPlayhead = nil
         rebuild()
+        onModelApplied?()
     }
 
     /// Show Mode: rows cannot be dragged, nothing can be dropped and no cell can be edited; a

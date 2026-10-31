@@ -308,6 +308,7 @@ final class MainWindowTests: XCTestCase {
         static let group: ModelID = "00000000-0000-0000-0000-0000000000a3"
         static let door: ModelID = "00000000-0000-0000-0000-0000000000a4"
         static let zebra: ModelID = "00000000-0000-0000-0000-0000000000a5"
+        static let other: ModelID = "00000000-0000-0000-0000-0000000000a7"
         static let net: ModelID = "00000000-0000-0000-0000-0000000000a6"
     }
 
@@ -341,7 +342,11 @@ final class MainWindowTests: XCTestCase {
                         cue(F.group, "3", "Act Two", "", FakeEngine.groupKind(kids)),
                         cue(F.net, "4", "Lights", "", network),
                     ]),
-                ])
+                ]),
+                .object([
+                    "id": .string("00000000-0000-0000-0000-0000000000b1"), "name": .string("Second"),
+                    "cues": .array([cue(F.other, "1", "Back door", "", memo)]),
+                ]),
             ]))
         let rig = try Rig(snapshot: snapshot)
         let connected = await rig.connect()
@@ -478,6 +483,18 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(store.receive(upsert), .applied)
         XCTAssertEqual(wc.find.scans, scans + 1, "a model change scans once, after the tree is updated")
         XCTAssertEqual(wc.find.matches, [F.wind])
+    }
+
+    /// Choosing a Warnings row can switch the shown list; the count must then be the new list's.
+    func testRevealingACueInAnotherListRefreshesTheFindCount() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "door"
+        XCTAssertEqual(find(wc, "door"), [F.wind, F.door])
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "2 found")
+        wc.reveal(cue: F.other)
+        XCTAssertEqual(wc.find.matches, [F.other])
+        XCTAssertEqual(wc.findBar.countLabel.stringValue, "1 found")
     }
 
     func testDoneAndCmdFCycleGiveTheCueTypeRowBack() async throws {
