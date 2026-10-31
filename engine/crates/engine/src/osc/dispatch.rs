@@ -256,6 +256,8 @@ pub enum Address {
     Panic,
     PauseAll,
     ResumeAll,
+    /// The workspace's Reset All (QLab's `/workspace/{id}/reset`).
+    ResetAll,
     Playhead(PlayheadTarget),
     Select(PlayheadTarget),
     Cue {
@@ -343,6 +345,7 @@ fn parse_rest(rest: &[&str], prefixed: bool, path: &str) -> Address {
         ["panic"] => Address::Panic,
         ["pause"] => Address::PauseAll,
         ["resume"] => Address::ResumeAll,
+        ["reset"] => Address::ResetAll,
         ["playhead", target] => Address::Playhead(target_of(target)),
         ["select", target] => Address::Select(target_of(target)),
         ["runningCues"] => Address::Query(Query::RunningCues),
@@ -424,7 +427,7 @@ fn verb_of(part: &str) -> Option<Verb> {
 /// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
 /// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
 ///   and `/select`.
-/// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, the cue
+/// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, the cue
 ///   verbs `start` ... `preview`, `/playhead`) and a cue's own OSC trigger address. An address
 ///   nothing answers to counts as a trigger, so a peer without Control learns nothing about which
 ///   triggers exist.
@@ -443,6 +446,7 @@ pub fn required_right(address: &Address, args: &[OscType]) -> Option<OscRight> {
         | Address::Panic
         | Address::PauseAll
         | Address::ResumeAll
+        | Address::ResetAll
         | Address::Playhead(_)
         | Address::Other(_)
         | Address::Pattern(_) => OscRight::Control,
@@ -614,6 +618,7 @@ pub fn resolve(
         Address::Panic => Resolved::input(TransportAction::Panic),
         Address::PauseAll => Resolved::input(TransportAction::PauseAll),
         Address::ResumeAll => Resolved::input(TransportAction::ResumeAll),
+        Address::ResetAll => Resolved::input(TransportAction::ResetAll),
         Address::Go => go(show, args),
         Address::Playhead(target) | Address::Select(target) => playhead(show, target),
         Address::Query(query) => query_reply(show, *query),
