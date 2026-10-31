@@ -221,10 +221,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Show Mode (SM-01) belongs to this window only and is not saved; the store tells the engine
-    /// (`set_show_mode`, so it holds off sleep, SM-07) and restores it after a reconnect. Locks the
-    /// inspector and cue-type row; transport, hotkeys, the sidebar and the layout toggles keep
-    /// working, as in QLab.
+    /// Show Mode (SM-01) belongs to this window; the store tells the engine (`set_show_mode`, so it
+    /// holds off sleep, SM-07) and restores it from the engine's word after a reconnect. It hides
+    /// the cue-type row and the whole inspector (their toggles wait, greyed, and the choice comes
+    /// back on leaving) and enlarges the masthead; transport, hotkeys, the sidebar and the masthead
+    /// toggle keep working, as in QLab.
     private(set) var isShowMode = false
 
     /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
@@ -255,11 +256,35 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebar.relinkLocked = on
         sidebar.listEditLocked = on
         footer.setShowMode(on)
+        for area in Self.hiddenInShowMode { show(area, on ? false : wanted[area] ?? true) }
+        refreshMasthead()
         refreshTitle()
+    }
+
+    /// The areas Show Mode takes away.
+    static let hiddenInShowMode: [LayoutArea] = [.toolbar, .inspector]
+    /// What the footer toggles last asked for. In Show Mode the shown state differs from it.
+    private var wanted: [LayoutArea: Bool] = [:]
+
+    private func refreshMasthead() {
+        let size = window?.contentView?.bounds.size ?? NSSize(width: 1200, height: 800)
+        masthead.apply(showMode: isShowMode, window: size)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        refreshMasthead()
+    }
+
+    /// A notice without an interruption: a log record and the footer line.
+    func quietNotice(_ message: String, error: Bool) {
+        _ = store.receive(.log(error ? .error : .warn, message))
+        footer.showNotice(message, error: error)
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).
     func showNotice(_ message: String) {
+        // Show Mode raises nothing modal (NFR-10): the footer and the show log carry it.
+        if isShowMode { return quietNotice(message, error: false) }
         guard let window else { return NSSound.beep() }
         let alert = NSAlert()
         alert.messageText = message
@@ -333,7 +358,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
     /// command (the Transport menu's Load Selected uses 0).
     func promptLoadToTime() {
-        guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
+        guard !isShowMode, let id = cueList.selectedIDs().last else { return NSSound.beep() }
         askText(
             title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
             ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
@@ -422,6 +447,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func setVisible(_ area: LayoutArea, _ visible: Bool) {
+        if isShowMode, Self.hiddenInShowMode.contains(area) { return }
+        wanted[area] = visible
+        show(area, visible)
+    }
+
+    private func show(_ area: LayoutArea, _ visible: Bool) {
         switch area {
         case .toolbar: cueToolbar.isHidden = !visible
         case .masthead: masthead.isHidden = !visible
@@ -429,6 +460,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .sidebar: sidebar.view.isHidden = !visible
         }
         footer.toggles[area]?.state = visible ? .on : .off
+        footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
     }
 
     func isVisible(_ area: LayoutArea) -> Bool {
@@ -468,7 +500,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         // These views have no intrinsic height; without explicit heights the stack stretches them.
-        masthead.heightAnchor.constraint(equalToConstant: 100).isActive = true
         cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
         for v in [masthead, cueToolbar, footer] {

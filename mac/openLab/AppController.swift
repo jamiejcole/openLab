@@ -30,6 +30,37 @@ final class AppController {
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
     var alerts: WorkspaceAlerts = AppKitAlerts()
+    /// `alerts` for errors and notices: with a window in Show Mode they become a log record and a
+    /// footer line on that window instead of a modal (NFR-10). Confirmations are not gated.
+    var gatedAlerts: WorkspaceAlerts {
+        ShowModeGatedAlerts(base: alerts) { [weak self] message, error in
+            self?.divertToShowModeWindows(message, error: error) ?? false
+        }
+    }
+
+    private func divertToShowModeWindows(_ message: String, error: Bool) -> Bool {
+        let live = controllers.values.filter(\.isShowMode)
+        for c in live { c.quietNotice(message, error: error) }
+        return !live.isEmpty
+    }
+
+    /// An error about one workspace (`store`). A Show Mode window gets it as a log record and a
+    /// footer line; another window gets it where it belongs (the usual alert, or a sheet on that
+    /// window when a different one is in Show Mode, which a sheet cannot block). With no window
+    /// to name, Show Mode windows' footers carry it (`gatedAlerts`).
+    func raise(_ message: String, from store: WorkspaceStore) {
+        guard let c = controllers[ObjectIdentifier(store)] else { return gatedAlerts.showError(message) }
+        if c.isShowMode {
+            c.quietNotice(message, error: true)
+        } else if controllers.values.contains(where: \.isShowMode) {
+            _ = store.receive(.log(.error, message))
+            c.showNotice(message)
+        } else {
+            _ = store.receive(.log(.error, message))
+            alerts.showError(message)
+        }
+    }
+
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
     /// The folder to search for missing media (nil: cancelled).
     var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel
