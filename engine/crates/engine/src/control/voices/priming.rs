@@ -174,8 +174,47 @@ impl Voices {
         false
     }
 
-    /// Checks the streams of live voices for failures: each failed run is reported once.
-    pub fn poll_streams(&mut self, fx: &mut Effects, ws: &Workspace) {
+    /// Checks the streams of live voices for failures: each failed run is reported once. A
+    /// started voice whose stream is still not primed `limit` samples after its start (an open
+    /// hung on a dead volume) is stopped now; its cue breaks when the mixer reports the end.
+    pub fn poll_streams(
+        &mut self,
+        now: SampleTime,
+        limit: SampleTime,
+        fx: &mut Effects,
+        ws: &Workspace,
+    ) {
+        for (&id, r) in &mut self.recs {
+            if r.stream_failed || !matches!(r.phase, Phase::Playing) || r.paused_at.is_some() {
+                continue;
+            }
+            let late = r.stream.as_ref().is_some_and(|h| {
+                !h.is_primed()
+                    && h.error().is_none()
+                    && now
+                        >= r.start_at
+                            .saturating_add(r.paused_frames)
+                            .saturating_add(limit)
+            });
+            if !late {
+                continue;
+            }
+            r.stream_failed = true;
+            let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
+            // A resume still on its way: the mixer may know the voice by its old id.
+            for voice in std::iter::once(id).chain(r.prev_id) {
+                let fade = Fade::NONE;
+                fx.commands
+                    .push((at, CommandKind::StopVoice { voice, fade }));
+            }
+            fx.notices.push((
+                "stream_timeout",
+                "a cue's audio file did not open in time (is its disk or network share \
+                 responding?); the cue was stopped"
+                    .to_owned(),
+                Some(r.cue),
+            ));
+        }
         for r in self.recs.values_mut() {
             if r.stream_failed {
                 continue;

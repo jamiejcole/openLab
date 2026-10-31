@@ -7,10 +7,12 @@
 //! beyond the cache's bounds from a seek back. Workers may block and allocate (fallibly, within
 //! the cache budget, for loop caches and exit buffers); they reuse their buffers in steady state.
 //!
-//! [`DiskStreamer::prepare`] does no I/O on the caller's thread: the file is opened by a worker,
-//! and failures arrive through [`StreamHandle::error`].
+//! [`DiskStreamer::prepare`] does no I/O on the caller's thread. A file is opened on a separate
+//! small pool of opener threads, never on a fill worker: an open that hangs (a dead network
+//! share, a stalled USB disk) holds up only its own stream and one opener, while every stream
+//! already open keeps refilling. Failures arrive through [`StreamHandle::error`]; an open that
+//! never answers leaves its stream unprimed, which the engine reports.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -27,6 +29,9 @@ const SAMPLE_BYTES: usize = std::mem::size_of::<f32>();
 use crate::resample::Pipeline;
 
 pub const DEFAULT_WORKERS: usize = 2;
+/// Opener threads: opens on a hung volume each hold one until the volume answers; the rest
+/// queue behind them (see docs/audio.md, Disk streaming).
+pub const DEFAULT_OPENERS: usize = 4;
 pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
 /// Loop exit buffer length. After a devamp leaves a loop the worker must, within this time:
@@ -63,6 +68,8 @@ pub struct StreamerConfig {
     /// Rate every stream is resampled to.
     pub device_rate: u32,
     pub workers: usize,
+    /// Threads that open stream files, apart from the fill workers.
+    pub openers: usize,
     /// Ring length per stream (read-ahead).
     pub buffer_ms: u32,
     /// Streams open at once (each holds a decoder and a ring).
@@ -84,10 +91,11 @@ pub struct StreamerConfig {
     pub cache_budget_bytes: usize,
     /// Most bytes all streams' loop exit buffers hold together.
     pub exit_budget_bytes: usize,
-    /// Called by a worker with a file's path just before it opens it. A no-op, except in tests,
-    /// which stand in a volume that stalls there (a FIFO no longer can: media opens never block
-    /// on one, #323).
-    pub before_open: fn(&Path),
+    /// Called by an opener with a file's path just before it opens it. Tests stand in a volume
+    /// that stalls there (a FIFO no longer can: media opens never block on one, #323). Test
+    /// support only: not in a shipped build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub before_open: fn(&std::path::Path),
 }
 
 impl StreamerConfig {
@@ -95,6 +103,7 @@ impl StreamerConfig {
         StreamerConfig {
             device_rate,
             workers: DEFAULT_WORKERS,
+            openers: DEFAULT_OPENERS,
             buffer_ms: DEFAULT_BUFFER_MS,
             max_streams: DEFAULT_MAX_STREAMS,
             exit_ms: DEFAULT_EXIT_MS,
@@ -103,6 +112,7 @@ impl StreamerConfig {
             loop_cache_bytes: DEFAULT_LOOP_CACHE_BYTES,
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             exit_budget_bytes: DEFAULT_EXIT_BUDGET_BYTES,
+            #[cfg(any(test, feature = "test-support"))]
             before_open: |_| {},
         }
     }
@@ -330,6 +340,8 @@ struct Worker {
 pub struct DiskStreamer {
     config: StreamerConfig,
     workers: Vec<Worker>,
+    /// The opener pool's job queue; the openers exit when it is dropped.
+    opener: Sender<OpenJob>,
     next: usize,
     open: Arc<AtomicUsize>,
     budget: Arc<Budget>,
@@ -388,8 +400,21 @@ impl Drop for Reservation {
 
 impl DiskStreamer {
     pub fn new(config: StreamerConfig) -> Result<Self, MediaError> {
-        if config.workers == 0 || config.device_rate == 0 || config.max_streams == 0 {
+        if config.workers == 0
+            || config.openers == 0
+            || config.device_rate == 0
+            || config.max_streams == 0
+        {
             return Err(MediaError::Worker);
+        }
+        let (opener, jobs) = mpsc::channel();
+        let jobs = Arc::new(Mutex::new(jobs));
+        for i in 0..config.openers {
+            let jobs = Arc::clone(&jobs);
+            std::thread::Builder::new()
+                .name(format!("openlab-open-{i}"))
+                .spawn(move || run_opener(&jobs))
+                .map_err(|_| MediaError::Worker)?;
         }
         let mut workers = Vec::with_capacity(config.workers);
         for i in 0..config.workers {
@@ -403,6 +428,7 @@ impl DiskStreamer {
         Ok(DiskStreamer {
             config,
             workers,
+            opener,
             next: 0,
             open: Arc::new(AtomicUsize::new(0)),
             budget: Arc::new(Budget::new(config.cache_budget_bytes)),
@@ -478,15 +504,35 @@ impl DiskStreamer {
         let shared = Arc::new(Shared::default());
         let link = Arc::new(StreamLink::with_entries(slices.len()));
         let entries = slices.len();
+        let opening = match media {
+            // Already in memory: nothing to wait for, the worker builds it on its first step.
+            Media::Preloaded(_) => Opening::Here(media),
+            media => {
+                let (reply, rx) = mpsc::channel();
+                self.opener
+                    .send(OpenJob {
+                        media,
+                        seeking: seeking.clone(),
+                        info,
+                        device_rate: self.config.device_rate,
+                        shared: Arc::clone(&shared),
+                        reply,
+                        wake: wake.clone(),
+                        #[cfg(any(test, feature = "test-support"))]
+                        before_open: self.config.before_open,
+                    })
+                    .map_err(|_| MediaError::Worker)?;
+                Opening::Away(rx)
+            }
+        };
         let task = Box::new(Task {
             shared: Arc::clone(&shared),
             link: Arc::clone(&link),
             producer,
-            media: Some(media),
+            opening,
             seeking,
             info,
             device_rate: self.config.device_rate,
-            before_open: self.config.before_open,
             slices: slices.clone(),
             pipe: None,
             entry: 0,
@@ -545,6 +591,68 @@ impl Drop for DiskStreamer {
             let _ = w.tx.send(Msg::Shutdown);
         }
     }
+}
+
+/// A stream's file to open, for the opener pool.
+struct OpenJob {
+    media: Media,
+    seeking: Seeking,
+    info: MediaInfo,
+    device_rate: u32,
+    shared: Arc<Shared>,
+    reply: Sender<Result<Pipeline, MediaError>>,
+    /// The stream's fill worker, woken when the answer is in.
+    wake: Sender<Msg>,
+    #[cfg(any(test, feature = "test-support"))]
+    before_open: fn(&std::path::Path),
+}
+
+/// An opener: takes jobs in order and opens each file. An open that hangs holds this thread
+/// only; the fill workers never wait for it. Exits when the streamer is dropped.
+fn run_opener(jobs: &Mutex<Receiver<OpenJob>>) {
+    loop {
+        // The lock is held only while waiting for a job, never during an open.
+        let next = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        let Ok(job) = next else {
+            return;
+        };
+        // A stream let go of while its job waited is not opened at all.
+        if job.shared.cancelled.load(Ordering::Acquire) {
+            continue;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Media::Path(path) = &job.media {
+            (job.before_open)(path);
+        }
+        let opened = contain(|| open_pipeline(job.media, job.seeking, &job.info, job.device_rate));
+        // The stream may have gone meanwhile; then nobody needs the answer.
+        let _ = job.reply.send(opened);
+        let _ = job.wake.send(Msg::Wake);
+    }
+}
+
+/// Opens `media` and builds its decode pipeline, checking it still matches its probe.
+fn open_pipeline(
+    media: Media,
+    seeking: Seeking,
+    info: &MediaInfo,
+    device_rate: u32,
+) -> Result<Pipeline, MediaError> {
+    let src = open_source(media, seeking)?;
+    if src.channels() != usize::from(info.channels) || src.sample_rate() != info.sample_rate {
+        return Err(MediaError::Changed);
+    }
+    Pipeline::new(src, info.frames, device_rate)
+}
+
+/// Where a task's decode pipeline comes from.
+enum Opening {
+    /// Preloaded media: built by the worker on its first step (no I/O).
+    Here(Media),
+    /// A file, opened on the opener pool; the answer comes back here.
+    Away(Receiver<Result<Pipeline, MediaError>>),
+    /// Taken into `Task::pipe`.
+    Done,
 }
 
 fn run_worker(rx: Receiver<Msg>) {
@@ -654,13 +762,11 @@ struct Task {
     shared: Arc<Shared>,
     link: Arc<StreamLink>,
     producer: Producer<f32>,
-    media: Option<Media>,
+    opening: Opening,
     /// How seeks reach the probe's timeline.
     seeking: Seeking,
     info: MediaInfo,
     device_rate: u32,
-    /// [`StreamerConfig::before_open`].
-    before_open: fn(&Path),
     slices: Vec<Slice>,
     pipe: Option<Pipeline>,
     /// Write cursor: slice-table entry, plays of it done, frames into the current play.
@@ -713,17 +819,22 @@ impl Task {
 
     fn fill(&mut self) -> Result<Progress, MediaError> {
         if self.pipe.is_none() {
-            let media = self.media.take().ok_or(MediaError::Worker)?;
-            if let Media::Path(path) = &media {
-                (self.before_open)(path);
-            }
-            let src = open_source(media, self.seeking.clone())?;
-            if src.channels() != usize::from(self.info.channels)
-                || src.sample_rate() != self.info.sample_rate
-            {
-                return Err(MediaError::Changed);
-            }
-            self.pipe = Some(Pipeline::new(src, self.info.frames, self.device_rate)?);
+            let pipe = match std::mem::replace(&mut self.opening, Opening::Done) {
+                Opening::Here(media) => {
+                    open_pipeline(media, self.seeking.clone(), &self.info, self.device_rate)?
+                }
+                Opening::Away(rx) => match rx.try_recv() {
+                    Ok(opened) => opened?,
+                    // Still opening: the worker goes on with its other streams.
+                    Err(TryRecvError::Empty) => {
+                        self.opening = Opening::Away(rx);
+                        return Ok(Progress::Idle);
+                    }
+                    Err(TryRecvError::Disconnected) => return Err(MediaError::Worker),
+                },
+                Opening::Done => return Err(MediaError::Worker),
+            };
+            self.pipe = Some(pipe);
         }
         self.check_cut()?;
         // An exit buffer under way is finished first: it has the decoder's position.
@@ -1437,7 +1548,7 @@ mod tests {
         let mut c = StreamerConfig::new(44_100);
         c.step_frames = 4_096;
         let d = DiskStreamer::new(c).unwrap();
-        let (tx, _rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         let flac =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.flac");
         let info = crate::decode::probe(&flac).unwrap().info;
@@ -1473,6 +1584,8 @@ mod tests {
                 tx,
             )
             .unwrap();
+        // B's file is opened on the opener pool, which wakes the worker when it is done.
+        assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok());
         // Round-robin, as the worker does: B, A, B, A, ...
         let mut b_steps = 0;
         while !pb.handle.is_primed() {
@@ -1487,7 +1600,7 @@ mod tests {
         }
         // A was served from its first turn, long before B reached its target.
         assert!(pa.handle.frames_written() >= 4_096);
-        // Open, then at least 20000 / 4096 bounded seek steps.
+        // At least 20000 / 4096 bounded seek steps.
         assert!(b_steps >= 5, "B's seek took only {b_steps} steps");
         assert_eq!(pb.handle.error(), None);
     }

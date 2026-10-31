@@ -67,7 +67,8 @@ Keep the crate count at three. Add a module before adding a crate.
 |---|---|---|---|
 | **Audio** (cpal callback, OS real-time priority) | `Mixer`, voice pool, fade ramps, output patches | **Never** | `rtrb` SPSC queues in/out; atomics for meters, clock |
 | **Control** (one thread, event loop) | the shared `Engine` (mixer controller, voice and patch-slot allocators, device state) and N `Doc`s, each with `Workspace`, `CueEngine`, undo stack, scheduler | Briefly (no disk I/O on it either — hand to I/O helpers) | `crossbeam-channel` inbox; SPSC to audio; broadcast to network |
-| **Disk** (small pool, default 2) | decoders, resamplers | Yes | per-voice SPSC ring buffers to audio; request channel from control |
+| **Disk** (small pool, default 2) | decoders, resamplers | Yes (reads) | per-voice SPSC ring buffers to audio; request channel from control |
+| **Disk open** (pool, default 4) | opening stream files, so a hung open never holds a disk worker | Yes | job queue from the disk streamer; the opened decoder back to the stream's disk worker |
 | **Network** (tokio runtime, 1–2 threads) | WebSocket sessions, OSC sockets | Async | forwards parsed commands to control inbox; receives broadcasts |
 | **Writer** (logging + saving) | log file, atomic saves | Yes | channel from control (and a lock-free queue from audio for RT events) |
 | **Watch** (`openlab-watch`, M2.25) | the media files' stat state (metadata only, no decoding) | Yes (a hung network volume can block a stat) | job channel from control (watch, unwatch, reset); one batched `Inbox::Watch` per pass, only when something changed; a control-side watchdog abandons a stalled worker |

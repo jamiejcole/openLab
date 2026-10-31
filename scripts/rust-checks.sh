@@ -8,6 +8,8 @@
 #   clippy           lints the test build (--all-targets), then the shipped build (--lib --bins): without
 #                    --all-targets the test-only features (test-support) are not unified in, so a warning
 #                    only the shipped build shows is caught
+#                    and checks no test-only feature (test-support, fault-injection) is in the shipped
+#                    engine's dependency graph, so test seams never compile into a release build
 #   clippy-windows   the same lints for the Windows target (needs `rustup target add x86_64-pc-windows-gnu`)
 #   test             the workspace tests, every failure listed
 #   test-release     the same, optimised (debug-only checks off)
@@ -18,11 +20,25 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../engine"
 
 lints() { cargo clippy --workspace "$@" --locked -- -D warnings; }
 
+# The engine binary as shipped (`cargo build --release --bin openlab-engine`: no dev-dependencies) must not
+# enable a test-only feature on any crate, for any target.
+shipped_features() {
+  local tree hits
+  tree=$(cargo tree --locked --target all -p openlab-engine -e normal,build,features --prefix none)
+  hits=$(printf '%s\n' "$tree" | grep -E 'feature "(test-support|fault-injection)"' | sort -u || true)
+  if [ -n "$hits" ]; then
+    echo "test-only features in the shipped engine build:" >&2
+    echo "$hits" >&2
+    return 1
+  fi
+}
+
 case "${1:-}" in
   fmt) cargo fmt --all --check ;;
   clippy)
     lints --all-targets
     lints --lib --bins
+    shipped_features
     ;;
   clippy-windows)
     lints --target x86_64-pc-windows-gnu --all-targets

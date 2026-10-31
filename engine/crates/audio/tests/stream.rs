@@ -488,6 +488,63 @@ fn slow_disk_underrun_recovers_where_it_left_off() {
     assert!(events(&mut ctl).contains(&finished(frames + gap as u64, FinishReason::OutPoint)));
 }
 
+/// A stream whose open never answers (a dead network share, a stalled USB disk) must not hold
+/// up the worker it is given: a stream already playing on that worker keeps refilling and
+/// plays on without a gap, far past its 2 s ring. The hung stream is not primed and has no
+/// error while its open waits (the engine reports it, see docs/control.md); once the volume
+/// answers, it streams.
+#[test]
+fn a_hung_open_never_starves_another_stream_on_its_worker() {
+    let frames = 5 * u64::from(SR);
+    let (media, info) = marker_file("hung_open_neighbour.wav", frames);
+    let (mut ctl, mut r) = setup(config(1));
+    let mut c = StreamerConfig::new(SR);
+    c.workers = 1;
+    let mut d = DiskStreamer::new(c).unwrap();
+    let h = start_stream(
+        &mut d,
+        &mut ctl,
+        media,
+        info,
+        plan(0..frames, &[], &[], 0).unwrap(),
+        0,
+    );
+    // Every read of the second file, its header first, waits for the gate.
+    let gate = Gate::default();
+    let bytes = wav(&markers(1000), 1, SR, Pcm::F32);
+    let len = bytes.len() as u64;
+    let hung = d
+        .prepare(StreamRequest {
+            media: Media::Reader(
+                Box::new(GatedReader::new(bytes, 0, len, gate.clone())),
+                Some("wav".into()),
+            ),
+            info: MediaInfo {
+                channels: 1,
+                sample_rate: SR,
+                frames: 1000,
+                duration: Duration::from_secs_f64(1000.0 / f64::from(SR)),
+            },
+            seeking: Seeking::Direct,
+            slices: plan(0..1000, &[], &[], 0).unwrap(),
+        })
+        .unwrap();
+    let out = render_synced(&mut r, &mut ctl, &h, frames as usize, 0);
+    assert_eq!(out, markers(frames));
+    assert_eq!(ctl.underrun_frames(), 0);
+    assert!(!hung.handle.is_primed());
+    assert_eq!(hung.handle.error(), None);
+    gate.open();
+    assert!(hung.handle.wait_primed(FAILSAFE).unwrap());
+}
+
+#[test]
+fn a_streamer_without_openers_is_refused() {
+    let mut c = StreamerConfig::new(SR);
+    c.openers = 0;
+    assert!(matches!(DiskStreamer::new(c), Err(MediaError::Worker)));
+}
+
 #[test]
 fn preload_plays_the_same_as_streaming() {
     // 44.1 kHz source, so both paths resample; loops make both seek.
