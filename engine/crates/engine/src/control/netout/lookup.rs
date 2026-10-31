@@ -4,10 +4,9 @@ use super::*;
 
 impl NetOut {
     /// Follows the workspace's network patches: starts look-ups for new host names, forgets
-    /// what is gone. `all` reports every name's state, not only what changed (a newly opened
-    /// workspace).
-    pub fn sync(&mut self, patches: &[NetworkPatch], all: bool, now: SampleTime) -> Reports {
-        let mut out = Reports::new();
+    /// what is gone. The answers only fill the senders' address caches: whether a name resolves
+    /// is never a cue problem (QLab 5 does not flag it).
+    pub fn sync(&mut self, patches: &[NetworkPatch], now: SampleTime) {
         let keep: HashSet<NetworkPatchId> = patches.iter().map(|p| p.id).collect();
         let gone: Vec<NetworkPatchId> = self
             .lookups
@@ -16,19 +15,23 @@ impl NetOut {
             .copied()
             .collect();
         for id in gone {
-            self.forget(id, &mut out);
+            self.forget(id);
         }
-        self.links.retain(|id, _| keep.contains(id));
+        let dropped: Vec<NetworkPatchId> = self
+            .links
+            .keys()
+            .filter(|id| !keep.contains(id))
+            .copied()
+            .collect();
+        for id in dropped {
+            self.drop_link(id);
+        }
         for patch in patches {
             let named = matches!(check_endpoint(&patch.host, patch.port), Ok(HostKind::Name));
             match self.lookups.get(&patch.id) {
-                Some(l) if named && l.host == patch.host && l.port == patch.port => {
-                    if all {
-                        out.push((patch.id, l.reported.clone()));
-                    }
-                }
+                Some(l) if named && l.host == patch.host && l.port == patch.port => {}
                 _ => {
-                    self.forget(patch.id, &mut out);
+                    self.forget(patch.id);
                     if named && self.lookups.len() < MAX_TRACKED {
                         self.lookups.insert(
                             patch.id,
@@ -36,7 +39,6 @@ impl NetOut {
                                 host: patch.host.clone(),
                                 port: patch.port,
                                 phase: Phase::Wanted,
-                                reported: NetworkReachability::Unknown,
                                 last_start: None,
                                 known: Vec::new(),
                                 resolved_once: false,
@@ -48,26 +50,20 @@ impl NetOut {
             }
         }
         self.start_wanted(now);
-        out.extend(self.relieve());
-        out
+        self.note_if_stuck();
     }
 
     /// Drops a patch's look-up state. A look-up thread still running for it stays counted in
     /// `running` until it answers.
-    fn forget(&mut self, id: NetworkPatchId, out: &mut Reports) {
+    fn forget(&mut self, id: NetworkPatchId) {
         if let Some(link) = self.links.get(&id) {
             set_cache(&link.cache, &[]);
         }
-        if let Some(l) = self.lookups.remove(&id)
-            && l.reported != NetworkReachability::Unknown
-        {
-            out.push((id, NetworkReachability::Unknown));
-        }
+        self.lookups.remove(&id);
     }
 
-    /// A look-up finished (or the thread gave up), or a send failed. Returns what changed for
-    /// the cue engine.
-    pub fn answer(&mut self, answer: NetAnswer, now: SampleTime) -> Reports {
+    /// A look-up finished (or the thread gave up), or a send failed.
+    pub fn answer(&mut self, answer: NetAnswer, now: SampleTime) {
         let (patch, ticket, result) = match answer {
             NetAnswer::Lookup {
                 patch,
@@ -83,7 +79,7 @@ impl NetOut {
                 if from_transport && destination.protocol == NetworkProtocol::Tcp {
                     self.stale(patch, &destination, now);
                 }
-                return Vec::new();
+                return;
             }
         };
         // The thread is gone, whatever it was for: its slot is free again.
@@ -93,7 +89,6 @@ impl NetOut {
         }
         let retry = now.saturating_add(self.samples(RETRY_AFTER));
         let refresh = now.saturating_add(self.samples(REFRESH_AFTER));
-        let mut out = Reports::new();
         // An answer of a look-up that was replaced or given up on is not about this one.
         if let Some(l) = self.lookups.get_mut(&patch)
             && matches!(l.phase, Phase::InFlight { ticket: t, .. } if t == ticket)
@@ -112,7 +107,6 @@ impl NetOut {
                     {
                         set_cache(&link.cache, &addrs);
                     }
-                    out.extend(Self::changed(l, patch, NetworkReachability::Resolved));
                 }
                 Err(reason) => {
                     l.phase = Phase::Idle {
@@ -121,18 +115,26 @@ impl NetOut {
                     if l.resolved_once {
                         Self::note_failed_refresh(l, &reason, &mut self.notes);
                     } else {
-                        out.extend(Self::changed(
-                            l,
-                            patch,
-                            NetworkReachability::Unresolved { reason },
-                        ));
+                        Self::note_unresolved(l, &reason, &mut self.notes);
                     }
                 }
             }
         }
         self.start_wanted(now);
-        out.extend(self.relieve());
-        out
+        self.note_if_stuck();
+    }
+
+    /// A name that has never resolved is logged once per run of failures; the cue is not
+    /// broken for it (QLab 5 does not flag an unreachable destination) and a send resolves
+    /// the name itself on its worker.
+    fn note_unresolved(l: &mut Lookup, reason: &str, notes: &mut Vec<String>) {
+        if !l.failing {
+            l.failing = true;
+            notes.push(format!(
+                "could not look up {} ({reason}); sends to it resolve the name themselves",
+                l.host
+            ));
+        }
     }
 
     /// A refresh that fails keeps the last-known addresses; the first failure of a run is logged.
@@ -168,20 +170,11 @@ impl NetOut {
         self.start_wanted(now);
     }
 
-    fn changed(l: &mut Lookup, patch: NetworkPatchId, now: NetworkReachability) -> Reports {
-        if l.reported == now {
-            return Vec::new();
-        }
-        l.reported = now.clone();
-        vec![(patch, now)]
-    }
-
     /// Once per tick: look-ups that timed out, retries that are due, look-ups waiting for a slot.
-    pub fn tick(&mut self, now: SampleTime) -> Reports {
+    pub fn tick(&mut self, now: SampleTime) {
         let timeout = self.samples(LOOKUP_TIMEOUT);
         let retry = now.saturating_add(self.samples(RETRY_AFTER));
-        let mut out = Reports::new();
-        for (id, l) in &mut self.lookups {
+        for l in self.lookups.values_mut() {
             match l.phase {
                 Phase::InFlight { since, .. } if now.saturating_sub(since) >= timeout => {
                     // The thread is not waited for, but it stays counted in `running`.
@@ -191,13 +184,7 @@ impl NetOut {
                     if l.resolved_once {
                         Self::note_failed_refresh(l, "the look-up timed out", &mut self.notes);
                     } else {
-                        out.extend(Self::changed(
-                            l,
-                            *id,
-                            NetworkReachability::Unresolved {
-                                reason: "the look-up timed out".to_owned(),
-                            },
-                        ));
+                        Self::note_unresolved(l, "the look-up timed out", &mut self.notes);
                     }
                 }
                 Phase::Idle { retry_at: Some(at) } if now >= at => l.phase = Phase::Wanted,
@@ -205,34 +192,29 @@ impl NetOut {
             }
         }
         self.start_wanted(now);
-        out.extend(self.relieve());
-        out
+        self.note_if_stuck();
     }
 
-    /// With every slot taken by look-ups that never answered, the names that wait for a slot
-    /// are not known to be bad: report them `Unknown` instead of leaving them broken.
     /// Every look-up slot is taken: this doc's, or the engine's together.
     fn slots_full(&self) -> bool {
         self.running.len() >= MAX_LOOKUPS || self.alive.alive() >= MAX_LOOKUPS
     }
 
-    fn relieve(&mut self) -> Reports {
+    /// With every slot taken by look-ups that never answered, names wait for one: logged once
+    /// per stretch. Their cues are not affected either way.
+    fn note_if_stuck(&mut self) {
         if !self.slots_full() {
             self.limit_hit = false;
-            return Vec::new();
+            return;
         }
-        let mut out = Reports::new();
-        for (id, l) in &mut self.lookups {
-            // A name that resolved before is already known; waiting does not change that.
-            if l.phase == Phase::Wanted && !l.resolved_once {
-                out.extend(Self::changed(l, *id, NetworkReachability::Unknown));
-            }
-        }
-        if !self.limit_hit && !out.is_empty() {
+        let waiting = self
+            .lookups
+            .values()
+            .any(|l| l.phase == Phase::Wanted && !l.resolved_once);
+        if waiting && !self.limit_hit {
             self.limit_hit = true;
             self.limit_note = true;
         }
-        out
     }
 
     fn start_wanted(&mut self, now: SampleTime) {

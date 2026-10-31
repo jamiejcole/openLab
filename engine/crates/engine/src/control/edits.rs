@@ -90,12 +90,9 @@ impl DocCx<'_> {
     /// reports every patch resolution (a newly opened workspace), else only changes.
     pub(super) fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.doc.primes_dirty = true;
-        let mut inputs = self.sync_patches(all);
+        let inputs = self.sync_patches(all);
         let now = self.now();
-        let reports = self.doc.net.sync(&self.doc.ws.network_patches, all, now);
-        if !reports.is_empty() {
-            inputs.push(Input::NetworkAvailability { patches: reports });
-        }
+        self.doc.net.sync(&self.doc.ws.network_patches, now);
         inputs
     }
 

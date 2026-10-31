@@ -2105,7 +2105,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 15;
+const ENGINE_PROBLEM_COUNT: usize = 14;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2119,10 +2119,9 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::DeviceUnavailable { .. } => 8,
         CueProblem::NetworkPatchMissing { .. } => 9,
         CueProblem::NetworkHostInvalid { .. } => 10,
-        CueProblem::NetworkHostUnresolved { .. } => 11,
-        CueProblem::NetworkMessageInvalid { .. } => 12,
-        CueProblem::StartedBroken => 13,
-        CueProblem::NothingToFade => 14,
+        CueProblem::NetworkMessageInvalid { .. } => 11,
+        CueProblem::StartedBroken => 12,
+        CueProblem::NothingToFade => 13,
     }
 }
 
@@ -2139,10 +2138,9 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::DeviceUnavailable { .. } => 8,
         WireProblem::NetworkPatchMissing { .. } => 9,
         WireProblem::NetworkHostInvalid { .. } => 10,
-        WireProblem::NetworkHostUnresolved { .. } => 11,
-        WireProblem::NetworkMessageInvalid { .. } => 12,
-        WireProblem::StartedBroken => 13,
-        WireProblem::NothingToFade => 14,
+        WireProblem::NetworkMessageInvalid { .. } => 11,
+        WireProblem::StartedBroken => 12,
+        WireProblem::NothingToFade => 13,
     }
 }
 
@@ -2474,16 +2472,6 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             WireProblem::NetworkHostInvalid {
                 patch: net_id(6),
                 reason: "the port must be 1 to 65535".into(),
-            },
-        ),
-        (
-            CueProblem::NetworkHostUnresolved {
-                patch: net_id(6),
-                reason: "no such host".into(),
-            },
-            WireProblem::NetworkHostUnresolved {
-                patch: net_id(6),
-                reason: "no such host".into(),
             },
         ),
         (
