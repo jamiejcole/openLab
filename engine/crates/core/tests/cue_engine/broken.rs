@@ -937,6 +937,47 @@ fn an_unsignalled_edit_inside_a_group_is_followed_alike_with_or_without_the_cros
     );
 }
 
+/// The edit cross-check compares the workspace itself, not only the problems: an unsignalled
+/// level change or rename (no cue's problems change, the outline stays) is counted once, not
+/// again on the calls after it.
+#[test]
+fn the_cross_check_counts_an_unsignalled_level_change_or_rename_once() {
+    let mut ws = workspace(vec![sound(1), memo(2)]);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.set_edit_cross_check(true);
+    for now in [0, 10, 20] {
+        engine.handle(&ws, Input::Tick, now);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+    if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+        levels.master_db = -6.0;
+    }
+    for now in [30, 40, 50] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![]);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 1, "level change");
+    ws.cue_lists[0].cues[1].name = "Renamed".into();
+    for now in [60, 70, 80] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![]);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 2, "rename");
+}
+
+/// A NaN a hostile workspace holds is not equal to itself under `==`; the cross-check still
+/// sees an unchanged workspace as unchanged and never counts it.
+#[test]
+fn the_cross_check_does_not_count_an_unchanged_workspace_holding_a_nan() {
+    let mut ws = workspace(vec![memo(1), memo(2)]);
+    ws.patches[0].master_db = f64::NAN;
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.set_edit_cross_check(true);
+    engine.handle(&ws, Input::Tick, 0);
+    for now in [10, 20, 30] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![], "{now}");
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+}
+
 #[test]
 fn the_pre_show_list_is_in_workspace_order() {
     // Lists in order, cues depth-first, not id order.
