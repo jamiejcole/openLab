@@ -131,13 +131,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated {
                 self?.syncSidebarList()
                 self?.syncFooterCount()
+                self?.syncMasthead()
             }
         }
+        masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
             self?.syncSidebarList()
+            self?.syncMasthead()
         }
+        sidebar.onNotice = { [weak self] in self?.showNotice($0) }
         sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
         // Both publish before they change: use the delivered values.
         statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
@@ -145,6 +149,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         syncSidebarList()
         syncFooterCount()
+        syncMasthead()
         // The store's mode moves on the operator's choice and on the engine's word (a reconnect,
         // another client): the window follows either. Published before it changes: use the value.
         showModeSub = store.$showMode.sink { [weak self] on in
@@ -242,9 +247,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard on != isShowMode else { return }
         isShowMode = on
         inspector.isLocked = on
+        masthead.isLocked = on
         cueToolbar.isLocked = on
         cueList.isEditLocked = on
         sidebar.relinkLocked = on
+        sidebar.listEditLocked = on
         footer.setShowMode(on)
         refreshTitle()
     }
@@ -359,6 +366,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
+    /// The shown list's playhead cue, with its notes.
+    func syncMasthead() {
+        let id = cueList.listID.flatMap { store.playheads[$0] }
+        masthead.show(standby: id.flatMap { store.model?.cue($0) })
+    }
+
     func syncFooterCount() {
         let model = store.model
         footer.showCount(cues: model?.cueCount ?? 0, lists: model?.cueLists.count ?? 0)
@@ -380,11 +393,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    /// Commits what is typed in the inspector and in the cue list's Duration cell, and waits for the
+    /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        if let notes = masthead.takePendingNotes() {
+            ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
+        }
         return await inspector.commitPendingEdits() && ok
     }
 

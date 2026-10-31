@@ -103,6 +103,7 @@
 "masthead.go" = "GO";
 "masthead.go.label" = "Go";
 "masthead.standby.none" = "No cue standing by";
+"masthead.notes.cueGone" = "The notes could not be saved: the cue no longer exists.";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
 "cue.type.audio" = "Audio";
@@ -245,6 +246,10 @@
 "activeCue.panic" = "Panic this cue";
 "footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
+"sidebar.list.rename" = "Rename List…";
+"sidebar.list.delete" = "Delete List";
+"sidebar.list.rename.prompt" = "Name for this cue list";
+"sidebar.list.rename.ok" = "Rename";
 "sidebar.newCart" = "New Cart";
 "sidebar.newList.name" = "Cue List %d";
 
@@ -411,6 +416,11 @@
 "preshow.title" = "Pre-Show Check";
 "preshow.title.workspace" = "Pre-Show Check: %@";
 "preshow.checkAgain" = "Check Again";
+"preshow.inspect" = "Inspect Cue";
+"preshow.hide" = "Hide";
+"preshow.unhide" = "Unhide";
+"preshow.showHidden" = "Show hidden";
+"preshow.summary.hidden" = "%@ (%d hidden)";
 "preshow.checking" = "Checking…";
 "preshow.failed" = "The check could not be run. Try again.";
 "preshow.disconnected" = "The engine is not connected: nothing has been checked.";
