@@ -18,7 +18,7 @@ final class CueListPerformanceTests: XCTestCase {
     }
 
     private func bigHarness(_ n: Int) async throws -> CueListHarness {
-        try await H(snapshot: FakeEngine.bigSnapshot(cues: n), collapsed: false)
+        try await H(snapshot: TestSnapshots.bigSnapshot(cues: n), collapsed: false)
     }
 
     /// `count` renames spread across the list, as decoded messages (revision filled in on send).
@@ -26,8 +26,8 @@ final class CueListPerformanceTests: XCTestCase {
         let cues = h.store.model?.cueLists.first?.cues ?? []
         return try (0..<count).map { i in
             let c = cues[(i * 7 + 3) % cues.count]
-            let json = FakeEngine.cueJSON(
-                id: c.id.raw, number: c.number, name: "Renamed \(i)", kind: FakeEngine.audioKind("media/x.wav"))
+            let json = TestSnapshots.cueJSON(
+                id: c.id.raw, number: c.number, name: "Renamed \(i)", kind: TestSnapshots.audioKind("media/x.wav"))
             return try H.upsertJSON(json, index: (i * 7 + 3) % cues.count)
         }
     }
@@ -44,7 +44,7 @@ final class CueListPerformanceTests: XCTestCase {
 
     func testSnapshotDecodeAndApplyOf2000CuesAreFast() async throws {
         let h = try await bigHarness(2000)
-        var snap = FakeEngine.bigSnapshot(cues: 2000)
+        var snap = TestSnapshots.bigSnapshot(cues: 2000)
         snap.set("revision", .int(1000))
         let text = try JSONValue.object(["type": .string("snapshot"), "snapshot": snap]).text()
         var message: ServerMessage?
