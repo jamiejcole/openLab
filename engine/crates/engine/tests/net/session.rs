@@ -1644,7 +1644,10 @@ async fn a_group_played_to_the_end_plays_again_in_its_new_mode_once_selected() {
     assert!(show.ws.states.is_empty(), "{:?}", show.ws.states);
     show.choose_mode("playlist").await;
     let from = show.space().await;
-    assert!(show.ws.states.is_empty(), "no cue standing by: nothing plays");
+    assert!(
+        show.ws.states.is_empty(),
+        "no cue standing by: nothing plays"
+    );
     assert_eq!(show.heard(from), Vec::<u128>::new());
     show.click(GROUP).await;
     let from = show.space().await;
