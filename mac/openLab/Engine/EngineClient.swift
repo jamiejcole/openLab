@@ -440,7 +440,8 @@ extension ClientMessage {
         case .request(_, let r):
             switch r {
             case .new, .open, .openRecovery, .scanRecovery, .save, .saveAs, .relink: return false
-            case .listDevices, .preshowCheck, .logTail, .setOutputOverrides, .setShowMode, .setPatchMapping,
+            case .listDevices, .setOutputDevice, .listPatchMappings, .preshowCheck, .logTail, .setOutputOverrides,
+                .setShowMode, .setPatchMapping,
                 .snapshot:
                 return true
             }

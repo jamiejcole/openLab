@@ -188,6 +188,12 @@ struct ErrorBody: Hashable, Sendable, Decodable {
     let message: String
 }
 
+/// One patch's place on this machine; nil `mapping`: never mapped, or cleared.
+struct PatchMappingEntry: Hashable, Sendable, Decodable {
+    let patch: ModelID
+    let mapping: PatchMapping?
+}
+
 struct DeviceEntry: Hashable, Sendable, Decodable {
     let name: String
     let outputChannels: Int
@@ -402,7 +408,10 @@ struct PreshowReport: Hashable, Sendable, Decodable {
 }
 
 enum ResultData: Sendable, Equatable, Decodable {
-    case devices([DeviceEntry])
+    /// `selected`: the device chosen for the next engine start (nil: none chosen). The device
+    /// playing now is the status message's `device`.
+    case devices([DeviceEntry], selected: String?)
+    case patchMappings([PatchMappingEntry])
     case relink(
         relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
@@ -419,7 +428,11 @@ enum ResultData: Sendable, Equatable, Decodable {
         let c = try decoder.container(keyedBy: Key.self)
         let type = try c.decode(String.self, forKey: "type")
         switch type {
-        case "devices": self = .devices(try c.decode([DeviceEntry].self, forKey: "devices"))
+        case "devices":
+            self = .devices(
+                try c.decode([DeviceEntry].self, forKey: "devices"),
+                selected: try c.decodeIfPresent(String.self, forKey: "selected"))
+        case "patch_mappings": self = .patchMappings(try c.decode([PatchMappingEntry].self, forKey: "patches"))
         case "relink":
             self = .relink(
                 relinked: try c.decode(Int.self, forKey: "relinked"),

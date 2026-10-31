@@ -81,6 +81,12 @@ final class FakeEngine: EngineTransport {
     /// `preshow_check` on one of these docs answers a sample report with problems (a broken cue,
     /// its missing file, a lost device) instead of the all-clear; other docs answer the all-clear.
     var preshowProblemDocs: Set<ModelID> = []
+    /// `list_devices`: name and output channel count of each device the fake lists.
+    var fakeDevices: [(name: String, channels: Int)] = [("Fake Output", 2)]
+    /// The device `set_output_device` stored (nil: none chosen).
+    private(set) var selectedOutputDevice: String?
+    /// `set_patch_mapping` results by patch.
+    private(set) var patchMappings: [ModelID: PatchMapping] = [:]
     /// `scan_recovery` lists these (`recovery_entries` entry objects).
     var recoveryEntries: [JSONValue] = []
     /// `workspaces` lists a doc saved at one of these paths with this `path_hash`; at any other
@@ -701,7 +707,38 @@ final class FakeEngine: EngineTransport {
             push(text(.object(["type": .string("document"), "document": docs[doc]?["document"] ?? .null])), doc: doc)
             result(c, id)
         case .setOutputOverrides: result(c, id)
-        case .setPatchMapping: result(c, id)
+        case .setPatchMapping(let patch, let mapping):
+            guard let device = mapping?.device else {
+                patchMappings[patch] = nil
+                return result(c, id)
+            }
+            guard fakeDevices.contains(where: { $0.name == device }) else {
+                return result(c, id, error: (.notFound, "no output device named \"\(device)\""))
+            }
+            patchMappings[patch] = mapping
+            result(c, id)
+        case .setOutputDevice(let device):
+            if let device, !fakeDevices.contains(where: { $0.name == device }) {
+                return result(c, id, error: (.notFound, "no output device named \"\(device)\""))
+            }
+            selectedOutputDevice = device
+            result(c, id)
+        case .listPatchMappings:
+            let ids = (c.doc.flatMap { docs[$0]?["workspace"]?["patches"]?.arrayValue } ?? []).compactMap {
+                $0["id"]?.stringValue
+            }
+            let entries: [JSONValue] = ids.map { raw in
+                var entry: [String: JSONValue] = ["patch": .string(raw)]
+                if let m = patchMappings[ModelID(raw)] {
+                    entry["mapping"] = .object([
+                        "device": .string(m.device), "channels": .array(m.channels.map { .int(Int64($0)) }),
+                    ])
+                }
+                return .object(entry)
+            }
+            result(
+                c, id,
+                ok: .object(["data": .object(["type": .string("patch_mappings"), "patches": .array(entries)])]))
         case .setShowMode(let on):
             guard let doc = c.doc else { return result(c, id, error: (.noWorkspace, "unbound")) }
             docs[doc]?["document"]?.set("show_mode", .bool(on))
@@ -731,8 +768,12 @@ final class FakeEngine: EngineTransport {
             let problems = c.doc.map(preshowProblemDocs.contains) ?? false
             result(c, id, ok: .object(["data": problems ? Self.sampleReportWithProblems : Self.allClearReport]))
         case .listDevices:
-            let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
-            result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
+            let devs: [JSONValue] = fakeDevices.map {
+                .object(["name": .string($0.name), "output_channels": .int(Int64($0.channels))])
+            }
+            var data: [String: JSONValue] = ["type": .string("devices"), "devices": .array(devs)]
+            if let selectedOutputDevice { data["selected"] = .string(selectedOutputDevice) }
+            result(c, id, ok: .object(["data": .object(data)]))
         }
     }
 

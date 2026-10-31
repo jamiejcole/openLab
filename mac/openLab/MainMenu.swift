@@ -84,6 +84,8 @@ enum MainMenu {
                 .separator(),
                 item("menu.file.relink", #selector(AppDelegate.relinkMedia(_:))),
                 .separator(),
+                item("menu.file.workspaceSettings", #selector(AppDelegate.showWorkspaceSettings(_:)), ","),
+                .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 item("menu.file.save", #selector(AppDelegate.saveWorkspace(_:)), "s"),
                 item("menu.file.saveAs", #selector(AppDelegate.saveWorkspaceAs(_:)), "S"),
