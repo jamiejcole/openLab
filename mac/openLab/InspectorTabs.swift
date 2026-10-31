@@ -28,6 +28,13 @@ extension InspectorViewController {
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
+        // Removing and re-adding selects tabs on the way; only the final selection may count as shown.
+        let delegate = tabView.delegate
+        tabView.delegate = nil
+        defer {
+            tabView.delegate = delegate
+            updateTimeLoopsActive()
+        }
         for item in tabView.tabViewItems { tabView.removeTabViewItem(item) }
         for id in wanted {
             if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
