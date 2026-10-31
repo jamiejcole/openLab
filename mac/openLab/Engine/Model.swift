@@ -115,6 +115,12 @@ struct WorkspaceModel: Sendable, Decodable {
         return value
     }
 
+    /// Every cue of every list, groups' children included (the footer's count).
+    var cueCount: Int {
+        func count(_ cues: [Cue]) -> Int { cues.reduce(0) { $0 + 1 + count($1.children) } }
+        return cueLists.reduce(0) { $0 + count($1.cues) }
+    }
+
     /// The cue with `id` anywhere in any list.
     func cue(_ id: ModelID) -> Cue? {
         func find(_ cues: [Cue]) -> Cue? {

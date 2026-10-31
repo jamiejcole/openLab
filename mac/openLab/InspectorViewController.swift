@@ -401,10 +401,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         for key in Self.colours {
             let style = CueKindStyle.colours[key]
             let item = NSMenuItem(title: loc(style?.labelKey ?? "cue.colour.none"), action: nil, keyEquivalent: "")
-            if let style,
-                let image = symbolImage(style.symbol, "")?.withSymbolConfiguration(.init(paletteColors: [style.tint]))
-            {
-                item.image = image
+            if let style {
+                let base = style.icon.image(loc(style.labelKey), compact: true)
+                item.image = base.withSymbolConfiguration(.init(paletteColors: [style.tint])) ?? base
             }
             colourPopup.menu?.addItem(item)
         }
@@ -453,7 +452,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // An unnamed cue with no file shows its kind as a hint; otherwise the field holds the shown name.
         nameField.placeholderString = CueKindStyle.kindLabel(kind)
         let style = CueKindStyle.kinds[kind]
-        kindIcon.image = style.flatMap { symbolImage($0.symbol, CueKindStyle.kindLabel(kind)) }
+        kindIcon.image = style.map { $0.icon.image(CueKindStyle.kindLabel(kind), compact: true) }
         let isTarget = InspectorEdit.targetKinds.contains(kind)
         targetField.placeholderString = isTarget ? nil : loc("inspector.target.notApplicable")
         if kind == "audio" {
