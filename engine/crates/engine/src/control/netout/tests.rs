@@ -42,7 +42,7 @@ fn ticket(net: &NetOut, n: u128) -> u64 {
     }
 }
 
-fn fail(net: &mut NetOut, n: u128, t: u64, now: SampleTime) -> Reports {
+fn fail(net: &mut NetOut, n: u128, t: u64, now: SampleTime) {
     net.answer(
         NetAnswer::Lookup {
             patch: nid(n),
@@ -51,12 +51,6 @@ fn fail(net: &mut NetOut, n: u128, t: u64, now: SampleTime) -> Reports {
         },
         now,
     )
-}
-
-fn unresolved(reason: &str) -> NetworkReachability {
-    NetworkReachability::Unresolved {
-        reason: reason.into(),
-    }
 }
 
 #[test]
@@ -118,25 +112,20 @@ fn ipv4_comes_first_when_the_resolver_returns_both() {
 }
 
 #[test]
-fn sync_looks_up_names_only_and_reports_changes() {
+fn sync_looks_up_names_only() {
     let (mut net, _rx) = out();
     let patches = [
         patch(1, "lights.local"),
         patch(2, "10.0.0.2"),
         patch(3, "bad host"),
     ];
-    assert!(
-        net.sync(&patches, true, 0)
-            .iter()
-            .all(|(id, r)| { *id == nid(1) && *r == NetworkReachability::Unknown })
-    );
+    net.sync(&patches, 0);
     assert_eq!(net.lookups.len(), 1);
     assert_eq!(net.running.len(), 1);
     let t = ticket(&net, 1);
-    assert_eq!(
-        fail(&mut net, 1, t, 100),
-        vec![(nid(1), unresolved("no such host"))]
-    );
+    fail(&mut net, 1, t, 100);
+    // A name that never resolved is only logged, once; no cue is broken for it.
+    assert_eq!(net.take_notes().len(), 1);
     assert_eq!(net.running.len(), 0);
     // A stale ticket is ignored.
     let stale = NetAnswer::Lookup {
@@ -144,9 +133,10 @@ fn sync_looks_up_names_only_and_reports_changes() {
         ticket: t + 99,
         result: Ok(vec![]),
     };
-    assert!(net.answer(stale, 101).is_empty());
+    net.answer(stale, 101);
+    assert!(net.take_notes().is_empty());
     // Retried after RETRY_AFTER (10 s = 10_000 samples at 1 kHz), not before.
-    assert!(net.tick(9_000).is_empty());
+    net.tick(9_000);
     assert_eq!(net.running.len(), 0);
     net.tick(10_100);
     assert_eq!(net.running.len(), 1);
@@ -157,7 +147,7 @@ fn sync_looks_up_names_only_and_reports_changes() {
 #[test]
 fn a_slow_resolver_times_out_retries_and_recovers() {
     let (mut net, _rx) = out();
-    net.sync(&[patch(1, "lights.local")], false, 0);
+    net.sync(&[patch(1, "lights.local")], 0);
     let mut now = 0;
     let mut tickets = Vec::new();
     // Far more tries than the old give-up limit; each thread answers only after its
@@ -165,14 +155,7 @@ fn a_slow_resolver_times_out_retries_and_recovers() {
     for _ in 0..40 {
         tickets.push(ticket_or_none(&net));
         now += 20_000;
-        let r = net.tick(now);
-        assert!(
-            matches!(
-                r.as_slice(),
-                [] | [(_, NetworkReachability::Unresolved { .. })]
-            ),
-            "{r:?}"
-        );
+        net.tick(now);
         // The thread finally answers (failed), after its timeout.
         if let Some(t) = tickets.last().copied().flatten() {
             fail(&mut net, 1, t, now);
@@ -189,15 +172,18 @@ fn a_slow_resolver_times_out_retries_and_recovers() {
         now += 1_000;
         net.tick(now);
     };
-    let r = net.answer(
+    net.answer(
         NetAnswer::Lookup {
             patch: nid(1),
             ticket: t,
-            result: Ok(vec![]),
+            result: Ok(vec![a(1)]),
         },
         now,
     );
-    assert_eq!(r, vec![(nid(1), NetworkReachability::Resolved)]);
+    assert_eq!(
+        net.lookups.get(&nid(1)).map(|l| l.known.clone()),
+        Some(vec![a(1)])
+    );
 }
 
 fn ticket_or_none(net: &NetOut) -> Option<u64> {
@@ -207,31 +193,19 @@ fn ticket_or_none(net: &NetOut) -> Option<u64> {
     }
 }
 
-/// H1: when hung look-ups fill every slot, waiting names are `Unknown`, not broken, the
-/// limit is noted once, and look-ups resume when a thread answers.
+/// H1: when hung look-ups fill every slot the limit is noted once (no cue is affected), and
+/// look-ups resume when a thread answers.
 #[test]
 fn hung_look_ups_filling_every_slot_do_not_break_cues() {
     let (mut net, _rx) = out();
     let names: Vec<NetworkPatch> = (1..=12).map(|n| patch(n, &format!("h{n}.local"))).collect();
-    net.sync(&names, false, 0);
+    net.sync(&names, 0);
     assert_eq!(net.running.len(), MAX_LOOKUPS);
     // Every started look-up times out and none answers.
-    let r = net.tick(20_000);
-    assert_eq!(
-        r.iter()
-            .filter(|(_, v)| matches!(v, NetworkReachability::Unresolved { .. }))
-            .count(),
-        MAX_LOOKUPS
-    );
+    net.tick(20_000);
     // 10 s later they are due again, but all slots are held by the hung threads: the
-    // names waiting are reported Unknown (mended), and the limit is noted once.
-    let r = net.tick(30_000);
-    assert_eq!(
-        r.iter()
-            .filter(|(_, v)| *v == NetworkReachability::Unknown)
-            .count(),
-        MAX_LOOKUPS
-    );
+    // limit is noted once.
+    net.tick(30_000);
     assert!(net.take_limit_note());
     net.tick(31_000);
     assert!(!net.take_limit_note(), "noted once");
@@ -268,9 +242,9 @@ fn free_slots_go_to_the_longest_waiting_name_first() {
     let (mut net, _rx) = out();
     let mut patches: Vec<NetworkPatch> =
         (1..=8).map(|n| patch(n, &format!("h{n}.local"))).collect();
-    net.sync(&patches, false, 0);
+    net.sync(&patches, 0);
     patches.extend((20..=22).map(|n| patch(n, &format!("w{n}.local"))));
-    net.sync(&patches, false, 10);
+    net.sync(&patches, 10);
     assert_eq!(net.running.len(), MAX_LOOKUPS);
     // x (20) was tried at 500, y (21) at 100, z (22) never.
     for (n, at) in [(20, Some(500)), (21, Some(100)), (22, None)] {
@@ -328,7 +302,7 @@ fn out_rec() -> (NetOut, crossbeam_channel::Receiver<Inbox>, Arc<Rec>) {
     (net, rx, rec)
 }
 
-fn resolve_ok(net: &mut NetOut, n: u128, addrs: Vec<SocketAddr>, now: SampleTime) -> Reports {
+fn resolve_ok(net: &mut NetOut, n: u128, addrs: Vec<SocketAddr>, now: SampleTime) {
     let t = ticket(net, n);
     net.answer(
         NetAnswer::Lookup {
@@ -371,11 +345,8 @@ fn cache_of(net: &NetOut, n: u128) -> Option<Vec<SocketAddr>> {
 fn a_refresh_sends_to_the_new_address() {
     let (mut net, _rx, rec) = out_rec();
     let p = patch(1, "console.local");
-    net.sync(std::slice::from_ref(&p), false, 0);
-    assert_eq!(
-        resolve_ok(&mut net, 1, vec![a(1)], 0),
-        vec![(nid(1), NetworkReachability::Resolved)]
-    );
+    net.sync(std::slice::from_ref(&p), 0);
+    resolve_ok(&mut net, 1, vec![a(1)], 0);
     send_one(&mut net, &p);
     assert_eq!(sent(&rec), vec![vec![a(1)]]);
     // Not due yet.
@@ -383,8 +354,8 @@ fn a_refresh_sends_to_the_new_address() {
     assert!(net.running.is_empty());
     net.tick(60_000);
     assert_eq!(net.running.len(), 1, "the refresh started");
-    // The cue stays reachable while it runs and when it answers.
-    assert!(resolve_ok(&mut net, 1, vec![a(2)], 60_100).is_empty());
+    // Sends keep working while it runs and use the new address once it answers.
+    resolve_ok(&mut net, 1, vec![a(2)], 60_100);
     send_one(&mut net, &p);
     assert_eq!(sent(&rec)[1], vec![a(2)]);
     // And it keeps refreshing.
@@ -393,47 +364,50 @@ fn a_refresh_sends_to_the_new_address() {
 }
 
 /// M1(c): a refresh that fails keeps the last-known addresses and does not break cues; one
-/// log line per run of failures; a never-resolved name is still broken.
+/// log line per run of failures; a never-resolved name is logged and still sent to.
 #[test]
 fn a_failed_refresh_keeps_the_old_addresses_and_does_not_break_cues() {
     let (mut net, _rx, rec) = out_rec();
     let p = patch(1, "console.local");
-    net.sync(std::slice::from_ref(&p), false, 0);
+    net.sync(std::slice::from_ref(&p), 0);
     resolve_ok(&mut net, 1, vec![a(1)], 0);
     send_one(&mut net, &p);
     net.tick(60_000);
     let t = ticket(&net, 1);
-    assert!(fail(&mut net, 1, t, 60_100).is_empty(), "not broken");
+    fail(&mut net, 1, t, 60_100);
     assert_eq!(net.take_notes().len(), 1);
     send_one(&mut net, &p);
     assert_eq!(sent(&rec)[1], vec![a(1)], "still the last-known address");
     // Retried after RETRY_AFTER; failing again (here by timing out) is not logged again,
     // and the cue is still not broken.
-    assert!(net.tick(70_200).is_empty());
+    net.tick(70_200);
     assert_eq!(net.running.len(), 1);
     let slow = ticket(&net, 1);
-    assert!(net.tick(90_300).is_empty());
+    net.tick(90_300);
     // The slow thread answers at last (stale: ignored), freeing its name for a new try.
-    assert!(fail(&mut net, 1, slow, 90_400).is_empty());
+    fail(&mut net, 1, slow, 90_400);
     assert!(net.take_notes().is_empty(), "one line per run of failures");
     assert_eq!(
-        net.lookups.get(&nid(1)).map(|l| l.reported.clone()),
-        Some(NetworkReachability::Resolved)
+        net.lookups.get(&nid(1)).map(|l| l.known.clone()),
+        Some(vec![a(1)])
     );
     // A success ends the run: the next failure is logged again.
     net.tick(100_400);
-    assert!(resolve_ok(&mut net, 1, vec![a(3)], 100_500).is_empty());
+    resolve_ok(&mut net, 1, vec![a(3)], 100_500);
     net.tick(160_500);
     let t = ticket(&net, 1);
-    assert!(fail(&mut net, 1, t, 160_600).is_empty());
+    fail(&mut net, 1, t, 160_600);
     assert_eq!(net.take_notes().len(), 1);
-    // A name that never resolved is Unresolved.
-    net.sync(&[p, patch(2, "never.local")], false, 160_700);
+    // A name that never resolved has no addresses, is logged once, and its sends still go out
+    // (the sender resolves the name itself on its worker).
+    let q = patch(2, "never.local");
+    net.sync(&[p, q.clone()], 160_700);
     let t = ticket(&net, 2);
-    assert_eq!(
-        fail(&mut net, 2, t, 160_800),
-        vec![(nid(2), unresolved("no such host"))]
-    );
+    fail(&mut net, 2, t, 160_800);
+    assert_eq!(net.take_notes().len(), 1);
+    assert_eq!(cache_of(&net, 2), None);
+    send_one(&mut net, &q);
+    assert_eq!(sent(&rec).last(), Some(&Vec::new()));
 }
 
 /// M1(b): a failed TCP send forgets the cached addresses and asks for a look-up now; a
@@ -444,7 +418,7 @@ fn a_tcp_send_failure_triggers_a_fresh_look_up() {
         let (mut net, rx, rec) = out_rec();
         let mut p = patch(1, "console.local");
         p.protocol = protocol;
-        net.sync(std::slice::from_ref(&p), false, 0);
+        net.sync(std::slice::from_ref(&p), 0);
         resolve_ok(&mut net, 1, vec![a(1)], 0);
         rec.fail.store(true, Ordering::SeqCst);
         send_one(&mut net, &p);
@@ -455,7 +429,7 @@ fn a_tcp_send_failure_triggers_a_fresh_look_up() {
                 Err(e) => panic!("{e}"),
             }
         };
-        assert!(net.answer(failed, 5_000).is_empty());
+        net.answer(failed, 5_000);
         assert_eq!(net.running.len(), usize::from(relookup));
         let want = if relookup { vec![] } else { vec![a(1)] };
         assert_eq!(cache_of(&net, 1), Some(want));
@@ -475,14 +449,14 @@ fn a_tcp_send_failure_triggers_a_fresh_look_up() {
 fn a_replaced_link_does_not_share_its_cache() {
     let (mut net, _rx, rec) = out_rec();
     let p = patch(1, "old.local");
-    net.sync(std::slice::from_ref(&p), false, 0);
+    net.sync(std::slice::from_ref(&p), 0);
     resolve_ok(&mut net, 1, vec![a(1)], 0);
     send_one(&mut net, &p);
     let old = net.links.get(&nid(1)).map(|l| Arc::clone(&l.cache));
     let Some(old) = old else { panic!("no link") };
     // The patch now names another host; its look-up answers before any message is sent.
     let q = patch(1, "new.local");
-    net.sync(std::slice::from_ref(&q), false, 10);
+    net.sync(std::slice::from_ref(&q), 10);
     resolve_ok(&mut net, 1, vec![a(2)], 20);
     assert_ne!(*crate::lock(&old), vec![a(2)]);
     send_one(&mut net, &q);
@@ -499,15 +473,15 @@ fn rapid_forget_and_restart_cannot_pile_up_threads() {
     let (mut net, _rx) = out();
     let names: Vec<NetworkPatch> = (1..=8).map(|n| patch(n, &format!("h{n}.local"))).collect();
     for round in 0..50 {
-        net.sync(&names, false, round);
-        net.sync(&[], false, round);
+        net.sync(&names, round);
+        net.sync(&[], round);
     }
     assert!(net.running.len() <= MAX_LOOKUPS, "{}", net.running.len());
     // The same name restarted while its old thread runs does not get a second one.
     let (mut net, _rx) = out();
-    net.sync(&[patch(1, "a.local")], false, 0);
-    net.sync(&[], false, 1);
-    net.sync(&[patch(1, "a.local")], false, 2);
+    net.sync(&[patch(1, "a.local")], 0);
+    net.sync(&[], 1);
+    net.sync(&[patch(1, "a.local")], 2);
     assert_eq!(net.running.len(), 1);
     assert!(
         net.lookups
@@ -531,11 +505,10 @@ fn rapid_forget_and_restart_cannot_pile_up_threads() {
 #[test]
 fn removing_or_editing_a_patch_clears_its_state() {
     let (mut net, _rx) = out();
-    net.sync(&[patch(1, "lights.local")], false, 0);
+    net.sync(&[patch(1, "lights.local")], 0);
     let t = ticket(&net, 1);
     fail(&mut net, 1, t, 0);
-    let r = net.sync(&[patch(1, "10.0.0.1")], false, 1);
-    assert_eq!(r, vec![(nid(1), NetworkReachability::Unknown)]);
+    net.sync(&[patch(1, "10.0.0.1")], 1);
     assert!(net.lookups.is_empty());
 }
 
@@ -545,12 +518,12 @@ fn a_show_with_very_many_named_patches_follows_a_bounded_number() {
     let patches: Vec<NetworkPatch> = (0..(MAX_TRACKED as u128 + 50))
         .map(|n| patch(n + 1, &format!("a{n}.local")))
         .collect();
-    net.sync(&patches, false, 0);
+    net.sync(&patches, 0);
     assert_eq!(net.lookups.len(), MAX_TRACKED);
     assert!(net.running.len() <= MAX_LOOKUPS);
 }
 
-/// Look-ups that wait until released.
+/// Look-ups and sends that wait until released (a resolver or a connect that hangs).
 #[derive(Default)]
 struct Hang {
     open: Mutex<bool>,
@@ -558,6 +531,13 @@ struct Hang {
 }
 
 impl Hang {
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+    }
+
     fn release(&self) {
         *self.open.lock().unwrap() = true;
         self.cv.notify_all();
@@ -566,13 +546,11 @@ impl Hang {
 
 impl Transport for Hang {
     fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+        self.wait();
         Ok(())
     }
     fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
-        let mut open = self.open.lock().unwrap();
-        while !*open {
-            open = self.cv.wait(open).unwrap();
-        }
+        self.wait();
         Ok(vec![])
     }
 }
@@ -601,8 +579,8 @@ fn two_docs_share_the_look_up_bound() {
             .map(|n| patch(base + n, &format!("d{base}-{n}.local")))
             .collect()
     };
-    a.sync(&names(10), false, 0);
-    b.sync(&names(20), false, 0);
+    a.sync(&names(10), 0);
+    b.sync(&names(20), 0);
     assert_eq!(a.running.len(), 6);
     assert_eq!(
         b.running.len(),
@@ -647,7 +625,7 @@ fn two_docs_share_the_look_up_bound() {
         Arc::clone(&disabled),
         alive.clone(),
     );
-    c.sync(&[patch(99, "late.local")], false, 0);
+    c.sync(&[patch(99, "late.local")], 0);
     assert_eq!(alive.alive(), 1);
     drop(c);
     assert_eq!(
@@ -665,7 +643,7 @@ fn at_most_max_lookups_run_at_once() {
     let patches: Vec<NetworkPatch> = (0..20)
         .map(|n| patch(n + 1, &format!("a{n}.local")))
         .collect();
-    net.sync(&patches, false, 0);
+    net.sync(&patches, 0);
     assert_eq!(net.running.len(), MAX_LOOKUPS);
 }
 
@@ -691,11 +669,82 @@ fn idle_senders_are_freed_when_the_limit_is_reached() {
     // The workers drain on their own threads; wait until every queue is empty, so the
     // senders are idle (bounded: a failure guard, not a timing assumption).
     crate::spin::spin_until("workers never drained", || {
-        net.links.values().all(|l| l.tx.is_empty())
+        net.links
+            .values()
+            .all(|l| l.pending.load(Ordering::SeqCst) == 0)
     });
     for n in limit..limit + 10 {
         let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
         assert_eq!(o, SendOutcome::Queued, "{n}");
     }
     assert!(net.links.len() <= MAX_LINKS);
+}
+
+/// A worker stuck in its own name look-up or connect is not idle: it is never evicted for room,
+/// and a sender replaced by a host edit keeps counting against MAX_LINKS until it is done, so
+/// stuck workers cannot pile up past the limit.
+#[test]
+fn stuck_senders_are_neither_evicted_nor_forgotten() {
+    let hang = Arc::new(Hang::default());
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut net = NetOut::new(
+        NetTransport(Arc::clone(&hang) as Arc<dyn Transport>),
+        tx,
+        1000,
+    );
+    let nil = CueId(Uuid::nil());
+    for n in 0..MAX_LINKS as u128 {
+        assert_eq!(
+            net.send(&patch(n + 1, "10.0.0.1"), nil, vec![1]),
+            SendOutcome::Queued
+        );
+    }
+    // Every worker is stuck mid-send: none is idle, so a new destination is refused.
+    let extra = net.send(&patch(1000, "10.0.0.1"), nil, vec![1]);
+    assert!(matches!(extra, SendOutcome::Refused(_)), "{extra:?}");
+    assert_eq!(net.links.len(), MAX_LINKS);
+    // Editing a stuck destination's host replaces its sender; the old worker still counts.
+    let refused = net.send(&patch(1, "10.0.0.9"), nil, vec![1]);
+    assert!(matches!(refused, SendOutcome::Refused(_)), "{refused:?}");
+    assert_eq!(net.retiring.len(), 1);
+    assert!(net.links.len() + net.retiring.len() <= MAX_LINKS);
+    hang.release();
+    crate::spin::spin_until("workers never finished", || {
+        net.outstanding.load(Ordering::SeqCst) == 0
+    });
+    // Done: the retired worker no longer counts and the edited destination sends.
+    assert_eq!(
+        net.send(&patch(1, "10.0.0.9"), nil, vec![1]),
+        SendOutcome::Queued
+    );
+    assert!(net.retiring.is_empty());
+}
+
+/// A transport that panics while sending unwinds its worker; the link must not stay counted as
+/// busy (it could then never be evicted) and the drain count must still reach zero.
+#[test]
+fn a_panicking_worker_still_counts_its_job_off() {
+    struct Boom;
+    impl Transport for Boom {
+        fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+            panic!("transport fault");
+        }
+        fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
+            Ok(vec![])
+        }
+    }
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut net = NetOut::new(NetTransport(Arc::new(Boom)), tx, 1000);
+    let p = patch(1, "10.0.0.1");
+    assert_eq!(
+        net.send(&p, CueId(Uuid::nil()), vec![1]),
+        SendOutcome::Queued
+    );
+    crate::spin::spin_until("the job was never counted off", || {
+        net.outstanding.load(Ordering::SeqCst) == 0
+            && net
+                .links
+                .values()
+                .all(|l| l.pending.load(Ordering::SeqCst) == 0)
+    });
 }

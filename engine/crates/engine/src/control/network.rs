@@ -6,7 +6,7 @@
 use std::sync::atomic::Ordering;
 
 use openlab_core::protocol::{LogKind, LogLevel, RuntimeChange};
-use openlab_core::{CueId, Input, NetworkPatchId, OscArg, SampleTime};
+use openlab_core::{CueId, NetworkPatchId, OscArg};
 
 use super::netout::{self, NetAnswer, SendOutcome};
 use super::{DocCx, Engine, notice};
@@ -87,13 +87,11 @@ impl DocCx<'_> {
             } => {
                 let message = format!("message to {destination} not sent: {reason}");
                 // A TCP failure also asks for a fresh look-up of the host.
-                let reports = self.doc.net.answer(answer, now);
-                self.network_reports(reports, now);
+                self.doc.net.answer(answer, now);
                 self.net_warning(cue, message);
             }
             lookup @ NetAnswer::Lookup { .. } => {
-                let reports = self.doc.net.answer(lookup, now);
-                self.network_reports(reports, now);
+                self.doc.net.answer(lookup, now);
             }
         }
         self.note_lookup_limit();
@@ -106,15 +104,9 @@ impl DocCx<'_> {
         if self.doc.net.take_limit_note() {
             self.log(
                 LogLevel::Warn,
-                "host look-ups are stuck; names waiting for one are taken to be reachable until one answers"
+                "host look-ups are stuck; sends to names waiting for one resolve the name themselves"
                     .to_owned(),
             );
-        }
-    }
-
-    pub(super) fn network_reports(&mut self, patches: netout::Reports, now: SampleTime) {
-        if !patches.is_empty() {
-            self.feed(Input::NetworkAvailability { patches }, now);
         }
     }
 

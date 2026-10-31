@@ -301,8 +301,7 @@ impl DocCx<'_> {
         self.doc.voices.expire_held(now, hold, &mut fx);
         self.follow(fx, now);
         self.reclaim_slots(now);
-        let reports = self.doc.net.tick(now);
-        self.network_reports(reports, now);
+        self.doc.net.tick(now);
         self.note_lookup_limit();
         self.deliver_deferred(now);
         if self.doc.engine.is_due(now) {
