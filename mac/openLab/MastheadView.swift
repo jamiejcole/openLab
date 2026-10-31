@@ -2,11 +2,18 @@
 
 import AppKit
 
-/// GO button, standing-by cue name and its notes. Read-only until the store exists (M5.2+).
-final class MastheadView: NSView {
+/// GO button, the standing-by cue as "number, name" on one line, and its notes. As in QLab the
+/// notes are editable in Edit Mode and read-only in Show Mode.
+final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
     let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
     let notesView = NSTextView()
+    /// The cue the masthead shows; nil when nothing stands by.
+    private(set) var cueID: ModelID?
+    /// Show Mode (or no cue): the notes cannot be typed in.
+    var isLocked = false { didSet { applyEditable() } }
+    /// The typed notes for the shown cue; the window sends them the way the inspector does.
+    var onCommitNotes: ((ModelID, String) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -31,9 +38,14 @@ final class MastheadView: NSView {
         standbyField.maximumNumberOfLines = 1
 
         notesView.setAX(AX.standbyNotes, label: loc("masthead.notes.label"))
+        // Only editable in Edit Mode with a cue. Locked, it takes no focus: a focused text view
+        // swallows the transport keys (Space = GO).
         notesView.isEditable = false
-        // A focused text view swallows the transport keys (Space = GO), so it must not take focus.
         notesView.isSelectable = false
+        notesView.isRichText = false
+        notesView.isAutomaticQuoteSubstitutionEnabled = false
+        notesView.isAutomaticDashSubstitutionEnabled = false
+        notesView.delegate = self
         notesView.drawsBackground = false
         notesView.font = .systemFont(ofSize: 13)
         notesView.textColor = .secondaryLabelColor
@@ -66,6 +78,64 @@ final class MastheadView: NSView {
             goButton.heightAnchor.constraint(equalToConstant: 80),
             notesScroll.heightAnchor.constraint(equalToConstant: 44),
         ])
+    }
+
+    private func applyEditable() {
+        let on = !isLocked && cueID != nil
+        notesView.isEditable = on
+        notesView.isSelectable = on
+        if !on, notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
+    }
+
+    /// The cue whose notes are being typed: fixed when typing starts, so the text always goes to
+    /// the cue it was typed for even if the playhead moves meanwhile.
+    private var editingID: ModelID?
+
+    /// Shows `cue` as standing by. Notes being typed for another cue are committed to that cue first.
+    func show(standby cue: Cue?) {
+        if let editing = editingID, editing != cue?.id {
+            editingID = nil
+            onCommitNotes?(editing, notesView.string)
+            // AppKit announces the start of typing once per focus session: leave the field so the
+            // next keystroke starts a new session for the new cue instead of typing unseen.
+            if notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
+        }
+        let changed = cueID != cue?.id
+        cueID = cue?.id
+        if let cue {
+            standbyField.stringValue = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: ", ")
+        } else {
+            standbyField.stringValue = loc("masthead.standby.none")
+        }
+        let notes = cue?.raw["notes"]?.stringValue ?? ""
+        if notesView.string != notes, changed || editingID == nil { notesView.string = notes }
+        applyEditable()
+    }
+
+    /// Escape ends editing (the text is committed by the end-of-editing that follows) and gives
+    /// focus back, so Space fires GO again.
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        window?.makeFirstResponder(nil)
+        return true
+    }
+
+    func textDidBeginEditing(_ notification: Notification) {
+        editingID = cueID
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+        guard let id = editingID else { return }
+        editingID = nil
+        if !isLocked { onCommitNotes?(id, notesView.string) }
+    }
+
+    /// Notes typed and not yet sent, handed over (and forgotten) for Show Mode, Save, Close and Quit.
+    func takePendingNotes() -> (id: ModelID, text: String)? {
+        guard let id = editingID, !isLocked else { return nil }
+        editingID = nil
+        return (id, notesView.string)
     }
 
     @available(*, unavailable)

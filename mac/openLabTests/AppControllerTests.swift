@@ -593,8 +593,11 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { !transports(action).isEmpty }
     }
 
-    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() throws {
+    func testNoReadOnlyTextViewCanTakeFocusAndSwallowTransportKeys() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
+        // Masthead notes are typed in Edit Mode; in Show Mode they are read-only and take no focus.
+        wc.setShowMode(true)
+        await assertEventually { wc.masthead.isLocked }
         XCTAssertFalse(wc.masthead.notesView.acceptsFirstResponder)
         XCTAssertTrue(wc.window?.initialFirstResponder === wc.cueList.outlineView)
     }
