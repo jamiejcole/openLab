@@ -318,7 +318,7 @@ Audio levels only in v0.0.1 (§21). A Fade of an audio cue is **absolute** (QLab
 
 ## Level edits on a playing cue (AUD-06, AUD-08, M5.9b)
 
-An edit of an Audio cue's levels (master, cue output levels and mutes, crosspoints and their mutes; `SetCueProperty Kind` from the Levels tab, an undo or redo of one) is heard on its playing voice at once, as QLab 5 does (5.3 change log, manual pp. 34-36). No restart, no new voice, no state change: the cue keeps running.
+An edit of an Audio cue's levels (master, cue output levels and mutes, crosspoints and their mutes; `SetCueProperty KindFields` from the Levels tab, an undo or redo of one) is heard on its playing voice at once, as QLab 5 does (5.3 change log, manual pp. 34-36). No restart, no new voice, no state change: the cue keeps running.
 
 - **Which cues**: an audio cue with a started voice (running, fading, paused, stopping), not broken. An idle, loaded or pre-waiting cue has no voice: the edit is in the model, and the voice starts with it. Previews are not followed (they keep the levels they started with).
 - **What is sent**: each run keeps what its voice has been given, per parameter (`Run::given`: the model's levels at the voice's start, and each edit sent since). When the engine follows edits (`model_changed` / `model_changed_cues`, M4.2 contract), after the deadlines due in that call are carried out (so a fade ending in the call has already let go of its levels), each such run compares the model's levels with that (`level::level_edits`) and emits one `Ramp { cue, run, at, param, gain, frames, curve: linear }` per parameter whose gain or mute differs: an unlisted or removed crosspoint and an output beyond the list are silent, a mute is gain 0 (its level is kept, so unmuting restores it), ganging alone changes nothing. `at = max(now, voice start, the voice's last committed command)`. Several edits between two calls are one ramp to the last; work per call is one comparison per started audio voice plus the changed gains (at most 1 + 64 outputs + their crosspoints, whatever the edit rate). A fader drag (many coalesced edits per second) is therefore one short ramp per edit, each retargeted by the next from wherever the gain is.
@@ -386,6 +386,16 @@ Problems that keep a cue from running are found **before it is triggered** (NFR-
 ### Stop All and a cue's own panic
 
 `Input::StopAll` (OSC `/stop` and `/hardStop`): every cue of every list, at every depth, and every preview stops at once, children before their groups, exactly as `Stop` with no fade does for one cue (pending pre-waits, continues and devamp next cues fire nothing). It ends any panic window (`panic_end()` is `None` after it), so a Panic right after is a new panic with its fade, not a second press. `Input::PanicCue { cue }` (OSC `/cue/{n}/panic`) is the cue's own panic of its `panic` second trigger (see `panic_tree`): the cue and what is in it fade out over `panic_duration` (0: at once); other cues and the workspace panic are untouched. **Second press** (QLab check Q7, M4.1d): `PanicCue` on a cue that, or whose descendant, is already fading out in a panic (its own or a workspace Panic) stops it and what is in it at once (`StopVoice` with no fade); other cues keep playing. The `panic` second-trigger option does not do this (a trigger on a cue fading out in a panic restarts it, see Second trigger). Both ignore an unknown cue or nothing running (`PanicCue` warns `UnknownCue` for an id not in the workspace).
+
+## Reset All
+
+`Input::ResetAll` (protocol `reset_all`, the app's sidebar Reset all) follows QLab's sidebar reset (manual pp. 97-98: hard stop of everything, temporary changes reset, every playhead to its list's first cue, the workspace as just opened). As one input, in this order:
+
+- **Stop All** (see above): every cue of every list at every depth and every preview stops at once, a panic fade under way included; no panic window is left, so a Panic right after is a first one with its fade.
+- **Reset** of every cue that still has a runtime, children before their groups: a cue broken at run time is cleared (its pending auto-continue cancelled), a loaded cue unloads (`UnloadVoice`). A cue with static problems stays broken, as Reset leaves it.
+- **Random groups** forget their round-robin cycle (as a new engine: the workspace opened again).
+- **Playheads**: each list's playhead moves to its first cue (none for an empty list); the binary primes the cues from there as after any playhead move ([Actions for the binary](#actions-for-the-binary-m42-contract)). QLab also loads that first cue; openLab's priming takes the place of that load.
+- **Kept**: Arm/Disarm changes and level edits (they are edits of the model, saved with the show; QLab check A1), double-GO protection's timer.
 
 ## Pause All and Resume All (PB-04)
 

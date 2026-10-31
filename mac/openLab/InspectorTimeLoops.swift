@@ -4,8 +4,7 @@ import AppKit
 
 /// The timing and loops tab of an Audio cue (AUD-10, AUD-11, AUD-12, AUD-14), after Basics and
 /// Triggers as in QLab. Trims, play counts, slices and the built-in fades are fields of the cue's
-/// `kind`, so an edit sends the whole kind (core's `CueProperty::Kind`, as the Levels tab does) with
-/// only those fields changed.
+/// `kind`, so an edit sends only those fields (core's `CueProperty::KindFields`, as the Levels tab does).
 extension InspectorViewController {
     func buildTimeLoopsTab() {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }

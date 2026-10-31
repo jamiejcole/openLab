@@ -67,7 +67,7 @@ enum HotkeyRules {
     ) -> KeyBindError? {
         if chord.key == KeyChord.escape || TransportKeys.isArrow(chord) { return .reserved }
         if chord.hotkeyJSON == nil { return .unsupported }
-        // The fixed app defaults (L, P, V) yield to a cue hotkey, so they do not refuse it.
+        // The fixed app defaults (L, P, V, S) yield to a cue hotkey, so they do not refuse it.
         if let command = keys.command(for: chord), !TransportKeys.fixed.contains(where: { $0.0 == command }) {
             return .duplicate(of: command)
         }

@@ -84,6 +84,31 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord("q", [.command]), menu: [KeyChord("q", [.command])]), .menuKey)
     }
 
+    /// The real menu bar's chords: an upper-case key equivalent (AppKit adds Shift) must collide with the
+    /// Shift chord a cue hotkey is recorded as (#454).
+    @MainActor
+    private func validateAgainstMenuBar(_ key: String, _ modifiers: NSEvent.ModifierFlags) -> KeyBindError? {
+        let saved = NSApp.mainMenu
+        NSApp.mainMenu = MainMenu.make().bar
+        defer { NSApp.mainMenu = saved }
+        return validate(KeyChord(key, modifiers), menu: HotkeyRules.currentMenuChords())
+    }
+
+    @MainActor
+    func testRedoShiftCmdZIsRefused() {
+        XCTAssertEqual(validateAgainstMenuBar("z", [.command, .shift]), .menuKey)
+    }
+
+    @MainActor
+    func testSaveAsShiftCmdSIsRefused() {
+        XCTAssertEqual(validateAgainstMenuBar("s", [.command, .shift]), .menuKey)
+    }
+
+    @MainActor
+    func testPreShowShiftCmdWIsRefused() {
+        XCTAssertEqual(validateAgainstMenuBar("w", [.command, .shift]), .menuKey)
+    }
+
     func testAllowedKeys() {
         XCTAssertNil(validate(KeyChord("a")))
         XCTAssertNil(validate(KeyChord(KeyChord.left)), "QLab allows left and right")

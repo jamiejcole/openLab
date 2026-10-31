@@ -46,7 +46,7 @@ final class TimeLoopsTests: XCTestCase {
     private var kinds: [JSONValue] {
         rig.engine.received.compactMap {
             guard case .command(_, let c, _) = $0, let cmd = JSONValue.parse((try? c.json.text()) ?? ""),
-                cmd["property"]?["type"]?.stringValue == "kind"
+                cmd["property"]?["type"]?.stringValue == "kind_fields"
             else { return nil }
             return normalised(cmd["property"]?["value"])
         }
@@ -145,8 +145,8 @@ final class TimeLoopsTests: XCTestCase {
         wave.endDrag()
         await assertEventually { self.kinds.count == 1 }
         XCTAssertEqual(kinds.last?["start_time"], .double(10))
-        XCTAssertEqual(kinds.last?["end_time"], .null, "the rest of the kind is untouched")
-        XCTAssertEqual(kinds.last?["media"], .string("media/a.wav"))
+        XCTAssertNil(kinds.last?["end_time"], "the rest of the kind is not sent")
+        XCTAssertNil(kinds.last?["media"])
         await assertEventually("the model answers") {
             normalised(self.rig.store.model?.cue(Self.intro)?.raw["kind"]?["start_time"]) == .double(10)
         }
@@ -206,7 +206,11 @@ final class TimeLoopsTests: XCTestCase {
         type(panel.endField, "1:00")
         await assertEventually { self.kinds.count == 2 }
         XCTAssertEqual(kinds.last?["end_time"], .double(60))
-        XCTAssertEqual(kinds.last?["start_time"], .double(5), "built on the previous edit")
+        XCTAssertNil(kinds.last?["start_time"], "only the edited field is sent")
+        await assertEventually("built on the previous edit") {
+            normalised(self.modelKind)?["start_time"] == .double(5)
+                && normalised(self.modelKind)?["end_time"] == .double(60)
+        }
         type(panel.startField, "1,5")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"))
         XCTAssertEqual(kinds.count, 2)
@@ -660,7 +664,7 @@ final class TimeLoopsTests: XCTestCase {
         await answered()
         let golden = try XCTUnwrap(
             Fixtures.json("client", "command_set_audio_timing")["command"]?["property"]?["value"])
-        let sent = try XCTUnwrap(kinds.last)
+        let sent = try XCTUnwrap(normalised(modelKind))
         for key in ["start_time", "end_time", "slices", "last_slice_play_count", "fade_in", "fade_out"] {
             XCTAssertEqual(sent[key], normalised(golden[key]), key)
         }

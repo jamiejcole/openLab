@@ -148,6 +148,9 @@ pub enum TransportAction {
     },
     PauseAll,
     ResumeAll,
+    /// Reset All (`Input::ResetAll`): every cue stops at once and is reset, and each list's
+    /// playhead goes back to its first cue.
+    ResetAll,
     /// `cue: null` puts the playhead past the end.
     SetPlayhead {
         list: CueListId,
@@ -239,6 +242,7 @@ impl TransportAction {
             | Self::HardStopAll
             | Self::PauseAll
             | Self::ResumeAll
+            | Self::ResetAll
             | Self::SetPlayhead { .. }
             | Self::SetPlayheadByNumber { .. }
             | Self::PlayheadNext { .. }

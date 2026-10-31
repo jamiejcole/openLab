@@ -56,8 +56,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// one is selected.
     let timeLoops = TimeLoopsPanel()
     var timeLoopsItem: NSTabViewItem?
-    /// `kind` is replaced whole by a levels or fade edit, so an edit made before the engine answered
-    /// the previous one must start from what was sent (as `pendingTriggers`).
+    /// A levels or fade edit sends only its changed `kind_fields`, but is built from the kind as the
+    /// previous unanswered edit left it, so those fields start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
@@ -677,7 +677,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             let outcome = await store.send(command: command, coalesce: coalesce)
             // Answered: the model holds the edit (or refused it), so the unanswered copy must not hide it
             // from the render below.
-            if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
+            if let sentKind, pendingKinds[cue] == sentKind {
+                pendingKinds[cue] = nil
+                // The panels were last drawn with the overlay; show the model's kind now it is gone.
+                if selection == [cue] { render() }
+            }
             if case .failure(let error) = outcome {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
@@ -714,6 +718,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
         let type = property["type"]?.stringValue
         if type == "kind" { return property["value"] }
+        if type == "kind_fields", let fields = property["value"]?.objectValue,
+            let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
+        {
+            for (field, value) in fields { kind.set(field, value) }
+            return kind
+        }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         else { return nil }
