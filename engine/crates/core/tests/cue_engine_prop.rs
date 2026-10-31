@@ -1306,6 +1306,15 @@ impl Run {
         let mut moves = 0usize;
         // Groups reported active in this call.
         let mut active_now: BTreeSet<CueId> = BTreeSet::new();
+        // Cues active when the call began: the engine follows an edit before it carries out the
+        // call's deadlines, so a group the edit puts the playhead into is entered while it is
+        // still in this state, and a continue it fires later in the call belongs to the visit.
+        let active_before: BTreeSet<CueId> = self
+            .reported
+            .iter()
+            .filter(|(_, s)| !matches!(s, CueState::Idle | CueState::Broken | CueState::Loaded))
+            .map(|(c, _)| *c)
+            .collect();
         for action in &actions {
             match action {
                 Action::PlayheadChanged { list, cue } if *list == self.list => {
@@ -1420,7 +1429,8 @@ impl Run {
             .ph
             .map(|p| groups_around(&self.ws.cue_lists[0].cues, p))
             .unwrap_or_default();
-        self.enter(around, None, &active_now);
+        let active: BTreeSet<CueId> = active_now.union(&active_before).copied().collect();
+        self.enter(around, None, &active);
         // No cue is passed over when a GO leaves a group that fires no continue (Playhead):
         // the group has not been active since the playhead entered it and is
         // not running now, so its continue targets never fire, and the playhead must stand on
@@ -2857,6 +2867,53 @@ fn a_playlist_child_failing_while_paused_shows_paused_with_no_voice() {
             step(10, 22, 0),
         ],
         lookahead: 6,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
+/// A cue dragged into a group whose auto-continue is due later in the same call: the engine
+/// follows the edit first, so the playhead enters the group while it still post-waits, and the
+/// continue it then fires belongs to that visit. A GO leaving the group from the dragged cue
+/// passes over the continue's target, which has started; it is not a cue passed over.
+#[test]
+fn a_continue_fired_in_the_call_that_drags_the_playhead_into_its_group_belongs_to_the_visit() {
+    let spec = |kind: u8, pre: u8, post: u8, mode: u8| Spec {
+        kind,
+        pre,
+        post,
+        mode,
+        armed: false,
+        dup: false,
+        level: 0,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let step = |dt: u64, op: u8, a: u8| Step { dt, op, a, b: 0 };
+    let case = Case {
+        specs: vec![
+            Spec {
+                armed: true,
+                ..spec(14, 1, 1, 1)
+            },
+            spec(18, 1, 2, 1),
+            spec(5, 1, 0, 0),
+            spec(0, 0, 0, 0),
+        ],
+        steps: vec![
+            step(0, 1, 0),
+            step(982, 2, 0),
+            step(1095, 12, 0),
+            step(405, 30, 39),
+            step(0, 1, 0),
+        ],
+        lookahead: 19,
         min_go: 0,
         panic: 0,
     };
