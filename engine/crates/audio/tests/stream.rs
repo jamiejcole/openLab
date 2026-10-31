@@ -688,13 +688,43 @@ fn opens_hung_on_two_volumes_never_hold_up_a_third() {
         "a local file waited behind two dead shares"
     );
     assert!(none_primed);
-    assert!(threads > c.openers && threads <= c.openers + MAX_EXTRA_OPENERS);
+    // The extra that opened the local file may have exited already: it takes nothing else.
+    assert!(threads <= c.openers + MAX_EXTRA_OPENERS);
     for p in &hung {
         assert!(p.handle.wait_primed(FAILSAFE).unwrap());
     }
     spin::spin_until("the extra openers to exit", || {
         d.opener_threads() == c.openers
     });
+}
+
+static SEVEN_SHARES: ShareGate = ShareGate::new("sevenshares_");
+
+/// Several opens queued on each of seven dead volumes: an extra opener only takes an open on a
+/// volume with nothing in flight, so the queued ones never use up the extras (each dead volume
+/// holds at most one) and a local file still opens at once.
+#[test]
+fn queued_opens_on_dead_volumes_never_use_up_the_extra_openers() {
+    let mut c = StreamerConfig::new(SR);
+    c.before_open = |p| SEVEN_SHARES.open(p);
+    c.volume_of = Some(|p| SEVEN_SHARES.volume(p).unwrap_or_else(|| "/".to_owned()));
+    let mut d = DiskStreamer::new(c).unwrap();
+    let hung: Vec<_> = (0..7)
+        .flat_map(|v| (0..3).map(move |i| format!("sevenshares_v{v}_{i}.wav")))
+        .map(|name| prepare_file(&mut d, &name))
+        .collect();
+    let ok = prepare_file(&mut d, "local_beside_seven_shares.wav");
+    let primed = ok.handle.wait_primed(FAILSAFE);
+    let threads = d.opener_threads();
+    SEVEN_SHARES.answer();
+    assert_eq!(
+        primed,
+        Ok(true),
+        "a local file waited behind seven dead shares ({threads} openers)"
+    );
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
 }
 
 static MANY_SHARES: ShareGate = ShareGate::new("manyshares_");

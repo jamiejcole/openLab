@@ -37,7 +37,8 @@ pub const DEFAULT_WORKERS: usize = 2;
 /// docs/audio.md, Disk streaming).
 pub const DEFAULT_OPENERS: usize = 4;
 /// Extra openers started while every opener is held and an open on a volume with nothing in
-/// flight waits (opens hung on several dead volumes). Each exits when it finds nothing to do.
+/// flight waits (opens hung on several dead volumes). Each takes only opens on volumes with
+/// nothing in flight, so a dead volume holds at most one, and exits when there is none.
 /// The bound means dead volumes cannot make the streamer start threads without end, as the
 /// probe pool's `MAX_ABANDONED_WORKERS` does for probes; past it, such an open waits for an
 /// opener to come free.
@@ -426,8 +427,8 @@ impl DiskStreamer {
         let mut workers = Vec::with_capacity(config.workers);
         let spawned = (|| {
             for _ in 0..config.openers {
-                let mut st = opener.lock();
-                if !opener.spawn(&mut st) {
+                opener.lock().threads += 1;
+                if !opener.start(false) {
                     return Err(std::io::Error::other("opener"));
                 }
             }
@@ -682,29 +683,50 @@ impl OpenQueue {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts one opener thread; false if the system refuses one.
-    fn spawn(self: &Arc<Self>, st: &mut OpenState) -> bool {
+    /// Starts one opener thread, already counted in `threads` (called without the lock: a
+    /// spawn is a system call). An extra one only opens on volumes with nothing in flight and
+    /// exits when there is none. False, and uncounted, if the system refuses a thread.
+    fn start(self: &Arc<Self>, extra: bool) -> bool {
         let queue = Arc::clone(self);
         let started = std::thread::Builder::new()
-            .name(format!("openlab-open-{}", st.threads))
-            .spawn(move || run_opener(&queue))
+            .name(
+                if extra {
+                    "openlab-open-x"
+                } else {
+                    "openlab-open"
+                }
+                .to_owned(),
+            )
+            .spawn(move || run_opener(&queue, extra))
             .is_ok();
-        if started {
-            st.threads += 1;
+        if !started {
+            let mut st = self.lock();
+            st.threads = st.threads.saturating_sub(1);
         }
         started
     }
 
-    /// Starts extra openers while a job on a volume with nothing in flight has no free opener
-    /// (every opener is held, e.g. by opens hung on other volumes), at most
-    /// [`MAX_EXTRA_OPENERS`] beyond the base pool. A job left without one waits for an opener
-    /// to come free.
-    fn grow(self: &Arc<Self>, st: &mut OpenState) {
-        let fresh = st.fresh();
-        while fresh > st.threads.saturating_sub(st.busy)
-            && st.threads < self.base + MAX_EXTRA_OPENERS
-        {
-            if !self.spawn(st) {
+    /// How many extra openers to start, counted in `threads` here: one per queued job on a
+    /// volume with nothing in flight that has no free opener (every opener is held, e.g. by
+    /// opens hung on other volumes), at most [`MAX_EXTRA_OPENERS`] beyond the base pool. A job
+    /// left without one waits for an opener to come free. The caller starts them
+    /// ([`Self::start_extras`]) once it has let go of the lock.
+    fn grow(&self, st: &mut OpenState) -> usize {
+        let wanted = st
+            .fresh()
+            .saturating_sub(st.threads.saturating_sub(st.busy));
+        let room = (self.base + MAX_EXTRA_OPENERS).saturating_sub(st.threads);
+        let n = wanted.min(room);
+        st.threads += n;
+        n
+    }
+
+    fn start_extras(self: &Arc<Self>, n: usize) {
+        for i in 0..n {
+            if !self.start(true) {
+                // The rest were counted too: the system has no thread for them either.
+                let mut st = self.lock();
+                st.threads = st.threads.saturating_sub(n - i - 1);
                 return;
             }
         }
@@ -717,9 +739,10 @@ impl OpenQueue {
             return None;
         }
         st.jobs.push_back(job);
-        self.grow(&mut st);
+        let extras = self.grow(&mut st);
         drop(st);
         self.changed.notify_all();
+        self.start_extras(extras);
         Some(())
     }
 
@@ -730,10 +753,11 @@ impl OpenQueue {
     }
 
     /// The oldest job an opener may run now: one without a volume, or whose volume has fewer
-    /// than `per_volume` opens running. Jobs of streams let go of meanwhile are dropped
-    /// unopened. Blocks while there is none; `None` once the streamer is gone, or for an extra
-    /// opener with nothing to do (it exits).
-    fn take(self: &Arc<Self>) -> Option<OpenJob> {
+    /// than `per_volume` opens running; for an `extra` opener only one whose volume has nothing
+    /// in flight, so a dead volume's queued opens never use up the extras. Jobs of streams let
+    /// go of meanwhile are dropped unopened. Blocks while there is none; `None` once the
+    /// streamer is gone, or for an extra opener with nothing to do (it exits).
+    fn take(self: &Arc<Self>, extra: bool) -> Option<OpenJob> {
         let mut st = self.lock();
         loop {
             if st.closed {
@@ -742,11 +766,12 @@ impl OpenQueue {
             }
             st.jobs
                 .retain(|j| !j.shared.cancelled.load(Ordering::Acquire));
+            let limit = if extra { 1 } else { self.per_volume };
             let OpenState { jobs, running, .. } = &mut *st;
             let ready = jobs.iter().position(|j| {
                 j.volume
                     .as_ref()
-                    .is_none_or(|v| running.get(v).copied().unwrap_or(0) < self.per_volume)
+                    .is_none_or(|v| running.get(v).copied().unwrap_or(0) < limit)
             });
             if let Some(job) = ready.and_then(|i| jobs.remove(i)) {
                 if let Some(v) = &job.volume {
@@ -755,11 +780,13 @@ impl OpenQueue {
                 st.busy += 1;
                 // This opener may have taken an older job of a busy volume ahead of one on an
                 // idle volume: that one still gets an opener.
-                self.grow(&mut st);
+                let extras = self.grow(&mut st);
+                drop(st);
+                self.start_extras(extras);
                 return Some(job);
             }
-            if st.threads > self.base {
-                st.threads -= 1;
+            if extra {
+                st.threads = st.threads.saturating_sub(1);
                 return None;
             }
             st = self
@@ -806,9 +833,9 @@ struct OpenJob {
 /// An opener: takes the oldest job the per-volume cap allows and opens its file. An open that
 /// hangs holds this thread only; the fill workers never wait for it. Exits when the streamer is
 /// dropped.
-fn run_opener(queue: &Arc<OpenQueue>) {
+fn run_opener(queue: &Arc<OpenQueue>, extra: bool) {
     // The queue's lock is held only while choosing a job, never during an open.
-    while let Some(job) = queue.take() {
+    while let Some(job) = queue.take(extra) {
         #[cfg(any(test, feature = "test-support"))]
         if let Media::Path(path) = &job.media {
             (job.before_open)(path);
