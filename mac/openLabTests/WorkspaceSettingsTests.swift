@@ -39,6 +39,19 @@ final class WorkspaceSettingsTests: XCTestCase {
         rig.engine.received.compactMap { if case .command(_, let c, _) = $0 { return c.json } else { return nil } }
     }
 
+    // MARK: Meters
+
+    func testTheAudioTabShowsTheShownPatchsPeaksAndOtherTabsIdle() async throws {
+        let (rig, sc) = try await open()
+        sc.tabs.selectTabViewItem(withIdentifier: "audio")
+        sc.patchMeter.updateLive()
+        XCTAssertNotNil(sc.patchMeter.source, "the shown patch is metered")
+        XCTAssertEqual(rig.store.meters.visibleCount, 1)
+        sc.tabs.selectTabViewItem(withIdentifier: "general")
+        XCTAssertEqual(rig.store.meters.visibleCount, 0)
+        sc.close()
+    }
+
     // MARK: Opening
 
     func testTheFooterGearOpensTheSettingsWindowAndReadsTheEngine() async throws {
