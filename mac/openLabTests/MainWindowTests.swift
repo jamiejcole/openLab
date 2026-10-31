@@ -308,6 +308,7 @@ final class MainWindowTests: XCTestCase {
         static let group: ModelID = "00000000-0000-0000-0000-0000000000a3"
         static let door: ModelID = "00000000-0000-0000-0000-0000000000a4"
         static let zebra: ModelID = "00000000-0000-0000-0000-0000000000a5"
+        static let net: ModelID = "00000000-0000-0000-0000-0000000000a6"
     }
 
     /// A show with a name, a number, notes, a file and a type to find, two of them inside a group.
@@ -319,6 +320,14 @@ final class MainWindowTests: XCTestCase {
         }
         let wait = JSONValue.object(["type": .string("wait"), "duration": .double(5)])
         let memo = JSONValue.object(["type": .string("memo")])
+        let network = JSONValue.object([
+            "type": .string("network"), "destination": .string("00000000-0000-0000-0000-000000000001"),
+            "address": .string("/lx/go"),
+            "args": .array([
+                .object(["type": .string("string"), "value": .string("cuelist")]),
+                .object(["type": .string("int"), "value": .int(42)]),
+            ]),
+        ])
         let kids = [cue(F.door, "3.1", "Door", "", wait), cue(F.zebra, "3.2", "Zebra", "", memo)]
         var snapshot = FakeEngine.emptySnapshot(name: "Find")
         snapshot["workspace"]?.set(
@@ -328,8 +337,9 @@ final class MainWindowTests: XCTestCase {
                     "id": .string(FakeEngine.demoListID), "name": .string("Main"),
                     "cues": .array([
                         cue(F.thunder, "1", "Opening Light", "", FakeEngine.audioKind("/show/media/Thunder.wav")),
-                        cue(F.wind, "2", "Cue", "bring up the Wind chimes", wait),
+                        cue(F.wind, "2", "Cue", "bring up the Wind chimes before the door", wait),
                         cue(F.group, "3", "Act Two", "", FakeEngine.groupKind(kids)),
+                        cue(F.net, "4", "Lights", "", network),
                     ]),
                 ])
             ]))
@@ -355,8 +365,11 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(find(wc, "wind CHIMES"), [F.wind], "notes")
         XCTAssertEqual(find(wc, "thunder.wav"), [F.thunder], "audio file name")
         XCTAssertEqual(find(wc, "/show/media"), [], "the folder is not the file name")
-        XCTAssertEqual(find(wc, "MEMO"), [F.zebra], "cue type")
-        XCTAssertEqual(find(wc, "wait"), [F.wind, F.door], "list order, group children included")
+        XCTAssertEqual(find(wc, "MEMO"), [], "the cue type is not searched (QLab manual p. 153)")
+        XCTAssertEqual(find(wc, "lx/GO"), [F.net], "Network address")
+        XCTAssertEqual(find(wc, "CueList"), [F.net], "Network string argument")
+        XCTAssertEqual(find(wc, "42"), [F.net], "Network number argument")
+        XCTAssertEqual(find(wc, "door"), [F.wind, F.door], "list order, group children included")
         XCTAssertEqual(find(wc, "   "), [], "blank text finds nothing")
         XCTAssertEqual(find(wc, "no such thing"), [])
         XCTAssertEqual(wc.findBar.countLabel.stringValue, "0 found")
@@ -371,8 +384,8 @@ final class MainWindowTests: XCTestCase {
         let group = try XCTUnwrap(wc.cueList.node(F.group))
         outline.collapseItem(group)
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        XCTAssertEqual(find(wc, "wait"), [F.wind, F.door])
+        wc.findBar.field.stringValue = "door"
+        XCTAssertEqual(find(wc, "door"), [F.wind, F.door])
         XCTAssertEqual(wc.findBar.countLabel.stringValue, "2 found")
         wc.stepFind(forward: true)
         XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind])
@@ -391,8 +404,8 @@ final class MainWindowTests: XCTestCase {
     func testFindStartsFromTheSelectionAndAClickEndsTheWalk() async throws {
         let wc = try await findController()
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        _ = find(wc, "wait")
+        wc.findBar.field.stringValue = "door"
+        _ = find(wc, "door")
         wc.cueList.select([F.thunder])
         wc.stepFind(forward: true)
         XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind], "the first found cue after the selection")
@@ -409,8 +422,8 @@ final class MainWindowTests: XCTestCase {
         let group = try XCTUnwrap(wc.cueList.node(F.group))
         wc.cueList.outlineView.collapseItem(group)
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        _ = find(wc, "wait")
+        wc.findBar.field.stringValue = "door"
+        _ = find(wc, "door")
         XCTAssertTrue(wc.findBar.selectFoundButton.isEnabled)
         wc.findBar.selectFoundButton.performClick(nil)
         XCTAssertEqual(Set(wc.cueList.selectedIDs()), [F.wind, F.door])
@@ -437,6 +450,36 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(wc.findBar.countLabel.stringValue, "0 found")
     }
 
+    /// Playing cues send progress and runtime ticks up to 30 times a second; none may rescan the
+    /// list, or a big show with the bar open would starve GO and Esc. Only a model change does.
+    func testOnlyModelChangesRescanTheListWhileTheBarIsOpen() async throws {
+        let wc = try await findController()
+        wc.openFind()
+        wc.findBar.field.stringValue = "door"
+        _ = find(wc, "door")
+        let scans = wc.find.scans
+        let store = wc.store
+        let ticks = [
+            #"{"type":"cue_state","cue":"\#(F.wind)","state":"running"}"#,
+            #"{"type":"cue_state","cue":"\#(F.wind)","state":"idle"}"#,
+        ]
+        for change in ticks {
+            let message = #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[\#(change)]}"#
+            XCTAssertEqual(store.receive(try ServerMessage.decode(message)), .applied)
+        }
+        let progress = #"{"type":"progress","items":[{"cue":"\#(F.wind)","elapsed":1.0,"remaining":2.0}]}"#
+        _ = store.receive(try ServerMessage.decode(progress))
+        XCTAssertEqual(wc.find.scans, scans, "runtime and progress ticks do not scan")
+        let renamed = FakeEngine.cueJSON(
+            id: F.door.raw, number: "3.1", name: "Gate", kind: .object(["type": .string("memo")]))
+        let upsert = try ServerMessage.decode(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(FakeEngine.demoListID)","parent":"\#(F.group)","index":0,"cue":\#(try renamed.text())}],"deletes":[]}"#
+        )
+        XCTAssertEqual(store.receive(upsert), .applied)
+        XCTAssertEqual(wc.find.scans, scans + 1, "a model change scans once, after the tree is updated")
+        XCTAssertEqual(wc.find.matches, [F.wind])
+    }
+
     func testDoneAndCmdFCycleGiveTheCueTypeRowBack() async throws {
         let wc = try await findController()
         let window = try XCTUnwrap(wc.window)
@@ -459,8 +502,8 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the focus returns to the cue list")
         // Done clears the search.
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        wc.setFindQuery("wait")
+        wc.findBar.field.stringValue = "door"
+        wc.setFindQuery("door")
         wc.findBar.doneButton.performClick(nil)
         XCTAssertTrue(wc.findBar.isHidden)
         XCTAssertFalse(wc.cueToolbar.isHidden)
@@ -488,8 +531,8 @@ final class MainWindowTests: XCTestCase {
     func testEscInTheFieldClosesTheBarAndReturnIsNext() async throws {
         let wc = try await findController()
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        _ = find(wc, "wait")
+        wc.findBar.field.stringValue = "door"
+        _ = find(wc, "door")
         let (field, text) = (wc.findBar.field, NSTextView())
         XCTAssertTrue(wc.findBar.control(field, textView: text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         XCTAssertEqual(wc.cueList.selectedIDs(), [F.wind])
@@ -503,8 +546,8 @@ final class MainWindowTests: XCTestCase {
     func testShowModeClosesFindAndRefusesIt() async throws {
         let wc = try await findController()
         wc.openFind()
-        wc.findBar.field.stringValue = "wait"
-        _ = find(wc, "wait")
+        wc.findBar.field.stringValue = "door"
+        _ = find(wc, "door")
         wc.setShowMode(true)
         XCTAssertTrue(wc.isShowMode)
         XCTAssertTrue(wc.findBar.isHidden, "Find is off in Show Mode")

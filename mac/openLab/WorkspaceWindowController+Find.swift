@@ -13,6 +13,9 @@ struct FindState {
     var matches: [ModelID] = []
     /// The match Next / Previous last went to.
     var currentID: ModelID?
+    /// How many times the list was scanned, for tests.
+    private(set) var scans = 0
+    mutating func countScan() { scans += 1 }
 
     var currentIndex: Int? { currentID.flatMap { matches.firstIndex(of: $0) } }
 }
@@ -24,6 +27,9 @@ extension WorkspaceWindowController {
         findBar.onStep = { [weak self] forward in self?.stepFind(forward: forward) }
         findBar.onSelectFound = { [weak self] in self?.selectFound() }
         findBar.onDone = { [weak self] in self?.closeFind() }
+        // Only a reset or a model change can change what is found; runtime and progress ticks
+        // (up to 30 a second while cues play) must not rescan the list.
+        cueList.onModelApplied = { [weak self] in self?.refreshFind() }
     }
 
     /// Cmd-F cycles as in QLab: the bar opens; then the cursor goes to its field; then, with the
@@ -81,6 +87,7 @@ extension WorkspaceWindowController {
     }
 
     private func recomputeFind() {
+        find.countScan()
         find.matches = CueFinder.matches(find.query, in: cueList.roots)
         if let id = find.currentID, !find.matches.contains(id) { find.currentID = nil }
         findBar.setCount(

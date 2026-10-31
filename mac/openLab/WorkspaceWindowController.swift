@@ -136,7 +136,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 self?.syncSidebarList()
                 self?.syncFooterCount()
                 self?.syncMasthead()
-                self?.refreshFind()
             }
         }
         wireFind()

@@ -29,11 +29,11 @@
 "menu.edit.selectAll" = "Select All";
 "menu.edit.delete" = "Delete";
 "menu.edit.find" = "Find";
-"menu.edit.find.find" = "Find...";
+"menu.edit.find.find" = "Find…";
 "menu.edit.find.next" = "Find Next";
 "menu.edit.find.previous" = "Find Previous";
 "find.label" = "Find:";
-"find.placeholder" = "Name, number, notes, type or file";
+"find.placeholder" = "Name, number, notes, file or message";
 "find.count.found" = "%d found";
 "find.count.of" = "%d of %d";
 "find.previous" = "Previous Found Cue";

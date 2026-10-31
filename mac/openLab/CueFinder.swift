@@ -6,7 +6,7 @@ import Foundation
 /// Pure: the window controller owns the state and the bar.
 enum CueFinder {
     /// The cues of `roots` (depth first, in list order, collapsed groups included) whose number,
-    /// name, notes, cue type or audio file name contain `query`, ignoring case. Blank text finds nothing.
+    /// name, notes, audio file name or Network message contain `query`, ignoring case. Blank text finds nothing.
     static func matches(_ query: String, in roots: [CueNode]) -> [ModelID] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
@@ -27,11 +27,20 @@ enum CueFinder {
     }
 
     static func matches(_ text: String, cue: Cue) -> Bool {
-        let fields = [
-            cue.number ?? "", cue.name, cue.raw["notes"]?.stringValue ?? "", CueKindStyle.kindLabel(cue.kindType),
-            cue.kindType, fileName(of: cue),
-        ]
+        let fields =
+            [cue.number ?? "", cue.name, cue.raw["notes"]?.stringValue ?? "", fileName(of: cue)] + message(of: cue)
         return fields.contains { $0.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    }
+
+    /// A Network cue's address and arguments (QLab searches the contents of Network cues). The
+    /// model has no Text, Video or Script cues yet; their contents join here when it does.
+    private static func message(of cue: Cue) -> [String] {
+        guard cue.kindType == "network", let kind = cue.raw["kind"] else { return [] }
+        let args = (kind["args"]?.arrayValue ?? []).compactMap { arg -> String? in
+            guard let value = arg["value"] else { return nil }
+            return value.stringValue ?? (try? value.text())
+        }
+        return [kind["address"]?.stringValue ?? ""] + args
     }
 
     /// The last `/` component of an Audio cue's file (as the cue list shows it), else empty.

@@ -308,6 +308,28 @@ final class CueEditingTests: XCTestCase {
         XCTAssertEqual(inner[1]["cue"]?["id"]?.stringValue, id.raw)
         await assertEventually { h.vc.node(id) != nil }
         XCTAssertTrue(log.notices.isEmpty)
+
+        // Byte for byte the engine's golden message, which its tests play: only the ids are the
+        // app's random ones, so they are set to the fixture's.
+        let golden = try XCTUnwrap(try Fixtures.json("client", "command_add_new_network_cue")["command"])
+        let want = try XCTUnwrap(golden["commands"]?.arrayValue)
+        let patchID = try XCTUnwrap(want[0]["patch"]?["id"])
+        var steps = try XCTUnwrap(sent["commands"]?.arrayValue)
+        var patchStep = steps[0]
+        var patch = try XCTUnwrap(patchStep["patch"])
+        patch.set("id", patchID)
+        patchStep.set("patch", patch)
+        var cueStep = steps[1]
+        var cue = try XCTUnwrap(cueStep["cue"])
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("destination", patchID)
+        cue.set("kind", kind)
+        cue.set("id", try XCTUnwrap(want[1]["cue"]?["id"]))
+        cueStep.set("cue", cue)
+        steps = [patchStep, cueStep]
+        var sentCommand = sent
+        sentCommand.set("commands", .array(steps))
+        XCTAssertEqual(JSONValue.parse(try sentCommand.text()), golden)
     }
 
     func testNetworkIsOnTheToolbarAndTheCuesMenuAtCmd8() throws {
