@@ -136,10 +136,10 @@ enum MainMenu {
         return delete
     }
 
-    /// New cues of each kind (QLab keys: Cmd-0 Audio, Cmd-6 Fade, Cmd-9 Group), Renumber (Cmd-R)
+    /// New cues of each kind (QLab keys: Cmd-0 Group, Cmd-1 Audio, Cmd-7 Fade; the other types have none), Renumber (Cmd-R)
     /// and Move Up / Down (Option-Cmd-Up / Down). `representedObject` carries the kind.
     private static func cuesMenu() -> NSMenu {
-        let keys: [NewCueKind: String] = [.audio: "0", .fade: "6", .group: "9"]
+        let keys: [NewCueKind: String] = [.group: "0", .audio: "1", .fade: "7"]
         var items: [NSMenuItem] = []
         for kind in NewCueKind.allCases {
             let entry = NSMenuItem(
