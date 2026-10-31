@@ -633,10 +633,11 @@ final class InspectorTabOrderTests: XCTestCase {
         vc.devampModePopup.selectItem(at: 1)
         vc.devampChanged()
         await assertEventually { !self.sent.isEmpty }
+        XCTAssertEqual(sent.last?["property"]?["type"], .string("kind_fields"))
         let kind = normalised(sent.last?["property"]?["value"])
         XCTAssertEqual(kind?["start_next_cue"], .bool(true))
         XCTAssertEqual(kind?["devamp_mode"], .string("looping_cue"))
-        XCTAssertEqual(kind?["target"], .string(CueListHarness.intro.raw), "the rest of the kind is kept")
+        XCTAssertNil(kind?["target"], "only the changed fields are sent; the engine keeps the rest")
     }
 
     func testShowModeLocksTheDevampTabAndClearButton() async {
@@ -667,8 +668,8 @@ final class InspectorTabOrderTests: XCTestCase {
         XCTAssertTrue(vc.clearTargetButton.isEnabled)
         vc.clearTargetClicked()
         await assertEventually { !self.sent.isEmpty }
-        XCTAssertEqual(sent.last?["property"]?["type"], .string("kind"))
-        XCTAssertEqual(sent.last?["property"]?["value"]?["media"], .null)
+        XCTAssertEqual(sent.last?["property"]?["type"], .string("media"))
+        XCTAssertEqual(sent.last?["property"]?["value"], .null)
     }
 
     /// Labels sit left of the fields, in one column, and still fit 520 x 240 and 900 wide.
