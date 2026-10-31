@@ -117,6 +117,10 @@ pub const MAX_PRIMES: usize = 64;
 /// A start held up by its file's probe fails after this long (sample time), so the cue goes
 /// broken instead of showing as running with no sound (docs/control.md).
 pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
+/// A started voice whose stream has not delivered its first chunk after this long (sample
+/// time; an open that hangs on a dead volume) is stopped and its cue breaks, instead of
+/// running silent and playing late if the volume ever answers (docs/control.md).
+pub const STREAM_START_LIMIT: Duration = Duration::from_secs(5);
 /// A document read stuck this long fails with `io` and its worker is replaced.
 pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long shutdown waits for the final recovery writes of the docs with unsaved changes
@@ -588,7 +592,14 @@ impl Control {
         let block = config.block_frames.max(1);
         let engine_config = EngineConfig::new(config.sample_rate, block, config.seed)?;
         let rate = engine_config.sample_rate();
-        let streamer = DiskStreamer::new(config.streamer).map_err(ControlError::Streamer)?;
+        // Stream opens are told apart by the probe gate's volumes, so opens hung on one volume
+        // never take every opener (docs/audio.md, Disk streaming).
+        let mut streamer_config = config.streamer;
+        streamer_config.volume_of = streamer_config
+            .volume_of
+            .or(config.probe_volume)
+            .or(Some(watch::bucket_of));
+        let streamer = DiskStreamer::new(streamer_config).map_err(ControlError::Streamer)?;
         // Only a doc has a show path ([`Self::new`]).
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;

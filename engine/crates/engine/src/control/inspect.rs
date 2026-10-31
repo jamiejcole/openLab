@@ -176,6 +176,11 @@ impl Control {
         self.eng.streamer.open_streams()
     }
 
+    /// The volume the disk streamer files a stream's open under (its per-volume opener cap).
+    pub fn stream_volume(&self, path: &std::path::Path) -> Option<String> {
+        self.eng.streamer.config().volume_of.map(|f| f(path))
+    }
+
     /// Starts that used a primed stream (not a cold start), in the first doc.
     pub fn prime_hits(&self) -> u64 {
         self.first().map_or(0, |d| d.voices.prime_hits())

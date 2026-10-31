@@ -13,15 +13,17 @@
 //! bounded. Every render runs with allocation forbidden.
 
 mod common;
+#[path = "common/spin.rs"]
+mod spin;
 
 use std::time::Duration;
 
 use common::media::*;
 use common::*;
 use openlab_audio::{
-    CommandKind, DiskStreamer, Event, FinishReason, Media, MediaError, MediaInfo, MediaWarning,
-    MixerController, OfflineRenderer, Plays, Seeking, Slice, StreamHandle, StreamRequest,
-    StreamerConfig, VoiceId, WarningKind, plan, preload, probe, probe_media,
+    CommandKind, DiskStreamer, Event, FinishReason, MAX_EXTRA_OPENERS, Media, MediaError,
+    MediaInfo, MediaWarning, MixerController, OfflineRenderer, Plays, Seeking, Slice, StreamHandle,
+    StreamRequest, StreamerConfig, VoiceId, WarningKind, plan, preload, probe, probe_media,
 };
 
 const SR: u32 = 48_000;
@@ -486,6 +488,278 @@ fn slow_disk_underrun_recovers_where_it_left_off() {
     assert_eq!(played, markers(frames));
     assert_eq!(ctl.underrun_frames(), gap as u64);
     assert!(events(&mut ctl).contains(&finished(frames + gap as u64, FinishReason::OutPoint)));
+}
+
+/// A stream whose open never answers (a dead network share, a stalled USB disk) must not hold
+/// up the worker it is given: a stream already playing on that worker keeps refilling and
+/// plays on without a gap, far past its 2 s ring. The hung stream is not primed and has no
+/// error while its open waits (the engine reports it, see docs/control.md); once the volume
+/// answers, it streams.
+#[test]
+fn a_hung_open_never_starves_another_stream_on_its_worker() {
+    let frames = 5 * u64::from(SR);
+    let (media, info) = marker_file("hung_open_neighbour.wav", frames);
+    let (mut ctl, mut r) = setup(config(1));
+    let mut c = StreamerConfig::new(SR);
+    c.workers = 1;
+    let mut d = DiskStreamer::new(c).unwrap();
+    let h = start_stream(
+        &mut d,
+        &mut ctl,
+        media,
+        info,
+        plan(0..frames, &[], &[], 0).unwrap(),
+        0,
+    );
+    // Every read of the second file, its header first, waits for the gate.
+    let gate = Gate::default();
+    let bytes = wav(&markers(1000), 1, SR, Pcm::F32);
+    let len = bytes.len() as u64;
+    let hung = d
+        .prepare(StreamRequest {
+            media: Media::Reader(
+                Box::new(GatedReader::new(bytes, 0, len, gate.clone())),
+                Some("wav".into()),
+            ),
+            info: MediaInfo {
+                channels: 1,
+                sample_rate: SR,
+                frames: 1000,
+                duration: Duration::from_secs_f64(1000.0 / f64::from(SR)),
+            },
+            seeking: Seeking::Direct,
+            slices: plan(0..1000, &[], &[], 0).unwrap(),
+        })
+        .unwrap();
+    let out = render_synced(&mut r, &mut ctl, &h, frames as usize, 0);
+    assert_eq!(out, markers(frames));
+    assert_eq!(ctl.underrun_frames(), 0);
+    assert!(!hung.handle.is_primed());
+    assert_eq!(hung.handle.error(), None);
+    gate.open();
+    assert!(hung.handle.wait_primed(FAILSAFE).unwrap());
+}
+
+/// Opens of files on the dead share below wait here until the share answers.
+static DEAD_SHARE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+    (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+fn on_dead_share(path: &std::path::Path) -> bool {
+    path.file_name()
+        .is_some_and(|n| n.to_string_lossy().contains("-dead_share_"))
+}
+
+fn dead_share_open(path: &std::path::Path) {
+    if on_dead_share(path) {
+        let mut answered = DEAD_SHARE.0.lock().unwrap();
+        while !*answered {
+            answered = DEAD_SHARE.1.wait(answered).unwrap();
+        }
+    }
+}
+
+fn share_volume(path: &std::path::Path) -> String {
+    if on_dead_share(path) {
+        "/Volumes/Dead"
+    } else {
+        "/"
+    }
+    .to_owned()
+}
+
+/// Opens hung on one volume (a dead network share) hold at most all openers but one, however
+/// many there are: a file on another volume still opens and primes at once, and the hung ones
+/// prime when the share answers.
+#[test]
+fn opens_hung_on_one_volume_never_take_every_opener() {
+    let mut c = StreamerConfig::new(SR);
+    c.before_open = dead_share_open;
+    c.volume_of = Some(share_volume);
+    let mut d = DiskStreamer::new(c).unwrap();
+    let one = |frames| plan(0..frames, &[], &[], 0).unwrap();
+    let hung: Vec<_> = (0..c.openers + 2)
+        .map(|i| {
+            let (media, info) = marker_file(&format!("dead_share_{i}.wav"), 1000);
+            d.prepare(StreamRequest {
+                media,
+                info,
+                seeking: Seeking::Direct,
+                slices: one(1000),
+            })
+            .unwrap()
+        })
+        .collect();
+    let (media, info) = marker_file("healthy_local.wav", 1000);
+    let ok = d
+        .prepare(StreamRequest {
+            media,
+            info,
+            seeking: Seeking::Direct,
+            slices: one(1000),
+        })
+        .unwrap();
+    let primed = ok.handle.wait_primed(FAILSAFE);
+    let none_primed = hung.iter().all(|p| !p.handle.is_primed());
+    *DEAD_SHARE.0.lock().unwrap() = true;
+    DEAD_SHARE.1.notify_all();
+    assert_eq!(primed, Ok(true), "a local file waited behind a dead share");
+    assert!(none_primed);
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
+}
+
+/// A gate for opens of files whose name holds `tag`, its own per test (a gate shared between
+/// tests lets one test's release open another's files).
+struct ShareGate {
+    tag: &'static str,
+    answered: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl ShareGate {
+    const fn new(tag: &'static str) -> Self {
+        ShareGate {
+            tag,
+            answered: std::sync::Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    /// The volume tag of `path` (`<tag><volume>_<n>.wav`), if it is one of this gate's files.
+    fn volume(&self, path: &std::path::Path) -> Option<String> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let rest = name.split_once(&format!("-{}", self.tag))?.1;
+        Some(format!("/Volumes/{}", rest.split('_').next()?))
+    }
+
+    fn open(&self, path: &std::path::Path) {
+        if self.volume(path).is_some() {
+            let mut answered = self.answered.lock().unwrap();
+            while !*answered {
+                answered = self.changed.wait(answered).unwrap();
+            }
+        }
+    }
+
+    fn answer(&self) {
+        *self.answered.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+/// Prepares a 1000-frame stream of a fresh file named `name`.
+fn prepare_file(d: &mut DiskStreamer, name: &str) -> openlab_audio::PreparedStream {
+    let (media, info) = marker_file(name, 1000);
+    d.prepare(StreamRequest {
+        media,
+        info,
+        seeking: Seeking::Direct,
+        slices: plan(0..1000, &[], &[], 0).unwrap(),
+    })
+    .unwrap()
+}
+
+static TWO_SHARES: ShareGate = ShareGate::new("twoshares_");
+
+/// Opens hung on two volumes (one NAS exporting two shares) hold every opener of the base
+/// pool between them, each under its per-volume cap: a file on a third volume still gets an
+/// extra opener at once and primes. Once the shares answer everything primes and the extra
+/// opener exits.
+#[test]
+fn opens_hung_on_two_volumes_never_hold_up_a_third() {
+    let mut c = StreamerConfig::new(SR);
+    c.before_open = |p| TWO_SHARES.open(p);
+    c.volume_of = Some(|p| TWO_SHARES.volume(p).unwrap_or_else(|| "/".to_owned()));
+    let mut d = DiskStreamer::new(c).unwrap();
+    let hung: Vec<_> = ["SFX", "Music"]
+        .iter()
+        .flat_map(|v| (0..3).map(move |i| format!("twoshares_{v}_{i}.wav")))
+        .map(|name| prepare_file(&mut d, &name))
+        .collect();
+    let ok = prepare_file(&mut d, "local_beside_two_shares.wav");
+    let primed = ok.handle.wait_primed(FAILSAFE);
+    let threads = d.opener_threads();
+    let none_primed = hung.iter().all(|p| !p.handle.is_primed());
+    TWO_SHARES.answer();
+    assert_eq!(
+        primed,
+        Ok(true),
+        "a local file waited behind two dead shares"
+    );
+    assert!(none_primed);
+    // The extra that opened the local file may have exited already: it takes nothing else.
+    assert!(threads <= c.openers + MAX_EXTRA_OPENERS);
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
+    spin::spin_until("the extra openers to exit", || {
+        d.opener_threads() == c.openers
+    });
+}
+
+static SEVEN_SHARES: ShareGate = ShareGate::new("sevenshares_");
+
+/// Several opens queued on each of seven dead volumes: an extra opener only takes an open on a
+/// volume with nothing in flight, so the queued ones never use up the extras (each dead volume
+/// holds at most one) and a local file still opens at once.
+#[test]
+fn queued_opens_on_dead_volumes_never_use_up_the_extra_openers() {
+    let mut c = StreamerConfig::new(SR);
+    c.before_open = |p| SEVEN_SHARES.open(p);
+    c.volume_of = Some(|p| SEVEN_SHARES.volume(p).unwrap_or_else(|| "/".to_owned()));
+    let mut d = DiskStreamer::new(c).unwrap();
+    let hung: Vec<_> = (0..7)
+        .flat_map(|v| (0..3).map(move |i| format!("sevenshares_v{v}_{i}.wav")))
+        .map(|name| prepare_file(&mut d, &name))
+        .collect();
+    let ok = prepare_file(&mut d, "local_beside_seven_shares.wav");
+    let primed = ok.handle.wait_primed(FAILSAFE);
+    let threads = d.opener_threads();
+    SEVEN_SHARES.answer();
+    assert_eq!(
+        primed,
+        Ok(true),
+        "a local file waited behind seven dead shares ({threads} openers)"
+    );
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
+}
+
+static MANY_SHARES: ShareGate = ShareGate::new("manyshares_");
+
+/// The hard cap: with every opener, extras included, held by opens hung on as many dead
+/// volumes, no more threads start; an open on yet another volume waits, and runs once an
+/// opener comes free.
+#[test]
+fn extra_openers_stop_at_their_cap() {
+    let mut c = StreamerConfig::new(SR);
+    c.openers = 1;
+    c.before_open = |p| MANY_SHARES.open(p);
+    c.volume_of = Some(|p| MANY_SHARES.volume(p).unwrap_or_else(|| "/".to_owned()));
+    let mut d = DiskStreamer::new(c).unwrap();
+    let cap = 1 + MAX_EXTRA_OPENERS;
+    let hung: Vec<_> = (0..cap)
+        .map(|i| prepare_file(&mut d, &format!("manyshares_v{i}_0.wav")))
+        .collect();
+    assert_eq!(d.opener_threads(), cap);
+    let late = prepare_file(&mut d, "local_beside_many_shares.wav");
+    // No opener is free and none may start: the open cannot have run.
+    assert_eq!(d.opener_threads(), cap);
+    assert!(!late.handle.is_primed());
+    MANY_SHARES.answer();
+    assert!(late.handle.wait_primed(FAILSAFE).unwrap());
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
+}
+
+#[test]
+fn a_streamer_without_openers_is_refused() {
+    let mut c = StreamerConfig::new(SR);
+    c.openers = 0;
+    assert!(matches!(DiskStreamer::new(c), Err(MediaError::Worker)));
 }
 
 #[test]
