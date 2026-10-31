@@ -385,14 +385,14 @@ extension Rig {
 /// cancellation reaches `receive` asynchronously). `releaseLate()` lets the old receive throw.
 @MainActor
 final class LateCloseTransport: EngineTransport {
-    let engine: FakeEngine
+    let inner: any EngineTransport
     private var gates: [CheckedContinuation<Void, Never>] = []
     private var made = 0
 
-    init(engine: FakeEngine) { self.engine = engine }
+    init(inner: any EngineTransport) { self.inner = inner }
 
     func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
-        let inner = try await engine.connect(info: info)
+        let inner = try await self.inner.connect(info: info)
         made += 1
         return LateConnection(inner: inner, late: made == 1, transport: self)
     }
