@@ -26,6 +26,7 @@ impl Control {
         self.watch_tick();
         self.begin_meter_round();
         self.each_doc(|cx| cx.tick());
+        self.clear_left_autosaves();
         self.end_meter_round();
         self.balance_primes();
         self.follow_key_changes();

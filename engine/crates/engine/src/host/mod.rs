@@ -245,6 +245,15 @@ fn join_control(worker: thread::JoinHandle<()>) -> Result<(), HostError> {
     worker.join().map_err(|_| HostError::ControlPanicked)
 }
 
+/// Waits for the control loop to end and says the engine is stopping: however the loop ended (a
+/// panic included, or a return no goodbye, signal or stdin asked for), no app connection that
+/// drops from here on is relaunched and `engine.json` is marked.
+fn end_control(worker: thread::JoinHandle<()>, stopping: &Stopping) -> Result<(), HostError> {
+    let joined = join_control(worker);
+    stopping.begin();
+    joined
+}
+
 /// The single-instance lock (`instance_lock`). Refused while another engine holds it, naming
 /// that engine from `engine.json` when the file is its (or the lock file names no pid). A
 /// folder or filesystem where the lock cannot be taken does not stop the start: the
@@ -552,9 +561,7 @@ fn run_with(
         .map_err(HostError::Thread)?;
     // The control loop stops the show and writes the recovery files; dropping it ends the
     // device thread, which drops the stream (and the mixer) there.
-    let joined = join_control(worker);
-    // However the loop ended (a panic included), the engine is stopping now.
-    stopping.begin();
+    let joined = end_control(worker, &stopping);
     stop.loop_ended();
     server.stop();
     joined
@@ -866,6 +873,26 @@ mod tests {
         assert!(stopping.is_set());
         assert!(told.try_recv().is_ok());
         assert!(matches!(inbox.try_recv(), Ok(Inbox::Shutdown)));
+    }
+
+    /// A control loop that ends with no goodbye, signal or stdin having begun the shutdown (it
+    /// returned, or it panicked) leaves the engine stopping all the same.
+    #[test]
+    fn the_engine_is_stopping_once_the_control_loop_ends_however_it_ended() {
+        let (stopping, told) = Stopping::new();
+        let returned = thread::spawn(|| {});
+        assert!(end_control(returned, &stopping).is_ok());
+        assert!(stopping.is_set());
+        assert!(told.try_recv().is_ok());
+
+        let (stopping, told) = Stopping::new();
+        let panicked = thread::spawn(|| panic!("a control-loop panic"));
+        assert!(matches!(
+            end_control(panicked, &stopping),
+            Err(HostError::ControlPanicked)
+        ));
+        assert!(stopping.is_set());
+        assert!(told.try_recv().is_ok());
     }
 
     /// As soon as the shutdown begins `engine.json` says `stopping: true` (the app then waits for

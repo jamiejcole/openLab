@@ -546,6 +546,7 @@ impl CueEngine {
                     };
                 }
             }
+            Input::SliceProblems { cues } => self.slice_problems(cues, cx),
             Input::ActionFailed { cue, run, reason } => {
                 self.action_failed(cue, run, reason, false, cx);
             }

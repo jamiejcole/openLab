@@ -194,6 +194,14 @@ pub enum Input {
     CueLengths {
         lengths: Vec<(CueId, Option<SampleTime>)>,
     },
+    /// From the binary: Audio cues whose trims, slice markers and play counts cannot be played
+    /// with their probed file (`Some(why)`, e.g. a looping slice too short) or can again
+    /// (`None`), each sent when it changes (an edit, a probe answer, a cue gone). The core cannot
+    /// plan audio; a cue told `Some` has [`CueProblem::SlicesUnplayable`] while it has a file and
+    /// no media problem.
+    SliceProblems {
+        cues: Vec<(CueId, Option<String>)>,
+    },
     /// Feedback (`DevampScheduled`): the devamp sent for this run's voice was accepted; the voice
     /// leaves its loop on sample `at`.
     DevampScheduled {
@@ -339,6 +347,12 @@ pub enum CueProblem {
     NetworkMessageInvalid {
         reason: String,
     },
+    /// An Audio cue's trims, slice markers and play counts cannot be played with its file (a
+    /// looping slice too short, markers that do not fit): `Input::SliceProblems`. `reason` is
+    /// English, for the log.
+    SlicesUnplayable {
+        reason: String,
+    },
     /// It was triggered while it had problems, which have been fixed since; the run it started
     /// (its timing, without its action) has not ended yet. Gone when that run ends.
     StartedBroken,
@@ -399,6 +413,9 @@ impl fmt::Display for CueProblem {
                 write!(f, "network patch {patch}: {reason}")
             }
             Self::NetworkMessageInvalid { reason } => write!(f, "{reason}"),
+            Self::SlicesUnplayable { reason } => {
+                write!(f, "its slices cannot be played: {reason}")
+            }
         }
     }
 }
