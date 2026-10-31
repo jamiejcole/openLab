@@ -35,7 +35,7 @@ impl Control {
         let mut workspace = None;
         let outcome = match self.cx_of(doc) {
             Some(mut cx) => {
-                workspace = Some(cx.doc.ws.id);
+                workspace = Some(cx.doc.model.ws().id);
                 cx.apply_patch_mapping(patch, mapping, &devices)
             }
             None => Err(ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace")),
@@ -45,7 +45,7 @@ impl Control {
             Ok(()) => {
                 self.each_doc(|cx| {
                     let now = cx.now();
-                    if cleared && Some(cx.doc.ws.id) == workspace {
+                    if cleared && Some(cx.doc.model.ws().id) == workspace {
                         cx.pause_cues_on(patch, now);
                     }
                     for input in cx.sync_patches(false) {
@@ -117,10 +117,11 @@ impl DocCx<'_> {
     /// fading) pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A device
     /// that disappears by itself is device loss, not this (docs/control.md, Devices).
     fn pause_cues_on(&mut self, patch: PatchId, now: SampleTime) {
-        let engine = &self.doc.engine;
+        let engine = self.doc.model.engine();
         let playing: Vec<CueId> = self
             .doc
-            .ws
+            .model
+            .ws()
             .cues()
             .filter(|c| matches!(&c.kind, CueKind::Audio { patch: p, .. } if *p == patch))
             .map(|c| c.id)
@@ -141,7 +142,8 @@ impl DocCx<'_> {
     ) -> Result<(), ErrorBody> {
         let Some((name, outputs)) = self
             .doc
-            .ws
+            .model
+            .ws()
             .patches
             .iter()
             .find(|p| p.id == patch)
@@ -149,7 +151,7 @@ impl DocCx<'_> {
         else {
             return Err(ErrorBody::new(ErrorCode::NotFound, "no such patch"));
         };
-        let workspace = self.doc.ws.id;
+        let workspace = self.doc.model.ws().id;
         self.eng.require_saveable()?;
         let message = match mapping {
             Some(mapping) => {
@@ -201,19 +203,23 @@ impl DocCx<'_> {
         };
         // This doc's warnings for patches that are gone (or of a workspace it no longer has)
         // are forgotten; other docs' stay (a closed doc's go when it closes).
-        let (doc, ws_id, patches) = (self.doc.id, self.doc.ws.id, &self.doc.ws.patches);
+        let (doc, ws_id, patches) = (
+            self.doc.id,
+            self.doc.model.ws().id,
+            &self.doc.model.ws().patches,
+        );
         self.eng.mapping_warned.retain(|(d, w, p, _)| {
             *d != doc || (*w == ws_id && patches.iter().any(|x| x.id == *p))
         });
         let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
         let mut notes = Vec::new();
         let mut changed = false;
-        for patch in &self.doc.ws.patches {
+        for patch in &self.doc.model.ws().patches {
             if self
                 .eng
                 .config
                 .machine
-                .patch_entry(self.doc.ws.id, patch.id)
+                .patch_entry(self.doc.model.ws().id, patch.id)
                 .is_some()
             {
                 continue;
@@ -242,12 +248,11 @@ impl DocCx<'_> {
                 device: device.name.clone(),
                 channels,
             };
-            match self
-                .eng
-                .config
-                .machine
-                .set_patch_mapping(self.doc.ws.id, patch.id, mapping)
-            {
+            match self.eng.config.machine.set_patch_mapping(
+                self.doc.model.ws().id,
+                patch.id,
+                mapping,
+            ) {
                 Ok(()) => {
                     changed = true;
                     notes.push((

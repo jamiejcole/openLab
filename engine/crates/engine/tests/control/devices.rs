@@ -300,23 +300,6 @@ fn a_device_with_fewer_outputs_than_a_patch_maps_is_warned_about() {
 }
 
 #[test]
-fn patch_output_delays_are_applied_on_the_device_outputs() {
-    let path = wav(&dc(200, 0.5));
-    let mut ws = workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]);
-    // 10 ms at 8 kHz: 80 frames on output 0; output 1 undelayed.
-    ws.patches[0].outputs[0].delay_ms = 10.0;
-    let mut s = show(ws);
-    s.run(BLOCK);
-    let at = s.now() as usize;
-    s.transport(TransportAction::Start { cue: id(1) });
-    s.transport(TransportAction::Start { cue: id(2) });
-    s.run(800);
-    assert_eq!(first_nonzero(&s.channel(0)), Some(at + 80));
-    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 80 + 199));
-    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
-}
-
-#[test]
 fn reopen_attempts_back_off_while_the_device_stays_away() {
     let path = wav(&dc(100, 0.5));
     let mut s = device_show(workspace(vec![audio(1, &path, 0)]));

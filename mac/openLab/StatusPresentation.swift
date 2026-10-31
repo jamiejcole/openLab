@@ -14,14 +14,14 @@ struct StatusPresentation: Equatable {
     let level: Level
     /// The footer text.
     let summary: String
-    let symbol: String
+    let icon: Icon
     let details: [String]
 
     /// No engine to ask: the last status is stale, so none is shown.
     static func offline() -> StatusPresentation {
         StatusPresentation(
             level: .alarm, summary: loc("status.alarm") + " " + loc("status.offline"),
-            symbol: "exclamationmark.octagon.fill", details: [loc("status.offline.detail")])
+            icon: .statusAlarm, details: [loc("status.offline.detail")])
     }
 
     /// `xrunsIncreased`: dropouts happened since the previous status. Only new ones raise a
@@ -29,7 +29,7 @@ struct StatusPresentation: Equatable {
     static func make(_ status: SystemStatus?, xrunsIncreased: Bool = true) -> StatusPresentation {
         guard let s = status else {
             return StatusPresentation(
-                level: .normal, summary: loc("status.waiting"), symbol: "circle.dashed", details: [])
+                level: .normal, summary: loc("status.waiting"), icon: .statusWaiting, details: [])
         }
         // The worst problem is named in the footer; the rest are in the details.
         var problems: [(Level, String)] = []
@@ -53,10 +53,8 @@ struct StatusPresentation: Equatable {
         case .warning: summary = loc("status.warning") + " " + (problems.first { $0.0 == .warning }?.1 ?? "")
         case .normal: summary = normalSummary(s)
         }
-        let symbol =
-            level == .alarm
-            ? "exclamationmark.octagon.fill" : level == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle"
-        return StatusPresentation(level: level, summary: summary, symbol: symbol, details: details(s, problems))
+        let icon: Icon = level == .alarm ? .statusAlarm : level == .warning ? .statusWarning : .statusNormal
+        return StatusPresentation(level: level, summary: summary, icon: icon, details: details(s, problems))
     }
 
     /// Engine load at or above this fraction of the block time is flagged (the callback is close

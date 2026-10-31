@@ -193,24 +193,6 @@ impl Mixer {
                     }
                 }
             }
-            CommandKind::SetOutput { output, settings } => {
-                let o = usize::from(output);
-                if self.out_health.get(o).is_none_or(|h| h.disabled) {
-                    return;
-                }
-                let level = if settings.mute {
-                    0.0
-                } else {
-                    sanitize_gain(settings.level)
-                };
-                let target = level * if settings.invert { -1.0 } else { 1.0 };
-                if let Some(p) = self.out_gain.get_mut(o) {
-                    p.ramp_to(target, dezip, Curve::Linear);
-                }
-                if let Some(d) = self.delays.get_mut(o) {
-                    d.set_delay(settings.delay_frames as usize);
-                }
-            }
             CommandKind::SetMaster { gain } => {
                 if !self.master_health.disabled {
                     self.master

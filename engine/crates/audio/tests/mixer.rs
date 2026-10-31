@@ -10,8 +10,8 @@ mod common;
 use common::*;
 use openlab_audio::{
     CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MAX_GAIN, MixerConfig,
-    MixerController, OfflineRenderer, OutputSettings, RAMP_TOLERANCE, RejectReason, SILENCE_DB,
-    VoiceId, VoiceStart, db_to_linear, ramp_value,
+    MixerController, OfflineRenderer, RAMP_TOLERANCE, RejectReason, SILENCE_DB, VoiceId,
+    VoiceStart, db_to_linear, ramp_value,
 };
 use proptest::prelude::*;
 
@@ -53,10 +53,6 @@ fn stop(voice: u64, fade: Fade) -> CommandKind {
         voice: VoiceId(voice),
         fade,
     }
-}
-
-fn set_output(output: u16, settings: OutputSettings) -> CommandKind {
-    CommandKind::SetOutput { output, settings }
 }
 
 fn patch(patch: u16, cue_output: u16, device_output: u16, gain: f32) -> CommandKind {
@@ -461,101 +457,12 @@ fn voices_route_through_their_own_patch() {
 }
 
 #[test]
-fn output_level_mute_and_polarity() {
-    let (mut ctl, mut r) = setup(config(4));
-    let set = |level, mute, invert| OutputSettings {
-        level,
-        mute,
-        invert,
-        delay_frames: 0,
-    };
-    ctl.send(0, set_output(0, set(0.5, false, false)));
-    ctl.send(0, set_output(1, set(1.0, false, true)));
-    ctl.send(0, set_output(2, set(1.0, true, false)));
-    ctl.send(0, set_output(3, set(db_to_linear(-6.0), false, true)));
-    start(&mut ctl, 1000, 1, source(&vec![1.0; 4 * 2000]), 4);
-    let out = r.render(1100, &[64]);
-    assert_eq!(
-        &out[1050 * 4..1051 * 4],
-        &[0.5, -1.0, 0.0, -db_to_linear(-6.0)]
-    );
-}
-
-#[test]
-fn output_delay_is_sample_exact() {
-    for &blocks in PATTERNS {
-        let (mut ctl, mut r) = setup(config(2));
-        let settings = OutputSettings {
-            delay_frames: 480,
-            ..OutputSettings::default()
-        };
-        ctl.send(0, set_output(1, settings));
-        let mut impulse = vec![0.0; 2 * 1000];
-        impulse[0] = 1.0;
-        impulse[1] = 1.0;
-        start(&mut ctl, 1000, 1, source(&impulse), 2);
-        let out = r.render(2000, blocks);
-        let (a, b) = (channel(&out, 2, 0), channel(&out, 2, 1));
-        assert_eq!(first_nonzero(&a), Some(1000));
-        assert_eq!(a.iter().filter(|s| **s != 0.0).count(), 1);
-        assert_eq!(first_nonzero(&b), Some(1480), "{blocks:?}");
-        assert_eq!(b[1480], 1.0);
-        assert_eq!(b.iter().filter(|s| **s != 0.0).count(), 1);
-    }
-}
-
-#[test]
-fn delay_is_capped_at_one_second() {
-    let (mut ctl, mut r) = setup(config(1));
-    let settings = OutputSettings {
-        delay_frames: u32::MAX,
-        ..OutputSettings::default()
-    };
-    ctl.send(0, set_output(0, settings));
-    let mut impulse = vec![0.0; 100];
-    impulse[0] = 1.0;
-    start(&mut ctl, 1000, 1, source(&impulse), 1);
-    let out = r.render(1000 + 48_000 + 10, &[512]);
-    assert_eq!(first_nonzero(&out), Some(1000 + 48_000));
-}
-
-/// Review M3 regression: a second delay change during a crossfade must not jump.
-#[test]
-fn delay_retarget_mid_crossfade_is_continuous() {
-    let (mut ctl, mut r) = setup(config(1));
-    let sig: Vec<f32> = (0..20_000).map(|i| (i as f32 * 0.001).sin()).collect();
-    start(&mut ctl, 0, 1, source(&sig), 1);
-    let delay = |d| OutputSettings {
-        delay_frames: d,
-        ..OutputSettings::default()
-    };
-    ctl.send(2000, set_output(0, delay(4000)));
-    ctl.send(2120, set_output(0, delay(8000)));
-    ctl.send(2200, set_output(0, delay(0)));
-    let out = r.render(10_000, &[256]);
-    // Crossfading two full-scale taps over 240 frames moves at most 2/240 per frame, plus the
-    // signal's own slope (0.001).
-    assert!(
-        max_step(&out) < 2.0 / 240.0 + 0.002,
-        "step {}",
-        max_step(&out)
-    );
-    // The last request wins once the crossfades finish.
-    assert!((out[9000] - sig[9000]).abs() < 1e-6);
-}
-
-#[test]
-fn global_master_and_per_output_master_levels() {
+fn global_master_scales_every_output() {
     let (mut ctl, mut r) = setup(config(2));
     ctl.send(0, CommandKind::SetMaster { gain: 0.25 });
-    let half = OutputSettings {
-        level: 0.5,
-        ..OutputSettings::default()
-    };
-    ctl.send(0, set_output(1, half));
     start(&mut ctl, 1000, 1, source(&vec![1.0; 2 * 2000]), 2);
     let out = r.render(1100, &[64]);
-    assert_eq!(&out[1050 * 2..1051 * 2], &[0.25, 0.125]);
+    assert_eq!(&out[1050 * 2..1051 * 2], &[0.25, 0.25]);
 }
 
 #[test]
@@ -760,21 +667,12 @@ fn equal_time_commands_apply_in_send_order_across_batches_and_held_commands() {
 fn instant_changes_are_dezippered() {
     let (mut ctl, mut r) = setup(config(1));
     start(&mut ctl, 0, 1, mono_dc(12_000), 1);
-    let d = OutputSettings::default();
-    let delayed = |o: OutputSettings| OutputSettings {
-        delay_frames: 100,
-        ..o
-    };
     ctl.send(1000, ramp(1, GainTarget::Master, 0.0, Fade::NONE));
     ctl.send(2000, ramp(1, GainTarget::Master, 1.0, Fade::NONE));
-    ctl.send(3000, set_output(0, OutputSettings { invert: true, ..d }));
-    ctl.send(4000, set_output(0, d));
-    ctl.send(4500, set_output(0, delayed(d)));
-    ctl.send(
-        5000,
-        set_output(0, delayed(OutputSettings { mute: true, ..d })),
-    );
-    ctl.send(6000, set_output(0, delayed(d)));
+    ctl.send(3000, patch(0, 0, 0, -1.0));
+    ctl.send(4000, patch(0, 0, 0, 1.0));
+    ctl.send(5000, patch(0, 0, 0, 0.0));
+    ctl.send(6000, patch(0, 0, 0, 1.0));
     ctl.send(7000, CommandKind::SetMaster { gain: 0.1 });
     ctl.send(8000, CommandKind::SetMaster { gain: 1.0 });
     ctl.send(9000, patch(0, 0, 0, 0.0));
@@ -788,12 +686,9 @@ fn instant_changes_are_dezippered() {
     assert_eq!(out[1240], 0.0);
     assert_eq!(out[2240], 1.0);
     assert_eq!(out[3240], -1.0);
-    assert_eq!(out[5240], 0.0, "mute acts after the delay, so immediately");
+    assert_eq!(out[5240], 0.0);
     assert!((out[7240] - 0.1).abs() < 1e-6);
-    assert_eq!(
-        out[9340], 0.0,
-        "patch routing is before the 100-frame delay"
-    );
+    assert_eq!(out[9240], 0.0);
 }
 
 #[test]
@@ -892,13 +787,12 @@ fn clock_and_short_buffers() {
     assert_eq!(r.mixer_mut().now(), 1010);
 }
 
-/// A scripted show: voices with fades/trims/patches, ramps, stops and output/patch changes.
+/// A scripted show: voices with fades/trims/patches, ramps, stops, patch and master changes.
 #[derive(Clone, Debug)]
 struct Script {
     starts: Vec<(u64, u64, u64, Option<u64>, u64, usize)>,
     ramps: Vec<(u64, u64, u8, f32, u64, usize)>,
     stops: Vec<(u64, u64, u64, usize)>,
-    outputs: Vec<(u64, u16, f32, bool, bool, u32)>,
     patches: Vec<(u64, u16, u16, u16, f32)>,
     masters: Vec<(u64, f32)>,
 }
@@ -914,28 +808,18 @@ fn script() -> impl Strategy<Value = Script> {
     );
     let ramp = (0u64..4000, 0u64..4, 0u8..5, 0f32..1.5, 0u64..800, 0usize..5);
     let stop = (0u64..4000, 0u64..4, 0u64..500, 0usize..5);
-    let output = (
-        0u64..4000,
-        0u16..2,
-        0f32..1.5,
-        any::<bool>(),
-        any::<bool>(),
-        0u32..300,
-    );
     let patch = (0u64..4000, 0u16..2, 0u16..2, 0u16..2, 0f32..1.5);
     (
         prop::collection::vec(start, 1..5),
         prop::collection::vec(ramp, 0..12),
         prop::collection::vec(stop, 0..3),
-        prop::collection::vec(output, 0..4),
         prop::collection::vec(patch, 0..4),
         prop::collection::vec((0u64..4000, 0f32..1.5), 0..3),
     )
-        .prop_map(|(starts, ramps, stops, outputs, patches, masters)| Script {
+        .prop_map(|(starts, ramps, stops, patches, masters)| Script {
             starts,
             ramps,
             stops,
-            outputs,
             patches,
             masters,
         })
@@ -983,15 +867,6 @@ fn render_script(s: &Script, blocks: &[usize]) -> Vec<f32> {
     }
     for &(at, voice, frames, curve) in &s.stops {
         ctl.send(at, stop(voice, Fade::new(frames, CURVES[curve])));
-    }
-    for &(at, output, level, mute, invert, delay_frames) in &s.outputs {
-        let settings = OutputSettings {
-            level,
-            mute,
-            invert,
-            delay_frames,
-        };
-        ctl.send(at, set_output(output, settings));
     }
     for &(at, p, o, d, gain) in &s.patches {
         ctl.send(at, patch(p, o, d, gain));

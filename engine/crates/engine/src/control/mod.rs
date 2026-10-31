@@ -30,6 +30,7 @@ mod inbox;
 mod inspect;
 mod mapping;
 mod media;
+mod model;
 mod netout;
 mod network;
 mod observe;
@@ -92,6 +93,7 @@ use devices::Device;
 use docs::{DocFile, Docs};
 use inbox::{Outbound, reply};
 use media::{MediaCatalog, ProbePool};
+use model::DocModel;
 use netout::NetOut;
 use observe::Observe;
 use patches::Patches;
@@ -449,8 +451,8 @@ impl Listed {
     fn of(d: &Doc) -> Self {
         Self {
             doc: d.id,
-            workspace_id: d.ws.id,
-            name: d.ws.name.clone(),
+            workspace_id: d.model.ws().id,
+            name: d.model.ws().name.clone(),
             path: d.show_path.clone(),
             dirty: d.is_dirty(),
         }
@@ -458,8 +460,8 @@ impl Listed {
 
     fn lists(&self, d: &Doc) -> bool {
         self.doc == d.id
-            && self.workspace_id == d.ws.id
-            && self.name == d.ws.name
+            && self.workspace_id == d.model.ws().id
+            && self.name == d.model.ws().name
             && self.path == d.show_path
             && self.dirty == d.is_dirty()
     }
@@ -470,9 +472,9 @@ impl Listed {
 /// clients have been told (revision, runtime sequence, warnings).
 struct Doc {
     id: DocId,
-    ws: Workspace,
+    /// The workspace and its cue engine: an edit of the workspace always reaches the engine.
+    model: DocModel,
     history: History,
-    engine: CueEngine,
     media: MediaCatalog,
     /// Network cues' output and the look-ups of their hosts (CT-30, PB-10, NFR-07).
     net: NetOut,
@@ -552,7 +554,13 @@ impl Control {
             control.eng.config.preload_budget,
         );
         let engine = CueEngine::new(control.eng.engine_config(id)?);
-        let doc = Doc::new(&control.eng, id, ws, engine, show_path, media);
+        let doc = Doc::new(
+            &control.eng,
+            id,
+            DocModel::new(ws, engine),
+            show_path,
+            media,
+        );
         control.docs.push(doc);
         control.eng.open_docs = control.docs.len();
         // Before the doc's first reports: the app connections (and the OSC side, which follows
@@ -564,10 +572,9 @@ impl Control {
                 doc,
             };
             let now = cx.now();
-            // A newly opened workspace: tell the engine, report the playheads
-            // (docs/cue-engine.md).
-            cx.doc.engine.model_changed();
-            cx.doc.media.sync(&cx.doc.ws);
+            // A newly opened workspace (the engine was told by `DocModel::new`): report the
+            // playheads (docs/cue-engine.md).
+            cx.doc.media.sync(cx.doc.model.ws());
             let mut inputs = vec![Input::Tick];
             inputs.extend(cx.sync_workspace(true));
             for input in inputs {
@@ -614,7 +621,7 @@ impl Control {
             pool.set_volume_of(volume);
         }
         let cue_outputs = mixer.cue_outputs();
-        let patches = Patches::new(config.mixer_patches, cue_outputs, rate);
+        let patches = Patches::new(config.mixer_patches, cue_outputs);
         let playable = match backend.device() {
             Some(d) => vec![playable_device(d)],
             None => config.devices.clone(),
@@ -839,8 +846,7 @@ impl Doc {
     fn new(
         eng: &Engine,
         id: DocId,
-        ws: Workspace,
-        engine: CueEngine,
+        model: DocModel,
         show_path: Option<PathBuf>,
         media: MediaCatalog,
     ) -> Self {
@@ -854,9 +860,8 @@ impl Doc {
         );
         Self {
             id,
-            ws,
+            model,
             history: History::new(),
-            engine,
             media,
             net,
             events: Vec::new(),
@@ -900,19 +905,21 @@ impl Doc {
     /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
     fn snapshot(&self) -> Snapshot {
         let cue_states = self
-            .engine
+            .model
+            .engine()
             .cue_states()
             .map(|(cue, state)| CueStateEntry {
                 cue,
                 state: state.into(),
                 reason: match state {
-                    CueState::Broken => self.engine.broken_reason(cue).map(Into::into),
+                    CueState::Broken => self.model.engine().broken_reason(cue).map(Into::into),
                     _ => None,
                 },
             })
             .collect();
         let problems = self
-            .engine
+            .model
+            .engine()
             .broken_cues()
             .into_iter()
             .map(|(cue, problems)| CueProblems {
@@ -921,30 +928,32 @@ impl Doc {
             })
             .collect();
         let group_warnings = self
-            .ws
+            .model
+            .ws()
             .cues()
             .filter(|c| matches!(c.kind, CueKind::Group { .. }))
             .map(|c| c.id)
-            .filter(|&c| self.engine.has_broken_descendant(c))
+            .filter(|&c| self.model.engine().has_broken_descendant(c))
             .collect();
         Snapshot {
             revision: self.revision,
             runtime_seq: self.runtime_seq,
             document: self.document_state(),
-            workspace: self.ws.clone(),
+            workspace: self.model.ws().clone(),
             cue_states,
             problems,
             group_warnings,
             playheads: self
-                .ws
+                .model
+                .ws()
                 .cue_lists
                 .iter()
                 .map(|l| PlayheadEntry {
                     list: l.id,
-                    cue: self.engine.playhead(l.id),
+                    cue: self.model.engine().playhead(l.id),
                 })
                 .collect(),
-            previewing: self.engine.previewing().collect(),
+            previewing: self.model.engine().previewing().collect(),
             warnings: self.warnings.clone(),
             media_durations: self.checks.media_durations(),
         }

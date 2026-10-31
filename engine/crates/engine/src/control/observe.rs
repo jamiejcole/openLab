@@ -386,17 +386,17 @@ impl DocCx<'_> {
         if self.eng.open_docs <= 1 {
             return message;
         }
-        let name = if self.doc.ws.name.is_empty() {
+        let name = if self.doc.model.ws().name.is_empty() {
             format!("workspace {}", self.doc.id)
         } else {
-            self.doc.ws.name.clone()
+            self.doc.model.ws().name.clone()
         };
         format!("[{name}] {message}")
     }
 
     /// `cue 5 "Storm"`, for log lines.
     pub(super) fn cue_label(&self, id: CueId) -> String {
-        match self.doc.ws.find_cue(id) {
+        match self.doc.model.ws().find_cue(id) {
             Some(cue) => match &cue.number {
                 Some(n) if !n.is_empty() => format!("cue {n} \"{}\"", cue.name),
                 _ => format!("cue \"{}\"", cue.name),
@@ -422,7 +422,7 @@ impl DocCx<'_> {
             let at = value
                 .get("list")
                 .and_then(|l| serde_json::from_value::<CueListId>(l.clone()).ok())
-                .and_then(|list| self.doc.engine.playhead(list));
+                .and_then(|list| self.doc.model.engine().playhead(list));
             let message = match at {
                 Some(cue) => format!("GO: {}", self.cue_label(cue)),
                 None => "GO: nothing at the playhead".to_owned(),

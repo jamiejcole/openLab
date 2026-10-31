@@ -138,12 +138,12 @@ impl Control {
 
     /// The first open doc's workspace.
     pub fn workspace(&self) -> &Workspace {
-        self.first().map_or(&self.none.ws, |d| &d.ws)
+        self.first().map_or(&self.none.ws, |d| d.model.ws())
     }
 
     /// The first open doc's cue engine.
     pub fn engine(&self) -> &CueEngine {
-        self.first().map_or(&self.none.engine, |d| &d.engine)
+        self.first().map_or(&self.none.engine, |d| d.model.engine())
     }
 
     /// The machine settings in force, including mappings the engine added (M4.4c).
@@ -297,11 +297,11 @@ impl<'a> DocView<'a> {
     }
 
     pub fn workspace(&self) -> &'a Workspace {
-        &self.doc.ws
+        self.doc.model.ws()
     }
 
     pub fn engine(&self) -> &'a CueEngine {
-        &self.doc.engine
+        self.doc.model.engine()
     }
 
     pub fn snapshot(&self) -> Snapshot {

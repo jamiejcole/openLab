@@ -176,6 +176,23 @@ fn relink_finds_moved_files_in_one_undo_step_and_undo_restores() {
     assert_eq!(media(&r.s, 2), format!("{}/b.wav", portable(&r.gone)));
 }
 
+/// The relink's edit reaches the cue engine with no signal by hand: the workspace's write guard
+/// tells it (docs/control.md, Model changes).
+#[test]
+fn a_relink_reaches_the_cue_engine_without_a_signal() {
+    let mut r = rig(&["a.wav"]);
+    touch(&r.lib.join("a.wav"));
+    let folder = r.lib.to_string_lossy().into_owned();
+    let replies = assert_engine_follows(&mut r.s, |s| {
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: Request::Relink { folder },
+        })
+    });
+    assert_eq!(counts(&replies).0, 1);
+}
+
 #[test]
 fn duplicates_are_reported_ambiguous_and_not_guessed() {
     let mut r = rig(&["a.wav"]);

@@ -69,11 +69,9 @@ final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let icon = NSImageView()
-        if let image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil) {
-            icon.image = image
-            icon.contentTintColor = .systemRed
-            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
-        }
+        icon.image = Icon.engineAlarm.image(loc("engine.alarm.window"), compact: true)
+        icon.contentTintColor = .systemRed
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
         titleLabel.font = .boldSystemFont(ofSize: 15)
         titleLabel.textColor = .systemRed
         titleLabel.setAX(AX.engineAlarmTitle)

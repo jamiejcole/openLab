@@ -157,7 +157,7 @@ impl Control {
             let old = self.eng.block;
             let mut failed = None;
             for doc in &mut self.docs {
-                if let Err(e) = doc.engine.set_lookahead(b) {
+                if let Err(e) = doc.model.set_lookahead(b) {
                     failed = Some(e);
                     break;
                 }
@@ -176,7 +176,7 @@ impl Control {
                 Some(e) => {
                     for doc in &mut self.docs {
                         // The old lookahead was accepted before: this cannot fail.
-                        let _ = doc.engine.set_lookahead(old);
+                        let _ = doc.model.set_lookahead(old);
                     }
                     self.eng.log_device(
                         LogLevel::Warn,
@@ -213,7 +213,7 @@ impl DocCx<'_> {
         // Audio runs with no voice yet or any more (pre-wait, post-wait, paused) are routed to
         // the device too: nothing scheduled before the outage may start by itself after it.
         // They end as device_lost breaks; `Input::DeviceLost` below stops all the others.
-        for (cue, state) in self.doc.engine.cue_states() {
+        for (cue, state) in self.doc.model.engine().cue_states() {
             if matches!(
                 state,
                 CueState::PreWaiting
@@ -222,9 +222,9 @@ impl DocCx<'_> {
                     | CueState::PostWaiting
                     | CueState::Fading
                     | CueState::Stopping
-            ) && let Some(run) = self.doc.engine.run_of(cue)
+            ) && let Some(run) = self.doc.model.engine().run_of(cue)
                 && matches!(
-                    self.doc.ws.find_cue(cue).map(|c| &c.kind),
+                    self.doc.model.ws().find_cue(cue).map(|c| &c.kind),
                     Some(CueKind::Audio { .. })
                 )
                 && !runs.contains(&(cue, run))
@@ -268,7 +268,7 @@ impl DocCx<'_> {
 
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
     /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
-    /// slot (`mixer_patches_exhausted`), device outputs that patches give different delays.
+    /// slot (`mixer_patches_exhausted`).
     pub(super) fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         self.eng.stage_faults.warnings(list);
         if let Some(d) = self.eng.backend.device() {
@@ -324,7 +324,7 @@ impl DocCx<'_> {
                 ));
             }
         }
-        for patch in &self.doc.ws.patches {
+        for patch in &self.doc.model.ws().patches {
             if let Some(PatchResolution::ChannelsMissing {
                 device,
                 needed,
@@ -345,7 +345,8 @@ impl DocCx<'_> {
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self
                 .doc
-                .ws
+                .model
+                .ws()
                 .patches
                 .iter()
                 .find(|p| p.id == id)
@@ -355,17 +356,6 @@ impl DocCx<'_> {
                 format!(
                     "patch \"{name}\" cannot play: all {} mixer patches are in use",
                     self.eng.patches.capacity()
-                ),
-                None,
-            ));
-        }
-        for output in self.eng.patches.delay_conflicts(self.doc.id) {
-            list.push(notice(
-                "output_delay_conflict",
-                format!(
-                    "device output {} has different delays in different patches; the longest \
-                     is used",
-                    u32::from(output) + 1
                 ),
                 None,
             ));
