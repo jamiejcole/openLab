@@ -105,9 +105,9 @@ final class CueEditingTests: XCTestCase {
         let afterIntro = CueEditor.insertion(selected: [n(H.intro)], roots: roots)
         XCTAssertEqual(afterIntro.index, 1)
         XCTAssertNil(afterIntro.parent)
-        // A selected group gets the cue after it, not inside it.
+        // A selected group takes the cue in, as its last child.
         XCTAssertEqual(CueEditor.insertion(selected: [n(H.group)], roots: roots).index, 3)
-        XCTAssertNil(CueEditor.insertion(selected: [n(H.group)], roots: roots).parent)
+        XCTAssertEqual(CueEditor.insertion(selected: [n(H.group)], roots: roots).parent, H.group)
         // Inside a group: after the last selected child.
         let inside = CueEditor.insertion(selected: [n(H.door), n(H.rain)], roots: roots)
         XCTAssertEqual(inside.parent, H.group)
@@ -129,6 +129,112 @@ final class CueEditingTests: XCTestCase {
         let new = try XCTUnwrap(id)
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(h.vc.node(H.group)?.children.map(\.id), [H.door, new, H.rain, H.radio])
+    }
+
+    func testAddWithAGroupSelectedPutsTheCueInsideItLast() async throws {
+        let (h, editor, log) = try await harness()
+        h.vc.select([H.group])
+        let added = await editor.add(.memo)
+        let new = try XCTUnwrap(added)
+        XCTAssertEqual(log.commands.first?["at"]?["parent"]?.stringValue, H.group.raw)
+        await assertEventually { h.vc.selectedIDs() == [new] }
+        XCTAssertEqual(h.vc.node(H.group)?.children.map(\.id), [H.door, H.rain, H.radio, new])
+    }
+
+    // MARK: Group from the selection
+
+    /// The cue list's shape, e.g. "0a 20[21 22] 0b", from the demo ids' last two characters; the
+    /// new cue shows as "N".
+    private func shape(_ nodes: [CueNode], new: ModelID?) -> String {
+        nodes.map { n in
+            let name = n.id == new ? "N" : String(n.id.raw.suffix(2))
+            return n.isGroup ? "\(name)[\(shape(n.children, new: new))]" : name
+        }.joined(separator: " ")
+    }
+
+    func testNewGroupTakesInScatteredSelectedCuesInListOrderAsOneUndoStep() async throws {
+        let (h, editor, log) = try await harness()
+        let before = shape(h.vc.roots, new: nil)
+        XCTAssertEqual(before, "0a 0b 20[21 22 23]")
+        // Picked bottom first and from different parents: they still go in list order, at the
+        // first one's place.
+        h.vc.select([H.door, H.intro])
+        let added = await editor.add(.group)
+        let new = try XCTUnwrap(added)
+        XCTAssertEqual(log.commands.count, 1, "one undo step")
+        let sent = try XCTUnwrap(log.commands.first)
+        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
+        let steps = sent["commands"]?.arrayValue ?? []
+        XCTAssertEqual(steps.map { $0["type"]?.stringValue }, ["add_cue", "reparent_cue", "reparent_cue"])
+        XCTAssertEqual(steps.first?["at"]?["parent"], .null)
+        XCTAssertEqual(steps.first?["at"]?["index"], .int(0))
+        XCTAssertEqual(steps.first?["cue"]?["kind"]?["type"]?.stringValue, "group")
+        XCTAssertEqual(steps.dropFirst().map { $0["id"]?.stringValue }, [H.intro.raw, H.door.raw])
+        XCTAssertEqual(steps.dropFirst().map { $0["to"]?["parent"]?.stringValue }, [new.raw, new.raw])
+        XCTAssertEqual(steps.dropFirst().map { $0["to"]?["index"] }, [.int(0), .int(1)])
+        await assertEventually { h.vc.selectedIDs() == [new] }
+        XCTAssertEqual(shape(h.vc.roots, new: new), "N[0a 21] 0b 20[22 23]")
+        XCTAssertTrue(log.notices.isEmpty)
+        await editor.undo()
+        await assertEventually { shape(h.vc.roots, new: new) == before }
+    }
+
+    func testNewGroupTakesInContiguousCuesInsideAGroupWhereTheFirstWas() async throws {
+        let (h, editor, _) = try await harness()
+        h.vc.select([H.door, H.rain])
+        let added = await editor.add(.group)
+        let new = try XCTUnwrap(added)
+        await assertEventually { h.vc.selectedIDs() == [new] }
+        XCTAssertEqual(shape(h.vc.roots, new: new), "0a 0b 20[N[21 22] 23]")
+    }
+
+    func testNewGroupWithAGroupAndItsOwnChildSelectedTakesTheGroupWhole() async throws {
+        let (h, editor, _) = try await harness()
+        h.vc.select([H.group, H.rain])
+        let added = await editor.add(.group)
+        let new = try XCTUnwrap(added)
+        await assertEventually { h.vc.selectedIDs() == [new] }
+        XCTAssertEqual(shape(h.vc.roots, new: new), "0a 0b N[20[21 22 23]]")
+    }
+
+    func testNewGroupAroundARunningCueSendsOnlyTheEditAndIsNotRefused() async throws {
+        let (h, editor, log) = try await harness()
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        h.vc.select([H.intro, H.fade])
+        let added = await editor.add(.group)
+        let new = try XCTUnwrap(added)
+        XCTAssertTrue(log.notices.isEmpty)
+        // No stop, start or other transport: the one edit, and the playhead following the selection.
+        let others = log.messages.filter {
+            switch $0 {
+            case .command, .transport(_, .setPlayhead): return false
+            default: return true
+            }
+        }
+        XCTAssertEqual(others, [])
+        XCTAssertEqual(log.commands.map { $0["type"]?.stringValue }, ["transaction"])
+        await assertEventually { h.vc.node(new)?.children.map(\.id) == [H.intro, H.fade] }
+    }
+
+    func testNewGroupWithOneCueSelectedIsAnEmptyGroupAfterIt() async throws {
+        let (h, editor, log) = try await harness()
+        h.vc.select([H.intro])
+        let added = await editor.add(.group)
+        let new = try XCTUnwrap(added)
+        XCTAssertEqual(log.commands.first?["type"]?.stringValue, "add_cue")
+        await assertEventually { h.vc.selectedIDs() == [new] }
+        XCTAssertEqual(shape(h.vc.roots, new: new), "0a N[] 0b 20[21 22 23]")
+    }
+
+    func testNewGroupRefusedByTheEngineLeavesTheListAndSaysWhy() async throws {
+        let (h, editor, log) = try await harness()
+        h.rig.engine.refuseCommands = true
+        h.vc.select([H.intro, H.fade])
+        let new = await editor.add(.group)
+        XCTAssertNil(new)
+        XCTAssertEqual(log.notices.count, 1)
+        XCTAssertTrue(log.notices[0].contains("refused by the fake"), log.notices[0])
+        XCTAssertEqual(shape(h.vc.roots, new: nil), "0a 0b 20[21 22 23]")
     }
 
     func testAddAudioWithoutAPatchIsRefusedWithAMessage() async throws {
@@ -323,6 +429,9 @@ final class CueEditingTests: XCTestCase {
         XCTAssertTrue(wc.cueList.isEditLocked)
         XCTAssertTrue(wc.cueToolbar.segmentedControls.allSatisfy { !$0.isEnabled })
         for kind in NewCueKind.allCases { await e.add(kind) }
+        wc.cueList.select(Array(ids.prefix(2)))
+        await e.add(.group)
+        wc.cueList.select([first])
         await e.deleteSelection()
         await e.moveSelection(by: 1)
         await e.move([first], to: nil, at: 0)
